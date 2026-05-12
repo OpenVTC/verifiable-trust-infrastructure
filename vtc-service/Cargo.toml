@@ -92,6 +92,12 @@ tempfile = "3"
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+# CBOR encoding for the soft Ed25519 authenticator harness
+# (`tests/common/webauthn_harness.rs`). Produces the CTAP attestation
+# object + COSE public key on the same wire shape `webauthn-rs-core`
+# parses (it uses `serde_cbor_2` internally — `ciborium` is canonical
+# enough for both to agree).
+ciborium = "0.2"
 
 [lints]
 workspace = true

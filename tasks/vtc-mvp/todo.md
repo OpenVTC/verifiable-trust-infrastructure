@@ -393,23 +393,37 @@ concurrent claims race correctly through the mutex. No WebAuthn yet.
 
 ## M0.5 — WebAuthn claim flow
 
-### `[ ]` M0.5.0 — WebAuthn test harness validation
+### `[x]` M0.5.0 — WebAuthn test harness validation
 
 - **Acceptance**
-  - A test helper in `vtc-service/tests/common/webauthn_harness.rs`
-    can produce deterministic registration + authentication
-    responses for a fake authenticator
-  - Helper covers Ed25519 (EdDSA, `COSEAlgorithmIdentifier = -8`)
-  - At least one trivial test confirms the helper drives
-    `webauthn-rs` server-side validation green
+  - `tests/common/webauthn_harness.rs` ships a
+    `SoftEd25519Authenticator` producing deterministic CTAP-format
+    registration + authentication responses (none-attestation, COSE
+    OKP Ed25519 public keys via `ciborium` CBOR encoding, signatures
+    from `ed25519-dalek`).
+  - The harness refuses non-EdDSA registration challenges with a
+    panic — protects callers that bypass
+    `vtc_service::webauthn::start_eddsa_passkey_registration`.
 - **Verify**
-  - A standalone test (`tests/webauthn_harness.rs`) exercises the
-    helper through a full register-and-authenticate cycle
+  - `tests/webauthn_harness.rs` × 3 tests:
+    - `register_then_authenticate_completes_end_to_end` — full
+      ceremony succeeds, harness pubkey matches the passkey's stored
+      COSE `x` coordinate (proves the byte that becomes the
+      `did:key` is the one the authenticator generated).
+    - `second_authenticate_increments_sign_count` — counter
+      monotonicity holds across multiple assertions.
+    - `register_panics_when_challenge_lacks_eddsa` — guard against
+      misuse by tests that drive the upstream challenge directly.
 - **Files**
-  - `vtc-service/tests/common/mod.rs`
-  - `vtc-service/tests/common/webauthn_harness.rs`
-  - `vtc-service/tests/webauthn_harness.rs`
-- **Deps**: M0.1.0 (just for the dep import)
+  - `vtc-service/tests/common/mod.rs` (new)
+  - `vtc-service/tests/common/webauthn_harness.rs` (new — ~260 lines)
+  - `vtc-service/tests/webauthn_harness.rs` (new — 3 validation tests)
+  - `vtc-service/Cargo.toml` (`ciborium` dev-dep)
+- **Deps**: M0.5.1 (uses the EdDSA-restricting wrappers as the
+  challenge producer)
+- **Note**: Upstream `webauthn-authenticator-rs::SoftPasskey` is
+  hard-coded to ES256 (`openssl::ec`) and was unsuitable; the
+  in-tree harness sidesteps that.
 
 ### `[x]` M0.5.1 — VTC `AppState` implements `PasskeyState`
 
