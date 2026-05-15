@@ -24,10 +24,11 @@ use super::state::{find_record_by_scid, state_from_jsonl, state_to_jsonl};
 use super::validate::{validate_document_for_update, validate_watchers, validate_witnesses};
 use crate::audit;
 use crate::auth::AuthClaims;
+use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::SeedStore;
-use crate::operations::did_webvh::WebvhTransport;
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
+use crate::operations::did_webvh::{WebvhRestAuthContext, WebvhTransport};
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
@@ -39,6 +40,7 @@ pub async fn update_did_webvh(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
+    config: &AppConfig,
     auth: &AuthClaims,
     scid: &str,
     opts: UpdateDidWebvhOptions,
@@ -361,9 +363,17 @@ pub async fn update_did_webvh(
                     record.server_id
                 ))
             })?;
-        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge)
-            .await
-            .map_err(|e| UpdateDidWebvhError::Publish(format!("transport: {e}")))?;
+        let rest_auth = WebvhRestAuthContext {
+            webvh_ks,
+            keys_ks,
+            seed_store,
+            config,
+            channel,
+        };
+        let transport =
+            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth)
+                .await
+                .map_err(|e| UpdateDidWebvhError::Publish(format!("transport: {e}")))?;
         transport
             .publish_did(&record.mnemonic, &new_log_jsonl)
             .await

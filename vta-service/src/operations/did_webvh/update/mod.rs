@@ -739,6 +739,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -791,6 +792,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -845,6 +847,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -865,6 +868,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -913,6 +917,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -933,6 +938,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -982,6 +988,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1005,6 +1012,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1051,6 +1059,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             RotateDidWebvhKeysOptions::default(),
@@ -1141,6 +1150,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1212,6 +1222,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1233,6 +1244,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1365,6 +1377,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             RotateDidWebvhKeysOptions {
@@ -1425,6 +1438,7 @@ mod pre_rotation_e2e_tests {
             &ts.webvh_ks,
             &ts.audit_ks,
             &seed_store,
+            &cfg,
             &auth,
             &scid,
             UpdateDidWebvhOptions {

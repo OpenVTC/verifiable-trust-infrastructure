@@ -59,9 +59,9 @@ use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::keys::{self, KeyType as SdkKeyType, PreRotationKeyData, encode_private_multibase};
 use crate::store::KeyspaceHandle;
-use crate::webvh_client::{RequestUriResponse, WebvhClient};
+use crate::webvh_client::{RequestUriResponse, WebvhAuthState, WebvhClient};
 use crate::webvh_didcomm::WebvhDIDCommClient;
-use crate::webvh_store;
+use crate::webvh_store::{self, WebvhServerAuthRecord};
 use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 use zeroize::Zeroize;
 
@@ -311,6 +311,14 @@ pub async fn create_did_webvh(
     auth.require_admin()?;
     auth.require_context(&params.context_id)?;
 
+    let rest_auth = WebvhRestAuthContext {
+        webvh_ks,
+        keys_ks,
+        seed_store,
+        config,
+        channel,
+    };
+
     // Template is mutually exclusive with raw did_document / did_log — it
     // renders into did_document, so specifying both would ambiguously
     // override.
@@ -384,7 +392,8 @@ pub async fn create_did_webvh(
                     AppError::NotFound(format!("webvh server not found: {server_id}"))
                 })?;
             let transport =
-                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth)
+                    .await?;
             // Final mode has no mnemonic from a server request — use the SCID as identifier
             transport.publish_did(&scid, did_log).await?;
         }
@@ -599,7 +608,8 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+        let transport =
+            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth).await?;
         let uri_response = transport.request_uri(params.path.as_deref()).await?;
 
         // Validate the URL
@@ -952,7 +962,8 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+        let transport =
+            WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth).await?;
         transport.publish_did(mnemonic, &log_content).await?;
 
         // Store DID record and log
@@ -1001,8 +1012,8 @@ pub async fn create_did_webvh(
 pub async fn delete_did_webvh(
     webvh_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
-    _seed_store: &dyn SeedStore,
-    _config: &AppConfig,
+    seed_store: &dyn SeedStore,
+    config: &AppConfig,
     auth: &AuthClaims,
     did: &str,
     did_resolver: &DIDCacheClient,
@@ -1019,7 +1030,14 @@ pub async fn delete_did_webvh(
     let server = webvh_store::get_server(webvh_ks, &record.server_id).await?;
 
     if let Some(server) = server {
-        match WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await {
+        let rest_auth = WebvhRestAuthContext {
+            webvh_ks,
+            keys_ks,
+            seed_store,
+            config,
+            channel,
+        };
+        match WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth).await {
             Ok(transport) => {
                 if let Err(e) = transport.delete_did(&record.mnemonic).await {
                     tracing::warn!(did = %did, error = %e, "failed to delete DID from webvh-server (continuing local cleanup)");
@@ -1059,6 +1077,231 @@ pub async fn delete_did_webvh(
 // WebVH transport abstraction
 // ---------------------------------------------------------------------------
 
+/// Transport choice inferred from a resolved WebVH server DID document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ResolvedServerTransport {
+    Didcomm,
+    Rest(String),
+}
+
+fn normalize_service_uri(url: String) -> String {
+    url.trim_matches('"').trim_end_matches('/').to_string()
+}
+
+fn resolve_server_transport<T>(
+    services: &[T],
+    service_types: impl Fn(&T) -> &[String],
+    service_uri: impl Fn(&T) -> Option<String>,
+) -> Option<ResolvedServerTransport> {
+    if services
+        .iter()
+        .any(|svc| servers::is_didcomm_service_type(service_types(svc)))
+    {
+        return Some(ResolvedServerTransport::Didcomm);
+    }
+
+    services.iter().find_map(|svc| {
+        if !servers::is_webvh_rest_service_type(service_types(svc)) {
+            return None;
+        }
+        service_uri(svc)
+            .map(normalize_service_uri)
+            .map(ResolvedServerTransport::Rest)
+    })
+}
+
+const WEBVH_REST_TOKEN_REFRESH_SKEW_SECS: u64 = 30;
+
+pub(super) struct WebvhRestAuthContext<'a> {
+    webvh_ks: &'a KeyspaceHandle,
+    keys_ks: &'a KeyspaceHandle,
+    seed_store: &'a dyn SeedStore,
+    config: &'a AppConfig,
+    channel: &'a str,
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn access_token_is_fresh(auth_state: &WebvhServerAuthRecord, now: u64) -> bool {
+    auth_state
+        .access_token
+        .as_ref()
+        .is_some_and(|token| !token.is_empty())
+        && auth_state
+            .access_expires_at
+            .is_some_and(|exp| exp > now.saturating_add(WEBVH_REST_TOKEN_REFRESH_SKEW_SECS))
+}
+
+async fn load_vta_signing_secret(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    config: &AppConfig,
+) -> Result<(String, Secret), AppError> {
+    let vta_did = config
+        .vta_did
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("vta_did is not configured".into()))?
+        .clone();
+    let key_id = format!("{vta_did}#key-0");
+
+    let record: KeyRecord = keys_ks
+        .get(keys::store_key(&key_id))
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("VTA signing key not found: {key_id}")))?;
+
+    if record.key_type != KeyType::Ed25519 {
+        return Err(AppError::Internal(format!(
+            "VTA signing key {key_id} must be Ed25519, found {}",
+            record.key_type
+        )));
+    }
+    if record.status != KeyStatus::Active {
+        return Err(AppError::Internal(format!(
+            "VTA signing key {key_id} is not active"
+        )));
+    }
+    if record.origin != KeyOrigin::Derived {
+        return Err(AppError::Internal(format!(
+            "webvh REST auth currently requires a derived VTA signing key; {key_id} is {:?}",
+            record.origin
+        )));
+    }
+
+    let seed = load_seed_bytes(keys_ks, seed_store, record.seed_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let bip32 = ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| AppError::Internal(format!("failed to create BIP-32 root key: {e}")))?;
+    let derivation_path: DerivationPath = record
+        .derivation_path
+        .parse()
+        .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
+    let derived_key = bip32
+        .derive(&derivation_path)
+        .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
+    let private_key_multibase =
+        encode_private_multibase(&KeyType::Ed25519, derived_key.signing_key.as_bytes());
+
+    let signing_secret = if vta_did.starts_with("did:key:") {
+        let seed: [u8; 32] = vta_sdk::did_key::decode_private_key_multibase(&private_key_multibase)
+            .map_err(|e| {
+                AppError::Internal(format!("decode VTA did:key signing seed for {key_id}: {e}"))
+            })?;
+        vta_sdk::did_key::secrets_from_did_key(&vta_did, &seed)
+            .map_err(|e| AppError::Internal(format!("construct did:key secrets: {e}")))?
+            .signing
+    } else {
+        let mut secret = Secret::from_multibase(&private_key_multibase, None).map_err(|e| {
+            AppError::Internal(format!(
+                "construct Secret for VTA signing key {key_id}: {e}"
+            ))
+        })?;
+        secret.id = key_id;
+        secret
+    };
+
+    Ok((vta_did, signing_secret))
+}
+
+fn apply_webvh_auth_state(stored: &mut WebvhServerAuthRecord, auth_state: &WebvhAuthState) {
+    stored.access_token = Some(auth_state.access_token.clone());
+    stored.access_expires_at = Some(auth_state.access_expires_at);
+    if let Some(ref refresh_token) = auth_state.refresh_token {
+        stored.refresh_token = Some(refresh_token.clone());
+    }
+}
+
+async fn build_authenticated_rest_client(
+    server: &WebvhServerRecord,
+    url: &str,
+    auth: &WebvhRestAuthContext<'_>,
+) -> Result<WebvhClient, AppError> {
+    let mut client = WebvhClient::new(url);
+    let now = unix_now_secs();
+    let stored = webvh_store::get_server_auth(auth.webvh_ks, &server.id).await?;
+
+    if let Some(ref auth_state) = stored
+        && access_token_is_fresh(auth_state, now)
+    {
+        if let Some(ref token) = auth_state.access_token {
+            client.set_access_token(token.clone());
+        }
+        return Ok(client);
+    }
+
+    let mut updated = stored.unwrap_or_default();
+
+    if let Some(refresh_token) = updated.refresh_token.clone() {
+        match client.refresh_access_token(&refresh_token).await {
+            Ok(auth_state) => {
+                apply_webvh_auth_state(&mut updated, &auth_state);
+                webvh_store::store_server_auth(auth.webvh_ks, &server.id, &updated).await?;
+                client.set_access_token(auth_state.access_token);
+                info!(
+                    channel = auth.channel,
+                    server_id = %server.id,
+                    server_did = %server.did,
+                    transport = "rest",
+                    "refreshed stored WebVH REST access token"
+                );
+                return Ok(client);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    channel = auth.channel,
+                    server_id = %server.id,
+                    server_did = %server.did,
+                    error = %e,
+                    "failed to refresh WebVH REST access token; falling back to full authentication"
+                );
+            }
+        }
+    }
+
+    if auth.config.vta_did.as_deref().is_none_or(str::is_empty) {
+        info!(
+            channel = auth.channel,
+            server_id = %server.id,
+            server_did = %server.did,
+            transport = "rest",
+            "no configured vta_did yet; using unauthenticated WebVH REST client"
+        );
+        return Ok(client);
+    }
+
+    let (vta_did, signing_secret) =
+        load_vta_signing_secret(auth.keys_ks, auth.seed_store, auth.config).await?;
+    let auth_state = client
+        .authenticate(&vta_did, &signing_secret, &server.did)
+        .await
+        .map_err(|e| {
+            AppError::Internal(format!(
+                "authenticate VTA DID {vta_did} to webvh server {} via REST: {e}",
+                server.did
+            ))
+        })?;
+
+    apply_webvh_auth_state(&mut updated, &auth_state);
+    webvh_store::store_server_auth(auth.webvh_ks, &server.id, &updated).await?;
+    client.set_access_token(auth_state.access_token);
+
+    info!(
+        channel = auth.channel,
+        server_id = %server.id,
+        server_did = %server.did,
+        vta_did = %vta_did,
+        transport = "rest",
+        "authenticated VTA to WebVH REST endpoint"
+    );
+
+    Ok(client)
+}
+
 /// Unified transport for communicating with a WebVH server via REST or DIDComm.
 ///
 /// Owns all necessary state so callers don't need to branch on transport type.
@@ -1073,49 +1316,40 @@ pub(super) enum WebvhTransport<'a> {
 impl<'a> WebvhTransport<'a> {
     /// Resolve the server DID and construct the appropriate transport.
     ///
-    /// Prefers `DIDCommMessaging` and falls back to `WebVHHostingService`.
+    /// Prefers `DIDCommMessaging` and falls back to REST when the DID exposes
+    /// either `WebVHHosting` or `WebVHHostingService`.
     pub(super) async fn from_server(
         server: &WebvhServerRecord,
         did_resolver: &DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
+        rest_auth: &WebvhRestAuthContext<'_>,
     ) -> Result<Self, AppError> {
         let resolved = did_resolver.resolve(&server.did).await.map_err(|e| {
             AppError::Internal(format!("failed to resolve server DID {}: {e}", server.did))
         })?;
 
-        // Check for DIDCommMessaging first
-        let has_didcomm = resolved
-            .doc
-            .service
-            .iter()
-            .any(|svc| svc.type_.iter().any(|t| t == "DIDCommMessaging"));
-        if has_didcomm {
-            info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
-            return Ok(Self::DIDComm {
-                bridge: didcomm_bridge,
-                server_did: server.did.clone(),
-            });
-        }
-
-        // Fall back to WebVHHostingService
-        for svc in &resolved.doc.service {
-            if svc.type_.iter().any(|t| t == "WebVHHostingService")
-                && let Some(url) = svc.service_endpoint.get_uri()
-            {
-                let url = url.trim_matches('"').trim_end_matches('/').to_string();
-                info!(server_did = %server.did, transport = "rest", %url, "resolved webvh server endpoint");
-                let mut client = WebvhClient::new(&url);
-                if let Some(ref token) = server.access_token {
-                    client.set_access_token(token.clone());
-                }
-                return Ok(Self::Rest(client));
+        match resolve_server_transport(
+            &resolved.doc.service,
+            |svc| &svc.type_,
+            |svc| svc.service_endpoint.get_uri(),
+        ) {
+            Some(ResolvedServerTransport::Didcomm) => {
+                info!(server_did = %server.did, transport = "didcomm", "resolved webvh server endpoint");
+                Ok(Self::DIDComm {
+                    bridge: didcomm_bridge,
+                    server_did: server.did.clone(),
+                })
             }
+            Some(ResolvedServerTransport::Rest(url)) => {
+                info!(server_did = %server.did, transport = "rest", %url, "resolved webvh server endpoint");
+                let client = build_authenticated_rest_client(server, &url, rest_auth).await?;
+                Ok(Self::Rest(client))
+            }
+            None => Err(AppError::Internal(format!(
+                "server DID {} has no DIDCommMessaging, WebVHHosting, or WebVHHostingService endpoint",
+                server.did,
+            ))),
         }
-
-        Err(AppError::Internal(format!(
-            "server DID {} has no DIDCommMessaging or WebVHHostingService endpoint",
-            server.did,
-        )))
     }
 
     async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
@@ -1226,4 +1460,139 @@ pub(crate) async fn derive_pre_rotation_keys(
     }
 
     Ok((hashes, key_data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ResolvedServerTransport, WEBVH_REST_TOKEN_REFRESH_SKEW_SECS, WebvhAuthState,
+        access_token_is_fresh, apply_webvh_auth_state, resolve_server_transport,
+    };
+    use crate::webvh_store::WebvhServerAuthRecord;
+
+    #[derive(Debug, Clone)]
+    struct TestService {
+        types: Vec<String>,
+        uri: Option<String>,
+    }
+
+    fn service(types: &[&str], uri: Option<&str>) -> TestService {
+        TestService {
+            types: types.iter().map(|t| (*t).to_string()).collect(),
+            uri: uri.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn resolve_server_transport_prefers_didcomm_when_both_didcomm_and_hosting_exist() {
+        let services = [
+            service(&["WebVHHosting"], Some("https://host.example.com/webvh/")),
+            service(&["DIDCommMessaging"], Some("https://mediator.example.com")),
+        ];
+
+        assert_eq!(
+            resolve_server_transport(&services, |svc| &svc.types, |svc| svc.uri.clone()),
+            Some(ResolvedServerTransport::Didcomm)
+        );
+    }
+
+    #[test]
+    fn resolve_server_transport_uses_rest_for_webvh_hosting() {
+        let services = [service(
+            &["WebVHHosting"],
+            Some("\"https://host.example.com/webvh/\""),
+        )];
+
+        assert_eq!(
+            resolve_server_transport(&services, |svc| &svc.types, |svc| svc.uri.clone()),
+            Some(ResolvedServerTransport::Rest(
+                "https://host.example.com/webvh".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_server_transport_uses_rest_for_webvh_hosting_service() {
+        let services = [service(
+            &["WebVHHostingService"],
+            Some("https://host.example.com/webvh/"),
+        )];
+
+        assert_eq!(
+            resolve_server_transport(&services, |svc| &svc.types, |svc| svc.uri.clone()),
+            Some(ResolvedServerTransport::Rest(
+                "https://host.example.com/webvh".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn resolve_server_transport_returns_none_without_supported_service_types() {
+        let services = [service(&["LinkedDomains"], Some("https://example.com"))];
+
+        assert_eq!(
+            resolve_server_transport(&services, |svc| &svc.types, |svc| svc.uri.clone()),
+            None
+        );
+    }
+
+    #[test]
+    fn access_token_is_fresh_requires_nonempty_token_and_future_expiry() {
+        let now = 1_000u64;
+        let record = WebvhServerAuthRecord {
+            access_token: Some("tok".into()),
+            access_expires_at: Some(now + WEBVH_REST_TOKEN_REFRESH_SKEW_SECS + 1),
+            refresh_token: None,
+        };
+        assert!(access_token_is_fresh(&record, now));
+
+        let mut no_token = record.clone();
+        no_token.access_token = None;
+        assert!(!access_token_is_fresh(&no_token, now));
+
+        let mut empty_token = record.clone();
+        empty_token.access_token = Some(String::new());
+        assert!(!access_token_is_fresh(&empty_token, now));
+
+        let mut missing_expiry = record.clone();
+        missing_expiry.access_expires_at = None;
+        assert!(!access_token_is_fresh(&missing_expiry, now));
+    }
+
+    #[test]
+    fn access_token_is_fresh_respects_refresh_skew_window() {
+        let now = 5_000u64;
+        let record = WebvhServerAuthRecord {
+            access_token: Some("tok".into()),
+            access_expires_at: Some(now + WEBVH_REST_TOKEN_REFRESH_SKEW_SECS),
+            refresh_token: None,
+        };
+
+        assert!(
+            !access_token_is_fresh(&record, now),
+            "expiry at or inside the skew window must trigger refresh/auth"
+        );
+    }
+
+    #[test]
+    fn apply_webvh_auth_state_keeps_existing_refresh_token_when_not_reissued() {
+        let mut record = WebvhServerAuthRecord {
+            access_token: None,
+            access_expires_at: None,
+            refresh_token: Some("existing-refresh".into()),
+        };
+
+        apply_webvh_auth_state(
+            &mut record,
+            &WebvhAuthState {
+                access_token: "new-access".into(),
+                access_expires_at: 42,
+                refresh_token: None,
+            },
+        );
+
+        assert_eq!(record.access_token.as_deref(), Some("new-access"));
+        assert_eq!(record.access_expires_at, Some(42));
+        assert_eq!(record.refresh_token.as_deref(), Some("existing-refresh"));
+    }
 }

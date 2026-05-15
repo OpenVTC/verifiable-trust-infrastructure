@@ -29,12 +29,14 @@ use tracing::info;
 
 use crate::audit;
 use crate::auth::AuthClaims;
+use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
+use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
-use super::{RaceDetected, RecordSnapshot, WebvhTransport};
+use super::{RaceDetected, RecordSnapshot, WebvhRestAuthContext, WebvhTransport};
 
 /// `server_id` value stored on a DID record that has not yet been
 /// associated with a webvh hosting server. Mirrors the literal used
@@ -116,7 +118,10 @@ impl From<AppError> for RegisterDidWithServerError {
 /// mutations) auto-publish there.
 pub async fn register_did_with_server(
     webvh_ks: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    config: &AppConfig,
     auth: &AuthClaims,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,
@@ -159,7 +164,14 @@ pub async fn register_did_with_server(
 
     // 4. Build the transport for the target server (REST or DIDComm
     //    depending on the server DID's advertised endpoints).
-    let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge)
+    let rest_auth = WebvhRestAuthContext {
+        webvh_ks,
+        keys_ks,
+        seed_store,
+        config,
+        channel,
+    };
+    let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge, &rest_auth)
         .await
         .map_err(|e| RegisterDidWithServerError::Transport(e.to_string()))?;
 
@@ -248,23 +260,34 @@ pub async fn register_did_with_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::seed_store::PlaintextSeedStore;
     use crate::store::Store;
     use crate::test_support::test_app_config;
     use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
-    async fn setup() -> (tempfile::TempDir, KeyspaceHandle, KeyspaceHandle) {
+    async fn setup() -> (
+        tempfile::TempDir,
+        KeyspaceHandle,
+        KeyspaceHandle,
+        KeyspaceHandle,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&VtiStoreConfig {
             data_dir: dir.path().into(),
         })
         .unwrap();
+        let keys_ks = store.keyspace("keys").unwrap();
         let webvh_ks = store.keyspace("webvh").unwrap();
         let audit_ks = store.keyspace("audit").unwrap();
         // Force the test_app_config helper to be exercised so any
         // future field addition surfaces as a test failure.
         let _ = test_app_config(dir.path().into());
-        (dir, webvh_ks, audit_ks)
+        (dir, keys_ks, webvh_ks, audit_ks)
+    }
+
+    fn seed_store(dir: &tempfile::TempDir) -> PlaintextSeedStore {
+        PlaintextSeedStore::new(dir.path())
     }
 
     fn serverless_record(did: &str) -> WebvhDidRecord {
@@ -290,9 +313,6 @@ mod tests {
             id: id.into(),
             did: format!("did:web:{id}.example"),
             label: None,
-            access_token: None,
-            access_expires_at: None,
-            refresh_token: None,
             created_at: now,
             updated_at: now,
         }
@@ -332,12 +352,17 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_non_super_admin() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (dir, keys_ks, webvh_ks, audit_ks) = setup().await;
         let resolver = resolver().await;
         let bridge = bridge();
+        let config = test_app_config(dir.path().into());
+        let seed_store = seed_store(&dir);
         let err = register_did_with_server(
             &webvh_ks,
+            &keys_ks,
             &audit_ks,
+            &seed_store,
+            &config,
             &other_user(),
             &resolver,
             &bridge,
@@ -355,12 +380,17 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_did_not_found() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (dir, keys_ks, webvh_ks, audit_ks) = setup().await;
         let resolver = resolver().await;
         let bridge = bridge();
+        let config = test_app_config(dir.path().into());
+        let seed_store = seed_store(&dir);
         let err = register_did_with_server(
             &webvh_ks,
+            &keys_ks,
             &audit_ks,
+            &seed_store,
+            &config,
             &super_admin(),
             &resolver,
             &bridge,
@@ -378,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_already_server_managed() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (dir, keys_ks, webvh_ks, audit_ks) = setup().await;
         let did = "did:webvh:scid:host:vta";
         let mut rec = serverless_record(did);
         rec.server_id = "existing-host".into();
@@ -386,9 +416,14 @@ mod tests {
 
         let resolver = resolver().await;
         let bridge = bridge();
+        let config = test_app_config(dir.path().into());
+        let seed_store = seed_store(&dir);
         let err = register_did_with_server(
             &webvh_ks,
+            &keys_ks,
             &audit_ks,
+            &seed_store,
+            &config,
             &super_admin(),
             &resolver,
             &bridge,
@@ -409,7 +444,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_server_not_registered() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (dir, keys_ks, webvh_ks, audit_ks) = setup().await;
         let did = "did:webvh:scid:host:vta";
         webvh_store::store_did(&webvh_ks, &serverless_record(did))
             .await
@@ -420,9 +455,14 @@ mod tests {
 
         let resolver = resolver().await;
         let bridge = bridge();
+        let config = test_app_config(dir.path().into());
+        let seed_store = seed_store(&dir);
         let err = register_did_with_server(
             &webvh_ks,
+            &keys_ks,
             &audit_ks,
+            &seed_store,
+            &config,
             &super_admin(),
             &resolver,
             &bridge,
@@ -440,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_when_log_missing() {
-        let (_dir, webvh_ks, audit_ks) = setup().await;
+        let (dir, keys_ks, webvh_ks, audit_ks) = setup().await;
         let did = "did:webvh:scid:host:vta";
         webvh_store::store_did(&webvh_ks, &serverless_record(did))
             .await
@@ -452,9 +492,14 @@ mod tests {
 
         let resolver = resolver().await;
         let bridge = bridge();
+        let config = test_app_config(dir.path().into());
+        let seed_store = seed_store(&dir);
         let err = register_did_with_server(
             &webvh_ks,
+            &keys_ks,
             &audit_ks,
+            &seed_store,
+            &config,
             &super_admin(),
             &resolver,
             &bridge,

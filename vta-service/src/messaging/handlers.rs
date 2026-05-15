@@ -894,10 +894,14 @@ pub async fn handle_register_did_with_server(
         .did_resolver
         .as_ref()
         .ok_or_else(|| handler_err("DID resolver not available"))?;
+    let config = state.config.read().await;
     let result = app_try!(
         operations::did_webvh::register_did_with_server(
             &state.webvh_ks,
+            &state.keys_ks,
             &state.audit_ks,
+            &*state.seed_store,
+            &config,
             &auth,
             did_resolver,
             &state.didcomm_bridge,
@@ -1379,6 +1383,7 @@ pub async fn handle_update_did_webvh(
         expected_version_id: env.body.expected_version_id,
     };
 
+    let config = state.config.read().await;
     let result = app_try!(
         operations::did_webvh::update_did_webvh(
             &state.keys_ks,
@@ -1386,6 +1391,7 @@ pub async fn handle_update_did_webvh(
             &state.webvh_ks,
             &state.audit_ks,
             &*state.seed_store,
+            &config,
             &auth,
             &env.scid,
             opts,
@@ -1431,6 +1437,7 @@ pub async fn handle_rotate_did_webvh_keys(
         label: env.body.label,
     };
 
+    let config = state.config.read().await;
     let result = app_try!(
         operations::did_webvh::rotate_did_webvh_keys(
             &state.keys_ks,
@@ -1438,6 +1445,7 @@ pub async fn handle_rotate_did_webvh_keys(
             &state.webvh_ks,
             &state.audit_ks,
             &*state.seed_store,
+            &config,
             &auth,
             &env.scid,
             opts,

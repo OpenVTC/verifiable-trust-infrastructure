@@ -461,6 +461,7 @@ pub async fn run_edit_did(
         &webvh_ks,
         &audit_ks,
         &*seed_store,
+        &config,
         &auth,
         &scid,
         opts,
@@ -492,15 +493,21 @@ pub async fn run_register_did(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
+    let keys_ks = store.keyspace("keys")?;
     let webvh_ks = store.keyspace("webvh")?;
     let audit_ks = store.keyspace("audit")?;
+    let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
+        Arc::from(create_seed_store(&config)?);
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::register_did_with_server(
         &webvh_ks,
+        &keys_ks,
         &audit_ks,
+        &*seed_store,
+        &config,
         &auth,
         &did_resolver,
         &didcomm_bridge,

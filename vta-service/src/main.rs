@@ -571,7 +571,7 @@ enum WebvhCommands {
         /// Server identifier
         #[arg(long)]
         id: String,
-        /// Server DID (must resolve to a DID document with a WebVHHostingService endpoint)
+        /// Server DID (must resolve to a DID document with a DIDCommMessaging, WebVHHosting, or WebVHHostingService endpoint)
         #[arg(long)]
         did: String,
         /// Human-readable label

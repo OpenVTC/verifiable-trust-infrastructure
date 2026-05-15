@@ -196,12 +196,14 @@ pub async fn disable_didcomm(
     let patched = without_didcomm_service(current_doc);
 
     // Publish via update_did_webvh.
+    let current_config = config.read().await.clone();
     let update_result = update_did_webvh(
         keys_ks,
         contexts_ks,
         webvh_ks,
         audit_ks,
         seed_store,
+        &current_config,
         auth,
         &scid,
         UpdateDidWebvhOptions {

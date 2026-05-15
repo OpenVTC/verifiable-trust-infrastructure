@@ -171,7 +171,7 @@ pub async fn export_backup(
             reason: s.reason,
         });
 
-    // 7. Collect WebVH records
+    // 7. Collect WebVH metadata + DID records (auth cache is excluded)
     #[cfg(feature = "webvh")]
     let (webvh_servers, webvh_dids, webvh_logs) = {
         let servers: Vec<vta_sdk::webvh::WebvhServerRecord> = webvh_ks
@@ -377,7 +377,7 @@ pub async fn apply_import(
     clear_keyspace(audit_ks, &["log:"]).await?;
     clear_keyspace(imported_ks, &["secret:"]).await?;
     #[cfg(feature = "webvh")]
-    clear_keyspace(webvh_ks, &["server:", "did:", "log:"]).await?;
+    clear_keyspace(webvh_ks, &["server:", "server-auth:", "did:", "log:"]).await?;
 
     // Also remove counters
     let _ = keys_ks.remove("active_seed_id").await;
@@ -439,7 +439,7 @@ pub async fn apply_import(
         acl_ks.insert("vta:sealed", &record).await?;
     }
 
-    // 9. Write WebVH records
+    // 9. Write WebVH metadata + DID records (auth cache is runtime-only)
     #[cfg(feature = "webvh")]
     {
         for server in &payload.webvh_servers {
@@ -919,6 +919,181 @@ mod tests {
         // Different salts → different ciphertexts
         assert_ne!(env1.kdf.salt, env2.kdf.salt);
         assert_ne!(env1.ciphertext, env2.ciphertext);
+    }
+
+    #[test]
+    fn legacy_backup_payload_with_embedded_webvh_auth_fields_deserializes() {
+        let payload_json = serde_json::json!({
+            "active_seed_hex": hex::encode([42u8; 32]),
+            "active_seed_id": 1,
+            "seed_records": [],
+            "jwt_signing_key": serde_json::Value::Null,
+            "key_records": [],
+            "context_records": [],
+            "context_counter": 0,
+            "acl_entries": [],
+            "seal": serde_json::Value::Null,
+            "webvh_servers": [{
+                "id": "srv",
+                "did": "did:webvh:Q...:vta.example.com:primary",
+                "label": "edge",
+                "access_token": "legacy-access",
+                "access_expires_at": 42,
+                "refresh_token": "legacy-refresh",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }],
+            "webvh_dids": [],
+            "webvh_logs": [],
+            "config": {},
+            "audit_logs": [],
+            "imported_secrets": [],
+            "imported_kek_salt": serde_json::Value::Null
+        });
+
+        let payload: BackupPayload = serde_json::from_value(payload_json).unwrap();
+        assert_eq!(payload.webvh_servers.len(), 1);
+        assert_eq!(payload.webvh_servers[0].id, "srv");
+        assert_eq!(payload.webvh_servers[0].label.as_deref(), Some("edge"));
+
+        let server_json = serde_json::to_value(&payload.webvh_servers[0]).unwrap();
+        assert!(server_json.get("access_token").is_none());
+        assert!(server_json.get("access_expires_at").is_none());
+        assert!(server_json.get("refresh_token").is_none());
+    }
+
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn export_backup_excludes_webvh_auth_cache() {
+        use crate::keys::seed_store::{PlaintextSeedStore, SeedStore};
+        use crate::keys::seeds::set_active_seed_id;
+        use crate::operations::Keyspaces;
+        use crate::test_support::{open_test_store, super_admin_claims, test_app_config};
+        use crate::webvh_store::{self, WebvhServerAuthRecord};
+        use vta_sdk::webvh::WebvhServerRecord;
+
+        let ts = open_test_store().await;
+        let seed_store = PlaintextSeedStore::new(&ts.data_dir);
+        seed_store.set(&[7u8; 32]).await.unwrap();
+        set_active_seed_id(&ts.keys_ks, 1).await.unwrap();
+
+        let server = WebvhServerRecord {
+            id: "srv".into(),
+            did: "did:webvh:Q...:vta.example.com:primary".into(),
+            label: Some("edge".into()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        webvh_store::store_server(&ts.webvh_ks, &server)
+            .await
+            .unwrap();
+        webvh_store::store_server_auth(
+            &ts.webvh_ks,
+            &server.id,
+            &WebvhServerAuthRecord {
+                access_token: Some("live-access".into()),
+                access_expires_at: Some(42),
+                refresh_token: Some("live-refresh".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let keyspaces = Keyspaces {
+            keys: &ts.keys_ks,
+            acl: &ts.acl_ks,
+            contexts: &ts.contexts_ks,
+            did_templates: &ts.did_templates_ks,
+            audit: &ts.audit_ks,
+            imported: &ts.imported_ks,
+            webvh: &ts.webvh_ks,
+        };
+        let config = test_app_config(ts.data_dir.clone());
+        let auth = super_admin_claims();
+
+        let envelope = export_backup(
+            &keyspaces,
+            &seed_store,
+            &config,
+            &auth,
+            "test-password-12chars!",
+            false,
+        )
+        .await
+        .unwrap();
+        let payload = decrypt_backup(&envelope, "test-password-12chars!").unwrap();
+
+        assert_eq!(payload.webvh_servers.len(), 1);
+        assert_eq!(payload.webvh_servers[0].id, server.id);
+        let server_json = serde_json::to_value(&payload.webvh_servers[0]).unwrap();
+        assert!(server_json.get("access_token").is_none());
+        assert!(server_json.get("access_expires_at").is_none());
+        assert!(server_json.get("refresh_token").is_none());
+    }
+
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn apply_import_clears_webvh_auth_cache() {
+        use std::sync::Arc;
+
+        use crate::keys::seed_store::{PlaintextSeedStore, SeedStore};
+        use crate::operations::Keyspaces;
+        use crate::test_support::{open_test_store, test_app_config};
+        use crate::webvh_store::{self, WebvhServerAuthRecord};
+        use tokio::sync::RwLock;
+        use vta_sdk::webvh::WebvhServerRecord;
+
+        let ts = open_test_store().await;
+        let seed_store: Arc<dyn SeedStore> = Arc::new(PlaintextSeedStore::new(&ts.data_dir));
+
+        webvh_store::store_server_auth(
+            &ts.webvh_ks,
+            "srv",
+            &WebvhServerAuthRecord {
+                access_token: Some("stale-access".into()),
+                access_expires_at: Some(42),
+                refresh_token: Some("stale-refresh".into()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut payload = test_payload();
+        payload.webvh_servers = vec![WebvhServerRecord {
+            id: "srv".into(),
+            did: "did:webvh:Q...:vta.example.com:primary".into(),
+            label: Some("edge".into()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+
+        let keyspaces = Keyspaces {
+            keys: &ts.keys_ks,
+            acl: &ts.acl_ks,
+            contexts: &ts.contexts_ks,
+            did_templates: &ts.did_templates_ks,
+            audit: &ts.audit_ks,
+            imported: &ts.imported_ks,
+            webvh: &ts.webvh_ks,
+        };
+        let config = RwLock::new(test_app_config(ts.data_dir.clone()));
+
+        apply_import(&payload, &keyspaces, &seed_store, &config, None)
+            .await
+            .unwrap();
+
+        assert!(
+            webvh_store::get_server_auth(&ts.webvh_ks, "srv")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            webvh_store::get_server(&ts.webvh_ks, "srv")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     // ── vta_did cross-check guard ───────────────────────────────────

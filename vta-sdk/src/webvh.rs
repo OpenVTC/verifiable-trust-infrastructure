@@ -7,12 +7,6 @@ pub struct WebvhServerRecord {
     pub did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_expires_at: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -51,6 +45,51 @@ fn default_next_fragment_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_server_record_ignores_embedded_auth_fields() {
+        let json = r#"{
+            "id": "srv",
+            "did": "did:webvh:Q...:vta.example.com:primary",
+            "label": "edge",
+            "access_token": "leaky-access",
+            "access_expires_at": 42,
+            "refresh_token": "leaky-refresh",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z"
+        }"#;
+
+        let record: WebvhServerRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(record.id, "srv");
+        assert_eq!(record.did, "did:webvh:Q...:vta.example.com:primary");
+        assert_eq!(record.label.as_deref(), Some("edge"));
+
+        let serialized = serde_json::to_value(&record).unwrap();
+        assert!(serialized.get("access_token").is_none());
+        assert!(serialized.get("access_expires_at").is_none());
+        assert!(serialized.get("refresh_token").is_none());
+    }
+
+    #[test]
+    fn server_record_round_trips_as_metadata_only() {
+        let record = WebvhServerRecord {
+            id: "srv".into(),
+            did: "did:webvh:abc:vta.example.com:primary".into(),
+            label: Some("edge".into()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let json = serde_json::to_value(&record).unwrap();
+        assert!(json.get("access_token").is_none());
+        assert!(json.get("access_expires_at").is_none());
+        assert!(json.get("refresh_token").is_none());
+
+        let restored: WebvhServerRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.id, "srv");
+        assert_eq!(restored.did, "did:webvh:abc:vta.example.com:primary");
+        assert_eq!(restored.label.as_deref(), Some("edge"));
+    }
 
     #[test]
     fn legacy_record_loads_with_default_pre_rotation_and_fragment_id() {

@@ -987,9 +987,6 @@ mod tests {
             id: id.into(),
             did: format!("did:webvh:{id}"),
             label: None,
-            access_token: None,
-            access_expires_at: None,
-            refresh_token: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

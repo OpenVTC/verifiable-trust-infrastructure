@@ -15,6 +15,7 @@ use super::options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDid
 use super::orchestrator::update_did_webvh;
 use super::state::{find_record_by_scid, state_from_jsonl};
 use crate::auth::AuthClaims;
+use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
@@ -31,6 +32,7 @@ pub async fn rotate_did_webvh_keys(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
+    config: &AppConfig,
     auth: &AuthClaims,
     scid: &str,
     opts: RotateDidWebvhKeysOptions,
@@ -174,6 +176,7 @@ pub async fn rotate_did_webvh_keys(
         webvh_ks,
         audit_ks,
         seed_store,
+        config,
         auth,
         scid,
         UpdateDidWebvhOptions {
