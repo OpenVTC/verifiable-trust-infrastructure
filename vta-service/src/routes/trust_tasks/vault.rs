@@ -283,7 +283,10 @@ const PROXY_LOGIN_INNER_MSG_TYPE: &str =
 /// (M3 policy engine will read consumerContext; step-up gating across
 /// the proxy-login flow lands as a follow-up to step-up's release-flow
 /// integration). `ttlSecondsHint` is accepted but capped by the
-/// maintainer.
+/// maintainer. `nonce` (M2B.4) is embedded verbatim in the SIOP
+/// id_token's `nonce` claim — the canonical use is the wallet
+/// threading the RP's `/auth/challenge` value through so the resulting
+/// id_token passes the RP's nonce check.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultProxyLoginBody {
@@ -308,9 +311,24 @@ struct VaultProxyLoginBody {
     #[serde(default)]
     #[allow(dead_code)]
     step_up_proof: Option<Value>,
+    /// Caller-supplied nonce — embedded verbatim as the SIOP id_token's
+    /// `nonce` claim for the `did-self-issued` driver. Drivers without
+    /// a nonce concept (Password POST, OAuth refresh — M2B.5+) ignore.
+    /// Capped to the canonical schema's 512-char ceiling at the parse
+    /// boundary; a longer string would fail JSON-Schema validation
+    /// upstream but we double-check below to keep the SIOP token shape
+    /// sane.
+    #[serde(default)]
+    nonce: Option<String>,
     #[serde(default)]
     ttl_seconds_hint: Option<u32>,
 }
+
+/// Schema-level ceiling for `nonce` per `vault/proxy-login/0.1`. The
+/// canonical payload schema enforces this; we re-check here so a
+/// malformed-but-parseable request still gets a clean reject rather
+/// than a multi-KB JWT.
+const NONCE_MAX_LEN: usize = 512;
 
 /// Response body for `vault/proxy-login/0.1`. The `sealedSessionBlob`
 /// is the same pluggable cipher envelope shape used by `vault/release` —
@@ -1146,6 +1164,24 @@ pub(super) async fn handle_proxy_login(
         Err(resp) => return resp,
     };
 
+    // Defense-in-depth nonce bounds check. The canonical schema
+    // enforces `minLength: 1, maxLength: 512`; this guard handles
+    // requests that bypassed schema validation (e.g. dispatcher
+    // changes that disable schema-first parsing).
+    if let Some(n) = req.nonce.as_deref()
+        && (n.is_empty() || n.len() > NONCE_MAX_LEN)
+    {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!(
+                    "vault/proxy-login: nonce length {} outside [1, {NONCE_MAX_LEN}]",
+                    n.len()
+                ),
+            },
+        );
+    }
+
     // Load entry — conflate not-found with permission-denied to deny
     // enumeration (matches handle_release).
     let mut stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
@@ -1282,6 +1318,7 @@ pub(super) async fn handle_proxy_login(
         &siop_did,
         &signing_key_id,
         &audience,
+        req.nonce.as_deref(),
         iat,
         ttl_secs,
         &signing_key,

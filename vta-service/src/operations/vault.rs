@@ -68,7 +68,8 @@ pub async fn load_signing_key_by_id(
 /// `did-self-issued` vault entry. Header carries the entry's
 /// `signing_key_id` as `kid`; payload follows SIOP shape with
 /// `iss == sub` (the self-issued DID), `aud` (the relying-party DID or
-/// origin), random `nonce`, server-issued `iat`/`exp`.
+/// origin), `nonce` (caller-supplied verbatim if `Some`, else a fresh
+/// UUIDv4), server-issued `iat`/`exp`.
 ///
 /// Unlike `step_up_approval::build_vta_approval_token` which has
 /// `iss = vta_did, sub = holder_did` (VTA vouches for someone), SIOP
@@ -77,14 +78,20 @@ pub async fn load_signing_key_by_id(
 /// presents the DID as both issuer and subject because the relying
 /// party only knows the DID, not who custodies its keys.
 ///
-/// `nonce` is generated server-side (UUIDv4) — the spec accepts a
-/// client `nonce` claim in `ttlSecondsHint` siblings but for M2B.2b
-/// the wallet doesn't supply one and the maintainer is the authority
-/// on nonce freshness anyway.
+/// **Nonce handling.** Per `vault/proxy-login/0.1` conformance bullet
+/// #5, when the consumer supplies `nonce` the maintainer MUST embed
+/// it verbatim. The canonical use is SIOPv2: the RP's authorization-
+/// request `nonce` MUST appear as the `nonce` claim in the id_token
+/// or the RP's exact-match check fails. We treat the supplied nonce
+/// as opaque — no trimming, canonicalisation, or re-encoding. When
+/// `None`, the maintainer generates a fresh UUIDv4; that path is
+/// appropriate for push-mode flows where the consumer doesn't
+/// pre-fetch a challenge.
 pub fn build_siop_id_token(
     siop_did: &str,
     signing_key_id: &str,
     audience: &str,
+    nonce: Option<&str>,
     iat: u64,
     ttl_secs: u64,
     signing_key: &SigningKey,
@@ -94,11 +101,15 @@ pub fn build_siop_id_token(
         "typ": "JWT",
         "kid": signing_key_id,
     });
+    let nonce_claim = match nonce {
+        Some(n) => n.to_string(),
+        None => uuid::Uuid::new_v4().to_string(),
+    };
     let payload = json!({
         "iss": siop_did,
         "sub": siop_did,
         "aud": audience,
-        "nonce": uuid::Uuid::new_v4().to_string(),
+        "nonce": nonce_claim,
         "iat": iat,
         "exp": iat.saturating_add(ttl_secs),
     });
@@ -134,7 +145,7 @@ mod tests {
         let iat = 1_700_000_000u64;
         let ttl = 300;
 
-        let jws = build_siop_id_token(siop_did, &kid, audience, iat, ttl, &signing_key)
+        let jws = build_siop_id_token(siop_did, &kid, audience, None, iat, ttl, &signing_key)
             .expect("build SIOP id_token");
 
         let parts: Vec<&str> = jws.split('.').collect();
@@ -183,6 +194,7 @@ mod tests {
             "did:webvh:foo",
             "did:webvh:foo#key-0",
             "did:web:rp.example",
+            None,
             1_700_000_000,
             300,
             &signing_key,
@@ -194,6 +206,57 @@ mod tests {
         assert!(
             wrong_key.verify(signing_input.as_bytes(), &sig).is_err(),
             "verification must fail against an unrelated public key"
+        );
+    }
+
+    #[test]
+    fn siop_id_token_embeds_caller_nonce_verbatim() {
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        // Pick a nonce that's NOT a UUID and contains characters the
+        // server might be tempted to canonicalise — verifies we treat
+        // it as opaque per the spec.
+        let nonce = "rp-challenge_5e3f-AB cd~!@#$%^&*()";
+        let jws = build_siop_id_token(
+            "did:webvh:foo",
+            "did:webvh:foo#key-0",
+            "did:web:rp.example",
+            Some(nonce),
+            1_700_000_000,
+            300,
+            &signing_key,
+        )
+        .expect("build SIOP id_token with caller nonce");
+        let parts: Vec<&str> = jws.split('.').collect();
+        let payload_json: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert_eq!(
+            payload_json["nonce"], nonce,
+            "caller-supplied nonce must appear verbatim in the id_token's nonce claim"
+        );
+    }
+
+    #[test]
+    fn siop_id_token_generates_uuid_nonce_when_none_supplied() {
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let jws = build_siop_id_token(
+            "did:webvh:foo",
+            "did:webvh:foo#key-0",
+            "did:web:rp.example",
+            None,
+            1_700_000_000,
+            300,
+            &signing_key,
+        )
+        .unwrap();
+        let parts: Vec<&str> = jws.split('.').collect();
+        let payload_json: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        let n = payload_json["nonce"].as_str().expect("nonce is a string");
+        // UUIDv4: 8-4-4-4-12 hex with dashes = 36 chars total.
+        assert_eq!(n.len(), 36, "fallback nonce is a UUIDv4 (36 chars)");
+        assert!(
+            uuid::Uuid::parse_str(n).is_ok(),
+            "fallback nonce parses as a UUID"
         );
     }
 }
