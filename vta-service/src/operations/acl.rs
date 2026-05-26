@@ -398,6 +398,18 @@ pub async fn swap_acl(
         )));
     }
 
+    // DO NOT inherit `expires_at` from the ephemeral. The swap
+    // expresses the operator's intent to hand off authority to the
+    // long-term DID — preserving the ephemeral's TTL would silently
+    // expire the long-term entry on the same clock (typically 1 h,
+    // since onboarding scripts set --expires 1h on the ephemeral by
+    // design). The acl_sweeper would then physically delete the
+    // long-term entry an hour later, and /auth/challenge would
+    // start returning "DID not in ACL" with no audit-log trace of
+    // the create→swap→sweep chain. Operators who genuinely want a
+    // time-limited long-term entry can `acl change-role --expires
+    // …` afterwards. See PR fixing this and the parallel
+    // acl_sweeper change that audit-logs every deletion.
     let entry = AclEntry {
         did: new_did.clone(),
         role: old.role.clone(),
@@ -405,7 +417,7 @@ pub async fn swap_acl(
         allowed_contexts: old.allowed_contexts.clone(),
         created_at: now,
         created_by: auth.did.clone(),
-        expires_at: old.expires_at,
+        expires_at: None,
         kind: old.kind.clone(),
         capabilities: old.capabilities.clone(),
         device: old.device.clone(),
@@ -417,7 +429,15 @@ pub async fn swap_acl(
     store_acl_entry(acl_ks, &entry).await?;
     delete_acl_entry(acl_ks, &auth.did).await?;
 
-    info!(channel, old = %auth.did, new = %new_did, role = %entry.role, "ACL entry swapped");
+    info!(
+        channel,
+        old = %auth.did,
+        new = %new_did,
+        role = %entry.role,
+        old_expires_at = ?old.expires_at,
+        new_expires_at = ?entry.expires_at,
+        "ACL entry swapped; long-term entry is permanent (ephemeral TTL not inherited)"
+    );
     audit!(
         "acl.swap",
         actor = &auth.did,

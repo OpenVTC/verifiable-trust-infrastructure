@@ -945,7 +945,14 @@ fn run_storage_thread(
                             warn!("audit cleanup error: {e}");
                         }
                         // Prune expired AclEntry rows and PendingBootstrap rows.
-                        if let Err(e) = crate::acl_sweeper::sweep_expired(&acl_ks).await {
+                        // `audit_ks` threaded in so each deletion produces
+                        // an `acl.expire` audit entry — without it, the
+                        // sweeper's removals leave no trail and operators
+                        // can't distinguish "entry was never created" from
+                        // "entry was created then expired and pruned".
+                        if let Err(e) =
+                            crate::acl_sweeper::sweep_expired(&acl_ks, &audit_ks).await
+                        {
                             warn!("acl sweeper error: {e}");
                         }
                         // Expire & retention-prune in-flight backup
