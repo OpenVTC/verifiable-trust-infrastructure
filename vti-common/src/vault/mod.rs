@@ -78,6 +78,36 @@ pub struct VaultEntry {
     pub last_used_at: Option<String>,
     /// Monotonic version for optimistic concurrency + sync seq baseline.
     pub version: u32,
+    /// Cached "principal DID" the entry will act AS for DID-shaped flows.
+    /// Mirrors the `did` field of `did-self-issued` / `didcomm-peer`
+    /// secrets; absent for kinds without a DID concept. MAINTAINER-DERIVED:
+    /// recomputed from the secret at every upsert / rotation; a producer-
+    /// supplied value on the wire is ignored. Exposed so consumers can
+    /// drive RP-side flows (e.g. an RP page fetching `/auth/challenge`
+    /// keyed on the principal DID before requesting a proxy-login)
+    /// without releasing the secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal_did: Option<String>,
+}
+
+impl VaultEntry {
+    /// Derive `principal_did` from a freshly-unsealed `VaultSecret`. The
+    /// maintainer calls this at every upsert + secret rotation; the
+    /// resulting value overrides whatever the producer wrote on the
+    /// wire (the canonical schema declares the field read-only on the
+    /// upsert path).
+    pub fn principal_did_from_secret(secret: &VaultSecret) -> Option<String> {
+        match secret {
+            VaultSecret::DidSelfIssued { did, .. } => Some(did.clone()),
+            VaultSecret::DidcommPeer { peer_did, .. } => Some(peer_did.clone()),
+            VaultSecret::Password { .. }
+            | VaultSecret::Passkey { .. }
+            | VaultSecret::OauthTokens { .. }
+            | VaultSecret::BearerToken { .. }
+            | VaultSecret::SshKey { .. }
+            | VaultSecret::Custom { .. } => None,
+        }
+    }
 }
 
 /// Binding target for a vault entry. Tagged union over the discriminator
@@ -622,6 +652,7 @@ mod tests {
             updated_by: None,
             last_used_at: last_used.map(String::from),
             version: 1,
+            principal_did: None,
         }
     }
 
@@ -745,5 +776,75 @@ mod tests {
                 ..Default::default()
             }
         ));
+    }
+
+    #[test]
+    fn principal_did_from_secret_for_each_kind() {
+        // DID-shaped kinds → Some(did)
+        let did = "did:webvh:Q1:rp.example:alice";
+        let s = VaultSecret::DidSelfIssued {
+            did: did.to_string(),
+            signing_key_id: format!("{did}#key-0"),
+            secure_notes: None,
+        };
+        assert_eq!(
+            VaultEntry::principal_did_from_secret(&s),
+            Some(did.to_string())
+        );
+
+        let peer = "did:peer:2.Ez6LSc...";
+        let s = VaultSecret::DidcommPeer {
+            peer_did: peer.to_string(),
+            signing_key_id: format!("{peer}#key-0"),
+            secure_notes: None,
+        };
+        assert_eq!(
+            VaultEntry::principal_did_from_secret(&s),
+            Some(peer.to_string())
+        );
+
+        // No-DID kinds → None (sample each variant so a future
+        // refactor that misses one trips this test).
+        for s in [
+            VaultSecret::Password {
+                username: Some("u".into()),
+                password: "p".into(),
+                totp: None,
+                secure_notes: None,
+                custom_fields: vec![],
+            },
+            VaultSecret::Passkey {
+                credential_id: "c".into(),
+                private_key: "pk".into(),
+                algorithm: None,
+                rp_id: "rp".into(),
+                user_handle: None,
+                secure_notes: None,
+            },
+            VaultSecret::BearerToken {
+                token: "t".into(),
+                header_name: None,
+                header_prefix: None,
+                secure_notes: None,
+            },
+            VaultSecret::SshKey {
+                private_key: "p".into(),
+                public_key: None,
+                comment: None,
+                passphrase: None,
+                secure_notes: None,
+            },
+            VaultSecret::Custom {
+                fields: vec![],
+                secure_notes: None,
+            },
+        ] {
+            assert_eq!(
+                VaultEntry::principal_did_from_secret(&s),
+                None,
+                "non-DID kind {:?} must yield None",
+                s.kind()
+            );
+        }
     }
 }

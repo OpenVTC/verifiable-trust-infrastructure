@@ -874,6 +874,12 @@ pub(super) async fn handle_upsert(
         updated_by: Some(auth.did.clone()),
         last_used_at: existing.as_ref().and_then(|e| e.entry.last_used_at.clone()),
         version: existing.as_ref().map(|e| e.entry.version + 1).unwrap_or(1),
+        // Maintainer-derived from the canonical secret. Producer-supplied
+        // values on the wire are intentionally ignored — the canonical
+        // schema declares this field read-only and we recompute every
+        // upsert + rotation. Stays in sync with the actual signing key
+        // for did-self-issued / didcomm-peer entries.
+        principal_did: VaultEntry::principal_did_from_secret(&secret),
     };
 
     let record = StoredVaultEntry {
