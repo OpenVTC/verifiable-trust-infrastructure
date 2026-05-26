@@ -448,10 +448,22 @@ pub fn build_handler(
 
     // Provision-integration — always available; vta-service depends
     // on vta-sdk with the `provision-integration` feature enabled.
-    router = router.route(
-        provision_integration_management::PROVISION_INTEGRATION,
-        handler_fn(handlers::handle_provision_integration),
-    )?;
+    //
+    // Both the legacy FPN-private URI and the canonical Trust Task URI
+    // route to the same handler; the handler reads the inbound `typ`
+    // and emits the matching response URI (`…-result` for the legacy
+    // shape, `#response` fragment for the canonical shape). Existing
+    // clients on the FPN URI keep working unchanged; new clients can
+    // target the canonical registry without coordinating a URI flip.
+    router = router
+        .route(
+            provision_integration_management::PROVISION_INTEGRATION,
+            handler_fn(handlers::handle_provision_integration),
+        )?
+        .route(
+            provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
+            handler_fn(handlers::handle_provision_integration),
+        )?;
 
     // Step-up approval — the VTA vouches (signs as itself) that a holder
     // may step up their session at a relying party. Always available.

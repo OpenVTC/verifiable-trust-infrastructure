@@ -1477,18 +1477,26 @@ pub async fn handle_provision_integration(
         },
     };
 
+    // Match the response URI to whichever request URI the caller used.
+    // A client targeting the canonical Trust Task URI
+    // (`https://trusttasks.org/spec/provision/integration/0.1`) receives
+    // the canonical `#response` fragment; the legacy FPN URI gets the
+    // legacy `…-result`. Both share one handler so the routing decision
+    // lives in `result_uri_for` rather than two parallel branches here.
+    let result_uri =
+        vta_sdk::protocols::provision_integration_management::result_uri_for(&message.typ);
+
     info!(
         from = %auth.did,
         admin_did = %result.summary.admin_did,
         admin_rolled_over = result.summary.admin_rolled_over,
         bundle_id = %result.summary.bundle_id_hex,
+        request_uri = %message.typ,
+        result_uri,
         "provision-integration completed via DIDComm"
     );
 
-    response(
-        vta_sdk::protocols::provision_integration_management::PROVISION_INTEGRATION_RESULT,
-        &result,
-    )
+    response(result_uri, &result)
 }
 
 /// Envelope used by the DIDComm update + rotate-keys messages.
