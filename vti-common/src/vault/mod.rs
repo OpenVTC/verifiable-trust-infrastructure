@@ -220,6 +220,17 @@ pub struct StoredVaultEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum VaultSecret {
+    // `rename_all = "camelCase"` on each variant aligns Rust's
+    // default snake_case field names with the canonical wire shape
+    // in `vault/_shared/0.1/vault-secret` (which uses camelCase
+    // throughout: `secureNotes`, `loginConfig`, `signingKeyId`,
+    // `credentialId`, etc.). Without these, every camelCase-emitting
+    // consumer (the browser plugin's `vault/upsert` path is the live
+    // example) silently loses optional fields on deserialize and
+    // emits the wrong shape on serialize. The two new tests in this
+    // file's `mod tests` exercise password + did-self-issued
+    // round-trips and would have caught this earlier.
+    #[serde(rename_all = "camelCase")]
     Password {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         username: Option<String>,
@@ -239,6 +250,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         custom_fields: Vec<CustomField>,
     },
+    #[serde(rename_all = "camelCase")]
     Passkey {
         credential_id: String,
         private_key: String,
@@ -250,6 +262,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     OauthTokens {
         provider: String,
         refresh_token: String,
@@ -262,18 +275,21 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     DidSelfIssued {
         did: String,
         signing_key_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     DidcommPeer {
         peer_did: String,
         signing_key_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     BearerToken {
         token: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,6 +299,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     SshKey {
         private_key: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,6 +311,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
     Custom {
         fields: Vec<CustomField>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -855,6 +873,53 @@ mod tests {
                 ..Default::default()
             }
         ));
+    }
+
+    #[test]
+    fn password_secret_round_trips_camel_case_wire_form() {
+        // The canonical spec (vault/_shared/0.1/vault-secret) uses
+        // camelCase field names (`secureNotes`, `loginConfig`,
+        // `signingKeyId`). Verify the Rust implementation deserializes
+        // the spec-form wire input AND re-emits it in the same shape
+        // — i.e. neither side requires snake_case translation. If
+        // this test fails, every camelCase-emitting consumer (the
+        // browser plugin's vault/upsert path is the live example)
+        // would silently lose optional fields.
+        let camel = r#"{"kind":"password","password":"x","secureNotes":"hi"}"#;
+        let v: VaultSecret = serde_json::from_str(camel).expect("parse camelCase");
+        match &v {
+            VaultSecret::Password { secure_notes, .. } => {
+                assert_eq!(secure_notes.as_deref(), Some("hi"));
+            }
+            _ => panic!("expected Password variant"),
+        }
+        let re = serde_json::to_string(&v).expect("re-emit");
+        assert!(
+            re.contains("\"secureNotes\":\"hi\""),
+            "re-emitted JSON must use camelCase secureNotes; got {re}"
+        );
+    }
+
+    #[test]
+    fn did_self_issued_secret_round_trips_camel_case_wire_form() {
+        let camel = r#"{"kind":"did-self-issued","did":"did:webvh:foo","signingKeyId":"did:webvh:foo#key-0"}"#;
+        let v: VaultSecret = serde_json::from_str(camel).expect("parse camelCase");
+        match &v {
+            VaultSecret::DidSelfIssued {
+                did,
+                signing_key_id,
+                ..
+            } => {
+                assert_eq!(did, "did:webvh:foo");
+                assert_eq!(signing_key_id, "did:webvh:foo#key-0");
+            }
+            _ => panic!("expected DidSelfIssued variant"),
+        }
+        let re = serde_json::to_string(&v).expect("re-emit");
+        assert!(
+            re.contains("\"signingKeyId\":\"did:webvh:foo#key-0\""),
+            "re-emitted JSON must use camelCase signingKeyId; got {re}"
+        );
     }
 
     #[test]
