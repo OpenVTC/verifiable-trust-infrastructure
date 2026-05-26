@@ -266,6 +266,34 @@ enum VaultCommands {
         #[arg(long)]
         force: bool,
     },
+    /// Delete every row in the `vault:` keyspace.
+    ///
+    /// Use cases:
+    /// - Clear out stale-format rows after a schema migration
+    ///   (e.g. M1's bare `VaultEntry` rows became unreadable after
+    ///   M2A introduced the `StoredVaultEntry { entry, secret }`
+    ///   wrapper — a fresh wipe is faster than writing a one-shot
+    ///   re-wrapper).
+    /// - Reset the demo state between test runs.
+    ///
+    /// Refuses to run unless `--force` is supplied — this is
+    /// irreversible against the local store and you'd lose any
+    /// real entries the wallet has saved.
+    ///
+    /// Daemon must be stopped (fjall holds an exclusive lock); the
+    /// `vault:` keyspace is the only one touched, so other VTA
+    /// state (ACL, contexts, keys, audit) is preserved.
+    Wipe {
+        /// Required confirmation flag. Without it the command lists
+        /// the row count and exits without writing.
+        #[arg(long)]
+        force: bool,
+        /// Optional: only wipe rows whose `contextId` matches.
+        /// Useful when the user wants to reset a single persona's
+        /// vault without clearing the others. Omit to wipe every row.
+        #[arg(long)]
+        context: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1369,6 +1397,17 @@ async fn main() {
                     force,
                 };
                 if let Err(e) = vault_cli::run_vault_seed(args).await {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            VaultCommands::Wipe { force, context } => {
+                let args = vault_cli::VaultWipeArgs {
+                    config_path: cli.config,
+                    force,
+                    context,
+                };
+                if let Err(e) = vault_cli::run_vault_wipe(args).await {
                     eprintln!("Error: {e}");
                     std::process::exit(1);
                 }

@@ -3,11 +3,13 @@
 //! available in TEE deployments (the enclave's vsock-store is the only
 //! reader/writer there). Same constraints as `vta acl`, `vta did-mgmt`, etc.
 //!
-//! M1 ships **seed only** — populates the keyspace from a JSON file or a
-//! built-in three-entry demo set so operators can exercise vault/list/0.1
-//! end-to-end before vault/upsert/0.1 lands in M2. `delete` and `list`
-//! offline subcommands can follow if they prove useful; for now the dispatcher
-//! handlers cover the read path.
+//! Two subcommands today:
+//! - `seed` — populate from a JSON file or a built-in demo set.
+//! - `wipe` — drop every row (or every row in a single context). Useful
+//!   for clearing stale-format rows after a schema migration (e.g. the
+//!   M1→M2A `VaultEntry` → `StoredVaultEntry { entry, secret }` wrap
+//!   broke deserialisation of pre-M2A seed entries; a wipe is faster
+//!   than writing a one-shot re-wrapper).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -267,4 +269,125 @@ fn stamp_suffix() -> String {
         .map(|d| d.as_millis())
         .unwrap_or(0);
     format!("{t:x}")
+}
+
+// ─── wipe ─────────────────────────────────────────────────────────
+
+pub struct VaultWipeArgs {
+    pub config_path: Option<PathBuf>,
+    /// Without this, the command reports the row count and exits
+    /// without writing. Irreversible against the local store; demand
+    /// explicit confirmation rather than silently mutating fjall.
+    pub force: bool,
+    /// Optional context filter — wipe only rows whose `entry.context_id`
+    /// matches. `None` wipes every row in the keyspace.
+    ///
+    /// Implementation: we walk `vault:` prefix and deserialise each
+    /// row. Rows that fail to deserialise (e.g. pre-M2A
+    /// bare-VaultEntry format) are unconditionally dropped — the
+    /// whole reason this command exists is to clear data that
+    /// already can't be read by vault/list/0.1.
+    pub context: Option<String>,
+}
+
+pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(args.config_path)?;
+    let store = Store::open(&config.store)?;
+    let vault_ks = store.keyspace("vault")?;
+
+    // Enumerate every key under the `vault:` prefix. We use the raw
+    // iterator so a deserialise failure on a single row doesn't abort
+    // the count — rows that vault/list/0.1 already can't read are
+    // candidates for the wipe by definition.
+    let raw_rows = vault_ks.prefix_iter_raw("vault:").await?;
+    let total = raw_rows.len();
+    if total == 0 {
+        eprintln!("Vault keyspace is empty; nothing to wipe.");
+        return Ok(());
+    }
+
+    // When a context filter is set, partition into "matches" (will be
+    // deleted) and "skipped" (unreadable rows + rows in other
+    // contexts). Unreadable rows are NOT deleted under a context
+    // filter — we can't tell which context they belong to. Tell the
+    // user so they can re-run without `--context` to clear them.
+    let mut to_delete: Vec<Vec<u8>> = Vec::new();
+    let mut unreadable_under_filter: u64 = 0;
+    let mut skipped_other_context: u64 = 0;
+    if let Some(ctx) = args.context.as_deref() {
+        for (key, bytes) in raw_rows {
+            match serde_json::from_slice::<StoredVaultEntry>(&bytes) {
+                Ok(stored) => {
+                    if stored.entry.context_id == ctx {
+                        to_delete.push(key);
+                    } else {
+                        skipped_other_context += 1;
+                    }
+                }
+                Err(_) => {
+                    unreadable_under_filter += 1;
+                }
+            }
+        }
+    } else {
+        // No filter — every row is fair game, including unreadable
+        // ones. (That's the whole point of the wipe.)
+        to_delete = raw_rows.into_iter().map(|(k, _)| k).collect();
+    }
+
+    if to_delete.is_empty() {
+        if let Some(ctx) = args.context.as_deref() {
+            eprintln!(
+                "No rows in context '{ctx}'. {skipped_other_context} row(s) in other contexts, {unreadable_under_filter} unreadable row(s) preserved."
+            );
+        } else {
+            eprintln!("Vault keyspace is empty; nothing to wipe.");
+        }
+        return Ok(());
+    }
+
+    if !args.force {
+        eprintln!(
+            "Would delete {} vault row(s){}.",
+            to_delete.len(),
+            args.context
+                .as_deref()
+                .map(|c| format!(" in context '{c}'"))
+                .unwrap_or_default()
+        );
+        if args.context.is_some() && unreadable_under_filter > 0 {
+            eprintln!(
+                "  + {unreadable_under_filter} unreadable row(s) would be preserved (re-run without --context to clear them)."
+            );
+        }
+        if args.context.is_some() && skipped_other_context > 0 {
+            eprintln!("  + {skipped_other_context} row(s) in other contexts would be preserved.");
+        }
+        eprintln!("Pass --force to apply.");
+        return Ok(());
+    }
+
+    let target = to_delete.len();
+    for key in to_delete {
+        vault_ks.remove(key).await?;
+    }
+    store.persist().await?;
+
+    eprintln!(
+        "Wiped {} vault row(s){}.",
+        target,
+        args.context
+            .as_deref()
+            .map(|c| format!(" in context '{c}'"))
+            .unwrap_or_default()
+    );
+    if args.context.is_some() && unreadable_under_filter > 0 {
+        eprintln!(
+            "Preserved {unreadable_under_filter} unreadable row(s); re-run without --context to clear them."
+        );
+    }
+    eprintln!(
+        "Restart the VTA daemon to make the empty (or trimmed) keyspace visible via vault/list/0.1."
+    );
+    Ok(())
 }
