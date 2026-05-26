@@ -115,6 +115,9 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Used by the password-POST proxy-login driver to form-encode credentials
+# (operations::vault::password_post). Previously dev-only.
+urlencoding = "2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 bip39 = "2"
@@ -190,7 +193,6 @@ aws-lc-rs = { version = "1", optional = true }
 [dev-dependencies]
 tempfile = "3"
 http-body-util = "0.1"
-urlencoding = "2"
 # Self-dep with `test-support` enabled so integration tests under
 # `tests/` get the shared `test_support::build_test_app` HTTP scaffolding
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.

@@ -22,6 +22,15 @@ use crate::operations::internal_authority::InternalAuthority;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
 
+/// HTTP-POST driver for vault/proxy-login/0.1 against
+/// `VaultSecret::Password` entries with a populated `loginConfig`.
+/// Pulls in `reqwest` + `url`, so it's gated behind `webvh` — every
+/// real consumer of vta-service (local binary + enclave) enables that
+/// feature already, but the gating keeps `cargo check
+/// --no-default-features` honest.
+#[cfg(feature = "webvh")]
+pub mod password_post;
+
 /// Audit channel tag for the internal authority used by
 /// proxy-login key resolution.
 const PROXY_LOGIN_CHANNEL: &str = "vault-proxy-login-internal";

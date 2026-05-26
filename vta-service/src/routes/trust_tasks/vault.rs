@@ -1146,16 +1146,32 @@ pub(super) async fn handle_release(
     )
 }
 
-/// Handler for `spec/vault/proxy-login/0.1` — M2B.2b ships the
-/// DID-self-issued (SIOP) driver. The VTA mints a SIOPv2 id_token on
-/// the entry's behalf, wraps it in a [`SessionBlob`] with a single
-/// `Authorization: Bearer …` header, authcrypts the blob to the
-/// calling wallet, and returns it. The long-term signing key (and the
-/// entry's DID) never leaves the VTA.
+/// Per-driver TTL ceilings. SIOP is capped by the underlying id_token's
+/// `exp` (300 s, the canonical M2B.2b limit). Password POST is capped
+/// by the maintainer's policy; we keep it short by default so a
+/// compromised wallet can't replay the session indefinitely. The
+/// caller's `ttlSecondsHint` is honoured up to the ceiling and
+/// silently truncated above it.
+const PASSWORD_POST_TTL_CEILING_SECS: u64 = 900;
+
+/// Handler for `spec/vault/proxy-login/0.1`. Two drivers wired today:
 ///
-/// Other `secretKind`s reject with `task_failed: not_implemented` —
-/// Password POST + cookie injection lands in M2B.5; OAuth refresh +
-/// DIDComm-peer drivers follow that.
+/// - **`did-self-issued`** (M2B.2b): VTA mints a SIOPv2 id_token on
+///   the entry's behalf, wraps it in a [`SessionBlob`] with a single
+///   `Authorization: Bearer …` header. Long-term signing key never
+///   leaves the VTA.
+/// - **`password`** with a `loginConfig` (M2B.5): VTA performs an
+///   HTTP POST against the configured login URL with the entry's
+///   credentials, captures the resulting Set-Cookie headers, and
+///   returns them in a [`SessionBlob`] for the consumer to inject
+///   into its browser. Long-term password leaves the VTA only as
+///   the body of one outbound HTTPS request.
+///
+/// `password` without a `loginConfig` rejects with `not_proxyable`
+/// (consumer falls back to `vault/release` for browser-fill). Other
+/// secret kinds (`passkey`, `oauth-tokens`, `didcomm-peer`,
+/// `bearer-token`, `ssh-key`, `custom`) reject with
+/// `not_implemented` — future drivers will light them up.
 pub(super) async fn handle_proxy_login(
     state: &AppState,
     auth: &AuthClaims,
@@ -1211,64 +1227,9 @@ pub(super) async fn handle_proxy_login(
         return r;
     }
 
-    // M2B.2b only implements the DID-self-issued driver. Reject other
-    // secret kinds with `not_implemented` so wallets can fall back to
-    // vault/release (the existing browser-fill path) for those.
-    let (siop_did, signing_key_id) = match &stored.secret {
-        VaultSecret::DidSelfIssued {
-            did,
-            signing_key_id,
-            ..
-        } => (did.clone(), signing_key_id.clone()),
-        other => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: format!(
-                        "vault/proxy-login:not_implemented — entry secretKind {kind} has no proxy-login driver yet (M2B.2b ships did-self-issued; M2B.5 adds password)",
-                        kind = match other.kind() {
-                            SecretKind::Password => "password",
-                            SecretKind::Passkey => "passkey",
-                            SecretKind::OauthTokens => "oauth-tokens",
-                            SecretKind::DidSelfIssued => "did-self-issued",
-                            SecretKind::DidcommPeer => "didcomm-peer",
-                            SecretKind::BearerToken => "bearer-token",
-                            SecretKind::SshKey => "ssh-key",
-                            SecretKind::Custom => "custom",
-                        }
-                    ),
-                    details: Some(serde_json::json!({
-                        "secretKind": other.kind(),
-                        "supportedKinds": ["did-self-issued"],
-                    })),
-                },
-            );
-        }
-    };
-
-    // Derive the SIOP audience. The wallet may pin a target on the
-    // request; otherwise the maintainer picks the entry's first
-    // DID-shaped target, falling back to the first web-origin. App
-    // targets (iOS/Android) don't define a SIOP audience and would
-    // need a separate flow.
-    let (audience, bind_origin) = match resolve_siop_audience(&req.target, &stored.entry.targets) {
-        Some(pair) => pair,
-        None => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason:
-                        "vault/proxy-login:no_audience — entry has no DID or web-origin target to use as SIOP audience"
-                            .into(),
-                    details: Some(serde_json::json!({
-                        "entryTargets": &stored.entry.targets,
-                    })),
-                },
-            );
-        }
-    };
-
-    // ATM is required for outbound authcrypt of the SessionBlob.
+    // ATM + vta_did are needed for the shared authcrypt tail
+    // regardless of driver — hoist them above the dispatch so both
+    // arms see the same readiness checks.
     let atm = match state.atm.as_ref() {
         Some(atm) => atm,
         None => {
@@ -1297,64 +1258,154 @@ pub(super) async fn handle_proxy_login(
         }
     };
 
-    // Cap TTL at the SIOP id_token TTL — the SessionBlob can't outlive
-    // the bearer token inside it. Client hint is honoured up to that
-    // ceiling.
-    let ttl_secs = req
-        .ttl_seconds_hint
-        .map(|t| (t as u64).min(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS))
-        .unwrap_or(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS);
-
-    // Load the entry's signing key and mint the SIOP id_token.
-    let signing_key = match crate::operations::vault::load_signing_key_by_id(
-        &state.keys_ks,
-        &state.imported_ks,
-        &*state.seed_store,
-        &state.audit_ks,
-        &signing_key_id,
-    )
-    .await
-    {
-        Ok(k) => k,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    let iat = chrono::Utc::now().timestamp().max(0) as u64;
-    let id_token = match crate::operations::vault::build_siop_id_token(
-        &siop_did,
-        &signing_key_id,
-        &audience,
-        req.nonce.as_deref(),
-        iat,
-        ttl_secs,
-        &signing_key,
-    ) {
-        Ok(t) => t,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    // Assemble the SessionBlob. SIOP path is cookie-free: the wallet
-    // attaches the id_token as `Authorization: Bearer …` to the bound
-    // origin's outbound requests, and the RP swaps it for its own
-    // session cookie. No localStorage / sessionStorage entries needed.
-    let session_id = Uuid::new_v4().to_string();
-    let expires_at_dt = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
-    let expires_at = expires_at_dt.to_rfc3339();
-    let session_blob = SessionBlob {
-        session_id: session_id.clone(),
-        expires_at: expires_at.clone(),
-        cookies: Vec::new(),
-        headers: vec![RequestHeader {
-            name: "Authorization".to_string(),
-            value: format!("Bearer {id_token}"),
-        }],
-        local_storage: Vec::new(),
-        session_storage: Vec::new(),
-        bind_origin,
-        // SIOP id_tokens are one-shot — the wallet calls vault/proxy-login
-        // again when the token expires. M3 may upgrade to BeforeExpiry once
-        // the wallet has a background-refresh loop.
-        refresh_hint: None,
+    // Driver dispatch. Each arm constructs a `SessionBlob` (plus its
+    // own session_id + expires_at) and the shared tail authcrypts +
+    // persists + responds. Adding a new driver (e.g. OAuth refresh)
+    // means one more arm here — the wrapper code stays put.
+    let (session_blob, session_id, expires_at) = match &stored.secret {
+        // ─── M2B.2b: did-self-issued (SIOP id_token) ───
+        VaultSecret::DidSelfIssued {
+            did: siop_did,
+            signing_key_id,
+            ..
+        } => {
+            let (audience, bind_origin) = match resolve_siop_audience(
+                &req.target,
+                &stored.entry.targets,
+            ) {
+                Some(pair) => pair,
+                None => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::TaskFailed {
+                            reason:
+                                "vault/proxy-login:no_audience — entry has no DID or web-origin target to use as SIOP audience"
+                                    .into(),
+                            details: Some(serde_json::json!({
+                                "entryTargets": &stored.entry.targets,
+                            })),
+                        },
+                    );
+                }
+            };
+            let ttl_secs = req
+                .ttl_seconds_hint
+                .map(|t| (t as u64).min(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS))
+                .unwrap_or(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS);
+            let signing_key = match crate::operations::vault::load_signing_key_by_id(
+                &state.keys_ks,
+                &state.imported_ks,
+                &*state.seed_store,
+                &state.audit_ks,
+                signing_key_id,
+            )
+            .await
+            {
+                Ok(k) => k,
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+            let iat = chrono::Utc::now().timestamp().max(0) as u64;
+            let id_token = match crate::operations::vault::build_siop_id_token(
+                siop_did,
+                signing_key_id,
+                &audience,
+                req.nonce.as_deref(),
+                iat,
+                ttl_secs,
+                &signing_key,
+            ) {
+                Ok(t) => t,
+                Err(e) => return app_error_to_reject(&doc, e),
+            };
+            build_session_blob_with_bearer(id_token, bind_origin, ttl_secs)
+        }
+        // ─── M2B.5: password (HTTP-POST driver) ───
+        VaultSecret::Password {
+            username,
+            password,
+            totp,
+            login_config: Some(login_config),
+            ..
+        } => {
+            #[cfg(feature = "webvh")]
+            {
+                let cookies = match crate::operations::vault::password_post::run_password_post(
+                    login_config,
+                    username.as_deref(),
+                    password,
+                    totp.as_ref(),
+                )
+                .await
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return reject_with(
+                            &doc,
+                            password_post_error_to_reject(&e, &stored.entry.id),
+                        );
+                    }
+                };
+                let ttl_secs = req
+                    .ttl_seconds_hint
+                    .map(|t| (t as u64).min(PASSWORD_POST_TTL_CEILING_SECS))
+                    .unwrap_or(PASSWORD_POST_TTL_CEILING_SECS);
+                // bind_origin: prefer the entry's first WebOrigin (where the
+                // user actually browses); falls back to the loginUrl's
+                // origin when the entry only carries DID / app targets
+                // (atypical but possible — e.g. an API-first site with a
+                // DID-bound target).
+                let bind_origin = first_web_origin(&stored.entry.targets).or_else(|| {
+                    url::Url::parse(&login_config.login_url)
+                        .ok()
+                        .and_then(|u| u.origin().ascii_serialization().into())
+                });
+                build_session_blob_with_cookies(cookies, bind_origin, ttl_secs)
+            }
+            #[cfg(not(feature = "webvh"))]
+            {
+                let _ = (username, password, totp, login_config);
+                return reject_with(
+                    &doc,
+                    RejectReason::TaskFailed {
+                        reason:
+                            "vault/proxy-login:not_implemented — password driver requires the `webvh` feature"
+                                .into(),
+                        details: None,
+                    },
+                );
+            }
+        }
+        VaultSecret::Password {
+            login_config: None, ..
+        } => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason:
+                        "vault/proxy-login:not_proxyable — password entry has no loginConfig; use vault/release for browser-fill"
+                            .into(),
+                    details: Some(serde_json::json!({
+                        "secretKind": "password",
+                        "remediation": "fall back to vault/release/0.1",
+                    })),
+                },
+            );
+        }
+        other => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/proxy-login:not_implemented — entry secretKind {kind} has no proxy-login driver yet",
+                        kind = secret_kind_label(other.kind())
+                    ),
+                    details: Some(serde_json::json!({
+                        "secretKind": other.kind(),
+                        "supportedKinds": ["did-self-issued", "password"],
+                    })),
+                },
+            );
+        }
     };
 
     let session_body = match serde_json::to_value(&session_blob) {
@@ -1432,6 +1483,135 @@ pub(super) async fn handle_proxy_login(
 /// uses the DID for the SIOP exchange but the page lives at the origin).
 /// Returns `None` from `bind_origin` when no web origin is in play (e.g.
 /// pure-DIDComm RP — no browser origin to bind to).
+/// Construct a SessionBlob carrying a bearer-token Authorization
+/// header — the SIOP driver's output shape. Cookie-free. Returns
+/// `(blob, session_id, expires_at_rfc3339)`.
+fn build_session_blob_with_bearer(
+    bearer: String,
+    bind_origin: Option<String>,
+    ttl_secs: u64,
+) -> (SessionBlob, String, String) {
+    let session_id = Uuid::new_v4().to_string();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64)).to_rfc3339();
+    let blob = SessionBlob {
+        session_id: session_id.clone(),
+        expires_at: expires_at.clone(),
+        cookies: Vec::new(),
+        headers: vec![RequestHeader {
+            name: "Authorization".to_string(),
+            value: format!("Bearer {bearer}"),
+        }],
+        local_storage: Vec::new(),
+        session_storage: Vec::new(),
+        bind_origin,
+        // SIOP id_tokens are one-shot — the wallet calls vault/proxy-login
+        // again when the token expires. M3 may upgrade to BeforeExpiry once
+        // the wallet has a background-refresh loop.
+        refresh_hint: None,
+    };
+    (blob, session_id, expires_at)
+}
+
+/// Construct a SessionBlob carrying cookies — the Password POST
+/// driver's output shape. No bearer header (the cookies ARE the
+/// session). Returns `(blob, session_id, expires_at_rfc3339)`.
+fn build_session_blob_with_cookies(
+    cookies: Vec<vti_common::vault::CookieJarEntry>,
+    bind_origin: Option<String>,
+    ttl_secs: u64,
+) -> (SessionBlob, String, String) {
+    let session_id = Uuid::new_v4().to_string();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64)).to_rfc3339();
+    let blob = SessionBlob {
+        session_id: session_id.clone(),
+        expires_at: expires_at.clone(),
+        cookies,
+        headers: Vec::new(),
+        local_storage: Vec::new(),
+        session_storage: Vec::new(),
+        bind_origin,
+        // Password POST sessions can hint the wallet to refresh on 401
+        // (the third party's cookie expired); the maintainer would then
+        // re-run vault/proxy-login. M3 wires this hint into a real
+        // wallet-side refresh loop.
+        refresh_hint: Some(vti_common::vault::RefreshHint::On401),
+    };
+    (blob, session_id, expires_at)
+}
+
+/// Pick the first `web-origin` target on the entry. Used by the
+/// password driver to derive the SessionBlob's `bind_origin` — the
+/// scheme + host + port the wallet will inject cookies into. Returns
+/// `None` if the entry has no web-origin target.
+fn first_web_origin(targets: &[SiteTarget]) -> Option<String> {
+    targets.iter().find_map(|t| match t {
+        SiteTarget::WebOrigin { origin } => Some(origin.clone()),
+        _ => None,
+    })
+}
+
+/// Human-readable label for a [`SecretKind`] — used in error messages
+/// so the consumer sees `secretKind password` instead of
+/// `secretKind 0`.
+fn secret_kind_label(kind: SecretKind) -> &'static str {
+    match kind {
+        SecretKind::Password => "password",
+        SecretKind::Passkey => "passkey",
+        SecretKind::OauthTokens => "oauth-tokens",
+        SecretKind::DidSelfIssued => "did-self-issued",
+        SecretKind::DidcommPeer => "didcomm-peer",
+        SecretKind::BearerToken => "bearer-token",
+        SecretKind::SshKey => "ssh-key",
+        SecretKind::Custom => "custom",
+    }
+}
+
+/// Translate a [`crate::operations::vault::password_post::PasswordPostError`]
+/// into the canonical `vault/proxy-login/0.1` reject reason. Per the
+/// spec: 4xx HTTP → `credential_rejected` (not retryable); 5xx HTTP +
+/// transport failures → `target_unreachable` (retryable); bad config
+/// → `malformed_request`; TOTP-not-supported → `not_implemented`.
+#[cfg(feature = "webvh")]
+fn password_post_error_to_reject(
+    err: &crate::operations::vault::password_post::PasswordPostError,
+    entry_id: &str,
+) -> RejectReason {
+    use crate::operations::vault::password_post::PasswordPostError;
+    match err {
+        PasswordPostError::NonSuccessStatus { status } if (400..500).contains(status) => {
+            RejectReason::TaskFailed {
+                reason: format!(
+                    "vault/proxy-login:credential_rejected — third party returned HTTP {status} for entry {entry_id}"
+                ),
+                details: Some(serde_json::json!({
+                    "status": status,
+                    "remediation": "rotate the entry's password via vault/upsert/0.1",
+                })),
+            }
+        }
+        PasswordPostError::NonSuccessStatus { status } => RejectReason::TaskFailed {
+            reason: format!(
+                "vault/proxy-login:target_unreachable — third party returned HTTP {status}"
+            ),
+            details: Some(serde_json::json!({ "status": status, "retryable": true })),
+        },
+        PasswordPostError::Transport { url, source } => RejectReason::TaskFailed {
+            reason: format!("vault/proxy-login:target_unreachable — {source} ({url})"),
+            details: Some(serde_json::json!({ "url": url, "retryable": true })),
+        },
+        PasswordPostError::InvalidLoginUrl(msg) => RejectReason::MalformedRequest {
+            reason: format!("vault/proxy-login:invalid_login_url — {msg}"),
+        },
+        PasswordPostError::TotpNotImplemented(msg) => RejectReason::TaskFailed {
+            reason: format!("vault/proxy-login:not_implemented — {msg}"),
+            details: None,
+        },
+        PasswordPostError::ResponseParse(msg) => RejectReason::InternalError {
+            reason: format!("vault/proxy-login: response parse failure — {msg}"),
+        },
+    }
+}
+
 fn resolve_siop_audience(
     explicit: &Option<SiteTarget>,
     entry_targets: &[SiteTarget],

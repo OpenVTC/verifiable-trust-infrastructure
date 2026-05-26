@@ -140,6 +140,7 @@ fn demo_records(context_id: &str) -> Vec<StoredVaultEntry> {
         username: Some("demo".into()),
         password: "PLACEHOLDER-replace-via-vault/upsert/0.1".into(),
         totp: None,
+        login_config: None,
         secure_notes: None,
         custom_fields: Vec::new(),
     };

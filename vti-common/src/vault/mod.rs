@@ -226,6 +226,14 @@ pub enum VaultSecret {
         password: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         totp: Option<TotpSeed>,
+        /// Optional driver config for `vault/proxy-login/0.1` against
+        /// this entry. When present, the maintainer performs an HTTP
+        /// POST against `loginConfig.loginUrl` with the entry's
+        /// credentials. When absent, proxy-login returns
+        /// `not_proxyable` and the consumer falls back to vault/release
+        /// for browser-fill. See `vault/_shared/0.1/vault-secret#/$defs/PasswordLoginConfig`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        login_config: Option<PasswordLoginConfig>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -342,6 +350,77 @@ pub enum TotpAlgorithm {
     Sha256,
     #[serde(rename = "SHA512")]
     Sha512,
+}
+
+/// Driver config for HTTP-POST proxy-login against a Password-kind
+/// entry. Mirrors `vault/_shared/0.1/vault-secret#/$defs/PasswordLoginConfig`.
+///
+/// When this struct is present on a Password secret, the maintainer
+/// performs an HTTP POST against `login_url` carrying the entry's
+/// credentials and captures the resulting Set-Cookie headers into the
+/// SessionBlob. When absent, vault/proxy-login returns `not_proxyable`
+/// and the consumer falls back to vault/release for a browser-fill
+/// flow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasswordLoginConfig {
+    /// Absolute URL the maintainer POSTs credentials to. MUST be
+    /// `https://` for any non-loopback host — see the canonical spec
+    /// for the loopback carve-out.
+    pub login_url: String,
+    /// Request-body encoding. `Json` → `application/json`,
+    /// `FormUrlEncoded` → `application/x-www-form-urlencoded`.
+    #[serde(default)]
+    pub format: PasswordLoginFormat,
+    /// Field name carrying the username. Default `"username"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username_field: Option<String>,
+    /// Field name carrying the password. Default `"password"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_field: Option<String>,
+    /// Optional field name carrying the TOTP code. When set AND the
+    /// entry's `totp` is populated, the maintainer computes the
+    /// current code and includes it in the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub totp_field: Option<String>,
+    /// Constant field/value pairs the maintainer MUST include
+    /// alongside the credentials. Useful for fixed selectors the site
+    /// expects (e.g. `grantType: password`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_fields: Option<std::collections::BTreeMap<String, String>>,
+    /// HTTP status codes the maintainer treats as login success.
+    /// Default `[200, 204]` (set via accessor when None — keeps the
+    /// wire shape clean).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success_status: Option<Vec<u16>>,
+}
+
+impl PasswordLoginConfig {
+    /// The set of HTTP statuses the maintainer treats as success,
+    /// falling back to the canonical default `[200, 204]` when the
+    /// caller didn't override.
+    pub fn effective_success_status(&self) -> Vec<u16> {
+        self.success_status
+            .clone()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| vec![200, 204])
+    }
+
+    pub fn effective_username_field(&self) -> &str {
+        self.username_field.as_deref().unwrap_or("username")
+    }
+
+    pub fn effective_password_field(&self) -> &str {
+        self.password_field.as_deref().unwrap_or("password")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PasswordLoginFormat {
+    #[default]
+    Json,
+    FormUrlencoded,
 }
 
 /// Free-form user-defined field on Password / Custom variants.
@@ -810,6 +889,7 @@ mod tests {
                 username: Some("u".into()),
                 password: "p".into(),
                 totp: None,
+                login_config: None,
                 secure_notes: None,
                 custom_fields: vec![],
             },
