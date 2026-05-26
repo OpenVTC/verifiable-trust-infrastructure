@@ -1,15 +1,17 @@
-//! Vault slice trust-task handlers — M1 + M2A surface.
+//! Vault slice trust-task handlers — M1 + M2A + M2B surface.
 //!
-//! Handles `spec/vault/{list,get,upsert,delete,release}/0.1` per the canonical
+//! Handles `spec/vault/{list,get,upsert,delete,release,proxy-login}/0.1`
+//! per the canonical
 //! [trust-tasks-tf](https://github.com/trustoverip/dtgwg-trust-tasks-tf) specs.
-//! Delete + release handler bodies land in M2A.2/M2A.3 — they're stubbed here
-//! returning `task_failed: not yet implemented`.
+//! `proxy-login`'s DID-self-issued (SIOP) driver lands in M2B.2b; the
+//! Password POST driver follows in M2B.5.
 //!
 //! Auth: gated on derived capabilities for the caller's role —
 //! [`vti_common::acl::derived_capabilities_for_role`]. List/get require
 //! `VaultRead`; upsert/delete require `VaultWrite`; release requires
-//! `FillRelease`. Admin/Initiator carry the write capabilities; Application
-//! and Reader carry read-only; Monitor carries none.
+//! `FillRelease`; proxy-login requires `ProxyLogin`. Admin/Initiator
+//! carry the write capabilities; Application/Reader carry read-only;
+//! Monitor carries none.
 
 use affinidi_messaging_didcomm::Message;
 use axum::response::Response;
@@ -19,8 +21,8 @@ use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vti_common::acl::{Capability, role_has_capability};
 use vti_common::vault::{
-    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter, VaultSecret,
-    delete_vault_entry, get_stored_vault_entry, get_vault_entry,
+    RequestHeader, SecretKind, SessionBlob, SiteTarget, StoredVaultEntry, VaultEntry,
+    VaultListFilter, VaultSecret, delete_vault_entry, get_stored_vault_entry, get_vault_entry,
     list_vault_entries as list_entries_store, put_stored_vault_entry,
 };
 
@@ -269,6 +271,68 @@ enum SealedEnvelopeWire {
 /// body as `VaultSecret` directly per the spec.
 const RELEASE_INNER_MSG_TYPE: &str = "https://openvtc.org/vault/release/secret-envelope/1.0";
 
+/// DIDComm `Message.typ` for the proxy-login envelope's cleartext.
+/// Counterpart of [`RELEASE_INNER_MSG_TYPE`] for the SessionBlob the
+/// wallet receives. Same workspace namespace; the JWE body is a
+/// [`SessionBlob`] per `vault/_shared/0.1/session-blob`.
+const PROXY_LOGIN_INNER_MSG_TYPE: &str =
+    "https://openvtc.org/vault/proxy-login/session-envelope/1.0";
+
+/// Request body for `vault/proxy-login/0.1`. Mirrors the canonical schema.
+/// `consumerContext` / `stepUpProof` are accepted but not yet consumed
+/// (M3 policy engine will read consumerContext; step-up gating across
+/// the proxy-login flow lands as a follow-up to step-up's release-flow
+/// integration). `ttlSecondsHint` is accepted but capped by the
+/// maintainer.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultProxyLoginBody {
+    entry_id: String,
+    /// Optional target the wallet is asking the VTA to log in *against*.
+    /// When omitted the maintainer picks the entry's first DID-shaped or
+    /// web-origin target (in that order). For SIOP entries the audience
+    /// is the relying party's DID; for Password POST (M2B.5) it's the
+    /// site origin.
+    #[serde(default)]
+    target: Option<SiteTarget>,
+    /// Free-form `consumer-context` per the shared schema — origin /
+    /// page hints the wallet ships so the policy engine can decide
+    /// whether to proceed. Accepted, ignored by M2B.2b (default-allow).
+    #[serde(default)]
+    #[allow(dead_code)]
+    consumer_context: Option<Value>,
+    /// Step-up proof token (vta-approval JWS) — accepted for forward
+    /// compatibility; the M2B.2b SIOP driver doesn't require step-up
+    /// (the wallet already authenticated this caller). Sensitive sites
+    /// gain step-up enforcement via M3 policy + step-up wiring.
+    #[serde(default)]
+    #[allow(dead_code)]
+    step_up_proof: Option<Value>,
+    #[serde(default)]
+    ttl_seconds_hint: Option<u32>,
+}
+
+/// Response body for `vault/proxy-login/0.1`. The `sealedSessionBlob`
+/// is the same pluggable cipher envelope shape used by `vault/release` —
+/// M2B.2b emits only the `didcomm-authcrypt` variant.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultProxyLoginResponseBody {
+    sealed_session_blob: SealedEnvelopeWire,
+    /// Maintainer-assigned session id — opaque to the wallet, used by
+    /// future `vault/session/{revoke, refresh}/0.1` calls. Same value
+    /// as the `sessionId` inside the cleartext SessionBlob; exposed at
+    /// the response root so the wallet can log / index it without
+    /// having to unseal the envelope first (audit trail before
+    /// decryption).
+    session_id: String,
+    /// Mirrors the cleartext SessionBlob's `expiresAt`. Exposed in the
+    /// clear so the wallet's UI can show "session expires in N minutes"
+    /// without unsealing. Discarding the wrapper at this time is the
+    /// wallet's obligation.
+    expires_at: String,
+}
+
 /// Reject the request unless the caller's role implies `VaultRead`. When
 /// AclEntry-level explicit capabilities arrive (M4), this check upgrades
 /// to consult the entry's `capabilities` Vec instead of deriving from role.
@@ -321,6 +385,28 @@ fn require_fill_release(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(),
             RejectReason::PermissionDenied {
                 reason: format!(
                     "vault release denied: role {} does not carry FillRelease capability",
+                    auth.role
+                ),
+            },
+        ))
+    }
+}
+
+/// Reject the request unless the caller's role implies `ProxyLogin` —
+/// Admin, Initiator, and Application pass; Reader and Monitor do not.
+/// Used by vault/proxy-login. ProxyLogin is the "VTA performs the login
+/// for the consumer" capability; it's strictly more privileged than
+/// FillRelease (the consumer never sees the long-term secret) so the
+/// role→capability mapping carries it on the same roles as FillRelease.
+fn require_proxy_login(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
+    if role_has_capability(&auth.role, Capability::ProxyLogin) {
+        Ok(())
+    } else {
+        Err(reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: format!(
+                    "vault proxy-login denied: role {} does not carry ProxyLogin capability",
                     auth.role
                 ),
             },
@@ -1036,23 +1122,303 @@ pub(super) async fn handle_release(
     )
 }
 
-/// M2B.2a stub for `spec/vault/proxy-login/0.1`. URI is wired into the
-/// dispatcher so clients posting proxy-login get a clear maintainer-
-/// defined reject rather than `unsupported_type`. The real driver bodies
-/// (DID-self-issued in M2B.2b, Password POST in M2B.5) land as follow-up
-/// PRs against this scaffolding.
+/// Handler for `spec/vault/proxy-login/0.1` — M2B.2b ships the
+/// DID-self-issued (SIOP) driver. The VTA mints a SIOPv2 id_token on
+/// the entry's behalf, wraps it in a [`SessionBlob`] with a single
+/// `Authorization: Bearer …` header, authcrypts the blob to the
+/// calling wallet, and returns it. The long-term signing key (and the
+/// entry's DID) never leaves the VTA.
+///
+/// Other `secretKind`s reject with `task_failed: not_implemented` —
+/// Password POST + cookie injection lands in M2B.5; OAuth refresh +
+/// DIDComm-peer drivers follow that.
 pub(super) async fn handle_proxy_login(
-    _state: &AppState,
-    _auth: &AuthClaims,
+    state: &AppState,
+    auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    reject_with(
+    if let Err(r) = require_proxy_login(auth, &doc) {
+        return r;
+    }
+
+    let req: VaultProxyLoginBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // Load entry — conflate not-found with permission-denied to deny
+    // enumeration (matches handle_release).
+    let mut stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/proxy-login:not_found — no entry at id {}",
+                        req.entry_id
+                    ),
+                    details: None,
+                },
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
+        return r;
+    }
+
+    // M2B.2b only implements the DID-self-issued driver. Reject other
+    // secret kinds with `not_implemented` so wallets can fall back to
+    // vault/release (the existing browser-fill path) for those.
+    let (siop_did, signing_key_id) = match &stored.secret {
+        VaultSecret::DidSelfIssued {
+            did,
+            signing_key_id,
+            ..
+        } => (did.clone(), signing_key_id.clone()),
+        other => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/proxy-login:not_implemented — entry secretKind {kind} has no proxy-login driver yet (M2B.2b ships did-self-issued; M2B.5 adds password)",
+                        kind = match other.kind() {
+                            SecretKind::Password => "password",
+                            SecretKind::Passkey => "passkey",
+                            SecretKind::OauthTokens => "oauth-tokens",
+                            SecretKind::DidSelfIssued => "did-self-issued",
+                            SecretKind::DidcommPeer => "didcomm-peer",
+                            SecretKind::BearerToken => "bearer-token",
+                            SecretKind::SshKey => "ssh-key",
+                            SecretKind::Custom => "custom",
+                        }
+                    ),
+                    details: Some(serde_json::json!({
+                        "secretKind": other.kind(),
+                        "supportedKinds": ["did-self-issued"],
+                    })),
+                },
+            );
+        }
+    };
+
+    // Derive the SIOP audience. The wallet may pin a target on the
+    // request; otherwise the maintainer picks the entry's first
+    // DID-shaped target, falling back to the first web-origin. App
+    // targets (iOS/Android) don't define a SIOP audience and would
+    // need a separate flow.
+    let (audience, bind_origin) = match resolve_siop_audience(&req.target, &stored.entry.targets) {
+        Some(pair) => pair,
+        None => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason:
+                        "vault/proxy-login:no_audience — entry has no DID or web-origin target to use as SIOP audience"
+                            .into(),
+                    details: Some(serde_json::json!({
+                        "entryTargets": &stored.entry.targets,
+                    })),
+                },
+            );
+        }
+    };
+
+    // ATM is required for outbound authcrypt of the SessionBlob.
+    let atm = match state.atm.as_ref() {
+        Some(atm) => atm,
+        None => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: "ATM not configured — server cannot pack DIDComm envelopes".into(),
+                },
+            );
+        }
+    };
+
+    let vta_did = {
+        let config = state.config.read().await;
+        match config.vta_did.clone() {
+            Some(d) => d,
+            None => {
+                return reject_with(
+                    &doc,
+                    RejectReason::InternalError {
+                        reason: "vta_did not configured — server cannot identify itself as signer"
+                            .into(),
+                    },
+                );
+            }
+        }
+    };
+
+    // Cap TTL at the SIOP id_token TTL — the SessionBlob can't outlive
+    // the bearer token inside it. Client hint is honoured up to that
+    // ceiling.
+    let ttl_secs = req
+        .ttl_seconds_hint
+        .map(|t| (t as u64).min(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS))
+        .unwrap_or(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS);
+
+    // Load the entry's signing key and mint the SIOP id_token.
+    let signing_key = match crate::operations::vault::load_signing_key_by_id(
+        &state.keys_ks,
+        &state.imported_ks,
+        &*state.seed_store,
+        &state.audit_ks,
+        &signing_key_id,
+    )
+    .await
+    {
+        Ok(k) => k,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    let iat = chrono::Utc::now().timestamp().max(0) as u64;
+    let id_token = match crate::operations::vault::build_siop_id_token(
+        &siop_did,
+        &signing_key_id,
+        &audience,
+        iat,
+        ttl_secs,
+        &signing_key,
+    ) {
+        Ok(t) => t,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // Assemble the SessionBlob. SIOP path is cookie-free: the wallet
+    // attaches the id_token as `Authorization: Bearer …` to the bound
+    // origin's outbound requests, and the RP swaps it for its own
+    // session cookie. No localStorage / sessionStorage entries needed.
+    let session_id = Uuid::new_v4().to_string();
+    let expires_at_dt = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+    let expires_at = expires_at_dt.to_rfc3339();
+    let session_blob = SessionBlob {
+        session_id: session_id.clone(),
+        expires_at: expires_at.clone(),
+        cookies: Vec::new(),
+        headers: vec![RequestHeader {
+            name: "Authorization".to_string(),
+            value: format!("Bearer {id_token}"),
+        }],
+        local_storage: Vec::new(),
+        session_storage: Vec::new(),
+        bind_origin,
+        // SIOP id_tokens are one-shot — the wallet calls vault/proxy-login
+        // again when the token expires. M3 may upgrade to BeforeExpiry once
+        // the wallet has a background-refresh loop.
+        refresh_hint: None,
+    };
+
+    let session_body = match serde_json::to_value(&session_blob) {
+        Ok(v) => v,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!("vault/proxy-login: failed to serialise SessionBlob: {e}"),
+                },
+            );
+        }
+    };
+
+    let msg = Message::build(
+        Uuid::new_v4().to_string(),
+        PROXY_LOGIN_INNER_MSG_TYPE.to_string(),
+        session_body,
+    )
+    .from(vta_did.clone())
+    .to(auth.did.clone())
+    .finalize();
+
+    let (jwe, _metadata) = match atm
+        .pack_encrypted(&msg, &auth.did, Some(&vta_did), Some(&vta_did))
+        .await
+    {
+        Ok(packed) => packed,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!("vault/proxy-login: pack_encrypted failed: {e}"),
+                },
+            );
+        }
+    };
+
+    // Same lastUsedAt update as handle_release — server-managed
+    // metadata, NOT a version bump.
+    let now = chrono::Utc::now().to_rfc3339();
+    stored.entry.last_used_at = Some(now);
+    if let Err(e) = put_stored_vault_entry(&state.vault_ks, &stored).await {
+        tracing::warn!(
+            entry_id = %stored.entry.id,
+            error = %e,
+            "vault/proxy-login: lastUsedAt update failed; session release proceeded"
+        );
+    }
+
+    success_response(
         &doc,
-        RejectReason::TaskFailed {
-            reason: "vault/proxy-login/0.1: handler not yet implemented — M2B.2b lands the DID-self-issued (SIOP) driver, M2B.5 adds Password POST".into(),
-            details: None,
+        VaultProxyLoginResponseBody {
+            sealed_session_blob: SealedEnvelopeWire::DidcommAuthcrypt { jwe },
+            session_id,
+            expires_at,
         },
     )
+}
+
+/// Resolve the SIOP audience (and the SessionBlob's `bind_origin`) from
+/// the optional request target + the entry's declared targets.
+///
+/// Priority:
+/// 1. Explicit `req.target`: must be `Did` or `WebOrigin` (the only two
+///    SIOP-meaningful target kinds). App targets reject — they'd need a
+///    different flow.
+/// 2. First `Did` target on the entry.
+/// 3. First `WebOrigin` target on the entry.
+/// 4. None — caller rejects with `no_audience`.
+///
+/// `bind_origin` is set when the *audience* is a web origin (the wallet
+/// MUST refuse to inject the session into any other origin) OR when the
+/// entry has a web-origin target alongside the DID audience (the wallet
+/// uses the DID for the SIOP exchange but the page lives at the origin).
+/// Returns `None` from `bind_origin` when no web origin is in play (e.g.
+/// pure-DIDComm RP — no browser origin to bind to).
+fn resolve_siop_audience(
+    explicit: &Option<SiteTarget>,
+    entry_targets: &[SiteTarget],
+) -> Option<(String, Option<String>)> {
+    // First web-origin on the entry — used as bind_origin whenever the
+    // entry has one, regardless of whether the audience itself is a DID.
+    let entry_origin: Option<String> = entry_targets.iter().find_map(|t| match t {
+        SiteTarget::WebOrigin { origin } => Some(origin.clone()),
+        _ => None,
+    });
+
+    if let Some(t) = explicit {
+        return match t {
+            SiteTarget::Did { did } => Some((did.clone(), entry_origin)),
+            SiteTarget::WebOrigin { origin } => Some((origin.clone(), Some(origin.clone()))),
+            // App targets aren't SIOP audiences.
+            _ => None,
+        };
+    }
+
+    // No explicit target — pick the entry's first DID target, falling
+    // back to its first web-origin.
+    let entry_did: Option<String> = entry_targets.iter().find_map(|t| match t {
+        SiteTarget::Did { did } => Some(did.clone()),
+        _ => None,
+    });
+    if let Some(did) = entry_did {
+        return Some((did, entry_origin));
+    }
+    entry_origin.clone().map(|o| (o, entry_origin))
 }
 
 // Suppress an unused-import warning on the SiteTarget re-export — kept
@@ -1071,3 +1437,79 @@ type _SiteTargetReexport = SiteTarget;
 // duplicate the wire-form encoder).
 #[allow(dead_code)]
 const _: &() = &();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn web(o: &str) -> SiteTarget {
+        SiteTarget::WebOrigin {
+            origin: o.to_string(),
+        }
+    }
+    fn did(d: &str) -> SiteTarget {
+        SiteTarget::Did { did: d.to_string() }
+    }
+    fn ios() -> SiteTarget {
+        SiteTarget::IosApp {
+            bundle_id: "com.example.app".into(),
+            team_id: None,
+        }
+    }
+
+    #[test]
+    fn explicit_did_target_uses_did_as_audience_with_entry_origin_as_bind() {
+        let entry_targets = vec![did("did:web:rp.example"), web("https://rp.example")];
+        let (aud, bind) = resolve_siop_audience(&Some(did("did:web:rp.example")), &entry_targets)
+            .expect("audience");
+        assert_eq!(aud, "did:web:rp.example");
+        assert_eq!(bind.as_deref(), Some("https://rp.example"));
+    }
+
+    #[test]
+    fn explicit_web_origin_target_audience_equals_bind() {
+        let entry_targets = vec![web("https://rp.example")];
+        let (aud, bind) = resolve_siop_audience(&Some(web("https://rp.example")), &entry_targets)
+            .expect("audience");
+        assert_eq!(aud, "https://rp.example");
+        assert_eq!(bind.as_deref(), Some("https://rp.example"));
+    }
+
+    #[test]
+    fn explicit_app_target_rejects_for_siop() {
+        let entry_targets = vec![did("did:web:rp.example")];
+        assert!(
+            resolve_siop_audience(&Some(ios()), &entry_targets).is_none(),
+            "app targets aren't SIOP audiences"
+        );
+    }
+
+    #[test]
+    fn no_explicit_target_prefers_first_did_on_entry() {
+        let entry_targets = vec![
+            web("https://rp.example"),
+            did("did:web:rp.example"),
+            did("did:web:other"),
+        ];
+        let (aud, bind) = resolve_siop_audience(&None, &entry_targets).expect("audience");
+        assert_eq!(aud, "did:web:rp.example", "first DID wins over later DIDs");
+        assert_eq!(bind.as_deref(), Some("https://rp.example"));
+    }
+
+    #[test]
+    fn no_explicit_target_falls_back_to_first_web_origin_when_no_did() {
+        let entry_targets = vec![web("https://rp.example")];
+        let (aud, bind) = resolve_siop_audience(&None, &entry_targets).expect("audience");
+        assert_eq!(aud, "https://rp.example");
+        assert_eq!(bind.as_deref(), Some("https://rp.example"));
+    }
+
+    #[test]
+    fn no_audience_when_entry_has_only_app_targets() {
+        let entry_targets = vec![ios()];
+        assert!(
+            resolve_siop_audience(&None, &entry_targets).is_none(),
+            "app-only entry yields no SIOP audience"
+        );
+    }
+}
