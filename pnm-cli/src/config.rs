@@ -11,6 +11,15 @@ pub struct PnmConfig {
     #[serde(default)]
     pub vtas: BTreeMap<String, VtaConfig>,
 
+    /// WebSocket URL of an external `affinidi-did-resolver-cache-server`
+    /// (e.g. `ws://127.0.0.1:4445/did/v1/ws`). When set, PNM exports it
+    /// as `PNM_RESOLVER_URL` at startup and the SDK dispatches every DID
+    /// resolution to that server instead of resolving in-process. Useful
+    /// when running PNM alongside a VTA pointed at the same server —
+    /// both share the cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolver_url: Option<String>,
+
     // Legacy field — migrated to vtas on first load.
     #[serde(default, skip_serializing)]
     url: Option<String>,

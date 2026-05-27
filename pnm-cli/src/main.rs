@@ -91,6 +91,28 @@ async fn main() {
         }
     };
 
+    // Propagate the optional remote DID-resolver URL to the SDK as an
+    // env var. `vta_sdk::resolver::build_did_cache_config_from_env`
+    // reads this at every DIDCacheClient construction site, so a single
+    // config setting reaches the three SDK helpers PNM uses
+    // (resolve_vta_endpoint / resolve_vta_url / resolve_mediator_did)
+    // and the local `pnm health` resolver without surface-API churn.
+    //
+    // Respects any value the operator set in their environment — only
+    // sets from config when the env var is absent (or empty).
+    if let Some(url) = pnm_config.resolver_url.as_deref()
+        && !url.is_empty()
+        && std::env::var_os("PNM_RESOLVER_URL")
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+    {
+        // SAFETY: set on the main thread, before any worker / async
+        // task that reads PNM_RESOLVER_URL has been spawned.
+        unsafe {
+            std::env::set_var("PNM_RESOLVER_URL", url);
+        }
+    }
+
     // Save overrides + move the parsed command into a local so the
     // pre-auth dispatch can consume the inner enums by value (no
     // borrow-vs-move dance against `cli.command`).
@@ -153,6 +175,17 @@ async fn main() {
                 return;
             }
             command = Commands::Vta { command: vta_cmd };
+        }
+        Commands::Config {
+            command: cli::ConfigCommands::ResolverUrl { url, unset },
+        } => {
+            // Purely local — mutates the PNM config file at
+            // `~/.config/pnm/config.toml`. No VTA round-trip.
+            if let Err(e) = commands::config::run_resolver_url(&mut pnm_config, url, unset).await {
+                vta_cli_common::render::print_cli_error(e.as_ref());
+                std::process::exit(1);
+            }
+            return;
         }
         other => {
             command = other;

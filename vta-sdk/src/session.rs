@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
@@ -1086,7 +1086,7 @@ pub async fn resolve_vta_endpoint(
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
     debug!(vta_did, "resolving VTA DID for transport selection");
 
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
 
@@ -1143,7 +1143,7 @@ pub async fn resolve_vta_endpoint(
 pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error::Error>> {
     debug!(vta_did, "resolving VTA DID to discover service URL");
 
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
 
@@ -1244,7 +1244,7 @@ pub async fn send_trust_ping(
 pub async fn resolve_mediator_did(
     vta_did: &str,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
     resolve_mediator_did_with_resolver(vta_did, &did_resolver).await

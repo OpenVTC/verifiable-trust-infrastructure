@@ -18,12 +18,14 @@ pub(crate) async fn run(
     url_override: Option<&str>,
     keyring_key: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
     let session = auth::loaded_session(keyring_key);
 
-    // Single shared DID resolver — cached across all resolutions
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+    // Single shared DID resolver — cached across all resolutions.
+    // Honours PNM_RESOLVER_URL (set from `~/.config/pnm/config.toml`'s
+    // `resolver_url` at startup) for shared-cache deployments.
+    let did_resolver = DIDCacheClient::new(vta_sdk::resolver::build_did_cache_config_from_env())
         .await
         .ok();
 

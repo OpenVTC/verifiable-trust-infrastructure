@@ -1154,6 +1154,25 @@ pub(crate) enum ConfigCommands {
         #[arg(long)]
         public_url: Option<String>,
     },
+    /// Manage the remote DID-resolver cache URL stored in
+    /// `~/.config/pnm/config.toml`. When set, PNM dispatches every DID
+    /// resolution to that WebSocket endpoint (typically the same
+    /// `affinidi-did-resolver-cache-server` the local VTA points at)
+    /// instead of resolving in-process.
+    ///
+    /// Examples:
+    ///   pnm config resolver-url                            # show current value
+    ///   pnm config resolver-url ws://127.0.0.1:4445/did/v1/ws
+    ///   pnm config resolver-url --unset                    # clear, resolve locally
+    ResolverUrl {
+        /// WebSocket URL of the resolver-cache server. Omit to print
+        /// the current value.
+        url: Option<String>,
+        /// Clear the configured resolver URL. PNM will resolve DIDs
+        /// in-process again.
+        #[arg(long, conflicts_with = "url")]
+        unset: bool,
+    },
 }
 
 // ── Unified `pnm services …` surface (spec §5.1) ──────────────────
@@ -1767,6 +1786,16 @@ pub(crate) fn requires_auth(cmd: &Commands) -> bool {
     // ProvisionIntegration bridges to the authenticated endpoint.
     if let Commands::Bootstrap { command } = cmd {
         return matches!(command, BootstrapCommands::ProvisionIntegration { .. });
+    }
+    // `pnm config resolver-url …` is purely local — it mutates the
+    // PNM config file at `~/.config/pnm/config.toml` and never talks
+    // to the VTA. Other `pnm config` subcommands hit REST endpoints
+    // and need auth.
+    if let Commands::Config {
+        command: ConfigCommands::ResolverUrl { .. },
+    } = cmd
+    {
+        return false;
     }
     !matches!(
         cmd,

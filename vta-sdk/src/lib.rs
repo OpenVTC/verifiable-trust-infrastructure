@@ -100,6 +100,7 @@ pub mod didcomm_session;
 pub mod keyring_init;
 pub mod keys;
 pub mod prelude;
+pub mod resolver;
 // `protocol` itself is always-on (its `services` submodule holds pure
 // wire types + the shared `validate_service_url` validator that
 // vta-service uses without ever talking to a `VtaClient`). The
