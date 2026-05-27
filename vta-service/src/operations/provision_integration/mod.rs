@@ -60,7 +60,8 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use crate::acl::Role;
+use crate::acl::{Role, delete_acl_entry, get_acl_entry};
+use crate::audit::{self, audit};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
@@ -588,6 +589,19 @@ pub async fn provision_integration(
         Err(e) => return Err(e),
     }
 
+    // ── 5.5. Retire the ephemeral after admin rollover ──────────────
+    //
+    // When the request asked for an admin-DID rollover, the ephemeral
+    // `client_did` only existed to open the bundle. Its ACL row
+    // (granted by the operator before this call) is now stale —
+    // delete it and emit an `acl.swap` audit so the ephemeral →
+    // long-term hand-off is recorded the same shape as
+    // `operations::acl::swap_acl`. No-op when `admin_did == client_did`
+    // (no rollover requested) or when client_did has no ACL row
+    // (relayer ≠ holder flow — the ephemeral was never granted on
+    // this VTA).
+    retire_ephemeral_after_rollover(state, &client_did, &admin_did, &context).await?;
+
     // ── 6. Build + sign the VTA authorization VC ────────────────────
     let config = state.config.read().await;
     let vta_did = config
@@ -717,6 +731,61 @@ pub async fn provision_integration(
 
 use vta_sdk::hex::lower as hex_lower;
 
+/// Retire the ephemeral `client_did`'s ACL row after the VTA has rolled
+/// the long-term admin over to a freshly-minted `admin_did`. Emits an
+/// `acl.swap` audit entry — same action tag + shape as
+/// [`super::acl::swap_acl`] — so audit consumers see a single uniform
+/// "ephemeral → long-term hand-off" trail regardless of which path
+/// performed the swap.
+///
+/// No-ops when:
+/// - `admin_did == client_did`: no rollover happened, the ephemeral IS
+///   the long-term DID, nothing to retire.
+/// - `client_did` has no ACL row: relayer ≠ holder flow, the ephemeral
+///   was never granted on this VTA, there's nothing to delete and
+///   "swap" wouldn't be an accurate label.
+///
+/// Closes the audit gap surfaced in the May 2026 review: previously the
+/// ephemeral row lingered until `acl_sweeper` cleaned it up at TTL
+/// expiry, with no record of why it had been superseded.
+async fn retire_ephemeral_after_rollover(
+    state: &ProvisionIntegrationDeps,
+    client_did: &str,
+    admin_did: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    if admin_did == client_did {
+        return Ok(());
+    }
+    if get_acl_entry(&state.acl_ks, client_did).await?.is_none() {
+        return Ok(());
+    }
+    delete_acl_entry(&state.acl_ks, client_did).await?;
+    info!(
+        from = %client_did,
+        to = %admin_did,
+        context = %context,
+        "provision-integration retired ephemeral ACL row after admin rollover"
+    );
+    audit!(
+        "acl.swap",
+        actor = client_did,
+        resource = admin_did,
+        outcome = "success"
+    );
+    let _ = audit::record(
+        &state.audit_ks,
+        "acl.swap",
+        client_did,
+        Some(admin_did),
+        "success",
+        Some("provision-integration"),
+        Some(context),
+    )
+    .await;
+    Ok(())
+}
+
 /// `BootstrapAsk::AdminRotation` flow — mints a fresh long-term admin
 /// DID via the requested admin template, writes its ACL row, issues
 /// the authorization VC (no `operator_of` claim — there's no
@@ -782,6 +851,13 @@ async fn provision_admin_rotation(
         }
         Err(e) => return Err(e),
     }
+
+    // ── 2.5. Retire the ephemeral after admin rollover ──────────────
+    //
+    // AdminRotation always mints a fresh admin DID, so the ephemeral
+    // `client_did` is always being swapped out. Same shape as the
+    // TemplateBootstrap path — see the comment there for rationale.
+    retire_ephemeral_after_rollover(state, client_did, &admin_did, context).await?;
 
     // ── 3. VTA identity ─────────────────────────────────────────────
     let config = state.config.read().await;
@@ -1739,6 +1815,169 @@ mod tests {
             acl_entry.allowed_contexts.iter().any(|c| c == "ctx-1"),
             "ACL row contexts must include ctx-1, got {:?}",
             acl_entry.allowed_contexts
+        );
+    }
+
+    #[tokio::test]
+    async fn provision_integration_admin_rotation_retires_ephemeral_acl_and_emits_swap_audit() {
+        // Closes the May 2026 review gap: when the rotation mints a fresh
+        // long-term admin DID, the ephemeral `client_did` that opened the
+        // bundle has no further authority. Its ACL row (granted by the
+        // operator just before this call) must be removed AND an
+        // `acl.swap` audit entry must land, matching the
+        // `operations::acl::swap_acl` audit shape.
+        use crate::acl::{AclEntry, Role, store_acl_entry};
+        use vta_sdk::protocols::audit_management::list::AuditLogEntry;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-swap", "Swap-audit ctx")
+            .await
+            .expect("create context");
+
+        // The ephemeral the operator would have granted before calling
+        // provision-integration. Hand-write the ACL row directly so the
+        // test doesn't depend on `acl::create_acl`'s validation surface
+        // (and doesn't need a separate auth ceremony for the grant).
+        let request = signed_admin_rotation_request("vta-admin", "ctx-swap").await;
+        let client_did = request.holder().to_string();
+        let ephemeral_row = AclEntry {
+            did: client_did.clone(),
+            role: Role::Admin,
+            label: Some("ephemeral".into()),
+            allowed_contexts: vec!["ctx-swap".into()],
+            created_at: 0,
+            created_by: "test".into(),
+            expires_at: None,
+            kind: Default::default(),
+            capabilities: vec![],
+            device: None,
+            version: 0,
+        };
+        store_acl_entry(&deps.acl_ks, &ephemeral_row)
+            .await
+            .expect("seed ephemeral ACL row");
+
+        let auth = super_admin_claims();
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "ctx-swap".into(),
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("provision_integration AdminRotation");
+
+        // Ephemeral row gone, long-term row present.
+        assert!(
+            crate::acl::get_acl_entry(&deps.acl_ks, &client_did)
+                .await
+                .expect("acl get ephemeral")
+                .is_none(),
+            "ephemeral ACL row must be retired after admin rollover"
+        );
+        assert!(
+            crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+                .await
+                .expect("acl get admin")
+                .is_some(),
+            "rotated admin ACL row must exist"
+        );
+
+        // Audit entry shape: action=acl.swap, actor=ephemeral,
+        // resource=long-term, outcome=success, channel=provision-integration,
+        // context_id=ctx-swap.
+        let entries: Vec<AuditLogEntry> = {
+            let raw = deps
+                .audit_ks
+                .prefix_iter_raw("log:")
+                .await
+                .expect("audit prefix scan");
+            raw.iter()
+                .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+                .collect()
+        };
+        let swap_entries: Vec<&AuditLogEntry> =
+            entries.iter().filter(|e| e.action == "acl.swap").collect();
+        assert_eq!(
+            swap_entries.len(),
+            1,
+            "expected exactly one acl.swap audit entry, got: {:#?}",
+            swap_entries
+        );
+        let swap = swap_entries[0];
+        assert_eq!(swap.actor, client_did, "actor = swapped-from (ephemeral)");
+        assert_eq!(
+            swap.resource.as_deref(),
+            Some(output.summary.admin_did.as_str()),
+            "resource = swapped-to (rotated long-term admin)"
+        );
+        assert_eq!(swap.outcome, "success");
+        assert_eq!(swap.channel.as_deref(), Some("provision-integration"));
+        assert_eq!(swap.context_id.as_deref(), Some("ctx-swap"));
+    }
+
+    #[tokio::test]
+    async fn provision_integration_admin_rotation_swap_audit_skipped_when_no_ephemeral_row() {
+        // Relayer-mode flow: the holder ephemeral was never granted an
+        // ACL row on this VTA (the relayer's bearer is the auth context).
+        // The retirement helper must no-op silently — no spurious
+        // acl.swap audit, no error.
+        use vta_sdk::protocols::audit_management::list::AuditLogEntry;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "ctx-relayer", "Relayer ctx")
+            .await
+            .expect("create context");
+
+        let auth = super_admin_claims();
+        let request = signed_admin_rotation_request("vta-admin", "ctx-relayer").await;
+        let client_did = request.holder().to_string();
+        // Deliberately do NOT seed an ACL row for client_did — this
+        // mirrors the relayer ≠ holder flow.
+
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "ctx-relayer".into(),
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("provision_integration AdminRotation (relayer mode)");
+
+        // Long-term ACL row still gets created (rollover succeeded).
+        assert_ne!(output.summary.admin_did, client_did);
+        assert!(
+            crate::acl::get_acl_entry(&deps.acl_ks, &output.summary.admin_did)
+                .await
+                .expect("acl get admin")
+                .is_some()
+        );
+
+        // No acl.swap audit — there was no swap to record.
+        let entries: Vec<AuditLogEntry> = {
+            let raw = deps
+                .audit_ks
+                .prefix_iter_raw("log:")
+                .await
+                .expect("audit prefix scan");
+            raw.iter()
+                .filter_map(|(_, v)| serde_json::from_slice(v).ok())
+                .collect()
+        };
+        let swap_count = entries.iter().filter(|e| e.action == "acl.swap").count();
+        assert_eq!(
+            swap_count, 0,
+            "no acl.swap entry expected when ephemeral has no ACL row"
         );
     }
 
