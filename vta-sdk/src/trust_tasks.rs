@@ -288,6 +288,168 @@ pub const TASK_VAULT_PROXY_LOGIN_0_1: &str = "https://trusttasks.org/spec/vault/
 pub const TASK_VAULT_SIGN_TRUST_TASK_0_1: &str =
     "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
 
+// ─── DID-management slice (spec/did-management/*) ────────────────────────
+//
+// Canonical Trust Tasks for DID + domain + server + registry management
+// from `dtgwg-trust-tasks-tf/specs/did-management/`. The VTA used to
+// expose its own `vta/webvh/dids/*/1.0` namespace and the did-hosting
+// service used its own `did-hosting/did/*` namespace — neither
+// consumed the canonical spec. These URIs are the shared vocabulary
+// both sides should speak going forward; the old namespaces stay
+// dispatchable during the migration window and are deprecated once
+// every consumer (plugin, pnm-cli) has cut over.
+
+// ─── DID-management — did/* (11 tasks) ───────────────────────────────────
+
+/// `spec/did-management/did/register/0.1` — claim a path on a hosting
+/// server and publish the first DID document atomically. The producer
+/// (DID owner via VTA) ships the DID document + initial keys; the
+/// consumer (did-hosting service) verifies the path is free, writes the
+/// `did.jsonl` log, and registers the DID in its persistent store.
+pub const TASK_DID_MANAGEMENT_DID_REGISTER_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/register/0.1";
+
+/// `spec/did-management/did/publish/0.1` — publish a new log entry for
+/// an existing DID. Used for key rotation, service-endpoint updates,
+/// and any other did-document mutation the owner needs to record.
+pub const TASK_DID_MANAGEMENT_DID_PUBLISH_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/publish/0.1";
+
+/// `spec/did-management/did/delete/0.1` — soft-delete a DID. The
+/// `did.jsonl` log is preserved (the chain is append-only); the
+/// resolved endpoint returns a tombstone. Hard-delete requires
+/// `did-management/domain/purge/0.1` once the domain is disabled.
+pub const TASK_DID_MANAGEMENT_DID_DELETE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/delete/0.1";
+
+/// `spec/did-management/did/enable/0.1` — re-enable a previously
+/// disabled DID. The owner reclaims operational control without
+/// re-registering.
+pub const TASK_DID_MANAGEMENT_DID_ENABLE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/enable/0.1";
+
+/// `spec/did-management/did/disable/0.1` — temporarily disable a DID.
+/// Resolution returns a `disabled` marker; the owner can re-enable
+/// later. Distinct from delete: delete is final, disable is reversible.
+pub const TASK_DID_MANAGEMENT_DID_DISABLE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/disable/0.1";
+
+/// `spec/did-management/did/list/0.1` — list DIDs owned by the caller
+/// at the hosting service. Paginated; supports filtering by domain
+/// and status.
+pub const TASK_DID_MANAGEMENT_DID_LIST_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/list/0.1";
+
+/// `spec/did-management/did/info/0.1` — fetch metadata for a specific
+/// owned DID (current did-document, log digest, status, owner DID,
+/// domain). Read-only.
+pub const TASK_DID_MANAGEMENT_DID_INFO_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/info/0.1";
+
+/// `spec/did-management/did/check-name/0.1` — test whether a path is
+/// available for `did/register/0.1`. Returns `available | taken | reserved`.
+/// Idempotent + side-effect-free.
+pub const TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/check-name/0.1";
+
+/// `spec/did-management/did/change-owner/0.1` — atomic owner-transfer
+/// between two consenting DIDs. Both parties countersign; the hosting
+/// service rebinds the DID's owner record on commit.
+pub const TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/change-owner/0.1";
+
+/// `spec/did-management/did/rollback/0.1` — append a new log entry that
+/// reverts the document to a prior state. The chain stays append-only;
+/// the new entry just re-asserts an earlier verification-method /
+/// service-endpoint set.
+pub const TASK_DID_MANAGEMENT_DID_ROLLBACK_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/rollback/0.1";
+
+/// `spec/did-management/did/problem-report/0.1` — async error envelope
+/// the hosting service emits when a deferred operation (a published log
+/// entry that fails witness verification, a registry sync that
+/// regresses, etc.) needs to surface to the owner.
+pub const TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1: &str =
+    "https://trusttasks.org/spec/did-management/did/problem-report/0.1";
+
+// ─── DID-management — domain/* (7 tasks) ─────────────────────────────────
+
+/// `spec/did-management/domain/create/0.1` — register a new domain on
+/// the hosting service. Multi-tenant ops; the operator chooses the
+/// FQDN. The hosting service writes the domain entry and provisions
+/// any per-domain key material it needs.
+pub const TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/create/0.1";
+
+/// `spec/did-management/domain/update/0.1` — mutate domain metadata
+/// (display name, contact info, registry pointer). Does NOT rename the
+/// domain — that would invalidate every DID's identifier under it.
+pub const TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/update/0.1";
+
+/// `spec/did-management/domain/disable/0.1` — freeze a domain. Existing
+/// DIDs resolve as `disabled`; no new DIDs can be registered under it.
+/// Required precondition for `domain/purge/0.1`.
+pub const TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/disable/0.1";
+
+/// `spec/did-management/domain/purge/0.1` — hard-delete a disabled
+/// domain + every DID under it. Irreversible. Grace window enforced
+/// server-side.
+pub const TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/purge/0.1";
+
+/// `spec/did-management/domain/set-default/0.1` — choose the default
+/// domain for DID-create operations that omit a domain parameter.
+pub const TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/set-default/0.1";
+
+/// `spec/did-management/domain/assign/0.1` — grant a caller the right
+/// to register DIDs under a domain. Per-owner ACL on top of the domain
+/// entry.
+pub const TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/assign/0.1";
+
+/// `spec/did-management/domain/unassign/0.1` — revoke a previously
+/// assigned domain grant.
+pub const TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1: &str =
+    "https://trusttasks.org/spec/did-management/domain/unassign/0.1";
+
+// ─── DID-management — server/* (3 tasks) ─────────────────────────────────
+
+/// `spec/did-management/server/register/0.1` — register a new hosting
+/// server with a control plane. Control-plane → server bootstrap path
+/// for distributed deployments.
+pub const TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1: &str =
+    "https://trusttasks.org/spec/did-management/server/register/0.1";
+
+/// `spec/did-management/server/health/0.1` — control-plane → server
+/// health probe. Returns aliveness + outstanding-sync metrics so the
+/// control plane can flag stale instances.
+pub const TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1: &str =
+    "https://trusttasks.org/spec/did-management/server/health/0.1";
+
+/// `spec/did-management/server/stats-sync/0.1` — periodic stats push
+/// from a server to its control plane (DID counts, resolution
+/// throughput, error rates). Replaces the ad-hoc HTTP stats sync the
+/// standalone server used pre-trust-task.
+pub const TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1: &str =
+    "https://trusttasks.org/spec/did-management/server/stats-sync/0.1";
+
+// ─── DID-management — registry/* (2 tasks) ───────────────────────────────
+
+/// `spec/did-management/registry/admin-register/0.1` — admin-side
+/// registration of a server into the trust registry. Used by operators
+/// to seed a deployment.
+pub const TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1: &str =
+    "https://trusttasks.org/spec/did-management/registry/admin-register/0.1";
+
+/// `spec/did-management/registry/deregister/0.1` — remove a server
+/// from the registry. The server's DIDs continue to resolve from cache
+/// but no new ones are accepted.
+pub const TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1: &str =
+    "https://trusttasks.org/spec/did-management/registry/deregister/0.1";
+
 // ─── Config slice (spec/vta/config/*) ────────────────────────────────────
 
 /// `spec/vta/config/get/1.0` — read the current VTA configuration
@@ -721,6 +883,30 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VAULT_RELEASE_0_1,
     TASK_VAULT_PROXY_LOGIN_0_1,
     TASK_VAULT_SIGN_TRUST_TASK_0_1,
+    // DID-management slice (canonical spec/did-management/*)
+    TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
+    TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,
+    TASK_DID_MANAGEMENT_DID_DELETE_0_1,
+    TASK_DID_MANAGEMENT_DID_ENABLE_0_1,
+    TASK_DID_MANAGEMENT_DID_DISABLE_0_1,
+    TASK_DID_MANAGEMENT_DID_LIST_0_1,
+    TASK_DID_MANAGEMENT_DID_INFO_0_1,
+    TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
+    TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1,
+    TASK_DID_MANAGEMENT_DID_ROLLBACK_0_1,
+    TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1,
+    TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
+    TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1,
+    TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1,
+    TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
+    TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+    TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
     // Config slice
     TASK_CONFIG_GET_1_0,
     TASK_CONFIG_UPDATE_1_0,
