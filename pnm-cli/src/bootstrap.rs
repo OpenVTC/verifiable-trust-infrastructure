@@ -428,7 +428,11 @@ pub async fn run_provision_integration(
     let resp = client
         .provision_integration(ProvisionIntegrationRequest {
             request: vp,
-            context: target_context.clone(),
+            // `--context` is required on the pnm-cli surface today, so
+            // we always pass a concrete value. The wire field is
+            // `Option<String>` per the canonical spec; future flag
+            // changes can pass `None` to opt into VTA-side inference.
+            context: Some(target_context.clone()),
             assertion: Some(assertion_mode),
             vc_validity_seconds,
             create_context,

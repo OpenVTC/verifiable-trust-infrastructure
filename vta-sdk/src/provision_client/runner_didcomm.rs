@@ -56,7 +56,8 @@ pub async fn provision_via_didcomm(
     let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
 
     let response =
-        provision_integration_didcomm(&session, vp, ask.context.clone(), None, None, false).await?;
+        provision_integration_didcomm(&session, vp, Some(ask.context.clone()), None, None, false)
+            .await?;
 
     response_to_result(&seed, nonce, response)
 }
@@ -352,7 +353,8 @@ pub async fn provision_admin_rotation_via_didcomm(
     let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
 
     let response =
-        provision_integration_didcomm(&session, vp, ask.context.clone(), None, None, false).await?;
+        provision_integration_didcomm(&session, vp, Some(ask.context.clone()), None, None, false)
+            .await?;
 
     crate::provision_client::result::admin_rotation_response_to_reply(&seed, nonce, response)
 }

@@ -14,6 +14,108 @@ use vta_sdk::provision_integration::{BootstrapAsk, DidTemplateRef, VerifiedBoots
 
 use super::ProvisionIntegrationDeps;
 
+/// Returned when [`infer_target_context`] cannot pick a single target
+/// context — caller has admin in multiple contexts, or is a super-admin
+/// against a multi-context maintainer. Carries the plausible candidates
+/// so the transport layer can surface them to the relayer and let them
+/// retry with an explicit choice.
+///
+/// The caller renders this differently per transport: the DIDComm
+/// handler emits a `provision/integration:context_required` problem
+/// report with `args = candidates`; the REST handler returns a 400
+/// with the message and candidates inlined.
+#[derive(Debug)]
+pub struct AmbiguousContext {
+    pub candidates: Vec<String>,
+    pub message: String,
+}
+
+/// Infer the target context the maintainer should provision into when
+/// the caller omits `payload.context`. Implements the three rules
+/// pinned in
+/// `dtgwg-trust-tasks-tf/specs/provision/integration/0.1/spec.md`
+/// §"Context inference":
+///
+/// 1. **Single-context grant.** If the relayer's ACL entry scopes to
+///    exactly one context, use that context.
+/// 2. **Single-context maintainer.** If the relayer is a super-admin
+///    AND the maintainer has exactly one context registered, use it.
+/// 3. **Ambiguous.** Anything else returns
+///    [`Err(AmbiguousContext)`] so the caller can surface candidates
+///    + retry with an explicit value.
+///
+/// `Result<Result<…>, …>` is intentional: the outer `Result` is the
+/// usual `AppError` plumbing (store-level failures); the inner Result
+/// distinguishes "inferred ok" from "ambiguous, here are the candidates"
+/// without conflating the two with store errors.
+pub async fn infer_target_context(
+    auth: &AuthClaims,
+    contexts_ks: &KeyspaceHandle,
+) -> Result<Result<String, AmbiguousContext>, AppError> {
+    // Rule 1: single-context grant — operator already named the bucket
+    // on the wire when they granted the ephemeral. Respect it.
+    if let Some(ctx) = auth.default_context() {
+        return Ok(Ok(ctx.to_string()));
+    }
+
+    // Rule 2: super-admin + single-context maintainer. Covers the
+    // typical wallet onboarding case where the operator ran
+    // `pnm acl create --did <eph> --role admin` (no `--contexts`)
+    // against a single-context VTA.
+    if auth.is_super_admin() {
+        let contexts = crate::contexts::list_contexts(contexts_ks).await?;
+        let mut ids: Vec<String> = contexts.iter().map(|c| c.id.clone()).collect();
+        ids.sort();
+        match ids.len() {
+            0 => {
+                // No contexts at all — distinct from "ambiguous". The
+                // operator needs to create a context first; surface as
+                // NotFound with a remediation hint matching the rest of
+                // provision-integration's error vocabulary.
+                return Err(AppError::NotFound(
+                    "no contexts registered on this VTA — create one with \
+                     'vta contexts create --id <name>' (offline) or \
+                     'pnm contexts create' (online), then retry"
+                        .into(),
+                ));
+            }
+            1 => return Ok(Ok(ids.into_iter().next().expect("len == 1"))),
+            n => {
+                return Ok(Err(AmbiguousContext {
+                    candidates: ids,
+                    message: format!(
+                        "super-admin grant against {n} contexts — \
+                         specify which to provision into via payload.context"
+                    ),
+                }));
+            }
+        }
+    }
+
+    // Rule 3a: multi-context relayer (not super-admin) — caller has
+    // admin in N > 1 contexts but didn't say which. Return the list.
+    if auth.allowed_contexts.len() > 1 {
+        let mut ids = auth.allowed_contexts.clone();
+        ids.sort();
+        return Ok(Err(AmbiguousContext {
+            message: format!(
+                "caller holds admin in {} contexts — specify which to provision into via payload.context",
+                ids.len()
+            ),
+            candidates: ids,
+        }));
+    }
+
+    // Defensive fallthrough: caller is not super-admin (would have
+    // matched above), has 0 or 1 allowed_contexts but default_context
+    // returned None (so it's 0). A non-super-admin with zero context
+    // grants shouldn't reach the inference step — `require_admin`
+    // would have rejected. But surface clearly if it does.
+    Err(AppError::Forbidden(
+        "caller has admin role but no context grants — refusing to infer".into(),
+    ))
+}
+
 /// Ensure the target `context` exists, optionally creating it
 /// inline when `create_context` is set. Centralised here so REST,
 /// DIDComm, and the offline CLI all enforce the same semantics:
@@ -185,5 +287,134 @@ pub(super) fn extract_admin_template(ask: &BootstrapAsk) -> Option<DidTemplateRe
     match ask {
         BootstrapAsk::TemplateBootstrap(ask) => ask.admin_template.clone(),
         BootstrapAsk::AdminRotation(ask) => Some(ask.admin_template.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::Role;
+    use crate::store::Store;
+    use vti_common::config::StoreConfig;
+
+    async fn fresh_contexts_ks() -> (tempfile::TempDir, Store, KeyspaceHandle) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let ks = store.keyspace("contexts").expect("open contexts ks");
+        (dir, store, ks)
+    }
+
+    fn auth(role: Role, allowed_contexts: Vec<&str>) -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zTestCaller".into(),
+            role,
+            allowed_contexts: allowed_contexts.iter().map(|s| (*s).to_string()).collect(),
+            session_id: "test-session".into(),
+            // Synthesized auth claim, not from a JWT — mirrors the
+            // shape used by `AuthClaims::synthesize` for DIDComm-only
+            // callers in the codebase.
+            access_expires_at: 0,
+            amr: vec!["synth".into()],
+            acr: String::new(),
+        }
+    }
+
+    async fn seed_context(ks: &KeyspaceHandle, id: &str) {
+        crate::contexts::create_context(ks, id, id)
+            .await
+            .expect("seed context");
+    }
+
+    /// Rule 1: single allowed context → returns it. The relayer's grant
+    /// already named the bucket; inference respects it without
+    /// consulting the contexts keyspace.
+    #[tokio::test]
+    async fn infer_returns_single_allowed_context() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        // Seed multiple contexts to confirm the inference doesn't reach
+        // for rule 2's fallback when rule 1 already resolves.
+        seed_context(&ks, "ctx_a").await;
+        seed_context(&ks, "ctx_b").await;
+
+        let a = auth(Role::Admin, vec!["ctx_b"]);
+        let result = infer_target_context(&a, &ks).await.expect("ok");
+        assert_eq!(result.expect("not ambiguous"), "ctx_b");
+    }
+
+    /// Rule 2: super-admin grant + maintainer has exactly one context →
+    /// use it. This is the typical wallet onboarding case where the
+    /// operator ran `pnm acl create --did <eph> --role admin` (no
+    /// `--contexts` flag = super-admin scoping).
+    #[tokio::test]
+    async fn infer_super_admin_with_single_context() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        seed_context(&ks, "only").await;
+
+        let a = auth(Role::Admin, vec![]); // empty → super-admin
+        assert!(a.is_super_admin());
+
+        let result = infer_target_context(&a, &ks).await.expect("ok");
+        assert_eq!(result.expect("not ambiguous"), "only");
+    }
+
+    /// Rule 3a: super-admin + multiple contexts → ambiguous; carry the
+    /// candidates so the caller can surface them and retry.
+    #[tokio::test]
+    async fn infer_super_admin_with_multiple_contexts_is_ambiguous() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        seed_context(&ks, "ctx_a").await;
+        seed_context(&ks, "ctx_b").await;
+        seed_context(&ks, "ctx_c").await;
+
+        let a = auth(Role::Admin, vec![]);
+
+        let result = infer_target_context(&a, &ks).await.expect("ok");
+        let ambiguous = result.expect_err("must be ambiguous with 3 contexts");
+        assert_eq!(
+            ambiguous.candidates,
+            vec![
+                "ctx_a".to_string(),
+                "ctx_b".to_string(),
+                "ctx_c".to_string()
+            ]
+        );
+        assert!(ambiguous.message.contains("3 contexts"));
+    }
+
+    /// Rule 3b: multi-context grant (non-super-admin) → ambiguous,
+    /// candidates come from the relayer's own `allowed_contexts`.
+    #[tokio::test]
+    async fn infer_multi_context_grant_is_ambiguous() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+
+        let a = auth(Role::Admin, vec!["ctx_x", "ctx_y"]);
+
+        let result = infer_target_context(&a, &ks).await.expect("ok");
+        let ambiguous = result.expect_err("two contexts → ambiguous");
+        assert_eq!(
+            ambiguous.candidates,
+            vec!["ctx_x".to_string(), "ctx_y".to_string()]
+        );
+    }
+
+    /// Super-admin against an empty maintainer → NotFound, not
+    /// AmbiguousContext. The remediation is "create a context first"
+    /// rather than "pick from the list" (the list is empty).
+    #[tokio::test]
+    async fn infer_super_admin_with_no_contexts_returns_not_found() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+
+        let a = auth(Role::Admin, vec![]);
+
+        let err = infer_target_context(&a, &ks)
+            .await
+            .expect_err("must NotFound");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

@@ -61,10 +61,18 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// target context isn't yet registered — same semantics as the REST
 /// path. Default is `false` (caller must have created the context
 /// out-of-band).
+///
+/// `context` is `Option<String>`. Pass `Some(name)` for the
+/// integration-class pattern (caller knows which bucket to provision
+/// into); pass `None` to let the VTA infer per the canonical Trust
+/// Task spec's three rules — typical for wallet-class callers that
+/// don't track the maintainer's context layout. See
+/// [`crate::provision_integration::http::ProvisionIntegrationRequest::context`]
+/// for the full inference rules + error semantics.
 pub async fn provision_integration_didcomm(
     session: &DIDCommSession,
     request: BootstrapRequest,
-    context: String,
+    context: Option<String>,
     assertion: Option<AssertionMode>,
     vc_validity_seconds: Option<i64>,
     create_context: bool,

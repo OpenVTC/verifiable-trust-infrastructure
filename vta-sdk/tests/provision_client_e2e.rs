@@ -520,7 +520,7 @@ async fn admin_rotated_via_rest_round_trip() {
 
     let req = ProvisionIntegrationRequest {
         request: signed,
-        context: "ctx-1".into(),
+        context: Some("ctx-1".into()),
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,

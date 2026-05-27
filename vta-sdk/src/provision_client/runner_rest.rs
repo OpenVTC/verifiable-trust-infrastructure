@@ -185,7 +185,7 @@ pub(crate) async fn run_rest_attempt_full_setup(
 
     let req = ProvisionIntegrationRequest {
         request: vp,
-        context: ask.context.clone(),
+        context: Some(ask.context.clone()),
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,
@@ -330,7 +330,7 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
 
     let req = ProvisionIntegrationRequest {
         request: vp,
-        context: ask.context.clone(),
+        context: Some(ask.context.clone()),
         assertion: None,
         vc_validity_seconds: None,
         create_context: false,

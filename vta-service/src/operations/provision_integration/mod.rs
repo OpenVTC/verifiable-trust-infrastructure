@@ -49,7 +49,7 @@ mod templates;
 mod vta_keys;
 mod webvh;
 
-pub use preconditions::ensure_target_context_or_create;
+pub use preconditions::{AmbiguousContext, ensure_target_context_or_create, infer_target_context};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

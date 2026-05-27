@@ -28,7 +28,8 @@ use vta_sdk::provision_integration::http::{
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations::provision_integration::{
-    ProvisionIntegrationDeps, ProvisionIntegrationParams, ensure_target_context_or_create,
+    AmbiguousContext, ProvisionIntegrationDeps, ProvisionIntegrationParams,
+    ensure_target_context_or_create, infer_target_context,
     provision_integration as provision_integration_op,
 };
 use crate::server::AppState;
@@ -73,6 +74,30 @@ pub(super) async fn handle_request(
     let vc_validity = req.vc_validity_seconds.map(chrono::Duration::seconds);
     let deps = ProvisionIntegrationDeps::from(state);
 
+    // Resolve the target context. When the caller sent one, use it
+    // verbatim; otherwise run the spec's inference rules. Ambiguous
+    // → MalformedRequest with the candidates inline (trust-task
+    // envelopes don't carry the canonical `provision/integration:
+    // context_required` code yet — REST surfaces what we have here).
+    let context = match req.context {
+        Some(c) => c,
+        None => match infer_target_context(auth, &deps.contexts_ks).await {
+            Ok(Ok(c)) => c,
+            Ok(Err(AmbiguousContext {
+                candidates,
+                message,
+            })) => {
+                return reject_with(
+                    &doc,
+                    trust_tasks_rs::RejectReason::MalformedRequest {
+                        reason: format!("{message} (candidates: {})", candidates.join(", ")),
+                    },
+                );
+            }
+            Err(e) => return app_error_to_reject(&doc, e),
+        },
+    };
+
     // `create_context: true` — create the target context inline if it
     // doesn't exist. Hits the super-admin gate inside
     // operations::contexts::create_context; context-admin callers
@@ -80,7 +105,7 @@ pub(super) async fn handle_request(
     let context_created = match ensure_target_context_or_create(
         &deps.contexts_ks,
         auth,
-        &req.context,
+        &context,
         req.create_context,
     )
     .await
@@ -94,7 +119,7 @@ pub(super) async fn handle_request(
         auth,
         ProvisionIntegrationParams {
             request: verified,
-            context: req.context,
+            context,
             assertion_mode: AssertionModeOpAdapter(assertion_mode).into(),
             vc_validity,
         },

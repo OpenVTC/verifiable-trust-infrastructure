@@ -1432,6 +1432,36 @@ pub async fn handle_provision_integration(
     let vc_validity = body.vc_validity_seconds.map(chrono::Duration::seconds);
 
     let deps = operations::provision_integration::ProvisionIntegrationDeps::from(state.as_ref());
+
+    // Resolve the target context. When the caller sent one, use it
+    // verbatim (integration-class consumer pattern). When omitted, run
+    // the spec's three inference rules — single-context grant, super-
+    // admin + single-context maintainer, else AmbiguousContext.
+    let context = match body.context {
+        Some(c) => c,
+        None => match app_try!(
+            operations::provision_integration::infer_target_context(&auth, &deps.contexts_ks).await
+        ) {
+            Ok(ctx) => ctx,
+            Err(operations::provision_integration::AmbiguousContext {
+                candidates,
+                message,
+            }) => {
+                // Emit the canonical Trust Task error code so clients
+                // can surface candidates structurally. `args` carries
+                // the list in arrival order (sorted by the helper).
+                let report = ProblemReport {
+                    code: vta_sdk::protocols::problem_report_codes::PROVISION_CONTEXT_REQUIRED
+                        .to_string(),
+                    comment: message,
+                    args: candidates,
+                    escalate_to: None,
+                };
+                return Ok(Some(DIDCommResponse::problem_report(report)));
+            }
+        },
+    };
+
     // `--create-context` from the wire body. Same semantics as the
     // REST handler — super-admin gate enforced inside
     // `operations::contexts::create_context`. Idempotent.
@@ -1439,7 +1469,7 @@ pub async fn handle_provision_integration(
         operations::provision_integration::ensure_target_context_or_create(
             &deps.contexts_ks,
             &auth,
-            &body.context,
+            &context,
             body.create_context,
         )
         .await
@@ -1450,7 +1480,7 @@ pub async fn handle_provision_integration(
             &auth,
             operations::provision_integration::ProvisionIntegrationParams {
                 request: verified,
-                context: body.context,
+                context,
                 assertion_mode,
                 vc_validity,
             },

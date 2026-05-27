@@ -531,9 +531,13 @@ mod provision {
         /// The integration's VP-framed bootstrap request (signed by its
         /// ephemeral `client_did`).
         pub request: BootstrapRequest,
-        /// VTA context to provision into. See library-fn docs for
-        /// context-hint reconciliation rules.
-        pub context: String,
+        /// VTA context to provision into. **Optional** per the canonical
+        /// Trust Task spec; omit to let the VTA infer from the caller's
+        /// ACL grant or its own contexts state. See
+        /// `vta_sdk::provision_integration::http::ProvisionIntegrationRequest`
+        /// for the full inference rules + error semantics when ambiguous.
+        #[serde(default)]
+        pub context: Option<String>,
         /// Optional — default `DidSigned`. Rejected unless the assertion
         /// mode is one the server is happy to sign (pinned-only is
         /// accepted on the HTTP surface because dev/test HTTP use is
@@ -628,6 +632,37 @@ mod provision {
         let vc_validity = req.vc_validity_seconds.map(chrono::Duration::seconds);
 
         let deps = crate::operations::provision_integration::ProvisionIntegrationDeps::from(&state);
+
+        // Resolve the target context. When the caller sent one, use it
+        // verbatim; otherwise run the spec's inference rules. On
+        // ambiguity we collapse into Validation here — REST clients
+        // (pnm-cli, scripts) get the message + candidates inline. The
+        // DIDComm path emits the canonical
+        // `provision/integration:context_required` code so structured
+        // clients can branch on it; REST's typed-error vocabulary
+        // wasn't designed for arbitrary new codes, so we stay with the
+        // existing 400 shape.
+        let context = match req.context {
+            Some(c) => c,
+            None => match crate::operations::provision_integration::infer_target_context(
+                &auth.0,
+                &deps.contexts_ks,
+            )
+            .await?
+            {
+                Ok(ctx) => ctx,
+                Err(crate::operations::provision_integration::AmbiguousContext {
+                    candidates,
+                    message,
+                }) => {
+                    return Err(AppError::Validation(format!(
+                        "{message} (candidates: {})",
+                        candidates.join(", "),
+                    )));
+                }
+            },
+        };
+
         // `--create-context`: create the target context inline if
         // it doesn't exist. Hits the super-admin gate inside
         // `operations::contexts::create_context` — context-admin
@@ -637,7 +672,7 @@ mod provision {
             crate::operations::provision_integration::ensure_target_context_or_create(
                 &deps.contexts_ks,
                 &auth.0,
-                &req.context,
+                &context,
                 req.create_context,
             )
             .await?;
@@ -646,7 +681,7 @@ mod provision {
             &auth.0,
             ProvisionIntegrationParams {
                 request: verified,
-                context: req.context,
+                context,
                 assertion_mode,
                 vc_validity,
             },

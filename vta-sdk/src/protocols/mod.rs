@@ -40,6 +40,13 @@ pub mod problem_report_codes {
     /// "Token may be expired" — which is misleading when the real
     /// problem is a privilege-laundering rejection or an ACL miss.
     pub const FORBIDDEN: &str = "e.p.msg.forbidden";
+    /// Per the canonical `provision/integration/0.1` spec: emitted
+    /// when the caller omits `payload.context` AND the maintainer
+    /// cannot infer a unique target context from the relayer's grant
+    /// or its own contexts state. The problem-report body's `args`
+    /// carries `candidates: Vec<String>` so the relayer can surface
+    /// the list to the operator and retry with an explicit choice.
+    pub const PROVISION_CONTEXT_REQUIRED: &str = "provision/integration:context_required";
 }
 
 /// Extract code and comment from a problem-report message body.

@@ -19,7 +19,25 @@ pub struct ProvisionIntegrationRequest {
     /// server verifies on intake.
     pub request: BootstrapRequest,
     /// VTA context to provision into.
-    pub context: String,
+    ///
+    /// **Optional** per the canonical Trust Task spec
+    /// (`https://trusttasks.org/spec/provision/integration/0.1`). When
+    /// absent, the maintainer infers the target context using these
+    /// rules in order:
+    ///
+    /// 1. If the relayer's ACL grant scopes to exactly one context →
+    ///    use that context.
+    /// 2. If the relayer is a super-admin (Admin role with empty
+    ///    `allowed_contexts`) AND the maintainer has exactly one
+    ///    context registered → use it.
+    /// 3. Otherwise the maintainer refuses with
+    ///    `provision/integration:context_required` and `details.
+    ///    candidates: Vec<String>` listing the plausible contexts.
+    ///
+    /// Wallet-class consumers SHOULD omit; integration-class consumers
+    /// SHOULD send explicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
     /// Optional — default `did-signed`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assertion: Option<AssertionMode>,
