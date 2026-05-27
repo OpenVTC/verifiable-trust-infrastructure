@@ -70,6 +70,9 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
         created_at: 1,
         created_by: "test".into(),
         expires_at: None,
+        kind: Default::default(),
+        capabilities: vec![],
+        device: None,
         version: 0,
     };
     vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)

@@ -273,6 +273,9 @@ async fn mint_mode_b(
         created_at: now,
         created_by: "tee:mode-b".to_string(),
         expires_at: None,
+        kind: Default::default(),
+        capabilities: vec![],
+        device: None,
         version: 0,
     };
     store_acl_entry(&state.acl_ks, &entry).await?;

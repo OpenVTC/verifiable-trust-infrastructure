@@ -141,6 +141,9 @@ impl TestContext {
             created_at: now_epoch(),
             created_by: "test".to_string(),
             expires_at: None,
+            kind: Default::default(),
+            capabilities: vec![],
+            device: None,
             version: 0,
         };
         self.acl_ks()
