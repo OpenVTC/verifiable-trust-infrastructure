@@ -594,6 +594,23 @@ pub async fn run_setup_wizard(
     // 7b. Optional remote DID resolver — required for TEE network mode
     // (resolver-cache-server sidecar bridged via vsock); useful for
     // any deployment that wants to share a resolver-cache.
+    println!();
+    println!("DID resolution");
+    println!("  The VTA resolves DIDs (did:web, did:webvh, did:key, did:peer) on every");
+    println!("  authcrypt, every proof check, every authenticate. Pick where that work");
+    println!("  happens:");
+    println!();
+    println!("    • Leave EMPTY — resolve in-process with an in-memory cache. Fine for");
+    println!("      single-node deployments. No external dependency.");
+    println!();
+    println!("    • Set a ws:// URL — dispatch every resolution to an external");
+    println!("      `affinidi-did-resolver-cache-server`. That server becomes the shared");
+    println!("      cache across every VTA pointed at it.");
+    println!();
+    println!("  REQUIRED for TEE / Nitro deployments (the enclave cannot fetch did:web");
+    println!("  / did:webvh itself; resolution is bridged to a parent-side cache server");
+    println!("  over vsock). Example: ws://127.0.0.1:4445/did/v1/ws");
+    println!();
     let resolver_url: String = Input::new()
         .with_prompt("Remote DID resolver WebSocket URL (leave empty to resolve locally)")
         .allow_empty(true)
