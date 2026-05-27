@@ -277,6 +277,17 @@ pub const TASK_VAULT_RELEASE_0_1: &str = "https://trusttasks.org/spec/vault/rele
 /// Auth: ProxyLogin.
 pub const TASK_VAULT_PROXY_LOGIN_0_1: &str = "https://trusttasks.org/spec/vault/proxy-login/0.1";
 
+/// `spec/vault/sign-trust-task/0.1` — the VTA attaches an eddsa-jcs-2022
+/// Data Integrity proof to a Trust Task envelope, signing as the
+/// principal DID of a `did-self-issued` or `didcomm-peer` vault entry.
+/// The long-term signing key never leaves the VTA. Per-envelope signing
+/// complement to proxy-login's session-credential minting — used when a
+/// consumer needs to issue follow-up tasks during a proxy-login'd
+/// session and the RP expects them signed by the session DID.
+/// Auth: SignTrustTask capability.
+pub const TASK_VAULT_SIGN_TRUST_TASK_0_1: &str =
+    "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
+
 // ─── Config slice (spec/vta/config/*) ────────────────────────────────────
 
 /// `spec/vta/config/get/1.0` — read the current VTA configuration
@@ -709,6 +720,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VAULT_DELETE_0_1,
     TASK_VAULT_RELEASE_0_1,
     TASK_VAULT_PROXY_LOGIN_0_1,
+    TASK_VAULT_SIGN_TRUST_TASK_0_1,
     // Config slice
     TASK_CONFIG_GET_1_0,
     TASK_CONFIG_UPDATE_1_0,

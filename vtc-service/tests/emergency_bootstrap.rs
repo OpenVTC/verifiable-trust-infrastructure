@@ -272,6 +272,9 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
             created_at: 0,
             created_by: "did:key:vtc-install".into(),
             expires_at: None,
+            kind: Default::default(),
+            capabilities: vec![],
+            device: None,
             version: 0,
         },
     )

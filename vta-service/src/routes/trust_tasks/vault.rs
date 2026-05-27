@@ -432,6 +432,28 @@ fn require_proxy_login(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), 
     }
 }
 
+/// Used by vault/sign-trust-task. Per-envelope signing on the entry's
+/// principal DID — strictly more privileged than `Sign` (which is the
+/// generic signing oracle), distinct from `ProxyLogin` (which mints a
+/// session credential, not an arbitrary envelope). Splitting them lets
+/// operators grant proxy-login without sign-trust-task to limit blast
+/// radius on Service consumers.
+fn require_sign_trust_task(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
+    if role_has_capability(&auth.role, Capability::SignTrustTask) {
+        Ok(())
+    } else {
+        Err(reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: format!(
+                    "vault sign-trust-task denied: role {} does not carry SignTrustTask capability",
+                    auth.role
+                ),
+            },
+        ))
+    }
+}
+
 /// Unseal a `SealedEnvelope` into the cleartext [`VaultSecret`].
 ///
 /// M2A supports the `didcomm-authcrypt` variant only. The JWE is unpacked
@@ -1462,6 +1484,298 @@ pub(super) async fn handle_proxy_login(
             sealed_session_blob: SealedEnvelopeWire::DidcommAuthcrypt { jwe },
             session_id,
             expires_at,
+        },
+    )
+}
+
+// ─── vault/sign-trust-task/0.1 ─────────────────────────────────────
+
+/// Request body for `vault/sign-trust-task/0.1`. Mirrors the canonical
+/// schema. `consumerContext` / `stepUpProof` are accepted but not yet
+/// consumed (M3 policy engine will read consumerContext; step-up gating
+/// across sign-trust-task lands as a follow-up to the proxy-login wiring).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSignTrustTaskBody {
+    entry_id: String,
+    unsigned_envelope: Value,
+    #[serde(default)]
+    #[allow(dead_code)]
+    consumer_context: Option<Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    step_up_proof: Option<Value>,
+}
+
+/// Response body for `vault/sign-trust-task/0.1`. Same `unsigned_envelope`
+/// the consumer submitted with a `proof` field attached.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSignTrustTaskResponseBody {
+    signed_envelope: Value,
+}
+
+/// Handler for `spec/vault/sign-trust-task/0.1`. Attaches an
+/// `eddsa-jcs-2022` Data Integrity proof to a Trust Task envelope,
+/// signing as the principal DID of a `did-self-issued` or
+/// `didcomm-peer` vault entry.
+///
+/// The long-term signing key never leaves the maintainer. This is the
+/// per-envelope-signing complement to `vault/proxy-login/0.1`: proxy-
+/// login mints a session credential at session-start; sign-trust-task
+/// signs individual follow-up tasks during that session so the proof
+/// VM matches the authenticated session DID at the relying party.
+///
+/// Conformance check order matches the spec's error precedence:
+/// `not_found` → `permission_denied` (cap) → context scope →
+/// `not_signable` (entry kind) → `envelope_invalid` (structure) →
+/// `envelope_already_proofed` → `envelope_issuer_mismatch` →
+/// `envelope_expired` → sign.
+pub(super) async fn handle_sign_trust_task(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    if let Err(r) = require_sign_trust_task(auth, &doc) {
+        return r;
+    }
+    let req: VaultSignTrustTaskBody = match parse_payload(&doc) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+
+    // Load entry — conflate not-found with permission-denied to deny
+    // enumeration (matches handle_release / handle_proxy_login).
+    let stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/sign-trust-task:not_found — no entry at id {}",
+                        req.entry_id
+                    ),
+                    details: None,
+                },
+            );
+        }
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
+        return r;
+    }
+
+    // Only signable kinds (DID-anchored secrets) carry a principal
+    // identity the maintainer can sign as. Password / OAuth / passkey
+    // / bearer / ssh / custom kinds have no DID — reject loudly so the
+    // consumer can fall back to a different flow (proxy-login for
+    // session creds, release for browser autofill).
+    let (principal_did, signing_key_id) = match &stored.secret {
+        VaultSecret::DidSelfIssued {
+            did,
+            signing_key_id,
+            ..
+        }
+        | VaultSecret::DidcommPeer {
+            peer_did: did,
+            signing_key_id,
+            ..
+        } => (did.clone(), signing_key_id.clone()),
+        other => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/sign-trust-task:not_signable — entry kind '{}' has no DID-based signing identity",
+                        secret_kind_label(other.kind()),
+                    ),
+                    details: Some(serde_json::json!({
+                        "secretKind": secret_kind_label(other.kind()),
+                    })),
+                },
+            );
+        }
+    };
+
+    // Structural validation of the supplied envelope. Per spec: id,
+    // type, issuer, recipient, issuedAt, payload all required; proof
+    // must be absent.
+    let envelope_obj = match req.unsigned_envelope.as_object() {
+        Some(o) => o,
+        None => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: "vault/sign-trust-task:envelope_invalid — unsignedEnvelope must be a JSON object".into(),
+                    details: None,
+                },
+            );
+        }
+    };
+    for field in ["id", "type", "issuer", "recipient", "issuedAt", "payload"] {
+        if !envelope_obj.contains_key(field) {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!(
+                        "vault/sign-trust-task:envelope_invalid — missing required field '{field}'"
+                    ),
+                    details: Some(serde_json::json!({ "missing": field })),
+                },
+            );
+        }
+    }
+    if envelope_obj.contains_key("proof") {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: "vault/sign-trust-task:envelope_already_proofed — strip the existing proof and resubmit".into(),
+                details: None,
+            },
+        );
+    }
+
+    // Strict issuer match: the maintainer refuses to silently rewrite
+    // the consumer's issuer. Mismatch is loud so consumer bugs surface
+    // explicitly rather than as cryptic verification failures at the
+    // recipient.
+    let envelope_issuer = match envelope_obj.get("issuer").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: "vault/sign-trust-task:envelope_invalid — issuer must be a string"
+                        .into(),
+                    details: None,
+                },
+            );
+        }
+    };
+    if envelope_issuer != principal_did {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: "vault/sign-trust-task:envelope_issuer_mismatch — envelope.issuer must equal the entry's principalDid".into(),
+                details: Some(serde_json::json!({
+                    "envelopeIssuer": envelope_issuer,
+                    "expectedIssuer": principal_did,
+                })),
+            },
+        );
+    }
+
+    // expiresAt (if present) must not be in the past.
+    if let Some(exp_v) = envelope_obj.get("expiresAt") {
+        let exp_str = exp_v.as_str().unwrap_or_default();
+        match chrono::DateTime::parse_from_rfc3339(exp_str) {
+            Ok(exp) if exp < chrono::Utc::now() => {
+                return reject_with(
+                    &doc,
+                    RejectReason::TaskFailed {
+                        reason: "vault/sign-trust-task:envelope_expired — envelope.expiresAt is in the past".into(),
+                        details: Some(serde_json::json!({ "expiresAt": exp_str })),
+                    },
+                );
+            }
+            Ok(_) => {} // future-dated, fine
+            Err(_) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::TaskFailed {
+                        reason: "vault/sign-trust-task:envelope_invalid — expiresAt must be an RFC 3339 timestamp".into(),
+                        details: Some(serde_json::json!({ "expiresAt": exp_str })),
+                    },
+                );
+            }
+        }
+    }
+
+    // Load the signing key as an affinidi Secret (the shape
+    // DataIntegrityProof::sign consumes). The kid the proof's
+    // verificationMethod field carries IS the entry's signing_key_id —
+    // the maintainer trusts the stored entry's reference because the
+    // upsert path validated it at the time the entry was written.
+    let secret = match crate::operations::vault::load_signing_secret_by_id(
+        &state.keys_ks,
+        &state.imported_ks,
+        &*state.seed_store,
+        &state.audit_ks,
+        &signing_key_id,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // Sign. `DataIntegrityProof::sign` takes the document WITHOUT a
+    // `proof` field — we already validated none is present. The
+    // resulting `proof` object carries cryptosuite, verificationMethod
+    // (`<principalDid>#<signingKeyId>`), proofPurpose=assertionMethod,
+    // created, and proofValue.
+    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
+        &req.unsigned_envelope,
+        &secret,
+        affinidi_data_integrity::SignOptions::new(),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal(format!("DataIntegrityProof sign failed: {e}")),
+            );
+        }
+    };
+    let proof_value = match serde_json::to_value(&proof) {
+        Ok(v) => v,
+        Err(e) => {
+            return app_error_to_reject(&doc, AppError::Internal(format!("serialize proof: {e}")));
+        }
+    };
+
+    // Attach proof to the envelope. Mutate the parsed JSON in place so
+    // every other field — including any consumer-supplied `ext` — is
+    // preserved byte-for-byte.
+    let mut signed = req.unsigned_envelope.clone();
+    signed
+        .as_object_mut()
+        .expect("envelope is an object — checked above")
+        .insert("proof".to_string(), proof_value);
+
+    // Audit log — `{who, when, entryId, envelope: {id, type, recipient}, outcome}`.
+    // Per the spec, payload is OMITTED (it may carry sensitive RP-side
+    // task content).
+    let envelope_id = envelope_obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let envelope_type = envelope_obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let envelope_recipient = envelope_obj
+        .get("recipient")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    tracing::info!(
+        actor = %auth.did,
+        entry_id = %req.entry_id,
+        envelope_id,
+        envelope_type,
+        envelope_recipient,
+        principal_did = %principal_did,
+        "vault/sign-trust-task: signed"
+    );
+
+    success_response(
+        &doc,
+        VaultSignTrustTaskResponseBody {
+            signed_envelope: signed,
         },
     )
 }

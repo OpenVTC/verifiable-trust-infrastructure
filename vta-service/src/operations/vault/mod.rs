@@ -11,6 +11,7 @@
 //! land in M2B.5 — they'll grow this module rather than the handler's
 //! file so the auth-elevated paths stay scoped here.
 
+use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signer, SigningKey};
@@ -34,6 +35,10 @@ pub mod password_post;
 /// Audit channel tag for the internal authority used by
 /// proxy-login key resolution.
 const PROXY_LOGIN_CHANNEL: &str = "vault-proxy-login-internal";
+
+/// Audit channel tag for the internal authority used by
+/// sign-trust-task key resolution.
+const SIGN_TRUST_TASK_CHANNEL: &str = "vault-sign-trust-task-internal";
 
 /// Default SIOP id_token lifetime (seconds). The vault/proxy-login spec
 /// recommends a short window; 300 s matches the step-up token's TTL and
@@ -71,6 +76,39 @@ pub async fn load_signing_key_by_id(
     let seed: [u8; 32] = decode_private_key_multibase(&resp.private_key_multibase)
         .map_err(|e| AppError::Internal(format!("decode signing-key seed for {key_id}: {e}")))?;
     Ok(SigningKey::from_bytes(&seed))
+}
+
+/// Load an Ed25519 signing key by id as an affinidi
+/// [`Secret`](affinidi_secrets_resolver::secrets::Secret) — the form
+/// `affinidi_data_integrity::DataIntegrityProof::sign` consumes.
+/// Companion to [`load_signing_key_by_id`] which returns the raw
+/// `ed25519_dalek::SigningKey` used by the SIOP id_token JWS path.
+///
+/// Auth: gated by `InternalAuthority`. The caller (sign-trust-task
+/// handler) has already validated the `SignTrustTask` capability and
+/// the entry's context scope.
+pub async fn load_signing_secret_by_id(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_ks: &KeyspaceHandle,
+    key_id: &str,
+) -> Result<Secret, AppError> {
+    let authority = InternalAuthority::new("vault-sign-trust-task");
+    let resp = crate::operations::keys::get_key_secret_internal(
+        keys_ks,
+        imported_ks,
+        seed_store,
+        audit_ks,
+        authority,
+        key_id,
+        SIGN_TRUST_TASK_CHANNEL,
+    )
+    .await?;
+    let mut secret = Secret::from_multibase(&resp.private_key_multibase, None)
+        .map_err(|e| AppError::Internal(format!("construct Secret for {key_id}: {e}")))?;
+    secret.id = key_id.to_string();
+    Ok(secret)
 }
 
 /// Build a SIOPv2 id_token (compact Ed25519 JWS) on behalf of a

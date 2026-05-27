@@ -96,6 +96,9 @@ affinidi-crypto = { workspace = true }
 # direct so `vta-service::operations::provision_integration` can name
 # the type.
 affinidi-secrets-resolver = { workspace = true }
+# Data Integrity (eddsa-jcs-2022) — used by the vault/sign-trust-task
+# handler to attach proofs to envelopes on behalf of the holder.
+affinidi-data-integrity = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.13"

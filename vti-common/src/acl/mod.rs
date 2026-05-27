@@ -126,6 +126,12 @@ pub enum Capability {
     DeviceAdmin,
     Sign,
     KeyMint,
+    /// Per-envelope Trust Task signing via `vault/sign-trust-task/0.1` —
+    /// distinct from `ProxyLogin` (which mints a session credential) and
+    /// from `Sign` (the generic signing oracle). Keeping it separate lets
+    /// operators grant proxy-login without sign-trust-task to limit
+    /// blast radius on Service consumers (AI agents, etc.).
+    SignTrustTask,
 }
 
 /// Returns true if `role` is granted `cap` by the default capability
@@ -150,6 +156,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::PolicyAdmin,
             Capability::DeviceAdmin,
             Capability::Sign,
+            Capability::SignTrustTask,
             Capability::KeyMint,
         ],
         Role::Initiator => vec![
@@ -159,6 +166,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::FillRelease,
             Capability::DeviceAdmin,
             Capability::Sign,
+            Capability::SignTrustTask,
             Capability::KeyMint,
         ],
         Role::Application => vec![
@@ -166,6 +174,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::Sign,
+            Capability::SignTrustTask,
         ],
         Role::Reader => vec![Capability::VaultRead],
         Role::Monitor => vec![],

@@ -345,6 +345,9 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => {
             vault::handle_proxy_login(state, auth, doc).await
         }
+        vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => {
+            vault::handle_sign_trust_task(state, auth, doc).await
+        }
         // ─── Config slice ────────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get(state, auth, doc).await,
         vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => {

@@ -161,6 +161,9 @@ async fn build_fixture(with_audit: bool) -> Fixture {
         created_at: now_epoch(),
         created_by: "did:key:vtc-install".into(),
         expires_at: None,
+        kind: Default::default(),
+        capabilities: vec![],
+        device: None,
         version: 0,
     };
     store_acl_entry(&acl_ks, &acl_entry).await.unwrap();
