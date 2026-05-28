@@ -64,6 +64,7 @@ mod vault;
 mod webvh;
 
 use helpers::{body_parse_error_response, method_not_found, reject_with};
+#[cfg(feature = "didcomm")]
 use trust_tasks_rs::RejectReason;
 
 /// URIs that the VTA exposes through dedicated unauth REST routes
@@ -286,7 +287,8 @@ pub(crate) async fn dispatch_trust_task_core(
 /// Trust-Task error document — not a DIDComm problem-report, which a
 /// conformant Trust-Task client can't read. (On REST the JWT extractor
 /// rejects unauthenticated callers before dispatch, so this gap is
-/// DIDComm-only.)
+/// DIDComm-only — hence the feature gate.)
+#[cfg(feature = "didcomm")]
 pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> Response {
     match serde_json::from_slice::<TrustTask<Value>>(body) {
         Ok(doc) => reject_with(&doc, reason),

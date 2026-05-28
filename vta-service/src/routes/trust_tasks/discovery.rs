@@ -15,7 +15,12 @@ use vta_sdk::protocols::discovery::{
 use crate::auth::AuthClaims;
 use crate::server::AppState;
 
-use super::helpers::{app_error_to_reject, parse_payload, success_response};
+// `app_error_to_reject` is only reachable when the `webvh` feature is
+// on (the only branch that produces an `AppError`). Gate the import
+// alongside to avoid an "unused import" lint in non-webvh combos.
+#[cfg(feature = "webvh")]
+use super::helpers::app_error_to_reject;
+use super::helpers::{parse_payload, success_response};
 
 /// URIs handled by this slice. Aggregated by the dispatcher's parity
 /// harness — see the feature-gating convention in

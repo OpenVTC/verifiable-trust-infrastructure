@@ -100,6 +100,9 @@ pub mod didcomm_session;
 pub mod keyring_init;
 pub mod keys;
 pub mod prelude;
+// `resolver` wraps `affinidi-did-resolver-cache-sdk`, which is only a
+// dependency under the `didcomm` feature.
+#[cfg(feature = "didcomm")]
 pub mod resolver;
 // `protocol` itself is always-on (its `services` submodule holds pure
 // wire types + the shared `validate_service_url` validator that

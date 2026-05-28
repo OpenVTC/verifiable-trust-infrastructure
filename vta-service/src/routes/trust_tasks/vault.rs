@@ -1181,6 +1181,7 @@ pub(super) async fn handle_release(
 /// compromised wallet can't replay the session indefinitely. The
 /// caller's `ttlSecondsHint` is honoured up to the ceiling and
 /// silently truncated above it.
+#[cfg(feature = "webvh")]
 const PASSWORD_POST_TTL_CEILING_SECS: u64 = 900;
 
 /// Handler for `spec/vault/proxy-login/0.1`. Two drivers wired today:
@@ -1836,6 +1837,10 @@ fn build_session_blob_with_bearer(
 /// Construct a SessionBlob carrying cookies — the Password POST
 /// driver's output shape. No bearer header (the cookies ARE the
 /// session). Returns `(blob, session_id, expires_at_rfc3339)`.
+///
+/// Only called from the Password POST proxy-login branch (gated on
+/// `webvh` for `password_post::run_password_post`).
+#[cfg(feature = "webvh")]
 fn build_session_blob_with_cookies(
     cookies: Vec<vti_common::vault::CookieJarEntry>,
     bind_origin: Option<String>,
@@ -1863,7 +1868,9 @@ fn build_session_blob_with_cookies(
 /// Pick the first `web-origin` target on the entry. Used by the
 /// password driver to derive the SessionBlob's `bind_origin` — the
 /// scheme + host + port the wallet will inject cookies into. Returns
-/// `None` if the entry has no web-origin target.
+/// `None` if the entry has no web-origin target. Gated on `webvh`
+/// alongside its only caller.
+#[cfg(feature = "webvh")]
 fn first_web_origin(targets: &[SiteTarget]) -> Option<String> {
     targets.iter().find_map(|t| match t {
         SiteTarget::WebOrigin { origin } => Some(origin.clone()),

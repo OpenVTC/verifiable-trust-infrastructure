@@ -13,7 +13,12 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use vti_common::auth::backend::{AttestationOutcome, AuthBackend, AuthError, RoleResolution};
+// `AuthError` is only constructed inside `#[cfg(feature = "tee")]`
+// branches; gate the import alongside to avoid an "unused import" lint
+// in non-TEE feature combos (`-D warnings` in CI).
+#[cfg(feature = "tee")]
+use vti_common::auth::backend::AuthError;
+use vti_common::auth::backend::{AttestationOutcome, AuthBackend, RoleResolution};
 use vti_common::auth::handlers::KeyspaceSessionStore;
 use vti_common::auth::jwt::JwtKeys;
 
