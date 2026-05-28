@@ -1,3 +1,9 @@
+// Each handler's `Result<…, Response>` Err variant is the boxed-axum
+// `Response` (~128 bytes). Boxing the entire Result would buy nothing —
+// the Response is owned-and-emitted on the same stack frame — so allow
+// the lint at the slice level rather than per-fn.
+#![allow(clippy::result_large_err)]
+
 //! Vault slice trust-task handlers — M1 + M2A + M2B surface.
 //!
 //! Handles `spec/vault/{list,get,upsert,delete,release,proxy-login}/0.1`
@@ -43,6 +49,7 @@ pub(super) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1,
     vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1,
     vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
+    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1,
 ];
 
 /// Request body for `vault/list/0.1`. Mirrors the canonical
@@ -875,9 +882,9 @@ pub(super) async fn handle_upsert(
         },
         // Sticky from existing — maintainer-set fields.
         breached_at: existing.as_ref().and_then(|e| e.entry.breached_at.clone()),
-        password_changed_at: if is_create && matches!(req.secret_kind, SecretKind::Password) {
-            Some(now.clone())
-        } else if secret_rotated_password {
+        password_changed_at: if (is_create && matches!(req.secret_kind, SecretKind::Password))
+            || secret_rotated_password
+        {
             Some(now.clone())
         } else {
             existing

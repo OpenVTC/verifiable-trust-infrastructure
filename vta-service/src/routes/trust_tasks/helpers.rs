@@ -1,3 +1,8 @@
+// Helpers share the same `Result<_, Response>` shape as the slice
+// handlers (see `vault.rs` for the same allow). The Response is owned
+// and emitted on the same stack frame as the Err — boxing buys nothing.
+#![allow(clippy::result_large_err)]
+
 //! Shared helpers for the trust-task dispatcher and its per-slice
 //! handler modules.
 //!

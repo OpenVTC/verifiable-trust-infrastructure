@@ -609,13 +609,13 @@ pub async fn handle_swap_acl(
     // For canonical Trust Task callers, additionally enforce that the body's
     // claimed newSubject equals the holder the VP-JWT actually proved. The
     // operation already verified the VP — `result.did` is the verified holder.
-    if let Some(claimed) = claimed_new_subject {
-        if claimed != result.did {
-            return Err(handler_err(format!(
-                "acl/swap-key: newSubject {} does not match verified VP holder {}",
-                claimed, result.did
-            )));
-        }
+    if let Some(claimed) = claimed_new_subject
+        && claimed != result.did
+    {
+        return Err(handler_err(format!(
+            "acl/swap-key: newSubject {} does not match verified VP holder {}",
+            claimed, result.did
+        )));
     }
 
     let response_type = if is_canonical {

@@ -200,13 +200,13 @@ pub async fn swap_acl(
     )
     .await?;
 
-    if let Some(claimed) = claimed_new_subject {
-        if claimed != result.did {
-            return Err(AppError::Validation(format!(
-                "acl/swap-key: newSubject {} does not match verified VP holder {}",
-                claimed, result.did
-            )));
-        }
+    if let Some(claimed) = claimed_new_subject
+        && claimed != result.did
+    {
+        return Err(AppError::Validation(format!(
+            "acl/swap-key: newSubject {} does not match verified VP holder {}",
+            claimed, result.did
+        )));
     }
 
     Ok(Json(result))

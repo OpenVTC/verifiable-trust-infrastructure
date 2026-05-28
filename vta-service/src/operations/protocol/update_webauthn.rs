@@ -99,7 +99,10 @@ pub async fn update_webauthn(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
+    // Threaded by every caller for signature parity with the other
+    // protocol-mutation operations. Not consumed inside this function;
+    // see `enable_webauthn` for the rationale.
+    _service_state_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,

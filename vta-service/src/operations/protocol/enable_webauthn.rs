@@ -120,7 +120,13 @@ pub async fn enable_webauthn(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
+    // Threaded by every caller (REST + DIDComm dispatch + rollback) for
+    // signature parity with the other protocol-mutation operations.
+    // Not consumed inside this function — webauthn enable/update don't
+    // currently touch the per-kind service-state keyspace; the param
+    // is here so future runtime-state work can read/write it without
+    // churning every call site again.
+    _service_state_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,

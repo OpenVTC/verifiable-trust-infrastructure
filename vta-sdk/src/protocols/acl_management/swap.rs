@@ -198,10 +198,10 @@ mod verify_impl {
             if header.alg != "EdDSA" {
                 return Err(AclSwapError::UnsupportedAlg(header.alg));
             }
-            if let Some(h) = &claims.vp.holder {
-                if h != &claims.iss {
-                    return Err(AclSwapError::HolderMismatch);
-                }
+            if let Some(h) = &claims.vp.holder
+                && h != &claims.iss
+            {
+                return Err(AclSwapError::HolderMismatch);
             }
             // Key binding: the signing key's DID (before '#') must be the
             // holder — stops a proof made by someone else's key being accepted

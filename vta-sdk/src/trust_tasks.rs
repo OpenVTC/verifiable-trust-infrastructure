@@ -964,15 +964,32 @@ mod tests {
 
     #[test]
     fn every_uri_in_canonical_namespace() {
-        // The auth/* slice now points at the framework's canonical
-        // /spec/auth/*/0.1 specs (cross-cutting primitives shared
-        // across VTA / VTC / did-hosting). The remaining VTA-specific
-        // operations stay under /spec/vta/. Either is acceptable.
+        // VTA's wire surface canonically lives under
+        // `https://trusttasks.org/spec/<family>/`. Five families are
+        // currently represented:
+        //
+        // - `spec/vta/`            — VTA-specific operations (this
+        //                            module is the source of truth).
+        // - `spec/auth/`           — cross-cutting auth primitives
+        //                            shared with did-hosting / VTC.
+        // - `spec/did-management/` — canonical DID-hosting protocol
+        //                            (PR #139 added the constants;
+        //                            Phase 3 migration consumed them).
+        // - `spec/vault/`          — the secret-bearing vault family
+        //                            (PR #138 + follow-ups).
+        // - `spec/webvh/`          — did:webvh protocol mechanics
+        //                            (witness / sync).
+        const ALLOWED_PREFIXES: &[&str] = &[
+            "https://trusttasks.org/spec/vta/",
+            "https://trusttasks.org/spec/auth/",
+            "https://trusttasks.org/spec/did-management/",
+            "https://trusttasks.org/spec/vault/",
+            "https://trusttasks.org/spec/webvh/",
+        ];
         for uri in ALL_URIS {
             assert!(
-                uri.starts_with("https://trusttasks.org/spec/vta/")
-                    || uri.starts_with("https://trusttasks.org/spec/auth/"),
-                "URI must live under /spec/vta/ or /spec/auth/: {uri}"
+                ALLOWED_PREFIXES.iter().any(|p| uri.starts_with(p)),
+                "URI must live under one of {ALLOWED_PREFIXES:?}: {uri}"
             );
         }
     }

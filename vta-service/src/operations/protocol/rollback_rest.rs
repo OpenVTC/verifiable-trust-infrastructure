@@ -158,7 +158,6 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub async fn rollback_rest(
     config: &Arc<RwLock<AppConfig>>,
     keys_ks: &KeyspaceHandle,

@@ -778,6 +778,13 @@ pub(crate) enum WebvhCommands {
 // conversion in the next minor release.
 
 /// Two-tier split: server-registration management vs DID lifecycle.
+//
+// `Servers` and `Dids` carry large subcommand enums (16+ field
+// variants); clippy flags the size delta but boxing CLI variants is
+// not idiomatic for clap-derive surfaces. Each variant is only ever
+// alive transiently inside `main`, so the heap-vs-stack trade-off is
+// immaterial.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum DidMgmtCommands {
     /// Manage registered DID-hosting servers.
@@ -826,6 +833,12 @@ pub(crate) enum DidMgmtServerCommands {
 }
 
 /// `pnm did-mgmt dids {…}` — DID lifecycle.
+//
+// Same large-variant-size rationale as `DidMgmtCommands` above: clap
+// surfaces own these enums transiently inside `main`; boxing each
+// variant would obscure the derive-driven CLI surface for negligible
+// benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub(crate) enum DidMgmtDidCommands {
     /// Create a DID hosted on a registered server, or serverless via

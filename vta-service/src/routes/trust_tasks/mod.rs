@@ -132,6 +132,41 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    // did-management Trust-Task spec URIs — declared in vta-sdk by
+    // PR #139 ("PR 1 of N") as the shared vocabulary for the
+    // cross-repo did-management migration (vta-sdk + vta-service +
+    // affinidi-webvh-service all reference these). They are
+    // **outbound producer URIs** — VTA's `webvh_didcomm.rs` sends
+    // requests with these URIs to did-hosting, then matches
+    // `<uri>#response` on the way back. They are not consumed by any
+    // vta-service inbound dispatcher arm, so the parity harness
+    // treats them like the feature-gated URIs above (declared
+    // canonically, intentionally not in `DISPATCHED_URIS`). Removing
+    // an entry here without a corresponding dispatcher addition will
+    // surface as a parity-harness failure pointing back at this list.
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DELETE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_ENABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_DISABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_INFO_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHECK_NAME_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_CHANGE_OWNER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_ROLLBACK_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DID_PROBLEM_REPORT_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_CREATE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UPDATE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_DISABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_PURGE_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_SET_DEFAULT_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_ASSIGN_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_DOMAIN_UNASSIGN_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_HEALTH_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
 ];
 
 /// Aggregate `DISPATCHED_URIS` from every slice module. Feature-gated
@@ -220,10 +255,10 @@ pub(crate) async fn dispatch_trust_task_core(
     //    slice's typed handler runs it after `parse_payload`.
     {
         let vta_did = state.config.read().await.vta_did.clone();
-        if let Some(my_vid) = vta_did.as_deref() {
-            if let Err(reason) = doc.validate_basic(chrono::Utc::now(), my_vid) {
-                return reject_with(&doc, reason);
-            }
+        if let Some(my_vid) = vta_did.as_deref()
+            && let Err(reason) = doc.validate_basic(chrono::Utc::now(), my_vid)
+        {
+            return reject_with(&doc, reason);
         }
         // No vta_did configured → service is in setup; skip
         // the recipient check (no identity to bind against).

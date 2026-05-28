@@ -642,20 +642,20 @@ pub async fn list_vault_entries(
 }
 
 fn matches_filter(entry: &VaultEntry, filter: &VaultListFilter<'_>) -> bool {
-    if let Some(ctx) = filter.context_id {
-        if entry.context_id != ctx {
-            return false;
-        }
+    if let Some(ctx) = filter.context_id
+        && entry.context_id != ctx
+    {
+        return false;
     }
-    if let Some(kind) = filter.secret_kind {
-        if entry.secret_kind != kind {
-            return false;
-        }
+    if let Some(kind) = filter.secret_kind
+        && entry.secret_kind != kind
+    {
+        return false;
     }
-    if let Some(tag) = filter.tag {
-        if !entry.tags.iter().any(|t| t == tag) {
-            return false;
-        }
+    if let Some(tag) = filter.tag
+        && !entry.tags.iter().any(|t| t == tag)
+    {
+        return false;
     }
     if let Some(since) = filter.used_since {
         match entry.last_used_at.as_deref() {

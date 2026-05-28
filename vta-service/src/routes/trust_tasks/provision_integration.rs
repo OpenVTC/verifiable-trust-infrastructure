@@ -26,7 +26,6 @@ use vta_sdk::provision_integration::http::{
 };
 
 use crate::auth::AuthClaims;
-use crate::error::AppError;
 use crate::operations::provision_integration::{
     AmbiguousContext, ProvisionIntegrationDeps, ProvisionIntegrationParams,
     ensure_target_context_or_create, infer_target_context,
@@ -127,7 +126,7 @@ pub(super) async fn handle_request(
     .await
     {
         Ok(o) => o,
-        Err(e) => return app_error_to_reject(&doc, AppError::from(e)),
+        Err(e) => return app_error_to_reject(&doc, e),
     };
 
     let body = ProvisionIntegrationResponse {

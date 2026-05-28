@@ -906,7 +906,6 @@ pub async fn run(
 
 /// Storage thread: runs session cleanup loop and persists the store on shutdown.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn run_storage_thread(
     store: Store,
     sessions_ks: KeyspaceHandle,

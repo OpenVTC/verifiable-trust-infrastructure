@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn append_vm_creates_authentication_reference() {
-        let mut doc = json!({
+        let doc = json!({
             "@context": ["https://www.w3.org/ns/did/v1"],
             "id": "did:webvh:example.com:abc",
             "verificationMethod": [
@@ -634,7 +634,7 @@ mod tests {
             webauthn_transports: vec![],
             label: None,
         };
-        let new = append_vm_to_document(&mut doc, &vm).unwrap();
+        let new = append_vm_to_document(&doc, &vm).unwrap();
         let vms = new["verificationMethod"].as_array().unwrap();
         assert_eq!(vms.len(), 2);
         let auths = new["authentication"].as_array().unwrap();

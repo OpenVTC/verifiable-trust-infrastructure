@@ -428,18 +428,18 @@ pub async fn abort_bundle(
 
     // Best-effort delete of any staged bytes (export-side: bytes
     // are on disk; import-side: only if upload already happened).
-    if let Some(path) = record.blob_path.clone() {
-        if let Err(e) = tokio::fs::remove_file(&path).await {
-            // NotFound is fine — already gone. Anything else: log
-            // but proceed; the sweeper will retry.
-            if e.kind() != std::io::ErrorKind::NotFound {
-                warn!(
-                    bundle_id = %bundle_id,
-                    path = %path.display(),
-                    error = %e,
-                    "abort: failed to delete staged bytes; sweeper will retry"
-                );
-            }
+    if let Some(path) = record.blob_path.clone()
+        && let Err(e) = tokio::fs::remove_file(&path).await
+    {
+        // NotFound is fine — already gone. Anything else: log
+        // but proceed; the sweeper will retry.
+        if e.kind() != std::io::ErrorKind::NotFound {
+            warn!(
+                bundle_id = %bundle_id,
+                path = %path.display(),
+                error = %e,
+                "abort: failed to delete staged bytes; sweeper will retry"
+            );
         }
     }
 
