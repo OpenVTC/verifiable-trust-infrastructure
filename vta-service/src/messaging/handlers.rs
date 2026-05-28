@@ -982,6 +982,54 @@ pub async fn handle_list_webvh_servers(
     )
 }
 
+/// `list-webvh-server-domains` — relay the registered hosting
+/// server's `/api/me/domains` view through the VTA. Used by `pnm
+/// did-mgmt list-domains` and the interactive `--domain` prompt in
+/// `create-did` / `register-did`. The handler authenticates to the
+/// server with the VTA's own credentials and returns the
+/// caller-scoped subset of hosting domains plus the system default.
+///
+/// Without this arm in the router, pnm-cli's DIDComm transport
+/// returns `unsupported message type:
+/// firstperson.network/protocols/did-management/1.0/list-webvh-server-domains`
+/// and the CLI falls back to the server's resolution chain with a
+/// warning — the symptom that motivated this addition.
+#[cfg(feature = "webvh")]
+pub async fn handle_list_webvh_server_domains(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let body: vta_sdk::protocols::did_management::servers::ListWebvhServerDomainsBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("DID resolver not available"))?;
+    let vta_did = state.config.read().await.vta_did.clone();
+    let result = app_try!(
+        operations::did_webvh::list_webvh_server_domains(
+            &state.keys_ks,
+            &state.imported_ks,
+            &state.audit_ks,
+            &state.webvh_ks,
+            &*state.seed_store,
+            &auth,
+            did_resolver,
+            &state.didcomm_bridge,
+            &state.webvh_auth_locks,
+            vta_did.as_deref(),
+            &body.server_id,
+        )
+        .await
+    );
+    response(
+        vta_sdk::protocols::did_management::LIST_WEBVH_SERVER_DOMAINS_RESULT,
+        &result,
+    )
+}
+
 #[cfg(feature = "webvh")]
 pub async fn handle_update_webvh_server(
     _ctx: HandlerContext,

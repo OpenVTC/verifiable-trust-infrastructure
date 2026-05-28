@@ -375,6 +375,10 @@ pub fn build_handler(
                 handler_fn(handlers::handle_list_webvh_servers),
             )?
             .route(
+                did_management::LIST_WEBVH_SERVER_DOMAINS,
+                handler_fn(handlers::handle_list_webvh_server_domains),
+            )?
+            .route(
                 did_management::UPDATE_WEBVH_SERVER,
                 handler_fn(handlers::handle_update_webvh_server),
             )?
