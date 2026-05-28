@@ -14,7 +14,7 @@
 //!    32-byte random `challenge` to `session_id` server-side with
 //!    a TTL (default 5 min).
 //! 2. Client signs a DIDComm `Message` of `type:
-//!    https://affinidi.com/webvh/1.0/authenticate` with body
+//!    https://trusttasks.org/spec/auth/authenticate/0.1` with body
 //!    `{ session_id, challenge }`, packs it as JWS (EdDSA, Ed25519),
 //!    and POSTs the JWS string to `/api/auth/`.
 //! 3. Daemon `unpack_signed` verifies the JWS, asserts `from` matches
@@ -22,7 +22,7 @@
 //!    its stored session, and returns access + refresh tokens.
 //!
 //! Refresh follows the same shape with `type:
-//! https://affinidi.com/webvh/1.0/authenticate/refresh` and
+//! https://trusttasks.org/spec/auth/refresh/0.1` and
 //! `body: { refresh_token }`.
 //!
 //! ## Audience binding
@@ -54,11 +54,15 @@ use zeroize::Zeroizing;
 
 use crate::error::AppError;
 
-/// DIDComm `type` URI for the initial authenticate request.
-pub const AUTHENTICATE_TYPE: &str = "https://affinidi.com/webvh/1.0/authenticate";
+/// DIDComm `type` URI for the initial authenticate request — the
+/// canonical `spec/auth/authenticate/0.1` per dtgwg-trust-tasks-tf.
+/// did-hosting accepts this natively (and recognises the historical
+/// `affinidi.com/webvh/1.0/authenticate` form during the alias-table
+/// migration window).
+pub const AUTHENTICATE_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
 
-/// DIDComm `type` URI for the refresh request.
-pub const REFRESH_TYPE: &str = "https://affinidi.com/webvh/1.0/authenticate/refresh";
+/// DIDComm `type` URI for the refresh request — `spec/auth/refresh/0.1`.
+pub const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
 
 /// Identifies who's signing the request. All fields are borrowed;
 /// the caller owns the lifetime — important because `private_key`
@@ -258,14 +262,23 @@ mod tests {
     }
 
     #[test]
-    fn authenticate_message_type_is_webvh_specific() {
-        // Distinguishing the protocol from generic auth flows means
-        // an attacker who steals a generic-auth JWS can't replay it
-        // as a webvh auth (and vice versa). Pin the constant.
+    fn authenticate_message_type_is_canonical_spec_uri() {
+        // The VTA's outbound authenticate to did-hosting carries the
+        // canonical Trust-Task spec URI per dtgwg-trust-tasks-tf.
+        // did-hosting accepts both this and the historical
+        // `affinidi.com/webvh/1.0/authenticate` form via its alias
+        // table during the migration window; once that alias is
+        // dropped (Phase 3 cleanup on did-hosting) this is the only
+        // form on the wire.
         assert_eq!(
             AUTHENTICATE_TYPE,
-            "https://affinidi.com/webvh/1.0/authenticate",
+            "https://trusttasks.org/spec/auth/authenticate/0.1",
         );
+    }
+
+    #[test]
+    fn refresh_message_type_is_canonical_spec_uri() {
+        assert_eq!(REFRESH_TYPE, "https://trusttasks.org/spec/auth/refresh/0.1",);
     }
 
     #[test]
