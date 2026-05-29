@@ -354,12 +354,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             get(health::diagnostics),
             health_diagnostics,
         )
-        // `did:webvh` log publication (Trust-Task-exempt — DID
-        // resolvers don't carry our extension header). The VTC is
-        // not a general-purpose did:webvh host: the handler matches
-        // the URL `scid` against the VTC's own DID and 404s on any
-        // other request. See `tasks/vtc-mvp/vta-driven-keys.md` §10.
-        .route_exempt("/{scid}/did.jsonl", get(did_log::did_log))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).
@@ -968,6 +962,14 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         // operator just curls `/health` on whichever host the
         // daemon is reachable on).
         .route("/health", get(health::health))
+        // `did:webvh` log publication. Mounted at the parent root
+        // (above the `/v1` nest) because a serverless VTC's DID,
+        // `did:webvh:<scid>:<host>`, resolves to
+        // `https://<host>/.well-known/did.jsonl` by the did:webvh
+        // convention — the log has to live at that exact URL for the
+        // VTC's own DID to be resolvable. The VTC hosts exactly one
+        // DID, its own. See `tasks/vtc-mvp/vta-driven-keys.md` §10.
+        .route("/.well-known/did.jsonl", get(did_log::did_log))
         // API surface — existing TrustTaskRouter result nested at
         // the configured mount.
         .nest(&routing.api.mount, api);
@@ -1067,6 +1069,11 @@ pub fn assemble_with_website(
 
     let mut app: Router<AppState> = Router::new()
         .route("/health", get(health::health))
+        // `did:webvh` log publication — see the matching comment in
+        // `assemble`. Parent-root mount so a serverless VTC's
+        // `did:webvh:<scid>:<host>` resolves to
+        // `https://<host>/.well-known/did.jsonl`, the URL we serve.
+        .route("/.well-known/did.jsonl", get(did_log::did_log))
         .nest(&routing.api.mount, api);
     app = app.nest(&routing.admin_ui.mount, admin);
     // axum 0.8's `nest("/admin", inner)` registers `/admin` (bare)

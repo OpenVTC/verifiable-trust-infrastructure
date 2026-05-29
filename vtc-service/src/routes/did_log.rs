@@ -8,15 +8,27 @@
 //!
 //! ## Wire shape
 //!
-//! `GET /v1/{scid}/did.jsonl` → `200 application/jsonl` with the
+//! `GET /.well-known/did.jsonl` → `200 application/jsonl` with the
 //! log content.
 //!
+//! This path is **not** arbitrary: a serverless VTC's DID is
+//! `did:webvh:<scid>:<host>` (no path component), which by the
+//! did:webvh resolution convention resolves to
+//! `https://<host>/.well-known/did.jsonl`. Serving the log here is
+//! what makes the VTC's own DID resolvable from the VTC itself — no
+//! external hosting required. The route is mounted at the
+//! parent-router root (above the `/v1` API nest) so the URL the DID
+//! resolves to is the URL we serve, regardless of routing mode.
+//!
 //! Trust-Task-**exempt** because DID resolvers won't carry our
-//! private extension header.
+//! private extension header. Because the route lives on the bare
+//! parent router (not the `TrustTaskRouter`), it carries no
+//! Trust-Task gate to exempt in the first place.
 //!
 //! ## Storage
 //!
-//! Reads from `<config.store.data_dir>/did/<scid>.jsonl`. The setup
+//! Reads from `<config.store.data_dir>/did/<scid>.jsonl`, where
+//! `<scid>` is the SCID of the VTC's own `config.vtc_did`. The setup
 //! wizard wrote the file at first-boot when it opened the VTA's
 //! `TemplateBootstrapPayload` — see
 //! `vta_sdk::sealed_transfer::template_bootstrap::TemplateOutput`'s
@@ -24,31 +36,31 @@
 //!
 //! ## Safety
 //!
-//! The `scid` parameter is constrained to a charset that matches
-//! the did:webvh SCID grammar (alphanumeric only). The match
-//! against `config.vtc_did`'s SCID is exact; a mismatch returns
-//! 404 (we don't host arbitrary DIDs).
+//! The VTC hosts exactly one DID — its own. The SCID is taken from
+//! `config.vtc_did` (operator-controlled at setup, not the request)
+//! and is validated against the did:webvh SCID grammar
+//! (alphanumeric, `-`, `_`) before it reaches the filesystem, so a
+//! malformed configured DID can't drive a path-traversal read.
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 
 use crate::server::AppState;
 
-/// `GET /v1/{scid}/did.jsonl`
-pub async fn did_log(State(state): State<AppState>, Path(scid): Path<String>) -> impl IntoResponse {
-    if !is_valid_scid(&scid) {
-        return (StatusCode::NOT_FOUND, "did log not found").into_response();
-    }
+/// `GET /.well-known/did.jsonl`
+pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
 
-    // Confirm the requested scid matches the VTC's own DID. The VTC
-    // is not a general-purpose did:webvh host — we host exactly one
-    // DID, our own.
-    match config.vtc_did.as_deref().and_then(extract_scid_from_did) {
-        Some(expected) if expected == scid => {}
-        _ => return (StatusCode::NOT_FOUND, "did log not found").into_response(),
-    }
+    // The VTC is not a general-purpose did:webvh host — it serves
+    // exactly one DID, its own. Resolve the SCID from `config.vtc_did`;
+    // before setup has run (or for a non-webvh DID) there's nothing to
+    // serve. `extract_scid_from_did` also validates the SCID grammar,
+    // so the filename below can't escape the `did/` directory.
+    let scid = match config.vtc_did.as_deref().and_then(extract_scid_from_did) {
+        Some(scid) => scid,
+        None => return (StatusCode::NOT_FOUND, "did log not found").into_response(),
+    };
 
     let path = config
         .store

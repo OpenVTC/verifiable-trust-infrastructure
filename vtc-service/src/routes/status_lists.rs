@@ -2,7 +2,7 @@
 //! /v1/status-lists/{purpose}` (M2.11).
 //!
 //! Verifier-facing, unauthenticated, Trust-Task-exempt — same
-//! rationale as `/v1/{scid}/did.jsonl`: external verifiers
+//! rationale as `/.well-known/did.jsonl`: external verifiers
 //! resolve credentials through standard W3C verification flows
 //! that don't carry our extension header.
 //!

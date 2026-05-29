@@ -146,7 +146,7 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     let bundle = VtcKeyBundle::from_did_key_material(integration_did.clone(), integration_key);
 
     // 5. Persist the did.jsonl log so the daemon's `GET
-    //    /v1/{scid}/did.jsonl` route can serve it after restart.
+    //    /.well-known/did.jsonl` route can serve it after restart.
     let did_log = provision.webvh_log().ok_or_else(|| {
         AppError::Internal(
             "vtc-host template did not produce a did.jsonl output — the VTC must be a did:webvh"
@@ -466,6 +466,10 @@ async fn select_webvh_target(
     println!("  This is the DID every member, credential, and trust-registry entry will");
     println!("  reference — choose its host and path deliberately.");
     println!();
+    println!("  Serverless instead drops the <path>: the VTC self-hosts its own");
+    println!("  did.jsonl at <host>/.well-known/did.jsonl, served by this daemon — no");
+    println!("  external did-hosting server required.");
+    println!();
 
     // Connect over whichever transport the VTA advertises so we can offer
     // live server/domain pickers. Any failure here is non-fatal: we fall
@@ -492,21 +496,30 @@ async fn select_webvh_target(
     };
 
     let Some(client) = client else {
-        // No live catalogue — offer just the optional path, matching the
-        // pre-picker behaviour and leaving server selection to the VTA.
-        let path = prompt_webvh_path(None)?;
-        return Ok(WebvhTarget {
-            path,
-            ..WebvhTarget::default()
-        });
+        // No live catalogue — leave server selection to the VTA (it
+        // auto-picks a registered did-hosting server, or self-hosts).
+        // We don't prompt for a path: it's only meaningful once a
+        // hosting server is in play, and a serverless DID ignores it
+        // entirely (it always resolves at `<host>/.well-known/`), so a
+        // prompt here would have unpredictable effect.
+        return Ok(WebvhTarget::default());
     };
 
     let server_id = prompt_webvh_server(&client).await?;
-    let domain = match server_id.as_deref() {
-        Some(sid) => prompt_webvh_domain(&client, sid).await?,
-        None => None,
+    let (domain, path) = match server_id.as_deref() {
+        // A hosting server is selected: the `<path>` is a real label
+        // under that server, so offer it (and the tenant-domain picker).
+        Some(sid) => {
+            let domain = prompt_webvh_domain(&client, sid).await?;
+            let path = prompt_webvh_path(sid)?;
+            (domain, path)
+        }
+        // Serverless: the VTC self-hosts its `did.jsonl`, and the DID
+        // `did:webvh:<scid>:<host>` always resolves at
+        // `<host>/.well-known/did.jsonl`. There's no meaningful path to
+        // pick, so we don't ask.
+        None => (None, None),
     };
-    let path = prompt_webvh_path(server_id.as_deref())?;
 
     Ok(WebvhTarget {
         server_id,
@@ -671,25 +684,18 @@ async fn prompt_webvh_domain(
     }
 }
 
-/// Prompt for the optional `<path>` component of the VTC DID. Blank input
-/// → `None` (the host assigns one). The help text is tailored to whether
-/// a hosting server was selected.
-fn prompt_webvh_path(server_id: Option<&str>) -> Result<Option<String>, AppError> {
+/// Prompt for the optional `<path>` label of the VTC DID under the
+/// selected hosting server. Blank input → `None` (the server assigns
+/// one). Only called in hosted mode: serverless self-hosting always
+/// resolves at `<host>/.well-known/did.jsonl`, so it has no path to pick.
+fn prompt_webvh_path(server_id: &str) -> Result<Option<String>, AppError> {
     println!();
-    match server_id {
-        Some(sid) => {
-            println!("  Optional path label under the hosting server `{sid}`. It becomes the");
-            println!("  trailing `<path>` of the VTC DID — e.g. `acme` yields a DID ending");
-            println!("  `:acme`. Operators with a naming convention (community slug, env)");
-            println!("  can pin it; leave blank to let the server assign one.");
-        }
-        None => {
-            println!("  Optional path label for the VTC DID. It becomes the trailing");
-            println!("  `<path>` component. Leave blank to let the host assign one.");
-        }
-    }
+    println!("  Optional path label under the hosting server `{server_id}`. It becomes the");
+    println!("  trailing `<path>` of the VTC DID — e.g. `acme` yields a DID ending");
+    println!("  `:acme`. Operators with a naming convention (community slug, env)");
+    println!("  can pin it; leave blank to let the server assign one.");
     let raw: String = Input::new()
-        .with_prompt("WebVH path (blank → auto-assigned)")
+        .with_prompt("WebVH path (blank → server-assigned)")
         .default(String::new())
         .allow_empty(true)
         .interact_text()

@@ -116,22 +116,27 @@ VTC DID should be published**:
   `did.jsonl` at the VTC base URL.
 - **tenant domain** — when the chosen server is multi-tenant, pick
   the domain the DID is allocated under (otherwise the server's
-  default is used).
+  default is used). *(hosted mode only)*
 - **path** — the optional `<path>` label in
-  `did:webvh:<scid>:<host>:<path>`; blank lets the host assign one.
+  `did:webvh:<scid>:<host>:<path>`; blank lets the server assign one.
+  *(hosted mode only)* In **serverless** mode there is no path: the
+  DID is `did:webvh:<scid>:<host>`, which resolves to
+  `https://<host>/.well-known/did.jsonl` — the daemon serves it
+  itself, so the wizard doesn't prompt for a path.
 
 The picker enumerates the catalogue over whichever transport the VTA
 advertises (REST when available, otherwise DIDComm), and provisioning
 then runs over the auto-selected transport (DIDComm-first when both are
 advertised). If the VTA DID can't be resolved or reached, the wizard
-falls back to the VTA's own 0-or-1-server auto-selection and shows only
-the path prompt.
+falls back to the VTA's own 0-or-1-server auto-selection (no path
+prompt — the VTA picks a server or self-hosts).
 
 It then drives the provision-integration round trip against the VTA,
 opens the sealed bundle, and writes:
 
 - `<data_dir>/did/<scid>.jsonl` — the `did:webvh` log entry the
-  daemon serves at `GET /v1/{scid}/did.jsonl`.
+  daemon serves at `GET /.well-known/did.jsonl` (the URL the VTC's
+  own DID resolves to).
 - `config.toml` — the VTC's runtime configuration.
 - The `VtcKeyBundle` to the configured secrets backend.
 

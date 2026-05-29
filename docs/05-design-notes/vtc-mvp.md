@@ -108,7 +108,8 @@ Flow:
 5. Write the `did.jsonl` log from
    `TemplateBootstrapPayload.config.outputs` to
    `<store.data_dir>/did/<scid>.jsonl`. The daemon publishes
-   it at `GET /v1/{scid}/did.jsonl` (Trust-Task-exempt).
+   it at `GET /.well-known/did.jsonl` (Trust-Task-exempt) — the
+   URL a serverless `did:webvh:<scid>:<host>` resolves to.
 6. Write `config.toml` (`vtc_did`, `vta_did`, `public_url`,
    `store`, `secrets`, `auth.jwt_signing_key`).
 7. Initialise all fjall keyspaces (§13).

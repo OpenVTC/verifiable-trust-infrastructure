@@ -1,12 +1,14 @@
-//! Integration coverage for `GET /v1/{scid}/did.jsonl`.
+//! Integration coverage for `GET /.well-known/did.jsonl`.
 //!
-//! The VTC publishes exactly one did:webvh log — its own. Tests
-//! verify the happy path + the boundary cases the design doc
+//! The VTC publishes exactly one did:webvh log — its own — at the
+//! `.well-known` path its `did:webvh:<scid>:<host>` resolves to.
+//! Tests verify the happy path + the boundary cases the design doc
 //! (`tasks/vtc-mvp/vta-driven-keys.md` §10) calls out:
 //!
 //! - Trust-Task-exempt (no header → 200).
-//! - 404 when the scid in the URL doesn't match config.vtc_did.
-//! - 404 when the file doesn't exist on disk.
+//! - 404 when `config.vtc_did`'s log file is absent on disk.
+//! - 404 when the configured DID's SCID is malformed (no path
+//!   traversal reaches the filesystem).
 
 mod common;
 
@@ -157,36 +159,40 @@ async fn happy_path_returns_log_content_as_jsonl() {
 "#;
     seed_did_log(&fix.data_dir, VTC_SCID, log);
 
-    let (status, body, ct) = get(&fix.router, &format!("/v1/{VTC_SCID}/did.jsonl")).await;
+    let (status, body, ct) = get(&fix.router, "/.well-known/did.jsonl").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, log.as_bytes());
     assert_eq!(ct.as_deref(), Some("application/jsonl"));
 }
 
 #[tokio::test]
-async fn returns_404_when_scid_mismatches_vtc_did() {
+async fn returns_404_when_only_a_foreign_scid_log_exists() {
+    // The VTC serves exactly its own DID's log. A stray log file for
+    // some other SCID on disk must not be served — we read only the
+    // SCID derived from `config.vtc_did`.
     let fix = build_fixture(VTC_DID).await;
     seed_did_log(&fix.data_dir, "different", "{}");
 
-    let (status, _, _) = get(&fix.router, "/v1/different/did.jsonl").await;
+    let (status, _, _) = get(&fix.router, "/.well-known/did.jsonl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn returns_404_when_file_missing_even_for_correct_scid() {
+async fn returns_404_when_file_missing() {
     let fix = build_fixture(VTC_DID).await;
     // no seed_did_log — file absent
-    let (status, _, _) = get(&fix.router, &format!("/v1/{VTC_SCID}/did.jsonl")).await;
+    let (status, _, _) = get(&fix.router, "/.well-known/did.jsonl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn returns_404_for_path_traversal_attempt_in_scid() {
-    let fix = build_fixture(VTC_DID).await;
-    seed_did_log(&fix.data_dir, VTC_SCID, "{}");
-    // Path traversal characters fail `is_valid_scid` and 404
-    // before any filesystem touch.
-    let (status, _, _) = get(&fix.router, "/v1/..%2f..%2fetc%2fpasswd/did.jsonl").await;
+async fn returns_404_when_configured_scid_is_malformed() {
+    // The SCID is taken from `config.vtc_did`, not the URL. A
+    // configured DID whose trailing component fails the SCID grammar
+    // (here, path-traversal characters) is rejected before any
+    // filesystem read, so it can't escape the `did/` directory.
+    let fix = build_fixture("did:webvh:vtc.example.com:..%2f..%2fetc%2fpasswd").await;
+    let (status, _, _) = get(&fix.router, "/.well-known/did.jsonl").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -202,7 +208,7 @@ async fn route_is_trust_task_exempt() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/v1/{VTC_SCID}/did.jsonl"))
+                .uri("/.well-known/did.jsonl")
                 .body(Body::empty())
                 .unwrap(),
         )
