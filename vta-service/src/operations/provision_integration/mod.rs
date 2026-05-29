@@ -302,6 +302,13 @@ pub async fn provision_integration(
     // metadata, not document content.
     let webvh_path = webvh::take_webvh_path(&mut template_vars)?;
 
+    // Optional `WEBVH_DOMAIN` template var: when the webvh hosting server
+    // is multi-tenant, this pins which tenant domain the DID is allocated
+    // under. Absent → the remote runs its own resolution chain (caller's
+    // ACL default → system default). Removed from the map for the same
+    // reason as `WEBVH_PATH` — transport metadata, not document content.
+    let webvh_domain = webvh::take_webvh_domain(&mut template_vars)?;
+
     // Decide whether the minted DID should become the context's primary
     // DID. First-integration wins: when the context has no DID yet, bind
     // the newly-minted one so downstream operations (fetch_did_secrets_bundle,
@@ -400,10 +407,11 @@ pub async fn provision_integration(
                 server_id: params_server_id,
                 url: params_url,
                 path: webvh_path,
-                // Provision-integration runs against a freshly-
-                // bootstrapped tenant context — no explicit domain
-                // selection; let the remote resolve to its default.
-                domain: None,
+                // Explicit tenant domain when the caller set
+                // `WEBVH_DOMAIN` (multi-tenant hosting server); `None`
+                // lets the remote resolve to its caller-default / system
+                // default.
+                domain: webvh_domain,
                 label: Some(client_did.clone()),
                 portable: true,
                 add_mediator_service: false,

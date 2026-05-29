@@ -451,6 +451,16 @@ optionally `--var WEBVH_PATH=<path>`) to have the VTA publish the
 new integration's log directly to that server instead of
 self-hosting.
 
+On a multi-tenant hosting server, add `--var WEBVH_DOMAIN=<name>` to
+pin which tenant domain the DID is allocated under (the
+`did:webvh:<scid>:<host>` host slot). Omit it to let the server run
+its own resolution chain (the caller's ACL default → system default).
+Like `WEBVH_SERVER` / `WEBVH_PATH`, `WEBVH_DOMAIN` is transport
+metadata consumed VTA-side — it never reaches the template renderer.
+Discover legitimate domain values with
+`pnm did-mgmt dids list-domains --server <id>`. The `vtc setup`
+wizard surfaces this as an interactive picker after the ACL grant.
+
 ### Exporting existing context state (offline admin handoff)
 
 A second offline scenario: the operator has an

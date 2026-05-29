@@ -59,12 +59,15 @@ sequenceDiagram
     participant VTC as vtc daemon
 
     Op->>CLI: vtc setup
-    CLI->>Op: Prompt config path<br/>VTC base URL<br/>VTA DID<br/>context<br/>webvh path<br/>secrets backend
-    Op->>CLI: Confirm
+    CLI->>Op: Prompt config path<br/>VTC base URL<br/>VTA DID<br/>context
+    CLI->>VTA: Resolve VTA DID<br/>(mediator + REST endpoint)
+    CLI->>Op: DIDComm messaging choice
     CLI->>CLI: Mint ephemeral did:key<br/>(round-trip identity)
     CLI->>Op: Print ephemeral DID
-    Op->>VTA: pnm acl create --did <eph> --role admin<br/>--contexts <ctx> --expires 1h
-    Op->>CLI: Press Enter
+    Op->>VTA: pnm contexts create / acl create<br/>--admin-did <eph> --admin-expires 1h
+    Op->>CLI: Confirm ACL grant
+    CLI->>VTA: Authenticate ephemeral key<br/>List did-hosting servers + domains
+    CLI->>Op: Pick did-hosting server / domain / path<br/>then secrets backend
     CLI->>VTA: Provision-integration<br/>(VP, template=vtc-host)
     VTA->>VTA: Mint VTC keys<br/>Render template<br/>Issue admin VC<br/>Seal bundle
     VTA-->>CLI: Sealed bundle (HPKE)
@@ -89,8 +92,7 @@ The wizard prompts:
 | 2 | VTC base URL | The URL the daemon will publish (e.g. `https://community.example.com`) |
 | 3 | VTA DID | The VTA's `did:webvh:...` identifier. Transport endpoints are resolved from the DID document — no separate VTA URL prompt |
 | 4 | Context name | The context inside the VTA that will own this VTC (created via `cnm contexts create` if it doesn't already exist) |
-| 5 | WebVH path | Optional. Blank lets the DID-hosting server auto-assign |
-| 6 | Secrets backend | `keyring` (default) / `aws` / `gcp` / `azure` / `inline` / `plaintext` |
+| 5 | DIDComm messaging | Use the VTA's mediator, supply a different one, or skip |
 
 The wizard prints an ephemeral `did:key` and pauses. **Authorise it
 on the VTA** (this is the operator's choice — it's how you prove
@@ -105,9 +107,28 @@ pnm acl create \
     --expires 1h
 ```
 
-Press Enter in the VTC setup wizard. It drives the
-provision-integration round trip against the VTA, opens the sealed
-bundle, and writes:
+Press Enter in the VTC setup wizard. Now that the ephemeral key is
+authorised, the wizard authenticates to the VTA and asks **where the
+VTC DID should be published**:
+
+- **did-hosting server** — pick a registered DID-hosting server from
+  the VTA's live catalogue, or choose *serverless* to self-host the
+  `did.jsonl` at the VTC base URL.
+- **tenant domain** — when the chosen server is multi-tenant, pick
+  the domain the DID is allocated under (otherwise the server's
+  default is used).
+- **path** — the optional `<path>` label in
+  `did:webvh:<scid>:<host>:<path>`; blank lets the host assign one.
+
+The picker enumerates the catalogue over whichever transport the VTA
+advertises (REST when available, otherwise DIDComm), and provisioning
+then runs over the auto-selected transport (DIDComm-first when both are
+advertised). If the VTA DID can't be resolved or reached, the wizard
+falls back to the VTA's own 0-or-1-server auto-selection and shows only
+the path prompt.
+
+It then drives the provision-integration round trip against the VTA,
+opens the sealed bundle, and writes:
 
 - `<data_dir>/did/<scid>.jsonl` — the `did:webvh` log entry the
   daemon serves at `GET /v1/{scid}/did.jsonl`.

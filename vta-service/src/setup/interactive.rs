@@ -591,35 +591,38 @@ pub async fn run_setup_wizard(
         _ => LogFormat::Text,
     };
 
-    // 7b. Optional remote DID resolver — required for TEE network mode
-    // (resolver-cache-server sidecar bridged via vsock); useful for
-    // any deployment that wants to share a resolver-cache.
-    println!();
-    println!("DID resolution");
-    println!("  The VTA resolves DIDs (did:web, did:webvh, did:key, did:peer) on every");
-    println!("  authcrypt, every proof check, every authenticate. Pick where that work");
-    println!("  happens:");
-    println!();
-    println!("    • Leave EMPTY — resolve in-process with an in-memory cache. Fine for");
-    println!("      single-node deployments. No external dependency.");
-    println!();
-    println!("    • Set a ws:// URL — dispatch every resolution to an external");
-    println!("      `affinidi-did-resolver-cache-server`. That server becomes the shared");
-    println!("      cache across every VTA pointed at it.");
-    println!();
-    println!("  REQUIRED for TEE / Nitro deployments (the enclave cannot fetch did:web");
-    println!("  / did:webvh itself; resolution is bridged to a parent-side cache server");
-    println!("  over vsock). Example: ws://127.0.0.1:4445/did/v1/ws");
-    println!();
-    let resolver_url: String = Input::new()
-        .with_prompt("Remote DID resolver WebSocket URL (leave empty to resolve locally)")
-        .allow_empty(true)
-        .interact_text()?;
-    let resolver_url = if resolver_url.is_empty() {
-        None
-    } else {
-        Some(resolver_url)
+    // 7b. Optional remote DID resolver — only prompted on TEE / Nitro
+    // builds. There the enclave cannot fetch did:web / did:webvh itself,
+    // so resolution must be bridged to a parent-side
+    // `affinidi-did-resolver-cache-server` over vsock and a ws:// URL is
+    // required. Non-TEE builds always resolve in-process; an operator who
+    // wants a shared resolver-cache there can set `resolver_url` directly
+    // in config.toml — it doesn't warrant a wizard prompt for every
+    // single-node deployment.
+    #[cfg(feature = "tee")]
+    let resolver_url = {
+        println!();
+        println!("DID resolution");
+        println!("  The VTA resolves DIDs (did:web, did:webvh, did:key, did:peer) on every");
+        println!("  authcrypt, every proof check, every authenticate. In a TEE the enclave");
+        println!("  cannot reach the network directly, so resolution is dispatched to an");
+        println!("  external `affinidi-did-resolver-cache-server` on the parent, bridged");
+        println!("  over vsock.");
+        println!();
+        println!("  Example: ws://127.0.0.1:4445/did/v1/ws");
+        println!();
+        let entered: String = Input::new()
+            .with_prompt("Remote DID resolver WebSocket URL")
+            .allow_empty(true)
+            .interact_text()?;
+        if entered.is_empty() {
+            None
+        } else {
+            Some(entered)
+        }
     };
+    #[cfg(not(feature = "tee"))]
+    let resolver_url: Option<String> = None;
 
     // 7c. Audit-log retention. Default 28 days; compliance-driven
     // deployments often want 90 or 365.

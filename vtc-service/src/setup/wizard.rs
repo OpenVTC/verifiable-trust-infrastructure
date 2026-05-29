@@ -37,9 +37,10 @@ use dialoguer::{Confirm, Input};
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 use tracing::warn;
+use vta_sdk::client::VtaClient;
 use vta_sdk::provision_client::{
-    EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResult, VtaIntent, VtaReply,
-    resolve_vta, run_provision,
+    EphemeralSetupKey, OperatorMessages, ProvisionAsk, ProvisionResult, ResolvedVta, VtaEvent,
+    VtaIntent, VtaReply, resolve_vta, run_connection_test, run_provision_flight,
 };
 
 use vti_common::config::StoreConfig;
@@ -66,13 +67,29 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
 
     let inputs = prompt_inputs()?;
 
-    // 1. Mediator choice. Done immediately after `prompt_inputs` so
-    //    the VTA DID resolution doubles as an early "is the VTA DID
-    //    valid?" check — bail fast on a typo rather than after the
-    //    operator has gone off to grant the ACL.
-    let messaging = prompt_messaging(&inputs.vta_did).await?;
+    // 1. Resolve the VTA DID once, up front. This doubles as an early
+    //    "is the VTA DID valid?" check — bail-fast on a typo rather than
+    //    after the operator has gone off to grant the ACL — and feeds
+    //    both the mediator suggestion below and the REST URL the
+    //    did-hosting picker needs later. A resolution failure isn't fatal:
+    //    the operator can still supply a mediator by hand and the picker
+    //    degrades to the VTA's own server auto-selection.
+    let resolved: Option<ResolvedVta> = match resolve_vta(&inputs.vta_did).await {
+        Ok(r) => Some(r),
+        Err(e) => {
+            warn!(
+                error = %e,
+                vta_did = %inputs.vta_did,
+                "could not resolve VTA DID — mediator suggestion + did-hosting picker unavailable"
+            );
+            None
+        }
+    };
 
-    // 2. Mint the ephemeral DID first so we can show it to the
+    // 2. Mediator choice.
+    let messaging = prompt_messaging(resolved.as_ref().and_then(|r| r.mediator_did.clone()))?;
+
+    // 3. Mint the ephemeral DID first so we can show it to the
     //    operator before they pick a secret-store backend (the
     //    pause for the ACL step is the slow part — get the
     //    decision-needed-from-the-operator instructions on screen
@@ -89,7 +106,14 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
         return Err(AppError::Validation("setup aborted".into()));
     }
 
-    // 3. Pick a secrets-store backend. We delay this until after
+    // 4. Choose where the VTC DID is published. The ACL grant just
+    //    landed, so the ephemeral key can now authenticate to the VTA and
+    //    enumerate its did-hosting servers + tenant domains for an
+    //    interactive picker. Done before the secrets prompt so any auth /
+    //    listing failure surfaces while the operator is still engaged.
+    let webvh = select_webvh_target(resolved.as_ref(), &setup_key).await?;
+
+    // 5. Pick a secrets-store backend. We delay this until after
     //    the ACL pause because the operator may want to interrupt
     //    setup at this point (e.g. realise they typed the VTA URL
     //    wrong); resolving the keyring path before the VTA
@@ -97,11 +121,11 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     //    layer.
     let secrets = prompt_secrets_config()?;
 
-    // 4. Drive the provision-integration round-trip. Capture and
+    // 6. Drive the provision-integration round-trip. Capture and
     //    discard event traffic so the wizard's UX stays terse —
     //    long-form progress UX is for `pnm`, not the daemon setup
     //    flow.
-    let provision = run_provision_quietly(&inputs, &setup_key).await?;
+    let provision = run_provision_quietly(&inputs, &webvh, &setup_key).await?;
     let integration_did = provision
         .integration_did()
         .ok_or_else(|| {
@@ -133,9 +157,10 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     let scid = extract_scid_or_err(&integration_did)?;
     write_did_log(&data_dir, &scid, did_log)?;
 
-    // 6. Materialise the config + write it to disk so
-    //    `create_secret_store` sees the chosen backend.
-    let app_config = build_app_config(
+    // 6. Materialise the config. We hold off writing it to disk until
+    //    step 7 because the config-secret backend stores the key bundle
+    //    *inside* the config file itself.
+    let mut app_config = build_app_config(
         config_path.clone(),
         integration_did.clone(),
         inputs.vta_did.clone(),
@@ -144,16 +169,36 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
         secrets,
         messaging,
     )?;
-    write_config_toml(&config_path, &app_config)?;
 
-    // 7. Write the bundle into the secret store.
-    let secret_store = create_secret_store(&app_config)
-        .map_err(|e| AppError::Config(format!("failed to construct secret store: {e}")))?;
+    // 7. Persist the key bundle via the chosen backend.
+    //
+    //    Every backend except config-secret is a writable store the
+    //    daemon reads back at runtime: write the config first (so
+    //    `create_secret_store` resolves the right backend), then `.set()`
+    //    the bundle.
+    //
+    //    The config-secret backend is read-only at runtime by design — its
+    //    bytes live inline in `[secrets] secret` in config.toml, and
+    //    `ConfigSecretStore::set` deliberately errors. For that backend we
+    //    hex-encode the bundle into the config and let the config write
+    //    carry it to disk instead of calling `.set()`.
+    //    `secrets_choice_to_config` seeds `secret = Some("")` when the
+    //    operator picks the inline backend, so an `is_some()` secret is the
+    //    signal we took that path. Mirrors the VTA wizard's config-seed
+    //    handling in `vta-service/src/setup/interactive.rs`.
     let bundle_bytes = bundle.to_secret_store_bytes()?;
-    secret_store
-        .set(&bundle_bytes)
-        .await
-        .map_err(|e| AppError::SecretStore(format!("failed to store VTC key bundle: {e}")))?;
+    if app_config.secrets.secret.is_some() {
+        app_config.secrets.secret = Some(hex::encode(&bundle_bytes));
+        write_config_toml(&config_path, &app_config)?;
+    } else {
+        write_config_toml(&config_path, &app_config)?;
+        let secret_store = create_secret_store(&app_config)
+            .map_err(|e| AppError::Config(format!("failed to construct secret store: {e}")))?;
+        secret_store
+            .set(&bundle_bytes)
+            .await
+            .map_err(|e| AppError::SecretStore(format!("failed to store VTC key bundle: {e}")))?;
+    }
 
     // 8. Materialise the keyspaces so a `vtc` start doesn't have
     //    to pay the partition-create cost.
@@ -223,12 +268,25 @@ struct WizardInputs {
     base_url: String,
     vta_did: String,
     context: String,
-    /// Optional path component for the minted `did:webvh:<scid>:
-    /// <host>:<path>` — when `Some`, the wizard injects it as the
-    /// `WEBVH_PATH` template var so the VTA's webvh server uses it
-    /// instead of auto-assigning. Blank input → `None` → server
-    /// auto-assigns.
-    webvh_path: Option<String>,
+}
+
+/// Where the VTC's `did:webvh` is published, as chosen by the operator
+/// after the ACL grant (when the ephemeral key can authenticate to the
+/// VTA and enumerate its did-hosting catalogue). All three fields are
+/// optional; a fully-`None` target reproduces the serverless default
+/// (self-hosted at the VTC base URL, server-assigned path).
+#[derive(Default)]
+struct WebvhTarget {
+    /// Registered did-hosting server id (the `WEBVH_SERVER` var).
+    /// `None` → serverless: the VTC publishes its own `did.jsonl` at
+    /// the base URL.
+    server_id: Option<String>,
+    /// Tenant domain on a multi-domain hosting server (the
+    /// `WEBVH_DOMAIN` var). `None` → the server resolves its default.
+    domain: Option<String>,
+    /// Path component of `did:webvh:<scid>:<host>:<path>` (the
+    /// `WEBVH_PATH` var). `None` → the server auto-assigns.
+    path: Option<String>,
 }
 
 fn prompt_config_path(initial: Option<PathBuf>) -> Result<PathBuf, AppError> {
@@ -296,37 +354,21 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
         .interact_text()
         .map_err(prompt_err)?;
 
-    // Optional webvh path (the `<path>` slot in
-    // `did:webvh:<scid>:<host>:<path>`). Blank → server auto-assigns
-    // a path. Operators with a naming convention (e.g. `vtc-prod`,
-    // `community-name`) can pin it here. The server-selection prompt
-    // is deferred to a follow-up; for now the VTA's auto-pick handles
-    // the 0-or-1-server case, which is the MVP norm.
-    let webvh_path_raw: String = Input::new()
-        .with_prompt("WebVH path (blank → server auto-assigns)")
-        .default(String::new())
-        .allow_empty(true)
-        .interact_text()
-        .map_err(prompt_err)?;
-    let webvh_path = {
-        let trimmed = webvh_path_raw.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    };
+    // The VTC DID's hosting target (did-hosting server, domain, path) is
+    // collected later, in `select_webvh_target`, after the ACL grant — at
+    // that point the ephemeral key can authenticate to the VTA and
+    // enumerate the available servers/domains so the operator picks from a
+    // live list rather than typing blind.
 
     Ok(WizardInputs {
         base_url,
         vta_did,
         context,
-        webvh_path,
     })
 }
 
-/// Resolve the VTA DID and ask the operator which mediator the VTC
-/// should route DIDComm traffic through. Three paths:
+/// Ask the operator which mediator the VTC should route DIDComm traffic
+/// through. Three paths:
 ///
 /// 1. Use the same mediator the VTA advertises in its DID document.
 ///    This is the dominant choice for single-operator deployments —
@@ -337,21 +379,13 @@ fn prompt_inputs() -> Result<WizardInputs, AppError> {
 ///    startup ("messaging not configured — inbound message handling
 ///    disabled") but otherwise stays healthy on the REST surface.
 ///
-/// Resolving the VTA DID doubles as a "is this DID resolvable?"
-/// sanity check; a typo here surfaces *before* the operator runs off
-/// to grant the ACL. A resolution failure that yields no mediator
-/// hint falls through to options 2 + 3 with a warning — bootstrapping
-/// can continue if the operator already knows which mediator to use.
-async fn prompt_messaging(vta_did: &str) -> Result<Option<MessagingConfig>, AppError> {
+/// `vta_mediator` is the mediator DID resolved from the VTA's DID
+/// document (the caller resolves the VTA once, up front; see
+/// [`run_setup_wizard`]). `None` means the document advertised no
+/// mediator (or didn't resolve) — the wizard then falls through to
+/// options 2 + 3, letting the operator supply one or skip messaging.
+fn prompt_messaging(vta_mediator: Option<String>) -> Result<Option<MessagingConfig>, AppError> {
     use dialoguer::Select;
-
-    let vta_mediator = match resolve_vta(vta_did).await {
-        Ok(resolved) => resolved.mediator_did,
-        Err(e) => {
-            warn!(error = %e, vta_did, "could not resolve VTA DID — mediator suggestion unavailable");
-            None
-        }
-    };
 
     println!();
     let mut labels: Vec<String> = Vec::new();
@@ -402,6 +436,270 @@ async fn prompt_messaging(vta_did: &str) -> Result<Option<MessagingConfig>, AppE
         mediator_did,
         mediator_host: None,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// did:webvh hosting-target selection
+// ---------------------------------------------------------------------------
+
+/// Collect the VTC DID's hosting target — did-hosting server, tenant
+/// domain, and path — after the ACL grant.
+///
+/// The freshly-authorized ephemeral key connects to the VTA (REST when
+/// advertised, otherwise DIDComm) and enumerates the registered
+/// did-hosting servers + their tenant domains so the operator picks from a
+/// live list. If the VTA didn't resolve or the connection fails, the
+/// picker degrades gracefully: only the path is collected and the VTA's
+/// own 0-or-1-server auto-selection applies.
+async fn select_webvh_target(
+    resolved: Option<&ResolvedVta>,
+    setup_key: &EphemeralSetupKey,
+) -> Result<WebvhTarget, AppError> {
+    println!();
+    println!("\x1b[1mDID hosting\x1b[0m");
+    println!("  Your community is identified by a `did:webvh` DID of the form:");
+    println!();
+    println!("    did:webvh:<scid>:<host>:<path>");
+    println!();
+    println!("  <scid> is a self-certifying id the VTA generates for you. <host> is the");
+    println!("  did-hosting server's domain and <path> is an optional label under it.");
+    println!("  This is the DID every member, credential, and trust-registry entry will");
+    println!("  reference — choose its host and path deliberately.");
+    println!();
+
+    // Connect over whichever transport the VTA advertises so we can offer
+    // live server/domain pickers. Any failure here is non-fatal: we fall
+    // back to the path-only prompt and the VTA's own server auto-pick.
+    let client = match resolved {
+        Some(r) => match connect_setup_client(r, setup_key).await {
+            Ok(c) => Some(c),
+            Err(e) => {
+                warn!(error = %e, "could not connect to the VTA to list did-hosting servers");
+                println!(
+                    "  Could not reach the VTA to list did-hosting servers ({e}); the VTA \
+                     will auto-select one (or self-host)."
+                );
+                None
+            }
+        },
+        None => {
+            println!(
+                "  The VTA DID didn't resolve, so an interactive server/domain picker isn't \
+                 available; the VTA will auto-select a server (or self-host)."
+            );
+            None
+        }
+    };
+
+    let Some(client) = client else {
+        // No live catalogue — offer just the optional path, matching the
+        // pre-picker behaviour and leaving server selection to the VTA.
+        let path = prompt_webvh_path(None)?;
+        return Ok(WebvhTarget {
+            path,
+            ..WebvhTarget::default()
+        });
+    };
+
+    let server_id = prompt_webvh_server(&client).await?;
+    let domain = match server_id.as_deref() {
+        Some(sid) => prompt_webvh_domain(&client, sid).await?,
+        None => None,
+    };
+    let path = prompt_webvh_path(server_id.as_deref())?;
+
+    Ok(WebvhTarget {
+        server_id,
+        domain,
+        path,
+    })
+}
+
+/// Connect the ephemeral setup key to the VTA and return a client capable
+/// of reading the did-hosting catalogue.
+///
+/// Prefers REST — the lightweight challenge-response flow (`auth_light`)
+/// reads the catalogue without spinning up a mediator session. Falls back
+/// to a DIDComm session against a DIDComm-only VTA so the picker still
+/// works there. The choice of listing transport is independent of the
+/// transport the later provision round-trip uses.
+async fn connect_setup_client(
+    resolved: &ResolvedVta,
+    setup_key: &EphemeralSetupKey,
+) -> Result<VtaClient, AppError> {
+    if let Some(rest_url) = resolved.rest_url.as_deref() {
+        let http = reqwest::Client::new();
+        let auth = vta_sdk::auth_light::challenge_response_light(
+            &http,
+            rest_url,
+            &setup_key.did,
+            setup_key.private_key_multibase(),
+            &resolved.vta_did,
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("VTA REST authentication failed: {e}")))?;
+        let client = VtaClient::new(rest_url);
+        client.set_token_async(auth.access_token).await;
+        return Ok(client);
+    }
+
+    if let Some(mediator_did) = resolved.mediator_did.as_deref() {
+        return VtaClient::connect_didcomm(
+            &setup_key.did,
+            setup_key.private_key_multibase(),
+            &resolved.vta_did,
+            mediator_did,
+            resolved.rest_url.clone(),
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("VTA DIDComm connection failed: {e}")));
+    }
+
+    Err(AppError::Internal(
+        "VTA advertises neither a REST nor a DIDComm transport".into(),
+    ))
+}
+
+/// List the VTA's registered did-hosting servers and let the operator
+/// pick one — or choose serverless (self-hosted at the base URL). An
+/// empty catalogue or a listing error falls back to serverless (`None`).
+async fn prompt_webvh_server(client: &VtaClient) -> Result<Option<String>, AppError> {
+    use dialoguer::Select;
+
+    let servers = match client.list_webvh_servers().await {
+        Ok(body) => body.servers,
+        Err(e) => {
+            println!("  Could not list did-hosting servers ({e}); defaulting to serverless.");
+            return Ok(None);
+        }
+    };
+
+    if servers.is_empty() {
+        println!("  No did-hosting servers are registered with this VTA — the VTC will");
+        println!("  self-host its `did.jsonl` at the base URL (serverless).");
+        return Ok(None);
+    }
+
+    let mut labels: Vec<String> = servers
+        .iter()
+        .map(|s| match s.label.as_deref() {
+            Some(label) if !label.is_empty() => format!("{} — {label}  ({})", s.id, s.did),
+            _ => format!("{}  ({})", s.id, s.did),
+        })
+        .collect();
+    labels.push("Serverless — self-host did.jsonl at the VTC base URL".to_string());
+
+    let idx = Select::new()
+        .with_prompt("Where should the VTC DID be published?")
+        .items(&labels)
+        .default(0)
+        .interact()
+        .map_err(prompt_err)?;
+
+    if idx == servers.len() {
+        Ok(None)
+    } else {
+        Ok(Some(servers[idx].id.clone()))
+    }
+}
+
+/// On a multi-domain hosting server, let the operator pick the tenant
+/// domain the DID is allocated under. A 0-or-1-domain server (or a
+/// listing error) returns `None` so the server resolves its own default.
+/// Mirrors `pnm did-mgmt`'s `prompt_domain_if_interactive`.
+async fn prompt_webvh_domain(
+    client: &VtaClient,
+    server_id: &str,
+) -> Result<Option<String>, AppError> {
+    use dialoguer::Select;
+
+    let domains = match client.list_webvh_server_domains(server_id).await {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, server_id, "could not list hosting domains");
+            println!(
+                "  Could not list hosting domains on `{server_id}` ({e}); using the \
+                 server's default domain."
+            );
+            return Ok(None);
+        }
+    };
+
+    // 0 or 1 domain → nothing meaningful to choose; let the server resolve
+    // its default.
+    if domains.domains.len() < 2 {
+        return Ok(None);
+    }
+
+    let mut labels: Vec<String> = domains
+        .domains
+        .iter()
+        .map(|d| {
+            let default = if d.default_domain { " (default)" } else { "" };
+            let disabled = if d.status == "disabled" {
+                " [disabled]"
+            } else {
+                ""
+            };
+            match d.label.as_deref() {
+                Some(l) if !l.is_empty() => format!("{}{default}{disabled} — {l}", d.name),
+                _ => format!("{}{default}{disabled}", d.name),
+            }
+        })
+        .collect();
+    labels.push("Use the server's default domain".to_string());
+
+    // Default the cursor to the server's flagged default domain, falling
+    // back to the "use default" sentinel when none is flagged.
+    let default_idx = domains
+        .domains
+        .iter()
+        .position(|d| d.default_domain)
+        .unwrap_or(domains.domains.len());
+
+    let idx = Select::new()
+        .with_prompt(format!("Tenant domain on `{server_id}`"))
+        .items(&labels)
+        .default(default_idx)
+        .interact()
+        .map_err(prompt_err)?;
+
+    if idx == domains.domains.len() {
+        Ok(None)
+    } else {
+        Ok(Some(domains.domains[idx].name.clone()))
+    }
+}
+
+/// Prompt for the optional `<path>` component of the VTC DID. Blank input
+/// → `None` (the host assigns one). The help text is tailored to whether
+/// a hosting server was selected.
+fn prompt_webvh_path(server_id: Option<&str>) -> Result<Option<String>, AppError> {
+    println!();
+    match server_id {
+        Some(sid) => {
+            println!("  Optional path label under the hosting server `{sid}`. It becomes the");
+            println!("  trailing `<path>` of the VTC DID — e.g. `acme` yields a DID ending");
+            println!("  `:acme`. Operators with a naming convention (community slug, env)");
+            println!("  can pin it; leave blank to let the server assign one.");
+        }
+        None => {
+            println!("  Optional path label for the VTC DID. It becomes the trailing");
+            println!("  `<path>` component. Leave blank to let the host assign one.");
+        }
+    }
+    let raw: String = Input::new()
+        .with_prompt("WebVH path (blank → auto-assigned)")
+        .default(String::new())
+        .allow_empty(true)
+        .interact_text()
+        .map_err(prompt_err)?;
+    let trimmed = raw.trim();
+    Ok(if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    })
 }
 
 fn prompt_secrets_config() -> Result<SecretsConfig, AppError> {
@@ -771,6 +1069,7 @@ fn secrets_choice_to_config(choice: SecretsBackendChoice) -> SecretsConfig {
 
 async fn run_provision_quietly(
     inputs: &WizardInputs,
+    webvh: &WebvhTarget,
     setup_key: &EphemeralSetupKey,
 ) -> Result<ProvisionResult, AppError> {
     let mut vars = BTreeMap::new();
@@ -781,14 +1080,26 @@ async fn run_provision_quietly(
         "URL".to_string(),
         JsonValue::String(inputs.base_url.clone()),
     );
-    // `WEBVH_PATH` is a sideband hint consumed VTA-side (see
-    // `provision_integration::webvh::take_webvh_path`) before render —
-    // it pins the SCID-trailing path component of the minted
-    // `did:webvh:<scid>:<host>:<path>`. `run_provision` only injects
-    // its own value when the caller's `webvh_path` arg is `Some`, so a
-    // pre-set var here survives intact and the 0-or-1-server auto-pick
-    // continues to work for `webvh_server_id` itself.
-    if let Some(path) = inputs.webvh_path.as_deref() {
+    // `WEBVH_SERVER` / `WEBVH_DOMAIN` / `WEBVH_PATH` are sideband hints
+    // consumed VTA-side (see `provision_integration::webvh`) before the
+    // template renders — they pin where the VTC's `did.jsonl` is published
+    // and the `did:webvh:<scid>:<host>:<path>` shape. All come from the
+    // operator's choices in `select_webvh_target`. They ride in the ask's
+    // template vars and `drive_provision` forwards them verbatim on both
+    // transports.
+    if let Some(server) = webvh.server_id.as_deref() {
+        vars.insert(
+            "WEBVH_SERVER".to_string(),
+            JsonValue::String(server.to_string()),
+        );
+    }
+    if let Some(domain) = webvh.domain.as_deref() {
+        vars.insert(
+            "WEBVH_DOMAIN".to_string(),
+            JsonValue::String(domain.to_string()),
+        );
+    }
+    if let Some(path) = webvh.path.as_deref() {
         vars.insert(
             "WEBVH_PATH".to_string(),
             JsonValue::String(path.to_string()),
@@ -797,28 +1108,7 @@ async fn run_provision_quietly(
     let ask = ProvisionAsk::for_template("vtc-host", vars, inputs.context.clone())
         .with_label("vtc-host integration");
 
-    let (event_tx, mut event_rx) = mpsc::unbounded_channel();
-    let drain_task = tokio::spawn(async move { while event_rx.recv().await.is_some() {} });
-
-    let reply = run_provision(
-        VtaIntent::FullSetup,
-        inputs.vta_did.clone(),
-        setup_key.did.clone(),
-        setup_key.private_key_multibase().to_string(),
-        ask,
-        None,
-        Arc::new(VtcHostMessages),
-        event_tx,
-    )
-    .await
-    .map_err(|e| {
-        AppError::Internal(format!(
-            "VTA provisioning failed: {e}. Double-check the VTA URL/DID and that the \
-             ephemeral DID was authorized via `pnm contexts create` (or `pnm acl create` if \
-             the context already exists)."
-        ))
-    })?;
-    drain_task.abort();
+    let reply = drive_provision(inputs.vta_did.clone(), setup_key, ask).await?;
 
     match reply {
         VtaReply::Full(result) => Ok(*result),
@@ -828,6 +1118,94 @@ async fn run_provision_quietly(
                 .into(),
         )),
     }
+}
+
+/// Drive the provision-integration workflow to completion, honouring the
+/// operator's explicit webvh choice already baked into `ask`.
+///
+/// This replicates `run_provision`'s orchestration but deliberately
+/// bypasses its client-side webvh-server auto-pick. On the DIDComm
+/// preflight we hand `run_provision_flight` `None`/`None` so the
+/// `WEBVH_SERVER` / `WEBVH_PATH` / `WEBVH_DOMAIN` vars already present in
+/// `ask` flow through verbatim. That makes an explicit server choice — or
+/// an explicit *serverless* choice — work on both transports, including
+/// against a VTA with 2+ registered hosting servers, where `run_provision`
+/// refuses to guess and bails. The REST path needs no special handling:
+/// its one-shot attempt already forwards the ask's vars unchanged.
+///
+/// Transport is auto-selected (DIDComm-first when both are advertised),
+/// matching `run_provision`'s default. Events are consumed for control
+/// flow only — the wizard keeps its own UX terse.
+async fn drive_provision(
+    vta_did: String,
+    setup_key: &EphemeralSetupKey,
+    ask: ProvisionAsk,
+) -> Result<VtaReply, AppError> {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tokio::spawn(run_connection_test(
+        VtaIntent::FullSetup,
+        vta_did.clone(),
+        setup_key.did.clone(),
+        setup_key.private_key_multibase().to_string(),
+        ask.clone(),
+        None,
+        tx,
+    ));
+
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            // REST one-shot path completes here.
+            VtaEvent::Connected { reply, .. } => return Ok(reply),
+            VtaEvent::Failed(msg) => return Err(provision_failed(&msg)),
+            // DIDComm FullSetup: preflight done — drive the flight with the
+            // explicit choice baked into `ask` (None/None → no auto-pick).
+            VtaEvent::PreflightDone {
+                rest_url,
+                mediator_did,
+                ..
+            } => {
+                let (ftx, mut frx) = mpsc::unbounded_channel();
+                tokio::spawn(run_provision_flight(
+                    vta_did.clone(),
+                    setup_key.did.clone(),
+                    setup_key.private_key_multibase().to_string(),
+                    mediator_did,
+                    rest_url,
+                    ask.clone(),
+                    None,
+                    None,
+                    Arc::new(VtcHostMessages),
+                    ftx,
+                ));
+                while let Some(fev) = frx.recv().await {
+                    match fev {
+                        VtaEvent::Connected { reply, .. } => return Ok(reply),
+                        VtaEvent::Failed(msg) => return Err(provision_failed(&msg)),
+                        _ => {}
+                    }
+                }
+                return Err(provision_failed(
+                    "provisioning ended without a terminal event",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    Err(provision_failed(
+        "provisioning ended without a terminal event",
+    ))
+}
+
+/// Wrap a terminal failure string with the actionable hint the wizard has
+/// always printed — the most common cause is a missing or expired ACL
+/// grant on the setup DID.
+fn provision_failed(msg: &str) -> AppError {
+    AppError::Internal(format!(
+        "VTA provisioning failed: {msg}. Double-check the VTA URL/DID and that the ephemeral \
+         DID was authorized via `pnm contexts create` (or `pnm acl create` if the context \
+         already exists)."
+    ))
 }
 
 /// `OperatorMessages` impl for the vtc-host integration kind.

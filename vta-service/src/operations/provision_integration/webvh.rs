@@ -1,10 +1,10 @@
-//! Helpers for the `WEBVH_SERVER` / `WEBVH_PATH` template variables —
-//! the two "transport metadata" vars that control where the VTA
-//! publishes the integration's `did.jsonl` log. These are *not*
-//! document content; they never reach the template renderer.
+//! Helpers for the `WEBVH_SERVER` / `WEBVH_PATH` / `WEBVH_DOMAIN`
+//! template variables — the "transport metadata" vars that control
+//! where the VTA publishes the integration's `did.jsonl` log. These
+//! are *not* document content; they never reach the template renderer.
 //!
 //! The rest of the provision-integration flow treats webvh-hosted and
-//! serverless integrations uniformly; these two helpers are the only
+//! serverless integrations uniformly; these helpers are the only
 //! places that know about the `WEBVH_*` var names.
 
 use std::collections::BTreeMap;
@@ -90,4 +90,101 @@ pub(super) fn take_webvh_path(
         ));
     }
     Ok(Some(trimmed.to_string()))
+}
+
+/// Remove and return the optional `WEBVH_DOMAIN` template var.
+///
+/// `WEBVH_DOMAIN` is transport metadata — it tells the webvh hosting
+/// server which of its tenant domains to allocate the DID under (the
+/// `did:webvh:<scid>:<host>` host slot). Like `WEBVH_PATH` it is removed
+/// from `template_vars` before the renderer sees the map so a template
+/// author never picks it up as document content.
+///
+/// `Ok(None)` when the var is absent or JSON-null — the remote server
+/// then runs its own resolution chain (caller's ACL default → system
+/// default). `Ok(Some(domain))` when it is a non-empty string. Empty
+/// strings and non-string types fail loud, matching [`take_webvh_path`].
+pub(super) fn take_webvh_domain(
+    template_vars: &mut BTreeMap<String, Value>,
+) -> Result<Option<String>, AppError> {
+    let removed = match template_vars.remove("WEBVH_DOMAIN") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let s = match removed {
+        Value::String(s) => s,
+        _ => {
+            return Err(AppError::Validation(
+                "WEBVH_DOMAIN must be a non-empty string".into(),
+            ));
+        }
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "WEBVH_DOMAIN must be a non-empty string".into(),
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn vars(pairs: &[(&str, Value)]) -> BTreeMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn take_webvh_domain_absent_is_none() {
+        let mut v = vars(&[]);
+        assert_eq!(take_webvh_domain(&mut v).unwrap(), None);
+    }
+
+    #[test]
+    fn take_webvh_domain_null_is_none() {
+        let mut v = vars(&[("WEBVH_DOMAIN", Value::Null)]);
+        assert_eq!(take_webvh_domain(&mut v).unwrap(), None);
+    }
+
+    #[test]
+    fn take_webvh_domain_trims_and_returns() {
+        let mut v = vars(&[("WEBVH_DOMAIN", json!("  acme.example.com "))]);
+        assert_eq!(
+            take_webvh_domain(&mut v).unwrap(),
+            Some("acme.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn take_webvh_domain_removes_from_map() {
+        // Must be stripped before the renderer sees the var — it's
+        // transport metadata, not document content.
+        let mut v = vars(&[("WEBVH_DOMAIN", json!("acme.example.com"))]);
+        let _ = take_webvh_domain(&mut v).unwrap();
+        assert!(!v.contains_key("WEBVH_DOMAIN"));
+    }
+
+    #[test]
+    fn take_webvh_domain_empty_string_errors() {
+        let mut v = vars(&[("WEBVH_DOMAIN", json!("   "))]);
+        assert!(matches!(
+            take_webvh_domain(&mut v),
+            Err(AppError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn take_webvh_domain_non_string_errors() {
+        let mut v = vars(&[("WEBVH_DOMAIN", json!(42))]);
+        assert!(matches!(
+            take_webvh_domain(&mut v),
+            Err(AppError::Validation(_))
+        ));
+    }
 }
