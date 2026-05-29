@@ -33,9 +33,17 @@ use super::storage::StatusListState;
 /// Side-effects: sets `assigned[index] = true`. Does **not**
 /// touch the bitstring — the bit stays `0` (= "valid") until a
 /// subsequent [`flip`] revokes / suspends.
+///
+/// A candidate slot must be **both** unassigned **and** have its
+/// bit currently clear. The second condition matters because
+/// [`add_initial_decoys`] flips bits on *unassigned* slots: without
+/// the `!is_set` filter the allocator could hand a member a decoy
+/// slot whose bit already reads `1`, so the member's credential
+/// would resolve as *revoked from the moment of issuance*. Decoy
+/// slots are therefore skipped and remain permanent noise.
 pub fn allocate(state: &mut StatusListState) -> Option<u32> {
     let available: Vec<usize> = (0..state.capacity)
-        .filter(|&i| !state.assigned[i])
+        .filter(|&i| !state.assigned[i] && !state.is_set(i))
         .collect();
     if available.is_empty() {
         return None;
@@ -211,6 +219,48 @@ mod tests {
             occupancy(&state) >= 0.75,
             "expected occupancy >= 0.75, got {}",
             occupancy(&state)
+        );
+    }
+
+    /// Regression (deterministic): when every unassigned slot
+    /// already carries a bit (all decoys, nothing assigned), the
+    /// allocator must refuse rather than hand one out. The old
+    /// allocator filtered on `assigned` alone and returned a
+    /// decoy slot here — which in production gives a member a
+    /// credential that reads as revoked at issuance.
+    #[test]
+    fn allocate_refuses_when_all_free_slots_are_decoys() {
+        let mut state = fresh_state(Some(8));
+        // Flip a bit on every slot; leave all of them unassigned.
+        for i in 0..8 {
+            flip(&mut state, i as u32, true).unwrap();
+        }
+        assert!(
+            allocate(&mut state).is_none(),
+            "allocate must not return a slot whose bit is already set"
+        );
+    }
+
+    /// Regression: under a realistic decoy load, every slot the
+    /// allocator hands out has a clear bit. Drains the list to be
+    /// sure no decoy slot ever slips through.
+    #[test]
+    fn allocate_never_returns_a_set_slot_under_decoys() {
+        let mut state = fresh_state(Some(256));
+        add_initial_decoys(&mut state, 200);
+        let mut handed_out = 0usize;
+        while let Some(idx) = allocate(&mut state) {
+            assert!(
+                !state.is_set(idx as usize),
+                "allocate returned slot {idx} whose bit was already set (decoy)"
+            );
+            handed_out += 1;
+        }
+        // Only the non-decoy slots are allocatable.
+        assert!(handed_out > 0, "expected some allocatable slots");
+        assert!(
+            handed_out <= 256 - state.count_set(),
+            "allocated more slots than there were clear ones"
         );
     }
 
