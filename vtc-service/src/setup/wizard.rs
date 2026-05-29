@@ -154,8 +154,8 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
         )
     })?;
     let data_dir = default_data_dir_for(&config_path);
-    let scid = extract_scid_or_err(&integration_did)?;
-    write_did_log(&data_dir, &scid, did_log)?;
+    let label = did_log_label_or_err(&integration_did)?;
+    write_did_log(&data_dir, &label, did_log)?;
 
     // 6. Materialise the config. We hold off writing it to disk until
     //    step 7 because the config-secret backend stores the key bundle
@@ -1453,7 +1453,14 @@ fn default_data_dir_for(config_path: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("data"))
 }
 
-fn extract_scid_or_err(did: &str) -> Result<String, AppError> {
+/// Derive the on-disk log label for the VTC's own `did:webvh` — the
+/// final colon-separated component (for a serverless
+/// `did:webvh:<scid>:<host>` that's the host). This is purely a
+/// storage-key derivation: the daemon's `GET /.well-known/did.jsonl`
+/// route (`routes::did_log`) reads the log back under the *same*
+/// derivation, so the two must stay in lockstep. Not an SCID — the
+/// SCID is the first label, and nothing here needs it.
+fn did_log_label_or_err(did: &str) -> Result<String, AppError> {
     did.strip_prefix("did:webvh:")
         .and_then(|suffix| suffix.split(':').next_back())
         .map(str::to_string)
@@ -1483,14 +1490,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extract_scid_from_webvh() {
-        let scid = extract_scid_or_err("did:webvh:vtc.example.com:v1:abc123").unwrap();
-        assert_eq!(scid, "abc123");
+    fn did_log_label_is_the_final_component() {
+        // Real did:webvh is `did:webvh:<scid>:<host>` — the wizard's
+        // log label is the final component, i.e. the host. (The serve
+        // route reads the file back under this same label.)
+        let label = did_log_label_or_err("did:webvh:abc123:vtc.example.com").unwrap();
+        assert_eq!(label, "vtc.example.com");
     }
 
     #[test]
-    fn extract_scid_refuses_non_webvh() {
-        let err = extract_scid_or_err("did:key:z6Mk…").unwrap_err();
+    fn did_log_label_refuses_non_webvh() {
+        let err = did_log_label_or_err("did:key:z6Mk…").unwrap_err();
         assert!(format!("{err}").contains("non-webvh"));
     }
 

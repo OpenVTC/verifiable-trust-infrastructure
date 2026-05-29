@@ -32,7 +32,7 @@ fn base_template(extra: Value) -> Value {
 
 fn ambient_vars() -> TemplateVars {
     let mut v = TemplateVars::new();
-    v.insert_string("DID", "did:webvh:example.com:abc");
+    v.insert_string("DID", "did:webvh:abc:example.com");
     v.insert_string("SIGNING_KEY_MB", "z6MkSigning");
     v
 }
@@ -133,7 +133,7 @@ fn renders_embedded_string_placeholder() {
 
     let out = tpl.render(&vars).unwrap();
     assert_eq!(out["uri"], "prefix-https://m.example.com-suffix");
-    assert_eq!(out["id"], "did:webvh:example.com:abc");
+    assert_eq!(out["id"], "did:webvh:abc:example.com");
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn placeholders_in_nested_arrays_and_objects() {
     let mut vars = ambient_vars();
     vars.insert_string("URL", "https://svc.example.com");
     let out = tpl.render(&vars).unwrap();
-    assert_eq!(out["service"][0]["id"], "did:webvh:example.com:abc#svc");
+    assert_eq!(out["service"][0]["id"], "did:webvh:abc:example.com#svc");
     assert_eq!(
         out["service"][0]["serviceEndpoint"]["uri"],
         "https://svc.example.com"
@@ -319,21 +319,21 @@ fn utf8_strings_survive_substitution() {
 fn didcomm_mediator_builtin_renders_end_to_end() {
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:mediator");
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "https://mediator.example.com");
     vars.insert_string("WS_URL", "wss://mediator.example.com/ws");
 
     let doc = tpl.render(&vars).unwrap();
-    assert_eq!(doc["id"], "did:webvh:example.com:mediator");
+    assert_eq!(doc["id"], "did:webvh:mediator:example.com");
     let services = doc["service"].as_array().unwrap();
     assert_eq!(services.len(), 2);
 
     // DIDComm service: id `#service`, type as a single-element array,
     // serviceEndpoint as an array of two endpoint objects (HTTP first,
     // WSS second). Each endpoint carries the same accept/routingKeys.
-    assert_eq!(services[0]["id"], "did:webvh:example.com:mediator#service");
+    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#service");
     assert_eq!(services[0]["type"], json!(["DIDCommMessaging"]));
     let endpoints = services[0]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints.len(), 2);
@@ -346,7 +346,7 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
 
     // Authentication service: id `#auth`, type as a single-element array,
     // serviceEndpoint as a plain string at `<URL>/authenticate`.
-    assert_eq!(services[1]["id"], "did:webvh:example.com:mediator#auth");
+    assert_eq!(services[1]["id"], "did:webvh:mediator:example.com#auth");
     assert_eq!(services[1]["type"], json!(["Authentication"]));
     assert_eq!(
         services[1]["serviceEndpoint"],
@@ -363,7 +363,7 @@ fn ws_url_is_derived_from_url_when_omitted() {
     // (`/mediator/v1` over HTTP, `/mediator/v1/ws` over WSS).
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:mediator");
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "https://mediator.example.com/mediator/v1");
@@ -388,7 +388,7 @@ fn ws_url_derivation_handles_plain_http_and_trailing_slash() {
     // `ws://host//ws`.
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:mediator");
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "http://mediator.local/");
@@ -405,7 +405,7 @@ fn explicit_ws_url_overrides_derivation() {
     // an operator who terminates WS at a different host).
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:mediator");
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "https://mediator.example.com");
@@ -426,7 +426,7 @@ fn ws_url_not_derived_for_non_http_scheme() {
     // — surface the missing-var error instead of fabricating something.
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:mediator");
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "didcomm://routed-only");
@@ -473,7 +473,7 @@ fn vta_admin_builtin_renders_end_to_end() {
 fn did_hosting_daemon_builtin_renders_end_to_end() {
     let tpl = load_embedded("did-hosting-daemon").unwrap();
     let mut vars = TemplateVars::new();
-    vars.insert_string("DID", "did:webvh:example.com:host");
+    vars.insert_string("DID", "did:webvh:host:example.com");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
     vars.insert_string("URL", "https://host.example.com");
@@ -648,10 +648,10 @@ fn vtc_host_renders_with_minimal_vars() {
 
     let out = tpl.render(&vars).unwrap();
 
-    assert_eq!(out["id"], "did:webvh:example.com:abc");
+    assert_eq!(out["id"], "did:webvh:abc:example.com");
     assert_eq!(
         out["verificationMethod"][0]["id"],
-        "did:webvh:example.com:abc#key-0"
+        "did:webvh:abc:example.com#key-0"
     );
     assert_eq!(
         out["verificationMethod"][0]["publicKeyMultibase"],
@@ -659,20 +659,20 @@ fn vtc_host_renders_with_minimal_vars() {
     );
     assert_eq!(
         out["verificationMethod"][1]["id"],
-        "did:webvh:example.com:abc#key-1"
+        "did:webvh:abc:example.com#key-1"
     );
     assert_eq!(
         out["verificationMethod"][1]["publicKeyMultibase"],
         "z6LSKeyAgreement"
     );
-    assert_eq!(out["assertionMethod"][0], "did:webvh:example.com:abc#key-0");
-    assert_eq!(out["authentication"][0], "did:webvh:example.com:abc#key-0");
-    assert_eq!(out["keyAgreement"][0], "did:webvh:example.com:abc#key-1");
+    assert_eq!(out["assertionMethod"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["authentication"][0], "did:webvh:abc:example.com#key-0");
+    assert_eq!(out["keyAgreement"][0], "did:webvh:abc:example.com#key-1");
 
     // Two services: #vtc-rest at the URL, #vtc-status-list at URL + default path.
     assert_eq!(
         out["service"][0]["id"],
-        "did:webvh:example.com:abc#vtc-rest"
+        "did:webvh:abc:example.com#vtc-rest"
     );
     assert_eq!(out["service"][0]["type"], "VTCRest");
     assert_eq!(
@@ -681,7 +681,7 @@ fn vtc_host_renders_with_minimal_vars() {
     );
     assert_eq!(
         out["service"][1]["id"],
-        "did:webvh:example.com:abc#vtc-status-list"
+        "did:webvh:abc:example.com#vtc-status-list"
     );
     assert_eq!(out["service"][1]["type"], "VTCStatusList");
     assert_eq!(

@@ -34,13 +34,27 @@
 //! `vta_sdk::sealed_transfer::template_bootstrap::TemplateOutput`'s
 //! `did.jsonl` entry.
 //!
+//! ## Filename
+//!
+//! The VTC hosts exactly one DID — its own. The setup wizard wrote
+//! the log to `did/<label>.jsonl`, where `<label>` is the final
+//! colon-separated component of `config.vtc_did`. For a serverless
+//! `did:webvh:<scid>:<host>` that final component is the **host** (the
+//! SCID is the *first* label — see the did:webvh spec and
+//! `vta_sdk::session::url_from_did`, which reads the host as the 2nd
+//! component). This route reads back the same name the wizard wrote,
+//! so the derivation here mirrors the wizard's exactly. The label is
+//! not interpreted as anything — it's only a storage key.
+//!
 //! ## Safety
 //!
-//! The VTC hosts exactly one DID — its own. The SCID is taken from
-//! `config.vtc_did` (operator-controlled at setup, not the request)
-//! and is validated against the did:webvh SCID grammar
-//! (alphanumeric, `-`, `_`) before it reaches the filesystem, so a
-//! malformed configured DID can't drive a path-traversal read.
+//! `config.vtc_did` is operator-controlled at setup, never request-
+//! derived. Before the label reaches the filesystem it's checked for
+//! path-traversal safety (no separators, no `..`), so a malformed
+//! configured DID can't escape the `did/` directory. This is a
+//! *path-safety* check, **not** an SCID-grammar check: a real label is
+//! a hostname and legitimately contains dots — rejecting dots is the
+//! bug that made the VTC's own DID unresolvable.
 
 use axum::extract::State;
 use axum::http::{HeaderValue, StatusCode, header};
@@ -53,12 +67,13 @@ pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
     let config = state.config.read().await;
 
     // The VTC is not a general-purpose did:webvh host — it serves
-    // exactly one DID, its own. Resolve the SCID from `config.vtc_did`;
-    // before setup has run (or for a non-webvh DID) there's nothing to
-    // serve. `extract_scid_from_did` also validates the SCID grammar,
-    // so the filename below can't escape the `did/` directory.
-    let scid = match config.vtc_did.as_deref().and_then(extract_scid_from_did) {
-        Some(scid) => scid,
+    // exactly one DID, its own. Derive the on-disk log label from
+    // `config.vtc_did` (the same way the setup wizard did when it wrote
+    // the file); before setup has run (or for a non-webvh DID) there's
+    // nothing to serve. `did_log_label` also rejects path-traversal, so
+    // the filename below can't escape the `did/` directory.
+    let label = match config.vtc_did.as_deref().and_then(did_log_label) {
+        Some(label) => label,
         None => return (StatusCode::NOT_FOUND, "did log not found").into_response(),
     };
 
@@ -66,7 +81,7 @@ pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
         .store
         .data_dir
         .join("did")
-        .join(format!("{scid}.jsonl"));
+        .join(format!("{label}.jsonl"));
     drop(config);
 
     let body = match tokio::fs::read(&path).await {
@@ -91,20 +106,31 @@ pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
         .into_response()
 }
 
-fn is_valid_scid(s: &str) -> bool {
+/// True if `s` is safe to interpolate into `did/<s>.jsonl` without
+/// escaping the directory. A legitimate label is a hostname or SCID,
+/// so dots are allowed; only path separators, parent-directory refs,
+/// and control characters are rejected.
+fn is_safe_label(s: &str) -> bool {
     !s.is_empty()
-        && s.len() <= 128
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && s.len() <= 253
+        && s != "."
+        && s != ".."
+        && !s.contains("..")
+        && !s.contains('/')
+        && !s.contains('\\')
+        && !s.chars().any(char::is_control)
 }
 
-/// Pull the SCID out of a `did:webvh:<host>:<…path…>:<scid>` —
-/// the SCID is the **last** colon-separated component.
-fn extract_scid_from_did(did: &str) -> Option<String> {
+/// Derive the on-disk log label from the VTC's own `did:webvh`. The
+/// label is the **final** colon-separated component — the same value
+/// the setup wizard used when it wrote `did/<label>.jsonl`. For a
+/// serverless `did:webvh:<scid>:<host>` that's the host. Returns
+/// `None` for a non-webvh DID or a label that isn't filesystem-safe.
+fn did_log_label(did: &str) -> Option<String> {
     let suffix = did.strip_prefix("did:webvh:")?;
-    let last = suffix.split(':').next_back()?;
-    if is_valid_scid(last) {
-        Some(last.to_string())
+    let label = suffix.split(':').next_back()?;
+    if is_safe_label(label) {
+        Some(label.to_string())
     } else {
         None
     }
@@ -119,40 +145,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn valid_scid_accepts_alphanumeric() {
-        assert!(is_valid_scid("abc123"));
-        assert!(is_valid_scid("zQmPLwUBtaqz3a"));
-        assert!(is_valid_scid("foo-bar_baz"));
+    fn safe_label_accepts_hostnames_and_scids() {
+        // A serverless DID's label is the host — dots and all. This is
+        // the case the old SCID-grammar check wrongly rejected.
+        assert!(is_safe_label("vtc.example.com"));
+        assert!(is_safe_label("abc123"));
+        assert!(is_safe_label("zQmPLwUBtaqz3a"));
+        assert!(is_safe_label("foo-bar_baz"));
     }
 
     #[test]
-    fn valid_scid_rejects_separators_and_empty() {
-        assert!(!is_valid_scid(""));
-        assert!(!is_valid_scid("foo/bar"));
-        assert!(!is_valid_scid("foo:bar"));
-        assert!(!is_valid_scid("../etc/passwd"));
+    fn safe_label_rejects_traversal_and_empty() {
+        assert!(!is_safe_label(""));
+        assert!(!is_safe_label("."));
+        assert!(!is_safe_label(".."));
+        assert!(!is_safe_label("foo/bar"));
+        assert!(!is_safe_label("foo\\bar"));
+        assert!(!is_safe_label("../etc/passwd"));
+        assert!(!is_safe_label("a..b"));
     }
 
     #[test]
-    fn extract_scid_from_did_pulls_last_component() {
+    fn did_log_label_takes_the_last_component() {
+        // Real did:webvh — SCID first, host last. The label is the host.
         assert_eq!(
-            extract_scid_from_did("did:webvh:vtc.example.com:abc123").as_deref(),
-            Some("abc123")
+            did_log_label("did:webvh:abc123:vtc.example.com").as_deref(),
+            Some("vtc.example.com")
         );
+        // Hosted DID with a path tail — label is the final component.
         assert_eq!(
-            extract_scid_from_did("did:webvh:vtc.example.com:v1:abc123").as_deref(),
-            Some("abc123")
+            did_log_label("did:webvh:abc123:vtc.example.com:v1").as_deref(),
+            Some("v1")
         );
     }
 
     #[test]
-    fn extract_scid_from_did_returns_none_for_non_webvh() {
-        assert!(extract_scid_from_did("did:key:z6Mk…").is_none());
-        assert!(extract_scid_from_did("not a did").is_none());
+    fn did_log_label_returns_none_for_non_webvh() {
+        assert!(did_log_label("did:key:z6Mk…").is_none());
+        assert!(did_log_label("not a did").is_none());
     }
 
     #[test]
-    fn extract_scid_from_did_returns_none_when_last_component_invalid() {
-        assert!(extract_scid_from_did("did:webvh:vtc.example.com:foo/bar").is_none());
+    fn did_log_label_returns_none_when_last_component_unsafe() {
+        assert!(did_log_label("did:webvh:abc123:../../etc/passwd").is_none());
     }
 }
