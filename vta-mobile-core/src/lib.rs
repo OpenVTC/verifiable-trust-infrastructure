@@ -20,11 +20,9 @@
 //!
 //! ## Build-out slices
 //!
-//! 1. **this slice** — skeleton + minimal sync surface; prove the crate builds
-//!    and Kotlin/Swift bindings generate.
+//! 1. **this slice** — skeleton + minimal sync surface; prove the crate builds and Kotlin/Swift bindings generate.
 //! 2. Trust Task build/verify (pure, sync) — see [`task`], [`stepup`].
-//! 3. VTA session/auth (async) — see [`session`]; DIDComm pack/unpack —
-//!    see [`didcomm`]; push registration — see [`push`].
+//! 3. VTA session/auth (async) — see [`session`]; DIDComm pack/unpack — see [`didcomm`]; push registration — see [`push`].
 
 uniffi::setup_scaffolding!();
 
