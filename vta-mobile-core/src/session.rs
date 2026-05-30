@@ -21,12 +21,24 @@
 //! 6. `parse_refresh_response` → the rotated tokens (+ an optional session
 //!    snapshot, e.g. an `acr` bump after a step-up).
 //!
+//! Introspection, callable any time the agent holds a session, to reconcile its
+//! local view (acr after a step-up, roles/scopes after a policy edit) without
+//! re-issuing tokens:
+//!
+//! - `build_whoami` → ask the auth service for its view of the holder
+//!   (`auth/whoami`). Like authenticate it is `IS_PROOF_REQUIRED == true`: the
+//!   request carries an empty payload but a holder-signed framework **proof**,
+//!   so the introspection itself proves who is asking.
+//! - `parse_whoami_response` → the current session + roles + scopes
+//!   ([`SessionInfo`]).
+//!
 //! Transport is the [`crate::didcomm::DidcommSession`]; these functions only
 //! build/parse the JSON.
 
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
     authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
+    whoami::v0_1 as whoami,
 };
 use trust_tasks_rs::{Payload, TrustTask};
 
@@ -70,6 +82,30 @@ pub struct AuthTokens {
     pub acr: Option<String>,
     /// Authentication methods references (e.g. `["did"]`).
     pub amr: Vec<String>,
+}
+
+/// The auth service's view of the holder, from a `whoami` response — the full
+/// current session plus the roles/scopes the service holds. The native layer
+/// uses it to reconcile local AAL/authorization state after a step-up or policy
+/// edit without re-issuing tokens.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SessionInfo {
+    /// Opaque, server-chosen session id.
+    pub session_id: String,
+    /// The authenticated party's VID (typically a DID URL).
+    pub subject: String,
+    /// RFC 3339 timestamp the session was created.
+    pub issued_at: String,
+    /// RFC 3339 timestamp the session ceases to be valid.
+    pub expires_at: String,
+    /// Authentication context class of the session (e.g. `"aal2"`).
+    pub acr: Option<String>,
+    /// Authentication methods references (e.g. `["did", "passkey"]`).
+    pub amr: Vec<String>,
+    /// Role assignments the auth service holds for the holder.
+    pub roles: Vec<String>,
+    /// Capability tags effective on the holder's current session.
+    pub scopes: Vec<String>,
 }
 
 /// Build an `auth/challenge/0.1` request to start VTA authentication. No proof —
@@ -191,6 +227,36 @@ pub fn parse_refresh_response(json: String) -> Result<AuthTokens, FfiError> {
         amr: session
             .map(|s| s.amr.iter().map(|a| a.to_string()).collect())
             .unwrap_or_default(),
+    })
+}
+
+/// Build a signed `auth/whoami/0.1` introspection request. The payload is empty;
+/// like authenticate, `auth/whoami` is `IS_PROOF_REQUIRED == true`, so the
+/// holder-signed framework proof (via `signer`, reusing [`crate::proof`]) is
+/// what authenticates the request.
+#[uniffi::export]
+pub fn build_whoami(env: AuthEnvelope, signer: Box<dyn Signer>) -> Result<String, FfiError> {
+    let mut doc = envelope_doc(&env, whoami::Payload::default())?;
+    attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
+    serialize(&doc)
+}
+
+/// Parse an `auth/whoami/0.1#response` — the auth service's view of the holder:
+/// the current session plus the roles/scopes it holds.
+#[uniffi::export]
+pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
+    let doc: TrustTask<whoami::Response> = serde_json::from_str(&json).map_err(decode)?;
+    let r = doc.payload;
+    let session = r.session;
+    Ok(SessionInfo {
+        session_id: session.id.to_string(),
+        subject: session.subject.to_string(),
+        issued_at: session.issued_at.to_rfc3339(),
+        expires_at: session.expires_at.to_rfc3339(),
+        acr: session.acr,
+        amr: session.amr.iter().map(|a| a.to_string()).collect(),
+        roles: r.roles.iter().map(|x| x.to_string()).collect(),
+        scopes: r.scopes.iter().map(|x| x.to_string()).collect(),
     })
 }
 
@@ -422,5 +488,120 @@ mod tests {
         assert_eq!(t.refresh_expires_in, None);
         assert_eq!(t.acr, None);
         assert!(t.amr.is_empty());
+    }
+
+    #[test]
+    fn whoami_request_is_signed_and_verifies_against_the_holder_key() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use multibase::Base;
+
+        let sk = SigningKey::from_bytes(&[99u8; 32]);
+        let pk = sk.verifying_key();
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(pk.as_bytes());
+        let mb = multibase::encode(Base::Base58Btc, mc);
+        let did = format!("did:key:{mb}");
+
+        struct EnclaveStub {
+            sk: SigningKey,
+            did: String,
+        }
+        impl Signer for EnclaveStub {
+            fn did(&self) -> String {
+                self.did.clone()
+            }
+            fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                Ok(self.sk.sign(&payload).to_bytes().to_vec())
+            }
+        }
+
+        let e = AuthEnvelope {
+            id: "whoami-1".to_string(),
+            holder_did: did.clone(),
+            vta_did: "did:web:vta.example".to_string(),
+            issued_at: "2026-05-30T10:00:00Z".to_string(),
+        };
+        let json = build_whoami(
+            e,
+            Box::new(EnclaveStub {
+                sk,
+                did: did.clone(),
+            }),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "https://trusttasks.org/spec/auth/whoami/0.1");
+
+        let doc: TrustTask<whoami::Payload> = serde_json::from_str(&json).unwrap();
+        let proof = doc.proof.clone().expect("whoami must be signed");
+        let di: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(&proof).unwrap()).unwrap();
+        assert_eq!(di.verification_method, format!("{did}#{mb}"));
+
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the whoami proof must verify against the holder key");
+    }
+
+    #[test]
+    fn parses_whoami_response_with_session_roles_and_scopes() {
+        let json = r#"{
+          "id": "w-1",
+          "type": "https://trusttasks.org/spec/auth/whoami/0.1#response",
+          "issuer": "did:web:vta.example",
+          "recipient": "did:key:zHolder",
+          "payload": {
+            "session": {
+              "id": "sess-1",
+              "subject": "did:key:zHolder",
+              "issuedAt": "2026-05-30T10:00:01Z",
+              "expiresAt": "2026-05-30T10:30:01Z",
+              "amr": ["did", "passkey"],
+              "acr": "aal2"
+            },
+            "roles": ["admin", "operator"],
+            "scopes": ["acl:read", "acl:write"]
+          }
+        }"#;
+        let s = parse_whoami_response(json.to_string()).unwrap();
+        assert_eq!(s.session_id, "sess-1");
+        assert_eq!(s.subject, "did:key:zHolder");
+        assert_eq!(s.acr.as_deref(), Some("aal2"));
+        assert_eq!(s.amr, vec!["did".to_string(), "passkey".to_string()]);
+        assert_eq!(s.roles, vec!["admin".to_string(), "operator".to_string()]);
+        assert_eq!(
+            s.scopes,
+            vec!["acl:read".to_string(), "acl:write".to_string()]
+        );
+    }
+
+    #[test]
+    fn parses_whoami_response_with_omitted_roles_and_scopes() {
+        // roles/scopes skip-serialize when empty; acr may be absent too.
+        let json = r#"{
+          "id": "w-2",
+          "type": "https://trusttasks.org/spec/auth/whoami/0.1#response",
+          "issuer": "did:web:vta.example",
+          "recipient": "did:key:zHolder",
+          "payload": {
+            "session": {
+              "id": "sess-2",
+              "subject": "did:key:zHolder",
+              "issuedAt": "2026-05-30T10:00:01Z",
+              "expiresAt": "2026-05-30T10:30:01Z"
+            }
+          }
+        }"#;
+        let s = parse_whoami_response(json.to_string()).unwrap();
+        assert_eq!(s.session_id, "sess-2");
+        assert_eq!(s.acr, None);
+        assert!(s.amr.is_empty());
+        assert!(s.roles.is_empty());
+        assert!(s.scopes.is_empty());
     }
 }
