@@ -187,8 +187,8 @@ export interface WhoamiResponse {
   allowedContexts: string[];
 }
 
-const WHOAMI_TASK = "https://trusttasks.org/openvtc/vtc/auth/whoami/1.0";
-const SIGN_OUT_TASK = "https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0";
+const WHOAMI_TASK = "https://trusttasks.org/spec/auth/whoami/0.1";
+const SIGN_OUT_TASK = "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
 /** Fetch the caller's session identity. Throws on 401/403. */
 export const fetchWhoami = (): Promise<WhoamiResponse> =>

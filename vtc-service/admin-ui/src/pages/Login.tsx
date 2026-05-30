@@ -30,9 +30,9 @@ import {
 } from "@/lib/wallet";
 
 const TRUST_TASK_START =
-  "https://trusttasks.org/openvtc/vtc/auth/passkey-login/start/1.0";
+  "https://trusttasks.org/spec/auth/passkey/login/start/0.1";
 const TRUST_TASK_FINISH =
-  "https://trusttasks.org/openvtc/vtc/auth/passkey-login/finish/1.0";
+  "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
 const TRUST_TASK_ADMIN_SESSION =
   "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0";
 

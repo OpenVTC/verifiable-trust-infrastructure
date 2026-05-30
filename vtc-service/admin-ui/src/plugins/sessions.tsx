@@ -24,9 +24,9 @@ type SortKey = "did" | "state" | "createdAt" | "refreshExpiresAt";
 type SortDir = "asc" | "desc";
 
 const TRUST_TASK_MANAGE =
-  "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/manage/1.0";
+  "https://trusttasks.org/spec/auth/sessions/list/0.1";
 const TRUST_TASK_REVOKE =
-  "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/revoke/1.0";
+  "https://trusttasks.org/spec/auth/revoke-session/0.1";
 
 type SessionState = "Pending" | "Authenticated" | "Revoked";
 
