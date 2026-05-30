@@ -24,6 +24,7 @@ crate-type = ["cdylib", "staticlib", "lib"]
 uniffi = { workspace = true, features = ["cli"] }
 thiserror = { workspace = true }
 base64 = { workspace = true }
+serde_json = { workspace = true }
 
 # ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
 # The FFI build + bindgen pipeline is proven first with a minimal surface.
