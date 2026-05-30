@@ -32,13 +32,22 @@
 //! - `parse_whoami_response` → the current session + roles + scopes
 //!   ([`SessionInfo`]).
 //!
+//! Teardown (logout / device-lost / key-rotation), also `IS_PROOF_REQUIRED ==
+//! true` so the revocation is holder-signed:
+//!
+//! - `build_revoke_session` → invalidate one named session (`auth/revoke-session`).
+//! - `build_revoke_all_sessions` → invalidate every session the service holds
+//!   for the holder. (One named session vs all is the spec payload's mutually
+//!   exclusive `oneOf`; exposing two builders makes misuse impossible.)
+//! - `parse_revoke_session_response` → how many sessions were invalidated.
+//!
 //! Transport is the [`crate::didcomm::DidcommSession`]; these functions only
 //! build/parse the JSON.
 
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
     authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
-    whoami::v0_1 as whoami,
+    revoke_session::v0_1 as revoke_session, whoami::v0_1 as whoami,
 };
 use trust_tasks_rs::{Payload, TrustTask};
 
@@ -258,6 +267,55 @@ pub fn parse_whoami_response(json: String) -> Result<SessionInfo, FfiError> {
         roles: r.roles.iter().map(|x| x.to_string()).collect(),
         scopes: r.scopes.iter().map(|x| x.to_string()).collect(),
     })
+}
+
+/// Build a signed `auth/revoke-session/0.1` that invalidates one named session.
+/// `reason` is an optional audit-log rationale (e.g. `"logout"`, `"device-lost"`,
+/// `"key-rotation"`). `auth/revoke-session` is `IS_PROOF_REQUIRED == true`, so
+/// the holder-signed proof (via `signer`) authorizes the revocation.
+#[uniffi::export]
+pub fn build_revoke_session(
+    env: AuthEnvelope,
+    session_id: String,
+    reason: Option<String>,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let payload = revoke_session::Payload::Variant0 {
+        session_id: revoke_session::PayloadVariant0SessionId::try_from(session_id).map_err(conv)?,
+        reason,
+        ext: None,
+    };
+    let mut doc = envelope_doc(&env, payload)?;
+    attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
+    serialize(&doc)
+}
+
+/// Build a signed `auth/revoke-session/0.1` that invalidates **every** session
+/// the auth service holds for the holder (e.g. "log out everywhere"). `reason`
+/// is an optional audit-log rationale. Holder-signed, as
+/// [`build_revoke_session`].
+#[uniffi::export]
+pub fn build_revoke_all_sessions(
+    env: AuthEnvelope,
+    reason: Option<String>,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let payload = revoke_session::Payload::Variant1 {
+        all: true,
+        reason,
+        ext: None,
+    };
+    let mut doc = envelope_doc(&env, payload)?;
+    attach_did_signed_proof(&mut doc, &*signer, &env.issued_at)?;
+    serialize(&doc)
+}
+
+/// Parse an `auth/revoke-session/0.1#response` — the number of sessions
+/// invalidated. Zero is a valid outcome (e.g. the session was already revoked).
+#[uniffi::export]
+pub fn parse_revoke_session_response(json: String) -> Result<u64, FfiError> {
+    let doc: TrustTask<revoke_session::Response> = serde_json::from_str(&json).map_err(decode)?;
+    Ok(doc.payload.revoked_count)
 }
 
 /// Build the request envelope (issuer/recipient/issuedAt) for an auth payload.
@@ -603,5 +661,111 @@ mod tests {
         assert!(s.amr.is_empty());
         assert!(s.roles.is_empty());
         assert!(s.scopes.is_empty());
+    }
+
+    /// A test `Signer` standing in for the native enclave, with a `did:key`
+    /// derived from an Ed25519 test key. Returns the signer plus the public key
+    /// and method-specific id so callers can verify the produced proof.
+    fn enclave_signer(seed: u8) -> (Box<dyn Signer>, ed25519_dalek::VerifyingKey, String) {
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use multibase::Base;
+
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        let pk = sk.verifying_key();
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(pk.as_bytes());
+        let mb = multibase::encode(Base::Base58Btc, mc);
+        let did = format!("did:key:{mb}");
+
+        struct EnclaveStub {
+            sk: SigningKey,
+            did: String,
+        }
+        impl Signer for EnclaveStub {
+            fn did(&self) -> String {
+                self.did.clone()
+            }
+            fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                Ok(self.sk.sign(&payload).to_bytes().to_vec())
+            }
+        }
+        (
+            Box::new(EnclaveStub {
+                sk,
+                did: did.clone(),
+            }),
+            pk,
+            mb,
+        )
+    }
+
+    #[test]
+    fn revoke_one_session_is_signed_and_carries_session_id() {
+        let (signer, pk, mb) = enclave_signer(11);
+        let did = signer.did();
+        let e = AuthEnvelope {
+            id: "revoke-1".to_string(),
+            holder_did: did.clone(),
+            vta_did: "did:web:vta.example".to_string(),
+            issued_at: "2026-05-30T10:00:00Z".to_string(),
+        };
+        let json =
+            build_revoke_session(e, "sess-1".to_string(), Some("logout".to_string()), signer)
+                .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["type"],
+            "https://trusttasks.org/spec/auth/revoke-session/0.1"
+        );
+        assert_eq!(v["payload"]["sessionId"], "sess-1");
+        assert_eq!(v["payload"]["reason"], "logout");
+        // Variant0 is the named-session arm — `all` must not appear.
+        assert!(v["payload"].get("all").is_none());
+
+        // The revocation must be holder-signed and verify against the key.
+        let doc: TrustTask<revoke_session::Payload> = serde_json::from_str(&json).unwrap();
+        let proof = doc.proof.clone().expect("revoke must be signed");
+        let di: affinidi_data_integrity::DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(&proof).unwrap()).unwrap();
+        assert_eq!(di.verification_method, format!("{did}#{mb}"));
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the revoke proof must verify against the holder key");
+    }
+
+    #[test]
+    fn revoke_all_sessions_carries_all_flag_not_session_id() {
+        let (signer, _pk, _mb) = enclave_signer(12);
+        let e = AuthEnvelope {
+            id: "revoke-2".to_string(),
+            holder_did: signer.did(),
+            vta_did: "did:web:vta.example".to_string(),
+            issued_at: "2026-05-30T10:00:00Z".to_string(),
+        };
+        let json = build_revoke_all_sessions(e, None, signer).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["payload"]["all"], true);
+        // Variant1 is the all-sessions arm — `sessionId` must not appear, and
+        // an omitted reason skip-serializes.
+        assert!(v["payload"].get("sessionId").is_none());
+        assert!(v["payload"].get("reason").is_none());
+        assert!(v.get("proof").is_some());
+    }
+
+    #[test]
+    fn parses_revoke_session_response_count() {
+        let json = r#"{
+          "id": "rv-1",
+          "type": "https://trusttasks.org/spec/auth/revoke-session/0.1#response",
+          "issuer": "did:web:vta.example",
+          "recipient": "did:key:zHolder",
+          "payload": { "revokedCount": 3 }
+        }"#;
+        assert_eq!(parse_revoke_session_response(json.to_string()).unwrap(), 3);
     }
 }
