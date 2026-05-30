@@ -65,8 +65,12 @@ pub enum SiopError {
     NotSelfIssued,
     #[error("id_token header missing `kid`")]
     MissingKid,
+    #[error("id_token header `alg` is `{0}`; only EdDSA is accepted")]
+    UnsupportedAlg(String),
     #[error("id_token header `kid` DID does not match `iss`")]
     KidMismatch,
+    #[error("verification method {0} is not in the DID's `authentication` relationship")]
+    VmNotAuthentication(String),
     #[error("failed to resolve DID {0}")]
     Resolve(String),
     #[error("verification method {0} not found in DID document")]
@@ -187,6 +191,15 @@ async fn resolve_verifying_key(
         .await
         .map_err(|e| SiopError::Resolve(format!("{base_did}: {e}")))?;
 
+    // The key must be published for *authentication* — a SIOP login is an
+    // authentication, so a key the DID controller listed only for
+    // `assertionMethod` / `keyAgreement` / `capabilityInvocation` must not
+    // mint a login token. `did:key` lists its key under every relationship
+    // (incl. authentication), so this doesn't affect the did:key path.
+    if !resolved.doc.contains_authentication(kid) {
+        return Err(SiopError::VmNotAuthentication(kid.to_string()));
+    }
+
     let vm = resolved
         .doc
         .get_verification_method(kid)
@@ -219,6 +232,12 @@ fn extract_signer_kid_compact(header_b64: &str) -> Result<String, SiopError> {
         .map_err(|_| SiopError::Base64("header"))?;
     let header: JwsProtectedHeader =
         serde_json::from_slice(&header_bytes).map_err(|_| SiopError::Json("header"))?;
+    // Verification is hard-wired to Ed25519; reject any other `alg` up
+    // front so a future refactor can't reintroduce alg-confusion, and so
+    // `alg:none` / HS256 tokens fail with a precise error.
+    if !header.alg.eq_ignore_ascii_case("EdDSA") {
+        return Err(SiopError::UnsupportedAlg(header.alg));
+    }
     header.kid.ok_or(SiopError::MissingKid)
 }
 
@@ -348,6 +367,24 @@ mod tests {
         let token = format!("{h}.{p}.AAAA");
         let err = verify_siop_id_token(&token, &resolver).await.unwrap_err();
         assert!(matches!(err, SiopError::MissingClaim("iss")));
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_alg() {
+        let resolver = test_resolver().await;
+        let sk = SigningKey::from_bytes(&[11u8; 32]);
+        let did = did_key_for(&sk);
+        // Valid `iss == sub` so we reach the header check, but `alg` is not
+        // EdDSA — must be rejected before any signature work.
+        let header = serde_json::json!({ "alg": "HS256", "kid": format!("{did}#k") });
+        let payload = serde_json::json!({
+            "iss": did, "sub": did, "aud": "rp", "nonce": "n", "iat": 1, "exp": 2,
+        });
+        let h = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header).unwrap());
+        let p = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let token = format!("{h}.{p}.AAAA");
+        let err = verify_siop_id_token(&token, &resolver).await.unwrap_err();
+        assert!(matches!(err, SiopError::UnsupportedAlg(_)));
     }
 
     #[test]
