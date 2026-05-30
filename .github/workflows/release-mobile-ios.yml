@@ -1,0 +1,77 @@
+name: Release mobile-core iOS xcframework
+
+# Publishes the iOS distribution artifact for vta-mobile-core. The
+# vta-mobile-agent-ios SwiftPM package consumes it as a
+# `.binaryTarget(url:checksum:)` pointing at the GitHub Release asset.
+#
+# Triggers:
+#   - push of a `vta-mobile-core-v*` tag → build AND publish a GitHub Release.
+#     (Namespaced so it does not fire on the workspace-wide `v*` release tags.)
+#   - manual workflow_dispatch → build + validate packaging only, no publish;
+#     a cheap way to smoke-test the xcframework assembly without cutting a tag.
+on:
+  push:
+    tags: ["vta-mobile-core-v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # create the Release + upload assets
+
+jobs:
+  ios-xcframework:
+    name: Package + publish iOS xcframework
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-ios-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-ios-
+            ${{ runner.os }}-cargo-
+
+      - name: Assemble VtaMobileCore.xcframework
+        run: ./vta-mobile-core/scripts/package-ios.sh
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          DOWNLOAD_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download
+        run: |
+          set -euo pipefail
+          out="target/mobile/ios"
+          checksum="$(cat "$out/VtaMobileCore.xcframework.zip.sha256")"
+          url="$DOWNLOAD_BASE/$TAG/VtaMobileCore.xcframework.zip"
+          notes="$RUNNER_TEMP/release-notes.md"
+          # Built line-by-line (no heredoc) to stay robust to YAML indentation.
+          {
+            printf '%s\n\n' "\`VtaMobileCore.xcframework\` for $TAG."
+            printf '%s\n\n' "**SwiftPM checksum (sha256):** \`$checksum\`"
+            printf '%s\n\n' "Consume from \`vta-mobile-agent-ios\`'s \`Package.swift\`:"
+            printf '%s\n' '```swift'
+            printf '%s\n' '.binaryTarget('
+            printf '%s\n' '    name: "VtaMobileCoreFFI",'
+            printf '    url: "%s",\n' "$url"
+            printf '    checksum: "%s"\n' "$checksum"
+            printf '%s\n' ')'
+            printf '%s\n\n' '```'
+            printf '%s\n' "\`VtaMobileCore.swift\` (the Swift API wrapper the consumer compiles) is attached as an asset."
+          } > "$notes"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "vta-mobile-core iOS $TAG" \
+            --notes-file "$notes" \
+            "$out/VtaMobileCore.xcframework.zip" \
+            "$out/VtaMobileCore.xcframework.zip.sha256" \
+            "$out/Sources/VtaMobileCore.swift"
