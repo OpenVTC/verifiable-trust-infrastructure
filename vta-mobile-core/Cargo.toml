@@ -25,6 +25,9 @@ uniffi = { workspace = true, features = ["cli"] }
 thiserror = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
+# Generated Trust Task payload types (incl. the step-up `Evidence` union and
+# `acceptableEvidence`, available from 0.1.3).
+trust-tasks-rs = { workspace = true }
 
 # ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
 # The FFI build + bindgen pipeline is proven first with a minimal surface.
