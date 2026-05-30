@@ -267,9 +267,20 @@ async fn wallet_login_rejects_tampered_signature() {
         now,
         now + 300,
     );
-    // Flip the last signature character.
-    id_token.pop();
-    id_token.push(if id_token.ends_with('A') { 'B' } else { 'A' });
+    // Corrupt the signature. Flip a character at the START of the signature
+    // segment, not the trailing char: a 64-byte Ed25519 signature base64url-
+    // encodes to 86 chars whose final char carries only 2 significant bits, so
+    // flipping it (e.g. 'A'->'B') decodes to the same signature bytes under a
+    // lenient decoder and leaves the token validly signed (~25% of runs, since
+    // the per-run challenge randomises the signature). A leading char carries a
+    // full 6 bits, so the flip always changes the signature → reliably invalid.
+    let sig_start = id_token.rfind('.').expect("jws has a signature segment") + 1;
+    let replacement = if id_token.as_bytes()[sig_start] == b'A' {
+        'B'
+    } else {
+        'A'
+    };
+    id_token.replace_range(sig_start..sig_start + 1, &replacement.to_string());
 
     let (status, _) = post_json(
         &fix.router,
