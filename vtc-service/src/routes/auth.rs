@@ -107,6 +107,26 @@ async fn authenticate_siop(
         return Ok(None);
     }
 
+    // SSRF hardening: bind the token's (unverified) `iss` to an existing
+    // challenge session *before* resolving it. `verify_siop_id_token`
+    // resolves `iss` — an HTTP fetch for did:web/webvh — so without this an
+    // unauthenticated caller could steer the daemon into resolving an
+    // arbitrary attacker-chosen DID. A session only exists for a DID that
+    // passed the ACL gate at challenge time, so resolution is confined to a
+    // known, authorised DID. These checks are not authoritative (the holder
+    // hasn't proven control of `iss` yet) — `handle_authenticate` below
+    // re-verifies everything; they exist purely to gate the network call.
+    let unverified_iss = vti_common::auth::parse_unverified_iss(&env.payload.id_token)
+        .map_err(|e| AppError::Authentication(format!("id_token: {e}")))?;
+    let session = crate::auth::session::get_session(&state.sessions_ks, &env.payload.session_id)
+        .await?
+        .ok_or_else(|| AppError::Authentication("session not found".into()))?;
+    if unverified_iss != session.did {
+        return Err(AppError::Authentication(
+            "id_token `iss` does not match the challenge session's DID".into(),
+        ));
+    }
+
     let resolver = state.did_resolver.as_ref().ok_or_else(|| {
         AppError::Authentication("DID resolver not configured; cannot verify id_token".into())
     })?;

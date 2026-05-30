@@ -176,6 +176,33 @@ pub async fn verify_siop_id_token(
     })
 }
 
+/// Parse the `iss` claim from an `id_token` **without** verifying its
+/// signature or resolving any DID. Enforces `iss == sub` (self-issued).
+///
+/// This is a cheap pre-check so a caller can bind the issuer to an existing
+/// session *before* calling [`verify_siop_id_token`] — which performs a
+/// network DID resolution of `iss`. Gating that resolution behind a
+/// session/ACL check stops an unauthenticated caller from steering the
+/// daemon into resolving (HTTP-fetching) an arbitrary attacker-chosen DID.
+///
+/// The returned DID is **not** authenticated — only [`verify_siop_id_token`]
+/// proves the holder controls it. Never trust this value for anything but a
+/// pre-resolution gate.
+pub fn parse_unverified_iss(id_token: &str) -> Result<String, SiopError> {
+    let payload_b64 = id_token.split('.').nth(1).ok_or(SiopError::MalformedJws)?;
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(payload_b64)
+        .map_err(|_| SiopError::Base64("payload"))?;
+    let claims: SiopClaims =
+        serde_json::from_slice(&payload_bytes).map_err(|_| SiopError::Json("payload"))?;
+    let iss = claims.iss.ok_or(SiopError::MissingClaim("iss"))?;
+    let sub = claims.sub.ok_or(SiopError::MissingClaim("sub"))?;
+    if iss != sub {
+        return Err(SiopError::NotSelfIssued);
+    }
+    Ok(iss)
+}
+
 /// Resolve `kid`'s base DID and return its Ed25519 public key bytes.
 /// Mirrors the DID-resolve + key-extraction primitive the DIDComm
 /// `unpack_signed` path uses. Rejects obvious X25519 key-agreement
@@ -205,10 +232,8 @@ async fn resolve_verifying_key(
         .get_verification_method(kid)
         .ok_or_else(|| SiopError::VmNotFound(kid.to_string()))?;
 
-    // X25519 key-agreement keys have narrow, unambiguous type names —
-    // refuse them. We don't whitelist Ed25519 types because the spec
-    // admits several (Ed25519VerificationKey2018/2020, Multikey with a
-    // z6Mk… prefix, JsonWebKey2020 crv:Ed25519).
+    // X25519 key-agreement keys have narrow, unambiguous *type* names —
+    // refuse them early for a clear error.
     if matches!(
         vm.type_.as_str(),
         "X25519KeyAgreementKey2020" | "X25519KeyAgreementKey2019"
@@ -216,11 +241,28 @@ async fn resolve_verifying_key(
         return Err(SiopError::NotSigningKey(kid.to_string()));
     }
 
-    let pk_bytes = vm
-        .get_public_key_bytes()
-        .map_err(|e| SiopError::BadPublicKey(e.to_string()))?;
-    pk_bytes
-        .try_into()
+    // Extract the key and **validate the multicodec**. The resolver
+    // normalises signing keys to `Multikey` (a `publicKeyMultibase`). Decode
+    // it ourselves and require the Ed25519 multicodec (`0xed01`): an X25519
+    // key published as a `Multikey` (codec `0xec01`, `z6LS…`) would otherwise
+    // decode to 32 bytes and be loaded as an "Ed25519" key, caught only later
+    // at signature verification. Checking the codec here rejects it up front
+    // and refuses any non-Ed25519 curve for the signing key.
+    let multibase = vm
+        .property_set
+        .get("publicKeyMultibase")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            SiopError::BadPublicKey(format!(
+                "verification method {kid} has no publicKeyMultibase"
+            ))
+        })?;
+    let (_base, bytes) = multibase::decode(multibase)
+        .map_err(|e| SiopError::BadPublicKey(format!("publicKeyMultibase: {e}")))?;
+    let key = bytes
+        .strip_prefix(&[0xed, 0x01])
+        .ok_or_else(|| SiopError::NotSigningKey(kid.to_string()))?;
+    key.try_into()
         .map_err(|_| SiopError::BadPublicKey("public key must be 32 bytes".into()))
 }
 
@@ -385,6 +427,35 @@ mod tests {
         let token = format!("{h}.{p}.AAAA");
         let err = verify_siop_id_token(&token, &resolver).await.unwrap_err();
         assert!(matches!(err, SiopError::UnsupportedAlg(_)));
+    }
+
+    #[test]
+    fn parse_unverified_iss_returns_self_issued_did() {
+        let sk = SigningKey::from_bytes(&[15u8; 32]);
+        let did = did_key_for(&sk);
+        let kid = format!("{did}#k");
+        let token = make_did_key_id_token(&sk, &did, &did, "rp", "n", 1, 2, &kid);
+        assert_eq!(parse_unverified_iss(&token).unwrap(), did);
+    }
+
+    #[test]
+    fn parse_unverified_iss_rejects_non_self_issued() {
+        let sk = SigningKey::from_bytes(&[16u8; 32]);
+        let did = did_key_for(&sk);
+        let token = make_did_key_id_token(
+            &sk,
+            &did,
+            "did:key:zOther",
+            "rp",
+            "n",
+            1,
+            2,
+            &format!("{did}#k"),
+        );
+        assert!(matches!(
+            parse_unverified_iss(&token),
+            Err(SiopError::NotSelfIssued)
+        ));
     }
 
     #[test]

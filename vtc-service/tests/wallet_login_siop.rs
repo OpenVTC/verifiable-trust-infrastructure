@@ -444,3 +444,35 @@ async fn admin_session_rejects_garbage_token() {
     // No cookie on rejection.
     assert!(res.headers().get(axum::http::header::SET_COOKIE).is_none());
 }
+
+#[tokio::test]
+async fn wallet_login_rejects_iss_not_matching_session() {
+    // SSRF gate: a token whose `iss` differs from the DID the challenge
+    // session was issued to is rejected before the verifier resolves `iss`.
+    // `holder` got the challenge (and is ACL'd); `stranger` self-issued the
+    // token. The mismatch must 401.
+    let (_sk_h, holder, _kid_h) = holder_identity(7);
+    let (sk_s, stranger, kid_s) = holder_identity(8);
+    let fix = build_fixture(&holder).await;
+    let (session_id, challenge) = get_challenge(&fix.router, &holder).await;
+
+    let now = now_epoch();
+    let id_token = sign_id_token(
+        &sk_s,
+        &kid_s,
+        &stranger,
+        &stranger,
+        VTC_DID,
+        &challenge,
+        now,
+        now + 300,
+    );
+
+    let (status, _) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/",
+        json!({ "type": AUTH_TYPE, "payload": { "id_token": id_token, "session_id": session_id } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

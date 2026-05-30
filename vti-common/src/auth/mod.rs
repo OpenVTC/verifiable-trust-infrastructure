@@ -14,4 +14,4 @@ pub use backend::{
 pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
 };
-pub use siop::{SiopError, VerifiedSiopIdToken, verify_siop_id_token};
+pub use siop::{SiopError, VerifiedSiopIdToken, parse_unverified_iss, verify_siop_id_token};
