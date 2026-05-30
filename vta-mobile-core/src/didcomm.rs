@@ -21,7 +21,7 @@ use affinidi_messaging_didcomm::Message;
 use affinidi_messaging_didcomm::crypto::key_agreement::{
     Curve, PrivateKeyAgreement, PublicKeyAgreement,
 };
-use affinidi_messaging_didcomm::identity::{PrivateIdentity, ResolvedIdentity};
+use affinidi_messaging_didcomm::identity::{Mediator, PrivateIdentity, ResolvedIdentity};
 use affinidi_messaging_didcomm::message::unpack::UnpackResult;
 
 use crate::error::FfiError;
@@ -185,6 +185,50 @@ impl DidcommSession {
                 reason: format!("authcrypt failed: {e}"),
             })
     }
+
+    /// Anoncrypt (encrypted, *not* sender-authenticated) a plaintext DIDComm
+    /// message JSON to `recipient_did` (which MUST have been added via
+    /// [`add_peer`](Self::add_peer)). Use when the sender should stay anonymous
+    /// to the recipient.
+    pub fn pack_anoncrypt(
+        &self,
+        message_json: String,
+        recipient_did: String,
+    ) -> Result<String, FfiError> {
+        let msg: Message = serde_json::from_str(&message_json).map_err(|e| FfiError::Decode {
+            reason: format!("not a valid DIDComm message: {e}"),
+        })?;
+        self.agent
+            .lock()
+            .expect("didcomm session lock")
+            .pack_anoncrypt(&msg, &recipient_did)
+            .map_err(|e| FfiError::InvalidInput {
+                reason: format!("anoncrypt failed: {e}"),
+            })
+    }
+
+    /// Register a mediator route for `recipient_did`. Once set, `pack_authcrypt`
+    /// / `pack_anoncrypt` to that recipient are automatically wrapped in a
+    /// `routing/2.0/forward` anoncrypt'd to the mediator — which is how the
+    /// mobile agent delivers to a peer that is only reachable via its mediator.
+    /// `mediator` carries the mediator's resolved key-agreement key.
+    pub fn add_route(&self, recipient_did: String, mediator: Peer) -> Result<(), FfiError> {
+        let key_agreement_public = PublicKeyAgreement::X25519(to_array_32(
+            &mediator.key_agreement_public_x25519,
+            "mediator keyAgreement key",
+        )?);
+        let route = Mediator {
+            did: mediator.did,
+            key_agreement_kid: mediator.key_agreement_kid,
+            key_agreement_public,
+        };
+        self.agent
+            .lock()
+            .expect("didcomm session lock")
+            .store_mut()
+            .add_route(recipient_did, route);
+        Ok(())
+    }
 }
 
 fn to_array_32(bytes: &[u8], what: &str) -> Result<[u8; 32], FfiError> {
@@ -272,5 +316,54 @@ mod tests {
             DidcommSession::new(h),
             Err(FfiError::InvalidInput { .. })
         ));
+    }
+
+    #[test]
+    fn anoncrypt_round_trip_is_not_sender_authenticated() {
+        let a = "did:example:a2";
+        let b = "did:example:b2";
+        let b_ka = [7u8; 32];
+        let alice = DidcommSession::new(holder(a, [5u8; 32], [6u8; 32])).unwrap();
+        alice.add_peer(peer(b, b_ka)).unwrap();
+        let bob = DidcommSession::new(holder(b, b_ka, [8u8; 32])).unwrap();
+
+        let msg = serde_json::json!({
+            "id": "m", "type": "https://didcomm.org/basicmessage/2.0/message",
+            "to": [b], "body": { "content": "anon" }
+        })
+        .to_string();
+        let jwe = alice.pack_anoncrypt(msg, b.to_string()).unwrap();
+        let unpacked = bob.unpack(jwe, None).unwrap();
+        assert!(
+            !unpacked.sender_authenticated,
+            "anoncrypt must not be sender-authenticated"
+        );
+        let m: serde_json::Value = serde_json::from_str(&unpacked.message_json).unwrap();
+        assert_eq!(m["body"]["content"], "anon");
+    }
+
+    #[test]
+    fn authcrypt_with_route_wraps_in_forward_for_the_mediator() {
+        let a = "did:example:alice3";
+        let b = "did:example:bob3";
+        let med = "did:example:mediator3";
+        let med_ka = [13u8; 32];
+
+        let alice = DidcommSession::new(holder(a, [9u8; 32], [10u8; 32])).unwrap();
+        alice.add_peer(peer(b, [11u8; 32])).unwrap(); // inner authcrypt → bob
+        alice.add_route(b.to_string(), peer(med, med_ka)).unwrap(); // outer forward → mediator
+        let mediator = DidcommSession::new(holder(med, med_ka, [14u8; 32])).unwrap();
+
+        let msg = serde_json::json!({
+            "id": "m", "type": "https://didcomm.org/basicmessage/2.0/message",
+            "from": a, "to": [b], "body": { "content": "hi" }
+        })
+        .to_string();
+        let outer = alice.pack_authcrypt(msg, b.to_string()).unwrap();
+
+        // The mediator opens the OUTER (anoncrypt) envelope; it's a forward.
+        let at_mediator = mediator.unpack(outer, None).unwrap();
+        let fwd: serde_json::Value = serde_json::from_str(&at_mediator.message_json).unwrap();
+        assert_eq!(fwd["type"], "https://didcomm.org/routing/2.0/forward");
     }
 }
