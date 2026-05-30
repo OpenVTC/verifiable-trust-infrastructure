@@ -6,6 +6,24 @@ members = [
   "pnm-cli",
   "tests/e2e",
   "vta-cli-common",
+  "vta-mobile-core",
+  "vta-sdk",
+  "vta-service",
+  "vta-enclave",
+  "vtc-service",
+  "vti-common",
+  "vti-webauthn",
+]
+# `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
+# Keep it out of `default-members` so a bare `cargo build`/`test` for the server
+# does not pull `uniffi` (or the mobile crate) into the build graph. CI that runs
+# `--workspace` still builds and lints it; the mobile-artifacts job cross-compiles it.
+default-members = [
+  "cnm-cli",
+  "didcomm-test",
+  "pnm-cli",
+  "tests/e2e",
+  "vta-cli-common",
   "vta-sdk",
   "vta-service",
   "vta-enclave",
@@ -27,6 +45,9 @@ license = "Apache-2.0"
 repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 
 [workspace.dependencies]
+
+# Foreign-language bindings for the mobile engine crate (`vta-mobile-core`).
+uniffi = "0.28"
 
 # Affinidi Trust Development Kit
 affinidi-tdk = "0.7"

@@ -1,0 +1,8 @@
+# Foreign-binding configuration for vta-mobile-core.
+# Names match the mobile topology decided for this engine.
+
+[bindings.kotlin]
+package_name = "org.openvtc.vta.mobilecore"
+
+[bindings.swift]
+module_name = "VtaMobileCore"

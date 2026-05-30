@@ -1,0 +1,45 @@
+[package]
+name = "vta-mobile-core"
+version = "0.1.0"
+description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
+edition.workspace = true
+# Not a crates.io library — the published artifacts are the Android AAR
+# (org.openvtc.vta:mobile-core-android) and the VtaMobileCore.xcframework,
+# produced by the dedicated mobile-artifacts CI job, not `cargo publish`.
+publish = false
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# Underscore form is the FFI library name (libvta_mobile_core.{so,dylib,a}).
+name = "vta_mobile_core"
+# cdylib → Android .so + the library uniffi-bindgen introspects;
+# staticlib → iOS xcframework; lib → in-crate tests and host builds.
+crate-type = ["cdylib", "staticlib", "lib"]
+
+[dependencies]
+# `cli` feature provides `uniffi::uniffi_bindgen_main` for the bindgen binary.
+uniffi = { workspace = true, features = ["cli"] }
+thiserror = { workspace = true }
+base64 = { workspace = true }
+
+# ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
+# The FFI build + bindgen pipeline is proven first with a minimal surface.
+#   slice 2 — Trust Tasks (pure, sync). Needs a republished trust-tasks-rs:
+#             crates.io 0.1.2 predates the `evidence` / `acceptableEvidence`
+#             fields merged to dtgwg-trust-tasks-tf (PRs #61/#62).
+#     trust-tasks-rs    = { workspace = true }
+#     trust-tasks-proof = { workspace = true }
+#   slice 3 — VTA session/auth (async over the FFI boundary, tokio runtime):
+#     vta-sdk      = { workspace = true, features = ["session"] }
+#     vti-webauthn = { path = "../vti-webauthn" }   # shared WebAuthn types
+
+[[bin]]
+# `cargo run -p vta-mobile-core --bin uniffi-bindgen -- generate ...`
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true
