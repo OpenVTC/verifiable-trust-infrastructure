@@ -847,6 +847,17 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
     let unauth_router = TrustTaskRouter::<AppState>::new()
         .route_with_task("/auth/challenge", post(auth::challenge), auth_challenge)
         .route_with_task("/auth/", post(auth::authenticate), auth_authenticate)
+        // VTA-wallet login surface. The browser wallet extension drives
+        // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
+        // + `<base>/auth/` with **no** `Trust-Task` header (the op `type`
+        // rides in the body). These header-exempt aliases reuse the same
+        // `challenge` / `authenticate` handlers — the latter's SIOP branch
+        // handles the wallet's `id_token` envelope. The admin-UI points the
+        // wallet at `<origin>/v1/wallet` so it lands here, leaving the
+        // Trust-Task-gated `/auth/*` routes above untouched for DIDComm and
+        // CLI clients. Mirrors did-hosting-control's header-less auth.
+        .route_exempt("/wallet/auth/challenge", post(auth::challenge))
+        .route_exempt("/wallet/auth/", post(auth::authenticate))
         .route_with_task("/auth/refresh", post(auth::refresh), auth_refresh)
         .route_with_task(
             "/auth/admin-login",

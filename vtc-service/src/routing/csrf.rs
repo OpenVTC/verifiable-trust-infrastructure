@@ -50,6 +50,10 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     "/v1/join-requests",
     "/v1/auth/challenge",
     "/v1/auth/",
+    // VTA-wallet header-exempt auth surface (unauthenticated bootstrap,
+    // same rationale as `/v1/auth/*` above — no session cookie yet).
+    "/v1/wallet/auth/challenge",
+    "/v1/wallet/auth/",
     "/v1/auth/refresh",
     "/v1/auth/admin-login",
     "/v1/install/claim/start",
