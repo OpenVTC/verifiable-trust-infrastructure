@@ -1,0 +1,9 @@
+{
+  "purpose": "leave",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkAdmin", "role": "admin", "authenticated": true },
+  "subject": { "did": "did:key:z6MkLeaver" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 1421 },
+  "evidence": { "request": { "reason": "code-of-conduct-violation" } },
+  "state": { "subject_member": { "role": "member", "status": "active", "joined_at": "2026-01-02T00:00:00Z" } }
+}

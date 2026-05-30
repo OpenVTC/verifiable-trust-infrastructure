@@ -1,0 +1,20 @@
+{
+  "purpose": "role-change",
+  "routes": [
+    {
+      "name": "Standard role change",
+      "when": { "all": ["target_role_standard"] },
+      "then": { "effect": "allow", "with": { "role": "$target" } }
+    },
+    {
+      "name": "Promote to admin (verified)",
+      "when": { "all": ["promotes_to_admin", "step_up_done"] },
+      "then": { "effect": "allow", "with": { "role": "admin" } }
+    },
+    {
+      "name": "Promote to admin (needs step-up)",
+      "when": { "all": ["promotes_to_admin"] },
+      "then": { "effect": "refer", "with": { "queue": "step-up" } }
+    }
+  ]
+}

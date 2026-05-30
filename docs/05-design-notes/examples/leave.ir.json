@@ -1,0 +1,20 @@
+{
+  "purpose": "leave",
+  "routes": [
+    {
+      "name": "Self-exit",
+      "when": { "all": ["actor_is_self"] },
+      "then": { "effect": "allow", "with": { "disposition": "$request" } }
+    },
+    {
+      "name": "Admin removes admin",
+      "when": { "all": ["actor_is_admin", "subject_is_admin"] },
+      "then": { "effect": "refer", "with": { "queue": "second-admin" } }
+    },
+    {
+      "name": "Admin removes member",
+      "when": { "all": ["actor_is_admin"] },
+      "then": { "effect": "allow", "with": { "disposition": "Tombstone" } }
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "purpose": "directory",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkViewer", "role": "member", "authenticated": true },
+  "subject": { "did": "did:key:z6MkTarget" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 1421 },
+  "evidence": { "request": { "fields_requested": ["did", "role", "joined_at"] } },
+  "state": { "subject_member": { "role": "member", "status": "active", "joined_at": "2026-03-03T00:00:00Z" } }
+}

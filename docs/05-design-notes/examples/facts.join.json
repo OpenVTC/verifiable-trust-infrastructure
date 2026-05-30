@@ -1,0 +1,19 @@
+{
+  "purpose": "join",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkHuman", "authenticated": true },
+  "subject": { "did": "did:key:z6MkHuman" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 1421 },
+  "evidence": {
+    "invitation": null,
+    "presentation": {
+      "verified": true,
+      "holder": "did:key:z6MkHuman",
+      "credentials": [
+        { "type": "WitnessCredential", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "claims": { "kind": "proximity" } }
+      ]
+    },
+    "request": { "agreements": {} }
+  },
+  "state": { "subject_member": null }
+}

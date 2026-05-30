@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VTC Ceremony Pipeline · Visual Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root{
+    --bg:#090c12; --bg-2:#0c1018; --panel:#10141d; --panel-2:#141a24;
+    --line:rgba(150,170,200,.12); --line-2:rgba(150,170,200,.22);
+    --ink:#e7ecf4; --muted:#8a94a8; --faint:#5b6577;
+    --brand:#2dd4bf;            /* structural / teal */
+    --admit:#34d399; --deny:#fb7185; --refer:#fbbf24; --more:#a78bfa;
+    --shadow:0 24px 60px -24px rgba(0,0,0,.7);
+    --r:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:
+      radial-gradient(1200px 620px at 78% -8%, rgba(45,212,191,.10), transparent 60%),
+      radial-gradient(900px 500px at 6% 4%, rgba(167,139,250,.08), transparent 55%),
+      var(--bg);
+    color:var(--ink);
+    font-family:'IBM Plex Sans',system-ui,sans-serif;
+    font-weight:400; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+    padding:0 0 80px;
+  }
+  body::before{ /* engineering grid */
+    content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+    background-image:
+      linear-gradient(var(--line) 1px,transparent 1px),
+      linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:46px 46px; mask:radial-gradient(120% 90% at 50% 0%, #000 35%, transparent 88%);
+    opacity:.5;
+  }
+  .wrap{position:relative; z-index:1; max-width:1240px; margin:0 auto; padding:0 26px}
+  .mono{font-family:'IBM Plex Mono',monospace}
+
+  /* ---- header ---- */
+  header{padding:46px 0 26px; border-bottom:1px solid var(--line); margin-bottom:30px}
+  .kicker{font-family:'IBM Plex Mono',monospace; font-size:11.5px; letter-spacing:.32em;
+    text-transform:uppercase; color:var(--brand); display:flex; gap:12px; align-items:center}
+  .kicker::before{content:""; width:26px; height:1px; background:var(--brand); display:inline-block}
+  h1{font-family:'Fraunces',serif; font-weight:500; font-size:clamp(34px,5vw,58px);
+    line-height:1.02; margin:16px 0 10px; letter-spacing:-.01em}
+  h1 em{font-style:italic; color:var(--brand)}
+  .sub{color:var(--muted); max-width:62ch; font-size:15.5px}
+  .cer-tabs{display:flex; gap:8px; margin-top:20px}
+  .cer-tab{font-family:'IBM Plex Mono'; font-size:12px; letter-spacing:.04em; padding:8px 15px; border-radius:9px;
+    border:1px solid var(--line-2); color:var(--muted); cursor:pointer; transition:.15s}
+  .cer-tab:hover{color:var(--ink)}
+  .cer-tab.on{border-color:var(--brand); color:var(--brand); background:rgba(45,212,191,.08)}
+  .cer-tab small{color:var(--faint); margin-left:7px}
+  .meta-row{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; align-items:center}
+  .chip{font-family:'IBM Plex Mono',monospace; font-size:11.5px; padding:6px 11px; border-radius:999px;
+    border:1px solid var(--line-2); color:var(--muted); background:rgba(255,255,255,.015)}
+  .chip b{color:var(--ink); font-weight:500}
+  .chip.active-v{border-color:rgba(45,212,191,.5); color:var(--brand)}
+
+  /* ---- section scaffold ---- */
+  section{margin:42px 0}
+  .sec-head{display:flex; align-items:baseline; gap:14px; margin-bottom:18px}
+  .sec-num{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--faint)}
+  h2{font-family:'Fraunces',serif; font-weight:500; font-size:24px; margin:0; letter-spacing:-.01em}
+  .sec-note{color:var(--muted); font-size:13.5px; margin-left:auto; max-width:46ch; text-align:right}
+
+  .panel{background:linear-gradient(180deg,var(--panel),var(--bg-2)); border:1px solid var(--line);
+    border-radius:var(--r); box-shadow:var(--shadow)}
+
+  /* ---- flow diagram ---- */
+  .flow-card{padding:10px 8px 4px}
+  #flow{width:100%; height:auto; display:block}
+  .node-box{fill:var(--panel-2); stroke:var(--line-2); stroke-width:1; rx:11; transition:.25s}
+  .node-box.hot{stroke:var(--brand); fill:#16202a}
+  .node-t{fill:var(--ink); font-family:'IBM Plex Sans'; font-size:14px; font-weight:500}
+  .node-s{fill:var(--faint); font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.04em}
+  .node-i{fill:var(--faint); font-family:'IBM Plex Mono'; font-size:10px}
+  .edge{stroke:var(--line-2); stroke-width:1.6; fill:none; marker-end:url(#arrow)}
+  .edge.loop{stroke:var(--more); stroke-dasharray:5 5; opacity:0; marker-end:url(#arrow-more)}
+  .edge.loop.show{opacity:.9}
+  .loop-label{fill:var(--more); font-family:'IBM Plex Mono'; font-size:10px; opacity:0}
+  .loop-label.show{opacity:1}
+  #token{fill:var(--brand); filter:drop-shadow(0 0 7px rgba(45,212,191,.9))}
+  .outcomes{display:flex; gap:10px; flex-wrap:wrap; padding:6px 14px 16px}
+  .oc{flex:1 1 0; min-width:150px; border:1px solid var(--line); border-radius:11px; padding:11px 13px;
+    background:rgba(255,255,255,.012); opacity:.42; transition:.3s}
+  .oc .och{font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.12em; text-transform:uppercase; display:flex; gap:8px; align-items:center}
+  .oc .ocd{font-size:12px; color:var(--muted); margin-top:5px}
+  .oc .dot{width:9px; height:9px; border-radius:50%; display:inline-block}
+  .oc.allow .dot{background:var(--admit)} .oc.refer .dot{background:var(--refer)}
+  .oc.deny .dot{background:var(--deny)} .oc.more .dot{background:var(--more)}
+  .oc.lit{opacity:1; transform:translateY(-2px)}
+  .oc.allow.lit{border-color:var(--admit); box-shadow:0 0 0 1px var(--admit),0 10px 30px -12px var(--admit)}
+  .oc.refer.lit{border-color:var(--refer); box-shadow:0 0 0 1px var(--refer),0 10px 30px -12px var(--refer)}
+  .oc.deny.lit{border-color:var(--deny); box-shadow:0 0 0 1px var(--deny),0 10px 30px -12px var(--deny)}
+  .oc.more.lit{border-color:var(--more); box-shadow:0 0 0 1px var(--more),0 10px 30px -12px var(--more)}
+
+  /* ---- workspace grid ---- */
+  .work{display:grid; grid-template-columns:1.32fr 1fr; gap:22px}
+  @media(max-width:980px){.work{grid-template-columns:1fr}}
+  .pad{padding:18px}
+  .panel-title{font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--faint); display:flex; align-items:center; gap:10px; margin-bottom:14px}
+  .panel-title .ln{flex:1; height:1px; background:var(--line)}
+
+  /* ---- route cards ---- */
+  .route{border:1px solid var(--line); border-radius:12px; background:var(--panel-2); margin-bottom:12px;
+    transition:.2s; position:relative; overflow:hidden}
+  .route::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--line-2)}
+  .route.eff-allow::before{background:var(--admit)} .route.eff-refer::before{background:var(--refer)}
+  .route.eff-deny::before{background:var(--deny)} .route.eff-request_more::before{background:var(--more)}
+  .route.fired{border-color:var(--brand); box-shadow:0 0 0 1px rgba(45,212,191,.35)}
+  .route.skipped{opacity:.5}
+  .rt-head{display:flex; align-items:center; gap:10px; padding:11px 12px 9px}
+  .pri{font-family:'IBM Plex Mono'; font-size:11px; color:var(--faint); width:22px; height:22px;
+    border:1px solid var(--line-2); border-radius:6px; display:grid; place-items:center; flex:none}
+  .rt-name{font-weight:500; font-size:14.5px; background:transparent; border:none; color:var(--ink);
+    font-family:'IBM Plex Sans'; width:auto; min-width:90px}
+  .rt-name:focus{outline:none; border-bottom:1px solid var(--brand)}
+  .vis{font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+    padding:2px 7px; border-radius:5px; border:1px solid var(--line-2); color:var(--faint); cursor:pointer}
+  .vis.unlisted{color:var(--more); border-color:rgba(167,139,250,.4)}
+  .rt-tools{margin-left:auto; display:flex; gap:4px}
+  .ib{background:transparent; border:1px solid var(--line); color:var(--muted); width:24px; height:24px;
+    border-radius:6px; cursor:pointer; font-family:'IBM Plex Mono'; font-size:13px; display:grid; place-items:center; transition:.15s}
+  .ib:hover{border-color:var(--brand); color:var(--brand)}
+  .ib:disabled{opacity:.3; cursor:not-allowed}
+  .drag-handle{cursor:grab; color:var(--faint); font-size:14px; user-select:none; padding:0 3px 0 1px; line-height:1}
+  .drag-handle:active{cursor:grabbing}
+  .route.dragging{opacity:.35}
+  .route.drag-over{box-shadow:inset 0 3px 0 -1px var(--brand)}
+  .flow-legend{display:flex; gap:18px; flex-wrap:wrap; padding:13px 16px 0; font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted)}
+  .flow-legend span{display:flex; gap:7px; align-items:center}
+  .flow-ns{padding:5px 16px 0; font-family:'IBM Plex Mono'; font-size:10px; color:var(--faint)}
+  .kd{width:8px; height:8px; border-radius:50%; display:inline-block}
+  .kd.wire{background:var(--brand)} .kd.local{background:var(--faint)} .kd.internal{background:var(--more)}
+  .kind-dot.wire{fill:var(--brand)} .kind-dot.local{fill:var(--faint)} .kind-dot.internal{fill:var(--more)}
+  .rt-body{padding:0 12px 12px; display:flex; flex-direction:column; gap:9px}
+  .when-row{display:flex; gap:7px; flex-wrap:wrap; align-items:center}
+  .comb{font-family:'IBM Plex Mono'; font-size:10px; letter-spacing:.1em; color:var(--brand);
+    border:1px solid rgba(45,212,191,.35); border-radius:5px; padding:3px 7px; cursor:pointer; user-select:none}
+  .cond{font-family:'IBM Plex Mono'; font-size:11px; padding:4px 8px; border-radius:6px;
+    border:1px solid var(--line-2); background:rgba(255,255,255,.02); color:var(--ink); display:inline-flex; gap:6px; align-items:center}
+  .cond.met{border-color:rgba(52,211,153,.5); color:var(--admit)}
+  .cond.unmet{border-color:rgba(251,113,133,.4); color:var(--deny)}
+  .cond .x{cursor:pointer; opacity:.5; font-weight:600} .cond .x:hover{opacity:1}
+  .add-cond, .then-sel{font-family:'IBM Plex Mono'; font-size:11px; background:var(--bg-2);
+    border:1px dashed var(--line-2); color:var(--muted); border-radius:6px; padding:4px 8px; cursor:pointer}
+  .then-row{display:flex; gap:8px; align-items:center; font-size:12.5px; color:var(--muted); padding-top:2px; flex-wrap:wrap}
+  .arrow-then{font-family:'IBM Plex Mono'; color:var(--faint)}
+  select,input.txt{background:var(--bg-2); border:1px solid var(--line-2); color:var(--ink);
+    font-family:'IBM Plex Mono'; font-size:11.5px; border-radius:6px; padding:4px 7px}
+  .add-route{width:100%; padding:11px; border:1px dashed var(--line-2); background:transparent;
+    color:var(--muted); border-radius:11px; cursor:pointer; font-family:'IBM Plex Mono'; font-size:12px; transition:.15s}
+  .add-route:hover{border-color:var(--brand); color:var(--brand)}
+  .default-route{border-style:dashed; opacity:.8}
+  .default-route .rt-head{padding-bottom:11px}
+
+  /* ---- simulator ---- */
+  .presets{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px}
+  .preset{font-family:'IBM Plex Mono'; font-size:11px; padding:6px 10px; border-radius:8px;
+    border:1px solid var(--line-2); background:rgba(255,255,255,.015); color:var(--muted); cursor:pointer; transition:.15s}
+  .preset:hover{border-color:var(--brand); color:var(--ink)}
+  .wallet{display:flex; flex-direction:column; gap:2px; margin-bottom:16px}
+  .ev{display:flex; align-items:center; gap:11px; padding:9px 4px; border-bottom:1px solid var(--line)}
+  .ev:last-child{border-bottom:none}
+  .ev-label{font-size:13px}
+  .ev-label small{display:block; color:var(--faint); font-family:'IBM Plex Mono'; font-size:10px; margin-top:1px}
+  .ev .ctrl{margin-left:auto}
+  .tog{width:42px; height:23px; border-radius:999px; background:var(--bg-2); border:1px solid var(--line-2);
+    position:relative; cursor:pointer; transition:.2s}
+  .tog::after{content:""; position:absolute; top:2px; left:2px; width:17px; height:17px; border-radius:50%;
+    background:var(--faint); transition:.2s}
+  .tog.on{background:rgba(45,212,191,.22); border-color:var(--brand)}
+  .tog.on::after{left:21px; background:var(--brand)}
+  .tog.dim{opacity:.4; pointer-events:none}
+  .stepper{display:flex; align-items:center; gap:9px; font-family:'IBM Plex Mono'; font-size:13px}
+  .stepper button{width:24px; height:24px; border-radius:6px; border:1px solid var(--line-2);
+    background:var(--bg-2); color:var(--ink); cursor:pointer}
+  .run{width:100%; margin-top:6px; padding:13px; border-radius:11px; border:1px solid var(--brand);
+    background:linear-gradient(180deg,rgba(45,212,191,.16),rgba(45,212,191,.05)); color:var(--brand);
+    font-family:'IBM Plex Mono'; font-size:13px; letter-spacing:.06em; cursor:pointer; transition:.15s}
+  .run:hover{background:rgba(45,212,191,.24)}
+  .verdict{margin-top:16px; border-radius:12px; border:1px solid var(--line); padding:16px; display:none; background:var(--bg-2)}
+  .verdict.show{display:block; animation:pop .35s ease}
+  @keyframes pop{from{opacity:0; transform:translateY(6px)}to{opacity:1; transform:none}}
+  .v-top{display:flex; align-items:center; gap:10px}
+  .v-badge{font-family:'IBM Plex Mono'; font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+    padding:5px 11px; border-radius:7px; font-weight:600}
+  .v-badge.allow{background:rgba(52,211,153,.16); color:var(--admit)}
+  .v-badge.refer{background:rgba(251,191,36,.16); color:var(--refer)}
+  .v-badge.deny{background:rgba(251,113,133,.16); color:var(--deny)}
+  .v-badge.request_more{background:rgba(167,139,250,.16); color:var(--more)}
+  .v-route{font-family:'IBM Plex Mono'; font-size:11px; color:var(--muted)}
+  .v-expl{margin-top:11px; font-size:13.5px; color:var(--ink)}
+  .v-missing{margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+  .satisfy{font-family:'IBM Plex Mono'; font-size:11px; padding:5px 9px; border-radius:7px; cursor:pointer;
+    border:1px solid var(--more); color:var(--more); background:rgba(167,139,250,.08)}
+  .satisfy:hover{background:rgba(167,139,250,.2)}
+
+  /* ---- version history ---- */
+  .draft-banner{display:none; align-items:center; gap:12px; padding:11px 15px; border-radius:11px;
+    border:1px solid rgba(251,191,36,.4); background:rgba(251,191,36,.07); color:var(--refer);
+    font-size:13px; margin-bottom:16px; font-family:'IBM Plex Mono'}
+  .draft-banner.show{display:flex}
+  .draft-banner .sp{flex:1}
+  .db-btn{font-family:'IBM Plex Mono'; font-size:11.5px; padding:6px 11px; border-radius:7px; cursor:pointer; border:1px solid transparent}
+  .db-btn.go{border-color:var(--admit); color:var(--admit); background:rgba(52,211,153,.1)}
+  .db-btn.discard{border-color:var(--line-2); color:var(--muted)}
+  .timeline{position:relative; padding-left:26px}
+  .timeline::before{content:""; position:absolute; left:8px; top:6px; bottom:6px; width:1px; background:var(--line-2)}
+  .ver{position:relative; margin-bottom:14px; padding:13px 15px; border:1px solid var(--line); border-radius:11px; background:var(--panel-2)}
+  .ver::before{content:""; position:absolute; left:-22px; top:18px; width:11px; height:11px; border-radius:50%;
+    background:var(--bg); border:2px solid var(--faint)}
+  .ver.active::before{background:var(--brand); border-color:var(--brand); box-shadow:0 0 0 4px rgba(45,212,191,.2)}
+  .ver.rollback::before{border-color:var(--more)}
+  .ver-top{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+  .ver-v{font-family:'Fraunces'; font-size:18px; font-weight:600}
+  .ver-tag{font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+    padding:2px 7px; border-radius:5px; border:1px solid var(--line-2); color:var(--faint)}
+  .ver-tag.active{color:var(--brand); border-color:var(--brand)}
+  .ver-tag.rollback{color:var(--more); border-color:rgba(167,139,250,.4)}
+  .ver-hash{font-family:'IBM Plex Mono'; font-size:11px; color:var(--faint); margin-left:auto}
+  .ver-note{font-size:13.5px; margin-top:7px}
+  .ver-meta{font-family:'IBM Plex Mono'; font-size:10.5px; color:var(--faint); margin-top:6px; display:flex; gap:14px; flex-wrap:wrap}
+  .ver-acts{display:flex; gap:7px; margin-top:11px}
+  .ver-btn{font-family:'IBM Plex Mono'; font-size:11px; padding:5px 11px; border-radius:7px; cursor:pointer;
+    border:1px solid var(--line-2); background:transparent; color:var(--muted); transition:.15s}
+  .ver-btn:hover{border-color:var(--brand); color:var(--brand)}
+  .ver-btn.rb:hover{border-color:var(--more); color:var(--more)}
+
+  /* diff */
+  .diff{margin-top:8px; border-top:1px dashed var(--line); padding-top:10px; display:none; flex-direction:column; gap:3px}
+  .diff.show{display:flex}
+  .dl{font-family:'IBM Plex Mono'; font-size:11.5px; padding:2px 8px; border-radius:5px}
+  .dl.add{color:var(--admit); background:rgba(52,211,153,.07)}
+  .dl.rem{color:var(--deny); background:rgba(251,113,133,.07)}
+  .dl.mov{color:var(--refer); background:rgba(251,191,36,.06)}
+  .dl.same{color:var(--faint)}
+
+  /* ---- compiled output ---- */
+  details.compiled{border:1px solid var(--line); border-radius:var(--r); background:var(--panel); overflow:hidden}
+  details.compiled summary{cursor:pointer; padding:16px 18px; font-family:'IBM Plex Mono'; font-size:12px;
+    letter-spacing:.12em; text-transform:uppercase; color:var(--muted); list-style:none; display:flex; align-items:center; gap:10px}
+  details.compiled summary::-webkit-details-marker{display:none}
+  details.compiled summary::before{content:"▸"; color:var(--brand); transition:.2s}
+  details.compiled[open] summary::before{transform:rotate(90deg)}
+  .tabs{display:flex; gap:6px; padding:0 18px 14px}
+  .tab{font-family:'IBM Plex Mono'; font-size:11.5px; padding:6px 13px; border-radius:8px; cursor:pointer;
+    border:1px solid var(--line); color:var(--muted); background:transparent}
+  .tab.on{border-color:var(--brand); color:var(--brand); background:rgba(45,212,191,.08)}
+  pre{margin:0; padding:18px 20px; background:var(--bg-2); border-top:1px solid var(--line); overflow:auto;
+    font-family:'IBM Plex Mono'; font-size:12px; line-height:1.65; color:#c9d3e2}
+  pre .k{color:var(--more)} pre .s{color:var(--admit)} pre .c{color:var(--faint); font-style:italic} pre .n{color:var(--refer)}
+
+  footer{margin-top:54px; padding-top:24px; border-top:1px solid var(--line); color:var(--faint);
+    font-size:12.5px; font-family:'IBM Plex Mono'}
+  footer a{color:var(--brand); text-decoration:none}
+  .legend{display:flex; gap:18px; flex-wrap:wrap; margin-top:16px; font-family:'IBM Plex Mono'; font-size:11.5px; color:var(--muted)}
+  .legend span{display:flex; gap:7px; align-items:center}
+  .legend i{width:10px; height:10px; border-radius:3px; display:inline-block}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="kicker">Ceremony Decision Pipeline · interactive</div>
+    <h1>One pipeline, <em>every ceremony</em>.</h1>
+    <p class="sub">Every community ceremony is an instance of one decision pipeline. Pick a ceremony, edit its
+      routes, drop a sample scenario into the simulator, watch which route fires, then version the policy and roll
+      it back — fail-forward. The vocabulary matches <b>vtc-ceremony-rule-ir.md</b> and <b>examples/</b>.</p>
+    <div class="cer-tabs" id="cerTabs">
+      <span class="cer-tab on" data-c="join">Join<small>onboard</small></span>
+      <span class="cer-tab" data-c="leave">Leave<small>offboard</small></span>
+      <span class="cer-tab" data-c="role-change">Role-change<small>mutate</small></span>
+      <span class="cer-tab" data-c="directory">Directory<small>read</small></span>
+    </div>
+    <div class="meta-row">
+      <span class="chip">ceremony <b id="cerChip">join</b></span>
+      <span class="chip">community <b>did:webvh:acme.example</b></span>
+      <span class="chip active-v" id="activeChip">active <b>v1</b></span>
+      <span class="chip">engine <b>regorus · Rego</b></span>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--admit)"></i> <span id="legAllow">allow (here: admit)</span></span>
+      <span><i style="background:var(--refer)"></i> refer · human / quorum</span>
+      <span><i style="background:var(--more)"></i> request_more · negotiation</span>
+      <span><i style="background:var(--deny)"></i> deny</span>
+    </div>
+  </header>
+
+  <!-- 1 · CEREMONY FLOW -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">01</span><h2>The pipeline</h2>
+      <span class="sec-note">Crypto is verified host-side in <em>Pre-verify</em>; <em>Evaluate</em> runs the policy over verified facts. Same stages for every ceremony — only Effects differ.</span>
+    </div>
+    <div class="panel flow-card">
+      <div class="flow-legend">
+        <span><i class="kd wire"></i> wire · Trust Task</span>
+        <span><i class="kd local"></i> local · client</span>
+        <span><i class="kd internal"></i> server-internal</span>
+      </div>
+      <div class="flow-ns" id="flowNs"></div>
+      <svg id="flow" viewBox="0 -20 1120 280" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="outcomes" id="outcomes"></div>
+    </div>
+  </section>
+
+  <!-- 2 · ROUTES + SIMULATOR -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">02</span><h2>Routes &amp; simulator</h2>
+      <span class="sec-note">A “path” is a prioritized rule branch. The actor presents what they have; the policy matches the first eligible route, top-down.</span>
+    </div>
+    <div class="work">
+      <div class="panel pad">
+        <div class="panel-title"><span id="routesTitle">Join policy · routes</span> <span class="ln"></span> <span class="mono" style="font-size:11px;color:var(--faint)">first-match ↓</span></div>
+        <div id="routes"></div>
+        <button class="add-route" id="addRoute">+ add route</button>
+      </div>
+
+      <div class="panel pad">
+        <div class="panel-title"><span id="simTitle">Simulator · applicant wallet</span> <span class="ln"></span></div>
+        <div class="presets" id="presets"></div>
+        <div class="wallet" id="wallet"></div>
+        <button class="run" id="run">▶ run ceremony</button>
+        <div class="verdict" id="verdict"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 · VERSIONS -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">03</span><h2>Version history &amp; rollback</h2>
+      <span class="sec-note">Per-ceremony, append-only, hash-chained — like WebVH. Rollback fails forward: it appends a new version, it never rewinds.</span>
+    </div>
+    <div class="panel pad">
+      <div class="draft-banner" id="draftBanner">
+        <span>▲ Draft has unsaved changes vs active <b id="dbActive">v1</b></span>
+        <span class="sp"></span>
+        <button class="db-btn go" id="activateBtn">activate as new version</button>
+        <button class="db-btn discard" id="discardBtn">discard</button>
+      </div>
+      <div class="timeline" id="timeline"></div>
+    </div>
+  </section>
+
+  <!-- 4 · COMPILED -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">04</span><h2>Compiled artifacts</h2>
+      <span class="sec-note">The Rule IR compiles to Rego (enforce) + a Presentation Definition (evidence-bearing ceremonies) + a human summary.</span>
+    </div>
+    <details class="compiled" open>
+      <summary>generated from the current routes — regenerates on every edit</summary>
+      <div class="tabs" id="tabs">
+        <span class="tab on" data-t="rego" id="regoTab">join.rego</span>
+        <span class="tab" data-t="pd">presentation_definition.json</span>
+        <span class="tab" data-t="en">human summary</span>
+      </div>
+      <pre id="compiledOut"></pre>
+    </details>
+  </section>
+
+  <footer>
+    Design aid for <b>vtc-service</b> · the ceremony decision pipeline (see
+    <span class="mono">vtc-ceremony-pipeline.md</span>, <span class="mono">vtc-ceremony-catalog.md</span>,
+    <span class="mono">vtc-ceremony-rule-ir.md</span>). Not wired to the running service — it models the intended
+    shape. Verdict colours are the generic <span class="mono">allow / refer / request_more / deny</span>;
+    each ceremony realizes <span class="mono">allow</span> differently (join → admit, leave → execute departure,
+    directory → return a field projection). Concepts:
+    <a href="https://identity.foundation/presentation-exchange/">DIF Presentation Exchange</a> ·
+    DTG credentials · <a href="https://www.openpolicyagent.org/docs/policy-language">Rego</a>.
+  </footer>
+</div>
+
+<script>
+/* ============================================================= UTIL */
+const clone = o => JSON.parse(JSON.stringify(o));
+function shortHash(obj){
+  const s=JSON.stringify(obj); let h=0x811c9dc5;
+  for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,0x01000193); }
+  return (h>>>0).toString(16).padStart(8,'0');
+}
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+/* ============================================================= CEREMONY CONFIGS */
+const CEREMONIES = {
+  join: {
+    label:'Join', simLabel:'applicant wallet', pkg:'vtc.join', family:'join-requests',
+    allowLabel:'admit', flowEffects:'issue + accept', genPD:true, allowObligation:'reciprocate_vmc',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  “…/” = that prefix',
+    v1note:'Initial join policy — invitation, verified-human, almost-there, open review',
+    allowPayload:{key:'role', kind:'text', def:'member'},
+    effects:['allow','request_more','refer','deny'],
+    conds:{
+      has_valid_invitation:{label:'Valid invitation (VIC)', short:'has_valid_invitation', rego:'has_valid_invitation', cred:null},
+      witness:{label:'Trusted WitnessCredential',           short:'holds_trusted("WitnessCredential")', rego:'cred_trusted("WitnessCredential")', cred:'WitnessCredential'},
+      coc:{label:'Agrees to code of conduct',               short:'agreed("code-of-conduct")', rego:'agreed("code-of-conduct")', cred:null},
+      endorse2:{label:'≥2 member endorsements',             short:'endorsement_count >= 2', rego:'endorsement_count >= 2', cred:'EndorsementCredential'},
+      always:{label:'Any applicant',                        short:'true', rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'issue VMC + role VEC · reciprocal edge · write ACL',
+      refer:'queue for a moderator — human-in-the-loop review',
+      request_more:'return a Presentation Definition for what’s missing',
+      deny:'no matching route — structural default-deny',
+    },
+    helpers:[
+      'cred_trusted(t) <span class="k">if</span> { <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.status == <span class="s">"valid"</span> }',
+      'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
+      'endorsement_count := <span class="n">count</span>([c | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == <span class="s">"EndorsementCredential"</span>])',
+      'agreed(tag) <span class="k">if</span> { input.evidence.request.agreements[tag] == <span class="k">true</span> }',
+    ],
+    usesIn:true,
+    scenario:{
+      init:()=>({inv:false, witnessPresent:false, witnessTrusted:true, coc:false, endorsements:0}),
+      fields:[
+        {id:'inv',            label:'Valid invitation (VIC)', sub:'DTG InvitationCredential, issuer authorized', type:'tog'},
+        {id:'witnessPresent', label:'WitnessCredential',      sub:'holds a WitnessCredential',                   type:'tog'},
+        {id:'witnessTrusted', label:'…issuer recognized',     sub:'resolved via trust registry (TRQP)',          type:'tog', dimWhen:'witnessPresent'},
+        {id:'coc',            label:'Agrees to code of conduct', sub:'evidence.request.agreements["code-of-conduct"]', type:'tog'},
+        {id:'endorsements',   label:'Member endorsements',    sub:'EndorsementCredentials from members',          type:'step'},
+      ],
+      presets:[
+        {n:'Unknown DID',     w:{inv:false,witnessPresent:false,witnessTrusted:true,coc:false,endorsements:0}},
+        {n:'Invited (VIC)',   w:{inv:true, witnessPresent:false,witnessTrusted:true,coc:false,endorsements:0}},
+        {n:'Verified human',  w:{inv:false,witnessPresent:true, witnessTrusted:true,coc:true, endorsements:0}},
+        {n:'Almost (no CoC)', w:{inv:false,witnessPresent:true, witnessTrusted:true,coc:false,endorsements:0}},
+        {n:'Untrusted issuer',w:{inv:false,witnessPresent:true, witnessTrusted:false,coc:true,endorsements:0}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'has_valid_invitation': return !!sc.inv;
+        case 'witness':  return sc.witnessPresent && sc.witnessTrusted;
+        case 'coc':      return !!sc.coc;
+        case 'endorse2': return (sc.endorsements||0) >= 2;
+        case 'always':   return true;
+        default:         return false; } },
+      satisfy:(need,sc)=>{ if(need==='coc') sc.coc=true; else if(need==='witness'){ sc.witnessPresent=true; sc.witnessTrusted=true; } else if(need==='endorse2') sc.endorsements=2; },
+    },
+    defaultRoutes:()=>[
+      {name:'Invitation',   comb:'all', conds:['has_valid_invitation'], effect:{type:'allow', role:'member'},        listed:false},
+      {name:'Verified human',comb:'all', conds:['witness','coc'],       effect:{type:'allow', role:'member'},        listed:true},
+      {name:'Almost there', comb:'all', conds:['witness'],              effect:{type:'request_more', needs:['coc']}, listed:true},
+      {name:'Open review',  comb:'all', conds:['always'],               effect:{type:'refer', queue:'moderator'},    listed:true},
+    ],
+  },
+
+  leave: {
+    label:'Leave', simLabel:'departure scenario', pkg:'vtc.leave', family:'departures',
+    allowLabel:'execute departure', flowEffects:'revoke + disposition', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/departures/  ·  actor ≠ subject · destructive',
+    v1note:'Initial leave policy — self-exit, admin-removes-admin → second-admin, admin-removes-member',
+    allowPayload:{key:'disposition', kind:'select', opts:['Tombstone','Purge','Historical','$request'], def:'Tombstone'},
+    effects:['allow','refer','request_more','deny'],
+    conds:{
+      actor_is_self:{label:'Actor is the member (self-exit)', short:'actor_is_self', rego:'input.actor.did == input.subject.did', cred:null},
+      actor_is_admin:{label:'Actor is an admin',             short:'actor_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
+      subject_is_admin:{label:'Subject is an admin',         short:'subject_is_admin', rego:'input.state.subject_member.role == <span class="s">"admin"</span>', cred:null},
+      disposition_requested:{label:'A disposition was requested', short:'disposition_requested', rego:'input.evidence.request.disposition', cred:null},
+      always:{label:'Anyone',                                short:'true', rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'revoke VMC (flip status bit) · apply disposition · registry departure',
+      refer:'a second admin must co-sign the removal',
+      request_more:'require a documented-reason credential first',
+      deny:'policy refuses — no matching route',
+    },
+    helpers:[
+      '<span class="c"># "$request" → the disposition the actor asked for, else PolicyDefault</span>',
+      'disposition := input.evidence.request.disposition <span class="k">if</span> { input.evidence.request.disposition } <span class="k">else</span> := <span class="s">"PolicyDefault"</span>',
+      '<span class="c"># NOTE: no-last-admin is enforced by the HOST around this policy, never in Rego.</span>',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({actor:'admin', subjectRole:'member', disposition:'(none)'}),
+      fields:[
+        {id:'actor',       label:'Actor (who triggers)',   sub:'self-exit vs admin removal',     type:'select', opts:['self','admin']},
+        {id:'subjectRole', label:'Subject’s current role', sub:'state.subject_member.role',       type:'select', opts:['member','admin']},
+        {id:'disposition', label:'Requested disposition',  sub:'self-exit may choose one',        type:'select', opts:['(none)','Tombstone','Purge','Historical']},
+      ],
+      presets:[
+        {n:'Self-exit',       w:{actor:'self',  subjectRole:'member', disposition:'Tombstone'}},
+        {n:'Admin → member',  w:{actor:'admin', subjectRole:'member', disposition:'(none)'}},
+        {n:'Admin → admin',   w:{actor:'admin', subjectRole:'admin',  disposition:'(none)'}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'actor_is_self':    return sc.actor==='self';
+        case 'actor_is_admin':   return sc.actor==='admin';
+        case 'subject_is_admin': return sc.subjectRole==='admin';
+        case 'disposition_requested': return sc.disposition!=='(none)';
+        case 'always':           return true;
+        default:                 return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Self-exit',          comb:'all', conds:['actor_is_self'],                  effect:{type:'allow', disposition:'$request'}, listed:false},
+      {name:'Admin removes admin',comb:'all', conds:['actor_is_admin','subject_is_admin'], effect:{type:'refer', queue:'second-admin'}, listed:false},
+      {name:'Admin removes member',comb:'all',conds:['actor_is_admin'],                 effect:{type:'allow', disposition:'Tombstone'}, listed:false},
+    ],
+  },
+
+  directory: {
+    label:'Directory', simLabel:'viewer', pkg:'vtc.directory', family:'directory',
+    allowLabel:'return fields', flowEffects:'return projection', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/directory/  ·  synchronous · no thread',
+    v1note:'Initial directory policy — admin sees full record, member sees did + role',
+    allowPayload:{key:'fields', kind:'text', def:'did, role'},
+    effects:['allow','deny'],
+    conds:{
+      viewer_is_admin:{label:'Viewer is an admin', short:'viewer_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
+      viewer_is_member:{label:'Viewer is a member', short:'viewer_is_member', rego:'input.actor.authenticated == <span class="k">true</span>', cred:null},
+      always:{label:'Anyone', short:'true', rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'return exactly the permitted field projection — inline, no write',
+      refer:'(unused for directory)',
+      request_more:'(unused for directory)',
+      deny:'non-member → empty result',
+    },
+    helpers:[],
+    usesIn:false,
+    scenario:{
+      init:()=>({viewer:'member'}),
+      fields:[
+        {id:'viewer', label:'Viewer', sub:'who is asking the directory', type:'select', opts:['admin','member','non-member']},
+      ],
+      presets:[
+        {n:'Admin viewer',  w:{viewer:'admin'}},
+        {n:'Member viewer', w:{viewer:'member'}},
+        {n:'Non-member',    w:{viewer:'non-member'}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'viewer_is_admin':  return sc.viewer==='admin';
+        case 'viewer_is_member': return sc.viewer!=='non-member';
+        case 'always':           return true;
+        default:                 return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Admin viewer', comb:'all', conds:['viewer_is_admin'],  effect:{type:'allow', fields:'did, role, joined_at, status, extensions'}, listed:false},
+      {name:'Member viewer',comb:'all', conds:['viewer_is_member'], effect:{type:'allow', fields:'did, role'},                                listed:false},
+    ],
+  },
+
+  'role-change': {
+    label:'Role-change', simLabel:'role-change scenario', pkg:'vtc.role_change', regoFile:'role-change.rego', family:'role-changes',
+    allowLabel:'re-issue role', flowEffects:'re-issue VEC', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  actor ≠ subject · escalation',
+    v1note:'Initial role-change policy — standard roles direct, admin promotion via step-up',
+    allowPayload:{key:'role', kind:'select', opts:['$target','member','moderator','admin'], def:'$target'},
+    effects:['allow','refer','request_more','deny'],
+    conds:{
+      target_role_standard:{label:'Target role is standard (not admin)', short:'target_role_standard', rego:'input.evidence.request.target_role != <span class="s">"admin"</span>', cred:null},
+      promotes_to_admin:{label:'Target role is admin',                    short:'promotes_to_admin',    rego:'input.evidence.request.target_role == <span class="s">"admin"</span>', cred:null},
+      step_up_done:{label:'Step-up reauth completed',                     short:'step_up_done',         rego:'input.evidence.request.step_up == <span class="k">true</span>', cred:null},
+      always:{label:'Anyone',                                            short:'true',                 rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'re-issue the role VEC · update the ACL role',
+      refer:'step-up reauth (or M-of-N) required before admin promotion',
+      request_more:'require additional evidence before the change',
+      deny:'policy refuses — no matching route',
+    },
+    helpers:[
+      '<span class="c"># "$target" → the requested target_role</span>',
+      'target_role := input.evidence.request.target_role',
+      '<span class="c"># admin promotion is allowed HERE (gated by step_up) — unlike join.</span>',
+      '<span class="c"># no-last-admin on demotion is HOST-enforced, never in Rego.</span>',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({targetRole:'moderator', stepUp:false}),
+      fields:[
+        {id:'targetRole', label:'Target role',               sub:'evidence.request.target_role',      type:'select', opts:['member','moderator','admin']},
+        {id:'stepUp',     label:'Step-up reauth completed',  sub:'fresh WebAuthn user-verification',  type:'tog'},
+      ],
+      presets:[
+        {n:'Promote to moderator',          w:{targetRole:'moderator', stepUp:false}},
+        {n:'Promote to admin (no step-up)', w:{targetRole:'admin',     stepUp:false}},
+        {n:'Promote to admin (verified)',   w:{targetRole:'admin',     stepUp:true}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'target_role_standard': return sc.targetRole!=='admin';
+        case 'promotes_to_admin':    return sc.targetRole==='admin';
+        case 'step_up_done':         return sc.stepUp===true;
+        case 'always':               return true;
+        default:                     return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Standard role change',            comb:'all', conds:['target_role_standard'],           effect:{type:'allow', role:'$target'}, listed:false},
+      {name:'Promote to admin (verified)',     comb:'all', conds:['promotes_to_admin','step_up_done'], effect:{type:'allow', role:'admin'},   listed:false},
+      {name:'Promote to admin (needs step-up)',comb:'all', conds:['promotes_to_admin'],              effect:{type:'refer', queue:'step-up'}, listed:false},
+    ],
+  },
+};
+
+/* ============================================================= STATE */
+let cur = 'join';
+const RT = {};
+const C = () => CEREMONIES[cur];
+const S = () => RT[cur];
+
+function initAll(){
+  Object.keys(CEREMONIES).forEach(id=>{
+    const cf=CEREMONIES[id];
+    const routes=cf.defaultRoutes();
+    RT[id]={ routes, scenario:cf.scenario.init(), versions:[{
+      v:1, kind:'create', note:cf.v1note, author:'did:key:z6Mk…Adm1n', ts:'2026-05-20 09:14Z',
+      parent:null, snapshot:clone(routes), hash:shortHash(routes)
+    }], activeV:1, lastResult:null, dragIndex:null };
+  });
+}
+
+/* ============================================================= EVAL */
+function condMet(id, sc){ return C().scenario.test(id, sc); }
+function routeMatches(r, sc){
+  const xs=r.conds.map(c=>condMet(c,sc));
+  return r.comb==='any' ? xs.some(Boolean) : xs.every(Boolean);
+}
+function evaluate(sc){
+  const routes=S().routes;
+  for(let i=0;i<routes.length;i++) if(routeMatches(routes[i],sc)) return {idx:i, route:routes[i], effect:routes[i].effect.type};
+  return {idx:-1, route:null, effect:'deny'};
+}
+function newEffect(type){
+  if(type==='allow'){ const p=C().allowPayload, o={type:'allow'}; o[p.key]=p.def; return o; }
+  if(type==='refer') return {type:'refer', queue:'moderator'};
+  if(type==='request_more') return {type:'request_more', needs:[]};
+  return {type:'deny', reason:'policy'};
+}
+
+/* ============================================================= FLOW DIAGRAM (D3) */
+const STAGES = [
+  {id:'discover',t:'Discover',  s:'…/manifest',      kind:'wire'},
+  {id:'gather',  t:'Gather',    s:'evidence',        kind:'local'},
+  {id:'submit',  t:'Submit',    s:'…/request',       kind:'wire'},
+  {id:'verify',  t:'Pre-verify',s:'host · crypto',   kind:'internal'},
+  {id:'evaluate',t:'Evaluate',  s:'policy · Rego',   kind:'internal'},
+  {id:'verdict', t:'Verdict',   s:'request#response',kind:'wire'},
+  {id:'effects', t:'Effects',   s:'issue + accept',  kind:'wire'},
+];
+const NW=128, NH=54, NY=70;
+const X = i => 36 + i*(1120-72-NW)/(STAGES.length-1) + NW/2;
+
+const svg = d3.select('#flow');
+const defs = svg.append('defs');
+[['arrow','var(--line-2)'],['arrow-more','var(--more)']].forEach(([id,col])=>{
+  defs.append('marker').attr('id',id).attr('viewBox','0 0 10 10').attr('refX',9).attr('refY',5)
+    .attr('markerWidth',7).attr('markerHeight',7).attr('orient','auto-start-reverse')
+    .append('path').attr('d','M0,0 L10,5 L0,10 Z').attr('fill',col);
+});
+const gEdge = svg.append('g');
+for(let i=0;i<STAGES.length-1;i++){
+  gEdge.append('path').attr('class','edge')
+    .attr('d',`M${X(i)+NW/2},${NY+NH/2} L${X(i+1)-NW/2-3},${NY+NH/2}`);
+}
+const lx0=X(5), lx1=X(1);
+svg.append('path').attr('class','edge loop').attr('id','loopEdge')
+  .attr('d',`M${lx0},${NY} C ${lx0},${-2} ${lx1},${-2} ${lx1},${NY-2}`);
+svg.append('text').attr('class','loop-label').attr('id','loopLabel')
+  .attr('x',(lx0+lx1)/2).attr('y',6).attr('text-anchor','middle').text('…/present ↺');
+const gNode = svg.selectAll('.node').data(STAGES).join('g').attr('class','node').attr('id',d=>'n-'+d.id);
+gNode.append('rect').attr('class','node-box').attr('width',NW).attr('height',NH)
+  .attr('x',(d,i)=>X(i)-NW/2).attr('y',NY).attr('rx',11);
+gNode.append('text').attr('class','node-i').attr('x',(d,i)=>X(i)-NW/2+11).attr('y',NY+18).text((d,i)=>String(i+1).padStart(2,'0'));
+gNode.append('text').attr('class','node-t').attr('x',(d,i)=>X(i)).attr('y',NY+26).attr('text-anchor','middle').text(d=>d.t);
+gNode.append('text').attr('class','node-s').attr('id',d=>'ns-'+d.id).attr('x',(d,i)=>X(i)).attr('y',NY+42).attr('text-anchor','middle').text(d=>d.s);
+gNode.append('circle').attr('class',d=>'kind-dot '+d.kind).attr('r',3.2)
+  .attr('cx',(d,i)=>X(i)+NW/2-10).attr('cy',NY+10);
+const token = svg.append('circle').attr('id','token').attr('r',6).attr('cx',X(0)).attr('cy',NY+NH/2).attr('opacity',0);
+
+const OUTCOME_DEFS = [
+  {k:'allow', cls:'allow', h:'allow'},
+  {k:'refer', cls:'refer', h:'refer'},
+  {k:'request_more', cls:'more', h:'request_more'},
+  {k:'deny',  cls:'deny',  h:'deny'},
+];
+function renderOutcomes(){
+  d3.select('#outcomes').selectAll('.oc').data(OUTCOME_DEFS, d=>d.k).join('div')
+    .attr('class',d=>`oc ${d.cls}`).attr('id',d=>'oc-'+d.k)
+    .html(d=>`<div class="och"><span class="dot"></span>${d.h}</div><div class="ocd">${C().outcomes[d.k]}</div>`);
+}
+
+function animateToken(fromX,toX,dur){
+  return new Promise(res=>{
+    token.attr('opacity',1); const t0=performance.now();
+    function step(now){ const p=Math.min(1,(now-t0)/dur), e=p<.5?2*p*p:1-Math.pow(-2*p+2,2)/2;
+      token.attr('cx',fromX+(toX-fromX)*e); if(p<1) requestAnimationFrame(step); else res(); }
+    requestAnimationFrame(step);
+  });
+}
+function animateArc(dur){
+  const path=document.getElementById('loopEdge'), L=path.getTotalLength();
+  d3.select('#loopEdge').classed('show',true); d3.select('#loopLabel').classed('show',true);
+  return new Promise(res=>{ const t0=performance.now();
+    function step(now){ const p=Math.min(1,(now-t0)/dur), pt=path.getPointAtLength(L*p);
+      token.attr('cx',pt.x).attr('cy',pt.y); if(p<1) requestAnimationFrame(step); else { token.attr('cy',NY+NH/2); res(); } }
+    requestAnimationFrame(step);
+  });
+}
+function resetFlow(){
+  svg.selectAll('.node-box').classed('hot',false);
+  d3.selectAll('.oc').classed('lit',false);
+  d3.select('#loopEdge').classed('show',false); d3.select('#loopLabel').classed('show',false);
+  token.attr('opacity',0).attr('cx',X(0)).attr('cy',NY+NH/2);
+}
+async function runFlow(result){
+  resetFlow();
+  for(let i=0;i<=5;i++){
+    svg.select('#n-'+STAGES[i].id).select('.node-box').classed('hot',true);
+    await animateToken(i===0?X(0):X(i-1), X(i), i===0?260:300);
+  }
+  d3.select('#oc-'+result.effect).classed('lit',true);
+  if(result.effect==='allow'){
+    await animateToken(X(5),X(6),320);
+    svg.select('#n-effects').select('.node-box').classed('hot',true);
+  } else if(result.effect==='request_more'){
+    await new Promise(r=>setTimeout(r,250));
+    await animateArc(900);
+    svg.select('#n-gather').select('.node-box').classed('hot',true);
+  }
+  token.transition().duration(400).attr('opacity',0);
+}
+
+/* ============================================================= ROUTES UI */
+const routesEl = d3.select('#routes');
+function renderRoutes(){
+  const routes=S().routes, lastResult=S().lastResult, conds=C().conds;
+  const data=routes.map((r,i)=>({r,i}));
+  const sel=routesEl.selectAll('.route:not(.default-route)').data(data,(d,i)=>i);
+  sel.exit().remove();
+  const enter=sel.enter().append('div').attr('class','route');
+  enter.append('div').attr('class','rt-head');
+  enter.append('div').attr('class','rt-body');
+  const all=enter.merge(sel);
+
+  all.attr('class',d=>{
+    let c='route eff-'+d.r.effect.type;
+    if(lastResult){ if(lastResult.idx===d.i) c+=' fired'; else if(lastResult.idx<0 || d.i<lastResult.idx) c+=' skipped'; }
+    return c;
+  });
+
+  all.on('dragover',function(e){ e.preventDefault(); e.dataTransfer.dropEffect='move'; d3.select(this).classed('drag-over',true); })
+    .on('dragleave',function(){ d3.select(this).classed('drag-over',false); })
+    .on('drop',function(e,d){ e.preventDefault(); d3.select(this).classed('drag-over',false); reorder(S().dragIndex,d.i); });
+
+  all.select('.rt-head').html('').each(function(d){
+    const head=d3.select(this);
+    head.append('span').attr('class','drag-handle').attr('draggable',true).attr('title','drag to reorder').text('⠿')
+      .on('dragstart',function(e){ S().dragIndex=d.i; e.dataTransfer.effectAllowed='move';
+        e.dataTransfer.setData('text/plain',String(d.i)); this.closest('.route').classList.add('dragging'); })
+      .on('dragend',function(){ S().dragIndex=null; d3.selectAll('.route').classed('dragging',false).classed('drag-over',false); });
+    head.append('div').attr('class','pri').text('P'+(d.i+1));
+    head.append('input').attr('class','rt-name').attr('value',d.r.name).on('change',function(){ d.r.name=this.value; onEdit(); });
+    head.append('span').attr('class','vis'+(d.r.listed?'':' unlisted')).text(d.r.listed?'public':'unlisted')
+      .attr('title','toggle manifest visibility').on('click',()=>{ d.r.listed=!d.r.listed; onEdit(); });
+    const tools=head.append('div').attr('class','rt-tools');
+    tools.append('button').attr('class','ib').attr('title','move up').property('disabled',d.i===0).text('↑').on('click',()=>move(d.i,-1));
+    tools.append('button').attr('class','ib').attr('title','move down').property('disabled',d.i===routes.length-1).text('↓').on('click',()=>move(d.i,1));
+    tools.append('button').attr('class','ib').attr('title','delete route').text('✕').on('click',()=>{ S().routes.splice(d.i,1); onEdit(); });
+  });
+
+  all.select('.rt-body').html('').each(function(d){
+    const body=d3.select(this);
+    const wr=body.append('div').attr('class','when-row');
+    if(d.r.conds.length>1){
+      wr.append('span').attr('class','comb').text(d.r.comb.toUpperCase())
+        .on('click',()=>{ d.r.comb=d.r.comb==='all'?'any':'all'; onEdit(); });
+    }
+    d.r.conds.forEach((cid,ci)=>{
+      const met=S().lastResult ? condMet(cid,S().scenario) : null;
+      const chip=wr.append('span').attr('class','cond'+(met===true?' met':met===false?' unmet':''));
+      chip.append('span').text(conds[cid]?conds[cid].short:cid);
+      chip.append('span').attr('class','x').text('×').on('click',()=>{ d.r.conds.splice(ci,1); onEdit(); });
+    });
+    const addSel=wr.append('select').attr('class','add-cond');
+    addSel.append('option').attr('value','').text('+ when');
+    Object.keys(conds).filter(k=>!d.r.conds.includes(k)).forEach(k=>addSel.append('option').attr('value',k).text(conds[k].label));
+    addSel.on('change',function(){ if(this.value){ d.r.conds.push(this.value); onEdit(); } });
+
+    const tr=body.append('div').attr('class','then-row');
+    tr.append('span').attr('class','arrow-then').text('then →');
+    const eSel=tr.append('select');
+    C().effects.forEach(e=>eSel.append('option').attr('value',e).attr('selected',e===d.r.effect.type?true:null).text(e));
+    eSel.on('change',function(){ d.r.effect=newEffect(this.value); onEdit(); });
+
+    const eff=d.r.effect;
+    if(eff.type==='allow'){
+      const p=C().allowPayload;
+      tr.append('span').text(p.key);
+      if(p.kind==='select'){
+        const s=tr.append('select').on('change',function(){ eff[p.key]=this.value; updateCompiled(); });
+        p.opts.forEach(o=>s.append('option').attr('value',o).attr('selected',(eff[p.key]||p.def)===o?true:null).text(o));
+      } else {
+        tr.append('input').attr('class','txt').style('width','120px').attr('value',eff[p.key]||p.def)
+          .on('change',function(){ eff[p.key]=this.value; updateCompiled(); });
+      }
+    } else if(eff.type==='refer'){
+      tr.append('span').text('to queue');
+      tr.append('input').attr('class','txt').style('width','110px').attr('value',eff.queue||'moderator').on('change',function(){ eff.queue=this.value; updateCompiled(); });
+    } else if(eff.type==='request_more'){
+      tr.append('span').text('needs');
+      (eff.needs||[]).forEach(n=>tr.append('span').attr('class','cond').style('color','var(--more)').text(conds[n]?conds[n].short:n));
+    } else if(eff.type==='deny'){
+      tr.append('span').text('reason');
+      tr.append('input').attr('class','txt').style('width','130px').attr('value',eff.reason||'policy').on('change',function(){ eff.reason=this.value; updateCompiled(); });
+    }
+  });
+
+  routesEl.selectAll('.default-route').remove();
+  routesEl.append('div').attr('class','route default-route eff-deny')
+    .html(`<div class="rt-head"><div class="pri">∎</div>
+      <span class="rt-name" style="color:var(--faint)">default</span>
+      <span class="vis" style="color:var(--faint)">structural</span></div>
+      <div class="rt-body"><div class="then-row"><span class="arrow-then">then →</span>
+      <span class="cond unmet">deny · no-matching-route</span>
+      <span style="color:var(--faint);font-size:11px">compiler-appended · cannot be removed</span></div></div>`);
+}
+function move(i,dir){
+  const routes=S().routes, j=i+dir; if(j<0||j>=routes.length) return;
+  [routes[i],routes[j]]=[routes[j],routes[i]]; onEdit();
+}
+function reorder(from,to){
+  if(from==null || from===to || to==null) return;
+  const routes=S().routes, item=routes.splice(from,1)[0];
+  routes.splice(to,0,item); S().lastResult=null; onEdit();
+}
+
+/* ============================================================= SIMULATOR UI */
+function renderPresets(){
+  d3.select('#presets').selectAll('.preset').data(C().scenario.presets, d=>d.n).join('div').attr('class','preset')
+    .text(d=>d.n).on('click',d=>{ S().scenario=clone(d.w); renderScenario(); });
+}
+function renderScenario(){
+  const sc=S().scenario, defs=C().scenario.fields;
+  const sel=d3.select('#wallet').selectAll('.ev').data(defs,d=>d.id);
+  sel.exit().remove();
+  const enter=sel.enter().append('div').attr('class','ev');
+  enter.append('div').attr('class','ev-label'); enter.append('div').attr('class','ctrl');
+  const all=enter.merge(sel);
+  all.select('.ev-label').html(d=>`${d.label}<small>${d.sub}</small>`);
+  all.select('.ctrl').html('').each(function(d){
+    const c=d3.select(this);
+    if(d.type==='tog'){
+      const dim=d.dimWhen && !sc[d.dimWhen];
+      c.append('div').attr('class','tog'+(sc[d.id]?' on':'')+(dim?' dim':'')).on('click',()=>{ sc[d.id]=!sc[d.id]; renderScenario(); });
+    } else if(d.type==='step'){
+      const st=c.append('div').attr('class','stepper');
+      st.append('button').text('−').on('click',()=>{ sc[d.id]=Math.max(0,(sc[d.id]||0)-1); renderScenario(); });
+      st.append('span').text(sc[d.id]||0);
+      st.append('button').text('+').on('click',()=>{ sc[d.id]=Math.min(5,(sc[d.id]||0)+1); renderScenario(); });
+    } else if(d.type==='select'){
+      const s=c.append('select').on('change',function(){ sc[d.id]=this.value; renderScenario(); });
+      d.opts.forEach(o=>s.append('option').attr('value',o).attr('selected',sc[d.id]===o?true:null).text(o));
+    }
+  });
+}
+
+async function run(){
+  const res=evaluate(S().scenario);
+  S().lastResult=res;
+  renderRoutes();
+  await runFlow(res);
+  showVerdict(res);
+}
+function showVerdict(res){
+  const v=d3.select('#verdict').attr('class','verdict show');
+  const eff=res.effect, rname=res.route?res.route.name:'—', pri=res.idx<0?'default':'P'+(res.idx+1);
+  let expl='', extra='';
+  if(eff==='allow'){
+    const e=res.route.effect, p=C().allowPayload, sc=S().scenario; let val=e[p.key]||p.def;
+    if(val==='$target') val=sc.targetRole;
+    else if(val==='$request') val=(sc.disposition && sc.disposition!=='(none)')?sc.disposition:'PolicyDefault';
+    expl=`<b>allow</b> — ${C().allowLabel}. Verdict carries <b>${p.key}: ${val}</b>. ${C().outcomes.allow}.`;
+  } else if(eff==='refer'){
+    expl=`<b>refer</b> → <b>${res.route.effect.queue||'moderator'}</b>. ${C().outcomes.refer}.`;
+  } else if(eff==='request_more'){
+    const needs=(res.route.effect.needs||[]).filter(n=>!condMet(n,S().scenario));
+    expl=`<b>request_more</b> on the <b>${rname}</b> route. ${C().outcomes.request_more}, then loops back to Gather.`;
+    if(C().scenario.satisfy && needs.length){
+      extra=`<div class="v-missing"><span style="color:var(--faint);font-family:'IBM Plex Mono';font-size:11px">still need:</span>`+
+        needs.map(n=>`<button class="satisfy" data-need="${n}">+ ${C().conds[n]?C().conds[n].short:n}</button>`).join('')+`</div>`;
+    }
+  } else {
+    expl=`<b>deny</b> — ${C().outcomes.deny}. The compiler guarantees the policy always reaches a decision.`;
+  }
+  v.html(`<div class="v-top"><span class="v-badge ${eff}">${eff}</span><span class="v-route">matched ${pri} · ${rname}</span></div><div class="v-expl">${expl}</div>${extra}`);
+  v.selectAll('.satisfy').on('click',function(){ C().scenario.satisfy(this.getAttribute('data-need'), S().scenario); renderScenario(); run(); });
+}
+
+/* ============================================================= VERSIONS */
+function isDraftDirty(){
+  const active=S().versions.find(x=>x.v===S().activeV);
+  return active ? shortHash(S().routes)!==active.hash : true;
+}
+function renderVersions(){
+  d3.select('#activeChip').html(`active <b>v${S().activeV}</b>`);
+  d3.select('#dbActive').text('v'+S().activeV);
+  d3.select('#draftBanner').classed('show', isDraftDirty());
+
+  const list=[...S().versions].sort((a,b)=>b.v-a.v);
+  const sel=d3.select('#timeline').selectAll('.ver').data(list,d=>d.v);
+  sel.exit().remove();
+  const enter=sel.enter().append('div');
+  enter.merge(sel).attr('class',d=>'ver'+(d.v===S().activeV?' active':'')+(d.kind==='rollback'?' rollback':''))
+    .html(d=>{
+      const tags=[];
+      if(d.v===S().activeV) tags.push('<span class="ver-tag active">active</span>');
+      if(d.kind==='rollback') tags.push('<span class="ver-tag rollback">rollback → v'+d.rollbackOf+'</span>');
+      if(d.kind==='create') tags.push('<span class="ver-tag">genesis</span>');
+      return `<div class="ver-top"><span class="ver-v">v${d.v}</span>${tags.join('')}
+          <span class="ver-hash">sha256:${d.hash}</span></div>
+        <div class="ver-note">${d.note}</div>
+        <div class="ver-meta"><span>✎ ${d.author}</span><span>◷ ${d.ts}</span>
+          ${d.parent?'<span>← parent v'+d.parent+'</span>':''}</div>
+        <div class="ver-acts">
+          ${d.v!==S().activeV?`<button class="ver-btn rb" data-rb="${d.v}">⟲ roll back to v${d.v}</button>`:''}
+          <button class="ver-btn" data-diff="${d.v}">⇄ diff vs active</button>
+          <button class="ver-btn" data-load="${d.v}">view routes</button>
+        </div>
+        <div class="diff" id="diff-${d.v}"></div>`;
+    });
+  d3.select('#timeline').selectAll('[data-rb]').on('click',function(){ rollback(+this.getAttribute('data-rb')); });
+  d3.select('#timeline').selectAll('[data-load]').on('click',function(){ loadVersion(+this.getAttribute('data-load')); });
+  d3.select('#timeline').selectAll('[data-diff]').on('click',function(){ toggleDiff(+this.getAttribute('data-diff')); });
+}
+function activateDraft(){
+  const r=S(), v=r.versions.length+1;
+  r.versions.push({ v, kind:'edit', note:prompt('Change note for v'+v+':','Edited '+cur+' routes')||'(no note)',
+    author:'did:key:z6Mk…Adm1n', ts:nowStamp(), parent:r.activeV, snapshot:clone(r.routes), hash:shortHash(r.routes) });
+  r.activeV=v; renderAll();
+}
+function rollback(target){
+  const r=S(), src=r.versions.find(x=>x.v===target), v=r.versions.length+1;
+  r.versions.push({ v, kind:'rollback', rollbackOf:target, note:`Roll back to v${target} — “${src.note}”`,
+    author:'did:key:z6Mk…Adm1n', ts:nowStamp(), parent:r.activeV, snapshot:clone(src.snapshot), hash:src.hash });
+  r.activeV=v; r.routes=clone(src.snapshot); r.lastResult=null; renderAll();
+}
+function loadVersion(target){
+  const r=S(), src=r.versions.find(x=>x.v===target);
+  r.routes=clone(src.snapshot); r.lastResult=null; renderAll();
+}
+function discardDraft(){
+  const r=S(), active=r.versions.find(x=>x.v===r.activeV);
+  r.routes=clone(active.snapshot); r.lastResult=null; renderAll();
+}
+function toggleDiff(v){
+  const el=d3.select('#diff-'+v), open=el.classed('show');
+  d3.selectAll('.diff').classed('show',false).html('');
+  if(open) return;
+  const from=S().versions.find(x=>x.v===v).snapshot, to=S().routes;
+  el.classed('show',true);
+  el.selectAll('.dl').data(semanticDiff(from,to)).join('div').attr('class',d=>'dl '+d.k).text(d=>d.t);
+}
+function semanticDiff(from,to){
+  const out=[], conds=C().conds, fn=from.map(r=>r.name), tn=to.map(r=>r.name);
+  fn.forEach(n=>{ if(!tn.includes(n)) out.push({k:'rem',t:`− route “${n}” removed`}); });
+  tn.forEach((n,ti)=>{
+    if(!fn.includes(n)){ out.push({k:'add',t:`+ route “${n}” added at P${ti+1}`}); return; }
+    const fi=fn.indexOf(n);
+    if(fi!==ti) out.push({k:'mov',t:`⇅ “${n}” priority P${fi+1} → P${ti+1}`});
+    const fr=from[fi], tr=to[ti];
+    if(fr.conds.join('+')!==tr.conds.join('+'))
+      out.push({k:'mov',t:`  ~ “${n}” when: [${fr.conds.map(c=>conds[c]?conds[c].short:c).join(', ')}] → [${tr.conds.map(c=>conds[c]?conds[c].short:c).join(', ')}]`});
+    if(fr.effect.type!==tr.effect.type) out.push({k:'mov',t:`  ~ “${n}” effect: ${fr.effect.type} → ${tr.effect.type}`});
+  });
+  if(!out.length) out.push({k:'same',t:'= identical — no changes vs this version'});
+  return out;
+}
+let tick=0; function nowStamp(){ tick++; return `2026-05-30 ${(10+tick).toString().padStart(2,'0')}:0${tick%6}Z`; }
+
+/* ============================================================= COMPILED OUTPUT */
+let activeTab='rego';
+d3.select('#tabs').selectAll('.tab').on('click',function(){
+  d3.selectAll('.tab').classed('on',false); d3.select(this).classed('on',true);
+  activeTab=this.getAttribute('data-t'); updateCompiled();
+});
+function regoVal(eff){
+  if(eff.type==='allow'){
+    const k=C().allowPayload.key; let payload;
+    if(k==='role'){
+      const rv=eff.role||'member';
+      const roleEx = rv==='$target' ? `<span class="s">"role"</span>: target_role` : `<span class="s">"role"</span>: <span class="s">"${rv}"</span>`;
+      payload = roleEx + (C().allowObligation ? `, <span class="s">"obligations"</span>: [<span class="s">"${C().allowObligation}"</span>]` : '');
+    }
+    else if(k==='disposition') payload=(eff.disposition||'')==='$request'
+      ? `<span class="s">"disposition"</span>: disposition`
+      : `<span class="s">"disposition"</span>: <span class="s">"${eff.disposition||'Tombstone'}"</span>`;
+    else { const arr=(eff.fields||'').split(',').map(s=>s.trim()).filter(Boolean).map(f=>`<span class="s">"${f}"</span>`).join(', ');
+      payload=`<span class="s">"fields"</span>: [${arr}]`; }
+    return `{<span class="s">"effect"</span>: <span class="s">"allow"</span>, <span class="s">"with"</span>: {${payload}}}`;
+  }
+  if(eff.type==='refer') return `{<span class="s">"effect"</span>: <span class="s">"refer"</span>, <span class="s">"with"</span>: {<span class="s">"queue"</span>: <span class="s">"${eff.queue||'moderator'}"</span>}}`;
+  if(eff.type==='request_more') return `{<span class="s">"effect"</span>: <span class="s">"request_more"</span>, <span class="s">"with"</span>: {<span class="s">"needs"</span>: [${(eff.needs||[]).map(n=>'<span class="s">"'+n+'"</span>').join(', ')}]}}`;
+  return `{<span class="s">"effect"</span>: <span class="s">"deny"</span>, <span class="s">"with"</span>: {<span class="s">"reason"</span>: <span class="s">"${eff.reason||'policy'}"</span>}}`;
+}
+function condLines(r){
+  const conds=C().conds;
+  if(r.conds.length===0) return ['  <span class="c"># (no conditions)</span>'];
+  if(r.comb==='any' && r.conds.length>1) return ['  '+r.conds.map(c=>conds[c].rego).join('  <span class="c"># or</span>  ')];
+  return r.conds.map(c=>'  '+conds[c].rego);
+}
+function genRego(){
+  const cf=C(), L=[];
+  L.push('<span class="c"># Compiled from the visual routes — illustrative (see vtc-ceremony-rule-ir.md).</span>');
+  L.push('<span class="c"># Crypto resolved by the host BEFORE eval; policy reads only verified facts in `input`.</span>');
+  L.push('');
+  L.push(`<span class="k">package</span> ${cf.pkg}`);
+  L.push('');
+  L.push('<span class="k">import</span> future.keywords.if');
+  if(cf.usesIn) L.push('<span class="k">import</span> future.keywords.in');
+  L.push('');
+  L.push('<span class="k">default</span> decision := {<span class="s">"effect"</span>: <span class="s">"deny"</span>, <span class="s">"with"</span>: {<span class="s">"code"</span>: <span class="s">"no-matching-route"</span>}}');
+  L.push('');
+  S().routes.forEach((r,i)=>{
+    L.push(`<span class="c"># P${i+1} · ${r.name}${r.listed?'':'  (unlisted)'}</span>`);
+    const head = i===0 ? `decision := ${regoVal(r.effect)} <span class="k">if</span> {`
+                       : `<span class="k">else</span> := ${regoVal(r.effect)} <span class="k">if</span> {`;
+    L.push(head);
+    condLines(r).forEach(l=>L.push(l));
+    L.push('}');
+  });
+  if(cf.helpers.length){ L.push(''); L.push('<span class="c"># ---- helpers (over already-verified facts) ----</span>'); cf.helpers.forEach(h=>L.push(h)); }
+  return L.join('\n');
+}
+function genPD(){
+  if(!C().genPD){
+    return '<span class="c">// '+C().label+' presents no credentials — no Presentation Definition.</span>\n'
+         + '<span class="c">// (PDs are generated only for evidence-bearing ceremonies, e.g. Join.)</span>';
+  }
+  const conds=C().conds, groups=S().routes.filter(r=>r.listed), descriptors=[];
+  groups.forEach((r,gi)=>r.conds.forEach(c=>{
+    if(conds[c] && conds[c].cred) descriptors.push({
+      id:`${r.name.toLowerCase().replace(/\s+/g,'-')}-${c}`, group:[`g${gi}`],
+      name:`${r.name}: ${conds[c].label}`,
+      constraints:{fields:[{path:['$.type'],filter:{contains:{const:conds[c].cred}}}]}
+    });
+  }));
+  const obj={ id:'vtc-'+cur, name:'Acme community '+cur+' requirements',
+    submission_requirements:groups.map((r,gi)=>({name:r.name, rule:'pick', count:1, from:`g${gi}`})),
+    input_descriptors:descriptors };
+  let s=esc(JSON.stringify(obj,null,2)).replace(/"([^"]+)":/g,'<span class="k">"$1"</span>:').replace(/: "([^"]*)"/g,': <span class="s">"$1"</span>');
+  return '<span class="c">// Unlisted routes (e.g. VIC) are excluded — the invite is the private signal.</span>\n'+s;
+}
+function genEnglish(){
+  const conds=C().conds, L=['<span class="c"># Human summary — published in the ceremony manifest.</span>',''];
+  L.push(`For <b>${C().label}</b> at Acme, the first matching route applies:`); L.push('');
+  S().routes.forEach((r,i)=>{
+    const when=r.conds.length? r.conds.map(c=>conds[c]?conds[c].label:c).join(r.comb==='any'?'  OR  ':'  AND  ') : 'always';
+    const e=r.effect; let then;
+    if(e.type==='allow'){ const p=C().allowPayload; const pv=e[p.key]||p.def; const disp=pv==='$target'?'requested role':pv==='$request'?'requested or PolicyDefault':pv; then=`→ <b>allow</b> (${C().allowLabel}; ${p.key}: ${disp})`; }
+    else if(e.type==='refer') then=`→ <b>refer</b> to ${e.queue||'moderator'}`;
+    else if(e.type==='request_more') then=`→ <b>request_more</b> (${(e.needs||[]).join(', ')})`;
+    else then=`→ <b>deny</b>`;
+    L.push(`  <span class="n">P${i+1}</span> <b>${r.name}</b>${r.listed?'':' <span class="c">(unlisted)</span>'}: ${when}  ${then}`);
+  });
+  L.push('  <span class="n">∎</span> <b>default</b>: anything else → denied.');
+  return L.join('\n');
+}
+function updateCompiled(){
+  const out=d3.select('#compiledOut');
+  if(activeTab==='rego') out.html(genRego());
+  else if(activeTab==='pd') out.html(genPD());
+  else out.html(genEnglish());
+}
+
+/* ============================================================= CHROME / SWITCH */
+function updateChrome(){
+  d3.select('#cerChip').text(cur);
+  d3.select('#legAllow').text(`allow (here: ${C().allowLabel})`);
+  d3.select('#routesTitle').text(`${C().label} policy · routes`);
+  d3.select('#simTitle').text(`Simulator · ${C().simLabel}`);
+  d3.select('#flowNs').text(C().manifestNs);
+  d3.select('#regoTab').text(C().regoFile || C().pkg.split('.')[1]+'.rego');
+  svg.select('#ns-effects').text(C().flowEffects);
+  d3.select('#cerTabs').selectAll('.cer-tab').classed('on',function(){ return this.getAttribute('data-c')===cur; });
+  renderOutcomes();
+  d3.select('#verdict').attr('class','verdict');   // hide stale verdict
+}
+function switchCeremony(id){
+  if(id===cur) return;
+  cur=id; resetFlow(); updateChrome(); renderAll();
+}
+
+/* ============================================================= WIRING */
+function onEdit(){ S().lastResult=null; renderRoutes(); renderVersions(); updateCompiled(); }
+function renderAll(){ renderPresets(); renderRoutes(); renderScenario(); renderVersions(); updateCompiled(); }
+
+d3.select('#cerTabs').selectAll('.cer-tab').on('click',function(){ switchCeremony(this.getAttribute('data-c')); });
+d3.select('#addRoute').on('click',()=>{ S().routes.push({name:'New route', comb:'all', conds:['always'], effect:newEffect(C().effects.includes('refer')?'refer':C().effects[0]), listed:true}); onEdit(); });
+d3.select('#run').on('click',run);
+d3.select('#activateBtn').on('click',activateDraft);
+d3.select('#discardBtn').on('click',discardDraft);
+
+initAll();
+updateChrome();
+renderAll();
+</script>
+</body>
+</html>

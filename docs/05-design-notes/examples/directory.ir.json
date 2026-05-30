@@ -1,0 +1,15 @@
+{
+  "purpose": "directory",
+  "routes": [
+    {
+      "name": "Admin viewer",
+      "when": { "all": ["viewer_is_admin"] },
+      "then": { "effect": "allow", "with": { "fields": ["did", "role", "joined_at", "status", "extensions"] } }
+    },
+    {
+      "name": "Member viewer",
+      "when": { "all": ["viewer_is_member"] },
+      "then": { "effect": "allow", "with": { "fields": ["did", "role"] } }
+    }
+  ]
+}

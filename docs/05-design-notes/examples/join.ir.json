@@ -1,0 +1,26 @@
+{
+  "purpose": "join",
+  "routes": [
+    {
+      "name": "Invitation",
+      "listed": false,
+      "when": { "all": ["has_valid_invitation"] },
+      "then": { "effect": "allow", "with": { "role": "member", "obligations": ["reciprocate_vmc"] } }
+    },
+    {
+      "name": "Verified human",
+      "when": { "all": [ { "holds_trusted": "WitnessCredential" }, { "agreed": "code-of-conduct" } ] },
+      "then": { "effect": "allow", "with": { "role": "member", "obligations": ["reciprocate_vmc"] } }
+    },
+    {
+      "name": "Almost there",
+      "when": { "all": [ { "holds_trusted": "WitnessCredential" } ] },
+      "then": { "effect": "request_more", "with": { "needs": ["agreed:code-of-conduct"] } }
+    },
+    {
+      "name": "Open review",
+      "when": { "all": ["always"] },
+      "then": { "effect": "refer", "with": { "queue": "moderator" } }
+    }
+  ]
+}
