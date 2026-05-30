@@ -9520,6 +9520,7 @@ version = "0.1.0"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
