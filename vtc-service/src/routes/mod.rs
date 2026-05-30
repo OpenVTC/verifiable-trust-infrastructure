@@ -800,6 +800,12 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
     let auth_admin_login =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0")
             .expect("static Trust-Task URL");
+    // Bearer→cookie bridge for the VTA-wallet login: the SPA posts the
+    // wallet-issued access token, the daemon mirrors it into the
+    // `vtc_admin_session` + `csrf` cookies (same shape as admin-login).
+    let auth_admin_session =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0")
+            .expect("static Trust-Task URL");
     // Browser-friendly passkey login — same canonical spec serves
     // initial login and AAL step-up via the payload's `purpose` field.
     let auth_passkey_login_start =
@@ -863,6 +869,11 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
             "/auth/admin-login",
             post(auth::admin_login),
             auth_admin_login,
+        )
+        .route_with_task(
+            "/auth/admin-session",
+            post(auth::admin_session),
+            auth_admin_session,
         )
         .route_with_task(
             "/auth/passkey-login/start",

@@ -311,6 +311,77 @@ pub async fn admin_login(
     Ok(response)
 }
 
+// ---------- POST /auth/admin-session ----------
+
+/// Request body for [`admin_session`].
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSessionRequest {
+    /// A valid VTC access token the caller already holds — e.g. from the
+    /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
+    pub access_token: String,
+}
+
+/// `POST /v1/auth/admin-session` — exchange a bearer access token for the
+/// admin SPA's cookie session.
+///
+/// The VTA-wallet login path returns a bearer token in the response body
+/// (the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and
+/// reads `tokens.accessToken`), but the admin SPA drives the API with the
+/// `vtc_admin_session` cookie + `csrf` double-submit, not an
+/// `Authorization` header. This endpoint bridges the two: it validates the
+/// presented token (signature + VTC audience + expiry) and, on success,
+/// sets the same `Set-Cookie` pair as [`admin_login`].
+///
+/// No privilege escalation — the caller must already possess a valid VTC
+/// access token, which it could use directly as a bearer; this only mirrors
+/// it into the cookie the browser SPA expects. Browser-only by nature: the
+/// CSRF layer's same-origin check carries the (cookie-less) first call.
+pub async fn admin_session(
+    State(state): State<AppState>,
+    Json(req): Json<AdminSessionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::HeaderValue;
+    use axum::http::header::SET_COOKIE;
+    use axum::response::IntoResponse;
+    use rand::RngExt;
+
+    let jwt_keys = state
+        .jwt_keys
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("JWT keys not configured".into()))?;
+
+    // Validate the token: signature, VTC audience (audience isolation — a
+    // foreign-audience token is rejected here exactly as on every other
+    // surface), and expiry. A bad token never sets a cookie.
+    let claims = jwt_keys
+        .decode(&req.access_token)
+        .map_err(|_| AppError::Authentication("invalid or expired access token".into()))?;
+
+    let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
+
+    let mut csrf_bytes = [0u8; 32];
+    rand::rng().fill(&mut csrf_bytes);
+    let csrf = hex::encode(csrf_bytes);
+
+    let session_cookie = build_session_cookie(&req.access_token, max_age);
+    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(session_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid session cookie value: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(csrf_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?,
+    );
+    Ok(response)
+}
+
 // ---------- POST /auth/passkey-login/start ----------
 
 /// `POST /v1/auth/passkey-login/start`.

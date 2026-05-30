@@ -336,3 +336,111 @@ async fn wallet_login_rejects_nonce_not_matching_challenge() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ─── Phase 3: bearer → cookie bridge (`/v1/auth/admin-session`) ───
+
+const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0";
+const WHOAMI_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
+
+/// Run a full wallet login and return the minted bearer access token.
+async fn wallet_login_bearer(fix: &Fixture, sk: &SigningKey, holder: &str, kid: &str) -> String {
+    let (session_id, challenge) = get_challenge(&fix.router, holder).await;
+    let now = now_epoch();
+    let id_token = sign_id_token(sk, kid, holder, holder, VTC_DID, &challenge, now, now + 300);
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/",
+        json!({ "type": AUTH_TYPE, "payload": { "id_token": id_token, "session_id": session_id } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    body["tokens"]["accessToken"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn admin_session_bridges_bearer_to_cookie_and_authenticates() {
+    let (sk, holder, kid) = holder_identity(5);
+    let fix = build_fixture(&holder).await;
+    let bearer = wallet_login_bearer(&fix, &sk, &holder, &kid).await;
+
+    // Exchange the bearer for the SPA cookie session. Browser-style:
+    // same-origin stamp carries CSRF, Trust-Task header satisfies the gate.
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/admin-session")
+                .header("content-type", "application/json")
+                .header("trust-task", ADMIN_SESSION_TASK)
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({ "accessToken": bearer })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+    // The session cookie must be set; capture it for the follow-up call.
+    let set_cookies: Vec<String> = res
+        .headers()
+        .get_all(axum::http::header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(str::to_string))
+        .collect();
+    let session_cookie = set_cookies
+        .iter()
+        .find(|c| c.starts_with("vtc_admin_session="))
+        .expect("vtc_admin_session cookie set");
+    let cookie_pair = session_cookie.split(';').next().unwrap().to_string();
+
+    // The cookie alone (no Authorization header) authenticates `whoami`.
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/auth/whoami")
+                .header("trust-task", WHOAMI_TASK)
+                .header("cookie", cookie_pair)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let who: Value =
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(who["did"].as_str(), Some(holder.as_str()));
+}
+
+#[tokio::test]
+async fn admin_session_rejects_garbage_token() {
+    let (_sk, holder, _kid) = holder_identity(6);
+    let fix = build_fixture(&holder).await;
+
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/auth/admin-session")
+                .header("content-type", "application/json")
+                .header("trust-task", ADMIN_SESSION_TASK)
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({ "accessToken": "not.a.jwt" })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    // No cookie on rejection.
+    assert!(res.headers().get(axum::http::header::SET_COOKIE).is_none());
+}
