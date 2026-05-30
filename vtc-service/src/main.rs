@@ -1,7 +1,7 @@
 // Module tree is declared in lib.rs (so integration tests under
 // `tests/` can pull the same modules the binary uses). Re-import the
 // pieces this binary needs at the top level.
-use vtc_service::{config, did_key, keys, server, status, store};
+use vtc_service::{acl_cli, config, did_key, keys, server, status, store};
 #[cfg(feature = "setup")]
 use vtc_service::{emergency, setup};
 
@@ -42,6 +42,41 @@ enum Commands {
     Admin {
         #[command(subcommand)]
         command: AdminCommands,
+    },
+    /// Manage ACL entries (offline — run on a **stopped** daemon)
+    Acl {
+        #[command(subcommand)]
+        command: AclCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AclCommands {
+    /// List every ACL entry.
+    List,
+    /// Add or update the ACL entry for a DID.
+    Add {
+        /// The subject DID the entry grants a role to.
+        #[arg(long)]
+        did: String,
+        /// Role: admin | moderator | issuer | member | custom:<name>.
+        #[arg(long, default_value = "member")]
+        role: String,
+        /// Human-readable label.
+        #[arg(long)]
+        label: Option<String>,
+        /// Comma-separated context IDs to scope the entry to.
+        #[arg(long, value_delimiter = ',')]
+        contexts: Vec<String>,
+        /// Expiry in seconds from now (omit for no expiry).
+        #[arg(long)]
+        expires: Option<u64>,
+    },
+    /// Remove the ACL entry for a DID.
+    Remove {
+        /// The subject DID whose entry to delete.
+        #[arg(long)]
+        did: String,
     },
 }
 
@@ -159,6 +194,33 @@ async fn main() {
             {
                 let _ = command;
                 eprintln!("admin subcommands are unavailable (compiled without 'setup')");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Acl { command }) => {
+            let result = match command {
+                AclCommands::List => acl_cli::run_acl_list(cli.config).await,
+                AclCommands::Add {
+                    did,
+                    role,
+                    label,
+                    contexts,
+                    expires,
+                } => {
+                    acl_cli::run_acl_add(acl_cli::AclAddArgs {
+                        config_path: cli.config,
+                        did,
+                        role,
+                        label,
+                        contexts,
+                        expires,
+                    })
+                    .await
+                }
+                AclCommands::Remove { did } => acl_cli::run_acl_remove(cli.config, did).await,
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
         }

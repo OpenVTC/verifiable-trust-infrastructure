@@ -13,6 +13,7 @@
 //! on this crate.
 
 pub mod acl;
+pub mod acl_cli;
 #[cfg(feature = "admin-ui")]
 pub mod admin_ui;
 pub mod auth;
