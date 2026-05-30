@@ -24,6 +24,8 @@ const TRUST_TASK_START =
   "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0";
 const TRUST_TASK_FINISH =
   "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0";
+const TRUST_TASK_BOOTSTRAP =
+  "https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0";
 
 type Phase =
   | { kind: "awaiting-code" }
@@ -201,6 +203,33 @@ export function Install() {
       adminDid: string;
       setupSessionToken: string;
     };
+
+    // ── admin/bootstrap ──
+    // This is the ONLY place the first admin's ACL entry (VtcAclEntry) is
+    // written, so without it passkey login fails with "DID not in ACL".
+    // Drive it here so the install link fully sets up the admin in one go.
+    // 409 = an admin already exists — i.e. this is an *invited* admin whose
+    // ACL was already granted by `vtc admin invite`, or a re-claim — which
+    // is fine: the passkey is registered and the DID is already authorised.
+    const bootstrap = await postJson(
+      "/v1/admin/bootstrap",
+      TRUST_TASK_BOOTSTRAP,
+      { setup_session_token: finishBody.setupSessionToken },
+    );
+    if (bootstrap.status !== 200 && bootstrap.status !== 409) {
+      const b = bootstrap.body as { error?: string; message?: string } | null;
+      setPhase({
+        kind: "error",
+        title: `Admin bootstrap failed (${bootstrap.status})`,
+        message:
+          b?.error ??
+          b?.message ??
+          "Your passkey registered, but finalising admin access failed.",
+        hint: "Check the daemon logs, then re-open the install URL to retry.",
+      });
+      return;
+    }
+
     setPhase({
       kind: "success",
       adminDid: finishBody.adminDid,
@@ -269,7 +298,7 @@ export function Install() {
 
       {phase.kind === "success" && (
         <section className="card">
-          <h3>Passkey registered ✅</h3>
+          <h3>Admin set up ✅</h3>
           <dl>
             <dt>Admin DID</dt>
             <dd>
@@ -277,10 +306,13 @@ export function Install() {
             </dd>
           </dl>
           <p>
-            Save the setup-session token below — your CNM CLI uses it
-            to complete the bootstrap handshake.
+            Your passkey is registered and this DID is now an admin. Open the
+            VTC admin UI and sign in with your passkey.
           </p>
-          <pre>{phase.setupSessionToken}</pre>
+          <details>
+            <summary>Setup-session token (advanced / CNM CLI)</summary>
+            <pre>{phase.setupSessionToken}</pre>
+          </details>
         </section>
       )}
 

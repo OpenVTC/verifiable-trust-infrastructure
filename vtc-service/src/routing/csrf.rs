@@ -58,6 +58,9 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     "/v1/auth/admin-login",
     "/v1/install/claim/start",
     "/v1/install/claim/finish",
+    // First-admin finalisation — unauthenticated (the setup-session JWT in
+    // the body is the credential), driven by the install page + CNM CLI.
+    "/v1/admin/bootstrap",
 ];
 
 /// Tower middleware function. Wire via
