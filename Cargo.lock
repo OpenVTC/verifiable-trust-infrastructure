@@ -888,6 +888,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compat"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "once_cell",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-compression"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9238,6 +9251,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc7687007d2546c454d8ae609b105daceb88175477dac280707ad6d95bcd6f1f"
 dependencies = [
  "anyhow",
+ "async-compat",
  "bytes",
  "log",
  "once_cell",
@@ -9505,12 +9519,14 @@ name = "vta-mobile-core"
 version = "0.1.0"
 dependencies = [
  "affinidi-data-integrity",
+ "affinidi-did-resolver-cache-sdk",
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
  "multibase",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "trust-tasks-rs",
  "uniffi",
 ]

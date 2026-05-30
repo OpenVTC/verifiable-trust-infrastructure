@@ -20,8 +20,9 @@ name = "vta_mobile_core"
 crate-type = ["cdylib", "staticlib", "lib"]
 
 [dependencies]
-# `cli` feature provides `uniffi::uniffi_bindgen_main` for the bindgen binary.
-uniffi = { workspace = true, features = ["cli"] }
+# `cli` provides `uniffi::uniffi_bindgen_main`; `tokio` lets us export async
+# functions (`#[uniffi::export(async_runtime = "tokio")]`).
+uniffi = { workspace = true, features = ["cli", "tokio"] }
 thiserror = { workspace = true }
 base64 = { workspace = true }
 serde_json = { workspace = true }
@@ -37,6 +38,11 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
+# Async runtime for the FFI async exports + a process-wide resolver cell.
+tokio = { workspace = true }
+# DID resolution. Default config is local (did:key / did:peer resolve offline);
+# networked methods (did:web / did:webvh) need network-mode config — later.
+affinidi-did-resolver-cache-sdk = { workspace = true }
 
 # ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
 # The FFI build + bindgen pipeline is proven first with a minimal surface.
