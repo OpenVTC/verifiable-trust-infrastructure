@@ -133,6 +133,25 @@ ignore = [
   Drop when aws-nitro-enclaves-nsm-api migrates to ciborium (or
   a maintained CBOR library).
   """ },
+
+  { id = "RUSTSEC-2025-0141", reason = """
+  bincode 1.3.x is unmaintained. Build-time only: pulled solely by
+  uniffi_macros (the proc-macro behind vta-mobile-core's #[uniffi::export]
+  scaffolding) to serialise binding metadata at compile time. No runtime
+  presence in any shipped binary; it never touches attacker-influenced
+  input.
+
+  Drop when uniffi (0.28.x) updates to bincode 2.x or drops it.
+  """ },
+
+  { id = "RUSTSEC-2024-0436", reason = """
+  paste 1.0.x is unmaintained. Build-time only: a proc-macro for token
+  pasting pulled by uniffi_core / uniffi_bindgen (again via
+  vta-mobile-core's UniFFI scaffolding). No runtime code; "unmaintained"
+  is the only flagged risk.
+
+  Drop when uniffi (0.28.x) removes its `paste` dependency.
+  """ },
 ]
 
 # License policy. Allow-list is derived from the actual licenses present
