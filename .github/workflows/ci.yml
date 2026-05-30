@@ -208,3 +208,41 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - run: cargo check -p vta-enclave --no-default-features --features rest,didcomm,vsock-store
+
+  mobile:
+    # Cross-compile vta-mobile-core for the iOS + Android targets the app repos
+    # consume, and regenerate the UniFFI bindings. The host check/test/clippy
+    # jobs only build for the runner's own architecture; without this job a
+    # dependency or deployment-target regression that breaks the phone build
+    # (e.g. the aws-lc-sys `___chkstk_darwin` iOS link failure this job's
+    # deployment-target pin guards against) — or an FFI type that no longer
+    # generates bindings — would land green. macOS runner because iOS needs
+    # Xcode; the macOS image also ships the Android NDK.
+    name: Mobile build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-mobile-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-mobile-
+            ${{ runner.os }}-cargo-
+
+      - name: Cross-compile (iOS + Android) and generate bindings
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_NDK_LATEST_HOME}"
+          ./vta-mobile-core/scripts/build-mobile.sh all
