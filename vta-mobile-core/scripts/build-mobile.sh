@@ -65,7 +65,10 @@ build_android() {
   fi
   local ndk_args=()
   for abi in "${ANDROID_ABIS[@]}"; do ndk_args+=(-t "$abi"); done
-  cargo ndk "${ndk_args[@]}" -p "$ANDROID_API" -o "target/mobile/jniLibs" \
+  # NOTE: `--platform` (the API level), spelled in full on purpose. cargo-ndk's
+  # short `-p` was dropped in v4; `-p 24` is forwarded to cargo as `--package 24`
+  # and panics with "unknown package: 24".
+  cargo ndk "${ndk_args[@]}" --platform "$ANDROID_API" -o "target/mobile/jniLibs" \
     build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
 }
 
