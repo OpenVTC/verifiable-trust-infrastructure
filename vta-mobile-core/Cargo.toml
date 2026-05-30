@@ -25,6 +25,9 @@ crate-type = ["cdylib", "staticlib", "lib"]
 uniffi = { workspace = true, features = ["cli", "tokio"] }
 thiserror = { workspace = true }
 base64 = { workspace = true }
+# `Serialize` bound for the generic proof/serialize helpers; payload types come
+# from trust-tasks-rs (which derives serde) — we only need the trait in scope.
+serde = { workspace = true }
 serde_json = { workspace = true }
 # Generated Trust Task payload types (incl. the step-up `Evidence` union and
 # `acceptableEvidence`, available from 0.1.3).

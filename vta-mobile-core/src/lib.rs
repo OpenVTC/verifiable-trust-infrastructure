@@ -22,12 +22,15 @@
 //!
 //! 1. **this slice** — skeleton + minimal sync surface; prove the crate builds and Kotlin/Swift bindings generate.
 //! 2. Trust Task build/verify (pure, sync) — see [`task`], [`stepup`].
-//! 3. VTA session/auth (async) — see [`session`]; DIDComm pack/unpack — see [`didcomm`]; push registration — see [`push`].
+//! 3. VTA auth — `auth/*` Trust Task build/parse (pure, sync) — see [`session`];
+//!    DIDComm pack/unpack — see [`didcomm`]; async DID resolution — see
+//!    [`resolver`]; push registration — see [`push`].
 
 uniffi::setup_scaffolding!();
 
 pub mod api;
 mod error;
+mod proof;
 
 // Planned module surface. These are stubs in slice 1; each file documents the
 // FFI it will expose and which slice wires it. They are kept as real modules

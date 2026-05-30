@@ -9,15 +9,13 @@
 //!   produces the canonical signing input, the native [`crate::keys::Signer`]
 //!   signs it in the enclave, and we assemble the proof from the signature.
 
-use affinidi_data_integrity::crypto_suites::CryptoSuite;
-use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
 use chrono::DateTime;
-use multibase::Base;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
+use crate::proof::attach_did_signed_proof;
 
 /// A WebAuthn assertion produced natively (`ASAuthorization` / Credential
 /// Manager). Binary fields are base64url-encoded, mirroring
@@ -92,39 +90,7 @@ pub fn build_approve_response_did_signed(
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
     let mut doc = assemble_doc(&draft, approve_response::Evidence::DidSigned)?;
-
-    // Proof config with everything but the proofValue (the "sign these bytes"
-    // request shape `prepare_sign_input` expects).
-    let mut proof_config = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some(draft.issued_at.clone()),
-        verification_method: did_key_vm(&signer.did())?,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
-
-    // Library does eddsa-jcs-2022 canonicalization + hashing of (document,
-    // proof config); the native enclave signs the result.
-    let signing_input = prepare_sign_input(&doc, &proof_config, CryptoSuite::EddsaJcs2022)
-        .map_err(|e| FfiError::InvalidInput {
-            reason: format!("failed to canonicalize for signing: {e}"),
-        })?;
-    let signature = signer.sign(signing_input)?;
-    proof_config.proof_value = Some(multibase::encode(Base::Base58Btc, signature));
-
-    // Attach as the framework proof (DataIntegrityProof -> trust_tasks_rs::Proof
-    // via their shared JSON shape).
-    let proof_json = serde_json::to_value(&proof_config).map_err(|e| FfiError::InvalidInput {
-        reason: format!("proof serialize: {e}"),
-    })?;
-    doc.proof = Some(
-        serde_json::from_value(proof_json).map_err(|e| FfiError::InvalidInput {
-            reason: format!("proof shape: {e}"),
-        })?,
-    );
-
+    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
@@ -163,18 +129,6 @@ fn serialize(doc: &TrustTask<approve_response::Payload>) -> Result<String, FfiEr
     serde_json::to_string(doc).map_err(|e| FfiError::InvalidInput {
         reason: format!("failed to serialize approve-response: {e}"),
     })
-}
-
-/// Derive the verification-method URI for a `did:key` holder. The mobile holder
-/// key is always a `did:key` (per the engine's design), whose verification
-/// method is `<did>#<method-specific-id>`.
-fn did_key_vm(did: &str) -> Result<String, FfiError> {
-    let suffix = did
-        .strip_prefix("did:key:")
-        .ok_or_else(|| FfiError::InvalidInput {
-            reason: format!("the did-signed step-up gate requires a did:key holder; got {did}"),
-        })?;
-    Ok(format!("{did}#{suffix}"))
 }
 
 /// Map a `trust-tasks-rs` newtype `ConversionError` (e.g. challenge below the
@@ -273,7 +227,9 @@ mod tests {
     /// proofValue assembly are correct (a real RP would verify the same way).
     #[test]
     fn did_signed_response_verifies_against_the_holder_key() {
+        use affinidi_data_integrity::DataIntegrityProof;
         use ed25519_dalek::{Signer as _, SigningKey};
+        use multibase::Base;
 
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let pk = sk.verifying_key();
