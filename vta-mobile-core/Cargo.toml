@@ -31,6 +31,12 @@ trust-tasks-rs = { workspace = true }
 # Parsing the caller-supplied `issuedAt` (RFC 3339) into the DateTime<Utc> the
 # TrustTask envelope carries.
 chrono = { workspace = true }
+# Data Integrity proof construction for the DID-signed step-up gate.
+# `prepare_sign_input` does the eddsa-jcs-2022 canonicalization/hashing; the
+# native Signer signs the result (key never enters Rust); we assemble the proof.
+affinidi-data-integrity = { workspace = true }
+# Multibase (base58btc) encoding of the signature into `proofValue`.
+multibase = { workspace = true }
 
 # ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
 # The FFI build + bindgen pipeline is proven first with a minimal surface.
@@ -42,6 +48,11 @@ chrono = { workspace = true }
 #   slice 3 — VTA session/auth (async over the FFI boundary, tokio runtime):
 #     vta-sdk      = { workspace = true, features = ["session"] }
 #     vti-webauthn = { path = "../vti-webauthn" }   # shared WebAuthn types
+
+[dev-dependencies]
+# Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
+# the native enclave Signer).
+ed25519-dalek = { workspace = true }
 
 [[bin]]
 # `cargo run -p vta-mobile-core --bin uniffi-bindgen -- generate ...`

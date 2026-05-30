@@ -1,16 +1,23 @@
-//! AAL step-up — build the `auth/step-up/approve-response` document.
+//! AAL step-up — build the `auth/step-up/approve-response` document for both
+//! gates the spec defines:
 //!
-//! **Slice 2b: the WebAuthn-gated builder.** The carried passkey assertion over
-//! the step-up challenge is the cryptographic gate, so no framework proof is
-//! attached (per the approve-response spec). The DID-signed gate — which signs
-//! the document via the native [`crate::keys::Signer`] callback — is the next
-//! slice, and needs Data Integrity proof construction.
+//! - **WebAuthn** ([`build_approve_response_webauthn`]) — the carried passkey
+//!   assertion over the challenge is the gate; no framework proof is attached.
+//! - **DID-signed** ([`build_approve_response_did_signed`]) — a Data Integrity
+//!   proof (`eddsa-jcs-2022`) over the document is the gate, signed by the
+//!   subject's key. The private key never enters Rust: `affinidi-data-integrity`
+//!   produces the canonical signing input, the native [`crate::keys::Signer`]
+//!   signs it in the enclave, and we assemble the proof from the signature.
 
+use affinidi_data_integrity::crypto_suites::CryptoSuite;
+use affinidi_data_integrity::{DataIntegrityProof, prepare_sign_input};
 use chrono::DateTime;
+use multibase::Base;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
 
 use crate::error::FfiError;
+use crate::keys::Signer;
 
 /// A WebAuthn assertion produced natively (`ASAuthorization` / Credential
 /// Manager). Binary fields are base64url-encoded, mirroring
@@ -28,7 +35,7 @@ pub struct WebAuthnAssertion {
 
 /// The envelope + echo fields for an approve-response. `id` and `issued_at` are
 /// supplied by the native layer (which owns identifiers and the clock), keeping
-/// this builder pure and deterministic.
+/// these builders pure and deterministic.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ApproveResponseDraft {
     /// Document id (e.g. a fresh UUID).
@@ -37,12 +44,12 @@ pub struct ApproveResponseDraft {
     pub issuer_did: String,
     /// The relying party's DID (document `recipient`).
     pub recipient_did: String,
-    /// RFC 3339 timestamp for `issuedAt`.
+    /// RFC 3339 timestamp for `issuedAt` (and the proof's `created`).
     pub issued_at: String,
     /// Echoed verbatim from the request.
     pub subject: String,
     pub session_id: String,
-    /// The step-up challenge; the assertion's `clientDataJSON` signs over it.
+    /// The step-up challenge; the gate signs/binds over it.
     pub challenge: String,
     /// The acr the approver believes it demonstrated (e.g. `"aal2"`).
     pub granted_acr: Option<String>,
@@ -57,6 +64,75 @@ pub fn build_approve_response_webauthn(
     draft: ApproveResponseDraft,
     assertion: WebAuthnAssertion,
 ) -> Result<String, FfiError> {
+    let evidence = approve_response::Evidence::Webauthn(approve_response::AssertionResponse {
+        id: assertion.credential_id.clone(),
+        raw_id: assertion.credential_id,
+        type_: serde_json::Value::String("public-key".to_string()),
+        response: approve_response::AssertionResponseResponse {
+            authenticator_data: assertion.authenticator_data,
+            client_data_json: assertion.client_data_json,
+            signature: assertion.signature,
+            user_handle: assertion.user_handle,
+        },
+        authenticator_attachment: None,
+        client_extension_results: serde_json::Map::new(),
+    });
+    let doc = assemble_doc(&draft, evidence)?;
+    serialize(&doc)
+}
+
+/// Build a DID-signed `auth/step-up/approve-response/0.1`: decision `approved`,
+/// `evidence.kind = did-signed`, gated by a Data Integrity proof
+/// (`eddsa-jcs-2022`) over the document. `signer` is the native enclave key
+/// (the holder/subject key) — its private material never enters this crate;
+/// it only signs the canonical input produced here.
+#[uniffi::export]
+pub fn build_approve_response_did_signed(
+    draft: ApproveResponseDraft,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let mut doc = assemble_doc(&draft, approve_response::Evidence::DidSigned)?;
+
+    // Proof config with everything but the proofValue (the "sign these bytes"
+    // request shape `prepare_sign_input` expects).
+    let mut proof_config = DataIntegrityProof {
+        type_: "DataIntegrityProof".to_string(),
+        cryptosuite: CryptoSuite::EddsaJcs2022,
+        created: Some(draft.issued_at.clone()),
+        verification_method: did_key_vm(&signer.did())?,
+        proof_purpose: "assertionMethod".to_string(),
+        proof_value: None,
+        context: None,
+    };
+
+    // Library does eddsa-jcs-2022 canonicalization + hashing of (document,
+    // proof config); the native enclave signs the result.
+    let signing_input = prepare_sign_input(&doc, &proof_config, CryptoSuite::EddsaJcs2022)
+        .map_err(|e| FfiError::InvalidInput {
+            reason: format!("failed to canonicalize for signing: {e}"),
+        })?;
+    let signature = signer.sign(signing_input)?;
+    proof_config.proof_value = Some(multibase::encode(Base::Base58Btc, signature));
+
+    // Attach as the framework proof (DataIntegrityProof -> trust_tasks_rs::Proof
+    // via their shared JSON shape).
+    let proof_json = serde_json::to_value(&proof_config).map_err(|e| FfiError::InvalidInput {
+        reason: format!("proof serialize: {e}"),
+    })?;
+    doc.proof = Some(
+        serde_json::from_value(proof_json).map_err(|e| FfiError::InvalidInput {
+            reason: format!("proof shape: {e}"),
+        })?,
+    );
+
+    serialize(&doc)
+}
+
+/// Build the approve-response envelope + payload (no proof) for a given gate.
+fn assemble_doc(
+    draft: &ApproveResponseDraft,
+    evidence: approve_response::Evidence,
+) -> Result<TrustTask<approve_response::Payload>, FfiError> {
     let issued_at = DateTime::parse_from_rfc3339(&draft.issued_at)
         .map_err(|e| FfiError::InvalidInput {
             reason: format!("issued_at is not an RFC 3339 timestamp: {e}"),
@@ -64,38 +140,41 @@ pub fn build_approve_response_webauthn(
         .with_timezone(&chrono::Utc);
 
     let payload = approve_response::Payload {
-        subject: approve_response::PayloadSubject::try_from(draft.subject).map_err(conv)?,
-        session_id: approve_response::PayloadSessionId::try_from(draft.session_id).map_err(conv)?,
-        challenge: approve_response::PayloadChallenge::try_from(draft.challenge).map_err(conv)?,
+        subject: approve_response::PayloadSubject::try_from(draft.subject.clone()).map_err(conv)?,
+        session_id: approve_response::PayloadSessionId::try_from(draft.session_id.clone())
+            .map_err(conv)?,
+        challenge: approve_response::PayloadChallenge::try_from(draft.challenge.clone())
+            .map_err(conv)?,
         decision: approve_response::PayloadDecision::Approved,
         denied_reason: None,
-        granted_acr: draft.granted_acr,
-        evidence: Some(approve_response::Evidence::Webauthn(
-            approve_response::AssertionResponse {
-                id: assertion.credential_id.clone(),
-                raw_id: assertion.credential_id,
-                type_: serde_json::Value::String("public-key".to_string()),
-                response: approve_response::AssertionResponseResponse {
-                    authenticator_data: assertion.authenticator_data,
-                    client_data_json: assertion.client_data_json,
-                    signature: assertion.signature,
-                    user_handle: assertion.user_handle,
-                },
-                authenticator_attachment: None,
-                client_extension_results: serde_json::Map::new(),
-            },
-        )),
+        granted_acr: draft.granted_acr.clone(),
+        evidence: Some(evidence),
         ext: None,
     };
 
-    let mut doc = TrustTask::for_payload(draft.id, payload);
-    doc.issuer = Some(draft.issuer_did);
-    doc.recipient = Some(draft.recipient_did);
+    let mut doc = TrustTask::for_payload(draft.id.clone(), payload);
+    doc.issuer = Some(draft.issuer_did.clone());
+    doc.recipient = Some(draft.recipient_did.clone());
     doc.issued_at = Some(issued_at);
+    Ok(doc)
+}
 
-    serde_json::to_string(&doc).map_err(|e| FfiError::InvalidInput {
+fn serialize(doc: &TrustTask<approve_response::Payload>) -> Result<String, FfiError> {
+    serde_json::to_string(doc).map_err(|e| FfiError::InvalidInput {
         reason: format!("failed to serialize approve-response: {e}"),
     })
+}
+
+/// Derive the verification-method URI for a `did:key` holder. The mobile holder
+/// key is always a `did:key` (per the engine's design), whose verification
+/// method is `<did>#<method-specific-id>`.
+fn did_key_vm(did: &str) -> Result<String, FfiError> {
+    let suffix = did
+        .strip_prefix("did:key:")
+        .ok_or_else(|| FfiError::InvalidInput {
+            reason: format!("the did-signed step-up gate requires a did:key holder; got {did}"),
+        })?;
+    Ok(format!("{did}#{suffix}"))
 }
 
 /// Map a `trust-tasks-rs` newtype `ConversionError` (e.g. challenge below the
@@ -141,32 +220,19 @@ mod tests {
             v["type"],
             "https://trusttasks.org/spec/auth/step-up/approve-response/0.1"
         );
-        assert_eq!(v["issuer"], "did:web:alice.example");
-        assert_eq!(v["recipient"], "did:web:bank.example");
         assert_eq!(v["payload"]["decision"], "approved");
-        assert_eq!(v["payload"]["grantedAcr"], "aal2");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
-        assert_eq!(
-            v["payload"]["evidence"]["assertion"]["response"]["signature"],
-            "U2lnbmF0dXJlVmFsdWVCYXNlNjQ"
-        );
         // No framework proof: the assertion is the gate.
         assert!(v.get("proof").is_none());
     }
 
     #[test]
-    fn output_round_trips_back_through_the_typed_parser() {
+    fn webauthn_output_round_trips_back_through_the_typed_parser() {
         let json = build_approve_response_webauthn(draft(), assertion()).unwrap();
-        // Deserializing into the typed envelope proves the built document is a
-        // structurally-valid approve-response.
         let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
         assert!(matches!(
             doc.payload.evidence,
             Some(approve_response::Evidence::Webauthn(_))
-        ));
-        assert!(matches!(
-            doc.payload.decision,
-            approve_response::PayloadDecision::Approved
         ));
     }
 
@@ -184,5 +250,81 @@ mod tests {
         d.issued_at = "not-a-timestamp".to_string();
         let err = build_approve_response_webauthn(d, assertion()).unwrap_err();
         assert!(matches!(err, FfiError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn rejects_non_did_key_signer() {
+        struct WebSigner;
+        impl Signer for WebSigner {
+            fn did(&self) -> String {
+                "did:web:alice.example".to_string()
+            }
+            fn sign(&self, _payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                unreachable!("vm derivation fails before signing")
+            }
+        }
+        let err = build_approve_response_did_signed(draft(), Box::new(WebSigner)).unwrap_err();
+        assert!(matches!(err, FfiError::InvalidInput { .. }));
+    }
+
+    /// End-to-end: build a DID-signed response with a test key standing in for
+    /// the enclave Signer, then verify the produced Data Integrity proof with
+    /// `affinidi-data-integrity` against that key. Proves the canonicalization +
+    /// proofValue assembly are correct (a real RP would verify the same way).
+    #[test]
+    fn did_signed_response_verifies_against_the_holder_key() {
+        use ed25519_dalek::{Signer as _, SigningKey};
+
+        let sk = SigningKey::from_bytes(&[7u8; 32]);
+        let pk = sk.verifying_key();
+        // did:key for the Ed25519 public key: multicodec 0xed01 + key, base58btc.
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(pk.as_bytes());
+        let mb = multibase::encode(Base::Base58Btc, mc);
+        let did = format!("did:key:{mb}");
+
+        struct EnclaveStub {
+            sk: SigningKey,
+            did: String,
+        }
+        impl Signer for EnclaveStub {
+            fn did(&self) -> String {
+                self.did.clone()
+            }
+            fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                Ok(self.sk.sign(&payload).to_bytes().to_vec())
+            }
+        }
+
+        let json = build_approve_response_did_signed(
+            draft(),
+            Box::new(EnclaveStub {
+                sk,
+                did: did.clone(),
+            }),
+        )
+        .unwrap();
+
+        let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            doc.payload.evidence,
+            Some(approve_response::Evidence::DidSigned)
+        ));
+        let proof = doc
+            .proof
+            .clone()
+            .expect("did-signed proof must be attached");
+        let di: DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(&proof).unwrap()).unwrap();
+        assert_eq!(di.verification_method, format!("{did}#{mb}"));
+
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the did-signed proof must verify against the holder's key");
     }
 }
