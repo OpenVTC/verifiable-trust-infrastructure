@@ -12,12 +12,21 @@
 //!    proof machinery in [`crate::proof`]), IS the authentication.
 //! 4. `parse_authenticate_response` → the issued access/refresh tokens.
 //!
+//! Once the access token nears expiry the agent refreshes without re-prompting
+//! the user:
+//!
+//! 5. `build_refresh` → present the refresh token (`auth/refresh`, **no proof**
+//!    — the opaque refresh token is itself the credential, verified
+//!    server-side, exactly as `IS_PROOF_REQUIRED == false` on the spec says).
+//! 6. `parse_refresh_response` → the rotated tokens (+ an optional session
+//!    snapshot, e.g. an `acr` bump after a step-up).
+//!
 //! Transport is the [`crate::didcomm::DidcommSession`]; these functions only
 //! build/parse the JSON.
 
 use chrono::DateTime;
 use trust_tasks_rs::specs::auth::{
-    authenticate::v0_1 as authenticate, challenge::v0_1 as challenge,
+    authenticate::v0_1 as authenticate, challenge::v0_1 as challenge, refresh::v0_1 as refresh,
 };
 use trust_tasks_rs::{Payload, TrustTask};
 
@@ -136,6 +145,52 @@ pub fn parse_authenticate_response(json: String) -> Result<AuthTokens, FfiError>
         refresh_expires_in: tokens.refresh_expires_in.map(|n| n.get()),
         acr: session.acr,
         amr: session.amr.iter().map(|a| a.to_string()).collect(),
+    })
+}
+
+/// Build an `auth/refresh/0.1` request: exchange a previously-issued refresh
+/// token for a new access token. **No proof** — `auth/refresh` is
+/// `IS_PROOF_REQUIRED == false`; the opaque refresh token is the credential and
+/// is verified server-side. `scope` MAY narrow (never widen) the issued scope;
+/// pass empty to keep the session's current scope.
+#[uniffi::export]
+pub fn build_refresh(
+    env: AuthEnvelope,
+    refresh_token: String,
+    scope: Vec<String>,
+) -> Result<String, FfiError> {
+    let payload = refresh::Payload {
+        refresh_token: refresh::PayloadRefreshToken::try_from(refresh_token).map_err(conv)?,
+        scope: scope
+            .into_iter()
+            .map(refresh::PayloadScopeItem::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(conv)?,
+        ext: None,
+    };
+    serialize(&envelope_doc(&env, payload)?)
+}
+
+/// Parse an `auth/refresh/0.1#response` — the rotated tokens. Unlike
+/// authenticate, the session snapshot is **optional**: when the response omits
+/// it, `acr` is `None` and `amr` is empty (the caller keeps its prior session
+/// state). A consumer that doesn't rotate refresh tokens may also omit
+/// `refreshToken`, in which case the caller keeps reusing the current one.
+#[uniffi::export]
+pub fn parse_refresh_response(json: String) -> Result<AuthTokens, FfiError> {
+    let doc: TrustTask<refresh::Response> = serde_json::from_str(&json).map_err(decode)?;
+    let tokens = doc.payload.tokens;
+    let session = doc.payload.session;
+    Ok(AuthTokens {
+        access_token: tokens.access_token.to_string(),
+        token_type: tokens.token_type.to_string(),
+        expires_in: tokens.expires_in.get(),
+        refresh_token: tokens.refresh_token.map(|t| t.to_string()),
+        refresh_expires_in: tokens.refresh_expires_in.map(|n| n.get()),
+        acr: session.as_ref().and_then(|s| s.acr.clone()),
+        amr: session
+            .map(|s| s.amr.iter().map(|a| a.to_string()).collect())
+            .unwrap_or_default(),
     })
 }
 
@@ -286,5 +341,86 @@ mod tests {
         assert_eq!(t.refresh_expires_in, Some(86400));
         assert_eq!(t.acr.as_deref(), Some("aal1"));
         assert_eq!(t.amr, vec!["did".to_string()]);
+    }
+
+    #[test]
+    fn refresh_request_has_no_proof_and_carries_the_token() {
+        let json =
+            build_refresh(env(), "rt_abc".to_string(), vec!["acl:read".to_string()]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "https://trusttasks.org/spec/auth/refresh/0.1");
+        assert_eq!(v["issuer"], "did:key:zHolder");
+        assert_eq!(v["recipient"], "did:web:vta.example");
+        assert_eq!(v["payload"]["refreshToken"], "rt_abc");
+        assert_eq!(v["payload"]["scope"][0], "acl:read");
+        // auth/refresh is IS_PROOF_REQUIRED == false — the token is the credential.
+        assert!(v.get("proof").is_none());
+    }
+
+    #[test]
+    fn empty_scope_is_omitted_from_the_refresh_request() {
+        let json = build_refresh(env(), "rt_abc".to_string(), vec![]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // `scope` skips serialization when empty — keep the session's scope.
+        assert!(v["payload"].get("scope").is_none());
+    }
+
+    #[test]
+    fn parses_refresh_response_with_rotated_token_and_session_bump() {
+        let json = r#"{
+          "id": "r-2",
+          "type": "https://trusttasks.org/spec/auth/refresh/0.1#response",
+          "issuer": "did:web:vta.example",
+          "recipient": "did:key:zHolder",
+          "payload": {
+            "session": {
+              "id": "sess-1",
+              "subject": "did:key:zHolder",
+              "issuedAt": "2026-05-30T10:00:01Z",
+              "expiresAt": "2026-05-30T10:30:01Z",
+              "amr": ["did", "passkey"],
+              "acr": "aal2"
+            },
+            "tokens": {
+              "accessToken": "eyJhbGciOi.access2",
+              "tokenType": "Bearer",
+              "expiresIn": 900,
+              "refreshToken": "rt_rotated",
+              "refreshExpiresIn": 86400
+            }
+          }
+        }"#;
+        let t = parse_refresh_response(json.to_string()).unwrap();
+        assert_eq!(t.access_token, "eyJhbGciOi.access2");
+        assert_eq!(t.refresh_token.as_deref(), Some("rt_rotated"));
+        // Session snapshot present → the step-up acr/amr bump is surfaced.
+        assert_eq!(t.acr.as_deref(), Some("aal2"));
+        assert_eq!(t.amr, vec!["did".to_string(), "passkey".to_string()]);
+    }
+
+    #[test]
+    fn parses_refresh_response_without_session_or_rotated_token() {
+        // Non-rotating consumer: no session snapshot, no new refresh token.
+        let json = r#"{
+          "id": "r-3",
+          "type": "https://trusttasks.org/spec/auth/refresh/0.1#response",
+          "issuer": "did:web:vta.example",
+          "recipient": "did:key:zHolder",
+          "payload": {
+            "tokens": {
+              "accessToken": "eyJhbGciOi.access3",
+              "tokenType": "Bearer",
+              "expiresIn": 900
+            }
+          }
+        }"#;
+        let t = parse_refresh_response(json.to_string()).unwrap();
+        assert_eq!(t.access_token, "eyJhbGciOi.access3");
+        assert_eq!(t.expires_in, 900);
+        // No rotation, no session → caller keeps its prior refresh token + acr.
+        assert_eq!(t.refresh_token, None);
+        assert_eq!(t.refresh_expires_in, None);
+        assert_eq!(t.acr, None);
+        assert!(t.amr.is_empty());
     }
 }
