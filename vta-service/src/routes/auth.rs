@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
+use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{
@@ -273,6 +274,16 @@ pub async fn refresh(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<AuthenticateResponse>, AppError> {
+    // Canonical REST path: an `auth/refresh/0.1` Trust Task. Refresh carries no
+    // proof — the opaque refresh token in the payload *is* the credential
+    // (OAuth2 §10.4 semantics), verified server-side by the rotating
+    // reverse-index. Tried first so a VTA with no DIDComm transport configured
+    // can still refresh over plain REST. Falls through to the DIDComm-envelope
+    // path for any body that isn't such a document.
+    if let Some(resp) = try_refresh_trust_task(&state, &body).await? {
+        return Ok(Json(resp));
+    }
+
     let atm = state
         .atm
         .as_ref()
@@ -319,6 +330,51 @@ pub async fn refresh(
         outcome = "success"
     );
     Ok(Json(resp))
+}
+
+/// Try to refresh from an `auth/refresh/0.1` Trust Task document (the canonical
+/// REST transport).
+///
+/// Mirrors [`try_authenticate_trust_task`], but refresh carries **no proof**:
+/// the opaque refresh token in the payload is the bearer credential, verified
+/// by the canonical handler's rotating reverse-index. `signer_did` is therefore
+/// `None` — there's no proven signer to bind, and the handler treats `None` as
+/// "skip the optional signer-DID check" (the token is sufficient).
+///
+/// Returns `Ok(None)` when the body isn't an `auth/refresh/0.1` Trust Task (→
+/// fall through to the DIDComm path); `Err` when it *is* one but is invalid.
+async fn try_refresh_trust_task(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<AuthenticateResponse>, AppError> {
+    let doc: TrustTask<Value> = match serde_json::from_str(body) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
+    };
+    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1 {
+        return Ok(None);
+    }
+
+    let payload: refresh::Payload = serde_json::from_value(doc.payload.clone())
+        .map_err(|e| AppError::Authentication(format!("invalid refresh payload: {e}")))?;
+    let refresh_token = payload.refresh_token.to_string();
+
+    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_refresh(
+        &backend,
+        vti_common::auth::RefreshInput {
+            refresh_token,
+            signer_did: None,
+        },
+    )
+    .await?;
+    audit!(
+        "auth.refresh",
+        actor = &resp.session.subject,
+        resource = &resp.session.id,
+        outcome = "success"
+    );
+    Ok(Some(resp))
 }
 
 // ---------- POST /auth/credentials ----------

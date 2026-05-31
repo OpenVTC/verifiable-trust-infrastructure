@@ -271,7 +271,8 @@ new flow, update both this section and the relevant `docs/*.md`.
 ### DIDComm challenge-response auth
 - **What**: Session initiation for any authenticated call.
 - **Endpoints**: `POST /auth/challenge` → challenge + session_id;
-  `POST /auth/` → JWT access token (15m) + refresh token (24h).
+  `POST /auth/` → JWT access token (15m) + refresh token (24h);
+  `POST /auth/refresh` → rotated access + refresh tokens.
 - **Wire** (`POST /auth/` content-negotiates on the body shape; all paths
   converge on `vti_common::auth::handlers::handle_authenticate`):
   - **DI-signed Trust Task (canonical REST)** — a plain JSON
@@ -288,6 +289,12 @@ new flow, update both this section and the relevant `docs/*.md`.
     the session at `/auth/challenge`; the DI path passes `created_time: None`
     (no-op freshness check), the DIDComm path enforces a 60s window on the
     envelope's `created_time`.
+  - **`POST /auth/refresh` content-negotiates the same way**: a plain
+    `auth/refresh/0.1` Trust Task (canonical REST) **or** a DIDComm envelope.
+    Refresh carries *no proof* — the opaque refresh token in the payload is the
+    bearer credential (OAuth2 §10.4 rotation), so the Trust Task path passes
+    `signer_did: None`. Together with the authenticate path above, the mobile
+    engine runs its whole login→refresh loop over plain REST, no mediator.
 - **Claims**: `{ aud, sub, session_id, role, contexts, exp }`. Audience
   separates VTA from VTC — cross-audience tokens are rejected.
 - **Code**: `vta-service/src/routes/auth.rs`, `vti-common/src/auth/`.
