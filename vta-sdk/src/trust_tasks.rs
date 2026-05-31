@@ -90,6 +90,13 @@ pub const TASK_AUTH_PASSKEY_LOGIN_START_0_1: &str =
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1: &str =
     "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
 
+/// `spec/auth/step-up/approve-response/0.1` — an approver's signed
+/// ratification of a pending AAL step-up. The relying party verifies the
+/// carried gate (did-signed Data Integrity proof, or a WebAuthn assertion)
+/// and elevates the session's `amr`/`acr`.
+pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
+
 // ─── ACL slice (spec/vta/acl/*) ──────────────────────────────────────────
 
 /// `spec/vta/acl/list/1.0` — list ACL entries, optionally filtered by
@@ -844,6 +851,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_REVOKE_SESSION_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,
