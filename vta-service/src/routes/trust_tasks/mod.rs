@@ -60,6 +60,7 @@ mod passkey_vms;
 mod provision_integration;
 mod seeds;
 mod step_up;
+pub(crate) use step_up::RequireStepUp;
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;

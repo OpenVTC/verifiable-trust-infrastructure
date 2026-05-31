@@ -11,6 +11,7 @@ use vta_sdk::protocols::context_management::{
 use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
+use crate::routes::trust_tasks::RequireStepUp;
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +136,8 @@ pub async fn preview_delete_context_handler(
 /// DELETE /contexts/{id} — delete a context and its associated resources. Auth: Super Admin only.
 pub async fn delete_context_handler(
     auth: SuperAdminAuth,
+    // Deleting a context requires a stepped-up (AAL2) session (operator policy).
+    _step_up: RequireStepUp,
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<DeleteContextQuery>,

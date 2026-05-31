@@ -103,6 +103,44 @@ impl TestContext {
         self.jwt_keys().encode(&claims).expect("encode jwt")
     }
 
+    /// Like [`auth_token`], but the session is **stepped-up (AAL2)** — the JWT
+    /// carries `acr=aal2` and a second factor in `amr`. Required for endpoints
+    /// gated by `RequireStepUp` (ACL mutations, context/key deletion). A plain
+    /// `auth_token` is AAL1, which those endpoints reject with a step-up `403`.
+    async fn auth_token_aal2(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        let session_id = format!("sess-{}", uuid::Uuid::new_v4());
+        let session = Session {
+            session_id: session_id.clone(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now_epoch(),
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["did".into(), "passkey".into()],
+            acr: "aal2".into(),
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+        store_session(self.sessions_ks(), &session)
+            .await
+            .expect("store session");
+
+        let claims = self
+            .jwt_keys()
+            .new_claims(
+                did.to_string(),
+                session_id,
+                role.to_string(),
+                contexts,
+                900,
+                false,
+            )
+            .with_aal(vec!["did".into(), "passkey".into()], "aal2");
+        self.jwt_keys().encode(&claims).expect("encode jwt")
+    }
+
     /// Mint a token signed with a different audience. Used to verify
     /// audience-isolation rejection — a VTC-audience token must not
     /// authenticate against a VTA route. CLAUDE.md guards this as a
@@ -375,7 +413,10 @@ async fn scoped_admin_cannot_update_config() {
 #[tokio::test]
 async fn acl_create_and_list() {
     let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    // ACL creation is an AAL2-gated mutation.
+    let token = ctx
+        .auth_token_aal2("did:key:z6MkAdmin", "admin", vec![])
+        .await;
 
     // Create
     let (status, body) = app
@@ -399,6 +440,48 @@ async fn acl_create_and_list() {
     assert!(
         entries.iter().any(|e| e["did"] == "did:key:z6MkNew"),
         "new entry should be in list"
+    );
+}
+
+/// An AAL1 admin hitting an AAL2-gated mutation is rejected with the step-up
+/// `403` that *carries the approve-request* — not a bare 403. The caller has
+/// the right role (so this isn't a permission failure); it just hasn't stepped
+/// up. Mirrors the operator policy: all ACL changes require AAL2.
+#[tokio::test]
+async fn acl_mutation_requires_step_up() {
+    let (app, ctx) = TestApp::new().await;
+    // A normal (AAL1) admin session: correct role, but not stepped up.
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({
+                "did": "did:key:z6MkNew",
+                "role": "application",
+                "label": "test app",
+                "allowed_contexts": ["ctx1"]
+            }),
+        ))
+        .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "AAL1 must be gated: {body}");
+    assert_eq!(body["error"], "step_up_required");
+    assert_eq!(body["requiredAcr"], "aal2");
+    // The 403 carries the approve-request the caller hands to its approver.
+    let ar = &body["approveRequest"];
+    assert_eq!(
+        ar["type"],
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.1"
+    );
+    assert_eq!(ar["recipient"], "did:key:z6MkAdmin");
+    assert_eq!(ar["payload"]["targetAcr"], "aal2");
+    assert!(
+        ar["payload"]["challenge"]
+            .as_str()
+            .is_some_and(|c| c.len() >= 16),
+        "approve-request must carry a ≥16-char challenge"
     );
 }
 
@@ -864,7 +947,10 @@ async fn backup_import_wrong_password_returns_auth_error() {
 #[tokio::test]
 async fn acl_get_update_delete_lifecycle() {
     let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    // create/update/delete are AAL2-gated mutations.
+    let token = ctx
+        .auth_token_aal2("did:key:z6MkAdmin", "admin", vec![])
+        .await;
 
     // Create
     app.request(post_auth(
@@ -915,7 +1001,10 @@ async fn acl_get_update_delete_lifecycle() {
 #[tokio::test]
 async fn context_create_get_update_delete() {
     let (app, ctx) = TestApp::new().await;
-    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    // Context deletion (the final step) is AAL2-gated.
+    let token = ctx
+        .auth_token_aal2("did:key:z6MkSuper", "admin", vec![])
+        .await;
 
     // Create
     let (status, _) = app
@@ -2169,7 +2258,11 @@ async fn ctx_did_templates_render_injects_context_vars() {
 #[tokio::test]
 async fn ctx_did_templates_deleted_when_parent_context_deleted() {
     let (app, ctx) = TestApp::new().await;
-    let super_token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    // This test deletes a context (an AAL2-gated mutation), so it needs a
+    // stepped-up session.
+    let super_token = ctx
+        .auth_token_aal2("did:key:z6MkSuper", "admin", vec![])
+        .await;
     create_test_context(&app, &super_token, "cascade-ctx").await;
 
     // Add a template to the context.

@@ -156,3 +156,89 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     // status (challenge_unknown — the pending step-up is gone).
     assert_ne!(status2, StatusCode::OK, "replay must not elevate again");
 }
+
+/// The trust-task analogue of the REST step-up `403`: an AAL1 caller invoking
+/// an AAL2-gated trust-task operation (here `acl/create`) is rejected with a
+/// reject that *carries the approve-request* in its `details`. The caller has
+/// the required role (admin → `require_manage` passes), so this is the step-up
+/// gate firing — not a permission denial — and it fires before payload parsing.
+#[tokio::test]
+async fn trust_task_acl_mutation_requires_step_up() {
+    let (router, ctx) = build_test_app().await;
+
+    let did = "did:key:z6MkAal1Admin".to_string();
+    let session_id = "sess-stepup-tt-1".to_string();
+
+    // An AAL1 admin session + bearer token: role passes, assurance level does not.
+    let session = Session {
+        session_id: session_id.clone(),
+        did: did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &session).await.unwrap();
+    let claims = ctx.jwt_keys.new_claims(
+        did.clone(),
+        session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let token = ctx.jwt_keys.encode(&claims).unwrap();
+
+    // A well-formed acl/create addressed to the test VTA. The step-up gate fires
+    // before payload parsing, so the body need only route + pass the role check.
+    let doc = json!({
+        "id": "acl-create-itest-1",
+        "type": "https://trusttasks.org/spec/vta/acl/create/1.0",
+        "issuer": did,
+        "recipient": "did:key:z6MkTestVTA",
+        "payload": {
+            "did": "did:key:z6MkSomeNewEntry",
+            "role": "application",
+            "allowed_contexts": ["ctx1"]
+        },
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    // Rejected (not executed), carrying the step-up signal + approve-request.
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "AAL1 must not execute the mutation: {v}"
+    );
+    let details = &v["payload"]["details"];
+    assert_eq!(
+        details["requiredAcr"], "aal2",
+        "step-up reject must carry requiredAcr: {v}"
+    );
+    assert_eq!(
+        details["approveRequest"]["type"],
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+        "reject must carry the approve-request: {v}"
+    );
+    assert_eq!(details["approveRequest"]["recipient"], did, "{v}");
+    assert_eq!(
+        details["approveRequest"]["payload"]["targetAcr"], "aal2",
+        "{v}"
+    );
+}

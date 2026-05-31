@@ -9,6 +9,7 @@ use crate::acl::Role;
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::operations;
+use crate::routes::trust_tasks::RequireStepUp;
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +44,10 @@ pub struct CreateAclRequest {
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
 pub async fn create_acl(
     auth: ManageAuth,
+    // Role first, step-up second: a caller lacking the role gets a permission
+    // error; an authorized AAL1 caller gets the step-up `403`. ACL mutations
+    // require AAL2 (operator policy).
+    _step_up: RequireStepUp,
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<CreateAclResultBody>), AppError> {
@@ -84,6 +89,7 @@ pub struct UpdateAclRequest {
 /// extractor fails earlier with a clearer error).
 pub async fn update_acl(
     auth: AdminAuth,
+    _step_up: RequireStepUp,
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
@@ -108,6 +114,7 @@ pub async fn update_acl(
 /// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.
 pub async fn delete_acl(
     auth: ManageAuth,
+    _step_up: RequireStepUp,
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
@@ -157,6 +164,7 @@ pub enum SwapAclRequest {
 /// `acl/swap-key/0.1` body during the deprecation window.
 pub async fn swap_acl(
     auth: AuthClaims,
+    _step_up: RequireStepUp,
     State(state): State<AppState>,
     Json(req): Json<SwapAclRequest>,
 ) -> Result<Json<CreateAclResultBody>, AppError> {

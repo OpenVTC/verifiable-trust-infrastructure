@@ -379,27 +379,27 @@ pub(super) async fn handle_approve_response(
     )
 }
 
-/// Mint a pending step-up and build the `403` that *carries the
-/// approve-request* an AAL1 caller must satisfy to elevate.
+/// Target assurance level and lifetime for a minted step-up challenge.
+const STEP_UP_TARGET_ACR: &str = "aal2";
+const STEP_UP_TTL_SECS: u64 = 300;
+
+/// Mint a pending step-up and build the `auth/step-up/approve-request/0.1`
+/// document the AAL1 caller hands to its approver (wallet / VTA).
 ///
-/// This is the relying-party initiation half (the chosen "403 carries the
-/// approve-request" trigger model): a fresh challenge is bound server-side to
-/// the caller's `{session_id, subject, targetAcr=aal2}` via the pending-step-up
-/// store, and the response body carries the `auth/step-up/approve-request/0.1`
-/// document the caller hands to its approver (wallet / VTA). The approver's
-/// `approve-response` is then consumed by [`handle_approve_response`].
-// Applied to step-up-gated endpoints via `RequireStepUp` once policy decides
-// which operations require AAL2; unit-tested in the meantime.
-#[allow(dead_code)]
-pub(crate) async fn issue_step_up_challenge(
+/// A fresh challenge is bound server-side to the caller's
+/// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
+/// pending-step-up store; the approver's `approve-response` is later consumed by
+/// [`handle_approve_response`]. Shared by both gate surfaces — the REST `403`
+/// ([`issue_step_up_challenge`]) and the trust-task reject ([`require_step_up`]).
+/// Returns the approve-request document, or `Err(())` if the pending step-up
+/// could not be persisted (the caller maps that to a 5xx / internal-error reject).
+async fn mint_pending_step_up(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
     subject: &str,
     session_id: &str,
     reason: &str,
-) -> Response {
-    const TARGET_ACR: &str = "aal2";
-    const TTL_SECS: u64 = 300;
+) -> Result<Value, ()> {
     let acceptable = vec!["did-signed".to_string(), "webauthn".to_string()];
 
     // 256 bits of challenge entropy (two UUIDv4s) — comfortably over the spec's
@@ -413,21 +413,16 @@ pub(crate) async fn issue_step_up_challenge(
         challenge.clone(),
         session_id,
         subject,
-        TARGET_ACR,
+        STEP_UP_TARGET_ACR,
         acceptable.clone(),
-        TTL_SECS,
+        STEP_UP_TTL_SECS,
     );
     if let Err(e) = store_pending_step_up(sessions_ks, &pending).await {
         tracing::error!(error = %e, "failed to persist pending step-up");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            br#"{"error":"internal_error"}"#.to_vec(),
-        )
-            .into_response();
+        return Err(());
     }
 
-    let approve_request = json!({
+    Ok(json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
         "issuer": vta_did,
@@ -437,16 +432,43 @@ pub(crate) async fn issue_step_up_challenge(
             "sessionId": session_id,
             "challenge": challenge,
             "reason": reason,
-            "targetAcr": TARGET_ACR,
+            "targetAcr": STEP_UP_TARGET_ACR,
             "acceptableEvidence": acceptable,
-            "ttl": TTL_SECS,
+            "ttl": STEP_UP_TTL_SECS,
         },
-    });
+    }))
+}
+
+/// Mint a pending step-up and return the REST `403` that *carries the
+/// approve-request* an AAL1 caller must satisfy to elevate.
+///
+/// This is the relying-party initiation half (the chosen "403 carries the
+/// approve-request" trigger model) for REST routes; applied via the
+/// [`RequireStepUp`] extractor.
+pub(crate) async fn issue_step_up_challenge(
+    sessions_ks: &KeyspaceHandle,
+    vta_did: &str,
+    subject: &str,
+    session_id: &str,
+    reason: &str,
+) -> Response {
+    let approve_request =
+        match mint_pending_step_up(sessions_ks, vta_did, subject, session_id, reason).await {
+            Ok(ar) => ar,
+            Err(()) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    br#"{"error":"internal_error"}"#.to_vec(),
+                )
+                    .into_response();
+            }
+        };
     // Backward-compatible with the prior 403 shape (`error` + `requiredAcr`),
     // plus the carried approve-request a step-up-aware client acts on.
     let body = json!({
         "error": "step_up_required",
-        "requiredAcr": TARGET_ACR,
+        "requiredAcr": STEP_UP_TARGET_ACR,
         "approveRequest": approve_request,
     });
     (
@@ -457,15 +479,65 @@ pub(crate) async fn issue_step_up_challenge(
         .into_response()
 }
 
+/// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
+/// (AAL2) session inside a dispatcher handler.
+///
+/// Returns `None` when the session already satisfies AAL2. Otherwise mints a
+/// pending step-up and returns a routed **reject** whose `details` carry the
+/// `approveRequest`, mirroring the REST `403` so a step-up-aware client acts on
+/// it the same way over either transport.
+///
+/// Call it *after* the handler's role check, so a caller lacking the role still
+/// gets a permission error rather than a step-up prompt.
+pub(super) async fn require_step_up(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+) -> Option<Response> {
+    if auth.acr == STEP_UP_TARGET_ACR {
+        return None;
+    }
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .unwrap_or_default();
+    let reject = match mint_pending_step_up(
+        &state.sessions_ks,
+        &vta_did,
+        &auth.did,
+        &auth.session_id,
+        "this operation requires a stepped-up (AAL2) session",
+    )
+    .await
+    {
+        Ok(approve_request) => RejectReason::TaskFailed {
+            reason: "auth:step_up_required".to_string(),
+            details: Some(json!({
+                "requiredAcr": STEP_UP_TARGET_ACR,
+                "approveRequest": approve_request,
+            })),
+        },
+        Err(()) => RejectReason::InternalError {
+            reason: "failed to initiate step-up".to_string(),
+        },
+    };
+    Some(reject_with(doc, reject))
+}
+
 /// Request extractor enforcing a **stepped-up (AAL2)** session.
 ///
-/// On an AAL2 session it yields the claims. On an AAL1 session it mints a
-/// pending step-up and rejects with the `403`-carrying-approve-request
-/// ([`issue_step_up_challenge`]) — so a caller hitting a step-up-gated endpoint
-/// is handed everything needed to elevate. Apply to endpoints that require a
-/// second factor (which operations those are is an operator/policy decision).
-#[allow(dead_code)] // applied to step-up-gated endpoints once policy selects them
-pub struct RequireStepUp(pub AuthClaims);
+/// A zero-sized marker: it gates, it does not carry claims. Pair it with the
+/// handler's role extractor (`AdminAuth`, `ManageAuth`, …), which yields the
+/// claims — `RequireStepUp` only asserts the session reached AAL2. On an AAL1
+/// session it mints a pending step-up and rejects with the
+/// `403`-carrying-approve-request ([`issue_step_up_challenge`]), so a caller
+/// hitting a step-up-gated endpoint is handed everything needed to elevate.
+/// Applied to the AAL2-gated REST routes (ACL mutations, context delete); the
+/// trust-task equivalents use [`require_step_up`].
+pub struct RequireStepUp;
 
 impl FromRequestParts<AppState> for RequireStepUp {
     type Rejection = Response;
@@ -475,7 +547,7 @@ impl FromRequestParts<AppState> for RequireStepUp {
             .await
             .map_err(IntoResponse::into_response)?;
         if claims.acr == "aal2" {
-            return Ok(RequireStepUp(claims));
+            return Ok(RequireStepUp);
         }
         let vta_did = state
             .config
