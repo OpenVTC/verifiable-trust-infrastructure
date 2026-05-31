@@ -16,12 +16,16 @@
 //! lands alongside it.
 
 use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
-use axum::response::Response;
+use axum::extract::FromRequestParts;
+use axum::http::StatusCode;
+use axum::http::request::Parts;
+use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
 use trust_tasks_rs::{RejectReason, TrustTask};
+use uuid::Uuid;
 
 use crate::audit::audit;
 use crate::auth::AuthClaims;
@@ -30,7 +34,10 @@ use crate::operations::passkey_login::{
     VtaVmResolver, enumerate_passkey_vms, verify_passkey_login,
 };
 use crate::server::AppState;
-use vti_common::auth::step_up::{ConsumeOutcome, consume_pending_step_up};
+use vti_common::auth::step_up::{
+    ConsumeOutcome, consume_pending_step_up, new_pending_step_up, store_pending_step_up,
+};
+use vti_common::store::KeyspaceHandle;
 
 use super::helpers::{parse_payload, reject_with, success_response};
 
@@ -372,14 +379,183 @@ pub(super) async fn handle_approve_response(
     )
 }
 
+/// Mint a pending step-up and build the `403` that *carries the
+/// approve-request* an AAL1 caller must satisfy to elevate.
+///
+/// This is the relying-party initiation half (the chosen "403 carries the
+/// approve-request" trigger model): a fresh challenge is bound server-side to
+/// the caller's `{session_id, subject, targetAcr=aal2}` via the pending-step-up
+/// store, and the response body carries the `auth/step-up/approve-request/0.1`
+/// document the caller hands to its approver (wallet / VTA). The approver's
+/// `approve-response` is then consumed by [`handle_approve_response`].
+// Applied to step-up-gated endpoints via `RequireStepUp` once policy decides
+// which operations require AAL2; unit-tested in the meantime.
+#[allow(dead_code)]
+pub(crate) async fn issue_step_up_challenge(
+    sessions_ks: &KeyspaceHandle,
+    vta_did: &str,
+    subject: &str,
+    session_id: &str,
+    reason: &str,
+) -> Response {
+    const TARGET_ACR: &str = "aal2";
+    const TTL_SECS: u64 = 300;
+    let acceptable = vec!["did-signed".to_string(), "webauthn".to_string()];
+
+    // 256 bits of challenge entropy (two UUIDv4s) — comfortably over the spec's
+    // ≥128-bit / ≥16-char minimum, using deps already present.
+    let mut raw = Vec::with_capacity(32);
+    raw.extend_from_slice(Uuid::new_v4().as_bytes());
+    raw.extend_from_slice(Uuid::new_v4().as_bytes());
+    let challenge = general_purpose::URL_SAFE_NO_PAD.encode(&raw);
+
+    let pending = new_pending_step_up(
+        challenge.clone(),
+        session_id,
+        subject,
+        TARGET_ACR,
+        acceptable.clone(),
+        TTL_SECS,
+    );
+    if let Err(e) = store_pending_step_up(sessions_ks, &pending).await {
+        tracing::error!(error = %e, "failed to persist pending step-up");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            br#"{"error":"internal_error"}"#.to_vec(),
+        )
+            .into_response();
+    }
+
+    let approve_request = json!({
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+        "issuer": vta_did,
+        "recipient": subject,
+        "payload": {
+            "subject": subject,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "reason": reason,
+            "targetAcr": TARGET_ACR,
+            "acceptableEvidence": acceptable,
+            "ttl": TTL_SECS,
+        },
+    });
+    // Backward-compatible with the prior 403 shape (`error` + `requiredAcr`),
+    // plus the carried approve-request a step-up-aware client acts on.
+    let body = json!({
+        "error": "step_up_required",
+        "requiredAcr": TARGET_ACR,
+        "approveRequest": approve_request,
+    });
+    (
+        StatusCode::FORBIDDEN,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_vec(&body).unwrap_or_default(),
+    )
+        .into_response()
+}
+
+/// Request extractor enforcing a **stepped-up (AAL2)** session.
+///
+/// On an AAL2 session it yields the claims. On an AAL1 session it mints a
+/// pending step-up and rejects with the `403`-carrying-approve-request
+/// ([`issue_step_up_challenge`]) — so a caller hitting a step-up-gated endpoint
+/// is handed everything needed to elevate. Apply to endpoints that require a
+/// second factor (which operations those are is an operator/policy decision).
+#[allow(dead_code)] // applied to step-up-gated endpoints once policy selects them
+pub struct RequireStepUp(pub AuthClaims);
+
+impl FromRequestParts<AppState> for RequireStepUp {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let claims = AuthClaims::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        if claims.acr == "aal2" {
+            return Ok(RequireStepUp(claims));
+        }
+        let vta_did = state
+            .config
+            .read()
+            .await
+            .vta_did
+            .clone()
+            .unwrap_or_default();
+        Err(issue_step_up_challenge(
+            &state.sessions_ks,
+            &vta_did,
+            &claims.did,
+            &claims.session_id,
+            "this operation requires a stepped-up (AAL2) session",
+        )
+        .await)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use affinidi_data_integrity::crypto_suites::CryptoSuite;
     use affinidi_data_integrity::prepare_sign_input;
     use ed25519_dalek::{Signer, SigningKey};
+    use http_body_util::BodyExt;
     use multibase::Base;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn issue_step_up_challenge_mints_pending_and_403s() {
+        use vti_common::auth::step_up::get_pending_step_up;
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace("sessions").unwrap();
+
+        let resp = issue_step_up_challenge(
+            &ks,
+            "did:web:vta.example",
+            "did:key:zHolder",
+            "sess-9",
+            "rotate keys",
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "step_up_required");
+        assert_eq!(v["requiredAcr"], "aal2");
+        assert_eq!(
+            v["approveRequest"]["type"],
+            "https://trusttasks.org/spec/auth/step-up/approve-request/0.1"
+        );
+        assert_eq!(v["approveRequest"]["issuer"], "did:web:vta.example");
+        assert_eq!(v["approveRequest"]["recipient"], "did:key:zHolder");
+        assert_eq!(v["approveRequest"]["payload"]["sessionId"], "sess-9");
+        assert_eq!(v["approveRequest"]["payload"]["targetAcr"], "aal2");
+        assert_eq!(v["approveRequest"]["payload"]["reason"], "rotate keys");
+        let challenge = v["approveRequest"]["payload"]["challenge"]
+            .as_str()
+            .expect("challenge string");
+
+        // The pending step-up was minted + bound to the caller, ready for the
+        // matching approve-response to consume.
+        let pending = get_pending_step_up(&ks, challenge).await.unwrap().unwrap();
+        assert_eq!(pending.session_id, "sess-9");
+        assert_eq!(pending.subject, "did:key:zHolder");
+        assert_eq!(pending.target_acr, "aal2");
+        assert_eq!(
+            pending.acceptable_evidence,
+            vec!["did-signed".to_string(), "webauthn".to_string()]
+        );
+    }
     use trust_tasks_rs::Proof;
 
     /// did:key for an Ed25519 verifying key (multicodec 0xed01 + key, base58btc).
