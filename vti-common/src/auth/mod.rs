@@ -6,6 +6,7 @@ pub mod jwt;
 pub mod passkey;
 pub mod session;
 pub mod siop;
+pub mod step_up;
 
 pub use backend::{
     AttestationOutcome, AuthAuditEvent, AuthBackend, AuthError, AuthenticateInput, ChallengeInput,
