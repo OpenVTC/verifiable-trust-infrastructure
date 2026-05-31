@@ -1,8 +1,12 @@
+use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
 use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{
@@ -69,6 +73,16 @@ pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<AuthenticateResponse>, AppError> {
+    // Canonical REST path: a DI-signed `auth/authenticate/0.1` Trust Task
+    // document, where the holder's Data-Integrity proof *is* the
+    // authentication (no DIDComm packing / mediator required). Tried first so
+    // a VTA with no DIDComm transport configured can still authenticate over
+    // plain REST. Falls through to the DIDComm envelope path for any body that
+    // isn't such a document.
+    if let Some(resp) = try_authenticate_trust_task(&state, &body).await? {
+        return Ok(Json(resp));
+    }
+
     let atm = state
         .atm
         .as_ref()
@@ -139,6 +153,106 @@ pub async fn authenticate(
         outcome = "success"
     );
     Ok(Json(resp))
+}
+
+/// Try to authenticate from a DI-signed `auth/authenticate/0.1` Trust Task
+/// document (the canonical REST transport).
+///
+/// Returns:
+/// - `Ok(Some(resp))` — the body was such a document, its proof verified, and
+///   the canonical authenticate handler issued tokens.
+/// - `Ok(None)` — the body is *not* an `auth/authenticate/0.1` Trust Task, so
+///   the caller should fall through to the DIDComm-envelope path.
+/// - `Err(_)` — the body *was* an authenticate document but is invalid (bad
+///   proof, malformed payload, challenge mismatch, …). We don't fall through:
+///   the caller's intent was unambiguous, so surface the real failure.
+///
+/// A DIDComm packed envelope is a JWE/JWS with none of a Trust Task's
+/// `id`/`type`/`payload` fields, so it fails the `TrustTask` parse and yields
+/// `None` — the two transports are unambiguous on the wire.
+async fn try_authenticate_trust_task(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<AuthenticateResponse>, AppError> {
+    let doc: TrustTask<Value> = match serde_json::from_str(body) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
+    };
+    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1 {
+        return Ok(None);
+    }
+
+    // From here the caller's intent is unambiguous; failures are real.
+    let signer_did = verify_authenticate_proof(&doc).await?;
+    let payload: authenticate::Payload = serde_json::from_value(doc.payload.clone())
+        .map_err(|e| AppError::Authentication(format!("invalid authenticate payload: {e}")))?;
+    let session_id = payload.session_id.to_string();
+    let challenge = payload.challenge.to_string();
+
+    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_authenticate(
+        &backend,
+        vti_common::auth::AuthenticateInput {
+            session_id: session_id.clone(),
+            challenge,
+            signer_did: signer_did.clone(),
+            // No DIDComm `created_time`; the single-use, TTL'd challenge bound to
+            // the session is the freshness/replay anchor (the canonical handler
+            // treats `None` as a no-op freshness check, same as REST SIOPv2).
+            created_time: None,
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await?;
+    audit!(
+        "auth.authenticate",
+        actor = &signer_did,
+        resource = &session_id,
+        outcome = "success"
+    );
+    Ok(Some(resp))
+}
+
+/// Verify the holder's `eddsa-jcs-2022` Data-Integrity proof on an
+/// `auth/authenticate/0.1` document and return the cryptographically-proven
+/// signer DID (the base DID of the proof's `verificationMethod`).
+///
+/// Mirrors the server-side did-signed gate verification in
+/// `routes/trust_tasks/step_up.rs::verify_did_signed_gate` (PR #177), but here
+/// the subject is *unknown a priori* — it's derived from the proof rather than
+/// checked against an expected value. The signer↔session binding is enforced
+/// downstream by the canonical handler (`signer_did == session.did`).
+/// `did:key` resolution is local (no I/O), matching the mobile holder key.
+async fn verify_authenticate_proof(doc: &TrustTask<Value>) -> Result<String, AppError> {
+    let proof = doc
+        .proof
+        .as_ref()
+        .ok_or_else(|| AppError::Authentication("authenticate document has no proof".into()))?;
+
+    let di: DataIntegrityProof = serde_json::to_value(proof)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .ok_or_else(|| AppError::Authentication("proof is not a Data Integrity proof".into()))?;
+
+    let signer_did = di
+        .verification_method
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if signer_did.is_empty() {
+        return Err(AppError::Authentication(
+            "proof verificationMethod carries no DID".into(),
+        ));
+    }
+
+    let mut unsigned = doc.clone();
+    unsigned.proof = None;
+    di.verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
+        .await
+        .map_err(|e| AppError::Authentication(format!("proof verification failed: {e}")))?;
+
+    Ok(signer_did)
 }
 
 // ---------- POST /auth/refresh ----------

@@ -272,7 +272,22 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: Session initiation for any authenticated call.
 - **Endpoints**: `POST /auth/challenge` → challenge + session_id;
   `POST /auth/` → JWT access token (15m) + refresh token (24h).
-- **Wire**: DIDComm v2 (via mediator) **or** direct REST with a JWS.
+- **Wire** (`POST /auth/` content-negotiates on the body shape; all paths
+  converge on `vti_common::auth::handlers::handle_authenticate`):
+  - **DI-signed Trust Task (canonical REST)** — a plain JSON
+    `auth/authenticate/0.1` document whose holder `eddsa-jcs-2022`
+    Data-Integrity proof *is* the authentication. No DIDComm packing /
+    mediator needed, so a REST-only VTA (no `atm`) can authenticate. The
+    proof's `verificationMethod` DID is the proven signer; `did:key`
+    resolution is local. This is what `vta-mobile-core::build_authenticate`
+    emits. Verified by `routes/auth.rs::verify_authenticate_proof` (mirrors
+    the `step_up.rs` did-signed gate, PR #177).
+  - **DIDComm v2 envelope** (via mediator) — packed message; ATM unpack
+    verifies the sender (`msg.from` is the proven signer). Still supported.
+  - Freshness/replay is anchored by the single-use, TTL'd challenge bound to
+    the session at `/auth/challenge`; the DI path passes `created_time: None`
+    (no-op freshness check), the DIDComm path enforces a 60s window on the
+    envelope's `created_time`.
 - **Claims**: `{ aud, sub, session_id, role, contexts, exp }`. Audience
   separates VTA from VTC — cross-audience tokens are rejected.
 - **Code**: `vta-service/src/routes/auth.rs`, `vti-common/src/auth/`.
