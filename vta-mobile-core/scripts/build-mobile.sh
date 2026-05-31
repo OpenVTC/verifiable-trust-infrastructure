@@ -38,6 +38,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$WORKSPACE_ROOT"
 
+# Where cargo writes build output. Honor a caller/CI-provided CARGO_TARGET_DIR;
+# otherwise pin to the workspace ./target. Export it so cargo and this script
+# agree on the location even when a global cargo config sets
+# `build.target-dir` (the env var overrides config) — otherwise cargo writes
+# elsewhere and the bindgen/ndk steps below can't find the libraries.
+TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE_ROOT/target}"
+export CARGO_TARGET_DIR="$TARGET_DIR"
+
 CARGO_PROFILE_FLAG=""
 PROFILE_DIR="debug"
 if [ "$PROFILE" = "release" ]; then
@@ -68,7 +76,7 @@ build_android() {
   # NOTE: `--platform` (the API level), spelled in full on purpose. cargo-ndk's
   # short `-p` was dropped in v4; `-p 24` is forwarded to cargo as `--package 24`
   # and panics with "unknown package: 24".
-  cargo ndk "${ndk_args[@]}" --platform "$ANDROID_API" -o "target/mobile/jniLibs" \
+  cargo ndk "${ndk_args[@]}" --platform "$ANDROID_API" -o "$TARGET_DIR/mobile/jniLibs" \
     build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
 }
 
@@ -79,15 +87,15 @@ check_bindings() {
   echo "── UniFFI bindings (kotlin + swift) ──"
   cargo build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
   local lib=""
-  for cand in "target/$PROFILE_DIR/libvta_mobile_core.dylib" \
-              "target/$PROFILE_DIR/libvta_mobile_core.so"; do
+  for cand in "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.dylib" \
+              "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.so"; do
     if [ -f "$cand" ]; then lib="$cand"; break; fi
   done
   if [ -z "$lib" ]; then
     echo "  could not find the built libvta_mobile_core dynamic library" >&2
     exit 1
   fi
-  local out="target/bindings"
+  local out="$TARGET_DIR/bindings"
   rm -rf "$out"
   for lang in kotlin swift; do
     cargo run -p vta-mobile-core --bin uniffi-bindgen -- \

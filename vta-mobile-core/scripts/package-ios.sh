@@ -28,6 +28,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$WORKSPACE_ROOT"
 
+# Where cargo writes build output. Honor a caller/CI-provided CARGO_TARGET_DIR;
+# otherwise pin to the workspace ./target. Export it so cargo and this script
+# agree even when a global cargo config sets `build.target-dir` (the env var
+# overrides config) — otherwise cargo writes elsewhere and the lipo / bindgen /
+# xcframework steps below can't find the static libraries.
+TARGET_DIR="${CARGO_TARGET_DIR:-$WORKSPACE_ROOT/target}"
+export CARGO_TARGET_DIR="$TARGET_DIR"
+
 CARGO_PROFILE_FLAG=""
 PROFILE_DIR="debug"
 if [ "$PROFILE" = "release" ]; then
@@ -38,7 +46,7 @@ fi
 DEVICE_TARGET="aarch64-apple-ios"
 SIM_TARGETS=(aarch64-apple-ios-sim x86_64-apple-ios)
 LIB="libvta_mobile_core.a"
-OUT="target/mobile/ios"
+OUT="$TARGET_DIR/mobile/ios"
 STAGE="$OUT/staging"
 
 rm -rf "$OUT"
@@ -57,8 +65,8 @@ echo "── Fusing simulator slice (arm64 + x86_64) ──"
 SIM_FAT="$STAGE/sim/$LIB"
 mkdir -p "$STAGE/sim"
 lipo -create \
-  "target/aarch64-apple-ios-sim/$PROFILE_DIR/$LIB" \
-  "target/x86_64-apple-ios/$PROFILE_DIR/$LIB" \
+  "$TARGET_DIR/aarch64-apple-ios-sim/$PROFILE_DIR/$LIB" \
+  "$TARGET_DIR/x86_64-apple-ios/$PROFILE_DIR/$LIB" \
   -output "$SIM_FAT"
 
 # Generate the Swift bindings from a host build (the generated source + C header
@@ -68,8 +76,8 @@ lipo -create \
 echo "── Generating Swift bindings ──"
 cargo build -p vta-mobile-core --lib $CARGO_PROFILE_FLAG
 HOST_LIB=""
-for cand in "target/$PROFILE_DIR/libvta_mobile_core.dylib" \
-            "target/$PROFILE_DIR/libvta_mobile_core.so"; do
+for cand in "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.dylib" \
+            "$TARGET_DIR/$PROFILE_DIR/libvta_mobile_core.so"; do
   [ -f "$cand" ] && HOST_LIB="$cand" && break
 done
 [ -n "$HOST_LIB" ] || { echo "  host library not found for bindgen" >&2; exit 1; }
@@ -84,7 +92,7 @@ cp "$BIND/VtaMobileCoreFFI.modulemap" "$STAGE/headers/module.modulemap"
 
 echo "── Assembling VtaMobileCore.xcframework ──"
 xcodebuild -create-xcframework \
-  -library "target/$DEVICE_TARGET/$PROFILE_DIR/$LIB" -headers "$STAGE/headers" \
+  -library "$TARGET_DIR/$DEVICE_TARGET/$PROFILE_DIR/$LIB" -headers "$STAGE/headers" \
   -library "$SIM_FAT" -headers "$STAGE/headers" \
   -output "$OUT/VtaMobileCore.xcframework" >/dev/null
 
