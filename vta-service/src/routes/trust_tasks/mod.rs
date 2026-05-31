@@ -59,6 +59,7 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
+mod step_up;
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;
