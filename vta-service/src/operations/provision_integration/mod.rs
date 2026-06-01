@@ -1860,19 +1860,10 @@ mod tests {
         // (and doesn't need a separate auth ceremony for the grant).
         let request = signed_admin_rotation_request("vta-admin", "ctx-swap").await;
         let client_did = request.holder().to_string();
-        let ephemeral_row = AclEntry {
-            did: client_did.clone(),
-            role: Role::Admin,
-            label: Some("ephemeral".into()),
-            allowed_contexts: vec!["ctx-swap".into()],
-            created_at: 0,
-            created_by: "test".into(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: vec![],
-            device: None,
-            version: 0,
-        };
+        let ephemeral_row = AclEntry::new(client_did.clone(), Role::Admin, "test")
+            .with_label(Some("ephemeral".into()))
+            .with_contexts(vec!["ctx-swap".into()])
+            .with_created_at(0);
         store_acl_entry(&deps.acl_ks, &ephemeral_row)
             .await
             .expect("seed ephemeral ACL row");

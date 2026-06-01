@@ -54,22 +54,9 @@ pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::erro
         }
     }
 
-    let entry = AclEntry {
-        did: args.did.clone(),
-        role: role.clone(),
-        label: args.label.clone(),
-        allowed_contexts: args.context.clone(),
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        created_by: "cli:import-did".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: Vec::new(),
-        device: None,
-        version: 0,
-    };
+    let entry = AclEntry::new(args.did.clone(), role.clone(), "cli:import-did")
+        .with_label(args.label.clone())
+        .with_contexts(args.context.clone());
 
     store_acl_entry(&acl_ks, &entry).await?;
     store.persist().await?;

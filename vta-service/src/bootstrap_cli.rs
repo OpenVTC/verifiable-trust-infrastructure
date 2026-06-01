@@ -809,19 +809,14 @@ pub async fn run_context_create(
             Some(raw) => Some(vta_cli_common::duration::duration_to_expires_at(raw)?),
             None => None,
         };
-        let entry = crate::acl::AclEntry {
-            did: did.clone(),
-            role: crate::acl::Role::Admin,
-            label: admin_label,
-            allowed_contexts: vec![id.clone()],
-            created_at: vti_common::auth::session::now_epoch(),
-            created_by: format!("vta-context-create:{}", auth.did),
-            expires_at,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        };
+        let entry = crate::acl::AclEntry::new(
+            did.clone(),
+            crate::acl::Role::Admin,
+            format!("vta-context-create:{}", auth.did),
+        )
+        .with_label(admin_label)
+        .with_contexts(vec![id.clone()])
+        .with_expires_at(expires_at);
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
         eprintln!("Admin ACL entry created for {did} (context: {id}).");
     }
@@ -1103,19 +1098,9 @@ pub async fn run_context_reprovision(
     if existing.is_none() {
         use crate::acl::AclEntry;
         use chrono::Utc;
-        let entry = AclEntry {
-            did: admin_did.clone(),
-            role: Role::Admin,
-            label: None,
-            allowed_contexts: vec![id.clone()],
-            created_at: Utc::now().timestamp() as u64,
-            created_by: auth.did.clone(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        };
+        let entry = AclEntry::new(admin_did.clone(), Role::Admin, auth.did.clone())
+            .with_contexts(vec![id.clone()])
+            .with_created_at(Utc::now().timestamp() as u64);
         crate::acl::store_acl_entry(&state.acl_ks, &entry).await?;
         store.persist().await?;
         eprintln!("Created ACL entry for {admin_did} in context '{id}'");

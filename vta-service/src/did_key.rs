@@ -61,22 +61,9 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
     // Optionally create ACL entry
     if args.admin {
         let acl_ks = store.keyspace("acl")?;
-        let entry = AclEntry {
-            did: did.clone(),
-            role: Role::Admin,
-            label: args.label.clone(),
-            allowed_contexts: vec![args.context.clone()],
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            created_by: "cli:create-did-key".into(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        };
+        let entry = AclEntry::new(did.clone(), Role::Admin, "cli:create-did-key")
+            .with_label(args.label.clone())
+            .with_contexts(vec![args.context.clone()]);
         store_acl_entry(&acl_ks, &entry).await?;
         eprintln!(
             "ACL entry created: {} (admin, context: {})",

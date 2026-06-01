@@ -87,19 +87,10 @@ mod tests {
         let did = "did:key:zExpired";
         store_acl_entry(
             &acl_ks,
-            &AclEntry {
-                did: did.into(),
-                role: Role::Admin,
-                label: None,
-                allowed_contexts: vec!["ctx-a".into()],
-                created_at: now_epoch().saturating_sub(7200),
-                created_by: "test".into(),
-                expires_at: Some(now_epoch().saturating_sub(60)), // expired one minute ago
-                kind: Default::default(),
-                capabilities: Vec::new(),
-                device: None,
-                version: 0,
-            },
+            &AclEntry::new(did, Role::Admin, "test")
+                .with_contexts(vec!["ctx-a".into()])
+                .with_created_at(now_epoch().saturating_sub(7200))
+                .with_expires_at(Some(now_epoch().saturating_sub(60))), // expired one minute ago
         )
         .await
         .unwrap();
@@ -120,19 +111,9 @@ mod tests {
         let did = "did:key:zLive";
         store_acl_entry(
             &acl_ks,
-            &AclEntry {
-                did: did.into(),
-                role: Role::Admin,
-                label: None,
-                allowed_contexts: vec!["ctx-a".into(), "ctx-b".into()],
-                created_at: now_epoch(),
-                created_by: "test".into(),
-                expires_at: Some(now_epoch() + 3600),
-                kind: Default::default(),
-                capabilities: Vec::new(),
-                device: None,
-                version: 0,
-            },
+            &AclEntry::new(did, Role::Admin, "test")
+                .with_contexts(vec!["ctx-a".into(), "ctx-b".into()])
+                .with_expires_at(Some(now_epoch() + 3600)),
         )
         .await
         .unwrap();
@@ -150,24 +131,9 @@ mod tests {
     async fn fragment_in_sender_collapses_to_base_did() {
         let (_store, acl_ks, _dir) = fresh_acl_ks().await;
         let base = "did:key:zBase";
-        store_acl_entry(
-            &acl_ks,
-            &AclEntry {
-                did: base.into(),
-                role: Role::Reader,
-                label: None,
-                allowed_contexts: vec![],
-                created_at: now_epoch(),
-                created_by: "test".into(),
-                expires_at: None,
-                kind: Default::default(),
-                capabilities: Vec::new(),
-                device: None,
-                version: 0,
-            },
-        )
-        .await
-        .unwrap();
+        store_acl_entry(&acl_ks, &AclEntry::new(base, Role::Reader, "test"))
+            .await
+            .unwrap();
 
         let msg = message_from(&format!("{base}#zBase"));
         let claims = auth_from_message(&msg, &acl_ks).await.unwrap();

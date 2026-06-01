@@ -105,19 +105,10 @@ pub async fn create_acl(
         )));
     }
 
-    let entry = AclEntry {
-        did: did.to_string(),
-        role,
-        label,
-        allowed_contexts,
-        created_at: now_epoch(),
-        created_by: auth.did.clone(),
-        expires_at,
-        kind: Default::default(),
-        capabilities: Vec::new(),
-        device: None,
-        version: 0,
-    };
+    let entry = AclEntry::new(did, role, auth.did.clone())
+        .with_label(label)
+        .with_contexts(allowed_contexts)
+        .with_expires_at(expires_at);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -410,19 +401,13 @@ pub async fn swap_acl(
     // time-limited long-term entry can `acl change-role --expires
     // …` afterwards. See PR fixing this and the parallel
     // acl_sweeper change that audit-logs every deletion.
-    let entry = AclEntry {
-        did: new_did.clone(),
-        role: old.role.clone(),
-        label: old.label.clone(),
-        allowed_contexts: old.allowed_contexts.clone(),
-        created_at: now,
-        created_by: auth.did.clone(),
-        expires_at: None,
-        kind: old.kind.clone(),
-        capabilities: old.capabilities.clone(),
-        device: old.device.clone(),
-        version: 0,
-    };
+    let entry = AclEntry::new(new_did.clone(), old.role.clone(), auth.did.clone())
+        .with_label(old.label.clone())
+        .with_contexts(old.allowed_contexts.clone())
+        .with_created_at(now)
+        .with_kind(old.kind.clone())
+        .with_capabilities(old.capabilities.clone())
+        .with_device(old.device.clone());
 
     // Create new before deleting old: a crash between the two leaves the old
     // DID authoritative (stale, not locked out).
@@ -461,7 +446,6 @@ pub async fn swap_acl(
 mod tests {
     use super::*;
     use crate::acl::{AclEntry, store_acl_entry};
-    use crate::auth::session::now_epoch;
     use crate::store::Store;
     use vti_common::config::StoreConfig;
 
@@ -524,19 +508,8 @@ mod tests {
     async fn seed_target(acl_ks: &KeyspaceHandle, did: &str, contexts: &[&str]) {
         store_acl_entry(
             acl_ks,
-            &AclEntry {
-                did: did.into(),
-                role: Role::Admin,
-                label: None,
-                allowed_contexts: contexts.iter().map(|s| s.to_string()).collect(),
-                created_at: now_epoch(),
-                created_by: "seed".into(),
-                expires_at: None,
-                kind: Default::default(),
-                capabilities: Vec::new(),
-                device: None,
-                version: 0,
-            },
+            &AclEntry::new(did, Role::Admin, "seed")
+                .with_contexts(contexts.iter().map(|s| s.to_string()).collect()),
         )
         .await
         .unwrap();

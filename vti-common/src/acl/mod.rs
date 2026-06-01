@@ -250,6 +250,79 @@ pub struct AclEntry {
 }
 
 impl AclEntry {
+    /// Create an entry with the required identity fields. Optional metadata
+    /// takes sensible defaults: no `label`, no `allowed_contexts`, never
+    /// expires, default [`ConsumerKind`], no `capabilities`, no `device`
+    /// binding, `version = 0`, and `created_at = now`. Layer non-defaults on
+    /// with the `with_*` builder methods.
+    ///
+    /// This is the single construction entry point — adding a new optional
+    /// field here defaults it everywhere, so callers don't churn.
+    pub fn new(did: impl Into<String>, role: Role, created_by: impl Into<String>) -> Self {
+        Self {
+            did: did.into(),
+            role,
+            label: None,
+            allowed_contexts: Vec::new(),
+            created_at: crate::auth::session::now_epoch(),
+            created_by: created_by.into(),
+            expires_at: None,
+            kind: ConsumerKind::default(),
+            capabilities: Vec::new(),
+            device: None,
+            version: 0,
+        }
+    }
+
+    /// Override `created_at` (defaults to now). Use when replaying a known
+    /// timestamp — bootstrap import, tests, migration.
+    pub fn with_created_at(mut self, created_at: u64) -> Self {
+        self.created_at = created_at;
+        self
+    }
+
+    /// Set the optional human-readable label.
+    pub fn with_label(mut self, label: Option<String>) -> Self {
+        self.label = label;
+        self
+    }
+
+    /// Set the allowed-contexts (scope) list.
+    pub fn with_contexts(mut self, allowed_contexts: Vec<String>) -> Self {
+        self.allowed_contexts = allowed_contexts;
+        self
+    }
+
+    /// Set the optional expiry (unix seconds). `None` is permanent.
+    pub fn with_expires_at(mut self, expires_at: Option<u64>) -> Self {
+        self.expires_at = expires_at;
+        self
+    }
+
+    /// Set the consumer kind (Companion vs Service).
+    pub fn with_kind(mut self, kind: ConsumerKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// Set the fine-grained capability set.
+    pub fn with_capabilities(mut self, capabilities: Vec<Capability>) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// Attach optional Companion/Service device-binding metadata.
+    pub fn with_device(mut self, device: Option<DeviceBinding>) -> Self {
+        self.device = device;
+        self
+    }
+
+    /// Set the optimistic-concurrency version (defaults to 0).
+    pub fn with_version(mut self, version: u32) -> Self {
+        self.version = version;
+        self
+    }
+
     /// Returns true if this entry has passed its configured `expires_at`.
     /// Permanent entries (no `expires_at`) never expire.
     pub fn is_expired(&self, now_unix: u64) -> bool {
@@ -463,35 +536,12 @@ mod tests {
     }
 
     fn sample_entry(did: &str, role: Role) -> AclEntry {
-        AclEntry {
-            did: did.to_string(),
-            role,
-            label: Some(format!("test-{did}")),
-            allowed_contexts: vec![],
-            created_at: now_epoch(),
-            created_by: "did:key:zSetup".into(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        }
+        AclEntry::new(did, role, "did:key:zSetup").with_label(Some(format!("test-{did}")))
     }
 
     fn scoped_entry(did: &str, role: Role, contexts: &[&str]) -> AclEntry {
-        AclEntry {
-            did: did.to_string(),
-            role,
-            label: None,
-            allowed_contexts: contexts.iter().map(|s| s.to_string()).collect(),
-            created_at: now_epoch(),
-            created_by: "did:key:zSetup".into(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        }
+        AclEntry::new(did, role, "did:key:zSetup")
+            .with_contexts(contexts.iter().map(|s| s.to_string()).collect())
     }
 
     fn super_admin_claims() -> AuthClaims {

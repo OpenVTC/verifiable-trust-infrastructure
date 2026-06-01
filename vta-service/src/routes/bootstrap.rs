@@ -265,19 +265,9 @@ async fn mint_mode_b(
         .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
         .await?;
 
-    let entry = AclEntry {
-        did: did.clone(),
-        role: Role::Admin,
-        label: Some("TEE first-boot admin".to_string()),
-        allowed_contexts: vec![],
-        created_at: now,
-        created_by: "tee:mode-b".to_string(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: vec![],
-        device: None,
-        version: 0,
-    };
+    let entry = AclEntry::new(did.clone(), Role::Admin, "tee:mode-b")
+        .with_label(Some("TEE first-boot admin".to_string()))
+        .with_created_at(now);
     store_acl_entry(&state.acl_ks, &entry).await?;
 
     let credential = CredentialBundle {

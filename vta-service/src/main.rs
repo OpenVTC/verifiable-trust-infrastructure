@@ -1960,22 +1960,9 @@ async fn run_bootstrap_admin(
     }
 
     // Create the super admin ACL entry
-    let entry = acl::AclEntry {
-        did: did.clone(),
-        role: acl::Role::Admin,
-        label,
-        allowed_contexts: vec![], // Empty = super admin
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        created_by: "cli:bootstrap-admin".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: Vec::new(),
-        device: None,
-        version: 0,
-    };
+    // Empty contexts = super admin
+    let entry =
+        acl::AclEntry::new(did.clone(), acl::Role::Admin, "cli:bootstrap-admin").with_label(label);
     acl::store_acl_entry(&acl_ks, &entry).await?;
 
     // Seal the VTA

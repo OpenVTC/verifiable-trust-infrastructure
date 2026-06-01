@@ -1183,22 +1183,7 @@ async fn seed_initial_admin(
         .into());
     }
 
-    let entry = acl::AclEntry {
-        did: did.to_string(),
-        role: acl::Role::Admin,
-        label,
-        allowed_contexts: vec![],
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-        created_by: "cli:setup-from-file".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: Vec::new(),
-        device: None,
-        version: 0,
-    };
+    let entry = acl::AclEntry::new(did, acl::Role::Admin, "cli:setup-from-file").with_label(label);
     acl::store_acl_entry(&acl_ks, &entry).await?;
     let _seal_record = seal::seal(&acl_ks, did).await?;
     store.persist().await?;

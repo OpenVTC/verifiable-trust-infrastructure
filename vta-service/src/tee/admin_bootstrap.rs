@@ -114,19 +114,8 @@ pub async fn maybe_bootstrap_admin(
         // closed immediately because the admin identity is already known.
         info!(did = %admin_did, context_id, "bootstrapping super-admin from config admin_did");
 
-        let entry = AclEntry {
-            did: admin_did.clone(),
-            role: Role::Admin,
-            label: Some("TEE bootstrap admin".to_string()),
-            allowed_contexts: vec![],
-            created_at: now_epoch(),
-            created_by: "tee:bootstrap".to_string(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: vec![],
-            device: None,
-            version: 0,
-        };
+        let entry = AclEntry::new(admin_did.clone(), Role::Admin, "tee:bootstrap")
+            .with_label(Some("TEE bootstrap admin".to_string()));
         store_acl_entry(&acl_ks, &entry).await?;
 
         keys_ks

@@ -340,7 +340,6 @@ fn verify_challenge_signature(
 mod tests {
     use super::*;
     use crate::acl::AclEntry;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Seal a fresh store under `data_dir` with a single super-admin
     /// ACL entry. The store is opened, populated, and dropped — the
@@ -352,22 +351,8 @@ mod tests {
         let store = Store::open(&config).expect("open store");
         let acl_ks = store.keyspace("acl").expect("acl keyspace");
 
-        let entry = AclEntry {
-            did: admin_did.to_string(),
-            role: Role::Admin,
-            label: Some("test-super-admin".into()),
-            allowed_contexts: vec![],
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            created_by: "test".into(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        };
+        let entry = AclEntry::new(admin_did, Role::Admin, "test")
+            .with_label(Some("test-super-admin".into()));
         acl::store_acl_entry(&acl_ks, &entry).await.expect("acl");
         seal(&acl_ks, admin_did).await.expect("seal");
         store.persist().await.expect("persist");

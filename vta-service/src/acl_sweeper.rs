@@ -109,7 +109,7 @@ pub async fn sweep_expired(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::{ConsumerKind, Role, store_acl_entry};
+    use crate::acl::{Role, store_acl_entry};
     use crate::store::Store;
     use vti_common::config::StoreConfig;
 
@@ -125,19 +125,7 @@ mod tests {
     }
 
     fn entry(did: &str, expires_at: Option<u64>) -> AclEntry {
-        AclEntry {
-            did: did.into(),
-            role: Role::Admin,
-            label: None,
-            allowed_contexts: vec![],
-            created_at: now_epoch(),
-            created_by: "test".into(),
-            expires_at,
-            kind: ConsumerKind::default(),
-            capabilities: Vec::new(),
-            device: None,
-            version: 0,
-        }
+        AclEntry::new(did, Role::Admin, "test").with_expires_at(expires_at)
     }
 
     /// Expired entries get deleted; permanent (no `expires_at`)
