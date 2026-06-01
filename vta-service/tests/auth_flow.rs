@@ -62,19 +62,8 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
 
     let did = "did:key:z6MkChallengeTester";
     // Pre-grant the DID admin access so it passes the ACL check.
-    let entry = vti_common::acl::AclEntry {
-        did: did.into(),
-        role: vti_common::acl::Role::Admin,
-        label: None,
-        allowed_contexts: vec![],
-        created_at: 1,
-        created_by: "test".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: vec![],
-        device: None,
-        version: 0,
-    };
+    let entry = vti_common::acl::AclEntry::new(did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
     vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
         .await
         .expect("seed admin ACL");

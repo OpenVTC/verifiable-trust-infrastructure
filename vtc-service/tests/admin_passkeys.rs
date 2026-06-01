@@ -153,19 +153,8 @@ async fn build_fixture(with_audit: bool) -> Fixture {
         created_at: Utc::now(),
     };
     store_admin_entry(&passkey_ks, &admin_entry).await.unwrap();
-    let acl_entry = AclEntry {
-        did: admin_did.clone(),
-        role: Role::Admin,
-        label: Some("install bootstrap".into()),
-        allowed_contexts: vec![],
-        created_at: now_epoch(),
-        created_by: "did:key:vtc-install".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: vec![],
-        device: None,
-        version: 0,
-    };
+    let acl_entry = AclEntry::new(admin_did.clone(), Role::Admin, "did:key:vtc-install")
+        .with_label(Some("install bootstrap".into()));
     store_acl_entry(&acl_ks, &acl_entry).await.unwrap();
 
     let audit_writer = if with_audit {

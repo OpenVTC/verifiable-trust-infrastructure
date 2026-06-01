@@ -247,6 +247,17 @@ pub struct AclEntry {
     /// with `version=0`. The first update bumps it to 1.
     #[serde(default)]
     pub version: u32,
+    /// VID authorized to ratify an AAL2 step-up for this subject — the
+    /// `recipient` the VTA addresses an `auth/step-up/approve-request/0.1` to
+    /// when a gated operation resolves to `delegated` mode (the holder's
+    /// mobile authenticator or browser companion). `None` means no delegated
+    /// approver is configured: under a `delegated` floor the operation
+    /// fail-closes (the subject can't self-approve a delegated requirement).
+    /// Mirrors the spec's `AclEntry.stepUp.approver`.
+    ///
+    /// `#[serde(default)]` so pre-existing rows deserialise as `None`.
+    #[serde(default)]
+    pub step_up_approver: Option<String>,
 }
 
 impl AclEntry {
@@ -271,6 +282,7 @@ impl AclEntry {
             capabilities: Vec::new(),
             device: None,
             version: 0,
+            step_up_approver: None,
         }
     }
 
@@ -314,6 +326,12 @@ impl AclEntry {
     /// Attach optional Companion/Service device-binding metadata.
     pub fn with_device(mut self, device: Option<DeviceBinding>) -> Self {
         self.device = device;
+        self
+    }
+
+    /// Set the delegated step-up approver VID (`stepUp.approver`).
+    pub fn with_step_up_approver(mut self, approver: Option<String>) -> Self {
+        self.step_up_approver = approver;
         self
     }
 

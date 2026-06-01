@@ -230,22 +230,15 @@ pub async fn delete_acl(
 /// match), which is fine because these helpers ignore the role
 /// field entirely.
 fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
-    vti_common::acl::AclEntry {
-        did: e.did.clone(),
-        role: match e.role {
-            VtcRole::Admin => vti_common::acl::Role::Admin,
-            _ => vti_common::acl::Role::Reader,
-        },
-        label: e.label.clone(),
-        allowed_contexts: e.allowed_contexts.clone(),
-        created_at: e.created_at,
-        created_by: e.created_by.clone(),
-        expires_at: e.expires_at,
-        kind: Default::default(),
-        capabilities: vec![],
-        device: None,
-        version: 0,
-    }
+    let role = match e.role {
+        VtcRole::Admin => vti_common::acl::Role::Admin,
+        _ => vti_common::acl::Role::Reader,
+    };
+    vti_common::acl::AclEntry::new(e.did.clone(), role, e.created_by.clone())
+        .with_label(e.label.clone())
+        .with_contexts(e.allowed_contexts.clone())
+        .with_created_at(e.created_at)
+        .with_expires_at(e.expires_at)
 }
 
 #[cfg(test)]

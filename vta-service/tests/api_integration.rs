@@ -196,19 +196,7 @@ impl TestContext {
     /// Create an ACL entry for a DID.
     #[allow(dead_code)]
     async fn create_acl(&self, did: &str, role: Role, contexts: Vec<String>) {
-        let entry = vti_common::acl::AclEntry {
-            did: did.to_string(),
-            role,
-            label: None,
-            allowed_contexts: contexts,
-            created_at: now_epoch(),
-            created_by: "test".to_string(),
-            expires_at: None,
-            kind: Default::default(),
-            capabilities: vec![],
-            device: None,
-            version: 0,
-        };
+        let entry = vti_common::acl::AclEntry::new(did, role, "test").with_contexts(contexts);
         self.acl_ks()
             .insert(format!("acl:{did}"), &entry)
             .await
@@ -602,6 +590,83 @@ async fn swap_key_gated_without_carve_out() {
         "swap-key must be gated: {body}"
     );
     assert_eq!(body["error"], "step_up_required");
+}
+
+#[tokio::test]
+async fn delegated_step_up_routes_to_configured_approver() {
+    use vti_common::acl::{AclEntry, Role, store_acl_entry};
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+    let (app, ctx) = TestApp::new().await;
+    let caller = "did:key:z6MkAdmin";
+    let approver = "did:key:z6MkApprover";
+    // The caller's ACL entry names its delegated approver.
+    store_acl_entry(
+        ctx.acl_ks(),
+        &AclEntry::new(caller, Role::Admin, "test")
+            .with_step_up_approver(Some(approver.to_string())),
+    )
+    .await
+    .unwrap();
+    ctx.set_step_up_floors(vec![StepUpFloor {
+        operation: "acl/grant".into(),
+        mode: StepUpMode::Delegated,
+        allow_aal1_if_non_escalating: false,
+    }])
+    .await;
+    let token = ctx.auth_token(caller, "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({ "did": "did:key:z6MkNew", "role": "application", "allowed_contexts": ["ctx1"] }),
+        ))
+        .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "step_up_required");
+    // The approve-request is addressed to the configured approver, not the caller.
+    assert_eq!(
+        body["approveRequest"]["recipient"], approver,
+        "delegated approve-request must be addressed to the configured approver: {body}"
+    );
+}
+
+#[tokio::test]
+async fn delegated_step_up_without_approver_fails_closed() {
+    use vti_common::acl::{AclEntry, Role, store_acl_entry};
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+    let (app, ctx) = TestApp::new().await;
+    let caller = "did:key:z6MkNoApprover";
+    // ACL entry with NO step-up approver under a delegated floor.
+    store_acl_entry(ctx.acl_ks(), &AclEntry::new(caller, Role::Admin, "test"))
+        .await
+        .unwrap();
+    ctx.set_step_up_floors(vec![StepUpFloor {
+        operation: "acl/grant".into(),
+        mode: StepUpMode::Delegated,
+        allow_aal1_if_non_escalating: false,
+    }])
+    .await;
+    let token = ctx.auth_token(caller, "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({ "did": "did:key:z6MkNew2", "role": "application", "allowed_contexts": ["ctx1"] }),
+        ))
+        .await;
+
+    // Fail-closed: 403 with no approve-request (nothing the caller can do until
+    // an operator registers an approver — the subject can't self-approve a
+    // delegated requirement).
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "step_up_required");
+    assert!(
+        body.get("approveRequest").is_none(),
+        "fail-closed must not carry an approve-request: {body}"
+    );
 }
 
 #[tokio::test]

@@ -34,8 +34,9 @@ use crate::operations::passkey_login::{
     VtaVmResolver, enumerate_passkey_vms, verify_passkey_login,
 };
 use crate::server::AppState;
+use vti_common::acl::get_acl_entry;
 use vti_common::auth::step_up::{
-    ConsumeOutcome, consume_pending_step_up, new_pending_step_up, store_pending_step_up,
+    ConsumeOutcome, StepUpMode, consume_pending_step_up, new_pending_step_up, store_pending_step_up,
 };
 use vti_common::store::KeyspaceHandle;
 
@@ -397,6 +398,7 @@ async fn mint_pending_step_up(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
     subject: &str,
+    recipient: &str,
     session_id: &str,
     reason: &str,
 ) -> Result<Value, ()> {
@@ -426,7 +428,9 @@ async fn mint_pending_step_up(
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
         "issuer": vta_did,
-        "recipient": subject,
+        // `recipient` is the approver the request is addressed to: the subject
+        // itself for `self` mode, or the configured delegated approver.
+        "recipient": recipient,
         "payload": {
             "subject": subject,
             "sessionId": session_id,
@@ -449,11 +453,14 @@ pub(crate) async fn issue_step_up_challenge(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
     subject: &str,
+    recipient: &str,
     session_id: &str,
     reason: &str,
 ) -> Response {
     let approve_request =
-        match mint_pending_step_up(sessions_ks, vta_did, subject, session_id, reason).await {
+        match mint_pending_step_up(sessions_ks, vta_did, subject, recipient, session_id, reason)
+            .await
+        {
             Ok(ar) => ar,
             Err(()) => {
                 return (
@@ -479,6 +486,84 @@ pub(crate) async fn issue_step_up_challenge(
         .into_response()
 }
 
+/// REST `403` for the **fail-closed** case: the operation requires AAL2 but no
+/// step-up method exists for the caller (a `delegated` floor with no
+/// `stepUp.approver` on the caller's ACL entry). Unlike
+/// [`issue_step_up_challenge`], this carries **no** approve-request — there's
+/// nothing the caller can do to elevate until an operator registers an
+/// approver, so we deny rather than hand back a request that can't be satisfied.
+fn step_up_denied_response() -> Response {
+    let body = json!({
+        "error": "step_up_required",
+        "requiredAcr": STEP_UP_TARGET_ACR,
+        "reason": "no step-up approver is configured for this subject; an operator must register one",
+    });
+    (
+        StatusCode::FORBIDDEN,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        serde_json::to_vec(&body).unwrap_or_default(),
+    )
+        .into_response()
+}
+
+/// Step-up enforcement decision resolved from the policy floor for an
+/// operation-class, plus (for `delegated` modes) the caller's configured
+/// approver.
+enum StepUpDecision {
+    /// Not gated — proceed at AAL1 (disabled policy, `none` floor, or the
+    /// non-escalation carve-out applied).
+    Allow,
+    /// Gated — mint an approve-request addressed to `recipient` (the subject
+    /// itself for `self` mode, or the delegated approver).
+    Require { recipient: String },
+    /// Gated, but no usable step-up method exists (a `delegated` floor with no
+    /// approver on the caller's entry) — fail closed.
+    Deny,
+}
+
+/// Resolve the step-up decision for `op_class` requested by `caller_did`.
+///
+/// `is_non_escalating` is the structural carve-out signal (true only for
+/// self-service ops like `acl/swap-key`); it lets a floor with
+/// `allow_aal1_if_non_escalating` admit the op at AAL1.
+async fn resolve_step_up(
+    state: &AppState,
+    op_class: &str,
+    caller_did: &str,
+    is_non_escalating: bool,
+) -> StepUpDecision {
+    let (mode, allow_carveout) = {
+        let cfg = state.config.read().await;
+        match cfg.auth.step_up.floor_record(op_class) {
+            None => return StepUpDecision::Allow,
+            Some(f) => (f.mode, f.allow_aal1_if_non_escalating),
+        }
+    };
+    if !mode.requires_aal2() || (allow_carveout && is_non_escalating) {
+        return StepUpDecision::Allow;
+    }
+    match mode {
+        StepUpMode::None => StepUpDecision::Allow,
+        StepUpMode::SelfApprove => StepUpDecision::Require {
+            recipient: caller_did.to_string(),
+        },
+        // Delegated (and delegated-any, until a broader approver criterion is
+        // defined) route to the caller's configured approver; absent one, fail
+        // closed rather than let the subject self-approve a delegated gate.
+        StepUpMode::Delegated | StepUpMode::DelegatedAny => {
+            match get_acl_entry(&state.acl_ks, caller_did).await {
+                Ok(Some(entry)) => match entry.step_up_approver {
+                    Some(approver) => StepUpDecision::Require {
+                        recipient: approver,
+                    },
+                    None => StepUpDecision::Deny,
+                },
+                _ => StepUpDecision::Deny,
+            }
+        }
+    }
+}
+
 /// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
 /// (AAL2) session inside a dispatcher handler.
 ///
@@ -498,21 +583,37 @@ pub(super) async fn require_step_up(
     if auth.acr == STEP_UP_TARGET_ACR {
         return None;
     }
-    let (vta_did, gated) = {
-        let cfg = state.config.read().await;
-        // Resolve the step-up floor for this operation-class (most specific
-        // floor, else the `*` catch-all, else none). A disabled policy
-        // yields `None` → not gated → the operation proceeds at AAL1.
-        let gated = cfg.auth.step_up.floor_for(op_class).requires_aal2();
-        (cfg.vta_did.clone().unwrap_or_default(), gated)
+    // Trust-task gated ops (grant, change-role, revoke, context-delete,
+    // key-revoke) are all escalating — they never qualify for the
+    // non-escalation carve-out.
+    let recipient = match resolve_step_up(state, op_class, &auth.did, false).await {
+        StepUpDecision::Allow => return None,
+        StepUpDecision::Require { recipient } => recipient,
+        StepUpDecision::Deny => {
+            return Some(reject_with(
+                doc,
+                RejectReason::TaskFailed {
+                    reason: "auth:step_up_required".to_string(),
+                    details: Some(json!({
+                        "requiredAcr": STEP_UP_TARGET_ACR,
+                        "reason": "no step-up approver is configured for this subject",
+                    })),
+                },
+            ));
+        }
     };
-    if !gated {
-        return None;
-    }
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .unwrap_or_default();
     let reject = match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
         &auth.did,
+        &recipient,
         &auth.session_id,
         "this operation requires a stepped-up (AAL2) session",
     )
@@ -604,31 +705,27 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
         if claims.acr == "aal2" {
             return Ok(RequireStepUp(std::marker::PhantomData));
         }
-        let (vta_did, gated) = {
-            let cfg = state.config.read().await;
-            // Resolve the floor for this route's operation-class. A disabled
-            // policy (or no matching floor) is not gated → proceed at AAL1.
-            // Non-escalation carve-out: a floor that requires AAL2 still
-            // admits a structurally non-escalating op (e.g. self key-rotation
-            // via `acl/swap-key`) at AAL1 when it sets
-            // `allow_aal1_if_non_escalating` — so a holder with no authenticator
-            // yet can still rotate. Escalating ops never qualify.
-            let gated = match cfg.auth.step_up.floor_record(O::OP_CLASS) {
-                None => false,
-                Some(f) => {
-                    f.mode.requires_aal2()
-                        && !(f.allow_aal1_if_non_escalating && O::IS_NON_ESCALATING)
-                }
+        // Resolve the floor for this route's operation-class, honoring the
+        // non-escalation carve-out (`O::IS_NON_ESCALATING`) and, for delegated
+        // modes, routing to the caller's configured approver.
+        let recipient =
+            match resolve_step_up(state, O::OP_CLASS, &claims.did, O::IS_NON_ESCALATING).await {
+                StepUpDecision::Allow => return Ok(RequireStepUp(std::marker::PhantomData)),
+                StepUpDecision::Require { recipient } => recipient,
+                StepUpDecision::Deny => return Err(step_up_denied_response()),
             };
-            (cfg.vta_did.clone().unwrap_or_default(), gated)
-        };
-        if !gated {
-            return Ok(RequireStepUp(std::marker::PhantomData));
-        }
+        let vta_did = state
+            .config
+            .read()
+            .await
+            .vta_did
+            .clone()
+            .unwrap_or_default();
         Err(issue_step_up_challenge(
             &state.sessions_ks,
             &vta_did,
             &claims.did,
+            &recipient,
             &claims.session_id,
             "this operation requires a stepped-up (AAL2) session",
         )
@@ -662,6 +759,8 @@ mod tests {
         let resp = issue_step_up_challenge(
             &ks,
             "did:web:vta.example",
+            "did:key:zHolder",
+            // self-approval: recipient == subject
             "did:key:zHolder",
             "sess-9",
             "rotate keys",

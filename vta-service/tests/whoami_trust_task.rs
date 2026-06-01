@@ -17,19 +17,9 @@ use vta_service::test_support::{TestAppContext, build_test_app};
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 
 async fn seed_admin_acl(ctx: &TestAppContext, did: &str, contexts: Vec<String>) {
-    let entry = vti_common::acl::AclEntry {
-        did: did.into(),
-        role: vti_common::acl::Role::Admin,
-        label: None,
-        allowed_contexts: contexts,
-        created_at: 1,
-        created_by: "test".into(),
-        expires_at: None,
-        kind: Default::default(),
-        capabilities: vec![],
-        device: None,
-        version: 0,
-    };
+    let entry = vti_common::acl::AclEntry::new(did, vti_common::acl::Role::Admin, "test")
+        .with_contexts(contexts)
+        .with_created_at(1);
     vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
         .await
         .expect("seed admin ACL");
