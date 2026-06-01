@@ -32,7 +32,7 @@ affinidi-tdk = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 affinidi-messaging-sdk = "0.18"
-affinidi-messaging-didcomm = "0.14"
+affinidi-messaging-didcomm = "0.15"
 
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "net"] }
 tempfile = "3"

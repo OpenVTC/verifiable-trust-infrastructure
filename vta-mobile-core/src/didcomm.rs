@@ -18,9 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use affinidi_messaging_didcomm::DIDCommAgent;
 use affinidi_messaging_didcomm::Message;
-use affinidi_messaging_didcomm::crypto::key_agreement::{
-    Curve, PrivateKeyAgreement, PublicKeyAgreement,
-};
+// didcomm 0.15 moved the key-agreement types into `affinidi-crypto`.
+use affinidi_crypto::jose::key_agreement::{Curve, PrivateKeyAgreement, PublicKeyAgreement};
 use affinidi_messaging_didcomm::identity::{Mediator, PrivateIdentity, ResolvedIdentity};
 use affinidi_messaging_didcomm::message::unpack::UnpackResult;
 

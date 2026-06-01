@@ -243,6 +243,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                     }
+                    Ok(WebSocketResponses::Disconnected) => {
+                        // New in messaging-sdk 0.18.5: the transport signals a
+                        // lost socket instead of silently blocking. Stop
+                        // listening — the connection is gone.
+                        warn!("websocket disconnected");
+                        break;
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         warn!("channel lagged, missed {n} messages");
                     }

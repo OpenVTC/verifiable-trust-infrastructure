@@ -18,6 +18,11 @@ client = [
   "dep:uuid",
   "dep:affinidi-tdk",
   "dep:affinidi-messaging-didcomm",
+  # didcomm 0.15 moved `PublicKeyAgreement` out of
+  # `affinidi_messaging_didcomm::crypto` into `affinidi_crypto::jose`.
+  # `didcomm_light::pack_anoncrypt` (gated on `client`) names that type,
+  # so `client` must pull `affinidi-crypto` in its own right.
+  "dep:affinidi-crypto",
   "dep:didwebvh-rs",
   "dep:tokio",
   "dep:ed25519-dalek",
@@ -127,7 +132,7 @@ sha2 = { workspace = true, optional = true }
 # Used by `client` (didcomm_light::pack_anoncrypt) to produce JWEs the
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
-affinidi-messaging-didcomm = { version = "0.14", optional = true }
+affinidi-messaging-didcomm = { version = "0.15", optional = true }
 # Used by `client` (didcomm_light::resolve_vta_keyagreement) to resolve
 # `did:webvh:` VTAs without pulling in the heavyweight TDK runtime. Same
 # workspace-pinned version as `vta-service`.

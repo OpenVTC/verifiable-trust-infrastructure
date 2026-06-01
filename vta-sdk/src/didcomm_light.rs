@@ -10,7 +10,7 @@
 //!
 //! Algorithm: ECDH-ES+A256KW (key agreement) + A256CBC-HS512 (content
 //! encryption) — the algorithm pair the workspace's pinned
-//! `affinidi-messaging-didcomm-0.13` actually decrypts. An earlier
+//! `affinidi-messaging-didcomm-0.15` actually decrypts. An earlier
 //! revision emitted A256GCM instead, which the crate doesn't support;
 //! every call fell through to the slower `session::challenge_response`
 //! tier-3 fallback in `integration::auth::try_rest`. Delegating to the
@@ -50,7 +50,10 @@ pub fn pack_anoncrypt(
     recipient_x25519_pub: &[u8; 32],
     recipient_kid: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    use affinidi_messaging_didcomm::crypto::key_agreement::PublicKeyAgreement;
+    // didcomm 0.15 moved the key-agreement types out of its own
+    // `crypto` module into `affinidi-crypto`; `anoncrypt` now takes the
+    // `affinidi_crypto::jose` shape. Same enum, same X25519 variant.
+    use affinidi_crypto::jose::key_agreement::PublicKeyAgreement;
     use affinidi_messaging_didcomm::jwe::encrypt::anoncrypt;
 
     let recipient_pub = PublicKeyAgreement::X25519(*recipient_x25519_pub);
@@ -399,14 +402,14 @@ mod tests {
 
     #[test]
     fn test_pack_anoncrypt_produces_valid_jwe() {
-        use affinidi_messaging_didcomm::crypto::key_agreement::{Curve, PrivateKeyAgreement};
+        use affinidi_crypto::jose::key_agreement::{Curve, PrivateKeyAgreement};
         use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 
         // Generate a recipient X25519 keypair via the same crate the
         // server uses — keeps the test honest about wire compatibility.
         let recipient_private = PrivateKeyAgreement::generate(Curve::X25519);
         let recipient_pub_bytes = match recipient_private.public_key() {
-            affinidi_messaging_didcomm::crypto::key_agreement::PublicKeyAgreement::X25519(b) => b,
+            affinidi_crypto::jose::key_agreement::PublicKeyAgreement::X25519(b) => b,
             _ => unreachable!("we asked for X25519"),
         };
 
