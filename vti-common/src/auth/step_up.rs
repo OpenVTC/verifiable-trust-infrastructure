@@ -41,6 +41,113 @@ pub struct PendingStepUp {
     pub expires_at: u64,
 }
 
+/// Step-up enforcement mode for an operation-class — the assurance the
+/// relying party requires before the operation runs. Mirrors the
+/// `auth/step-up/policy/0.1` `FloorMode`. Strictness (least → most):
+/// `None` < `SelfApprove` < `DelegatedAny` < `Delegated`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StepUpMode {
+    /// AAL1 permitted — no step-up required.
+    #[default]
+    None,
+    /// The caller elevates its own session (AAL2 via its own authenticator).
+    #[serde(rename = "self")]
+    SelfApprove,
+    /// A specific approver (the caller's `AclEntry.stepUp.approver`) must
+    /// ratify the elevation.
+    Delegated,
+    /// Any VID meeting the maintainer's approver criterion may ratify.
+    DelegatedAny,
+}
+
+impl StepUpMode {
+    /// Strictness rank for floor/override composition (higher = stricter).
+    fn rank(self) -> u8 {
+        match self {
+            StepUpMode::None => 0,
+            StepUpMode::SelfApprove => 1,
+            StepUpMode::DelegatedAny => 2,
+            StepUpMode::Delegated => 3,
+        }
+    }
+
+    /// Whether this mode demands AAL2 (anything stricter than `None`).
+    pub fn requires_aal2(self) -> bool {
+        self != StepUpMode::None
+    }
+
+    /// The stricter of two modes — used to compose a system floor with a
+    /// per-entry override (additive-only: an override may raise, never lower).
+    pub fn strictest(self, other: StepUpMode) -> StepUpMode {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// A per-operation-class step-up floor. Mirrors `auth/step-up/policy/0.1`
+/// `Floor`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StepUpFloor {
+    /// Operation-class this floor governs: a stable op-class id (e.g.
+    /// `acl/grant`, `acl/swap-key`, `context/delete`, `key/revoke`,
+    /// `vault/release`) or `*` for the catch-all default.
+    pub operation: String,
+    /// Minimum mode required to perform the operation.
+    pub mode: StepUpMode,
+    /// Admit a non-escalating self-service request at AAL1 even when `mode`
+    /// requires AAL2 — the rotation/enrolment carve-out. Default `false`
+    /// (fail-closed for escalating operations).
+    #[serde(default)]
+    pub allow_aal1_if_non_escalating: bool,
+}
+
+/// The relying party's system-wide step-up policy.
+///
+/// **Ships disabled.** A freshly-provisioned VTA has no registered approver
+/// and could not otherwise be administered (it could not even register the
+/// first approver), so until an operator turns it on every operation proceeds
+/// at AAL1. Mirrors the `auth/step-up/policy/0.1` payload; the VTA serializes
+/// it under `[auth.step_up]` in its config.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct StepUpPolicy {
+    /// Master switch. `false` (the default) ⇒ step-up is NOT enforced
+    /// anywhere; every operation proceeds at AAL1 regardless of `floors`.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-operation-class floors. Empty ⇒ nothing is gated even when
+    /// `enabled`.
+    #[serde(default)]
+    pub floors: Vec<StepUpFloor>,
+}
+
+impl StepUpPolicy {
+    /// Resolve the system-floor mode for an operation-class: the most
+    /// specific matching floor, else the `*` catch-all, else `None`. Always
+    /// `None` when the policy is disabled.
+    pub fn floor_for(&self, operation: &str) -> StepUpMode {
+        self.floor_record(operation)
+            .map(|f| f.mode)
+            .unwrap_or(StepUpMode::None)
+    }
+
+    /// The matching floor record (exact match preferred over the `*`
+    /// catch-all), or `None` when disabled or unmatched. Carries the
+    /// `allow_aal1_if_non_escalating` flag for the carve-out.
+    pub fn floor_record(&self, operation: &str) -> Option<&StepUpFloor> {
+        if !self.enabled {
+            return None;
+        }
+        self.floors
+            .iter()
+            .find(|f| f.operation == operation)
+            .or_else(|| self.floors.iter().find(|f| f.operation == "*"))
+    }
+}
+
 fn step_up_key(challenge: &str) -> String {
     format!("stepup:{challenge}")
 }
@@ -220,5 +327,94 @@ mod tests {
         );
         assert_eq!(p.expires_at, p.created_at + 300);
         assert_eq!(p.target_acr, "aal2");
+    }
+
+    fn floor(op: &str, mode: StepUpMode) -> StepUpFloor {
+        StepUpFloor {
+            operation: op.to_string(),
+            mode,
+            allow_aal1_if_non_escalating: false,
+        }
+    }
+
+    #[test]
+    fn default_policy_is_disabled_and_never_gates() {
+        let p = StepUpPolicy::default();
+        assert!(!p.enabled);
+        // Disabled ⇒ every operation resolves to None regardless of floors.
+        assert_eq!(p.floor_for("acl/grant"), StepUpMode::None);
+        assert_eq!(p.floor_for("*"), StepUpMode::None);
+        assert!(!p.floor_for("anything").requires_aal2());
+    }
+
+    #[test]
+    fn disabled_policy_ignores_configured_floors() {
+        let p = StepUpPolicy {
+            enabled: false,
+            floors: vec![floor("*", StepUpMode::Delegated)],
+        };
+        assert_eq!(p.floor_for("acl/grant"), StepUpMode::None);
+        assert!(p.floor_record("acl/grant").is_none());
+    }
+
+    #[test]
+    fn enabled_resolves_exact_then_catch_all() {
+        let p = StepUpPolicy {
+            enabled: true,
+            floors: vec![
+                floor("*", StepUpMode::SelfApprove),
+                floor("acl/grant", StepUpMode::Delegated),
+            ],
+        };
+        // Exact match wins over `*`.
+        assert_eq!(p.floor_for("acl/grant"), StepUpMode::Delegated);
+        // Unlisted op falls back to the catch-all.
+        assert_eq!(p.floor_for("context/delete"), StepUpMode::SelfApprove);
+    }
+
+    #[test]
+    fn enabled_without_catch_all_is_none_for_unlisted() {
+        let p = StepUpPolicy {
+            enabled: true,
+            floors: vec![floor("acl/grant", StepUpMode::Delegated)],
+        };
+        assert_eq!(p.floor_for("acl/swap-key"), StepUpMode::None);
+        assert_eq!(p.floor_for("acl/grant"), StepUpMode::Delegated);
+    }
+
+    #[test]
+    fn mode_strictness_is_additive() {
+        // Override may raise, never lower (strictest wins).
+        assert_eq!(
+            StepUpMode::SelfApprove.strictest(StepUpMode::Delegated),
+            StepUpMode::Delegated
+        );
+        assert_eq!(
+            StepUpMode::Delegated.strictest(StepUpMode::SelfApprove),
+            StepUpMode::Delegated
+        );
+        assert_eq!(
+            StepUpMode::None.strictest(StepUpMode::SelfApprove),
+            StepUpMode::SelfApprove
+        );
+        assert!(!StepUpMode::None.requires_aal2());
+        assert!(StepUpMode::SelfApprove.requires_aal2());
+        assert!(StepUpMode::DelegatedAny.requires_aal2());
+    }
+
+    #[test]
+    fn mode_serde_uses_spec_wire_tokens() {
+        assert_eq!(
+            serde_json::to_string(&StepUpMode::SelfApprove).unwrap(),
+            "\"self\""
+        );
+        assert_eq!(
+            serde_json::to_string(&StepUpMode::DelegatedAny).unwrap(),
+            "\"delegated-any\""
+        );
+        assert_eq!(
+            serde_json::from_str::<StepUpMode>("\"none\"").unwrap(),
+            StepUpMode::None
+        );
     }
 }

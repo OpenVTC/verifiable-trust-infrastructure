@@ -37,6 +37,11 @@ pub struct AuthConfig {
     pub session_cleanup_interval: u64,
     /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
     pub jwt_signing_key: Option<String>,
+    /// AAL2 step-up policy. Defaults to disabled (AAL1 everywhere) — a fresh
+    /// VTA has no approver registered, so step-up is opt-in once one exists.
+    /// See `auth/step-up/policy/0.1`.
+    #[serde(default)]
+    pub step_up: crate::auth::step_up::StepUpPolicy,
 }
 
 // Manual Debug so a `tracing::debug!(?config, ...)`, panic-with-debug,
@@ -56,6 +61,7 @@ impl std::fmt::Debug for AuthConfig {
                 "jwt_signing_key",
                 &self.jwt_signing_key.as_ref().map(|_| "<redacted>"),
             )
+            .field("step_up", &self.step_up)
             .finish()
     }
 }
@@ -177,6 +183,7 @@ impl Default for AuthConfig {
             challenge_ttl: default_challenge_ttl(),
             session_cleanup_interval: default_session_cleanup_interval(),
             jwt_signing_key: None,
+            step_up: crate::auth::step_up::StepUpPolicy::default(),
         }
     }
 }
@@ -206,6 +213,7 @@ mod tests {
             challenge_ttl: 300,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("SUPER_SECRET_KEY_MATERIAL_MUST_NOT_LEAK".into()),
+            step_up: Default::default(),
         };
         let dbg = format!("{cfg:?}");
         assert!(
@@ -275,6 +283,7 @@ mod tests {
             challenge_ttl: 300,
             session_cleanup_interval: 600,
             jwt_signing_key: Some("key-material".into()),
+            step_up: Default::default(),
         };
         let json = serde_json::to_string(&cfg).expect("serialize");
         assert!(

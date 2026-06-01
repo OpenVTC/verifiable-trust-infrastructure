@@ -68,6 +68,23 @@ impl TestContext {
     fn acl_ks(&self) -> &KeyspaceHandle {
         &self.inner.acl_ks
     }
+
+    /// Turn on the AAL2 step-up policy for every operation. The shipping
+    /// default is disabled (AAL1 everywhere); tests that assert the gate
+    /// fires opt in here, mirroring an operator enabling step-up with a `*`
+    /// floor. The config Arc is shared with the live router, so this takes
+    /// effect for subsequent requests.
+    async fn enable_step_up_all(&self) {
+        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
+        self.inner.config.write().await.auth.step_up = StepUpPolicy {
+            enabled: true,
+            floors: vec![StepUpFloor {
+                operation: "*".into(),
+                mode: StepUpMode::SelfApprove,
+                allow_aal1_if_non_escalating: false,
+            }],
+        };
+    }
 }
 
 impl TestContext {
@@ -450,6 +467,8 @@ async fn acl_create_and_list() {
 #[tokio::test]
 async fn acl_mutation_requires_step_up() {
     let (app, ctx) = TestApp::new().await;
+    // Opt into step-up enforcement (shipping default is disabled).
+    ctx.enable_step_up_all().await;
     // A normal (AAL1) admin session: correct role, but not stepped up.
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
 

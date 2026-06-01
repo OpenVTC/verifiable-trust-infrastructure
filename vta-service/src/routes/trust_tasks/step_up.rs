@@ -497,13 +497,19 @@ pub(super) async fn require_step_up(
     if auth.acr == STEP_UP_TARGET_ACR {
         return None;
     }
-    let vta_did = state
-        .config
-        .read()
-        .await
-        .vta_did
-        .clone()
-        .unwrap_or_default();
+    let (vta_did, gated) = {
+        let cfg = state.config.read().await;
+        // Step-up policy gate. Slice 1 resolves against the `*` catch-all
+        // floor only (no per-op-class threading yet); a disabled policy
+        // yields `None` → not gated → the operation proceeds at AAL1. This
+        // is what makes the shipping default (step-up off) admit every
+        // operation, including the first-auth key rotation.
+        let gated = cfg.auth.step_up.floor_for("*").requires_aal2();
+        (cfg.vta_did.clone().unwrap_or_default(), gated)
+    };
+    if !gated {
+        return None;
+    }
     let reject = match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
@@ -549,13 +555,17 @@ impl FromRequestParts<AppState> for RequireStepUp {
         if claims.acr == "aal2" {
             return Ok(RequireStepUp);
         }
-        let vta_did = state
-            .config
-            .read()
-            .await
-            .vta_did
-            .clone()
-            .unwrap_or_default();
+        let (vta_did, gated) = {
+            let cfg = state.config.read().await;
+            // Step-up policy gate (see `require_step_up`): slice 1 resolves
+            // against the `*` catch-all floor; a disabled policy is not
+            // gated and the request proceeds at AAL1.
+            let gated = cfg.auth.step_up.floor_for("*").requires_aal2();
+            (cfg.vta_did.clone().unwrap_or_default(), gated)
+        };
+        if !gated {
+            return Ok(RequireStepUp);
+        }
         Err(issue_step_up_challenge(
             &state.sessions_ks,
             &vta_did,

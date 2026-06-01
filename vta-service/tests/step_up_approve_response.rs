@@ -166,6 +166,20 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
 async fn trust_task_acl_mutation_requires_step_up() {
     let (router, ctx) = build_test_app().await;
 
+    // Opt into step-up enforcement (shipping default is disabled): a `*`
+    // floor at AAL2 so the AAL1 trust-task mutation below is gated.
+    {
+        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
+        ctx.config.write().await.auth.step_up = StepUpPolicy {
+            enabled: true,
+            floors: vec![StepUpFloor {
+                operation: "*".into(),
+                mode: StepUpMode::SelfApprove,
+                allow_aal1_if_non_escalating: false,
+            }],
+        };
+    }
+
     let did = "did:key:z6MkAal1Admin".to_string();
     let session_id = "sess-stepup-tt-1".to_string();
 
