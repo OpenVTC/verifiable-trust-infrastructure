@@ -7,23 +7,26 @@
 //! harness for the full list.
 
 use axum::response::Response;
-use serde_json::Value;
+use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
-use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
+use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoch_to_rfc3339};
 
-use crate::acl::Role;
+use crate::acl::{Role, check_acl_full};
 use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::auth::session::{delete_session, get_session};
 use crate::server::AppState;
 
-use super::helpers::{reject_with, success_response};
+use super::helpers::{app_error_to_reject, reject_with, success_response};
 
 /// URIs handled by this slice. Aggregated by the dispatcher's parity
 /// harness — see the feature-gating convention in
 /// `docs/05-design-notes/trust-task-feature-gating.md`.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1];
+pub(super) const DISPATCHED_URIS: &[&str] = &[
+    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1,
+    vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+];
 
 /// Handler for `spec/vta/auth/revoke-session/1.0`.
 ///
@@ -118,4 +121,81 @@ pub(super) async fn handle_revoke_session(
 
     // 6. Build the success response document.
     success_response(&doc, RevokeSessionResponse::default())
+}
+
+/// Handler for `spec/auth/whoami/0.1`.
+///
+/// Introspection for an authenticated caller. The bearer JWT is the auth (like
+/// revoke-session) — the holder's optional DI proof on the document is *not*
+/// required here, since the authenticated transport already established who's
+/// asking. Returns the session's **live** `acr`/`amr`, which reflect any
+/// step-up that happened since the access token was minted (the JWT's own
+/// `acr`/`amr` are stale until the next refresh), plus **freshly-resolved**
+/// roles/scopes from the ACL — so a policy change is visible without re-issuing
+/// tokens. No tokens are minted or rotated.
+pub(super) async fn handle_whoami(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    // Live session state: acr/amr are updated in place by step-up, and
+    // created_at is the session's issue time.
+    let session = match get_session(&state.sessions_ks, &auth.session_id).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: format!("session not found: {}", auth.session_id),
+                    details: None,
+                },
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "session lookup failed in whoami");
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!("session lookup: {e}"),
+                },
+            );
+        }
+    };
+
+    // Re-resolve roles/scopes so a policy/ACL change since the token was minted
+    // is reflected. A caller deauthorised mid-token surfaces here as the ACL
+    // error (their authority really is gone).
+    let (role, contexts) = match check_acl_full(&state.acl_ks, &auth.did).await {
+        Ok(rc) => rc,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    let mut session_info = json!({
+        "id": auth.session_id,
+        "subject": auth.did,
+        "issuedAt": epoch_to_rfc3339(session.created_at),
+        "expiresAt": epoch_to_rfc3339(auth.access_expires_at),
+        "amr": session.amr,
+    });
+    // `acr` is optional in the spec — include it only when the session has one.
+    if !session.acr.is_empty() {
+        session_info["acr"] = Value::String(session.acr.clone());
+    }
+
+    // Mirror the access token's scope representation (`ctx:<id>`), built by the
+    // canonical authenticate handler.
+    let scopes: Vec<String> = contexts.iter().map(|c| format!("ctx:{c}")).collect();
+    let body = json!({
+        "session": session_info,
+        "roles": [role.to_string()],
+        "scopes": scopes,
+    });
+
+    audit!(
+        "auth.whoami",
+        actor = &auth.did,
+        resource = &auth.session_id,
+        outcome = "success"
+    );
+    success_response(&doc, body)
 }
