@@ -92,6 +92,33 @@ pub(super) fn take_webvh_path(
     Ok(Some(trimmed.to_string()))
 }
 
+/// Defense-in-depth fallback: derive a `WEBVH_PATH` from the `URL`
+/// template var when the operator folded the DID path into the URL but
+/// did not set `WEBVH_PATH` explicitly.
+///
+/// Server-managed mode reads `WEBVH_PATH` and ignores `URL`, so a
+/// consumer that only set `URL` (`https://host.example.com/dids/daemon`)
+/// would otherwise hand the hosting server an empty path and get
+/// `e.p.did.path-invalid`. This reads `URL` (without removing it) and
+/// returns the path component for the caller to use as a fallback.
+///
+/// Read-only and conservative: bare origins, empty paths and
+/// `.well-known` (the webvh log marker, never a DID path) → `None`,
+/// letting the server run its own allocation. Mirrors the SDK-side
+/// `runner::webvh_path_from_url` so both layers agree on the derivation.
+pub(super) fn webvh_path_from_url_var(template_vars: &BTreeMap<String, Value>) -> Option<String> {
+    let url = template_vars.get("URL").and_then(|v| v.as_str())?;
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let path = after_scheme.split_once('/').map_or("", |(_, p)| p);
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() || trimmed == ".well-known" {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Remove and return the optional `WEBVH_DOMAIN` template var.
 ///
 /// `WEBVH_DOMAIN` is transport metadata — it tells the webvh hosting
@@ -186,5 +213,47 @@ mod tests {
             take_webvh_domain(&mut v),
             Err(AppError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_absent_is_none() {
+        let v = vars(&[]);
+        assert_eq!(webvh_path_from_url_var(&v), None);
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_bare_origin_is_none() {
+        let v = vars(&[("URL", json!("https://host.example.com"))]);
+        assert_eq!(webvh_path_from_url_var(&v), None);
+        let v = vars(&[("URL", json!("https://host.example.com/"))]);
+        assert_eq!(webvh_path_from_url_var(&v), None);
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_well_known_is_none() {
+        // `.well-known` is the webvh log marker, never a DID path.
+        let v = vars(&[("URL", json!("https://host.example.com/.well-known"))]);
+        assert_eq!(webvh_path_from_url_var(&v), None);
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_single_segment() {
+        let v = vars(&[("URL", json!("https://host.example.com/webvh"))]);
+        assert_eq!(webvh_path_from_url_var(&v), Some("webvh".to_string()));
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_multi_segment() {
+        let v = vars(&[("URL", json!("https://host.example.com/dids/daemon"))]);
+        assert_eq!(webvh_path_from_url_var(&v), Some("dids/daemon".to_string()));
+    }
+
+    #[test]
+    fn webvh_path_from_url_var_strips_query_and_fragment() {
+        let v = vars(&[(
+            "URL",
+            json!("https://host.example.com/dids/daemon?x=1#frag"),
+        )]);
+        assert_eq!(webvh_path_from_url_var(&v), Some("dids/daemon".to_string()));
     }
 }

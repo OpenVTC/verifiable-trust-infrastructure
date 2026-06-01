@@ -300,7 +300,18 @@ pub async fn provision_integration(
     // the operator sets it in `mediator_template_vars`. Removed from the
     // map so the template renderer doesn't also see it — it is transport
     // metadata, not document content.
-    let webvh_path = webvh::take_webvh_path(&mut template_vars)?;
+    let mut webvh_path = webvh::take_webvh_path(&mut template_vars)?;
+
+    // Defense-in-depth: in server-managed mode (`WEBVH_SERVER` set) the
+    // hosting server reads `WEBVH_PATH` and ignores `URL`. A consumer that
+    // folded the DID path into `URL` but didn't set `WEBVH_PATH` would hand
+    // the server an empty path → `e.p.did.path-invalid`. When that happens,
+    // derive the path from the `URL` var so the integration still lands.
+    // Only applies when a server is selected and no explicit path was given;
+    // serverless mode reads the path from `URL` directly and is untouched.
+    if webvh_server_id.is_some() && webvh_path.is_none() {
+        webvh_path = webvh::webvh_path_from_url_var(&template_vars);
+    }
 
     // Optional `WEBVH_DOMAIN` template var: when the webvh hosting server
     // is multi-tenant, this pins which tenant domain the DID is allocated

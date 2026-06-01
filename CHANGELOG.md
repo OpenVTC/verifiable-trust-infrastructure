@@ -2,7 +2,62 @@
 
 ## Unreleased
 
+### Fix: server-managed provisioning drops the DID path (`e.p.did.path-invalid`)
+
+When a consumer (e.g. the did-hosting-daemon) provisions an integration
+against a VTA that has **exactly one** registered webvh server, the SDK
+auto-selects that server and runs the server-managed path. In that mode
+the hosting server reads `WEBVH_PATH` and ignores the path folded into
+the `URL` template var — but `run_provision` passed `webvh_path = None`,
+so `WEBVH_PATH` was never injected and the hosting server received an
+empty path, rejecting with `e.p.did.path-invalid: path must not be
+empty` (HTTP 500 at the gateway).
+
+Fixed at two layers (defense-in-depth):
+
+- **SDK (vta-sdk, the fix):** `run_provision`'s `PreflightDone` handler
+  now derives the path from the ask's `URL` var (via the new
+  `runner::webvh_path_from_url`) when it auto-selects a server, and
+  passes it as `webvh_path` to `run_provision_flight`. The var-injection
+  is factored into `runner_didcomm::inject_webvh_vars` and unit-tested.
+  Serverless mode (no server selected) is unchanged — it reads the path
+  straight from `URL`.
+- **VTA service (vta-service, safety net):** `provision_integration`
+  falls back to the path parsed from the `URL` var
+  (`webvh::webvh_path_from_url_var`) when a `WEBVH_SERVER` is set but no
+  explicit `WEBVH_PATH` was provided. Read-only; never overrides an
+  explicit `WEBVH_PATH`.
+
+Derivation is conservative on both sides: bare origins, empty paths and
+`.well-known` (the webvh log marker, never a DID path) yield no path,
+letting the server run its own allocation; `…/webvh` → `webvh`,
+`…/dids/daemon` → `dids/daemon`, query/fragment stripped.
+
+### Dependencies: affinidi-messaging crates updated
+
+Bumped the affinidi-messaging stack to latest where it unifies cleanly:
+mediator/mediator-common/test-mediator, affinidi-crypto (0.1.10),
+affinidi-status-list (0.1.3). This collapses `didcomm` to a single
+`0.14.0` (dropping the duplicate `0.13.3`) and unifies `vta-sdk` to the
+published `0.9.0` so the affinidi mediator consumes it directly. The
+`didcomm-service` / `affinidi-messaging-sdk` jump to `didcomm 0.15` is
+**deferred** — that subset of the affinidi stack is internally split
+across didcomm major versions and pulling it now would re-fork `didcomm`.
+
 ### Version bumps
+
+This cycle's bumps for the provision-path fix above (the publish
+boundary already advanced to `vta-sdk` 0.9.0 / `vta-service` 0.8.0 in
+the #183 release bump):
+
+- `vta-sdk` 0.9.0 → 0.9.1 — patch: behavioural bugfix, no public API
+  change (the new helpers are crate-internal). External consumers
+  pinned at `"0.9"` pick the fix up with no pin change.
+- `vta-service` 0.8.0 → 0.8.1 — patch: carries the Option B safety net;
+  bumped so it can be republished. `vta-enclave`'s `"0.8"` pin is
+  unaffected.
+
+Historical (0.7 → 0.8 cycle, retained for context):
 
 Only the two crates external repos (did-hosting-common,
 webvh-witness, rp-sdk, …) consume are bumped:
