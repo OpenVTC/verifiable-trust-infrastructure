@@ -134,7 +134,7 @@ dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-encoding",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-secrets-resolver",
  "base64 0.22.1",
  "chrono",
@@ -246,7 +246,7 @@ dependencies = [
  "affinidi-did-authentication",
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-tdk-common",
  "base64 0.22.1",
  "chrono",
@@ -256,31 +256,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "uuid",
-]
-
-[[package]]
-name = "affinidi-messaging-didcomm"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a764d321eb211a662d84c8b225f8cde09164fa045c680907638b0e5f5cfac4eb"
-dependencies = [
- "aes 0.8.4",
- "base64ct",
- "cbc 0.1.2",
- "ed25519-dalek",
- "hmac 0.12.1",
- "k256",
- "p256",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "subtle",
- "thiserror 2.0.18",
- "url",
- "uuid",
- "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]
@@ -309,7 +284,7 @@ version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68b4b95a1c5aad5ad17259954ca3bf647ad109cb92ac5b1d6a0dc951434e0a99"
 dependencies = [
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
  "affinidi-secrets-resolver",
  "affinidi-tdk-common",
@@ -336,7 +311,7 @@ dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-encoding",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-mediator-common",
  "affinidi-messaging-sdk",
  "affinidi-secrets-resolver",
@@ -382,7 +357,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.9.0",
+ "vta-sdk 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -432,7 +407,7 @@ dependencies = [
  "affinidi-did-authentication",
  "affinidi-did-common",
  "affinidi-encoding",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-mediator-common",
  "affinidi-secrets-resolver",
  "affinidi-tdk-common",
@@ -542,7 +517,7 @@ dependencies = [
  "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-meeting-place",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
  "affinidi-secrets-resolver",
  "affinidi-tdk-common",
@@ -9521,7 +9496,7 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
@@ -9536,39 +9511,12 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83528ccb61f586e8a0b0ec395e108b2fcf092a7e7c065de3a85cbb8069c0fd0e"
-dependencies = [
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.14.1",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "getrandom 0.4.2",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "vta-sdk"
 version = "0.9.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "affinidi-vc",
@@ -9606,6 +9554,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-sdk"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "858ad5093e72c21153d50ec4aa7d361b9b5d356bdb1af2c4016734d0c66ae9b1"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "getrandom 0.4.2",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "vta-service"
 version = "0.8.1"
 dependencies = [
@@ -9614,7 +9590,7 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
  "affinidi-secrets-resolver",
  "affinidi-tdk",
@@ -9697,7 +9673,7 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
  "affinidi-secrets-resolver",
  "affinidi-status-list",
@@ -9808,7 +9784,7 @@ name = "vti-e2e-tests"
 version = "0.6.0"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm 0.15.0",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
  "affinidi-messaging-test-mediator",
  "affinidi-secrets-resolver",
