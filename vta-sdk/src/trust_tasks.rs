@@ -83,6 +83,11 @@ pub const TASK_AUTH_REVOKE_SESSION_0_1: &str =
 /// freshly-resolved roles/scopes. Authenticated (bearer JWT); no token re-issue.
 pub const TASK_AUTH_WHOAMI_0_1: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 
+/// `spec/auth/sessions/list/0.1` — enumerate every active session the VTA
+/// holds for the caller's subject (multi-device management). Companion to
+/// whoami (single-session). Authenticated (bearer JWT); read-only.
+pub const TASK_AUTH_SESSIONS_LIST_0_1: &str = "https://trusttasks.org/spec/auth/sessions/list/0.1";
+
 /// `spec/auth/passkey/login/start/0.1` — begin a WebAuthn assertion
 /// ceremony. Same wire form serves initial login AND AAL step-up via the
 /// payload's `purpose` field.
@@ -855,6 +860,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_REFRESH_0_1,
     TASK_AUTH_REVOKE_SESSION_0_1,
     TASK_AUTH_WHOAMI_0_1,
+    TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,

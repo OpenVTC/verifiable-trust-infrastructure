@@ -14,7 +14,7 @@ use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoc
 use crate::acl::{Role, check_acl_full};
 use crate::audit::audit;
 use crate::auth::AuthClaims;
-use crate::auth::session::{delete_session, get_session};
+use crate::auth::session::{SessionState, delete_session, get_session, list_sessions, now_epoch};
 use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, reject_with, success_response};
@@ -26,6 +26,7 @@ use super::helpers::{app_error_to_reject, reject_with, success_response};
 pub(super) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1,
     vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
+    vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
 ];
 
 /// Handler for `spec/vta/auth/revoke-session/1.0`.
@@ -198,4 +199,65 @@ pub(super) async fn handle_whoami(
         outcome = "success"
     );
     success_response(&doc, body)
+}
+
+/// Handler for `spec/auth/sessions/list/0.1`.
+///
+/// Enumerates every **active** session the VTA holds for the *caller's own*
+/// subject — the self-service multi-device view, companion to whoami. Scoped to
+/// `auth.did` (a caller only sees their own sessions); this is distinct from
+/// the admin `GET /auth/sessions` REST route, which lists every session.
+/// Bearer-authed like the other dispatcher auth ops; read-only.
+pub(super) async fn handle_sessions_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let all = match list_sessions(&state.sessions_ks).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(error = %e, "session list failed in sessions/list");
+            return reject_with(
+                &doc,
+                RejectReason::InternalError {
+                    reason: format!("session list: {e}"),
+                },
+            );
+        }
+    };
+
+    let now = now_epoch();
+    let sessions: Vec<Value> = all
+        .into_iter()
+        // The caller's own, authenticated, not-yet-expired sessions.
+        .filter(|s| {
+            s.did == auth.did
+                && s.state == SessionState::Authenticated
+                && s.refresh_expires_at.is_none_or(|exp| exp > now)
+        })
+        .map(|s| {
+            // The session ceases to be valid when its refresh window closes;
+            // fall back to issue time if no refresh token was minted.
+            let expires_at = s.refresh_expires_at.unwrap_or(s.created_at);
+            let mut item = json!({
+                "id": s.session_id,
+                "subject": s.did,
+                "issuedAt": epoch_to_rfc3339(s.created_at),
+                "expiresAt": epoch_to_rfc3339(expires_at),
+                "amr": s.amr,
+            });
+            if !s.acr.is_empty() {
+                item["acr"] = Value::String(s.acr);
+            }
+            item
+        })
+        .collect();
+
+    audit!(
+        "auth.sessions-list",
+        actor = &auth.did,
+        resource = &auth.session_id,
+        outcome = "success"
+    );
+    success_response(&doc, json!({ "sessions": sessions }))
 }

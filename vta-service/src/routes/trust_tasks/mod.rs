@@ -322,6 +322,9 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
             auth::handle_revoke_session(state, auth, doc).await
         }
         vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1 => auth::handle_whoami(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => {
+            auth::handle_sessions_list(state, auth, doc).await
+        }
         vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1 => {
             step_up::handle_approve_response(state, auth, doc).await
         }
@@ -608,6 +611,7 @@ mod tests {
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1;
+        let _ = vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1;
         let _ = vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1;
     }
