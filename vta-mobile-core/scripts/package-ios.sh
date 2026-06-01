@@ -111,7 +111,11 @@ cat > "$CK_DIR/Package.swift" <<'SWIFT'
 import PackageDescription
 let package = Package(name: "checksum")
 SWIFT
-CHECKSUM="$(cd "$CK_DIR" && swift package compute-checksum "$WORKSPACE_ROOT/$ZIP")"
+# `$ZIP` is absolute (it's under `$TARGET_DIR`), so pass it as-is. Re-prefixing
+# `$WORKSPACE_ROOT` double-prefixed the path and broke the release once #175
+# made `TARGET_DIR` absolute (v0.1.0 predated that, so it passed; v0.2.0 was the
+# first release after #175 and failed at this step).
+CHECKSUM="$(cd "$CK_DIR" && swift package compute-checksum "$ZIP")"
 echo "$CHECKSUM" > "$ZIP.sha256"
 
 rm -rf "$STAGE"
