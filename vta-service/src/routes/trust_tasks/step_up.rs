@@ -550,6 +550,14 @@ pub mod op {
 /// extractor can resolve the matching policy floor without reading the body.
 pub trait StepUpOp {
     const OP_CLASS: &'static str;
+    /// `true` when the operation is *structurally* non-escalating: it acts
+    /// only on the caller's own entry and preserves role/scopes (e.g. self
+    /// key-rotation via `acl/swap-key`). Such an op is eligible for a floor's
+    /// `allow_aal1_if_non_escalating` carve-out without inspecting the request
+    /// body — the non-escalation property is guaranteed by the operation
+    /// itself. Escalating ops (grant, change-role, …) leave this `false` and
+    /// fail closed when a method is absent.
+    const IS_NON_ESCALATING: bool = false;
 }
 
 macro_rules! step_up_op {
@@ -559,12 +567,19 @@ macro_rules! step_up_op {
             const OP_CLASS: &'static str = $class;
         }
     };
+    ($name:ident, $class:expr, non_escalating) => {
+        pub struct $name;
+        impl StepUpOp for $name {
+            const OP_CLASS: &'static str = $class;
+            const IS_NON_ESCALATING: bool = true;
+        }
+    };
 }
 
 step_up_op!(AclGrantOp, op::ACL_GRANT);
 step_up_op!(AclChangeRoleOp, op::ACL_CHANGE_ROLE);
 step_up_op!(AclRevokeOp, op::ACL_REVOKE);
-step_up_op!(AclSwapKeyOp, op::ACL_SWAP_KEY);
+step_up_op!(AclSwapKeyOp, op::ACL_SWAP_KEY, non_escalating);
 step_up_op!(ContextDeleteOp, op::CONTEXT_DELETE);
 
 /// Request extractor enforcing a **stepped-up (AAL2)** session for a
@@ -593,7 +608,18 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
             let cfg = state.config.read().await;
             // Resolve the floor for this route's operation-class. A disabled
             // policy (or no matching floor) is not gated → proceed at AAL1.
-            let gated = cfg.auth.step_up.floor_for(O::OP_CLASS).requires_aal2();
+            // Non-escalation carve-out: a floor that requires AAL2 still
+            // admits a structurally non-escalating op (e.g. self key-rotation
+            // via `acl/swap-key`) at AAL1 when it sets
+            // `allow_aal1_if_non_escalating` — so a holder with no authenticator
+            // yet can still rotate. Escalating ops never qualify.
+            let gated = match cfg.auth.step_up.floor_record(O::OP_CLASS) {
+                None => false,
+                Some(f) => {
+                    f.mode.requires_aal2()
+                        && !(f.allow_aal1_if_non_escalating && O::IS_NON_ESCALATING)
+                }
+            };
             (cfg.vta_did.clone().unwrap_or_default(), gated)
         };
         if !gated {

@@ -547,6 +547,64 @@ async fn step_up_floor_is_per_operation_class() {
 }
 
 #[tokio::test]
+async fn swap_key_carve_out_admits_aal1_when_configured() {
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+    let (app, ctx) = TestApp::new().await;
+    // Gate swap-key at AAL2 but allow the non-escalating self-service carve-out.
+    ctx.set_step_up_floors(vec![StepUpFloor {
+        operation: "acl/swap-key".into(),
+        mode: StepUpMode::SelfApprove,
+        allow_aal1_if_non_escalating: true,
+    }])
+    .await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (_status, body) = app
+        .request(post_auth(
+            "/acl/swap",
+            &token,
+            json!({ "presentation": "not-a-real-vp" }),
+        ))
+        .await;
+
+    // The carve-out admits the swap at AAL1, so it is NOT step-up-gated; it
+    // fails later on the (invalid) presentation rather than on step-up.
+    assert_ne!(
+        body["error"], "step_up_required",
+        "swap-key carve-out should admit AAL1: {body}"
+    );
+}
+
+#[tokio::test]
+async fn swap_key_gated_without_carve_out() {
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+    let (app, ctx) = TestApp::new().await;
+    // Same AAL2 floor but WITHOUT the carve-out → swap-key is gated.
+    ctx.set_step_up_floors(vec![StepUpFloor {
+        operation: "acl/swap-key".into(),
+        mode: StepUpMode::SelfApprove,
+        allow_aal1_if_non_escalating: false,
+    }])
+    .await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl/swap",
+            &token,
+            json!({ "presentation": "not-a-real-vp" }),
+        ))
+        .await;
+
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "swap-key must be gated: {body}"
+    );
+    assert_eq!(body["error"], "step_up_required");
+}
+
+#[tokio::test]
 async fn acl_application_cannot_manage() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx
