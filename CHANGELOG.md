@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Key rotation goes through `acl/swap-key`
+
+The SDK's first-auth key rotation (`session::rotate_key`, REST path) now
+uses the atomic `POST /acl/swap` (`acl/swap-key`) instead of the
+create-then-delete sequence on `POST /acl`. The VTA moves the temp DID's
+ACL entry (same role + contexts) onto the freshly-minted DID and removes
+the temp in one transaction — no transient over-privilege window, and the
+rotation travels the structurally non-escalating swap-key path, so an
+*enabled* step-up policy carrying the rotation carve-out still admits it
+at AAL1.
+
+- `vta-sdk` gains `protocols::acl_management::swap::build_swap_presentation`
+  (client feature) — builds the Ed25519 VP-JWT the swap verifier accepts;
+  round-trip-tested against `AclSwapPresentation::verify`.
+- `vta-sdk` 0.9.1 → 0.9.2 (additive public API). The DIDComm rotation path
+  still uses create-then-delete; migrating it onto swap-key is a follow-up.
+
 ### Fix: server-managed provisioning drops the DID path (`e.p.did.path-invalid`)
 
 When a consumer (e.g. the did-hosting-daemon) provisions an integration

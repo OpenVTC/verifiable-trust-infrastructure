@@ -57,6 +57,54 @@ pub type SwapAclResultBody = CreateAclResultBody;
 /// Alias for the canonical Trust Task response — same shape as the legacy result.
 pub type SwapKeyResponseBody = CreateAclResultBody;
 
+/// Build the compact Ed25519 VP-JWT (`presentation` / `link_proof`) that
+/// proves control of `holder_did` for an `acl/swap-key` request.
+///
+/// Signed by `signing_key` (the new DID's Ed25519 key); `aud` is the VTA DID
+/// the request is bound to. The presentation expires `ttl_secs` after `now`
+/// (unix seconds). The shape mirrors exactly what [`AclSwapPresentation::verify`]
+/// accepts: `iss == holder == holder_did`, `vp.type` carrying
+/// `VerifiablePresentation` + `AclSwapRequest`, and a `kid` resolving to the
+/// `did:key` verification method.
+///
+/// `holder_did` MUST be a `did:key` whose multibase suffix is the Ed25519
+/// public key matching `signing_key` (the form [`crate::session`] mints for
+/// rotation).
+#[cfg(feature = "client")]
+pub fn build_swap_presentation(
+    signing_key: &ed25519_dalek::SigningKey,
+    holder_did: &str,
+    aud: &str,
+    now: u64,
+    ttl_secs: u64,
+    nonce: Option<&str>,
+) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+    use ed25519_dalek::Signer;
+    use serde_json::json;
+
+    let mb = holder_did.strip_prefix("did:key:").unwrap_or(holder_did);
+    let kid = format!("{holder_did}#{mb}");
+    let header = json!({ "alg": "EdDSA", "typ": "JWT", "kid": kid });
+    let mut payload = json!({
+        "iss": holder_did,
+        "aud": aud,
+        "exp": now + ttl_secs,
+        "vp": { "type": ["VerifiablePresentation", "AclSwapRequest"], "holder": holder_did },
+    });
+    if let Some(n) = nonce {
+        payload["nonce"] = json!(n);
+    }
+    let signing_input = format!(
+        "{}.{}",
+        B64URL.encode(serde_json::to_vec(&header).expect("serialize JWS header")),
+        B64URL.encode(serde_json::to_vec(&payload).expect("serialize JWS payload")),
+    );
+    let sig = signing_key.sign(signing_input.as_bytes());
+    format!("{signing_input}.{}", B64URL.encode(sig.to_bytes()))
+}
+
 #[cfg(feature = "provision-integration")]
 pub use verify_impl::{AclSwapError, AclSwapPresentation, VerifiedAclSwap};
 
@@ -372,6 +420,28 @@ mod verify_impl {
                 "verificationMethod": [{ "id": kid, "publicKeyMultibase": mb }],
             });
             (jws, doc, sk)
+        }
+
+        #[cfg(feature = "client")]
+        #[test]
+        fn builder_round_trips_through_verifier() {
+            // The client-side builder must produce a presentation the
+            // server-side verifier accepts — same key, audience, and shape.
+            let sk = SigningKey::from_bytes(&[9u8; 32]);
+            let mb = crate::did_key::ed25519_multibase_pubkey(&sk.verifying_key().to_bytes());
+            let did = format!("did:key:{mb}");
+            let kid = format!("{did}#{mb}");
+            let jws =
+                super::super::build_swap_presentation(&sk, &did, AUD, 1_000, 300, Some("n-1"));
+            let doc = json!({
+                "id": did,
+                "verificationMethod": [{ "id": kid, "publicKeyMultibase": mb }],
+            });
+            let verified = AclSwapPresentation::new(jws)
+                .verify(&doc, AUD, 1_100)
+                .unwrap();
+            assert_eq!(verified.holder(), did);
+            assert_eq!(verified.nonce(), Some("n-1"));
         }
 
         #[test]

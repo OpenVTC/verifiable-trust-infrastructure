@@ -693,8 +693,10 @@ async fn rotate_key_didcomm(
     let contexts = acl_entry.allowed_contexts.clone();
     let label = acl_entry.label.clone();
 
-    // 2. Mint a new did:key.
-    let (new_did, new_private_key) = generate_did_key()?;
+    // 2. Mint a new did:key. (The DIDComm rotation path still uses the
+    //    create-then-delete shape; migrating it onto `acl/swap-key` is a
+    //    follow-up — see the REST `rotate_key`.)
+    let (new_did, new_private_key, _new_signing) = generate_did_key()?;
     debug!(%new_did, %role, "minted rotation DID, creating ACL entry over DIDComm");
 
     // 3. Create an ACL entry for the new DID via DIDComm.
@@ -754,12 +756,16 @@ async fn rotate_key_didcomm(
     })
 }
 
-/// Generate a fresh Ed25519 did:key. Returns `(did, private_key_multibase)`.
+/// Generate a fresh Ed25519 did:key. Returns
+/// `(did, private_key_multibase, signing_key)`.
 ///
 /// The seed is sourced from `getrandom` (the OS CSPRNG). `private_key_multibase`
 /// is the raw 32-byte seed base58btc-encoded, matching the format used by the
-/// rest of the workspace (see `decode_private_key_multibase`).
-fn generate_did_key() -> Result<(String, String), Box<dyn std::error::Error>> {
+/// rest of the workspace (see `decode_private_key_multibase`). The
+/// `signing_key` is returned so callers can sign over the new DID (e.g. the
+/// `acl/swap-key` presentation) without re-deriving it from the multibase.
+fn generate_did_key()
+-> Result<(String, String, ed25519_dalek::SigningKey), Box<dyn std::error::Error>> {
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed)
         .map_err(|e| format!("CSPRNG failed while minting rotated did:key: {e}"))?;
@@ -770,138 +776,81 @@ fn generate_did_key() -> Result<(String, String), Box<dyn std::error::Error>> {
         crate::did_key::ed25519_multibase_pubkey(&pubkey)
     );
     let private_key_multibase = multibase::encode(multibase::Base::Base58Btc, seed);
-    Ok((did, private_key_multibase))
+    Ok((did, private_key_multibase, signing))
 }
 
-/// Swap a `needs_rotation=true` session's temp did:key for a fresh one.
+/// Swap a `needs_rotation=true` session's temp did:key for a fresh one via the
+/// atomic `acl/swap-key` operation.
 ///
 /// Precondition: `temp_token` is a valid bearer token authenticating as
 /// `session.client_did` (the temp DID). Returned `Session` carries the new
-/// did:key and `needs_rotation=false`; caller is responsible for persisting
-/// it alongside the returned `TokenResult` (which is an auth under the new
-/// DID, confirming the ACL swap actually lived).
+/// did:key and `needs_rotation=false`; caller is responsible for persisting it
+/// alongside the returned `TokenResult` (an auth under the new DID, confirming
+/// the swap actually lived).
 ///
 /// Flow:
-/// 1. `GET /acl/{temp_did}` — read role + allowed_contexts the admin granted.
-/// 2. `POST /acl` — create an entry for the new DID with the same scope.
-/// 3. Run challenge-response as the new DID to confirm the new entry is
-///    live. If that fails, we bail *before* deleting the temp — so the
-///    temp still works and the caller can retry.
-/// 4. `DELETE /acl/{temp_did}` — best-effort; warn on failure.
+/// 1. Mint a fresh did:key.
+/// 2. `POST /acl/swap` with a VP-JWT proving control of the new DID. The VTA
+///    atomically moves the temp DID's ACL entry (same role + contexts) onto the
+///    new DID and removes the temp — no create-then-delete over-privilege
+///    window. Because swap-key is structurally non-escalating, an enabled
+///    step-up policy carrying the rotation carve-out still admits it at AAL1.
+/// 3. Run challenge-response as the new DID to obtain a token under it (and
+///    confirm the swap landed).
 async fn rotate_key(
     base_url: &str,
     session: Session,
     temp_token: &str,
 ) -> Result<(Session, TokenResult), Box<dyn std::error::Error>> {
+    use crate::protocols::acl_management::swap::{SwapAclBody, build_swap_presentation};
+
     let http = reqwest::Client::new();
 
-    // 1. Read the ACL entry the admin granted to the temp DID.
-    let acl_url = format!(
-        "{}/acl/{}",
-        base_url.trim_end_matches('/'),
-        &session.client_did
-    );
-    debug!(url = %acl_url, "fetching ACL entry for temp DID");
-    let acl_resp = http
-        .get(&acl_url)
+    // `ensure_authenticated` has already gated `vta_did.is_some()` via
+    // `require_vta_did`; safe to unwrap here.
+    let session_vta_did = session
+        .vta_did
+        .as_deref()
+        .expect("ensure_authenticated gates vta_did.is_some() before calling rotate_key")
+        .to_string();
+
+    // 1. Mint a fresh did:key.
+    let (new_did, new_private_key, new_signing) = generate_did_key()?;
+    debug!(%new_did, "minted rotation DID; swapping via acl/swap-key");
+
+    // 2. Prove control of the new DID and atomically swap the temp entry onto
+    //    it. The VP-JWT is audience-bound to this VTA and short-lived.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let presentation =
+        build_swap_presentation(&new_signing, &new_did, &session_vta_did, now, 300, None);
+    let swap_url = format!("{}/acl/swap", base_url.trim_end_matches('/'));
+    let swap_resp = http
+        .post(&swap_url)
         .bearer_auth(temp_token)
+        .json(&SwapAclBody { presentation })
         .send()
         .await
-        .map_err(|e| format!("GET {acl_url}: {e}"))?;
-    if !acl_resp.status().is_success() {
-        let status = acl_resp.status();
-        let body = acl_resp.text().await.unwrap_or_default();
+        .map_err(|e| format!("POST {swap_url}: {e}"))?;
+    if !swap_resp.status().is_success() {
+        let status = swap_resp.status();
+        let body = swap_resp.text().await.unwrap_or_default();
         return Err(format!(
-            "rotate: cannot read temp DID's ACL entry ({status}): {body} — has your admin run `vta import-did --did {} --role admin` yet?",
+            "rotate: acl/swap-key failed ({status}): {body} — has your admin run \
+             `vta import-did --did {} --role admin` yet?",
             session.client_did
         )
         .into());
     }
-    let acl_entry: crate::client::AclEntryResponse = acl_resp
-        .json()
-        .await
-        .map_err(|e| format!("parse ACL entry: {e}"))?;
-    let role = acl_entry.role.clone();
-    let contexts = acl_entry.allowed_contexts.clone();
-    let label = acl_entry.label.clone();
 
-    // 2. Mint a new did:key and register it.
-    let (new_did, new_private_key) = generate_did_key()?;
-    debug!(%new_did, %role, "minted rotation DID, creating ACL entry");
-    let mut create_req = crate::client::CreateAclRequest::new(&new_did, role).contexts(contexts);
-    if let Some(l) = label {
-        create_req = create_req.label(l);
-    }
-    let acl_post = format!("{}/acl", base_url.trim_end_matches('/'));
-    let create_resp = http
-        .post(&acl_post)
-        .bearer_auth(temp_token)
-        .json(&create_req)
-        .send()
-        .await
-        .map_err(|e| format!("POST {acl_post}: {e}"))?;
-    if !create_resp.status().is_success() {
-        let status = create_resp.status();
-        let body = create_resp.text().await.unwrap_or_default();
-        return Err(
-            format!("rotate: failed to create ACL entry for new DID ({status}): {body}").into(),
-        );
-    }
-
-    // 3. Verify the new DID can actually authenticate. Fail *before* we
-    //    delete the temp — if this errors, the temp still works.
-    //
-    // `ensure_authenticated` has already gated `vta_did.is_some()` via
-    // `require_vta_did`; we're safe to unwrap here.
-    let session_vta_did = session
-        .vta_did
-        .as_deref()
-        .expect("ensure_authenticated gates vta_did.is_some() before calling rotate_key");
-    let new_token_result = challenge_response(
-        base_url,
-        &new_did,
-        &new_private_key,
-        session_vta_did,
-    )
-    .await
-    .map_err(|e| {
-        format!(
-            "rotate: new DID failed challenge-response (ACL entry present but login failed): {e}"
-        )
-    })?;
-
-    // 4. Drop the temp DID from the ACL. Best-effort — if this fails, the
-    //    new DID is already live, so we log and continue rather than leave
-    //    the caller unauthenticated.
-    let del_url = format!(
-        "{}/acl/{}",
-        base_url.trim_end_matches('/'),
-        &session.client_did
-    );
-    match http
-        .delete(&del_url)
-        .bearer_auth(&new_token_result.access_token)
-        .send()
-        .await
-    {
-        Ok(resp) if resp.status().is_success() => {
-            debug!(temp_did = %session.client_did, "temp DID removed from ACL");
-        }
-        Ok(resp) => {
-            tracing::warn!(
-                temp_did = %session.client_did,
-                status = %resp.status(),
-                "could not delete temp DID from ACL after rotation — manual cleanup may be required",
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                temp_did = %session.client_did,
-                error = %e,
-                "could not delete temp DID from ACL after rotation — manual cleanup may be required",
-            );
-        }
-    }
+    // 3. Authenticate as the new DID to obtain a token under it (and confirm
+    //    the swap landed). The temp entry is already gone server-side.
+    let new_token_result =
+        challenge_response(base_url, &new_did, &new_private_key, &session_vta_did)
+            .await
+            .map_err(|e| format!("rotate: new DID failed challenge-response after swap: {e}"))?;
 
     let Session { vta_did, .. } = session;
     let rotated = Session {
