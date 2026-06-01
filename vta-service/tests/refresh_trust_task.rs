@@ -113,15 +113,22 @@ async fn trust_task_refresh_rotates_tokens() {
         StatusCode::OK,
         "Trust Task refresh must succeed: {body}"
     );
-    assert_eq!(body["session"]["subject"], did, "{body}");
+    // TT request → TT `#response` doc (tokens + session under `payload`).
     assert!(
-        body["tokens"]["accessToken"]
+        body["type"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("/auth/refresh/0.1#response")),
+        "response is a TT #response doc: {body}"
+    );
+    assert_eq!(body["payload"]["session"]["subject"], did, "{body}");
+    assert!(
+        body["payload"]["tokens"]["accessToken"]
             .as_str()
             .is_some_and(|t| !t.is_empty()),
         "a fresh access token is issued: {body}"
     );
     // RFC 6749 §10.4 rotation: a new refresh token, different from the old one.
-    let new_token = body["tokens"]["refreshToken"]
+    let new_token = body["payload"]["tokens"]["refreshToken"]
         .as_str()
         .expect("rotated refresh token");
     assert_ne!(new_token, old_token, "refresh token must rotate: {body}");

@@ -295,6 +295,18 @@ new flow, update both this section and the relevant `docs/*.md`.
     bearer credential (OAuth2 §10.4 rotation), so the Trust Task path passes
     `signer_did: None`. Together with the authenticate path above, the mobile
     engine runs its whole login→refresh loop over plain REST, no mediator.
+  - **Trust-Task-wrapped responses (engine interop):** `/auth/challenge`,
+    `/auth/`, and `/auth/refresh` all content-negotiate on *both* ends — when
+    the request body is a Trust Task document, the response is a TT `#response`
+    document (`doc.respond_with(...)`: issuer/recipient swapped, `#response`
+    type, `threadId` = request id) instead of flat JSON. `/auth/challenge` also
+    accepts a TT `auth/challenge/0.1` request (subject from `payload.subject`).
+    So `vta-mobile-core`'s `build_*` / `parse_*` (which speak TT docs
+    end-to-end) interoperate unmodified, while the SDK/CLI flat-JSON clients are
+    unchanged (flat-in → flat-out). Payloads match the generated spec Response
+    types exactly (challenge `{challenge,sessionId,expiresAt}`;
+    authenticate/refresh `{tokens,session}`) — those `deny_unknown_fields`, so
+    don't add extras like `teeAttestation`.
 - **Claims**: `{ aud, sub, session_id, role, contexts, exp }`. Audience
   separates VTA from VTC — cross-audience tokens are rejected.
 - **Code**: `vta-service/src/routes/auth.rs`, `vti-common/src/auth/`.

@@ -2,17 +2,16 @@ use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions}
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
 use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{
-    AuthenticateResponse, ChallengeRequest, ChallengeResponse, Session as WireSession, TokenBundle,
-    epoch_to_rfc3339,
+    AuthenticateResponse, ChallengeRequest, Session as WireSession, TokenBundle, epoch_to_rfc3339,
 };
 
 use crate::acl::{Role, check_acl, check_acl_full};
@@ -39,10 +38,17 @@ use tracing::{info, warn};
 /// just JSON deserialisation and the audit-macro emission
 /// (vti-common's default `audit` hook uses `tracing::info!`
 /// without VTA's HMAC-actor-hash audit envelope).
-pub async fn challenge(
-    State(state): State<AppState>,
-    Json(req): Json<ChallengeRequest>,
-) -> Result<Json<ChallengeResponse>, AppError> {
+pub async fn challenge(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
+    // Canonical path: an `auth/challenge/0.1` Trust Task → a TT `#response`
+    // document (what `vta-mobile-core::build_auth_challenge` /
+    // `parse_auth_challenge_response` speak). Falls through to the flat
+    // `{ did }` request used by the SDK / CLI REST clients.
+    if let Some(resp) = try_challenge_trust_task(&state, &body).await? {
+        return Ok(resp);
+    }
+
+    let req: ChallengeRequest = serde_json::from_str(&body)
+        .map_err(|e| AppError::Validation(format!("challenge request body: {e}")))?;
     let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
     let did_for_audit = req.did.clone();
     let resp = vti_common::auth::handlers::handle_challenge(
@@ -59,10 +65,71 @@ pub async fn challenge(
         resource = &resp.session_id,
         outcome = "success"
     );
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
+}
+
+/// Try to issue a challenge from an `auth/challenge/0.1` Trust Task document,
+/// returning a TT `#response` document so the canonical (engine) client can
+/// `parse_auth_challenge_response` it. `Ok(None)` ⇒ not such a document, fall
+/// through to the flat `{ did }` request.
+async fn try_challenge_trust_task(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<Response>, AppError> {
+    let doc: TrustTask<Value> = match serde_json::from_str(body) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None),
+    };
+    if doc.type_uri.to_string() != vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1 {
+        return Ok(None);
+    }
+    // Challenge carries no proof; the subject is the document's stated holder.
+    // (Same trust model as the flat `{ did }` request — challenge issuance is
+    // pre-auth and ACL-gated.)
+    let subject = doc
+        .payload
+        .get("subject")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("auth/challenge payload missing `subject`".into()))?
+        .to_string();
+
+    let backend = crate::auth::VtaAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_challenge(
+        &backend,
+        vti_common::auth::ChallengeInput {
+            did: subject.clone(),
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await?;
+    audit!(
+        "auth.challenge",
+        actor = &subject,
+        resource = &resp.session_id,
+        outcome = "success"
+    );
+    // The `challenge/0.1#response` payload — exactly the fields the engine
+    // parses (no `teeAttestation`; the generated Response denies unknowns).
+    let payload = json!({
+        "challenge": resp.challenge,
+        "sessionId": resp.session_id,
+        "expiresAt": resp.expires_at,
+    });
+    let response_doc = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
+    Ok(Some(Json(response_doc).into_response()))
 }
 
 // ---------- POST /auth/ ----------
+
+/// Wrap a flat `AuthenticateResponse` as a Trust Task `#response` document
+/// addressed back to the requester. Used for callers that sent a TT request
+/// doc (authenticate + refresh share the `{ tokens, session }` response
+/// payload); `vta-mobile-core::parse_{authenticate,refresh}_response` parse it.
+fn tokens_response_doc(request: &TrustTask<Value>, resp: &AuthenticateResponse) -> Response {
+    let payload = json!({ "tokens": resp.tokens, "session": resp.session });
+    let response_doc = request.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
+    Json(response_doc).into_response()
+}
 
 /// POST /auth/ — verify a signed DIDComm challenge and issue access+refresh tokens. Auth: unauthenticated.
 ///
@@ -73,7 +140,7 @@ pub async fn challenge(
 pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
-) -> Result<Json<AuthenticateResponse>, AppError> {
+) -> Result<Response, AppError> {
     // Canonical REST path: a DI-signed `auth/authenticate/0.1` Trust Task
     // document, where the holder's Data-Integrity proof *is* the
     // authentication (no DIDComm packing / mediator required). Tried first so
@@ -81,7 +148,7 @@ pub async fn authenticate(
     // plain REST. Falls through to the DIDComm envelope path for any body that
     // isn't such a document.
     if let Some(resp) = try_authenticate_trust_task(&state, &body).await? {
-        return Ok(Json(resp));
+        return Ok(resp);
     }
 
     let atm = state
@@ -153,15 +220,15 @@ pub async fn authenticate(
         resource = &session_id,
         outcome = "success"
     );
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
 }
 
 /// Try to authenticate from a DI-signed `auth/authenticate/0.1` Trust Task
 /// document (the canonical REST transport).
 ///
 /// Returns:
-/// - `Ok(Some(resp))` — the body was such a document, its proof verified, and
-///   the canonical authenticate handler issued tokens.
+/// - `Ok(Some(response_doc))` — the body was such a document, its proof
+///   verified, and we issued tokens wrapped in a TT `#response` document.
 /// - `Ok(None)` — the body is *not* an `auth/authenticate/0.1` Trust Task, so
 ///   the caller should fall through to the DIDComm-envelope path.
 /// - `Err(_)` — the body *was* an authenticate document but is invalid (bad
@@ -174,7 +241,7 @@ pub async fn authenticate(
 async fn try_authenticate_trust_task(
     state: &AppState,
     body: &str,
-) -> Result<Option<AuthenticateResponse>, AppError> {
+) -> Result<Option<Response>, AppError> {
     let doc: TrustTask<Value> = match serde_json::from_str(body) {
         Ok(doc) => doc,
         Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
@@ -211,7 +278,7 @@ async fn try_authenticate_trust_task(
         resource = &session_id,
         outcome = "success"
     );
-    Ok(Some(resp))
+    Ok(Some(tokens_response_doc(&doc, &resp)))
 }
 
 /// Verify the holder's `eddsa-jcs-2022` Data-Integrity proof on an
@@ -270,10 +337,7 @@ async fn verify_authenticate_proof(doc: &TrustTask<Value>) -> Result<String, App
 /// Response shape is the same `AuthenticateResponse` returned by
 /// `POST /auth/`, so callers handle login and refresh with one
 /// deserialization path.
-pub async fn refresh(
-    State(state): State<AppState>,
-    body: String,
-) -> Result<Json<AuthenticateResponse>, AppError> {
+pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
     // Canonical REST path: an `auth/refresh/0.1` Trust Task. Refresh carries no
     // proof — the opaque refresh token in the payload *is* the credential
     // (OAuth2 §10.4 semantics), verified server-side by the rotating
@@ -281,7 +345,7 @@ pub async fn refresh(
     // can still refresh over plain REST. Falls through to the DIDComm-envelope
     // path for any body that isn't such a document.
     if let Some(resp) = try_refresh_trust_task(&state, &body).await? {
-        return Ok(Json(resp));
+        return Ok(resp);
     }
 
     let atm = state
@@ -329,7 +393,7 @@ pub async fn refresh(
         resource = &resp.session.id,
         outcome = "success"
     );
-    Ok(Json(resp))
+    Ok(Json(resp).into_response())
 }
 
 /// Try to refresh from an `auth/refresh/0.1` Trust Task document (the canonical
@@ -346,7 +410,7 @@ pub async fn refresh(
 async fn try_refresh_trust_task(
     state: &AppState,
     body: &str,
-) -> Result<Option<AuthenticateResponse>, AppError> {
+) -> Result<Option<Response>, AppError> {
     let doc: TrustTask<Value> = match serde_json::from_str(body) {
         Ok(doc) => doc,
         Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
@@ -374,7 +438,7 @@ async fn try_refresh_trust_task(
         resource = &resp.session.id,
         outcome = "success"
     );
-    Ok(Some(resp))
+    Ok(Some(tokens_response_doc(&doc, &resp)))
 }
 
 // ---------- POST /auth/credentials ----------

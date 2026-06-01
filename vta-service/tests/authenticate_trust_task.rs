@@ -148,13 +148,21 @@ async fn di_signed_authenticate_issues_tokens() {
         StatusCode::OK,
         "DI-signed authenticate must succeed: {body}"
     );
-    assert_eq!(body["session"]["subject"], did, "{body}");
+    // A TT request gets a TT `#response` document back (what the engine's
+    // parse_authenticate_response consumes): tokens + session under `payload`.
+    assert!(
+        body["type"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("/auth/authenticate/0.1#response")),
+        "response is a TT #response doc: {body}"
+    );
+    assert_eq!(body["payload"]["session"]["subject"], did, "{body}");
     assert_eq!(
-        body["session"]["acr"], "aal1",
+        body["payload"]["session"]["acr"], "aal1",
         "first factor is AAL1: {body}"
     );
     assert!(
-        body["tokens"]["accessToken"]
+        body["payload"]["tokens"]["accessToken"]
             .as_str()
             .is_some_and(|t| !t.is_empty()),
         "an access token is issued: {body}"
@@ -216,4 +224,54 @@ async fn di_signed_authenticate_rejects_tampered_proof() {
         stored.state,
         vti_common::auth::session::SessionState::ChallengeSent
     );
+}
+
+/// The challenge step also speaks Trust Tasks end-to-end: a TT
+/// `auth/challenge/0.1` request returns a TT `#response` document the engine's
+/// `parse_auth_challenge_response` consumes (payload `{challenge, sessionId,
+/// expiresAt}`, addressed back to the holder).
+#[tokio::test]
+async fn tt_challenge_returns_tt_response_doc() {
+    let (router, ctx) = build_test_app().await;
+    let sk = SigningKey::from_bytes(&[11u8; 32]);
+    let (did, _mb) = did_key(&sk);
+    seed_admin_acl(&ctx, &did).await;
+
+    let doc = json!({
+        "id": "urn:uuid:challenge-itest-1",
+        "type": "https://trusttasks.org/spec/auth/challenge/0.1",
+        "issuer": did,
+        "recipient": "did:key:z6MkTestVTA",
+        "payload": { "subject": did },
+    });
+    let (status, body) = send(
+        &router,
+        post("/auth/challenge", serde_json::to_vec(&doc).unwrap()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "TT challenge must succeed: {body}");
+    assert!(
+        body["type"]
+            .as_str()
+            .is_some_and(|t| t.ends_with("/auth/challenge/0.1#response")),
+        "response is a TT #response doc: {body}"
+    );
+    assert_eq!(
+        body["recipient"], did,
+        "addressed back to the holder: {body}"
+    );
+    assert!(
+        body["payload"]["challenge"]
+            .as_str()
+            .is_some_and(|c| !c.is_empty()),
+        "{body}"
+    );
+    assert!(
+        body["payload"]["sessionId"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "{body}"
+    );
+    assert!(body["payload"]["expiresAt"].as_str().is_some(), "{body}");
 }
