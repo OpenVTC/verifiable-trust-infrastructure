@@ -60,7 +60,9 @@ mod passkey_vms;
 mod provision_integration;
 mod seeds;
 mod step_up;
-pub(crate) use step_up::RequireStepUp;
+pub(crate) use step_up::{
+    AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, ContextDeleteOp, RequireStepUp,
+};
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;

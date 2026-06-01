@@ -200,8 +200,10 @@ pub(super) async fn handle_delete(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // Deleting a context requires a stepped-up (AAL2) session (operator policy).
-    if let Some(resp) = super::step_up::require_step_up(state, auth, &doc).await {
+    // Deleting a context is gated per the `context/delete` step-up floor.
+    if let Some(resp) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::CONTEXT_DELETE, &doc).await
+    {
         return resp;
     }
     let req: DeleteContextBody = match parse_payload(&doc) {

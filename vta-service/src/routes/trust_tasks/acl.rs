@@ -68,8 +68,10 @@ pub(super) async fn handle_create(
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL mutations require a stepped-up (AAL2) session (operator policy).
-    if let Some(resp) = super::step_up::require_step_up(state, auth, &doc).await {
+    // ACL grant is gated per the `acl/grant` step-up floor (operator policy).
+    if let Some(resp) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_GRANT, &doc).await
+    {
         return resp;
     }
     let req: CreateAclBody = match parse_payload(&doc) {
@@ -135,8 +137,11 @@ pub(super) async fn handle_update(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL mutations require a stepped-up (AAL2) session (operator policy).
-    if let Some(resp) = super::step_up::require_step_up(state, auth, &doc).await {
+    // ACL change-role is gated per the `acl/change-role` step-up floor.
+    if let Some(resp) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_CHANGE_ROLE, &doc)
+            .await
+    {
         return resp;
     }
     let req: UpdateAclBody = match parse_payload(&doc) {
@@ -186,8 +191,10 @@ pub(super) async fn handle_delete(
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL mutations require a stepped-up (AAL2) session (operator policy).
-    if let Some(resp) = super::step_up::require_step_up(state, auth, &doc).await {
+    // ACL revoke is gated per the `acl/revoke` step-up floor (operator policy).
+    if let Some(resp) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_REVOKE, &doc).await
+    {
         return resp;
     }
     let req: DeleteAclBody = match parse_payload(&doc) {

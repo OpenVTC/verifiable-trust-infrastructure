@@ -492,6 +492,7 @@ pub(crate) async fn issue_step_up_challenge(
 pub(super) async fn require_step_up(
     state: &AppState,
     auth: &AuthClaims,
+    op_class: &str,
     doc: &TrustTask<Value>,
 ) -> Option<Response> {
     if auth.acr == STEP_UP_TARGET_ACR {
@@ -499,12 +500,10 @@ pub(super) async fn require_step_up(
     }
     let (vta_did, gated) = {
         let cfg = state.config.read().await;
-        // Step-up policy gate. Slice 1 resolves against the `*` catch-all
-        // floor only (no per-op-class threading yet); a disabled policy
-        // yields `None` → not gated → the operation proceeds at AAL1. This
-        // is what makes the shipping default (step-up off) admit every
-        // operation, including the first-auth key rotation.
-        let gated = cfg.auth.step_up.floor_for("*").requires_aal2();
+        // Resolve the step-up floor for this operation-class (most specific
+        // floor, else the `*` catch-all, else none). A disabled policy
+        // yields `None` → not gated → the operation proceeds at AAL1.
+        let gated = cfg.auth.step_up.floor_for(op_class).requires_aal2();
         (cfg.vta_did.clone().unwrap_or_default(), gated)
     };
     if !gated {
@@ -533,19 +532,54 @@ pub(super) async fn require_step_up(
     Some(reject_with(doc, reject))
 }
 
-/// Request extractor enforcing a **stepped-up (AAL2)** session.
+/// Stable operation-class identifiers used to resolve step-up floors.
+/// These are the gated VTA operations; they mirror the canonical
+/// `acl/*` / `context/*` / `key/*` slugs the `auth/step-up/policy/0.1`
+/// spec uses for its `Floor.operation`.
+pub mod op {
+    pub const ACL_GRANT: &str = "acl/grant";
+    pub const ACL_CHANGE_ROLE: &str = "acl/change-role";
+    pub const ACL_REVOKE: &str = "acl/revoke";
+    pub const ACL_SWAP_KEY: &str = "acl/swap-key";
+    pub const CONTEXT_DELETE: &str = "context/delete";
+    pub const KEY_REVOKE: &str = "key/revoke";
+}
+
+/// Compile-time operation-class marker for the [`RequireStepUp`] extractor.
+/// Each gated REST route names its op-class via a zero-sized type so the
+/// extractor can resolve the matching policy floor without reading the body.
+pub trait StepUpOp {
+    const OP_CLASS: &'static str;
+}
+
+macro_rules! step_up_op {
+    ($name:ident, $class:expr) => {
+        pub struct $name;
+        impl StepUpOp for $name {
+            const OP_CLASS: &'static str = $class;
+        }
+    };
+}
+
+step_up_op!(AclGrantOp, op::ACL_GRANT);
+step_up_op!(AclChangeRoleOp, op::ACL_CHANGE_ROLE);
+step_up_op!(AclRevokeOp, op::ACL_REVOKE);
+step_up_op!(AclSwapKeyOp, op::ACL_SWAP_KEY);
+step_up_op!(ContextDeleteOp, op::CONTEXT_DELETE);
+
+/// Request extractor enforcing a **stepped-up (AAL2)** session for a
+/// specific operation-class `O`.
 ///
 /// A zero-sized marker: it gates, it does not carry claims. Pair it with the
 /// handler's role extractor (`AdminAuth`, `ManageAuth`, …), which yields the
-/// claims — `RequireStepUp` only asserts the session reached AAL2. On an AAL1
-/// session it mints a pending step-up and rejects with the
-/// `403`-carrying-approve-request ([`issue_step_up_challenge`]), so a caller
-/// hitting a step-up-gated endpoint is handed everything needed to elevate.
-/// Applied to the AAL2-gated REST routes (ACL mutations, context delete); the
+/// claims — `RequireStepUp` only asserts the session reached AAL2 *when the
+/// policy floor for `O::OP_CLASS` requires it*. On a gated AAL1 session it
+/// mints a pending step-up and rejects with the `403`-carrying-approve-request
+/// ([`issue_step_up_challenge`]). Applied to the AAL2-gated REST routes; the
 /// trust-task equivalents use [`require_step_up`].
-pub struct RequireStepUp;
+pub struct RequireStepUp<O: StepUpOp>(std::marker::PhantomData<O>);
 
-impl FromRequestParts<AppState> for RequireStepUp {
+impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
@@ -553,18 +587,17 @@ impl FromRequestParts<AppState> for RequireStepUp {
             .await
             .map_err(IntoResponse::into_response)?;
         if claims.acr == "aal2" {
-            return Ok(RequireStepUp);
+            return Ok(RequireStepUp(std::marker::PhantomData));
         }
         let (vta_did, gated) = {
             let cfg = state.config.read().await;
-            // Step-up policy gate (see `require_step_up`): slice 1 resolves
-            // against the `*` catch-all floor; a disabled policy is not
-            // gated and the request proceeds at AAL1.
-            let gated = cfg.auth.step_up.floor_for("*").requires_aal2();
+            // Resolve the floor for this route's operation-class. A disabled
+            // policy (or no matching floor) is not gated → proceed at AAL1.
+            let gated = cfg.auth.step_up.floor_for(O::OP_CLASS).requires_aal2();
             (cfg.vta_did.clone().unwrap_or_default(), gated)
         };
         if !gated {
-            return Ok(RequireStepUp);
+            return Ok(RequireStepUp(std::marker::PhantomData));
         }
         Err(issue_step_up_challenge(
             &state.sessions_ks,

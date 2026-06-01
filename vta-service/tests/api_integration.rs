@@ -75,14 +75,22 @@ impl TestContext {
     /// floor. The config Arc is shared with the live router, so this takes
     /// effect for subsequent requests.
     async fn enable_step_up_all(&self) {
-        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
+        use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+        self.set_step_up_floors(vec![StepUpFloor {
+            operation: "*".into(),
+            mode: StepUpMode::SelfApprove,
+            allow_aal1_if_non_escalating: false,
+        }])
+        .await;
+    }
+
+    /// Enable the step-up policy with an explicit set of floors. The config
+    /// Arc is shared with the live router, so this takes effect immediately.
+    async fn set_step_up_floors(&self, floors: Vec<vti_common::auth::step_up::StepUpFloor>) {
+        use vti_common::auth::step_up::StepUpPolicy;
         self.inner.config.write().await.auth.step_up = StepUpPolicy {
             enabled: true,
-            floors: vec![StepUpFloor {
-                operation: "*".into(),
-                mode: StepUpMode::SelfApprove,
-                allow_aal1_if_non_escalating: false,
-            }],
+            floors,
         };
     }
 }
@@ -501,6 +509,40 @@ async fn acl_mutation_requires_step_up() {
             .as_str()
             .is_some_and(|c| c.len() >= 16),
         "approve-request must carry a ≥16-char challenge"
+    );
+}
+
+#[tokio::test]
+async fn step_up_floor_is_per_operation_class() {
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+    let (app, ctx) = TestApp::new().await;
+    // Gate ONLY `context/delete` — no floor for `acl/grant`, no `*` catch-all.
+    ctx.set_step_up_floors(vec![StepUpFloor {
+        operation: "context/delete".into(),
+        mode: StepUpMode::SelfApprove,
+        allow_aal1_if_non_escalating: false,
+    }])
+    .await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({
+                "did": "did:key:z6MkUngated",
+                "role": "application",
+                "label": "ungated app",
+                "allowed_contexts": ["ctx1"]
+            }),
+        ))
+        .await;
+
+    // The `acl/grant` route must NOT be step-up-gated by a context/delete-only
+    // policy — op-class resolution is specific, not all-or-nothing.
+    assert_ne!(
+        body["error"], "step_up_required",
+        "acl/grant gated by a context/delete-only floor: {status} {body}"
     );
 }
 
