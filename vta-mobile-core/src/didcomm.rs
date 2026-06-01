@@ -245,6 +245,51 @@ fn to_array_32(bytes: &[u8], what: &str) -> Result<[u8; 32], FfiError> {
     })
 }
 
+/// Derive the DIDComm [`HolderKeys`] for an Ed25519 `did:key` holder from its
+/// signing seed, so the native layer can open a [`DidcommSession`] without
+/// re-implementing key derivation.
+///
+/// The key-agreement (X25519) key is the **standard ed25519→x25519 conversion**
+/// of the holder signing key, so its public half equals the `keyAgreement` a
+/// resolver derives from the `did:key`. That means anyone resolving the holder
+/// did:key (e.g. a VTA wanting to send an approve-request) can authcrypt to it,
+/// and this session — holding the matching private — can unpack it.
+///
+/// No new cryptography here: this composes the tested TDK conversions
+/// (`affinidi_crypto::ed25519::{ed25519_private_to_x25519, ed25519_public_to_x25519}`),
+/// per the workspace "Default to DIDs" guidance. `signing_private_ed25519` is
+/// the 32-byte Ed25519 seed; it never leaves the device beyond this struct.
+#[uniffi::export]
+pub fn didcomm_holder_keys(
+    did: String,
+    signing_private_ed25519: Vec<u8>,
+) -> Result<HolderKeys, FfiError> {
+    let ed_multikey = did
+        .strip_prefix("did:key:")
+        .ok_or_else(|| FfiError::InvalidInput {
+            reason: format!("expected a did:key, got {did}"),
+        })?;
+    let signing = to_array_32(&signing_private_ed25519, "holder signing key")?;
+
+    // ed25519 secret → x25519 secret (key agreement private half).
+    let key_agreement_private = affinidi_crypto::ed25519::ed25519_private_to_x25519(&signing);
+    // ed25519 did:key multikey → x25519 multikey (the keyAgreement vm fragment).
+    let (x25519_multikey, _x25519_public) =
+        affinidi_crypto::ed25519::ed25519_public_to_x25519(ed_multikey).map_err(|e| {
+            FfiError::InvalidInput {
+                reason: format!("derive x25519 key agreement from did:key: {e}"),
+            }
+        })?;
+
+    Ok(HolderKeys {
+        did: did.clone(),
+        key_agreement_kid: format!("{did}#{x25519_multikey}"),
+        key_agreement_private_x25519: key_agreement_private.to_vec(),
+        signing_kid: format!("{did}#{ed_multikey}"),
+        signing_private_ed25519,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,5 +418,71 @@ mod tests {
         let at_mediator = mediator.unpack(outer, None).unwrap();
         let fwd: serde_json::Value = serde_json::from_str(&at_mediator.message_json).unwrap();
         assert_eq!(fwd["type"], "https://didcomm.org/routing/2.0/forward");
+    }
+
+    /// did:key from a fixed Ed25519 seed.
+    fn did_key_from_seed(seed: &[u8; 32]) -> String {
+        let pk = ed25519_dalek::SigningKey::from_bytes(seed)
+            .verifying_key()
+            .to_bytes();
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&pk)
+    }
+
+    #[test]
+    fn didcomm_holder_keys_match_the_did_key_key_agreement() {
+        let seed = [7u8; 32];
+        let did = did_key_from_seed(&seed);
+        let keys = didcomm_holder_keys(did.clone(), seed.to_vec()).unwrap();
+
+        // The crucial invariant: the public half of the derived X25519 private
+        // equals the keyAgreement a resolver derives from the did:key — so a
+        // sender resolving the did:key authcrypts to a key THIS session can open.
+        let ed_multikey = did.strip_prefix("did:key:").unwrap();
+        let (x25519_multikey, ka_public_from_did) =
+            affinidi_crypto::ed25519::ed25519_public_to_x25519(ed_multikey).unwrap();
+        assert_eq!(
+            x25519_public(&keys.key_agreement_private_x25519),
+            ka_public_from_did,
+            "derived agreement key must be reachable at the holder did:key",
+        );
+        // Kid shapes: `<did>#<x25519-multikey>` and `<did>#<ed25519-multikey>`.
+        assert_eq!(keys.key_agreement_kid, format!("{did}#{x25519_multikey}"));
+        assert_eq!(keys.signing_kid, format!("{did}#{ed_multikey}"));
+        assert_eq!(keys.signing_private_ed25519, seed.to_vec());
+    }
+
+    #[test]
+    fn derived_holders_authcrypt_round_trip() {
+        let alice_did = did_key_from_seed(&[7u8; 32]);
+        let bob_did = did_key_from_seed(&[9u8; 32]);
+        let alice_keys = didcomm_holder_keys(alice_did.clone(), [7u8; 32].to_vec()).unwrap();
+        let bob_keys = didcomm_holder_keys(bob_did.clone(), [9u8; 32].to_vec()).unwrap();
+
+        let peer_of = |k: &HolderKeys| Peer {
+            did: k.did.clone(),
+            key_agreement_kid: k.key_agreement_kid.clone(),
+            key_agreement_public_x25519: x25519_public(&k.key_agreement_private_x25519),
+        };
+
+        let alice = DidcommSession::new(alice_keys.clone()).unwrap();
+        alice.add_peer(peer_of(&bob_keys)).unwrap();
+        let bob = DidcommSession::new(bob_keys.clone()).unwrap();
+        bob.add_peer(peer_of(&alice_keys)).unwrap();
+
+        let msg = serde_json::json!({
+            "id": "m-stepup",
+            "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+            "from": alice_did,
+            "to": [bob_did],
+            "body": { "challenge": "abc" }
+        })
+        .to_string();
+
+        let jwe = alice.pack_authcrypt(msg, bob_did.clone()).unwrap();
+        let unpacked = bob.unpack(jwe, Some(alice_did.clone())).unwrap();
+        assert!(unpacked.sender_authenticated);
+        let m: serde_json::Value = serde_json::from_str(&unpacked.message_json).unwrap();
+        assert_eq!(m["from"], alice_did);
+        assert_eq!(m["body"]["challenge"], "abc");
     }
 }

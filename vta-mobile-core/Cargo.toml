@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -41,6 +41,11 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
+# ed25519→x25519 key-agreement derivation + did:key encoding for the DIDComm
+# holder identity (the X25519 key matches the holder did:key's keyAgreement, so
+# a sender resolving the did:key can authcrypt to it). Tested TDK conversions —
+# we compose, never hand-roll. See workspace CLAUDE.md "Default to DIDs".
+affinidi-crypto = { workspace = true }
 # Async runtime for the FFI async exports + a process-wide resolver cell.
 tokio = { workspace = true }
 # DID resolution. Default config is local (did:key / did:peer resolve offline);
