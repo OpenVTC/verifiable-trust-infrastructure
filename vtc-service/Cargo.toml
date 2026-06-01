@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.7.0"
+version = "0.8.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -58,13 +58,13 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.8", features = [
+vti-common = { path = "../vti-common", version = "0.9", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
   "setup",
 ] }
-vta-sdk = { path = "../vta-sdk", version = "0.8", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.9", features = [
   "didcomm",
   "session",
   "config-session",
