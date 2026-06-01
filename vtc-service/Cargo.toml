@@ -103,7 +103,7 @@ subtle = { workspace = true }
 # message handler in `messaging.rs` (M1.8.2). The service crate
 # accepts `Message` / `UnpackMetadata` by value but doesn't
 # re-export them.
-affinidi-messaging-didcomm = "0.13"
+affinidi-messaging-didcomm = "0.14"
 tokio-util = { workspace = true, features = ["rt"] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }

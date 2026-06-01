@@ -127,7 +127,7 @@ sha2 = { workspace = true, optional = true }
 # Used by `client` (didcomm_light::pack_anoncrypt) to produce JWEs the
 # workspace's pinned DIDComm decrypt path will accept (ECDH-ES+A256KW +
 # A256CBC-HS512). Same pinned version as `vta-service`.
-affinidi-messaging-didcomm = { version = "0.13", optional = true }
+affinidi-messaging-didcomm = { version = "0.14", optional = true }
 # Used by `client` (didcomm_light::resolve_vta_keyagreement) to resolve
 # `did:webvh:` VTAs without pulling in the heavyweight TDK runtime. Same
 # workspace-pinned version as `vta-service`.

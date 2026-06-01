@@ -202,6 +202,8 @@ mod tests {
             UnpackResult::Signed { message, .. } => message,
             UnpackResult::Plaintext(_) => panic!("expected Signed result, got Plaintext"),
             UnpackResult::Encrypted { .. } => panic!("expected Signed result, got Encrypted"),
+            // `UnpackResult` is `#[non_exhaustive]` as of didcomm 0.14.
+            _ => panic!("expected Signed result, got an unrecognised UnpackResult variant"),
         }
     }
 

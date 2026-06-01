@@ -154,6 +154,14 @@ impl DidcommSession {
                 signer_kid,
             } => (message, true, signer_kid),
             UnpackResult::Plaintext(message) => (message, false, None),
+            // `UnpackResult` is `#[non_exhaustive]` as of didcomm 0.14; reject
+            // any variant this engine version doesn't recognise rather than
+            // guess its authentication semantics.
+            _ => {
+                return Err(FfiError::InvalidInput {
+                    reason: "unsupported DIDComm unpack result variant".to_string(),
+                });
+            }
         };
 
         Ok(UnpackedMessage {

@@ -47,7 +47,7 @@ tokio = { workspace = true }
 # networked methods (did:web / did:webvh) need network-mode config — later.
 affinidi-did-resolver-cache-sdk = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
-affinidi-messaging-didcomm = "0.13"
+affinidi-messaging-didcomm = "0.14"
 
 # ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
 # The FFI build + bindgen pipeline is proven first with a minimal surface.

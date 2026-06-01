@@ -101,7 +101,7 @@ affinidi-secrets-resolver = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
-affinidi-messaging-didcomm = "0.13"
+affinidi-messaging-didcomm = "0.14"
 affinidi-messaging-didcomm-service = { workspace = true }
 async-trait = "0.1"
 affinidi-tdk-common = "0.6"
