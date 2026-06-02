@@ -88,6 +88,61 @@ function pluckDecision(resp: TestResponse): Verdict | null {
 }
 
 // ---------------------------------------------------------------------------
+// request_more loop — a verdict can ask for more evidence (`with.needs`).
+// The simulator models the negotiation: satisfy a need and re-run, the
+// way an applicant would supply it and re-present.
+// ---------------------------------------------------------------------------
+
+/** The `needs` array from a request_more verdict, as strings. */
+function verdictNeeds(verdict: Verdict | null): string[] {
+  const needs = verdict?.with?.needs;
+  return Array.isArray(needs) ? needs.map(String) : [];
+}
+
+/** A need the simulator knows how to satisfy by patching the facts. */
+function isSatisfiable(need: string): boolean {
+  const kind = need.split(":")[0];
+  return ["agreed", "cred", "credential", "trusted"].includes(kind ?? "");
+}
+
+type Facts = Record<string, unknown>;
+
+/** Apply a satisfied need to the facts — e.g. `agreed:code-of-conduct`
+ * sets the agreement flag; `trusted:WitnessCredential` adds a trusted
+ * credential to the presentation. */
+function satisfyNeed(facts: Facts, need: string): Facts {
+  const f = structuredClone(facts) as Facts;
+  const [kind, ...rest] = need.split(":");
+  const arg = rest.join(":");
+  const evidence = (f.evidence ??= {}) as Record<string, unknown>;
+  if (kind === "agreed") {
+    const request = (evidence.request ??= {}) as Record<string, unknown>;
+    request.agreements = {
+      ...((request.agreements as Record<string, unknown>) ?? {}),
+      [arg]: true,
+    };
+  } else if (kind === "cred" || kind === "credential" || kind === "trusted") {
+    const subject = f.subject as { did?: string } | undefined;
+    const presentation = (evidence.presentation ??= {
+      verified: true,
+      holder: subject?.did,
+      credentials: [],
+    }) as Record<string, unknown>;
+    presentation.credentials = [
+      ...((presentation.credentials as unknown[]) ?? []),
+      {
+        type: arg,
+        issuer: "did:example:satisfied",
+        issuer_trusted: true,
+        status: "valid",
+        claims: {},
+      },
+    ];
+  }
+  return f;
+}
+
+// ---------------------------------------------------------------------------
 // Components
 // ---------------------------------------------------------------------------
 
@@ -154,6 +209,8 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authoring, setAuthoring] = useState(false);
+  // Needs the operator has chosen to satisfy for the request_more loop.
+  const [satisfied, setSatisfied] = useState<string[]>([]);
 
   const policyQuery = useQuery({
     queryKey: ["active-policy", ceremony.purpose],
@@ -168,7 +225,18 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     setError(null);
     setPhase(-1);
     setAuthoring(false);
+    setSatisfied([]);
   }, [ceremony]);
+
+  // Editing the base evidence invalidates any satisfied needs.
+  const onFieldsChange = (v: FieldValues) => {
+    setForm(v);
+    setSatisfied([]);
+  };
+  const toggleNeed = (need: string) =>
+    setSatisfied((s) =>
+      s.includes(need) ? s.filter((n) => n !== need) : [...s, need],
+    );
 
   const canSimulate = ceremony.wired === "live";
 
@@ -185,7 +253,8 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     }
 
     try {
-      const facts = ceremony.buildFacts(form);
+      let facts = ceremony.buildFacts(form);
+      for (const need of satisfied) facts = satisfyNeed(facts, need);
       const resp = await postJson<TestResponse>(
         `/v1/policies/${policy.id}/test`,
         { query: `data.${ceremony.pkg}.decision`, input: facts },
@@ -289,7 +358,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
               <SimFields
                 fields={ceremony.fields}
                 values={form}
-                onChange={setForm}
+                onChange={onFieldsChange}
               />
 
               <button
@@ -311,16 +380,27 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
               )}
 
               {verdict && !error && (
-                <div className="cer-verdict">
-                  <span className={`cer-vbadge ${verdict.effect}`}>
-                    {verdict.effect}
-                  </span>
-                  <div className="cer-vwith">
-                    {verdict.with
-                      ? JSON.stringify(verdict.with, null, 2)
-                      : "{}"}
+                <>
+                  <div className="cer-verdict">
+                    <span className={`cer-vbadge ${verdict.effect}`}>
+                      {verdict.effect}
+                    </span>
+                    <div className="cer-vwith">
+                      {verdict.with
+                        ? JSON.stringify(verdict.with, null, 2)
+                        : "{}"}
+                    </div>
                   </div>
-                </div>
+                  {verdict.effect === "request_more" && (
+                    <NeedsLoop
+                      needs={verdictNeeds(verdict)}
+                      satisfied={satisfied}
+                      onToggle={toggleNeed}
+                      onRerun={run}
+                      running={running}
+                    />
+                  )}
+                </>
               )}
             </>
           )}
@@ -819,6 +899,60 @@ function SimFields({
           </div>
         ))}
     </>
+  );
+}
+
+// The request_more negotiation, in miniature: the verdict listed what
+// it needs; the operator satisfies the ones the simulator understands
+// and re-runs, modelling the applicant supplying the evidence.
+function NeedsLoop({
+  needs,
+  satisfied,
+  onToggle,
+  onRerun,
+  running,
+}: {
+  needs: string[];
+  satisfied: string[];
+  onToggle: (need: string) => void;
+  onRerun: () => void;
+  running: boolean;
+}) {
+  const anySelected = needs.some(
+    (n) => isSatisfiable(n) && satisfied.includes(n),
+  );
+  return (
+    <div className="cer-needs">
+      <div className="cer-needs-title">Satisfy to continue</div>
+      {needs.map((n) => {
+        const ok = isSatisfiable(n);
+        return (
+          <label
+            key={n}
+            className={`cer-need${ok ? "" : " unsupported"}`}
+            title={ok ? undefined : "The simulator can't auto-satisfy this need"}
+          >
+            <input
+              type="checkbox"
+              disabled={!ok}
+              checked={ok && satisfied.includes(n)}
+              onChange={() => onToggle(n)}
+            />
+            <code>{n}</code>
+            {!ok && <span className="cer-need-note">manual</span>}
+          </label>
+        );
+      })}
+      <button
+        type="button"
+        className="cer-run"
+        style={{ marginTop: "var(--space-2)" }}
+        onClick={onRerun}
+        disabled={running || !anySelected}
+      >
+        {running ? "Evaluating…" : "Re-run with satisfied evidence ▸"}
+      </button>
+    </div>
   );
 }
 

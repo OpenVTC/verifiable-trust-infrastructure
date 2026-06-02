@@ -1909,6 +1909,48 @@ dd .copy-icon-btn {
   background: var(--bg-elev);
   animation: cer-pop 0.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* request_more negotiation loop */
+.cer-needs {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--vd-more) 40%, var(--border));
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cer-needs-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vd-more);
+}
+.cer-need {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.cer-need input {
+  accent-color: var(--vd-more);
+}
+.cer-need.unsupported {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.cer-need-note {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
+}
 @keyframes cer-pop {
   from {
     opacity: 0;
