@@ -1956,3 +1956,199 @@ dd .copy-icon-btn {
   margin-bottom: var(--space-2);
   resize: vertical;
 }
+
+/* ── Visual rule editor ──────────────────────────────────────────── */
+.rule-editor {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: var(--space-4);
+}
+@media (max-width: 1100px) {
+  .rule-editor {
+    grid-template-columns: 1fr;
+  }
+}
+.rule-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.rule-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elev);
+  padding: var(--space-3);
+  position: relative;
+  overflow: hidden;
+}
+.rule-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--border-strong);
+}
+.rule-card.eff-allow::before {
+  background: var(--vd-allow);
+}
+.rule-card.eff-deny::before {
+  background: var(--vd-deny);
+}
+.rule-card.eff-refer::before {
+  background: var(--vd-refer);
+}
+.rule-card.eff-request_more::before {
+  background: var(--vd-more);
+}
+.rule-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.rule-pri {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.rule-name {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-base);
+  font-weight: 500;
+  padding: 2px 0;
+}
+.rule-name:focus {
+  outline: none;
+  border-bottom-color: var(--brand);
+}
+.rule-tools {
+  display: flex;
+  gap: 2px;
+}
+.rule-tools button {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.rule-tools button:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.rule-tools button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.rule-when,
+.rule-then,
+.rule-add-cond {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.rule-kw {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.rule-cond {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--text);
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+.rule-cond b {
+  color: var(--brand);
+  font-weight: 500;
+}
+.rule-x {
+  cursor: pointer;
+  opacity: 0.5;
+  font-weight: 600;
+}
+.rule-x:hover {
+  opacity: 1;
+}
+.rule-add-cond select,
+.rule-then select,
+.rule-arg {
+  height: 30px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  width: auto;
+  min-width: 0;
+}
+.rule-arg {
+  max-width: 160px;
+}
+.rule-add-cond button,
+.rule-add-route {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.rule-add-cond button:hover,
+.rule-add-route:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.rule-add-route {
+  width: 100%;
+  padding: var(--space-3);
+}
+.rule-preview {
+  display: flex;
+  flex-direction: column;
+}
+.rule-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.rule-cancel {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.rule-cancel:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}

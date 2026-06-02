@@ -21,12 +21,15 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
 import {
   type Purpose,
+  CEREMONY_PURPOSES,
   OTHER_PURPOSES,
   activatePolicy,
   fetchActivePolicy,
   fetchPolicies,
   uploadPolicy,
 } from "@/lib/policies-api";
+import { blankIR, parseRego } from "@/lib/rule-ir";
+import { RuleEditor } from "@/plugins/RuleEditor";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
 
@@ -532,10 +535,16 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
 // per-ceremony (the right panel) and for the non-ceremony purposes.
 // ---------------------------------------------------------------------------
 
+/** Rego package for a ceremony purpose (role-change → role_change). */
+function pkgFor(purpose: Purpose): string {
+  return `vtc.${purpose === "roleChange" ? "role_change" : purpose}`;
+}
+
 function PolicyManager({ purpose }: { purpose: Purpose }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [showUpload, setShowUpload] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const query = useQuery({
     queryKey: ["policies", purpose],
@@ -550,8 +559,32 @@ function PolicyManager({ purpose }: { purpose: Purpose }) {
     },
   });
 
+  const saveVisual = useMutation({
+    mutationFn: (rego: string) => uploadPolicy({ purpose, regoSource: rego }),
+    onSuccess: () => {
+      setEditing(false);
+      void qc.invalidateQueries({ queryKey: ["policies", purpose] });
+    },
+  });
+
   const items = query.data?.items ?? [];
   const active = items.find((p) => p.isActive) ?? null;
+  const canAuthor = CEREMONY_PURPOSES.includes(purpose);
+
+  if (editing) {
+    return (
+      <RuleEditor
+        purpose={purpose}
+        pkg={pkgFor(purpose)}
+        initial={
+          (active && parseRego(active.regoSource)) || blankIR(purpose)
+        }
+        saving={saveVisual.isPending}
+        onSave={(rego) => saveVisual.mutate(rego)}
+        onCancel={() => setEditing(false)}
+      />
+    );
+  }
 
   return (
     <>
@@ -626,13 +659,32 @@ function PolicyManager({ purpose }: { purpose: Purpose }) {
         </>
       )}
 
+      {canAuthor && (
+        <>
+          <button
+            type="button"
+            className="cer-run"
+            style={{ marginTop: "var(--space-4)" }}
+            onClick={() => setEditing(true)}
+          >
+            Author visually ▸
+          </button>
+          {active && !parseRego(active.regoSource) && (
+            <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+              The active policy was hand-written — opening the editor starts
+              from a blank route set.
+            </p>
+          )}
+        </>
+      )}
+
       <button
         type="button"
-        className="cer-run"
-        style={{ marginTop: "var(--space-4)" }}
+        className="rule-cancel"
+        style={{ marginTop: "var(--space-3)" }}
         onClick={() => setShowUpload((v) => !v)}
       >
-        {showUpload ? "Cancel" : "Upload new revision ▸"}
+        {showUpload ? "Cancel" : "Upload raw Rego"}
       </button>
       {showUpload && (
         <UploadPolicyForm
