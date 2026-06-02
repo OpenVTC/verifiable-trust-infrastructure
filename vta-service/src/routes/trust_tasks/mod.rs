@@ -345,6 +345,10 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => {
             device::handle_heartbeat(state, auth, doc).await
         }
+        vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => {
+            device::handle_disable(state, auth, doc).await
+        }
         // ─── Contexts slice ──────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => {
             contexts::handle_list(state, auth, doc).await

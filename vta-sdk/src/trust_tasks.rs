@@ -893,6 +893,8 @@ pub const ALL_URIS: &[&str] = &[
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_HEARTBEAT_0_1,
+    TASK_DEVICE_LIST_0_1,
+    TASK_DEVICE_DISABLE_0_1,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,

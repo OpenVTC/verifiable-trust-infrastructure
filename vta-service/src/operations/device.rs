@@ -11,13 +11,14 @@ use uuid::Uuid;
 
 use crate::acl::{
     AclEntry, Capability, CompanionFormFactor, ConsumerKind, DeviceBinding, ServiceKind,
-    derived_capabilities_for_role, get_acl_entry, store_acl_entry,
+    derived_capabilities_for_role, get_acl_entry, list_acl_entries, store_acl_entry,
 };
 use crate::audit;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
+use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 
 /// Register the caller's device: attach a [`DeviceBinding`] to its existing ACL
@@ -133,6 +134,136 @@ pub async fn heartbeat_device(
         "queuedOperations": [],
         "syncHint": "up-to-date",
     }))
+}
+
+/// List the maintainer's registered devices, filtered per the request. Requires
+/// management rights. Disabled/wiped devices are omitted unless explicitly
+/// included. Returns `{ devices, cursor, truncated }`.
+///
+/// Cursor pagination is not yet implemented — `pageSize` truncates and sets
+/// `truncated`, with no continuation `cursor` (operators narrow filters). This
+/// is the only deviation from the spec's pagination and is called out here.
+pub async fn list_devices(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    payload: &list_spec::Payload,
+) -> Result<Value, AppError> {
+    auth.require_manage()?;
+
+    let entries = list_acl_entries(acl_ks).await?;
+    let mut devices: Vec<Value> = Vec::new();
+    for entry in &entries {
+        let Some(b) = entry.device.as_ref() else {
+            continue;
+        };
+        if !payload.include_disabled && b.disabled_at.is_some() {
+            continue;
+        }
+        if !payload.include_wiped && b.wiped_at.is_some() {
+            continue;
+        }
+        if let Some(ckf) = &payload.consumer_kind_filter {
+            let is_companion = matches!(entry.kind, ConsumerKind::Companion { .. });
+            let want_companion = matches!(ckf, list_spec::PayloadConsumerKindFilter::Companion);
+            if is_companion != want_companion {
+                continue;
+            }
+        }
+        if let Some(fff) = &payload.form_factor_filter {
+            match &entry.kind {
+                ConsumerKind::Companion { form_factor }
+                    if form_factor_matches(fff, form_factor) => {}
+                // A form-factor filter excludes Services and non-matching companions.
+                _ => continue,
+            }
+        }
+        if let Some(cap) = &payload.capability_filter {
+            let want = serde_json::to_value(cap).ok();
+            let have = wire_capabilities(entry);
+            if !want.is_some_and(|w| have.contains(&w)) {
+                continue;
+            }
+        }
+        if let Some(since) = payload.last_seen_since {
+            let seen = b
+                .last_seen_at
+                .as_deref()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&chrono::Utc) >= since)
+                .unwrap_or(false);
+            if !seen {
+                continue;
+            }
+        }
+        devices.push(to_wire_binding(entry));
+    }
+
+    let limit = payload.page_size.map(|n| n.get() as usize).unwrap_or(200);
+    let truncated = devices.len() > limit;
+    devices.truncate(limit);
+    Ok(json!({ "devices": devices, "truncated": truncated }))
+}
+
+fn form_factor_matches(
+    filter: &list_spec::PayloadFormFactorFilter,
+    ff: &CompanionFormFactor,
+) -> bool {
+    use list_spec::PayloadFormFactorFilter as F;
+    matches!(
+        (filter, ff),
+        (F::Browser, CompanionFormFactor::Browser)
+            | (F::Mobile, CompanionFormFactor::Mobile)
+            | (F::Desktop, CompanionFormFactor::Desktop)
+    )
+}
+
+/// Disable a device by its `deviceId`: set `disabledAt` (idempotent — a
+/// re-disable keeps the original timestamp) so it can no longer authenticate.
+/// Requires management rights. Returns `{ deviceId, disabledAt }`.
+///
+/// NOTE: the auth-path enforcement (a disabled device is rejected at
+/// authentication) is a separate follow-up — this records the state and
+/// surfaces it via `device/list`.
+pub async fn disable_device(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    device_id: &str,
+) -> Result<Value, AppError> {
+    auth.require_manage()?;
+
+    let mut entry = list_acl_entries(acl_ks)
+        .await?
+        .into_iter()
+        .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
+        .ok_or_else(|| {
+            AppError::NotFound(format!("device/disable — no device with id {device_id}"))
+        })?;
+
+    let binding = entry.device.as_mut().expect("matched entry has a binding");
+    if binding.disabled_at.is_none() {
+        binding.disabled_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+    let disabled_at = binding.disabled_at.clone().expect("disabled_at set above");
+    // Disabling changes authorization-relevant state — bump the version so a
+    // concurrent ACL edit guarded by If-Match conflicts rather than racing.
+    entry.version = entry.version.saturating_add(1);
+    let did = entry.did.clone();
+    store_acl_entry(acl_ks, &entry).await?;
+
+    info!(did = %did, device_id, "device disabled");
+    let _ = audit::record(
+        audit_ks,
+        "device.disable",
+        &auth.did,
+        Some(&did),
+        "success",
+        None,
+        None,
+    )
+    .await;
+
+    Ok(json!({ "deviceId": device_id, "disabledAt": disabled_at }))
 }
 
 /// Assemble the wire `DeviceBinding` (device/_shared schema) from an ACL entry
@@ -457,6 +588,120 @@ mod tests {
         let err = heartbeat_device(&acl_ks, &device_auth("did:key:zBare"), None)
             .await
             .expect_err("heartbeat without a binding must be refused");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    fn admin_auth() -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zAdmin".into(),
+            role: Role::Admin,
+            allowed_contexts: vec![],
+            session_id: "s".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    fn list_payload(v: Value) -> list_spec::Payload {
+        serde_json::from_value(v).expect("valid list payload")
+    }
+
+    async fn seed_and_register(
+        acl_ks: &KeyspaceHandle,
+        audit_ks: &KeyspaceHandle,
+        did: &str,
+        ff: CompanionFormFactor,
+        name: &str,
+    ) {
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(did, Role::Application, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        register_device(
+            acl_ks,
+            audit_ks,
+            &device_auth(did),
+            ConsumerKind::Companion { form_factor: ff },
+            name.into(),
+            None,
+            Some("did:key:zHpke".into()),
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_filters_then_disable_hides_device() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        seed_and_register(
+            &acl_ks,
+            &audit_ks,
+            "did:key:zPhone",
+            CompanionFormFactor::Mobile,
+            "Phone",
+        )
+        .await;
+        seed_and_register(
+            &acl_ks,
+            &audit_ks,
+            "did:key:zLaptop",
+            CompanionFormFactor::Desktop,
+            "Laptop",
+        )
+        .await;
+
+        // Default list returns both active devices.
+        let all = list_devices(&acl_ks, &admin_auth(), &list_payload(json!({})))
+            .await
+            .unwrap();
+        assert_eq!(all["devices"].as_array().unwrap().len(), 2);
+
+        // formFactorFilter=mobile narrows to the phone.
+        let mob = list_devices(
+            &acl_ks,
+            &admin_auth(),
+            &list_payload(json!({ "formFactorFilter": "mobile" })),
+        )
+        .await
+        .unwrap();
+        let devs = mob["devices"].as_array().unwrap();
+        assert_eq!(devs.len(), 1);
+        assert_eq!(devs[0]["consumerKind"]["formFactor"], "mobile");
+
+        // Disable the phone by its deviceId.
+        let phone_id = devs[0]["deviceId"].as_str().unwrap().to_string();
+        let d = disable_device(&acl_ks, &audit_ks, &admin_auth(), &phone_id)
+            .await
+            .unwrap();
+        assert_eq!(d["deviceId"], phone_id.as_str());
+        assert!(d["disabledAt"].is_string());
+
+        // Default list now hides the disabled phone…
+        let after = list_devices(&acl_ks, &admin_auth(), &list_payload(json!({})))
+            .await
+            .unwrap();
+        assert_eq!(after["devices"].as_array().unwrap().len(), 1);
+        // …and includeDisabled brings it back.
+        let incl = list_devices(
+            &acl_ks,
+            &admin_auth(),
+            &list_payload(json!({ "includeDisabled": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(incl["devices"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn disable_unknown_device_is_not_found() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let err = disable_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope")
+            .await
+            .expect_err("unknown deviceId must be NotFound");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
 }

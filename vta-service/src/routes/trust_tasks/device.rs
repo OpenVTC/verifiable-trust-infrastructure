@@ -9,7 +9,9 @@
 use axum::response::Response;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::device::disable::v0_1 as disable_spec;
 use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
+use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 
 use crate::auth::AuthClaims;
@@ -23,6 +25,8 @@ use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, s
 pub(super) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1,
     vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
+    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1,
 ];
 
 /// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
@@ -72,6 +76,40 @@ pub(super) async fn handle_heartbeat(
         Err(resp) => return resp,
     };
     match operations::device::heartbeat_device(&state.acl_ks, auth, payload.platform).await {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `device/list/0.1` — list the maintainer's registered devices (filtered).
+pub(super) async fn handle_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let payload: list_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    match operations::device::list_devices(&state.acl_ks, auth, &payload).await {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `device/disable/0.1` — disable a device by `deviceId`.
+pub(super) async fn handle_disable(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let payload: disable_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let device_id = payload.device_id.to_string();
+    match operations::device::disable_device(&state.acl_ks, &state.audit_ks, auth, &device_id).await
+    {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
