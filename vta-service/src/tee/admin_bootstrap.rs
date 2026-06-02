@@ -18,7 +18,6 @@
 use tracing::info;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
-use crate::auth::session::now_epoch;
 use crate::config::AppConfig;
 use crate::contexts;
 use crate::error::AppError;
