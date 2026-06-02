@@ -564,6 +564,76 @@ async fn resolve_step_up(
     }
 }
 
+/// Trust Task `type` of a step-up approve-request (also the DIDComm message
+/// `type` used when pushing one to an approver).
+const STEP_UP_APPROVE_REQUEST_TYPE: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
+
+/// Pure route selection for a delegated push: given the approver DID and the
+/// VTA's configured mediator, pick the mediator to forward through.
+///
+/// DID-driven so it extends to routable DIDs: a `did:key` approver (the v1
+/// mobile holder) has no DIDComm service endpoint, so it routes through the
+/// VTA's own (shared) mediator — the holder registers its `did:key` with the
+/// same mediator and picks the message up there. Future `did:peer` / `did:webvh`
+/// approvers advertise their own mediator service and route there instead (not
+/// yet wired → `None`, so the relay fallback applies).
+fn approver_mediator(approver_did: &str, configured: Option<&str>) -> Option<String> {
+    if !approver_did.starts_with("did:key:") {
+        return None;
+    }
+    configured.filter(|m| !m.is_empty()).map(str::to_string)
+}
+
+/// Best-effort proactive delivery of a delegated step-up approve-request to the
+/// approver's device over DIDComm, by buffering a forward through the resolved
+/// mediator. No-op for self-approval (`recipient == caller`). Failures are
+/// swallowed — the `403`/reject still carries the approve-request as a relay
+/// fallback, so the proxied push is an enhancement, never a hard dependency.
+async fn maybe_push_step_up(
+    state: &AppState,
+    recipient: &str,
+    caller_did: &str,
+    approve_request: &Value,
+) {
+    if recipient == caller_did {
+        return; // self mode — the caller satisfies its own step-up.
+    }
+    let mediator_did = {
+        let cfg = state.config.read().await;
+        approver_mediator(
+            recipient,
+            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
+        )
+    };
+    let Some(mediator_did) = mediator_did else {
+        tracing::debug!(
+            approver = %recipient,
+            "no mediator route for delegated approver; relying on the relay fallback"
+        );
+        return;
+    };
+    let pending = crate::messaging::registry::PendingResponse {
+        recipient_did: recipient.to_string(),
+        message_type: STEP_UP_APPROVE_REQUEST_TYPE.to_string(),
+        body: approve_request.clone(),
+        thread_id: approve_request
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    if let Err(e) = state
+        .mediator_registry
+        .buffer_outbound(&mediator_did, pending)
+        .await
+    {
+        tracing::warn!(
+            error = %e, approver = %recipient, mediator = %mediator_did,
+            "failed to buffer delegated step-up push; relay fallback applies"
+        );
+    }
+}
+
 /// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
 /// (AAL2) session inside a dispatcher handler.
 ///
@@ -619,13 +689,19 @@ pub(super) async fn require_step_up(
     )
     .await
     {
-        Ok(approve_request) => RejectReason::TaskFailed {
-            reason: "auth:step_up_required".to_string(),
-            details: Some(json!({
-                "requiredAcr": STEP_UP_TARGET_ACR,
-                "approveRequest": approve_request,
-            })),
-        },
+        Ok(approve_request) => {
+            // Delegated mode: proactively push the approve-request to the
+            // approver's device over DIDComm. Best-effort — the carried
+            // `approveRequest` below remains the relay fallback.
+            maybe_push_step_up(state, &recipient, &auth.did, &approve_request).await;
+            RejectReason::TaskFailed {
+                reason: "auth:step_up_required".to_string(),
+                details: Some(json!({
+                    "requiredAcr": STEP_UP_TARGET_ACR,
+                    "approveRequest": approve_request,
+                })),
+            }
+        }
         Err(()) => RejectReason::InternalError {
             reason: "failed to initiate step-up".to_string(),
         },
@@ -742,6 +818,23 @@ mod tests {
     use http_body_util::BodyExt;
     use multibase::Base;
     use serde_json::json;
+
+    #[test]
+    fn approver_mediator_routes_did_key_to_configured_mediator() {
+        // did:key approver → the shared (VTA-configured) mediator.
+        assert_eq!(
+            approver_mediator("did:key:z6MkApprover", Some("did:web:mediator")),
+            Some("did:web:mediator".to_string())
+        );
+        // No (or empty) configured mediator → no route (relay fallback).
+        assert_eq!(approver_mediator("did:key:z6MkApprover", None), None);
+        assert_eq!(approver_mediator("did:key:z6MkApprover", Some("")), None);
+        // Future routable DIDs advertise their own mediator; not wired yet → None.
+        assert_eq!(
+            approver_mediator("did:webvh:scid:host:approver", Some("did:web:mediator")),
+            None
+        );
+    }
 
     #[tokio::test]
     async fn issue_step_up_challenge_mints_pending_and_403s() {
