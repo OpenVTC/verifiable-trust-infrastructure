@@ -892,6 +892,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
+    TASK_DEVICE_HEARTBEAT_0_1,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,

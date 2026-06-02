@@ -91,6 +91,50 @@ pub async fn register_device(
     Ok(json!({ "binding": to_wire_binding(&entry) }))
 }
 
+/// Device heartbeat: refresh the binding's `lastSeenAt` (and `platform` if the
+/// device reports a change), and return the maintainer's server time + any
+/// queued operations. The caller MUST be a registered device (else
+/// `not_registered`).
+///
+/// Does **not** bump the ACL entry `version` — a heartbeat is a metadata
+/// refresh, not a policy change, so it must not collide with concurrent admin
+/// edits guarded by `If-Match`. High-volume, so it is not individually audited
+/// (the spec permits sampling).
+///
+/// `queuedOperations` is empty until `device/wipe` lands (C3); `syncHint` is
+/// `up-to-date` until vault/sync is wired (the `vaultSeq` hint is accepted but
+/// not yet acted on).
+pub async fn heartbeat_device(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    platform: Option<String>,
+) -> Result<Value, AppError> {
+    let did = auth.did.clone();
+    let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "device/heartbeat:not_registered — no DeviceBinding for {did}"
+        ))
+    })?;
+    let binding = entry.device.as_mut().ok_or_else(|| {
+        AppError::NotFound(format!(
+            "device/heartbeat:not_registered — no DeviceBinding for {did}"
+        ))
+    })?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    binding.last_seen_at = Some(now.clone());
+    if platform.is_some() {
+        binding.platform = platform;
+    }
+    store_acl_entry(acl_ks, &entry).await?;
+
+    Ok(json!({
+        "serverTime": now,
+        "queuedOperations": [],
+        "syncHint": "up-to-date",
+    }))
+}
+
 /// Assemble the wire `DeviceBinding` (device/_shared schema) from an ACL entry
 /// that carries a [`DeviceBinding`]. Reused by `device/list`.
 ///
@@ -357,5 +401,62 @@ mod tests {
         .await
         .expect_err("re-registration must conflict");
         assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn heartbeat_refreshes_last_seen_and_platform() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(did, Role::Application, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        register_device(
+            &acl_ks,
+            &audit_ks,
+            &device_auth(did),
+            mobile_kind(),
+            "Phone".into(),
+            Some("iOS 19.0".into()),
+            Some("did:key:zHpke".into()),
+            "test",
+        )
+        .await
+        .unwrap();
+
+        let body = heartbeat_device(&acl_ks, &device_auth(did), Some("iOS 19.1".into()))
+            .await
+            .expect("heartbeat on a registered device succeeds");
+        assert_eq!(body["syncHint"], "up-to-date");
+        assert!(body["queuedOperations"].as_array().unwrap().is_empty());
+        assert!(body["serverTime"].is_string());
+
+        // Platform update + lastSeenAt are persisted; version is NOT bumped.
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        let b = entry.device.unwrap();
+        assert_eq!(b.platform.as_deref(), Some("iOS 19.1"));
+        assert!(b.last_seen_at.is_some());
+        assert_eq!(
+            entry.version, 1,
+            "heartbeat must not bump the entry version"
+        );
+    }
+
+    #[tokio::test]
+    async fn heartbeat_rejects_unregistered_device() {
+        let (acl_ks, _audit_ks, _dir) = fresh().await;
+        // ACL entry exists but no DeviceBinding attached.
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new("did:key:zBare", Role::Application, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        let err = heartbeat_device(&acl_ks, &device_auth("did:key:zBare"), None)
+            .await
+            .expect_err("heartbeat without a binding must be refused");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
 }

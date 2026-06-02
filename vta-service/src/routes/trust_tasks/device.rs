@@ -9,6 +9,7 @@
 use axum::response::Response;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 
 use crate::auth::AuthClaims;
@@ -19,7 +20,10 @@ use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, s
 
 /// URIs handled by this slice. Aggregated by the dispatcher's parity harness.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1];
+pub(super) const DISPATCHED_URIS: &[&str] = &[
+    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1,
+    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
+];
 
 /// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
 /// already be in the ACL; re-registration is refused.
@@ -51,6 +55,23 @@ pub(super) async fn handle_register(
     )
     .await
     {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` (and
+/// `platform` if changed) and returns server time + queued operations.
+pub(super) async fn handle_heartbeat(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let payload: heartbeat_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    match operations::device::heartbeat_device(&state.acl_ks, auth, payload.platform).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
