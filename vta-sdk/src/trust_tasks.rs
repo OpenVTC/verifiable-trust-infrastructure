@@ -890,6 +890,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
+    // Device slice
+    TASK_DEVICE_REGISTER_0_1,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,
@@ -1028,6 +1030,7 @@ mod tests {
         const ALLOWED_PREFIXES: &[&str] = &[
             "https://trusttasks.org/spec/vta/",
             "https://trusttasks.org/spec/auth/",
+            "https://trusttasks.org/spec/device/",
             "https://trusttasks.org/spec/did-management/",
             "https://trusttasks.org/spec/vault/",
             "https://trusttasks.org/spec/webvh/",

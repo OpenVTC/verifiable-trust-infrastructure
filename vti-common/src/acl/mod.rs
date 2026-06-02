@@ -227,6 +227,11 @@ pub struct DeviceBinding {
     pub disabled_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wiped_at: Option<String>,
+    /// X25519 public key (`did:key` form) the maintainer HPKE-seals payloads to
+    /// (sealed secrets, session blobs, sync events). Supplied by the device at
+    /// `device/register/0.1`. `None` on legacy rows and pure ACL entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hpke_public_key: Option<String>,
     /// Push wake channel (opaque gateway handle + VTA-owned trigger allowlist).
     /// `None` until the device conveys a handle via `device/set-wake/0.1`;
     /// absent on legacy rows. The push token is never stored here.
@@ -652,6 +657,7 @@ mod tests {
             last_seen_at: None,
             disabled_at: None,
             wiped_at: None,
+            hpke_public_key: None,
             wake: None,
         }
     }

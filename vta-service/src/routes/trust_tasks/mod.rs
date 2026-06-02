@@ -49,6 +49,7 @@ mod auth;
 mod backup;
 mod config;
 mod contexts;
+mod device;
 mod did_templates;
 mod discovery;
 mod helpers;
@@ -187,6 +188,7 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     v.extend(backup::DISPATCHED_URIS);
     v.extend(config::DISPATCHED_URIS);
     v.extend(contexts::DISPATCHED_URIS);
+    v.extend(device::DISPATCHED_URIS);
     v.extend(did_templates::DISPATCHED_URIS);
     v.extend(discovery::DISPATCHED_URIS);
     v.extend(keys::DISPATCHED_URIS);
@@ -336,6 +338,10 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => acl::handle_get(state, auth, doc).await,
         vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update(state, auth, doc).await,
         vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete(state, auth, doc).await,
+        // ─── Device slice ─────────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => {
+            device::handle_register(state, auth, doc).await
+        }
         // ─── Contexts slice ──────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => {
             contexts::handle_list(state, auth, doc).await
