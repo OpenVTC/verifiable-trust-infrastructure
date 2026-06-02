@@ -7,6 +7,7 @@ mod auth;
 mod community;
 mod config;
 pub(crate) mod did_log;
+mod directory;
 mod endorsement_types;
 mod endorsements;
 mod health;
@@ -213,6 +214,8 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
     let members_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/list/1.0")
         .expect("static Trust-Task URL");
     let members_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/show/1.0")
+        .expect("static Trust-Task URL");
+    let directory_query = TrustTask::new("https://trusttasks.org/openvtc/vtc/directory/query/1.0")
         .expect("static Trust-Task URL");
     // `members_update` (`members/update/1.0`) shares the
     // `members/{did}` mount with `show` for now — TrustTaskRouter
@@ -500,6 +503,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             axum::routing::delete(admin::invites::revoke_invite),
             admin_invites_revoke,
         )
+        // Directory ceremony (read-only field projection via the
+        // ceremony decision pipeline).
+        .route_with_task("/directory/{did}", get(directory::query), directory_query)
         // Members (Phase 1 M1.4–M1.6).
         .route_with_task("/members", get(members::read::list_members), members_list)
         // `/v1/members/me` for self-remove (M1.11.1). Must be

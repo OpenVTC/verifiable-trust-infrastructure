@@ -1,28 +1,33 @@
-# Default `directory` policy — members see DID + role only
-# (spec §7.1 + §12.3).
+# Default `directory` policy — the ceremony decision spine
+# (ceremony-pipeline design §4; supersedes the Phase-5 boolean
+# placeholder).
 #
-# The directory endpoint lands in Phase 5 (community-facing
-# member directory). The default-deny envelope here describes
-# the privacy floor: any field beyond `did` + `role` is denied
-# unless the operator uploads a wider-scope policy. Audit + the
-# admin-facing `GET /v1/members` already bypass this — it's the
-# *member-to-member* visibility surface this policy gates.
+# The directory ceremony is the read-only instance of the decision
+# pipeline: `allow` carries a FIELD PROJECTION (`with.fields`), not a
+# boolean. The host runs `data.vtc.directory.decision` over the
+# verified Facts (`input.actor` / `input.subject` / `input.state`),
+# realizes the verdict by returning exactly `with.fields` of the
+# subject, and intersects those fields with the community PII-boundary
+# whitelist before they cross the wire.
 #
-# Input shape (spec §7.3):
-#   { viewer_did, viewer_role, target_member, fields_requested,
-#     action }
+# Privacy floor: a non-member viewer sees nothing; an authenticated
+# member sees `did` + `role`; an admin sees the fuller record. An
+# operator can upload a wider- or narrower-scope policy; the PII
+# boundary still caps what any policy can project.
 
 package vtc.directory
 
 import rego.v1
 
-default allow := false
+# structural totality — a non-member sees nothing
+default decision := {"effect": "deny", "with": {"code": "not-a-member"}}
 
-allowed_fields := {"did", "role"}
+# Admin viewer — fuller record
+decision := {"effect": "allow", "with": {"fields": ["did", "role", "joined_at", "status"]}} if {
+	input.actor.role == "admin"
+}
 
-allow if {
-	input.action == "show"
-	every f in input.fields_requested {
-		allowed_fields[f]
-	}
+# Authenticated member viewer — minimal projection
+else := {"effect": "allow", "with": {"fields": ["did", "role"]}} if {
+	input.actor.authenticated == true
 }

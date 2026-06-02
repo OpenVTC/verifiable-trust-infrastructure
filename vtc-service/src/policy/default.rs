@@ -548,37 +548,49 @@ mod tests {
     }
 
     #[test]
-    fn directory_default_allows_did_and_role_only() {
+    fn directory_default_projects_fields_by_viewer_role() {
+        // The directory default is now the ceremony decision spine: it
+        // returns a {effect, with} object whose `with.fields` is the
+        // projection, branching on the verified-facts `input.actor`.
         let c = compile_default(PolicyPurpose::Directory);
-        let ok = evaluate(
+
+        // Admin viewer → fuller record.
+        let admin = evaluate(
             &c,
-            "data.vtc.directory.allow",
-            json!({
-                "viewer_did": "did:key:zViewer",
-                "viewer_role": "member",
-                "target_member": { "did": "did:key:zTarget" },
-                "fields_requested": ["did", "role"],
-                "action": "show"
-            }),
+            "data.vtc.directory.decision",
+            json!({ "actor": { "role": "admin", "authenticated": true } }),
         )
         .unwrap();
-        assert!(pluck_bool(&ok));
+        assert_eq!(
+            admin.pointer("/result/0/expressions/0/value"),
+            Some(&json!({
+                "effect": "allow",
+                "with": { "fields": ["did", "role", "joined_at", "status"] }
+            })),
+        );
 
+        // Authenticated non-admin member → did + role only.
+        let member = evaluate(
+            &c,
+            "data.vtc.directory.decision",
+            json!({ "actor": { "role": "member", "authenticated": true } }),
+        )
+        .unwrap();
+        assert_eq!(
+            member.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "fields": ["did", "role"] } })),
+        );
+
+        // Unauthenticated / non-member → structural-totality deny.
         let denied = evaluate(
             &c,
-            "data.vtc.directory.allow",
-            json!({
-                "viewer_did": "did:key:zViewer",
-                "viewer_role": "member",
-                "target_member": { "did": "did:key:zTarget" },
-                "fields_requested": ["did", "role", "email"],
-                "action": "show"
-            }),
+            "data.vtc.directory.decision",
+            json!({ "actor": { "authenticated": false } }),
         )
         .unwrap();
-        assert!(
-            !pluck_bool(&denied),
-            "directory default must deny when extra fields are requested"
+        assert_eq!(
+            denied.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "deny", "with": { "code": "not-a-member" } })),
         );
     }
 
