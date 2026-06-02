@@ -1,0 +1,19 @@
+{
+  "purpose": "lkmv-maintainer",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkCandidate", "role": "contributor", "authenticated": false },
+  "subject": { "did": "did:key:z6MkCandidate" },
+  "context": { "community_did": "did:webvh:linux-kernel.example", "channel": "rest", "member_count": 4500 },
+  "evidence": {
+    "invitation": {
+      "verified": true,
+      "consumed": false,
+      "issuer": "did:key:z6MkLinusOrSuper",
+      "issuer_role": "super-maintainer",
+      "scopes": ["membership"]
+    },
+    "presentation": null,
+    "request": {}
+  },
+  "state": { "subject_member": { "role": "contributor", "status": "active", "joined_at": "2024-08-12T00:00:00Z" } }
+}

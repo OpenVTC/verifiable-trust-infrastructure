@@ -1,0 +1,20 @@
+{
+  "purpose": "lkmv-merge",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkContributor", "role": "contributor", "authenticated": true },
+  "subject": { "did": "did:key:z6MkContributor" },
+  "context": { "community_did": "did:webvh:linux-kernel.example", "channel": "rest", "member_count": 4500 },
+  "evidence": {
+    "invitation": null,
+    "presentation": null,
+    "request": {
+      "commit_sha": "9c3e1f2a8b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f",
+      "parent_shas": ["1a2b3c4d5e6f7890abcdef1234567890abcdef12"],
+      "branch": "staging-next",
+      "signoff_chain": [
+        { "did": "did:key:z6MkContributor",     "name": "First-time contributor" }
+      ]
+    }
+  },
+  "state": { "subject_member": { "role": "contributor", "status": "active", "joined_at": "2026-02-14T00:00:00Z" } }
+}

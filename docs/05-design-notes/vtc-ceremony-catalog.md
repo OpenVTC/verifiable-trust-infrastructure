@@ -211,7 +211,173 @@ without special-casing, the pipeline is the right shape — and threads/effects 
 
 ---
 
-## 6. The remaining purposes map cleanly
+## 6. Capability escalation — exemplars
+
+§4's `role-change` is the generic in-place mutation primitive. In real OSS communities, capability
+escalation has shape that the generic ceremony abstracts over: who can sponsor whom, whether one
+signature suffices or a quorum is required, whether the granted role carries a path scope, whether
+there's a structural prerequisite. The two exemplars below — modeled on the Linux kernel and Kubernetes
+— exercise opposite points in that design space using **the same IR vocabulary** plus one small leaf
+(`invitation_has_scope`).
+
+Both ceremonies are *applications* of the role-change shape, not replacements. They illustrate how a
+community would express its specific promotion rules; the generic `role-change` (§4) remains the
+default for communities without specialized needs. Both grant non-admin roles, so the privilege ceiling
+(`vtc-ceremony-rule-ir.md` §4) holds.
+
+### 6.1 Linux LKMV — subsystem maintainer addition
+
+- **Trigger:** a candidate developer who has been sustaining maintenance work in some part of the tree.
+  A super-maintainer (or Linus) authors a patch adding their name to the `MAINTAINERS` file, encoded
+  here as a VTC invitation credential.
+- **Evidence:** `invitation: { verified, consumed, issuer, issuer_role: "super-maintainer", scope:
+  "<path-glob>" }`. The `scope` field is the path the new maintainer's authority covers.
+- **Routes (`lkmv-maintainer.rego`):** `has_valid_invitation AND invitation_issuer_has_role
+  ("super-maintainer") AND invitation_has_scope → allow(role: maintainer)`; else
+  `request_more(needs: ["invitation:from-super-maintainer", "invitation:scope-required"])`.
+- **Verdict realization:** `allow` ⇒ VTA issues role VEC scoped to `evidence.invitation.scope`, writes
+  ACL entry recording the path-scoped grant.
+- **Effects (allow):** issue role VEC → write ACL + Member-as-maintainer record (carrying the scope) →
+  sealed-transfer → audit. Obligation `accept-maintainership`.
+- **Invariant:** privilege ceiling (no admin); plus an implicit *single-sponsor sufficiency* — Linux
+  governance encodes its informality by *not* gating on a quorum.
+
+**What this exemplar proves about the IR:** path-scoped roles fit cleanly via an optional invitation
+field (`pipeline.md` §3). The Linux *style* — informal, single-signer — turns out to need essentially
+no vocabulary beyond what Phase 2 already provides. The policy is two routes, one new leaf, one new
+helper.
+
+### 6.2 Kubernetes Approver — Reviewer → Approver promotion
+
+- **Trigger:** a candidate already holding role `reviewer` (per the trust registry) who has accumulated
+  sponsorship from existing approvers. Each sponsoring approver issues a `PromotionEndorsementCredential`
+  to the candidate.
+- **Evidence:** `presentation.credentials[]` containing ≥2 `PromotionEndorsementCredential`s whose
+  issuers each hold `issuer_role_in_community == "approver"`.
+- **Routes (`k8s-approver.rego`):** three routes, in priority order:
+  1. `subject_has_role("reviewer") AND holds_credential_from_role({type:"PromotionEndorsementCredential",
+     role:"approver", distinct_issuers:true, min:2}) → allow(role: approver)`.
+  2. `subject_has_role("reviewer") → request_more(needs: ["endorsement:from-approver:distinct>=2"])`.
+  3. `always → deny(code: "k8s-approver-requires-reviewer-first")`.
+- **Verdict realization:** `allow` ⇒ VTA re-issues role VEC as `approver`, updates ACL. `request_more`
+  ⇒ PD asking for more endorsements. `deny` ⇒ tells the caller they must be a reviewer first.
+- **Effects (allow):** re-issue role VEC → update ACL role → audit. Obligation
+  `accept-approver-duties`.
+- **Invariant:** privilege ceiling; plus a *structural prerequisite* — promotion to approver requires a
+  prior reviewer role (recorded in the trust registry).
+
+**What this exemplar proves about the IR:** M-of-N is *not a new primitive* — it's
+`holds_credential_from_role` applied to a credential type named `PromotionEndorsementCredential`. The
+same set-comprehension cardinality that drove Phase 3 (VRC from a different CTA) and Phase 4 (≥2 member
+VRCs) drives Kubernetes-style quorum-based promotion. The three-route policy demonstrates `allow /
+request_more / structural-deny` in one ceremony.
+
+### Why both — and what they show together
+
+Each exemplar exercises a different point on two axes from `vtc-ceremony-rule-ir.md`:
+
+| Axis | Linux (LKMV) | Kubernetes (Approver) |
+|---|---|---|
+| Sponsorship | M-of-1 (single super-maintainer) | M-of-N (≥2 distinct approvers) |
+| Promotion criteria | Sponsor's judgment, no thresholds | Endorser credentials + structural prerequisite |
+| Scope | Path-glob on the invitation | Project-wide (informational scope on endorsements only) |
+
+The IR vocabulary that expresses Kubernetes is a strict superset of what's needed for Linux — and that
+superset is small (the `holds_credential_from_role` leaf, already used by admission). One vocabulary
+covers both governance philosophies expressively, which is the design point.
+
+---
+
+## 7. Per-action attestation — issuance ceremonies
+
+The matrix row in §1 describes four ceremony *shapes*: constructive (admission), destructive (leave),
+mutating (role-change), read-only (directory). The two exemplars in this section introduce a **fifth
+shape — issuance of fresh per-action credentials**. The verdict's `allow` doesn't grant a role, change
+a role, or return a projection; it signals to the host that a new credential should be minted, bound
+to the actor's M-DID and the action's data (commit SHA, branch, parents, reviews, etc.).
+
+Per-action attestation is the OSS-distinctive ceremony category. In a generic community, the actions
+are mostly meta (joining, leaving, voting). In open source the *product itself* is a stream of
+artifacts — commits, reviews, merges, releases — and the integrity of the software depends on the
+integrity of these per-action micro-ceremonies. Sigstore, SLSA, in-toto already provide the
+cryptographic substrate; VTC's contribution is **binding the signing keys to community roles at the
+moment of signing**, so downstream verifiers can check both "did this key sign?" and "was the key
+authorized as role R at time T?".
+
+The two exemplars below mirror the same Linux/Kubernetes spectrum we saw in §6, applied to the merge
+event:
+
+### 7.1 LKMV merge — Linux subsystem maintainer merge attestation
+
+- **Trigger:** a Linux maintainer records that they merged a patch series into their tree.
+- **Evidence:** `request: { commit_sha, parent_shas, branch, signoff_chain }`. The actor is the
+  merging maintainer, authenticated via their M-DID.
+- **Routes (`lkmv-merge.rego`):** one-clause gate — `actor_has_role("maintainer") → allow(issues_attestation:
+  "MergeAttestation")`; else `deny(code: "lkmv-merge-requires-maintainer-role")`.
+- **Verdict realization:** `allow` ⇒ host mints a `MergeAttestation` VC binding `actor.did` +
+  `actor.role` + `now` to the request's commit data. The host's responsibility includes packing the
+  signoff chain, scope (if known from MAINTAINERS), and any in-toto layer-attestation references
+  into the credential's claims.
+- **Effects (allow):** mint MergeAttestation → publish to chain → audit. Obligation
+  `chain-to-parents` (the new credential references the parent commits' attestations, if any).
+- **Invariant:** per-action attestation purposes must not also grant a role (§4 invariants).
+
+**What this exemplar proves:** the IR can express *issuance ceremonies* with a tiny vocabulary
+delta — a one-clause gate plus the new `issues_attestation` allow payload. The complexity of the
+resulting credential's structure (which commits, which signoff trail, which scope) lives in the
+host's effect handler, not in the policy. The policy answers *whether* to issue, not *what*.
+
+### 7.2 K8s Prow merge — Kubernetes Prow bot merge attestation
+
+- **Trigger:** Kubernetes Prow's Tide bot records a PR merge after the PR satisfied review criteria.
+- **Evidence:** `request: { commit_sha, parent_shas, branch, pr_number }` + `presentation.credentials`
+  containing the underlying `ReviewAttestation`s (at least one `approve` from an Approver and one
+  `lgtm` from a Reviewer). Actor is Prow itself, holding role `merge-bot` via a forward-looking
+  `AutomationMembershipCredential`.
+- **Routes (`k8s-prow-merge.rego`):** five routes, in priority order:
+  1. bot + approve + lgtm → `allow(issues_attestation: "MergeAttestation")`.
+  2. bot + lgtm-only → `request_more(needs: ["review:approve-from-approver"])`.
+  3. bot + approve-only → `request_more(needs: ["review:lgtm-from-reviewer"])`.
+  4. bot + nothing → `request_more(needs: [both])`.
+  5. not-the-bot → `deny`.
+- **Verdict realization:** `allow` ⇒ host mints a `MergeAttestation` that *chains to* the underlying
+  ReviewAttestations (the obligation `chain-to-reviews` records this). The provenance trail becomes:
+  `MergeAttestation → references → ReviewAttestation[] → references → commit SHA`. A downstream
+  verifier can walk the chain end-to-end.
+- **Effects (allow):** mint MergeAttestation + chain references → publish → audit. Obligations
+  `chain-to-reviews` + `chain-to-parents`.
+- **Invariant:** same as 7.1 (per-action attestation purposes must not grant a role).
+
+**What this exemplar proves:** the IR can express *graceful degradation* across five routes — each
+missing piece of evidence gets a distinct `request_more` verdict with the specific `needs` list. The
+M-of-N gate (≥1 approve + ≥1 lgtm) reuses the existing `holds_credential_from_role` primitive applied
+to a new credential type (`ReviewAttestation`). The bot-as-actor pattern requires a forward-looking
+`AutomationMembershipCredential` (`vtc-ceremony-pipeline.md` §3.4 sketch).
+
+### 7.3 Why both — and what's next
+
+The two exemplars together establish:
+
+- **Per-action attestation is the fifth ceremony shape** (alongside the four §1 matrix rows). Same
+  pipeline, same evidence-collection mechanics, same threading machinery — just a different
+  `allow.with` payload.
+- **Issuance reuses M-of-N primitives**: `holds_credential_from_role` over `ReviewAttestation` credentials
+  is the same primitive that drives Phase 3/4 admission and K8s Approver promotion. The
+  set-comprehension cardinality pattern generalizes across the catalog.
+- **Bot-as-actor is essential** for K8s-style automation. The `AutomationMembershipCredential` sketch
+  in pipeline.md §3.4 names the gap; building the full bot-onboarding ceremony is future work.
+- **Temporal verification** is a real downstream concern. The IR is point-in-time; the trust registry
+  must answer "what role did this DID hold at time T?" for retrospective audits to work. The API
+  contract is sketched in pipeline.md §3.5; the implementation is future work.
+
+The two ceremonies together cover the spectrum from minimal (Linux one-clause) to richly composite
+(Kubernetes bot + multi-credential + chain-references). Both fit in the existing IR vocabulary with
+exactly one new shared leaf (`actor_has_role`) and one new `allow.with` payload key
+(`issues_attestation`).
+
+---
+
+## 8. The remaining purposes map cleanly
 
 The other `vtc-mvp.md` §7.1 purposes are further instances — listed to show coverage, not specified here:
 
@@ -229,7 +395,7 @@ effect handler. None needs a bespoke flow.
 
 ---
 
-## 7. Why this matters for the build
+## 9. Why this matters for the build
 
 Because the catalog is *instances*, the expensive machinery is built once and inherited:
 

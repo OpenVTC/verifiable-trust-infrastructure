@@ -1,0 +1,56 @@
+{
+  "purpose": "k8s-prow-merge",
+  "routes": [
+    {
+      "name": "Prow merge with approver + reviewer signoff",
+      "when": { "all": [
+        { "actor_has_role": "merge-bot" },
+        { "holds_credential_from_role": {
+            "type": "ReviewAttestation",
+            "role": "approver",
+            "min": 1 } },
+        { "holds_credential_from_role": {
+            "type": "ReviewAttestation",
+            "role": "reviewer",
+            "distinct_issuers": true,
+            "min": 1 } }
+      ] },
+      "then": { "effect": "allow", "with": { "issues_attestation": "MergeAttestation", "obligations": ["chain-to-reviews", "chain-to-parents"] } }
+    },
+    {
+      "name": "Missing approver signoff",
+      "when": { "all": [
+        { "actor_has_role": "merge-bot" },
+        { "holds_credential_from_role": {
+            "type": "ReviewAttestation",
+            "role": "reviewer",
+            "distinct_issuers": true,
+            "min": 1 } }
+      ] },
+      "then": { "effect": "request_more", "with": { "needs": ["review:approve-from-approver"] } }
+    },
+    {
+      "name": "Missing reviewer signoff",
+      "when": { "all": [
+        { "actor_has_role": "merge-bot" },
+        { "holds_credential_from_role": {
+            "type": "ReviewAttestation",
+            "role": "approver",
+            "min": 1 } }
+      ] },
+      "then": { "effect": "request_more", "with": { "needs": ["review:lgtm-from-reviewer"] } }
+    },
+    {
+      "name": "Nothing presented",
+      "when": { "all": [
+        { "actor_has_role": "merge-bot" }
+      ] },
+      "then": { "effect": "request_more", "with": { "needs": ["review:approve-from-approver", "review:lgtm-from-reviewer"] } }
+    },
+    {
+      "name": "Not the merge bot",
+      "when": { "all": ["always"] },
+      "then": { "effect": "deny", "with": { "code": "k8s-prow-merge-requires-bot-actor", "reason": "Only an automation actor holding role `merge-bot` may issue MergeAttestations in this community." } }
+    }
+  ]
+}

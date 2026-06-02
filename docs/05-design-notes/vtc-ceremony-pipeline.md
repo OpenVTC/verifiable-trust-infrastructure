@@ -83,7 +83,7 @@ input = {
 
   // What the actor presented. Ceremonies populate the slots they use; the rest are absent.
   "evidence": {
-    "invitation":   null | { "verified", "issuer", "issuer_role", "scopes", "consumed" },
+    "invitation":   null | { "verified", "issuer", "issuer_role", "scopes", "scope", "consumed" },
     "presentation": null | { "verified", "holder",
                              "credentials": [ { "type", "issuer", "issuer_trusted",
                                                 "issuer_role_in_community",
@@ -106,6 +106,62 @@ against the community on `context.community_did`). The latter is what lets polic
 a credential in community terms — e.g. phase3's gate on credentials from members holding role `trustAnchor`. A
 credential whose issuer is not a member of this community has `issuer_role_in_community: null`.
 
+**Invitation scope.** The optional `evidence.invitation.scope` field carries a path-glob string (e.g.,
+`drivers/net/ethernet/realtek/**`) for ceremonies whose granted role is *path-scoped* rather than
+project-wide. Used by the LKMV maintainer ceremony (`vtc-ceremony-rule-ir.md` §2.9); reusable by any
+future ceremony granting a path-restricted role. Distinct from `scopes` (the credential's plural
+authorization scopes; existing field). Ceremonies that don't read `scope` ignore it.
+
+### 3.4 Per-action attestation credential types
+
+The per-action attestation ceremonies (`vtc-ceremony-rule-ir.md` §§2.11–2.12) issue and consume a small
+family of credentials that travel in `evidence.presentation.credentials[]` like any other VC. They
+have the standard issuer/trust/role decoration; their distinguishing data lives in `claims`.
+
+| Credential type | Issued by | Purpose | Key `claims` fields |
+|---|---|---|---|
+| `MergeAttestation` | A `maintainer` (Linux) or a `merge-bot` (K8s) | Records that a commit was merged into a branch under that actor's authority | `commit_sha`, `parent_shas`, `branch`, `merged_by_role`, `attestation_time`, `references[]` (IDs of upstream ReviewAttestations) |
+| `ReviewAttestation` | A `reviewer` (lgtm) or `approver` (approve) | Records a code-review verdict on a specific commit | `commit_sha`, `pr_number`, `kind: "lgtm" \| "approve"`, `reviewed_at` |
+| `AutomationMembershipCredential` *(sketch)* | The trust registry (or the bot's configurer) | Establishes a bot/CI as a community actor with a constrained role | `automation_kind`, `configured_by`, `platform_oidc`, `role`, `scope` |
+
+`AutomationMembershipCredential` is documented as a **forward-looking sketch** — the K8s Prow merge
+ceremony assumes it exists and uses its `role` field, but the credential's full lifecycle (issuance
+under what onboarding ceremony, revocation semantics, OIDC binding) is out of scope for the current
+catalog. A natural fit is a "bot admission" ceremony parallel to Phase 4 with the IDVP replaced by
+the platform's OIDC issuer (e.g., GitHub Actions). Sigstore's keyless signing pattern is the
+existing implementation template.
+
+### 3.5 Temporal trust-registry API (forward-looking)
+
+Per-action attestations are most valuable in *retrospective verification* — months or years later,
+during a supply-chain audit. A downstream verifier needs to answer: "did the signer hold role R when
+this credential was issued?" The IR itself runs only at issuance time and only sees the current
+registry state (via `input.actor.role` and `input.state.subject_member.role`). The temporal dimension
+lives on the *verifier side* and depends on the trust registry exposing historical queries.
+
+The registry API contract this requires:
+
+```
+GET /trust-registry/role-of?did=<did>&at=<rfc3339-timestamp>
+→ { "role":              <string>,
+    "scope":             <optional string>,
+    "valid_from":        <rfc3339>,
+    "valid_until":       <rfc3339 | null>,
+    "registry_audit_ref": <url> }
+```
+
+Properties:
+- Role grants are **monotonically appended** to the registry; revocations record `valid_until` but
+  the grant entry is retained.
+- A query at time T returns the role that was active at T, even if it has since been revoked.
+- The registry retains revoked grants indefinitely for audit purposes.
+- Multiple roles per DID are supported (an actor may simultaneously hold `reviewer` and `approver`,
+  for example; the API returns the grant matching the queried role family).
+
+This API is a **forward-looking sketch** — the v1 ceremony catalog does not depend on it for issuance,
+only for downstream verification. Sigstore's Rekor transparency log is the closest existing analog;
+the VTC-specific bit is binding the signer's role at the time of signing.
+
 ---
 
 ## 4. The Verdict (four-valued, generic)
@@ -115,7 +171,7 @@ credential whose issuer is not a member of this community has `issuer_role_in_co
 ```jsonc
 { "effect": "allow" | "deny" | "refer" | "request_more",
   "with": {
-    // allow        → ceremony payload: { role } | { disposition } | { fields } | { obligations }
+    // allow        → ceremony payload: { role } | { disposition } | { fields } | { issues_attestation } | { obligations }
     // deny         → { code, reason }
     // refer        → { queue, reason }                       // needs a human / quorum
     // request_more → { needs, presentation_definition }      // needs more evidence (threaded continuation)

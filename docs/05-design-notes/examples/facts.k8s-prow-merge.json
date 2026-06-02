@@ -1,0 +1,24 @@
+{
+  "purpose": "k8s-prow-merge",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkProw", "role": "merge-bot", "authenticated": true },
+  "subject": { "did": "did:key:z6MkProw" },
+  "context": { "community_did": "did:webvh:kubernetes.example", "channel": "rest", "member_count": 312 },
+  "evidence": {
+    "invitation": null,
+    "presentation": {
+      "verified": true,
+      "holder": "did:key:z6MkProw",
+      "credentials": [
+        { "type": "ReviewAttestation", "issuer": "did:key:z6MkReviewerA", "issuer_trusted": true, "issuer_role_in_community": "reviewer", "status": "valid", "claims": { "kind": "lgtm", "commit_sha": "9c3e1f2a8b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f", "pr_number": 12345, "reviewed_at": "2026-05-30T10:14:00Z" } }
+      ]
+    },
+    "request": {
+      "commit_sha": "9c3e1f2a8b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f",
+      "parent_shas": ["1a2b3c4d5e6f7890abcdef1234567890abcdef12"],
+      "branch": "master",
+      "pr_number": 12345
+    }
+  },
+  "state": { "subject_member": { "role": "merge-bot", "status": "active", "joined_at": "2024-11-03T00:00:00Z" } }
+}

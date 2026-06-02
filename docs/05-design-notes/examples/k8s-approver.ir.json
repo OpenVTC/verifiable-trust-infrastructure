@@ -1,0 +1,29 @@
+{
+  "purpose": "k8s-approver",
+  "routes": [
+    {
+      "name": "Promoted by quorum of approvers",
+      "when": { "all": [
+        { "subject_has_role": "reviewer" },
+        { "holds_credential_from_role": {
+            "type": "PromotionEndorsementCredential",
+            "role": "approver",
+            "distinct_issuers": true,
+            "min": 2 } }
+      ] },
+      "then": { "effect": "allow", "with": { "role": "approver", "obligations": ["accept-approver-duties"] } }
+    },
+    {
+      "name": "Awaiting endorsements",
+      "when": { "all": [
+        { "subject_has_role": "reviewer" }
+      ] },
+      "then": { "effect": "request_more", "with": { "needs": ["endorsement:from-approver:distinct>=2"] } }
+    },
+    {
+      "name": "Not yet a reviewer",
+      "when": { "all": ["always"] },
+      "then": { "effect": "deny", "with": { "code": "k8s-approver-requires-reviewer-first", "reason": "Candidate must first hold role `reviewer` in this community before being promoted to `approver`." } }
+    }
+  ]
+}

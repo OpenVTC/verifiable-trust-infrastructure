@@ -1,0 +1,19 @@
+{
+  "purpose": "k8s-approver",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkCandidate", "role": "reviewer", "authenticated": true },
+  "subject": { "did": "did:key:z6MkCandidate" },
+  "context": { "community_did": "did:webvh:kubernetes.example", "channel": "rest", "member_count": 312 },
+  "evidence": {
+    "invitation": null,
+    "presentation": {
+      "verified": true,
+      "holder": "did:key:z6MkCandidate",
+      "credentials": [
+        { "type": "PromotionEndorsementCredential", "issuer": "did:key:z6MkApproverA", "issuer_trusted": true, "issuer_role_in_community": "approver", "status": "valid", "claims": { "target_role": "approver", "scope": "sig-auth", "rationale": "Sustained quality reviews on auth code over Q1/Q2 2026." } }
+      ]
+    },
+    "request": {}
+  },
+  "state": { "subject_member": { "role": "reviewer", "status": "active", "joined_at": "2025-09-04T00:00:00Z" } }
+}

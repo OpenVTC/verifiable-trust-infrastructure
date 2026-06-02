@@ -1,0 +1,17 @@
+{
+  "purpose": "lkmv-merge",
+  "routes": [
+    {
+      "name": "Maintainer-authorized merge",
+      "when": { "all": [
+        { "actor_has_role": "maintainer" }
+      ] },
+      "then": { "effect": "allow", "with": { "issues_attestation": "MergeAttestation", "obligations": ["chain-to-parents"] } }
+    },
+    {
+      "name": "Not a maintainer",
+      "when": { "all": ["always"] },
+      "then": { "effect": "deny", "with": { "code": "lkmv-merge-requires-maintainer-role", "reason": "Only members holding role `maintainer` (or above) may issue MergeAttestations in this community." } }
+    }
+  ]
+}

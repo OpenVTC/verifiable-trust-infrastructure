@@ -17,6 +17,10 @@ has its **Rule IR** (`*.ir.json`) and the **compiled Rego** (`*.rego`) that the
 | Phase 2 | `phase2.ir.json` | `phase2.rego` | invitation gate parameterised by issuer role — `invitation_issuer_has_role("initiator")` |
 | Phase 3 | `phase3.ir.json` | `phase3.rego` | cross-issuer constraint — VIC from a CTA **plus** VRC from a *different* CTA (set-comprehension with `c.issuer != input.evidence.invitation.issuer`) |
 | Phase 4 | `phase4.ir.json` | `phase4.rego` | four-clause `all` — member VIC + ≥2 distinct member VRCs (excluding inviter) + IDVC from approved IDVP |
+| LKMV maintainer | `lkmv-maintainer.ir.json` | `lkmv-maintainer.rego` | Linux subsystem maintainer addition — single super-maintainer signoff + path-scoped invitation (new leaf `invitation_has_scope`) |
+| LKMV merge | `lkmv-merge.ir.json` | `lkmv-merge.rego` | Linux maintainer-authorized merge attestation — one-clause `actor_has_role` gate; new `allow.with.issues_attestation` payload variant ("issuance ceremony" shape) |
+| K8s Approver | `k8s-approver.ir.json` | `k8s-approver.rego` | Kubernetes Reviewer → Approver promotion — M-of-N (≥2 distinct approver endorsements) + structural prerequisite (`subject_has_role("reviewer")`); 3-route policy |
+| K8s Prow merge | `k8s-prow-merge.ir.json` | `k8s-prow-merge.rego` | Kubernetes Prow bot merge attestation — bot-actor + ≥1 approve + ≥1 lgtm `ReviewAttestation`; 5-route graceful degradation |
 | Leave | `leave.ir.json` | `leave.rego` | `actor ≠ subject`, `allow.with.disposition`, `refer` for admin-removes-admin |
 | Role-change | `role-change.ir.json` | `role-change.rego` | in-place mutation; `allow` **may** grant `admin` (the sanctioned path, gated by step-up); `refer` = escalation |
 | Directory | `directory.ir.json` | `directory.rego` | synchronous read; `allow.with.fields` is a **projection**, not a boolean |
@@ -31,8 +35,12 @@ IR convention: a `then.with.disposition` of `"$request"` means "the disposition 
 opa eval -d phase1.rego      -i facts.phase1.json      'data.vtc.phase1.decision'
 opa eval -d phase2.rego      -i facts.phase2.json      'data.vtc.phase2.decision'
 opa eval -d phase3.rego      -i facts.phase3.json      'data.vtc.phase3.decision'
-opa eval -d phase4.rego      -i facts.phase4.json      'data.vtc.phase4.decision'
-opa eval -d leave.rego       -i facts.leave.json       'data.vtc.leave.decision'
+opa eval -d phase4.rego          -i facts.phase4.json          'data.vtc.phase4.decision'
+opa eval -d lkmv-maintainer.rego -i facts.lkmv-maintainer.json 'data.vtc.lkmv_maintainer.decision'
+opa eval -d lkmv-merge.rego      -i facts.lkmv-merge.json      'data.vtc.lkmv_merge.decision'
+opa eval -d k8s-approver.rego    -i facts.k8s-approver.json    'data.vtc.k8s_approver.decision'
+opa eval -d k8s-prow-merge.rego  -i facts.k8s-prow-merge.json  'data.vtc.k8s_prow_merge.decision'
+opa eval -d leave.rego           -i facts.leave.json           'data.vtc.leave.decision'
 opa eval -d role-change.rego -i facts.role-change.json 'data.vtc.role_change.decision'
 opa eval -d directory.rego   -i facts.directory.json   'data.vtc.directory.decision'
 ```
@@ -77,6 +85,50 @@ needs ≥2 VRCs from distinct *other* members, so the route fails on the VRC cou
 Add a second VRC from a different member (issuer ≠ inviter, ≠ the first VRC's issuer) → the route
 matches → `allow` with `role: member`. Drop the IDVC instead → the route fails on the IDVC clause and
 falls to *Almost there* with `idvc:from-approved-idvp` in `needs`.
+
+**LKMV maintainer** — `facts.lkmv-maintainer.json`: a VIC issued by a super-maintainer, but the
+invitation has no `scope` field. *Super-maintainer sponsored with path scope* fails on
+`invitation_has_scope` → falls to *Almost there*:
+```json
+{ "effect": "request_more", "with": { "needs": ["invitation:from-super-maintainer", "invitation:scope-required"], "presentation_definition": { "id": "vtc-lkmv-maintainer" } } }
+```
+Add `"scope": "drivers/net/ethernet/realtek/**"` to the invitation → the first route matches → `allow`
+with `role: maintainer`. The scope itself is informational on the resulting VEC — the policy only
+checks that *some* scope was supplied.
+
+**K8s Approver** — `facts.k8s-approver.json`: the candidate currently holds role `reviewer` and has
+**one** PromotionEndorsementCredential from `did:key:z6MkApproverA`. *Promoted by quorum of approvers*
+fails on the ≥2 distinct-issuers gate; *Awaiting endorsements* matches:
+```json
+{ "effect": "request_more", "with": { "needs": ["endorsement:from-approver:distinct>=2"], "presentation_definition": { "id": "vtc-k8s-approver-endorsements" } } }
+```
+Add a second PromotionEndorsementCredential from a different approver DID → distinct-issuer count
+becomes 2 → first route matches → `allow` with `role: approver`. Conversely, if the candidate's
+`state.subject_member.role` is `"contributor"` (not yet a reviewer), the structural prerequisite fails
+at every route and *Not yet a reviewer* fires → `deny`.
+
+**LKMV merge** — `facts.lkmv-merge.json`: the actor's role is `contributor` (not a maintainer). The
+one-clause gate fails and the catch-all *Not a maintainer* fires:
+```json
+{ "effect": "deny", "with": { "code": "lkmv-merge-requires-maintainer-role", "reason": "Only members holding role `maintainer` (or above) may issue MergeAttestations in this community." } }
+```
+Change `actor.role` to `"maintainer"` → first route matches → `allow` with
+`{"issues_attestation": "MergeAttestation", "obligations": ["chain-to-parents"]}`. This `allow`
+payload is the new "issuance ceremony" shape (`vtc-ceremony-rule-ir.md` §3) — the host treats it as a
+signal to mint a fresh `MergeAttestation` VC, binding the actor's M-DID and current role to the
+commit data in `evidence.request`.
+
+**K8s Prow merge** — `facts.k8s-prow-merge.json`: Prow (`actor.role == "merge-bot"`) presents one
+`ReviewAttestation` from a Reviewer (an lgtm) but no Approver credential. *Prow merge with approver +
+reviewer signoff* fails on the approver gate; *Missing approver signoff* matches:
+```json
+{ "effect": "request_more", "with": { "needs": ["review:approve-from-approver"] } }
+```
+Add a `ReviewAttestation` issued by a member holding role `"approver"` → both gates satisfied → first
+route matches → `allow` with `{"issues_attestation": "MergeAttestation", "obligations": ["chain-to-reviews",
+"chain-to-parents"]}`. The resulting MergeAttestation chains to the underlying ReviewAttestations,
+producing a verifiable provenance trail. Drop the actor's role from `"merge-bot"` to `"contributor"`
+→ every route fails on the bot prerequisite and *Not the merge bot* fires → `deny`.
 
 **Leave** — `facts.leave.json`: an admin removing a non-admin member. Falls to *Admin removes member*:
 ```json

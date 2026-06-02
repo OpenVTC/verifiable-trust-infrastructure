@@ -1,0 +1,19 @@
+{
+  "purpose": "lkmv-maintainer",
+  "routes": [
+    {
+      "name": "Super-maintainer sponsored with path scope",
+      "when": { "all": [
+        "has_valid_invitation",
+        { "invitation_issuer_has_role": "super-maintainer" },
+        "invitation_has_scope"
+      ] },
+      "then": { "effect": "allow", "with": { "role": "maintainer", "obligations": ["accept-maintainership"] } }
+    },
+    {
+      "name": "Almost there",
+      "when": { "all": ["always"] },
+      "then": { "effect": "request_more", "with": { "needs": ["invitation:from-super-maintainer", "invitation:scope-required"] } }
+    }
+  ]
+}

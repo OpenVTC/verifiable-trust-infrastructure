@@ -67,12 +67,17 @@
     line-height:1.02; margin:16px 0 10px; letter-spacing:-.01em}
   h1 em{font-style:italic; color:var(--brand)}
   .sub{color:var(--muted); max-width:62ch; font-size:15.5px}
-  .cer-tabs{display:flex; gap:8px; margin-top:20px}
-  .cer-tab{font-family:'IBM Plex Mono'; font-size:12px; letter-spacing:.04em; padding:8px 15px; border-radius:9px;
-    border:1px solid var(--line-2); color:var(--muted); cursor:pointer; transition:.15s}
+  .cer-tabs{display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:8px; margin-top:20px}
+  @media (max-width: 1100px){ .cer-tabs{grid-template-columns:repeat(4, minmax(0, 1fr))} }
+  @media (max-width: 720px) { .cer-tabs{grid-template-columns:repeat(3, minmax(0, 1fr))} }
+  @media (max-width: 480px) { .cer-tabs{grid-template-columns:repeat(2, minmax(0, 1fr))} }
+  .cer-tab{font-family:'IBM Plex Mono'; font-size:12px; letter-spacing:.04em; padding:9px 12px; border-radius:9px;
+    border:1px solid var(--line-2); color:var(--muted); cursor:pointer; transition:.15s;
+    display:flex; flex-direction:column; align-items:flex-start; gap:3px; text-align:left;
+    min-width:0; overflow-wrap:break-word; word-break:break-word; hyphens:auto}
   .cer-tab:hover{color:var(--ink)}
   .cer-tab.on{border-color:var(--brand); color:var(--brand); background:rgba(45,212,191,.08)}
-  .cer-tab small{color:var(--faint); margin-left:7px}
+  .cer-tab small{color:var(--faint); margin-left:0; line-height:1.35; font-size:11px}
   .meta-row{display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; align-items:center}
   .chip{font-family:'IBM Plex Mono',monospace; font-size:11.5px; padding:6px 11px; border-radius:999px;
     border:1px solid var(--line-2); color:var(--muted); background:rgba(255,255,255,.015)}
@@ -636,49 +641,6 @@ const CEREMONIES = {
     ],
   },
 
-  directory: {
-    label:'Directory', tagline:'read', simLabel:'viewer', pkg:'vtc.directory', family:'directory',
-    allowLabel:'return fields', flowEffects:'return projection', genPD:false,
-    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/directory/  ·  synchronous · no thread',
-    v1note:'Initial directory policy — admin sees full record, member sees did + role',
-    allowPayload:{key:'fields', kind:'text', def:'did, role'},
-    effects:['allow','deny'],
-    conds:{
-      viewer_is_admin:{label:'Viewer is an admin', short:'viewer_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
-      viewer_is_member:{label:'Viewer is a member', short:'viewer_is_member', rego:'input.actor.authenticated == <span class="k">true</span>', cred:null},
-      always:{label:'Anyone', short:'true', rego:'true', cred:null},
-    },
-    outcomes:{
-      allow:'return exactly the permitted field projection — inline, no write',
-      refer:'(unused for directory)',
-      request_more:'(unused for directory)',
-      deny:'non-member → empty result',
-    },
-    helpers:[],
-    usesIn:false,
-    scenario:{
-      init:()=>({viewer:'member'}),
-      fields:[
-        {id:'viewer', label:'Viewer', sub:'who is asking the directory', type:'select', opts:['admin','member','non-member']},
-      ],
-      presets:[
-        {n:'Admin viewer',  w:{viewer:'admin'}},
-        {n:'Member viewer', w:{viewer:'member'}},
-        {n:'Non-member',    w:{viewer:'non-member'}},
-      ],
-      test:(id,sc)=>{ switch(id){
-        case 'viewer_is_admin':  return sc.viewer==='admin';
-        case 'viewer_is_member': return sc.viewer!=='non-member';
-        case 'always':           return true;
-        default:                 return false; } },
-      satisfy:null,
-    },
-    defaultRoutes:()=>[
-      {name:'Admin viewer', comb:'all', conds:['viewer_is_admin'],  effect:{type:'allow', fields:'did, role, joined_at, status, extensions'}, listed:false},
-      {name:'Member viewer',comb:'all', conds:['viewer_is_member'], effect:{type:'allow', fields:'did, role'},                                listed:false},
-    ],
-  },
-
   'role-change': {
     label:'Role-change', tagline:'mutate', simLabel:'role-change scenario', pkg:'vtc.role_change', regoFile:'role-change.rego', family:'role-changes',
     allowLabel:'re-issue role', flowEffects:'re-issue VEC', genPD:false,
@@ -728,6 +690,255 @@ const CEREMONIES = {
       {name:'Standard role change',            comb:'all', conds:['target_role_standard'],           effect:{type:'allow', role:'$target'}, listed:false},
       {name:'Promote to admin (verified)',     comb:'all', conds:['promotes_to_admin','step_up_done'], effect:{type:'allow', role:'admin'},   listed:false},
       {name:'Promote to admin (needs step-up)',comb:'all', conds:['promotes_to_admin'],              effect:{type:'refer', queue:'step-up'}, listed:false},
+    ],
+  },
+
+  'lkmv-maintainer': {
+    label:'LKMV maintainer', tagline:'Linux subsystem maintainer addition', simLabel:'candidate wallet', pkg:'vtc.lkmv_maintainer', regoFile:'lkmv-maintainer.rego', family:'capability-escalation',
+    allowLabel:'admit as maintainer', flowEffects:'issue scoped role VEC', genPD:true, allowObligation:'accept-maintainership',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  Linux subsystem maintainer (single-sponsor, path-scoped)',
+    v1note:'LKMV maintainer addition — super-maintainer issues path-scoped VIC, M-of-1 sponsorship',
+    allowPayload:{key:'role', kind:'text', def:'maintainer'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      has_valid_invitation:{label:'Valid invitation (VIC)',                short:'has_valid_invitation',                              rego:'has_valid_invitation', cred:null},
+      invitation_from_super_maintainer:{label:'VIC issuer is a super-maintainer', short:'invitation_issuer_has_role("super-maintainer")', rego:'input.evidence.invitation.issuer_role == <span class="s">"super-maintainer"</span>', cred:null},
+      invitation_has_scope:{label:'VIC carries a path scope',               short:'invitation_has_scope',                              rego:'invitation_has_scope', cred:null},
+      always:{label:'Any candidate',                                       short:'true',                                              rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'issue role VEC scoped to a path · write ACL · audit',
+      request_more:'return a PD asking for a super-maintainer VIC with path scope',
+      deny:'no matching route — structural default-deny',
+    },
+    helpers:[
+      'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
+      'invitation_has_scope <span class="k">if</span> { input.evidence.invitation.scope; input.evidence.invitation.scope != <span class="s">""</span> }',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({hasInvitation:false, inviterIsSuperMaintainer:false, hasScope:false}),
+      fields:[
+        {id:'hasInvitation',            label:'Holds a valid VIC',                  sub:'evidence.invitation.verified && !consumed',                  type:'tog'},
+        {id:'inviterIsSuperMaintainer', label:'VIC issuer is a super-maintainer',   sub:'evidence.invitation.issuer_role == "super-maintainer"',     type:'tog', dimWhen:'hasInvitation'},
+        {id:'hasScope',                 label:'VIC carries a path scope',           sub:'evidence.invitation.scope is non-empty (e.g., "drivers/net/…")', type:'tog', dimWhen:'hasInvitation'},
+      ],
+      presets:[
+        {n:'Nothing',                                w:{hasInvitation:false, inviterIsSuperMaintainer:false, hasScope:false}},
+        {n:'VIC from regular dev',                   w:{hasInvitation:true,  inviterIsSuperMaintainer:false, hasScope:true}},
+        {n:'VIC from super-maint, no scope',         w:{hasInvitation:true,  inviterIsSuperMaintainer:true,  hasScope:false}},
+        {n:'VIC from super-maint with scope',        w:{hasInvitation:true,  inviterIsSuperMaintainer:true,  hasScope:true}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'has_valid_invitation':              return !!sc.hasInvitation;
+        case 'invitation_from_super_maintainer':  return !!sc.inviterIsSuperMaintainer;
+        case 'invitation_has_scope':              return !!sc.hasScope;
+        case 'always':                            return true;
+        default:                                  return false; } },
+      satisfy:(need,sc)=>{
+        if(need==='has_valid_invitation') sc.hasInvitation=true;
+        else if(need==='invitation_from_super_maintainer'){ sc.hasInvitation=true; sc.inviterIsSuperMaintainer=true; }
+        else if(need==='invitation_has_scope') sc.hasScope=true;
+      },
+    },
+    defaultRoutes:()=>[
+      {name:'Super-maintainer sponsored with path scope', comb:'all', conds:['has_valid_invitation','invitation_from_super_maintainer','invitation_has_scope'], effect:{type:'allow', role:'maintainer'},                                                       listed:true},
+      {name:'Almost there',                                comb:'all', conds:['always'],                                                                          effect:{type:'request_more', needs:['invitation_from_super_maintainer','invitation_has_scope']}, listed:true},
+    ],
+  },
+
+  'lkmv-merge': {
+    label:'LKMV merge', tagline:'Linux subsystem maintainer merge attestation', simLabel:'maintainer wallet', pkg:'vtc.lkmv_merge', regoFile:'lkmv-merge.rego', family:'per-action-attestation',
+    allowLabel:'issue MergeAttestation', flowEffects:'mint per-merge VC', genPD:false, allowObligation:'chain-to-parents',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/attestations/  ·  Linux maintainer-authorized merge attestation',
+    v1note:'LKMV merge attestation — maintainer mints MergeAttestation; chain to parent commits + signoff trail',
+    allowPayload:{key:'issues_attestation', kind:'text', def:'MergeAttestation'},
+    effects:['allow','deny'],
+    conds:{
+      actor_is_maintainer:{label:'Actor holds role `maintainer` (or super-maintainer)', short:'actor_has_role("maintainer")', rego:'input.actor.role == <span class="s">"maintainer"</span>', cred:null},
+      always:{label:'Anyone',                                                            short:'true',                          rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'mint MergeAttestation VC · bind to actor + commit data · publish to chain · audit',
+      deny:'only maintainers may issue merge attestations',
+    },
+    helpers:[
+      '<span class="c"># No helpers — Phase reads only `input.actor.role`.</span>',
+      '<span class="c"># Cultural complexity (MAINTAINERS scope, signoff chain, signed tag) lives in</span>',
+      '<span class="c"># what the HOST packs into the MergeAttestation claims, not in the policy.</span>',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({actorRole:'contributor'}),
+      fields:[
+        {id:'actorRole', label:'Actor\'s registry role', sub:'input.actor.role (resolved from actor\'s VMC at request time)', type:'select', opts:['contributor','maintainer','super-maintainer']},
+      ],
+      presets:[
+        {n:'Contributor',      w:{actorRole:'contributor'}},
+        {n:'Maintainer',       w:{actorRole:'maintainer'}},
+        {n:'Super-maintainer', w:{actorRole:'super-maintainer'}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'actor_is_maintainer': return sc.actorRole === 'maintainer' || sc.actorRole === 'super-maintainer';
+        case 'always':              return true;
+        default:                    return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Maintainer-authorized merge', comb:'all', conds:['actor_is_maintainer'], effect:{type:'allow', issues_attestation:'MergeAttestation'},                  listed:true},
+      {name:'Not a maintainer',            comb:'all', conds:['always'],               effect:{type:'deny', reason:'requires-maintainer-role'},                       listed:false},
+    ],
+  },
+
+  'k8s-approver': {
+    label:'K8s Approver', tagline:'Kubernetes Reviewer → Approver promotion', simLabel:'candidate wallet', pkg:'vtc.k8s_approver', regoFile:'k8s-approver.rego', family:'capability-escalation',
+    allowLabel:'promote to approver', flowEffects:'re-issue role VEC', genPD:true, allowObligation:'accept-approver-duties',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  Kubernetes Reviewer → Approver (M-of-N quorum)',
+    v1note:'K8s Reviewer → Approver — gated by ≥2 distinct existing Approvers signing PromotionEndorsementCredentials',
+    allowPayload:{key:'role', kind:'text', def:'approver'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      is_reviewer:{label:'Subject currently holds role `reviewer`',         short:'subject_has_role("reviewer")',                                                                                                                              rego:'input.state.subject_member.role == <span class="s">"reviewer"</span>', cred:null},
+      endorsements_2:{label:'≥2 PromotionEndorsementCredentials from approvers', short:'holds_credential_from_role({type:"PromotionEndorsementCredential", role:"approver", distinct:true, min:2})',                                              rego:'credential_distinct_issuer_count(<span class="s">"PromotionEndorsementCredential"</span>, <span class="s">"approver"</span>) >= <span class="n">2</span>', cred:'PromotionEndorsementCredential'},
+      always:{label:'Any candidate',                                       short:'true',                                                                                                                                                       rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'re-issue role VEC (approver) · update ACL role · audit',
+      request_more:'return a PD asking for more PromotionEndorsementCredentials from approvers',
+      deny:'candidate must hold role `reviewer` first',
+    },
+    helpers:[
+      'credential_distinct_issuer_count(t, role) := <span class="n">count</span>({c.issuer | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span>})',
+      '<span class="c"># M-of-N collapses to set-comprehension cardinality — same primitive as Phase 3/4.</span>',
+    ],
+    usesIn:true,
+    scenario:{
+      init:()=>({subjectRole:'contributor', endorsements:0}),
+      fields:[
+        {id:'subjectRole',  label:'Subject’s current role',          sub:'state.subject_member.role',                                       type:'select', opts:['contributor','reviewer','approver']},
+        {id:'endorsements', label:'PromotionEndorsementCredentials', sub:'from distinct existing approvers (community ACL)',                type:'step', max:3},
+      ],
+      presets:[
+        {n:'Not yet a reviewer',         w:{subjectRole:'contributor', endorsements:0}},
+        {n:'Reviewer, 0 endorsements',   w:{subjectRole:'reviewer',    endorsements:0}},
+        {n:'Reviewer, 1 endorsement',    w:{subjectRole:'reviewer',    endorsements:1}},
+        {n:'Reviewer, 2 endorsements',   w:{subjectRole:'reviewer',    endorsements:2}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'is_reviewer':    return sc.subjectRole==='reviewer';
+        case 'endorsements_2': return (sc.endorsements||0) >= 2;
+        case 'always':         return true;
+        default:               return false; } },
+      satisfy:(need,sc)=>{
+        if(need==='is_reviewer') sc.subjectRole='reviewer';
+        else if(need==='endorsements_2') sc.endorsements=2;
+      },
+    },
+    defaultRoutes:()=>[
+      {name:'Promoted by quorum of approvers', comb:'all', conds:['is_reviewer','endorsements_2'], effect:{type:'allow', role:'approver'},                  listed:true},
+      {name:'Awaiting endorsements',           comb:'all', conds:['is_reviewer'],                    effect:{type:'request_more', needs:['endorsements_2']}, listed:true},
+      {name:'Not yet a reviewer',              comb:'all', conds:['always'],                          effect:{type:'deny', reason:'requires-reviewer-first'}, listed:false},
+    ],
+  },
+
+  'k8s-prow-merge': {
+    label:'K8s Prow merge', tagline:'Kubernetes Prow merge attestation', simLabel:'Prow bot wallet', pkg:'vtc.k8s_prow_merge', regoFile:'k8s-prow-merge.rego', family:'per-action-attestation',
+    allowLabel:'issue MergeAttestation', flowEffects:'mint per-merge VC · chain to reviews', genPD:true, allowObligation:'chain-to-reviews',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/attestations/  ·  Kubernetes Prow bot merge attestation',
+    v1note:'K8s Prow merge attestation — bot-actor mints MergeAttestation after ≥1 approve + ≥1 lgtm from review credentials',
+    allowPayload:{key:'issues_attestation', kind:'text', def:'MergeAttestation'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      actor_is_merge_bot:{label:'Actor holds role `merge-bot`',                          short:'actor_has_role("merge-bot")',                                                                                                                       rego:'input.actor.role == <span class="s">"merge-bot"</span>', cred:null},
+      has_approve:{label:'≥1 ReviewAttestation from an Approver',                       short:'holds_credential_from_role({type:"ReviewAttestation", role:"approver", min:1})',                                                                       rego:'credential_count_from_role(<span class="s">"ReviewAttestation"</span>, <span class="s">"approver"</span>) >= <span class="n">1</span>', cred:'ReviewAttestation'},
+      has_lgtm:{label:'≥1 ReviewAttestation from a Reviewer',                            short:'holds_credential_from_role({type:"ReviewAttestation", role:"reviewer", distinct:true, min:1})',                                                       rego:'credential_distinct_issuer_count(<span class="s">"ReviewAttestation"</span>, <span class="s">"reviewer"</span>) >= <span class="n">1</span>', cred:'ReviewAttestation'},
+      always:{label:'Anyone',                                                            short:'true',                                                                                                                                              rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'mint MergeAttestation · chain to underlying ReviewAttestations · publish · audit',
+      request_more:'return a PD asking for the missing approve / lgtm credential',
+      deny:'only the registered `merge-bot` automation actor may issue MergeAttestations here',
+    },
+    helpers:[
+      'credential_count_from_role(t, role) := <span class="n">count</span>([c | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span>])',
+      'credential_distinct_issuer_count(t, role) := <span class="n">count</span>({c.issuer | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span>})',
+      '<span class="c"># merge-bot identity comes from a forward-looking AutomationMembershipCredential (sketched in pipeline.md §3).</span>',
+    ],
+    usesIn:true,
+    scenario:{
+      init:()=>({actorRole:'contributor', hasApprove:false, hasLgtm:false}),
+      fields:[
+        {id:'actorRole', label:'Actor (signer)',              sub:'input.actor.role — Prow bot vs human',                  type:'select', opts:['contributor','merge-bot']},
+        {id:'hasApprove', label:'Has ≥1 approve ReviewAttestation', sub:'issuer holds role `approver` in trust registry',        type:'tog'},
+        {id:'hasLgtm',    label:'Has ≥1 lgtm ReviewAttestation',    sub:'issuer holds role `reviewer` in trust registry',         type:'tog'},
+      ],
+      presets:[
+        {n:'Not the bot',          w:{actorRole:'contributor', hasApprove:true,  hasLgtm:true}},
+        {n:'Bot, no reviews',      w:{actorRole:'merge-bot',   hasApprove:false, hasLgtm:false}},
+        {n:'Bot + approve only',   w:{actorRole:'merge-bot',   hasApprove:true,  hasLgtm:false}},
+        {n:'Bot + lgtm only',      w:{actorRole:'merge-bot',   hasApprove:false, hasLgtm:true}},
+        {n:'Bot + both reviews',   w:{actorRole:'merge-bot',   hasApprove:true,  hasLgtm:true}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'actor_is_merge_bot': return sc.actorRole === 'merge-bot';
+        case 'has_approve':        return !!sc.hasApprove;
+        case 'has_lgtm':           return !!sc.hasLgtm;
+        case 'always':             return true;
+        default:                   return false; } },
+      satisfy:(need,sc)=>{
+        if(need==='has_approve') sc.hasApprove=true;
+        else if(need==='has_lgtm') sc.hasLgtm=true;
+      },
+    },
+    defaultRoutes:()=>[
+      {name:'Prow merge with approver + reviewer signoff', comb:'all', conds:['actor_is_merge_bot','has_approve','has_lgtm'], effect:{type:'allow', issues_attestation:'MergeAttestation'},      listed:true},
+      {name:'Missing approver signoff',                     comb:'all', conds:['actor_is_merge_bot','has_lgtm'],                effect:{type:'request_more', needs:['has_approve']},                listed:true},
+      {name:'Missing reviewer signoff',                     comb:'all', conds:['actor_is_merge_bot','has_approve'],             effect:{type:'request_more', needs:['has_lgtm']},                   listed:true},
+      {name:'Nothing presented',                            comb:'all', conds:['actor_is_merge_bot'],                            effect:{type:'request_more', needs:['has_approve','has_lgtm']},     listed:true},
+      {name:'Not the merge bot',                            comb:'all', conds:['always'],                                        effect:{type:'deny', reason:'requires-bot-actor'},                  listed:false},
+    ],
+  },
+
+  directory: {
+    label:'Directory', tagline:'read', simLabel:'viewer', pkg:'vtc.directory', family:'directory',
+    allowLabel:'return fields', flowEffects:'return projection', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/directory/  ·  synchronous · no thread',
+    v1note:'Initial directory policy — admin sees full record, member sees did + role',
+    allowPayload:{key:'fields', kind:'text', def:'did, role'},
+    effects:['allow','deny'],
+    conds:{
+      viewer_is_admin:{label:'Viewer is an admin', short:'viewer_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
+      viewer_is_member:{label:'Viewer is a member', short:'viewer_is_member', rego:'input.actor.authenticated == <span class="k">true</span>', cred:null},
+      always:{label:'Anyone', short:'true', rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'return exactly the permitted field projection — inline, no write',
+      refer:'(unused for directory)',
+      request_more:'(unused for directory)',
+      deny:'non-member → empty result',
+    },
+    helpers:[],
+    usesIn:false,
+    scenario:{
+      init:()=>({viewer:'member'}),
+      fields:[
+        {id:'viewer', label:'Viewer', sub:'who is asking the directory', type:'select', opts:['admin','member','non-member']},
+      ],
+      presets:[
+        {n:'Admin viewer',  w:{viewer:'admin'}},
+        {n:'Member viewer', w:{viewer:'member'}},
+        {n:'Non-member',    w:{viewer:'non-member'}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'viewer_is_admin':  return sc.viewer==='admin';
+        case 'viewer_is_member': return sc.viewer!=='non-member';
+        case 'always':           return true;
+        default:                 return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Admin viewer', comb:'all', conds:['viewer_is_admin'],  effect:{type:'allow', fields:'did, role, joined_at, status, extensions'}, listed:false},
+      {name:'Member viewer',comb:'all', conds:['viewer_is_member'], effect:{type:'allow', fields:'did, role'},                                listed:false},
     ],
   },
 
@@ -1178,6 +1389,8 @@ function regoVal(eff){
     else if(k==='disposition') payload=(eff.disposition||'')==='$request'
       ? `<span class="s">"disposition"</span>: disposition`
       : `<span class="s">"disposition"</span>: <span class="s">"${eff.disposition||'Tombstone'}"</span>`;
+    else if(k==='issues_attestation'){ const av=eff.issues_attestation||C().allowPayload.def||'Attestation';
+      payload=`<span class="s">"issues_attestation"</span>: <span class="s">"${av}"</span>` + (C().allowObligation ? `, <span class="s">"obligations"</span>: [<span class="s">"${C().allowObligation}"</span>]` : ''); }
     else { const arr=(eff.fields||'').split(',').map(s=>s.trim()).filter(Boolean).map(f=>`<span class="s">"${f}"</span>`).join(', ');
       payload=`<span class="s">"fields"</span>: [${arr}]`; }
     return `{<span class="s">"effect"</span>: <span class="s">"allow"</span>, <span class="s">"with"</span>: {${payload}}}`;

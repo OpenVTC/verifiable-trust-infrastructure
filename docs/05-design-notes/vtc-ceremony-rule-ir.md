@@ -59,8 +59,21 @@ host resolved that in *Verify*. Each row gives the IR leaf, its argument, and th
 | `actor_is_admin` | — | `input.actor.role == "admin"` |
 | `actor_is_self` | — | `input.actor.did == input.subject.did` |
 | `actor_is_initiator` | — | `input.actor.role == "initiator"` |
+| `actor_has_role` | role str | `input.actor.role == "<role>"` |
 | `subject_is_admin` | — | `input.state.subject_member.role == "admin"` |
+| `subject_has_role` | role str | `input.state.subject_member.role == "<role>"` |
 | `member_count_lt` | int | `input.context.member_count < <n>` |
+
+`subject_has_role` generalizes `subject_is_admin` — it's the same shape with an open-coded role string.
+Used by Kubernetes-style capability escalation (§2.10) to enforce structural prerequisites like
+"candidate must already hold role `reviewer`".
+
+`actor_has_role` is its actor-side twin: `input.actor.role == "<role>"`. Used by per-action attestation
+ceremonies (§2.11–§2.12) to gate on the *attesting* actor's role — e.g., "only members holding role
+`maintainer` may issue MergeAttestations." Note that `input.actor.role` is the role currently held by
+the actor in the trust registry, populated by Verify; for downstream credential consumers who want to
+verify the role *as of the attestation time*, see the temporal registry API sketch in
+[`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md) §3.5.
 
 **Admission ceremonies (Phases 1–4).** §2.2–§2.5 cover the four community-lifecycle admission phases
 defined in *VTC Bootstrapping* (draft 03). Each phase has the same `actor`/`subject` shape (applicant is
@@ -171,6 +184,98 @@ Phase 4 reuses the §2.4 leaves with different arguments — no new vocabulary.
 **Unlike the admission phases, role-change MAY grant `admin`** — it is the sanctioned promotion path,
 gated by `step_up_done` (or M-of-N). No-last-admin on demotion stays host-enforced.
 
+**Capability escalation exemplars (§2.9–§2.10).** §2.8's generic role-change is the baseline. §2.9 and
+§2.10 are *specific applications* of the same pattern — the Linux Kernel Maintainer Verification (LKMV)
+and Kubernetes Reviewer→Approver promotions — included because they exercise opposite ends of the OSS
+governance spectrum on the *single-sponsor / M-of-N* axis. Both grant non-admin roles, so the privilege
+ceiling (§4) holds.
+
+### 2.9 LKMV maintainer (Linux subsystem maintainer addition)
+
+The Linux kernel's promotion pattern: a super-maintainer (or Linus) issues a VTC invitation credential
+that grants `maintainer` for a specific code path (e.g., `drivers/net/ethernet/realtek/**`). Single
+sponsor, no quorum. The path scope is informational on the resulting VEC; the policy itself only checks
+that the scope was supplied.
+
+Reuses `has_valid_invitation` (§2.3) and `invitation_issuer_has_role` (§2.3). Adds one leaf:
+
+| IR leaf | Arg | Compiles to |
+|---|---|---|
+| `invitation_has_scope` | — | `invitation_has_scope` *(helper, defined below)* |
+
+```rego
+invitation_has_scope if {
+  input.evidence.invitation.scope
+  input.evidence.invitation.scope != ""
+}
+```
+
+The `evidence.invitation.scope` field is documented in
+[`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md) §3 as an optional path-glob string. LKMV is
+currently the only ceremony that reads it; future path-scoped ceremonies can reuse the same field.
+
+### 2.10 Kubernetes Approver (Reviewer → Approver promotion)
+
+The Kubernetes OWNERS-file promotion pattern: a candidate already holding role `reviewer` is promoted to
+`approver` when ≥2 distinct existing approvers each sign a `PromotionEndorsementCredential`. M-of-N
+(N≥2) via the existing `holds_credential_from_role` leaf — no new vocabulary required.
+
+| IR leaf | Arg | Compiles to |
+|---|---|---|
+| `subject_has_role` | role str | *(shared, §2.1)* |
+| `holds_credential_from_role` | `{ type, role, min, distinct_issuers, exclude_invitation_issuer }` | *(see §2.4)* |
+
+M-of-N is expressed by setting `type: "PromotionEndorsementCredential"`, `role: "approver"`,
+`distinct_issuers: true`, and `min: 2` on the `holds_credential_from_role` leaf. This is the same
+primitive that drives Phase 3 (VRC from a different CTA) and Phase 4 (≥2 member VRCs + IDVC) —
+M-of-N collapses to **set-comprehension cardinality** over an endorsement-credential type.
+
+The `PromotionEndorsementCredential` is a credential row in `evidence.presentation.credentials[]` with
+the standard issuer/trust/role decoration. Its `claims` carry the endorser's stated target role and
+optional scope (e.g., `sig-auth`); the v1 policy treats these as informational and does not enforce
+scope matching.
+
+**Per-action attestation exemplars (§2.11–§2.12).** A *new ceremony shape* — the verdict's `allow`
+*issues a fresh per-action credential* rather than granting a role. See §3 for the `issues_attestation`
+allow-payload variant. Both exemplars share the property that the `actor` is the issuer of the new
+credential; the policy gates on the actor's role and any required upstream evidence.
+
+### 2.11 LKMV merge (Linux subsystem maintainer merge attestation)
+
+The Linux maintainer-authorized merge pattern: a subsystem maintainer records that they merged a
+patch series into their tree by issuing a `MergeAttestation` credential. Single-actor authorization
+— the policy is a one-clause gate on `actor_has_role("maintainer")`. The cultural complexity
+(MAINTAINERS path scope, `Signed-off-by` chain, signed Git tag) lives in *what the host packs into
+the resulting `MergeAttestation` claims*, not in the policy.
+
+| IR leaf | Arg | Compiles to |
+|---|---|---|
+| `actor_has_role` | role str | *(shared, §2.1)* |
+
+A note on the role hierarchy: super-maintainers in the Linux trust registry are modeled as holding
+*both* `maintainer` and `super-maintainer` roles (multi-role membership), so the strict gate on
+`actor_has_role("maintainer")` admits super-maintainers without an `OR` clause. This keeps the
+policy minimal and surfaces the role-hierarchy decision as a *registry* concern rather than a
+*policy* concern.
+
+### 2.12 Kubernetes Prow merge (Prow bot merge attestation)
+
+The Kubernetes Prow Tide merge pattern: a bot actor (holding role `merge-bot` via a forward-looking
+`AutomationMembershipCredential`; see [`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md) §3.5)
+records a merge after collecting at least one `approve` `ReviewAttestation` and one `lgtm`
+`ReviewAttestation` from the underlying PR review. The resulting `MergeAttestation` *chains to* the
+underlying review credentials, producing a verifiable provenance trail.
+
+| IR leaf | Arg | Compiles to |
+|---|---|---|
+| `actor_has_role` | role str | *(shared, §2.1)* |
+| `holds_credential_from_role` | `{ type, role, min, distinct_issuers? }` | *(see §2.4)* |
+
+The K8s policy expresses *graceful degradation* across five routes: bot + both reviews → allow; bot
++ one missing → `request_more` listing the missing piece; bot + nothing → `request_more` listing
+both; not the bot → `deny`. Each route emits a distinct `needs` array, so the requester knows exactly
+what to collect before re-evaluating.
+
 Adding a purpose = adding a vocabulary block here + an effect handler (§5 of the pipeline doc). The compiler and
 combinator logic are unchanged.
 
@@ -182,10 +287,18 @@ Four effects (§4 of the pipeline doc). Only `allow` carries a purpose-specific 
 
 | `effect` | `with` payload | Compiles to |
 |---|---|---|
-| `allow` | `{ role }` \| `{ disposition }` \| `{ fields }` (+ `obligations`) | `{"effect":"allow","with":{…}}` |
+| `allow` | `{ role }` \| `{ disposition }` \| `{ fields }` \| `{ issues_attestation: <Type> }` (+ `obligations`) | `{"effect":"allow","with":{…}}` |
 | `deny` | `{ code, reason }` | `{"effect":"deny","with":{…}}` |
 | `refer` | `{ queue, reason }` | `{"effect":"refer","with":{…}}` |
 | `request_more` | `{ needs, presentation_definition }` | `{"effect":"request_more","with":{…}}` (PD from §5) |
+
+**`allow.with.issues_attestation`.** A *per-action attestation* ceremony's `allow` doesn't grant a role
+— instead, the verdict signals to the host that it should mint a fresh credential of the named type
+(`MergeAttestation`, `ReviewAttestation`, etc.). The host fills in the credential's claims from
+`evidence.request` (commit SHA, branch, etc.) and `actor` (signer's M-DID + their current role). The
+policy's responsibility is only to *authorize* the issuance, not to format the credential. See
+§§2.11–2.12 for exemplars; the credential shapes themselves are documented in
+[`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md) §3.
 
 ---
 
@@ -231,8 +344,13 @@ disposition := input.evidence.request.disposition if { input.evidence.request.di
   catch-all (`when: ["always"]`) — which is the recommended final route — but always present as a backstop.
 
 **Static invariant checks** (run at compile, fail the build):
-- no `allow.with.role == "admin"` for **admission** purposes (`phase1`, `phase2`, `phase3`, `phase4`) —
-  the privilege ceiling. Role-change is exempt by design (§2.8);
+- no `allow.with.role == "admin"` for **admission** purposes (`phase1`, `phase2`, `phase3`, `phase4`)
+  and **capability-escalation exemplars** (`lkmv-maintainer`, `k8s-approver`) — the privilege ceiling.
+  Role-change is exempt by design (§2.8);
+- **per-action attestation** purposes (`lkmv-merge`, `k8s-prow-merge`, future `*-attestation`) MUST use
+  the `allow.with.issues_attestation` payload variant and MUST NOT also carry `role`, `disposition`, or
+  `fields`. Mixing payload shapes would conflate "grant a role" with "mint a per-action credential" —
+  two different host-side effects;
 - every `when` leaf is in the purpose's vocabulary (no free Rego);
 - a catch-all or default guarantees totality (always true by construction);
 - purpose-specific checks (e.g. leave: no route may bypass the host's no-last-admin guard — enforced outside
