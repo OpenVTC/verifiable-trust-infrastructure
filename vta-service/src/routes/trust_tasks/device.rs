@@ -138,6 +138,10 @@ pub(super) async fn handle_set_wake(
         .map(|t| t.to_string())
         .collect::<Vec<_>>();
     let vta_did = state.config.read().await.vta_did.clone();
+    // Captured before the move into set_wake_device so the (DIDComm-only)
+    // best-effort gateway provisioning below can use them.
+    #[cfg(feature = "didcomm")]
+    let provision_inputs = (wake.clone(), vta_did.clone());
     match operations::device::set_wake_device(
         &state.acl_ks,
         &state.audit_ks,
@@ -148,7 +152,72 @@ pub(super) async fn handle_set_wake(
     )
     .await
     {
-        Ok(body) => success_response(&doc, body),
+        Ok(body) => {
+            // Best-effort: provision the wake handle's allowlist to the gateway
+            // over DIDComm. Spawned so the device's set-wake returns without
+            // blocking on the gateway round-trip; failure is logged, not
+            // surfaced (the VTA holds the authoritative wake state — a reconcile
+            // pass can re-provision). Only when DIDComm is built and the
+            // `gateway` is a DID (a URL gateway is provisioned over HTTPS —
+            // follow-up).
+            #[cfg(feature = "didcomm")]
+            provision_gateway(state, &provision_inputs.0, &provision_inputs.1, &body);
+            success_response(&doc, body)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
+}
+
+/// Send a `push/provision` to the gateway DID over DIDComm (spawned,
+/// best-effort) carrying the VTA-owned allowlist the set-wake just computed.
+/// The authcrypt sender authenticates the VTA to the gateway — no doc proof.
+#[cfg(feature = "didcomm")]
+fn provision_gateway(
+    state: &AppState,
+    wake: &Option<(String, String)>,
+    vta_did: &Option<String>,
+    body: &Value,
+) {
+    /// DIDComm message type that carries a Trust Task envelope in its body.
+    const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+
+    let Some((gateway, handle)) = wake.clone() else {
+        return;
+    };
+    if !gateway.starts_with("did:") {
+        return; // URL gateway → HTTPS provisioning (follow-up), not this path.
+    }
+    let Some(triggers) = body
+        .get("triggerPolicy")
+        .and_then(|p| p.get("allowedTriggers"))
+        .cloned()
+    else {
+        return;
+    };
+    let provision = serde_json::json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/provision/0.1",
+        "issuer": vta_did,
+        "recipient": gateway,
+        "payload": { "handle": handle, "policy": { "allowedTriggers": triggers } },
+    });
+    let bridge = state.didcomm_bridge.clone();
+    tokio::spawn(async move {
+        match bridge
+            .send_and_wait(
+                &gateway,
+                TRUST_TASK_ENVELOPE_TYPE,
+                provision,
+                TRUST_TASK_ENVELOPE_TYPE,
+                vta_sdk::protocols::PROBLEM_REPORT_TYPE,
+                15,
+            )
+            .await
+        {
+            Ok(_) => tracing::info!(gateway = %gateway, "push gateway allowlist provisioned"),
+            Err(e) => {
+                tracing::warn!(error = %e, gateway = %gateway, "gateway provision failed (best-effort)")
+            }
+        }
+    });
 }
