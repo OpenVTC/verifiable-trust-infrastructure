@@ -181,6 +181,30 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
     }
 }
 
+/// A device's push **wake channel** — the opaque gateway handle plus the
+/// VTA-owned trigger allowlist. Set via `device/set-wake/0.1`. Mirrors the push
+/// wake-up binding (<https://trusttasks.org/binding/push/0.1>) `WakeHandle` +
+/// `WakeTriggerPolicy`.
+///
+/// The raw platform push token is **never** stored here — it lives at the push
+/// gateway alone, behind the opaque `handle`. The VTA holds only the handle and
+/// the allowlist it provisions to the gateway.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WakeChannel {
+    /// The push gateway that issued the handle (a DID or an https URL) — where
+    /// the VTA and other triggers send a contentless wake.
+    pub gateway: String,
+    /// Opaque gateway-issued handle for this device's push channel. Reveals no
+    /// platform token; rotates when the device re-registers with the gateway.
+    pub handle: String,
+    /// DIDs the VTA has authorized to trigger a wake for this handle (the
+    /// allowlist it provisions to the gateway). Typically the device's mediator
+    /// and/or the VTA's own DID. Empty means no party may wake the device.
+    #[serde(default)]
+    pub allowed_triggers: Vec<String>,
+}
+
 /// Metadata for a registered Companion/Service device. M1 stores the field
 /// shape so the ACL row can carry it forward; the registration flow that
 /// populates it lands in M4 (`device/register/0.1`).
@@ -203,6 +227,20 @@ pub struct DeviceBinding {
     pub disabled_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wiped_at: Option<String>,
+    /// Push wake channel (opaque gateway handle + VTA-owned trigger allowlist).
+    /// `None` until the device conveys a handle via `device/set-wake/0.1`;
+    /// absent on legacy rows. The push token is never stored here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeChannel>,
+}
+
+impl DeviceBinding {
+    /// The non-secret `pushCapable` visibility flag (push binding §2): the
+    /// device has a usable wake channel — a handle is set and the device is
+    /// neither disabled nor wiped.
+    pub fn push_capable(&self) -> bool {
+        self.wake.is_some() && self.disabled_at.is_none() && self.wiped_at.is_none()
+    }
 }
 
 /// An entry in the Access Control List.
@@ -601,6 +639,67 @@ mod tests {
     fn role_parse_rejects_unknown() {
         let err = Role::parse("godmode").expect_err("unknown role must error");
         assert!(format!("{err:?}").contains("godmode"), "got {err:?}");
+    }
+
+    // ── DeviceBinding wake channel (push wake-up binding) ───────────────
+
+    fn sample_binding() -> DeviceBinding {
+        DeviceBinding {
+            device_id: "dev-1".into(),
+            display_name: "Glenn's iPhone".into(),
+            platform: Some("iOS 19".into()),
+            registered_at: "2026-06-02T00:00:00Z".into(),
+            last_seen_at: None,
+            disabled_at: None,
+            wiped_at: None,
+            wake: None,
+        }
+    }
+
+    #[test]
+    fn wake_channel_round_trips_camel_case() {
+        let mut b = sample_binding();
+        b.wake = Some(WakeChannel {
+            gateway: "https://gw.example".into(),
+            handle: "z6MkOpaque".into(),
+            allowed_triggers: vec!["did:web:mediator".into(), "did:web:vta".into()],
+        });
+        let json = serde_json::to_string(&b).unwrap();
+        // Wire is camelCase, mirroring the spec shapes.
+        assert!(json.contains("\"wake\""), "{json}");
+        assert!(json.contains("\"allowedTriggers\""), "{json}");
+        let back: DeviceBinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(b, back);
+    }
+
+    #[test]
+    fn legacy_row_without_wake_deserialises_to_none() {
+        // A binding serialised before the wake field existed.
+        let legacy =
+            r#"{"deviceId":"dev-1","displayName":"old","registeredAt":"2026-01-01T00:00:00Z"}"#;
+        let b: DeviceBinding = serde_json::from_str(legacy).unwrap();
+        assert!(b.wake.is_none());
+        assert!(!b.push_capable());
+    }
+
+    #[test]
+    fn push_capable_requires_wake_and_active_device() {
+        let mut b = sample_binding();
+        assert!(!b.push_capable(), "no wake channel → not push-capable");
+
+        b.wake = Some(WakeChannel {
+            gateway: "did:web:gw".into(),
+            handle: "h".into(),
+            allowed_triggers: vec!["did:web:vta".into()],
+        });
+        assert!(b.push_capable(), "wake set + active → push-capable");
+
+        b.disabled_at = Some("2026-06-02T01:00:00Z".into());
+        assert!(!b.push_capable(), "disabled device is not push-capable");
+
+        b.disabled_at = None;
+        b.wiped_at = Some("2026-06-02T02:00:00Z".into());
+        assert!(!b.push_capable(), "wiped device is not push-capable");
     }
 
     #[test]

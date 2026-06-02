@@ -107,6 +107,32 @@ pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1: &str =
 pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
 
+// ─── Device slice (spec/device/*) ────────────────────────────────────────
+// Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
+// lifecycle on the VTA: register a device, heartbeat, list, disable, wipe, and
+// set the push wake channel (the opaque gateway handle conveyed by the device).
+
+/// `device/register/0.1` — a Companion/Service claims its DeviceBinding after
+/// the provision-integration + acl/swap-key bootstrap.
+pub const TASK_DEVICE_REGISTER_0_1: &str = "https://trusttasks.org/spec/device/register/0.1";
+
+/// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` and
+/// delivers queued operations.
+pub const TASK_DEVICE_HEARTBEAT_0_1: &str = "https://trusttasks.org/spec/device/heartbeat/0.1";
+
+/// `device/list/0.1` — list the maintainer's registered devices.
+pub const TASK_DEVICE_LIST_0_1: &str = "https://trusttasks.org/spec/device/list/0.1";
+
+/// `device/disable/0.1` — disable a device (cannot authenticate; record kept).
+pub const TASK_DEVICE_DISABLE_0_1: &str = "https://trusttasks.org/spec/device/disable/0.1";
+
+/// `device/wipe/0.1` — issue a wipe instruction for a device.
+pub const TASK_DEVICE_WIPE_0_1: &str = "https://trusttasks.org/spec/device/wipe/0.1";
+
+/// `device/set-wake/0.1` — the device conveys its opaque push `WakeHandle` to
+/// the VTA, which owns the trigger allowlist and provisions the push gateway.
+pub const TASK_DEVICE_SET_WAKE_0_1: &str = "https://trusttasks.org/spec/device/set-wake/0.1";
+
 // ─── ACL slice (spec/vta/acl/*) ──────────────────────────────────────────
 
 /// `spec/vta/acl/list/1.0` — list ACL entries, optionally filtered by
