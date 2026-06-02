@@ -7,7 +7,6 @@
 //! already validated at submit time so the only failure modes
 //! here are auth + duplicate-membership.
 
-use affinidi_status_list::StatusPurpose;
 use affinidi_vc::VerifiableCredential;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -22,18 +21,14 @@ use vti_common::audit::{
 };
 use vti_common::error::AppError;
 
-use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+use crate::acl::VtcRole;
 use crate::auth::AdminAuth;
-use crate::auth::session::now_epoch;
+use crate::ceremony::execute::{self, top_level_id};
+use crate::ceremony::{EffectOutcome, EffectPlan};
 use crate::credentials::vec::VEC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
-use crate::credentials::{
-    CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
-};
 use crate::join::{JoinStatus, get_join_request, store_join_request};
-use crate::members::{Member, store_member};
 use crate::server::AppState;
-use crate::status_list;
 
 const REJECT_REASON_MAX: usize = 1024;
 
@@ -76,48 +71,23 @@ pub async fn approve(
             req.status
         )));
     }
-    if get_acl_entry(&state.acl_ks, &req.applicant_did)
-        .await?
-        .is_some()
-    {
-        return Err(AppError::Conflict(format!(
-            "{} already has an ACL row; refusing to approve a duplicate membership",
-            req.applicant_did
-        )));
-    }
-
-    // Write ACL first (auth-gating truth), then Member, then flip
-    // the JoinRequest status. A crash between ACL + Member would
-    // leave the auth path working but the metadata missing — the
-    // safer direction (Phase 2 reconcile / next admin action can
-    // patch the gap).
-    let now = now_epoch();
-    let acl = VtcAclEntry {
-        did: req.applicant_did.clone(),
-        role: VtcRole::Member,
-        label: None,
-        allowed_contexts: vec![],
-        created_at: now,
-        created_by: admin.0.did.clone(),
-        expires_at: None,
+    // Effects: admit the applicant as a member. The ceremony effect
+    // executor owns the duplicate-ACL guard, the ACL + Member writes,
+    // and credential issuance (it is the single state-mutating seam —
+    // see `ceremony::execute`). Approve wraps it with the join-request
+    // status flip + audit. A duplicate ACL surfaces as the executor's
+    // `Conflict` → 409, same as before.
+    let plan = EffectPlan::Admit {
+        subject: req.applicant_did.clone(),
+        role: VtcRole::Member.to_string(),
+        obligations: vec![],
     };
-    store_acl_entry(&state.acl_ks, &acl).await?;
-
-    let mut member = Member::fresh(&req.applicant_did);
-    store_member(&state.members_ks, &member).await?;
-
-    // M2.12: issue VMC + role VEC + flip status-list slot. Done
-    // after the ACL + Member rows are persisted so the credential
-    // pointers reference a row that exists. A failure here
-    // surfaces as 500 — the ACL + Member rows remain, so the
-    // operator can retry via the M2.13 renewal endpoint once the
-    // underlying issue is fixed.
-    let (vmc, role_vec, status_list_index) =
-        issue_join_credentials(&state, &req.applicant_did).await?;
-    member.status_list_index = Some(status_list_index);
-    member.current_vmc_id = top_level_id(&vmc);
-    member.current_role_vec_id = top_level_id(&role_vec);
-    store_member(&state.members_ks, &member).await?;
+    let EffectOutcome::Admitted(creds) = execute::apply(&state, plan, &admin.0.did).await? else {
+        return Err(AppError::Internal(
+            "admit effect did not produce credentials".into(),
+        ));
+    };
+    let (vmc, role_vec, status_list_index) = (creds.vmc, creds.role_vec, creds.status_list_index);
 
     req.status = JoinStatus::Approved;
     store_join_request(&state.join_requests_ks, &req).await?;
@@ -180,77 +150,6 @@ pub async fn approve(
             ),
         }),
     ))
-}
-
-/// Allocate a revocation-list slot, mint the VMC + role VEC,
-/// persist the updated status-list state. Returns the signed
-/// VCs + the allocated index for the audit trail.
-///
-/// Sealed-transfer to the applicant's DID is deferred — for
-/// M2.12 the credentials are returned inline in the approve
-/// response and the admin caller hands them off out-of-band.
-async fn issue_join_credentials(
-    state: &AppState,
-    applicant_did: &str,
-) -> Result<(VerifiableCredential, VerifiableCredential, u32), AppError> {
-    let signer = state.credential_signer.as_ref().ok_or_else(|| {
-        AppError::Internal(
-            "credential signer not initialised — cannot mint VMC (run setup first)".into(),
-        )
-    })?;
-
-    let mut row = status_list::get_state(&state.status_lists_ks, StatusPurpose::Revocation)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(
-                "revocation status list not provisioned — set `public_url` + restart".into(),
-            )
-        })?;
-
-    let slot = status_list::allocate(&mut row).ok_or_else(|| {
-        AppError::Internal(format!(
-            "revocation status list exhausted (capacity = {})",
-            row.capacity
-        ))
-    })?;
-
-    let status_ref = CredentialStatusRef::revocation(row.list_credential_id.clone(), slot);
-
-    let vmc_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let vmc = build_vmc(
-        signer,
-        VmcParams::new(applicant_did)
-            .with_id(vmc_id)
-            .with_status_ref(status_ref)
-            .with_personhood(false),
-    )
-    .await?;
-
-    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
-    let role_vec = build_role_vec(
-        signer,
-        RoleVecParams::new(applicant_did, VtcRole::Member).with_id(vec_id),
-    )
-    .await?;
-
-    // Persist the status-list state *after* both VCs build
-    // successfully — if either build fails we don't permanently
-    // burn a slot. (The state lives only in this function's
-    // local copy until the store_state call.)
-    status_list::store_state(&state.status_lists_ks, &row).await?;
-    status_list::maybe_emit_occupancy_warning(&row);
-
-    Ok((vmc, role_vec, slot))
-}
-
-/// Pull the top-level `id` field off a signed VC. The
-/// upstream `VerifiableCredential` type doesn't expose it
-/// directly — we splice it onto the wire form via JSON, so
-/// reading it back requires a JSON round-trip.
-fn top_level_id(vc: &VerifiableCredential) -> Option<String> {
-    serde_json::to_value(vc)
-        .ok()
-        .and_then(|v| v.get("id").and_then(|i| i.as_str().map(str::to_string)))
 }
 
 /// Build a [`CredentialIssuedData`] payload from a signed VC.

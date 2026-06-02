@@ -34,12 +34,15 @@
 //! - [`effects`] — plans the per-purpose state change a verdict
 //!   authorizes ([`effects::EffectPlan`]). The directory projection
 //!   (read-only) is fully realized; the write plans (admit / depart /
-//!   re-mint) await their async executor.
+//!   re-mint) are typed intents the executor applies.
+//! - [`execute`] — the async effect executor ([`execute::apply`]):
+//!   applies a plan against `AppState`. The **Admit** (join) write
+//!   path is wired and is the op the manual approve route now goes
+//!   through; **Depart** / **Remint** await their ceremonies.
 //!
-//! Still to land on top of this spine (pipeline §11): the async
-//! **effect executor** that applies the write plans against
-//! `AppState` (reusing the issue-VMC / write-ACL helpers), and the
-//! remaining state-dependent invariant — no-last-admin (see
+//! Still to land on top of this spine (pipeline §11): the Depart /
+//! Remint executor arms (with their leave / role-change ceremonies)
+//! and the remaining state-dependent invariant — no-last-admin (see
 //! [`invariant`]).
 //!
 //! ## Relationship to the existing `policy` + `join` modules
@@ -55,6 +58,7 @@
 
 pub mod effects;
 pub mod evaluate;
+pub mod execute;
 pub mod facts;
 pub mod invariant;
 pub mod verdict;
@@ -62,6 +66,7 @@ pub mod verify;
 
 pub use effects::{EffectPlan, plan};
 pub use evaluate::evaluate;
+pub use execute::{AdmitOutcome, EffectOutcome, apply};
 pub use facts::{
     Actor, Context, Credential, CredentialStatus, Evidence, Facts, Invitation, MemberState,
     Presentation, Purpose, State, Subject,
