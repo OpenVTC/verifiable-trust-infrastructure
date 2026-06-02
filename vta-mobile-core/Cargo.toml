@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.2.1"
+version = "0.3.0"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -53,17 +53,11 @@ tokio = { workspace = true }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 # DIDComm v2 authcrypt/anoncrypt pack + unpack. Pinned to vta-sdk's version.
 affinidi-messaging-didcomm = "0.15"
-
-# ── Deferred wiring (kept out of slice 1 on purpose) ────────────────────────
-# The FFI build + bindgen pipeline is proven first with a minimal surface.
-#   slice 2 — Trust Tasks (pure, sync). Needs a republished trust-tasks-rs:
-#             crates.io 0.1.2 predates the `evidence` / `acceptableEvidence`
-#             fields merged to dtgwg-trust-tasks-tf (PRs #61/#62).
-#     trust-tasks-rs    = { workspace = true }
-#     trust-tasks-proof = { workspace = true }
-#   slice 3 — VTA session/auth (async over the FFI boundary, tokio runtime):
-#     vta-sdk      = { workspace = true, features = ["session"] }
-#     vti-webauthn = { path = "../vti-webauthn" }   # shared WebAuthn types
+# Mediator-connected DIDComm session (ATM): the `MediatorSession` FFI wraps
+# `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
+# pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
+# the VTA uses rather than reimplementing the affinidi mediator protocol.
+vta-sdk = { path = "../vta-sdk", version = "0.9", features = ["session"] }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for

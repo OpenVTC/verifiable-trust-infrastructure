@@ -20,4 +20,9 @@ pub enum FfiError {
     /// The requested operation is part of a not-yet-wired build-out slice.
     #[error("not yet implemented: {what}")]
     Unimplemented { what: String },
+
+    /// A DIDComm mediator transport operation failed (connect, authenticate,
+    /// receive). Network/protocol failures from the live mediator surface here.
+    #[error("transport error: {reason}")]
+    Transport { reason: String },
 }
