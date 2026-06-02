@@ -21,6 +21,8 @@ pub struct UpdateAclParams {
     pub role: Option<Role>,
     pub label: Option<String>,
     pub allowed_contexts: Option<Vec<String>>,
+    /// `Some` sets the delegated step-up approver; `None` leaves it unchanged.
+    pub step_up_approver: Option<String>,
 }
 
 /// Compute the symmetric difference of two context lists — every
@@ -208,6 +210,9 @@ pub async fn update_acl(
     }
     if let Some(label) = params.label {
         entry.label = Some(label);
+    }
+    if let Some(approver) = params.step_up_approver {
+        entry.step_up_approver = Some(approver);
     }
     if let Some(allowed_contexts) = params.allowed_contexts {
         // Validate the *symmetric difference* of (old, new), not just
@@ -565,6 +570,7 @@ mod tests {
             UpdateAclParams {
                 role: None,
                 label: None,
+                step_up_approver: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
             },
             "test",
@@ -598,6 +604,7 @@ mod tests {
             UpdateAclParams {
                 role: None,
                 label: None,
+                step_up_approver: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
             },
             "test",
@@ -628,6 +635,7 @@ mod tests {
             UpdateAclParams {
                 role: None,
                 label: None,
+                step_up_approver: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
             },
             "test",
@@ -790,6 +798,7 @@ mod tests {
             UpdateAclParams {
                 role: None,
                 label: None,
+                step_up_approver: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-ghost".into()]),
             },
             "test",

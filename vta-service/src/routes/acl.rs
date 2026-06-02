@@ -89,6 +89,9 @@ pub struct UpdateAclRequest {
     pub role: Option<Role>,
     pub label: Option<String>,
     pub allowed_contexts: Option<Vec<String>>,
+    /// Set the delegated step-up approver VID (`Some` sets; `None` leaves).
+    #[serde(default)]
+    pub step_up_approver: Option<String>,
 }
 
 /// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry.
@@ -111,6 +114,7 @@ pub async fn update_acl(
             role: req.role,
             label: req.label,
             allowed_contexts: req.allowed_contexts,
+            step_up_approver: req.step_up_approver,
         },
         "rest",
     )

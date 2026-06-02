@@ -680,6 +680,7 @@ pub async fn handle_update_acl(
                 role,
                 label: body.label,
                 allowed_contexts: body.allowed_contexts,
+                step_up_approver: body.step_up_approver,
             },
             "didcomm",
         )

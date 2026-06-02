@@ -173,6 +173,7 @@ pub(super) async fn handle_update(
             role,
             label: req.label,
             allowed_contexts: req.allowed_contexts,
+            step_up_approver: req.step_up_approver,
         },
         TRANSPORT_TRUST_TASK,
     )

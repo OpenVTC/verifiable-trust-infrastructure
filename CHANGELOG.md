@@ -2,22 +2,25 @@
 
 ## Unreleased
 
-### Set a delegated step-up approver at grant time
+### Set a delegated step-up approver at grant *and update* time
 
-The ACL create/grant body gains an optional `step_up_approver` — the VID a
-delegated AAL2 step-up's approve-request is addressed to (the holder's
-mobile/browser approver). It's stored on the entry and read by the step-up
-gate's delegated mode. Makes delegated step-up operable end-to-end:
+The ACL create/grant and update bodies gain an optional `step_up_approver`
+— the VID a delegated AAL2 step-up's approve-request is addressed to (the
+holder's mobile/browser approver). It's stored on the entry and read by the
+step-up gate's delegated mode. Makes delegated step-up operable end-to-end:
 previously the gate could route to an approver but there was no way to set
-one outside tests.
+one outside tests. `update` follows the existing set-if-`Some`/leave-if-
+`None` semantics (clearing isn't expressible, matching `label`).
 
 - `vta-sdk` `CreateAclBody` + `CreateAclResultBody` gain
   `step_up_approver: Option<String>` (additive, `serde(default)`); the REST
   `POST /acl` request + the `vta/acl/create/1.0` trust task accept it and
-  the result reflects it. `vta-sdk` 0.9.2 → 0.9.3.
-- Still pending: setting/clearing the approver on an *existing* entry
-  (`acl/update`) and the wire `auth/step-up/policy/0.1` handler for remote
-  policy management.
+  the result reflects it. `UpdateAclBody` + the REST `PATCH /acl/{did}` +
+  the `vta/acl/update/1.0` trust task likewise accept it. `vta-sdk`
+  0.9.2 → 0.9.4.
+- Still pending (optional): the wire `auth/step-up/policy/0.1` handler for
+  *remote* policy management — the `vta step-up` CLI already covers local
+  management.
 
 ### Key rotation goes through `acl/swap-key`
 

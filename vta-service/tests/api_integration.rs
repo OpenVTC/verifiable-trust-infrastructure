@@ -593,6 +593,38 @@ async fn swap_key_gated_without_carve_out() {
 }
 
 #[tokio::test]
+async fn acl_update_sets_step_up_approver() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    // Grant with no approver…
+    let (status, _) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({ "did": "did:key:z6MkGrantee2", "role": "application", "allowed_contexts": ["ctx1"] }),
+        ))
+        .await;
+    assert!(status.is_success());
+
+    // …then add one via PATCH.
+    let (status, body) = app
+        .request(patch_auth(
+            "/acl/did:key:z6MkGrantee2",
+            &token,
+            json!({ "step_up_approver": "did:key:z6MkApprover" }),
+        ))
+        .await;
+    assert!(
+        status.is_success(),
+        "update should succeed: {status} {body}"
+    );
+    assert_eq!(
+        body["step_up_approver"], "did:key:z6MkApprover",
+        "update must set + reflect the step-up approver: {body}"
+    );
+}
+
+#[tokio::test]
 async fn acl_grant_persists_step_up_approver() {
     let (app, ctx) = TestApp::new().await;
     // Step-up ships disabled, so an AAL1 admin can grant without a gate.
