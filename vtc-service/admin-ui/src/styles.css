@@ -1951,6 +1951,100 @@ dd .copy-icon-btn {
   border-radius: var(--radius-sm);
   padding: 0 var(--space-2);
 }
+
+/* Decision trace — which route fired and why */
+.cer-trace {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cer-trace-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.trace-route {
+  position: relative;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  border-left: 2px solid var(--border);
+}
+.trace-route.skipped {
+  opacity: 0.45;
+}
+.trace-route.fired.eff-allow {
+  border-left-color: var(--vd-allow);
+}
+.trace-route.fired.eff-deny {
+  border-left-color: var(--vd-deny);
+}
+.trace-route.fired.eff-refer {
+  border-left-color: var(--vd-refer);
+}
+.trace-route.fired.eff-request_more {
+  border-left-color: var(--vd-more);
+}
+.trace-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.trace-mark {
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  width: 1ch;
+}
+.trace-route.fired .trace-mark {
+  color: var(--text);
+}
+.trace-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+.trace-fired,
+.trace-note {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+}
+.trace-fired {
+  color: var(--bg);
+  background: var(--brand);
+}
+.trace-note {
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+}
+.trace-conds {
+  list-style: none;
+  margin: var(--space-1) 0 0;
+  padding: 0 0 0 calc(1ch + var(--space-2));
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: var(--text-xs);
+}
+.trace-conds .pass {
+  color: var(--vd-allow);
+}
+.trace-conds .fail {
+  color: var(--text-faint);
+}
+.cer-trace-drift {
+  font-size: var(--text-xs);
+  color: var(--vd-refer);
+  margin: 0;
+}
 @keyframes cer-pop {
   from {
     opacity: 0;

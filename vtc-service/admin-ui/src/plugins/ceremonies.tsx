@@ -29,7 +29,15 @@ import {
   fetchPolicies,
   uploadPolicy,
 } from "@/lib/policies-api";
-import { blankIR, diffIR, irToEnglish, parseRego } from "@/lib/rule-ir";
+import {
+  type ExplainFacts,
+  type RuleIR,
+  blankIR,
+  diffIR,
+  explainDecision,
+  irToEnglish,
+  parseRego,
+} from "@/lib/rule-ir";
 import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
 import {
   type CeremonyKey,
@@ -211,6 +219,8 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   const [authoring, setAuthoring] = useState(false);
   // Needs the operator has chosen to satisfy for the request_more loop.
   const [satisfied, setSatisfied] = useState<string[]>([]);
+  // The facts that produced the current verdict — fed to the trace.
+  const [lastFacts, setLastFacts] = useState<ExplainFacts | null>(null);
 
   const policyQuery = useQuery({
     queryKey: ["active-policy", ceremony.purpose],
@@ -226,7 +236,14 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     setPhase(-1);
     setAuthoring(false);
     setSatisfied([]);
+    setLastFacts(null);
   }, [ceremony]);
+
+  // The active policy's IR, when it was authored visually — enables the
+  // local decision trace.
+  const activeIR = policyQuery.data
+    ? parseRego(policyQuery.data.regoSource)
+    : null;
 
   // Editing the base evidence invalidates any satisfied needs.
   const onFieldsChange = (v: FieldValues) => {
@@ -255,6 +272,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     try {
       let facts = ceremony.buildFacts(form);
       for (const need of satisfied) facts = satisfyNeed(facts, need);
+      setLastFacts(facts as ExplainFacts);
       const resp = await postJson<TestResponse>(
         `/v1/policies/${policy.id}/test`,
         { query: `data.${ceremony.pkg}.decision`, input: facts },
@@ -398,6 +416,13 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
                       onToggle={toggleNeed}
                       onRerun={run}
                       running={running}
+                    />
+                  )}
+                  {activeIR && lastFacts && (
+                    <DecisionTrace
+                      ir={activeIR}
+                      facts={lastFacts}
+                      verdictEffect={verdict.effect}
                     />
                   )}
                 </>
@@ -952,6 +977,60 @@ function NeedsLoop({
       >
         {running ? "Evaluating…" : "Re-run with satisfied evidence ▸"}
       </button>
+    </div>
+  );
+}
+
+// "Why this verdict" — the local first-match trace over the active
+// policy's routes: which conditions held, which route fired. Derived
+// from the IR, so it explains visually-authored policies; a note flags
+// the rare case where the live Rego was hand-edited away from its IR.
+function DecisionTrace({
+  ir,
+  facts,
+  verdictEffect,
+}: {
+  ir: RuleIR;
+  facts: ExplainFacts;
+  verdictEffect: Effect;
+}) {
+  const trace = explainDecision(ir, facts);
+  const drift = trace.fired ? trace.fired.effect !== verdictEffect : true;
+  return (
+    <div className="cer-trace">
+      <div className="cer-trace-title">Why this verdict</div>
+      {trace.routes.map((r, i) => (
+        <div
+          key={i}
+          className={`trace-route eff-${r.effect}${r.fired ? " fired" : ""}${
+            !r.reached ? " skipped" : ""
+          }`}
+        >
+          <div className="trace-head">
+            <span className="trace-mark" aria-hidden>
+              {r.fired ? "▶" : r.reached ? "·" : "⌀"}
+            </span>
+            <span className="trace-name">{r.name}</span>
+            {r.fired && <span className="trace-fired">fired</span>}
+            {!r.reached && <span className="trace-note">not reached</span>}
+          </div>
+          {r.reached && !r.isCatchAll && (
+            <ul className="trace-conds">
+              {r.conditions.map((c, j) => (
+                <li key={j} className={c.passed ? "pass" : "fail"}>
+                  <span aria-hidden>{c.passed ? "✓" : "✗"}</span> {c.label}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+      {drift && (
+        <p className="cer-trace-drift">
+          The live verdict differs from this trace — the active policy may
+          have been hand-edited away from its visual form.
+        </p>
+      )}
     </div>
   );
 }
