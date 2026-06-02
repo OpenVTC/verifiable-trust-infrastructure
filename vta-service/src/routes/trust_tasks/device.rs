@@ -13,6 +13,7 @@ use trust_tasks_rs::specs::device::disable::v0_1 as disable_spec;
 use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
 use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
+use trust_tasks_rs::specs::device::set_wake::v0_1 as set_wake_spec;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -27,6 +28,7 @@ pub(super) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
     vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1,
     vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1,
+    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
 ];
 
 /// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
@@ -109,6 +111,42 @@ pub(super) async fn handle_disable(
     };
     let device_id = payload.device_id.to_string();
     match operations::device::disable_device(&state.acl_ks, &state.audit_ks, auth, &device_id).await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `device/set-wake/0.1` — the device conveys its opaque push WakeHandle; the
+/// VTA records it and computes/returns the trigger allowlist.
+pub(super) async fn handle_set_wake(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let payload: set_wake_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let wake = payload
+        .wake_handle
+        .map(|h| (h.gateway.to_string(), h.handle.to_string()));
+    let suggested = payload
+        .suggested_triggers
+        .unwrap_or_default()
+        .iter()
+        .map(|t| t.to_string())
+        .collect::<Vec<_>>();
+    let vta_did = state.config.read().await.vta_did.clone();
+    match operations::device::set_wake_device(
+        &state.acl_ks,
+        &state.audit_ks,
+        auth,
+        wake,
+        suggested,
+        vta_did,
+    )
+    .await
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),

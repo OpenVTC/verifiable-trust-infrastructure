@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::acl::{
     AclEntry, Capability, CompanionFormFactor, ConsumerKind, DeviceBinding, ServiceKind,
-    derived_capabilities_for_role, get_acl_entry, list_acl_entries, store_acl_entry,
+    WakeChannel, derived_capabilities_for_role, get_acl_entry, list_acl_entries, store_acl_entry,
 };
 use crate::audit;
 use crate::auth::AuthClaims;
@@ -264,6 +264,95 @@ pub async fn disable_device(
     .await;
 
     Ok(json!({ "deviceId": device_id, "disabledAt": disabled_at }))
+}
+
+/// Set (or clear) the caller device's push **wake channel** from a
+/// `device/set-wake/0.1`. The caller MUST be a registered device. The VTA
+/// **owns the trigger allowlist**: it computes `{ vta_did } ∪ suggested` (the
+/// device's `suggestedTriggers` hint — typically its mediator — which the VTA
+/// MAY honor) and records it on the binding. `wake = None` clears the channel.
+/// Returns the effective `{ triggerPolicy, pushCapable }`.
+///
+/// NOTE: provisioning the allowlist to the gateway (a `push/provision` Trust
+/// Task to the gateway DID) is a follow-up — it is blocked on the gateway being
+/// able to authenticate the `did:webvh` VTA, which arrives with the gateway's
+/// DIDComm surface. This records the VTA-side state the VTA-trigger reads.
+pub async fn set_wake_device(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    wake: Option<(String, String)>,
+    suggested_triggers: Vec<String>,
+    vta_did: Option<String>,
+) -> Result<Value, AppError> {
+    let did = auth.did.clone();
+    let mut entry = get_acl_entry(acl_ks, &did).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "device/set-wake:not_registered — no DeviceBinding for {did}"
+        ))
+    })?;
+    if entry.device.is_none() {
+        return Err(AppError::NotFound(format!(
+            "device/set-wake:not_registered — no DeviceBinding for {did}"
+        )));
+    }
+
+    let Some((gateway, handle)) = wake else {
+        // Clear: the device is no longer wakeable.
+        entry.device.as_mut().unwrap().wake = None;
+        store_acl_entry(acl_ks, &entry).await?;
+        let _ = audit::record(
+            audit_ks,
+            "device.set_wake.clear",
+            &did,
+            Some(&did),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        return Ok(json!({ "pushCapable": false }));
+    };
+
+    // VTA owns the allowlist: its own DID (policy-driven wake) plus any
+    // device-suggested triggers (its mediator), deduped, order-preserved.
+    let mut allowed: Vec<String> = Vec::new();
+    for t in vta_did.into_iter().chain(suggested_triggers) {
+        if !t.is_empty() && !allowed.contains(&t) {
+            allowed.push(t);
+        }
+    }
+
+    let binding = entry
+        .device
+        .as_mut()
+        .expect("binding present (checked above)");
+    binding.wake = Some(WakeChannel {
+        gateway,
+        handle,
+        allowed_triggers: allowed.clone(),
+    });
+    let push_capable = binding.push_capable();
+    store_acl_entry(acl_ks, &entry).await?;
+
+    info!(did = %did, triggers = allowed.len(), "device wake channel set");
+    let _ = audit::record(
+        audit_ks,
+        "device.set_wake",
+        &did,
+        Some(&did),
+        "success",
+        None,
+        None,
+    )
+    .await;
+    // TODO(gateway): push/provision the allowlist to the gateway DID over
+    // DIDComm once the gateway's DIDComm surface can authenticate the VTA.
+
+    Ok(json!({
+        "pushCapable": push_capable,
+        "triggerPolicy": { "allowedTriggers": allowed },
+    }))
 }
 
 /// Assemble the wire `DeviceBinding` (device/_shared schema) from an ACL entry
@@ -702,6 +791,112 @@ mod tests {
         let err = disable_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope")
             .await
             .expect_err("unknown deviceId must be NotFound");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn set_wake_records_channel_and_vta_owned_allowlist() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        seed_and_register(
+            &acl_ks,
+            &audit_ks,
+            did,
+            CompanionFormFactor::Mobile,
+            "Phone",
+        )
+        .await;
+
+        let body = set_wake_device(
+            &acl_ks,
+            &audit_ks,
+            &device_auth(did),
+            Some(("did:webvh:gw".into(), "z6MkHandle".into())),
+            vec!["did:webvh:mediator".into()],
+            Some("did:webvh:vta".into()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(body["pushCapable"], true);
+        // VTA owns the allowlist: its own DID first, then the device-suggested mediator.
+        let triggers: Vec<&str> = body["triggerPolicy"]["allowedTriggers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(triggers, vec!["did:webvh:vta", "did:webvh:mediator"]);
+
+        // Persisted on the binding's wake channel.
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        let w = entry.device.unwrap().wake.unwrap();
+        assert_eq!(w.gateway, "did:webvh:gw");
+        assert_eq!(w.handle, "z6MkHandle");
+        assert_eq!(
+            w.allowed_triggers,
+            vec!["did:webvh:vta", "did:webvh:mediator"]
+        );
+    }
+
+    #[tokio::test]
+    async fn set_wake_clear_removes_channel() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let did = "did:key:zDevice";
+        seed_and_register(
+            &acl_ks,
+            &audit_ks,
+            did,
+            CompanionFormFactor::Mobile,
+            "Phone",
+        )
+        .await;
+        set_wake_device(
+            &acl_ks,
+            &audit_ks,
+            &device_auth(did),
+            Some(("did:webvh:gw".into(), "h".into())),
+            vec![],
+            Some("did:webvh:vta".into()),
+        )
+        .await
+        .unwrap();
+
+        // Clearing (wake = None) removes the channel.
+        let body = set_wake_device(
+            &acl_ks,
+            &audit_ks,
+            &device_auth(did),
+            None,
+            vec![],
+            Some("did:webvh:vta".into()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body["pushCapable"], false);
+        let entry = get_acl_entry(&acl_ks, did).await.unwrap().unwrap();
+        assert!(entry.device.unwrap().wake.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_wake_rejects_unregistered_device() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new("did:key:zBare", Role::Application, "did:key:zSetup"),
+        )
+        .await
+        .unwrap();
+        let err = set_wake_device(
+            &acl_ks,
+            &audit_ks,
+            &device_auth("did:key:zBare"),
+            Some(("g".into(), "h".into())),
+            vec![],
+            Some("did:webvh:vta".into()),
+        )
+        .await
+        .expect_err("set-wake without a binding must be refused");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
 }
