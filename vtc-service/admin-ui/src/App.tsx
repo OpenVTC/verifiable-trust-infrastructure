@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
-import { Menu, RefreshCw, X } from "lucide-react";
+import { ChevronsLeft, ChevronsRight, Menu, RefreshCw, X } from "lucide-react";
 
 import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
 import { PluginHost } from "@/components/PluginHost";
@@ -28,6 +28,22 @@ export default function App() {
   const allPlugins = usePlugins();
   const { pathname } = useLocation();
   const [navOpen, setNavOpen] = useState(false);
+  // Desktop nav collapse — an icons-only rail to reclaim horizontal
+  // space. Persisted so the operator's choice survives reloads.
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("vtc-admin-nav-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("vtc-admin-nav-collapsed", navCollapsed ? "1" : "0");
+    } catch {
+      // Private-mode / blocked storage: collapse just won't persist.
+    }
+  }, [navCollapsed]);
   const qc = useQueryClient();
   const toast = useToast();
   // De-dupe back-to-back expiry events: one expired session can fire
@@ -147,7 +163,11 @@ export default function App() {
   });
 
   return (
-    <div className={`layout${navOpen ? " nav-open" : ""}`}>
+    <div
+      className={`layout${navOpen ? " nav-open" : ""}${
+        navCollapsed ? " nav-collapsed" : ""
+      }`}
+    >
       <button
         type="button"
         className="nav-toggle"
@@ -161,16 +181,35 @@ export default function App() {
         </span>
         Menu
       </button>
-      <aside className="nav" id="admin-nav">
+      <aside
+        className={`nav${navCollapsed ? " collapsed" : ""}`}
+        id="admin-nav"
+      >
         <header>
-          <h1>VTC Admin</h1>
+          <div className="nav-brand">
+            <h1>VTC Admin</h1>
+            <button
+              type="button"
+              className="nav-collapse-btn"
+              aria-label={
+                navCollapsed ? "Expand navigation" : "Collapse navigation"
+              }
+              aria-expanded={!navCollapsed}
+              title={navCollapsed ? "Expand" : "Collapse"}
+              onClick={() => setNavCollapsed((v) => !v)}
+            >
+              <span className="button-icon" aria-hidden="true">
+                {navCollapsed ? <ChevronsRight /> : <ChevronsLeft />}
+              </span>
+            </button>
+          </div>
           <SessionBadge whoami={probe.data} />
           <ThemeSwitcher />
         </header>
         <ul>
           {plugins.map((p) => (
             <li key={p.id}>
-              <NavLink to={p.path}>
+              <NavLink to={p.path} title={p.label}>
                 <span className="nav-icon" aria-hidden="true">
                   <PluginIcon plugin={p} />
                 </span>
@@ -291,7 +330,9 @@ function ReloadPluginsButton() {
         <span className="button-icon" aria-hidden="true">
           <RefreshCw />
         </span>
-        {pending ? "Reloading plugins…" : "Reload plugins"}
+        <span className="nav-footer-label">
+          {pending ? "Reloading plugins…" : "Reload plugins"}
+        </span>
       </button>
     </div>
   );

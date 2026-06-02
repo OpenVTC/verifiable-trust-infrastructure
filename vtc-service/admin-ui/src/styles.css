@@ -336,6 +336,10 @@ button.primary:focus-visible {
     display: inline-flex;
   }
 
+  .nav-collapse-btn {
+    display: none;
+  }
+
   .nav {
     position: fixed;
     top: 0;
@@ -525,6 +529,70 @@ button.primary:focus-visible {
   margin: 0;
   font-size: var(--text-sm);
   text-align: left;
+}
+
+/* ── Nav: desktop collapse (icons-only rail) ─────────────────── */
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.nav-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+.nav-collapse-btn:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+.nav-collapse-btn .button-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* The collapsed rail is a desktop affordance only — the mobile nav is a
+   full-label slide-over, so scope every collapsed rule to ≥721px and
+   hide the toggle below it. */
+@media (min-width: 721px) {
+  .layout.nav-collapsed {
+    grid-template-columns: 64px 1fr;
+  }
+  .nav.collapsed .nav-brand {
+    justify-content: center;
+  }
+  .nav.collapsed h1,
+  .nav.collapsed .session-badge,
+  .nav.collapsed .theme-switcher,
+  .nav.collapsed .nav-label,
+  .nav.collapsed .nav-footer-label {
+    display: none;
+  }
+  .nav.collapsed a {
+    justify-content: center;
+    gap: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .nav.collapsed .nav-footer {
+    align-items: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
 }
 
 /* ── Theme switcher (segmented) ──────────────────────────────── */
