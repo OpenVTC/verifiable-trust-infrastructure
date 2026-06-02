@@ -14,12 +14,20 @@
 // the same `decide()` the routes run, minus the effect.
 
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getJson, postJson } from "@/lib/api";
+import { postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso } from "@/lib/format";
+import {
+  type Purpose,
+  OTHER_PURPOSES,
+  activatePolicy,
+  fetchActivePolicy,
+  fetchPolicies,
+  uploadPolicy,
+} from "@/lib/policies-api";
 
-const TRUST_TASK_POLICIES =
-  "https://trusttasks.org/openvtc/vtc/policies/upload/1.0";
 const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
 
 type Effect = "allow" | "deny" | "refer" | "request_more";
@@ -111,30 +119,11 @@ const natureColor: Record<string, string> = {
   mutating: "var(--vd-refer)",
 };
 
-interface PolicyRow {
-  id: string;
-  purpose: string;
-  regoSource: string;
-  sha256: string;
-  version: number;
-  isActive: boolean;
-}
-interface PoliciesPage {
-  items: PolicyRow[];
-}
 interface TestResponse {
   id: string;
   result: {
     result?: { expressions?: { value?: unknown }[] }[];
   };
-}
-
-async function fetchActivePolicy(purpose: string): Promise<PolicyRow | null> {
-  const page = await getJson<PoliciesPage>(
-    `/v1/policies?purpose=${purpose}&status=active&limit=1`,
-    { trustTask: TRUST_TASK_POLICIES },
-  );
-  return page.items.find((p) => p.isActive) ?? page.items[0] ?? null;
 }
 
 interface Verdict {
@@ -284,8 +273,8 @@ function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 export function Ceremonies() {
-  const [active, setActive] = useState<CeremonyKey>("directory");
-  const ceremony = CEREMONIES.find((c) => c.key === active)!;
+  const [active, setActive] = useState<CeremonyKey | "other">("directory");
+  const ceremony = CEREMONIES.find((c) => c.key === active);
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -296,8 +285,8 @@ export function Ceremonies() {
       <p className="cer-sub">
         Joining, leaving, directory lookups, role changes — each community
         state transition is an instance of one decision pipeline. Pick a
-        ceremony, shape the facts, and dry-run the live policy to see the
-        verdict the daemon would reach.
+        ceremony to see its flow, manage its decision policy, and dry-run the
+        live verdict the daemon would reach.
       </p>
 
       <div className="cer-tabs" role="tablist">
@@ -318,9 +307,23 @@ export function Ceremonies() {
             <small>{c.nature}</small>
           </button>
         ))}
+        <button
+          role="tab"
+          aria-selected={active === "other"}
+          className={`cer-tab${active === "other" ? " on" : ""}`}
+          onClick={() => setActive("other")}
+        >
+          <span
+            className="nature"
+            style={{ color: "var(--text-faint)" }}
+            aria-hidden
+          />
+          Other policies
+          <small>no ceremony</small>
+        </button>
       </div>
 
-      <CeremonyPanel ceremony={ceremony} />
+      {ceremony ? <CeremonyPanel ceremony={ceremony} /> : <OtherPolicies />}
     </div>
   );
 }
@@ -333,8 +336,8 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
   const [error, setError] = useState<string | null>(null);
 
   const policyQuery = useQuery({
-    queryKey: ["ceremony-policy", ceremony.purpose],
-    queryFn: () => fetchActivePolicy(ceremony.purpose!),
+    queryKey: ["active-policy", ceremony.purpose],
+    queryFn: () => fetchActivePolicy(ceremony.purpose as Purpose),
     enabled: ceremony.purpose !== null,
   });
 
@@ -508,34 +511,215 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
           )}
         </div>
 
-        {/* Active policy */}
+        {/* Decision policy — source + versions + activate + upload */}
         <div className="card">
           <div className="cer-panel-title">
-            Active decision policy <span className="ln" />
+            Decision policy <span className="ln" />
           </div>
           {ceremony.purpose === null ? (
             <p className="cer-sub">No policy purpose for this ceremony yet.</p>
-          ) : policyQuery.isLoading ? (
-            <p className="cer-sub">Loading…</p>
-          ) : policyQuery.data ? (
-            <>
-              <div
-                className="cer-meta-row"
-                style={{ marginTop: 0, marginBottom: "var(--space-3)" }}
-              >
-                <span className="cer-chip">
-                  v<b>{policyQuery.data.version}</b>
-                </span>
-                <span className="cer-chip">
-                  sha <b>{policyQuery.data.sha256.slice(0, 12)}…</b>
-                </span>
-              </div>
-              <pre className="cer-policy">{policyQuery.data.regoSource}</pre>
-            </>
           ) : (
-            <p className="cer-sub">No active policy found for this purpose.</p>
+            <PolicyManager purpose={ceremony.purpose as Purpose} />
           )}
         </div>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Policy management — source + version history + activate + upload. Used
+// per-ceremony (the right panel) and for the non-ceremony purposes.
+// ---------------------------------------------------------------------------
+
+function PolicyManager({ purpose }: { purpose: Purpose }) {
+  const qc = useQueryClient();
+  const confirm = useConfirm();
+  const [showUpload, setShowUpload] = useState(false);
+
+  const query = useQuery({
+    queryKey: ["policies", purpose],
+    queryFn: () => fetchPolicies(purpose),
+  });
+
+  const activate = useMutation({
+    mutationFn: activatePolicy,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["policies", purpose] });
+      void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
+    },
+  });
+
+  const items = query.data?.items ?? [];
+  const active = items.find((p) => p.isActive) ?? null;
+
+  return (
+    <>
+      {query.isLoading && <p className="cer-sub">Loading…</p>}
+      {query.error && (
+        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+          {(query.error as Error).message}
+        </p>
+      )}
+
+      {active && (
+        <>
+          <div
+            className="cer-meta-row"
+            style={{ marginTop: 0, marginBottom: "var(--space-3)" }}
+          >
+            <span className="cer-chip">
+              active <b>v{active.version}</b>
+            </span>
+            <span className="cer-chip">
+              sha <b>{active.sha256.slice(0, 12)}…</b>
+            </span>
+          </div>
+          <pre className="cer-policy">{active.regoSource}</pre>
+        </>
+      )}
+      {!query.isLoading && !active && (
+        <p className="cer-sub">No active policy for this purpose.</p>
+      )}
+
+      {/* Version history */}
+      {items.length > 0 && (
+        <>
+          <div
+            className="cer-panel-title"
+            style={{ marginTop: "var(--space-4)" }}
+          >
+            Versions <span className="ln" />
+          </div>
+          <div className="cer-versions">
+            {items.map((p) => (
+              <div
+                key={p.id}
+                className={`cer-ver${p.isActive ? " active" : ""}`}
+              >
+                <span className="cer-ver-v">v{p.version}</span>
+                <span className="cer-ver-meta">{formatIso(p.createdAt)}</span>
+                {p.isActive ? (
+                  <span className="cer-chip" style={{ color: "var(--vd-allow)" }}>
+                    active
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="cer-ver-activate"
+                    disabled={activate.isPending}
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Activate ${purpose} v${p.version}?`,
+                        message: `The current active policy for "${purpose}" becomes archived.`,
+                        confirmLabel: "Activate",
+                      });
+                      if (ok) activate.mutate(p.id);
+                    }}
+                  >
+                    Activate
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <button
+        type="button"
+        className="cer-run"
+        style={{ marginTop: "var(--space-4)" }}
+        onClick={() => setShowUpload((v) => !v)}
+      >
+        {showUpload ? "Cancel" : "Upload new revision ▸"}
+      </button>
+      {showUpload && (
+        <UploadPolicyForm
+          purpose={purpose}
+          onDone={() => {
+            setShowUpload(false);
+            void qc.invalidateQueries({ queryKey: ["policies", purpose] });
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function UploadPolicyForm({
+  purpose,
+  onDone,
+}: {
+  purpose: Purpose;
+  onDone: () => void;
+}) {
+  const [source, setSource] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => uploadPolicy({ purpose, regoSource: source }),
+    onSuccess: onDone,
+  });
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        mutation.mutate();
+      }}
+      style={{ marginTop: "var(--space-3)" }}
+    >
+      <p className="cer-sub" style={{ marginBottom: "var(--space-2)" }}>
+        Uploading does not activate — the revision is archived until you
+        activate it above.
+      </p>
+      <textarea
+        rows={10}
+        spellCheck={false}
+        className="cer-rego-input"
+        placeholder={`package vtc.${purpose}\n\nimport rego.v1\n\ndefault decision := {"effect": "deny", "with": {"code": "no-matching-route"}}`}
+        value={source}
+        onChange={(e) => setSource(e.target.value)}
+      />
+      {mutation.error && (
+        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+          {(mutation.error as Error).message}
+        </p>
+      )}
+      <button
+        type="submit"
+        className="cer-run"
+        disabled={mutation.isPending || source.trim().length === 0}
+      >
+        {mutation.isPending ? "Compiling…" : "Upload"}
+      </button>
+    </form>
+  );
+}
+
+function OtherPolicies() {
+  const [purpose, setPurpose] = useState<Purpose>(OTHER_PURPOSES[0]!);
+  return (
+    <>
+      <p className="cer-sub" style={{ marginTop: "var(--space-5)" }}>
+        Policy purposes that aren't (yet) first-class ceremonies — managed
+        the same way, without a flow or simulator.
+      </p>
+      <div className="cer-tabs" style={{ marginTop: "var(--space-4)" }}>
+        {OTHER_PURPOSES.map((p) => (
+          <button
+            key={p}
+            className={`cer-tab${p === purpose ? " on" : ""}`}
+            onClick={() => setPurpose(p)}
+          >
+            {p}
+          </button>
+        ))}
+      </div>
+      <div className="card" style={{ marginTop: "var(--space-4)" }}>
+        <div className="cer-panel-title">
+          {purpose} <span className="ln" />
+        </div>
+        <PolicyManager purpose={purpose} />
       </div>
     </>
   );
