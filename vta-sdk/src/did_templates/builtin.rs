@@ -13,6 +13,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "did-host-http",
     "did-host-http-didcomm",
     "didcomm-mediator",
+    "push-gateway",
     "vta-admin",
     "vtc-host",
 ];
@@ -34,6 +35,7 @@ const LEGACY_ALIASES: &[(&str, &str)] = &[
 ];
 
 const DIDCOMM_MEDIATOR: &str = include_str!("../../templates/didcomm-mediator.json");
+const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
 const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
@@ -61,6 +63,7 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
     let canonical = resolve_alias(name);
     let raw = match canonical {
         "didcomm-mediator" => DIDCOMM_MEDIATOR,
+        "push-gateway" => PUSH_GATEWAY,
         "vta-admin" => VTA_ADMIN,
         "vtc-host" => VTC_HOST,
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,

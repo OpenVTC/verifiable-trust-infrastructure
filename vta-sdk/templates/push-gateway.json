@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "name": "push-gateway",
+  "kind": "push-gateway",
+  "description": "Push wake-up gateway: signing + key-agreement methods and a DIDCommMessaging service so devices, VTAs, and mediators can authcrypt push/* Trust Tasks (register/provision/wake) to it. Implements https://trusttasks.org/binding/push/0.1.",
+  "methods": ["webvh", "web"],
+  "requiredVars": ["URL"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "ROUTING_KEYS": [],
+    "WEBVH_SERVER": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://w3id.org/security/multikey/v1",
+      "https://didcomm.org/messaging/v2"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "authentication": ["{DID}#key-0"],
+    "assertionMethod": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      {
+        "id": "{DID}#service",
+        "type": ["DIDCommMessaging"],
+        "serviceEndpoint": [
+          {
+            "accept": "{ACCEPT}",
+            "routingKeys": "{ROUTING_KEYS}",
+            "uri": "{URL}"
+          }
+        ]
+      }
+    ]
+  }
+}
