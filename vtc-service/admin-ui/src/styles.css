@@ -379,6 +379,10 @@ button.primary:focus-visible {
 .content {
   padding: var(--space-8) var(--space-10);
   max-width: 80rem;
+  /* The 1fr grid track is minmax(auto,1fr) by default; auto lets inner
+     content (long code lines) expand it and scroll the page. Pin the
+     floor to 0 so overflow stays inside the scrollable panels. */
+  min-width: 0;
 }
 
 /* ── Nav ─────────────────────────────────────────────────────── */
@@ -1741,6 +1745,20 @@ dd .copy-icon-btn {
   gap: var(--space-5);
   margin-top: var(--space-5);
 }
+/* Grid items default to min-width:auto, so an unbreakable line (e.g. the
+   compiled-Rego @vtc-rule-ir header) would expand the track and scroll
+   the whole page. Let the panels shrink so inner overflow:auto wins. */
+.cer-work > * {
+  min-width: 0;
+}
+/* Author mode: the visual editor needs full width, so stack the work
+   area with the decision policy on top and the simulator below it. */
+.cer-work.authoring {
+  grid-template-columns: 1fr;
+}
+.cer-work.authoring .cer-policy-panel {
+  order: -1;
+}
 @media (max-width: 940px) {
   .cer-work {
     grid-template-columns: 1fr;
@@ -1962,6 +1980,10 @@ dd .copy-icon-btn {
   display: grid;
   grid-template-columns: 1.25fr 1fr;
   gap: var(--space-4);
+  min-width: 0;
+}
+.rule-editor > * {
+  min-width: 0;
 }
 @media (max-width: 1100px) {
   .rule-editor {

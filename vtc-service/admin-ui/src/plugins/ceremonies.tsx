@@ -30,6 +30,15 @@ import {
 } from "@/lib/policies-api";
 import { blankIR, parseRego } from "@/lib/rule-ir";
 import { RuleEditor } from "@/plugins/RuleEditor";
+import {
+  type CeremonyKey,
+  type CeremonyManifest,
+  type FieldDef,
+  type FieldValues,
+  CEREMONIES,
+  defaultValues,
+  natureColor,
+} from "@/lib/ceremony-manifest";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
 
@@ -57,71 +66,6 @@ const EFFECTS: { key: Effect; label: string; blurb: string }[] = [
   },
 ];
 
-type CeremonyKey = "directory" | "join" | "leave" | "role-change";
-type Wired = "live" | "legacy" | "unwired";
-
-interface Ceremony {
-  key: CeremonyKey;
-  label: string;
-  nature: string;
-  /** API policy purpose key, or null when the ceremony has no policy. */
-  purpose: string | null;
-  /** Rego package whose `decision` rule the host evaluates. */
-  pkg: string;
-  wired: Wired;
-  blurb: string;
-}
-
-const CEREMONIES: Ceremony[] = [
-  {
-    key: "directory",
-    label: "Directory",
-    nature: "read-only",
-    purpose: "directory",
-    pkg: "vtc.directory",
-    wired: "live",
-    blurb:
-      "A member views another member's record. Read-only — the verdict's allow carries a field projection, capped by the PII boundary.",
-  },
-  {
-    key: "join",
-    label: "Join",
-    nature: "constructive",
-    purpose: "join",
-    pkg: "vtc.join",
-    wired: "live",
-    blurb:
-      "A DID joins the community. A trusted presented credential auto-admits (allow → issue the membership credential); everything else is referred to the moderator queue for review.",
-  },
-  {
-    key: "leave",
-    label: "Leave",
-    nature: "destructive",
-    purpose: "removal",
-    pkg: "vtc.removal",
-    wired: "live",
-    blurb:
-      "A member departs or is removed. Self-leave is unconditional; an admin may remove a non-admin. The no-last-admin invariant + revocation are host-enforced in the effect.",
-  },
-  {
-    key: "role-change",
-    label: "Role change",
-    nature: "mutating",
-    purpose: "roleChange",
-    pkg: "vtc.role_change",
-    wired: "live",
-    blurb:
-      "A member's role changes in place (the DID + VMC are unchanged; the role VEC is re-minted). The one ceremony whose allow may grant admin — gated by a verified step-up; demotions are guarded by no-last-admin.",
-  },
-];
-
-const natureColor: Record<string, string> = {
-  "read-only": "var(--brand)",
-  constructive: "var(--vd-allow)",
-  destructive: "var(--vd-deny)",
-  mutating: "var(--vd-refer)",
-};
-
 interface TestResponse {
   id: string;
   result: {
@@ -140,135 +84,6 @@ function pluckDecision(resp: TestResponse): Verdict | null {
   const v = value as Record<string, unknown>;
   if (typeof v.effect !== "string") return null;
   return { effect: v.effect as Effect, with: v.with as Record<string, unknown> };
-}
-
-// ---------------------------------------------------------------------------
-// Facts assembly — a compact, ceremony-specific editor produces the
-// verified-Facts document the policy decides over.
-// ---------------------------------------------------------------------------
-
-interface FormState {
-  // directory
-  viewerRole: string;
-  subjectIsMember: boolean;
-  subjectRole: string;
-  // leave
-  selfLeave: boolean;
-  // role-change
-  targetRole: string;
-  stepUp: boolean;
-  // join
-  joinTrusted: boolean;
-}
-
-const DEFAULT_FORM: FormState = {
-  viewerRole: "member",
-  subjectIsMember: true,
-  subjectRole: "member",
-  selfLeave: false,
-  targetRole: "moderator",
-  stepUp: false,
-  joinTrusted: false,
-};
-
-function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
-  const now = new Date().toISOString();
-  const context = {
-    community_did: "did:webvh:demo.example",
-    channel: "rest",
-    member_count: 42,
-  };
-
-  if (c.key === "directory") {
-    return {
-      purpose: "directory",
-      now,
-      actor: {
-        did: "did:key:zViewer",
-        role: f.viewerRole || undefined,
-        authenticated: true,
-      },
-      subject: { did: "did:key:zTarget" },
-      context,
-      evidence: {
-        request: { fields_requested: ["did", "role", "joined_at", "status"] },
-      },
-      state: {
-        subject_member: f.subjectIsMember
-          ? {
-              role: f.subjectRole,
-              status: "active",
-              joined_at: "2026-01-02T00:00:00Z",
-            }
-          : null,
-      },
-    };
-  }
-
-  if (c.key === "join") {
-    return {
-      purpose: "join",
-      now,
-      actor: { did: "did:key:zApplicant", authenticated: true },
-      subject: { did: "did:key:zApplicant" },
-      context,
-      evidence: {
-        presentation: {
-          verified: true,
-          holder: "did:key:zApplicant",
-          credentials: [
-            {
-              type: "WitnessCredential",
-              issuer: "did:webvh:notary.example",
-              issuer_trusted: f.joinTrusted,
-              status: "valid",
-              claims: {},
-            },
-          ],
-        },
-      },
-      state: { subject_member: null },
-    };
-  }
-
-  if (c.key === "role-change") {
-    return {
-      purpose: "role-change",
-      now,
-      actor: { did: "did:key:zAdmin", role: "admin", authenticated: true },
-      subject: { did: "did:key:zTarget" },
-      context,
-      evidence: {
-        request: { target_role: f.targetRole, step_up: f.stepUp },
-      },
-      state: {
-        subject_member: {
-          role: "member",
-          status: "active",
-          joined_at: "2026-01-02T00:00:00Z",
-        },
-      },
-    };
-  }
-
-  // leave
-  const actorDid = "did:key:zActor";
-  const subjectDid = f.selfLeave ? actorDid : "did:key:zTarget";
-  return {
-    purpose: "leave",
-    now,
-    actor: { did: actorDid, role: "admin", authenticated: true },
-    subject: { did: subjectDid },
-    context,
-    evidence: { request: { disposition: "tombstone" } },
-    state: {
-      subject_member: {
-        role: f.subjectRole,
-        status: "active",
-        joined_at: "2026-01-02T00:00:00Z",
-      },
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -331,12 +146,13 @@ export function Ceremonies() {
   );
 }
 
-function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
-  const [form, setForm] = useState<FormState>(DEFAULT_FORM);
+function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
+  const [form, setForm] = useState<FieldValues>(() => defaultValues(ceremony));
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [phase, setPhase] = useState(-1);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authoring, setAuthoring] = useState(false);
 
   const policyQuery = useQuery({
     queryKey: ["active-policy", ceremony.purpose],
@@ -344,12 +160,14 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
     enabled: ceremony.purpose !== null,
   });
 
-  // Reset the verdict whenever the ceremony changes.
+  // Reset the form + verdict whenever the ceremony changes.
   useEffect(() => {
+    setForm(defaultValues(ceremony));
     setVerdict(null);
     setError(null);
     setPhase(-1);
-  }, [ceremony.key]);
+    setAuthoring(false);
+  }, [ceremony]);
 
   const canSimulate = ceremony.wired === "live";
 
@@ -366,7 +184,7 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
     }
 
     try {
-      const facts = buildFacts(ceremony, form);
+      const facts = ceremony.buildFacts(form);
       const resp = await postJson<TestResponse>(
         `/v1/policies/${policy.id}/test`,
         { query: `data.${ceremony.pkg}.decision`, input: facts },
@@ -452,7 +270,7 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
         </div>
       </div>
 
-      <div className="cer-work">
+      <div className={`cer-work${authoring ? " authoring" : ""}`}>
         {/* Simulator */}
         <div className="card">
           <div className="cer-panel-title">
@@ -467,18 +285,11 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
             </p>
           ) : (
             <>
-              {ceremony.key === "join" && (
-                <JoinForm form={form} setForm={setForm} />
-              )}
-              {ceremony.key === "directory" && (
-                <DirectoryForm form={form} setForm={setForm} />
-              )}
-              {ceremony.key === "leave" && (
-                <LeaveForm form={form} setForm={setForm} />
-              )}
-              {ceremony.key === "role-change" && (
-                <RoleChangeForm form={form} setForm={setForm} />
-              )}
+              <SimFields
+                fields={ceremony.fields}
+                values={form}
+                onChange={setForm}
+              />
 
               <button
                 className="cer-run"
@@ -515,14 +326,18 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
         </div>
 
         {/* Decision policy — source + versions + activate + upload */}
-        <div className="card">
+        <div className="card cer-policy-panel">
           <div className="cer-panel-title">
             Decision policy <span className="ln" />
           </div>
           {ceremony.purpose === null ? (
             <p className="cer-sub">No policy purpose for this ceremony yet.</p>
           ) : (
-            <PolicyManager purpose={ceremony.purpose as Purpose} />
+            <PolicyManager
+              key={ceremony.purpose}
+              purpose={ceremony.purpose as Purpose}
+              onEditingChange={setAuthoring}
+            />
           )}
         </div>
       </div>
@@ -540,11 +355,22 @@ function pkgFor(purpose: Purpose): string {
   return `vtc.${purpose === "roleChange" ? "role_change" : purpose}`;
 }
 
-function PolicyManager({ purpose }: { purpose: Purpose }) {
+function PolicyManager({
+  purpose,
+  onEditingChange,
+}: {
+  purpose: Purpose;
+  /** Notifies the parent so it can widen the layout for the editor. */
+  onEditingChange?: (editing: boolean) => void;
+}) {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [showUpload, setShowUpload] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditingState] = useState(false);
+  const setEditing = (v: boolean) => {
+    setEditingState(v);
+    onEditingChange?.(v);
+  };
 
   const query = useQuery({
     queryKey: ["policies", purpose],
@@ -777,160 +603,52 @@ function OtherPolicies() {
   );
 }
 
-function DirectoryForm({
-  form,
-  setForm,
+// Generic simulator form — renders a ceremony's declared fields. A
+// `select` becomes a dropdown, a `toggle` a switch; a field with a
+// `showWhen` predicate only renders when it holds (dependent fields).
+function SimFields({
+  fields,
+  values,
+  onChange,
 }: {
-  form: FormState;
-  setForm: (f: FormState) => void;
+  fields: FieldDef[];
+  values: FieldValues;
+  onChange: (v: FieldValues) => void;
 }) {
   return (
     <>
-      <div className="cer-field">
-        <label>
-          Viewer's community role
-          <small>actor.role — admin sees the fuller record</small>
-        </label>
-        <select
-          className="input"
-          value={form.viewerRole}
-          onChange={(e) => setForm({ ...form, viewerRole: e.target.value })}
-        >
-          <option value="admin">admin</option>
-          <option value="member">member</option>
-          <option value="">none (authenticated)</option>
-        </select>
-      </div>
-      <div className="cer-field">
-        <label>
-          Subject is a member
-          <small>state.subject_member present</small>
-        </label>
-        <Toggle
-          on={form.subjectIsMember}
-          onClick={() =>
-            setForm({ ...form, subjectIsMember: !form.subjectIsMember })
-          }
-        />
-      </div>
-      {form.subjectIsMember && (
-        <div className="cer-field">
-          <label>
-            Subject's role
-            <small>state.subject_member.role</small>
-          </label>
-          <select
-            className="input"
-            value={form.subjectRole}
-            onChange={(e) => setForm({ ...form, subjectRole: e.target.value })}
-          >
-            <option value="member">member</option>
-            <option value="moderator">moderator</option>
-            <option value="admin">admin</option>
-          </select>
-        </div>
-      )}
-    </>
-  );
-}
-
-function LeaveForm({
-  form,
-  setForm,
-}: {
-  form: FormState;
-  setForm: (f: FormState) => void;
-}) {
-  return (
-    <>
-      <div className="cer-field">
-        <label>
-          Self-leave
-          <small>actor.did == subject.did — always allowed</small>
-        </label>
-        <Toggle
-          on={form.selfLeave}
-          onClick={() => setForm({ ...form, selfLeave: !form.selfLeave })}
-        />
-      </div>
-      {!form.selfLeave && (
-        <div className="cer-field">
-          <label>
-            Subject's role
-            <small>an admin may remove a non-admin only</small>
-          </label>
-          <select
-            className="input"
-            value={form.subjectRole}
-            onChange={(e) => setForm({ ...form, subjectRole: e.target.value })}
-          >
-            <option value="member">member</option>
-            <option value="moderator">moderator</option>
-            <option value="admin">admin</option>
-          </select>
-        </div>
-      )}
-    </>
-  );
-}
-
-function JoinForm({
-  form,
-  setForm,
-}: {
-  form: FormState;
-  setForm: (f: FormState) => void;
-}) {
-  return (
-    <div className="cer-field">
-      <label>
-        Presented credential is trusted
-        <small>evidence.presentation.credentials[].issuer_trusted</small>
-      </label>
-      <Toggle
-        on={form.joinTrusted}
-        onClick={() => setForm({ ...form, joinTrusted: !form.joinTrusted })}
-      />
-    </div>
-  );
-}
-
-function RoleChangeForm({
-  form,
-  setForm,
-}: {
-  form: FormState;
-  setForm: (f: FormState) => void;
-}) {
-  return (
-    <>
-      <div className="cer-field">
-        <label>
-          Target role
-          <small>evidence.request.target_role</small>
-        </label>
-        <select
-          className="input"
-          value={form.targetRole}
-          onChange={(e) => setForm({ ...form, targetRole: e.target.value })}
-        >
-          <option value="member">member</option>
-          <option value="moderator">moderator</option>
-          <option value="admin">admin (promotion)</option>
-        </select>
-      </div>
-      {form.targetRole === "admin" && (
-        <div className="cer-field">
-          <label>
-            Step-up verified
-            <small>admin needs step-up — else the verdict refers</small>
-          </label>
-          <Toggle
-            on={form.stepUp}
-            onClick={() => setForm({ ...form, stepUp: !form.stepUp })}
-          />
-        </div>
-      )}
+      {fields
+        .filter((f) => !f.showWhen || f.showWhen(values))
+        .map((f) => (
+          <div className="cer-field" key={f.key}>
+            <label>
+              {f.label}
+              {f.hint && <small>{f.hint}</small>}
+            </label>
+            {f.type === "toggle" ? (
+              <Toggle
+                on={values[f.key] === true}
+                onClick={() =>
+                  onChange({ ...values, [f.key]: values[f.key] !== true })
+                }
+              />
+            ) : (
+              <select
+                className="input"
+                value={String(values[f.key] ?? "")}
+                onChange={(e) =>
+                  onChange({ ...values, [f.key]: e.target.value })
+                }
+              >
+                {f.options?.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        ))}
     </>
   );
 }
