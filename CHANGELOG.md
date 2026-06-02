@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### DIDComm session: receive unsolicited inbound messages
+
+`vta-sdk`'s `DIDCommSession` gains `receive_next(timeout_secs)` — polls the
+mediator's live stream and returns the next **unsolicited** inbound message
+(unpacked, as JSON), not bound to a sent request's thread id. This is the
+foundation for the mobile approver receiving a VTA-pushed
+`auth/step-up/approve-request/0.1` over the mediator (the engine FFI for the
+iOS proxied step-up wraps it). Reuses the proven `message_pickup().live_stream_next`
+path. `vta-sdk` 0.9.4 → 0.9.5 (additive).
+
 ### Set a delegated step-up approver at grant *and update* time
 
 The ACL create/grant and update bodies gain an optional `step_up_approver`

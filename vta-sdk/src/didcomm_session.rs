@@ -292,6 +292,45 @@ impl DIDCommSession {
         }
     }
 
+    /// Receive the next **unsolicited** inbound DIDComm message — e.g. an
+    /// `auth/step-up/approve-request/0.1` the VTA pushed to this holder via the
+    /// mediator. Polls the mediator's live stream for up to `timeout_secs`;
+    /// returns `Ok(None)` if nothing arrived in time.
+    ///
+    /// Unlike [`Self::send_and_wait`], this is not bound to a thread id — it
+    /// surfaces whatever the mediator delivers next. The returned string is the
+    /// **unpacked** DIDComm message as JSON (`{ id, type, body, from, … }`);
+    /// ATM has already decrypted it under the holder key, so the caller works
+    /// with plaintext (the application Trust Task rides in `body`).
+    pub async fn receive_next(&self, timeout_secs: u64) -> Result<Option<String>, VtaError> {
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let wait_duration = std::time::Duration::from_secs(5);
+        let deadline = tokio::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            let wait = wait_duration.min(remaining);
+
+            let next = self
+                .atm
+                .message_pickup()
+                .live_stream_next(&self.profile, Some(wait), true)
+                .await
+                .map_err(|e| VtaError::DidcommTransport(format!("message pickup error: {e}")))?;
+
+            let (msg, _meta) = match next {
+                Some(pair) => pair,
+                None => continue, // nothing yet — keep waiting until the deadline
+            };
+            debug!(msg_type = %msg.typ, "received inbound DIDComm message");
+            let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
+            return Ok(Some(json));
+        }
+    }
+
     /// Gracefully shut down the DIDComm session.
     pub async fn shutdown(&self) {
         self.atm.graceful_shutdown().await;
