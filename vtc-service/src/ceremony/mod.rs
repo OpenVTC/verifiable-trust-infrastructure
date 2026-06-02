@@ -66,7 +66,7 @@ pub mod verify;
 
 pub use effects::{EffectPlan, plan};
 pub use evaluate::evaluate;
-pub use execute::{AdmitOutcome, EffectOutcome, apply};
+pub use execute::{AdmitOutcome, DepartOutcome, EffectOutcome, apply};
 pub use facts::{
     Actor, Context, Credential, CredentialStatus, Evidence, Facts, Invitation, MemberState,
     Presentation, Purpose, State, Subject,

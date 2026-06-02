@@ -21,30 +21,46 @@
 //! ## What's wired
 //!
 //! - **Admit** (join) — write the ACL row + Member record, issue the
-//!   VMC + role VEC, flip the status-list slot. Fully wired.
+//!   VMC + role VEC, flip the status-list slot. Fully wired; the
+//!   manual approve route goes through it.
+//! - **Depart** (leave) — enforce the no-last-admin invariant, delete
+//!   the ACL row, apply the disposition to the Member row, and revoke
+//!   the credential (flip the revocation bit). Fully wired; the
+//!   `DELETE /v1/members/{me,did}` removal routes go through it.
 //! - **NoStateChange** (deny / refer / request_more) — no-op.
 //! - **Project** (directory) — not handled here: the directory route
 //!   serializes the projection into its HTTP response inline, so a
 //!   `Project` plan reaching the executor is a caller bug.
-//! - **Depart** (leave) / **Remint** (role-change) — not yet wired:
-//!   their ceremonies (routes + facts assembly + the no-last-admin
-//!   invariant) don't exist yet, so wiring their executors now would
-//!   be untested speculation. They return a clear error until then.
+//! - **Remint** (role-change) — not yet wired (its ceremony doesn't
+//!   exist yet); returns a clear error until then.
+
+use std::sync::LazyLock;
 
 use affinidi_status_list::StatusPurpose;
 use affinidi_vc::VerifiableCredential;
+use tokio::sync::Mutex;
+use tracing::warn;
 use uuid::Uuid;
 use vti_common::error::AppError;
 
 use super::effects::EffectPlan;
-use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+use crate::acl::{
+    VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries, store_acl_entry,
+};
 use crate::auth::session::now_epoch;
 use crate::credentials::{
     CredentialStatusRef, RoleVecParams, VmcParams, build_role_vec, build_vmc,
 };
-use crate::members::{Member, store_member};
+use crate::members::{Disposition, Member, delete_member, get_member, store_member};
 use crate::server::AppState;
 use crate::status_list;
+
+/// Process-wide mutex serialising every member departure so the
+/// "would this leave zero admins?" check + ACL delete is one atomic
+/// critical section — concurrent removals can't both pass the check
+/// and both delete. (fjall isn't multi-process safe regardless, so a
+/// process-wide lock is the right grain.)
+static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// What the executor did. Carries back whatever the caller needs to
 /// audit + respond — currently the credentials minted on admit.
@@ -54,6 +70,9 @@ pub enum EffectOutcome {
     /// caller can audit them and hand them to the applicant. Boxed —
     /// the two VCs make this variant far larger than the others.
     Admitted(Box<AdmitOutcome>),
+    /// A member departed; carries the applied disposition + the
+    /// revocation slot that was flipped (for the caller's audit).
+    Departed(DepartOutcome),
     /// No state was changed (the verdict was deny / refer /
     /// request_more).
     None,
@@ -65,6 +84,19 @@ pub struct AdmitOutcome {
     pub vmc: VerifiableCredential,
     pub role_vec: VerifiableCredential,
     pub status_list_index: u32,
+}
+
+/// The result of a member departure.
+#[derive(Debug)]
+pub struct DepartOutcome {
+    /// The disposition that was applied to the Member row (resolved to
+    /// a concrete value — never `PolicyDefault`).
+    pub disposition: Disposition,
+    /// The revocation status-list slot that was flipped, if the member
+    /// held one and the flip succeeded. `None` if there was no slot or
+    /// the best-effort flip failed (the ACL/Member removal still
+    /// committed — a failed flip is logged, not unwound).
+    pub revoked_slot: Option<u32>,
 }
 
 /// Apply an effect plan.
@@ -92,12 +124,20 @@ pub async fn apply(
             let outcome = admit(state, &subject, role, actor_did).await?;
             Ok(EffectOutcome::Admitted(Box::new(outcome)))
         }
+        EffectPlan::Depart {
+            subject,
+            disposition,
+        } => {
+            let disposition = parse_disposition(disposition.as_deref());
+            let outcome = depart(state, &subject, disposition, actor_did).await?;
+            Ok(EffectOutcome::Departed(outcome))
+        }
         EffectPlan::NoStateChange => Ok(EffectOutcome::None),
         EffectPlan::Project { .. } => Err(AppError::Internal(
             "directory projection is applied by the route, not the effect executor".into(),
         )),
-        EffectPlan::Depart { .. } | EffectPlan::Remint { .. } => Err(AppError::Internal(
-            "leave / role-change effect executor is not yet wired".into(),
+        EffectPlan::Remint { .. } => Err(AppError::Internal(
+            "role-change effect executor is not yet wired".into(),
         )),
     }
 }
@@ -212,6 +252,129 @@ async fn issue_member_credentials(
     status_list::maybe_emit_occupancy_warning(&row);
 
     Ok((vmc, role_vec, slot))
+}
+
+/// Parse the plan's disposition string into a concrete
+/// [`Disposition`]. An absent or unrecognized disposition (and
+/// `policydefault`) falls back to [`Disposition::Tombstone`] — the
+/// safe middle ground. The caller's decide stage is expected to have
+/// already resolved `PolicyDefault` against the policy; this is the
+/// final, never-`PolicyDefault` value the effect applies.
+fn parse_disposition(disposition: Option<&str>) -> Disposition {
+    match disposition {
+        Some("purge") => Disposition::Purge,
+        Some("historical") => Disposition::Historical,
+        // tombstone / policydefault / unknown / absent → tombstone.
+        _ => Disposition::Tombstone,
+    }
+}
+
+/// Remove a member: enforce the no-last-admin invariant, delete the
+/// ACL row, apply the disposition to the Member row, and best-effort
+/// flip the revocation bit.
+///
+/// The whole no-last-admin check + ACL delete runs under
+/// [`LAST_ADMIN_LOCK`] so concurrent departures can't both pass the
+/// "still has an admin" check and both delete. The invariant is
+/// host-enforced here (pipeline §5: a policy can never authorize
+/// leaving zero admins) — on violation nothing is written and a
+/// [`AppError::Conflict`] surfaces (→ 409).
+async fn depart(
+    state: &AppState,
+    subject_did: &str,
+    disposition: Disposition,
+    _actor_did: &str,
+) -> Result<DepartOutcome, AppError> {
+    let _guard = LAST_ADMIN_LOCK.lock().await;
+
+    // No-last-admin invariant — checked before any write so a refusal
+    // leaves the community untouched.
+    if let Some(acl) = get_acl_entry(&state.acl_ks, subject_did).await?
+        && matches!(acl.role, VtcRole::Admin)
+    {
+        let other_admins = list_acl_entries(&state.acl_ks)
+            .await?
+            .iter()
+            .filter(|e| e.did != subject_did && matches!(e.role, VtcRole::Admin))
+            .count();
+        if other_admins == 0 {
+            return Err(AppError::Conflict(format!(
+                "refusing to remove the last admin ({subject_did}) — promote another \
+                 member to admin first"
+            )));
+        }
+    }
+
+    let member = get_member(&state.members_ks, subject_did).await?;
+    // Capture the revocation slot before the disposition path mutates
+    // (purge deletes the row) or clears it.
+    let slot = member.as_ref().and_then(|m| m.status_list_index);
+
+    delete_acl_entry(&state.acl_ks, subject_did).await?;
+
+    match (disposition, member) {
+        (Disposition::Purge, _) => {
+            delete_member(&state.members_ks, subject_did).await?;
+        }
+        (Disposition::Tombstone, Some(mut m)) => {
+            m.tombstone();
+            store_member(&state.members_ks, &m).await?;
+        }
+        (Disposition::Historical, Some(mut m)) => {
+            m.mark_historical();
+            store_member(&state.members_ks, &m).await?;
+        }
+        // No Member row — Tombstone/Historical are trivially satisfied.
+        (Disposition::Tombstone | Disposition::Historical, None) => {}
+        (Disposition::PolicyDefault, _) => {
+            // parse_disposition never yields PolicyDefault; this arm
+            // exists only to keep the match total.
+            unreachable!("disposition must be concrete before depart");
+        }
+    }
+
+    // Revoke the member's credentials by flipping the revocation bit.
+    // Best-effort: the ACL + Member rows are already gone, so a flip
+    // failure is logged, not unwound — the caller can re-flip.
+    let revoked_slot = match slot {
+        Some(slot) => match flip_revocation(state, slot).await {
+            Ok(()) => Some(slot),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    slot,
+                    target = subject_did,
+                    "failed to flip revocation bit on departure — ACL/Member already \
+                     removed; operator must reflip manually"
+                );
+                None
+            }
+        },
+        None => None,
+    };
+
+    Ok(DepartOutcome {
+        disposition,
+        revoked_slot,
+    })
+}
+
+/// Flip the revocation bit at `slot` to `revoked`. Raw write, no
+/// audit — the caller emits the `StatusListFlipped` event from the
+/// returned [`DepartOutcome`].
+async fn flip_revocation(state: &AppState, slot: u32) -> Result<(), AppError> {
+    let mut row = status_list::get_state(&state.status_lists_ks, StatusPurpose::Revocation)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(
+                "revocation status list not provisioned — set `public_url` + restart".into(),
+            )
+        })?;
+    status_list::flip(&mut row, slot, true)
+        .map_err(|e| AppError::Internal(format!("flip revocation slot {slot}: {e}")))?;
+    status_list::store_state(&state.status_lists_ks, &row).await?;
+    status_list::maybe_emit_occupancy_warning(&row);
+    Ok(())
 }
 
 /// Pull the top-level `id` field off a signed VC. The upstream

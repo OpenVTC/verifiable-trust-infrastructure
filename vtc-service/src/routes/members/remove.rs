@@ -19,34 +19,28 @@
 //! Phase-1 communities are small; Phase 2+ can swap in an
 //! admin-count index.
 
-use std::sync::LazyLock;
-
+use affinidi_status_list::StatusPurpose;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
-use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 use vti_common::audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
 use vti_common::error::AppError;
 
-use crate::acl::{VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries};
+use crate::acl::get_acl_entry;
 use crate::auth::{AdminAuth, AuthClaims};
-use crate::members::{Disposition, delete_member, get_member, store_member};
+use crate::ceremony::execute;
+use crate::ceremony::{EffectOutcome, EffectPlan};
+use crate::members::{Disposition, get_member};
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
 };
 use crate::server::AppState;
-
-/// Process-wide mutex that serialises every removal, self- and
-/// admin- alike, so the "would this leave zero admins?" check is
-/// not racy. Cannot defend against multi-process — fjall isn't
-/// multi-process safe to begin with (project memory).
-static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -161,24 +155,17 @@ pub async fn remove_inner(
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
 
-    let _guard = LAST_ADMIN_LOCK.lock().await;
-
     let target_acl = get_acl_entry(&state.acl_ks, target_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {target_did}")))?;
 
     let target_member = get_member(&state.members_ks, target_did).await?;
-    // Capture the status-list slot **before** the disposition
-    // path mutates the Member row (purge deletes it; tombstone
-    // clears extensions but leaves status_list_index intact —
-    // we still want to read it from the pre-mutation snapshot).
-    let status_list_index = target_member.as_ref().and_then(|m| m.status_list_index);
 
-    // Phase 2 policy step (M2.7). Admin-remove evaluates the
-    // active `removal.rego` against the canonical input from
-    // spec §7.3. Self-remove bypasses (spec §10.2 makes it
-    // unconditional). The no-last-admin invariant + the route-
-    // layer AdminAuth gate run in addition to the policy check.
+    // Decide. Admin-remove evaluates the active `removal.rego` `allow`
+    // rule against the canonical input (spec §7.3); self-remove is
+    // unconditional (spec §10.2). The no-last-admin invariant + the
+    // credential revocation are the *effect*, enforced by the executor
+    // below — not here.
     if is_admin_remove {
         let input = json!({
             "actor_did": actor_did,
@@ -195,12 +182,11 @@ pub async fn remove_inner(
         }
     }
 
-    // Resolve disposition. Caller's request wins; member's
-    // departure_preference is the fallback; `PolicyDefault`
-    // consults the active `removal.rego`'s `min_disposition`
-    // output (Phase 1 plan §D6 placeholder). A non-decodable
-    // policy output falls back to `Tombstone` — the boring
-    // middle ground Phase 1 already used.
+    // Resolve disposition. Caller's request wins; the member's
+    // departure_preference is the fallback; `PolicyDefault` consults
+    // the active `removal.rego`'s `min_disposition` (a non-decodable
+    // output falls back to `Tombstone`). The resolved value is a
+    // concrete disposition handed to the effect executor.
     let initial = disposition
         .or_else(|| target_member.as_ref().map(|m| m.departure_preference))
         .unwrap_or(Disposition::PolicyDefault);
@@ -211,52 +197,20 @@ pub async fn remove_inner(
         other => other,
     };
 
-    // No-last-admin invariant.
-    if matches!(target_acl.role, VtcRole::Admin) {
-        let acl_rows = list_acl_entries(&state.acl_ks).await?;
-        let other_admins = acl_rows
-            .iter()
-            .filter(|e| e.did != target_did && matches!(e.role, VtcRole::Admin))
-            .count();
-        if other_admins == 0 {
-            return Err(AppError::Conflict(format!(
-                "refusing to remove the last admin ({target_did}) — promote another \
-                 member to admin first"
-            )));
-        }
-    }
-
-    // Apply the disposition.
-    delete_acl_entry(&state.acl_ks, target_did).await?;
-    match (resolved, target_member) {
-        (Disposition::Purge, _) => {
-            delete_member(&state.members_ks, target_did).await?;
-        }
-        (Disposition::Tombstone, Some(mut m)) => {
-            m.tombstone();
-            store_member(&state.members_ks, &m).await?;
-        }
-        (Disposition::Historical, Some(mut m)) => {
-            m.mark_historical();
-            store_member(&state.members_ks, &m).await?;
-        }
-        // No Member row to operate on — Tombstone/Historical
-        // semantics are trivially satisfied (nothing to keep).
-        (Disposition::Tombstone | Disposition::Historical, None) => {}
-        (Disposition::PolicyDefault, _) => {
-            // resolve() collapsed this to Tombstone above; this
-            // arm is unreachable but stays here so the match
-            // remains total.
-            unreachable!("PolicyDefault must resolve before dispatch");
-        }
-    }
-
-    let disposition_str = match resolved {
-        Disposition::Purge => "purge",
-        Disposition::Tombstone => "tombstone",
-        Disposition::Historical => "historical",
-        Disposition::PolicyDefault => "policydefault",
+    // Effect: the no-last-admin invariant + ACL/Member removal +
+    // credential revocation, via the ceremony effect executor (the
+    // single state-mutating seam). A last-admin removal surfaces as the
+    // executor's `Conflict` → 409, untouched state.
+    let plan = EffectPlan::Depart {
+        subject: target_did.to_string(),
+        disposition: Some(disposition_wire(resolved).to_string()),
     };
+    let EffectOutcome::Departed(outcome) = execute::apply(state, plan, actor_did).await? else {
+        return Err(AppError::Internal(
+            "depart effect did not produce a departure outcome".into(),
+        ));
+    };
+    let disposition_str = disposition_wire(outcome.disposition);
 
     audit_writer
         .write(
@@ -269,22 +223,20 @@ pub async fn remove_inner(
         )
         .await?;
 
-    // M2.14: flip the revocation bit + emit StatusListFlipped.
-    // Best-effort — a failure here doesn't unwind the ACL +
-    // Member removal (those are already persisted), but it
-    // surfaces in audit + logs so an operator can re-flip
-    // manually if needed.
-    if let Some(slot) = status_list_index
-        && let Err(e) =
-            flip_revocation_for_member(state, slot, audit_writer, actor_did, target_did).await
-    {
-        warn!(
-            error = %e,
-            slot,
-            target = target_did,
-            "failed to flip revocation status-list bit on removal — \
-             ACL/Member already removed; operator must reflip manually"
-        );
+    // M2.14: the executor flipped the revocation bit (best-effort).
+    // Emit the audit event for the slot it reported.
+    if let Some(slot) = outcome.revoked_slot {
+        audit_writer
+            .write(
+                actor_did,
+                Some(target_did),
+                AuditEvent::StatusListFlipped(StatusListFlippedData {
+                    purpose: StatusPurpose::Revocation.to_string(),
+                    index: slot,
+                    revoked: true,
+                }),
+            )
+            .await?;
     }
 
     info!(
@@ -302,54 +254,16 @@ pub async fn remove_inner(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Status-list helpers (M2.14)
-// ---------------------------------------------------------------------------
-
-/// Flip the revocation bit at `slot` + emit `StatusListFlipped`.
-/// Used by [`remove_inner`] after the ACL + Member rows have
-/// already been mutated.
-async fn flip_revocation_for_member(
-    state: &AppState,
-    slot: u32,
-    audit_writer: &vti_common::audit::AuditWriter,
-    actor_did: &str,
-    target_did: &str,
-) -> Result<(), AppError> {
-    let mut row = crate::status_list::get_state(
-        &state.status_lists_ks,
-        affinidi_status_list::StatusPurpose::Revocation,
-    )
-    .await?
-    .ok_or_else(|| {
-        AppError::Internal(
-            "revocation status list not provisioned — set `public_url` + restart".into(),
-        )
-    })?;
-    crate::status_list::flip(&mut row, slot, true)
-        .map_err(|e| AppError::Internal(format!("flip revocation slot {slot}: {e}")))?;
-    crate::status_list::store_state(&state.status_lists_ks, &row).await?;
-    crate::status_list::maybe_emit_occupancy_warning(&row);
-
-    audit_writer
-        .write(
-            actor_did,
-            Some(target_did),
-            AuditEvent::StatusListFlipped(StatusListFlippedData {
-                purpose: affinidi_status_list::StatusPurpose::Revocation.to_string(),
-                index: slot,
-                revoked: true,
-            }),
-        )
-        .await?;
-
-    info!(
-        actor = actor_did,
-        target = target_did,
-        slot,
-        "revocation bit flipped"
-    );
-    Ok(())
+/// Wire string for a resolved (concrete) disposition. Mirrors the
+/// `Disposition` serde representation; used for the response +
+/// audit + the `EffectPlan::Depart` payload.
+fn disposition_wire(d: Disposition) -> &'static str {
+    match d {
+        Disposition::Purge => "purge",
+        Disposition::Tombstone => "tombstone",
+        Disposition::Historical => "historical",
+        Disposition::PolicyDefault => "policydefault",
+    }
 }
 
 // ---------------------------------------------------------------------------

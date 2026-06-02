@@ -1,14 +1,15 @@
 //! Integration coverage for the ceremony effect executor
 //! (`vtc_service::ceremony::execute::apply`).
 //!
-//! The manual join-approve route already exercises the `Admit` arm via
-//! `tests/join_requests.rs` (approve now goes through the executor).
-//! This file covers what approve can't:
-//! - admit at a **non-`member` role** (approve hardcodes `member`),
-//!   proving the plan's role is honoured;
-//! - the duplicate-ACL guard living in the executor;
-//! - the trivial dispatch arms (`NoStateChange` no-op, `Depart` not
-//!   yet wired).
+//! The manual approve + removal routes already exercise the `Admit`
+//! and `Depart` arms over HTTP (`tests/join_requests.rs`,
+//! `tests/removal.rs` — both now go through the executor). This file
+//! covers the arms directly, including cases the routes don't:
+//! - admit at a **non-`member` role** (approve hardcodes `member`);
+//! - the duplicate-ACL guard on admit;
+//! - depart removing + revoking a member, and the no-last-admin
+//!   invariant living in the executor;
+//! - the `NoStateChange` no-op.
 //!
 //! It calls `apply` directly against a built `AppState` rather than
 //! over HTTP — the executor is below the route layer.
@@ -25,7 +26,7 @@ use vtc_service::ceremony::EffectPlan;
 use vtc_service::ceremony::execute::{self, EffectOutcome};
 use vtc_service::config::AppConfig;
 use vtc_service::install::InstallTokenStore;
-use vtc_service::members::get_member;
+use vtc_service::members::{Disposition, get_member};
 use vtc_service::server::AppState;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
@@ -225,21 +226,97 @@ async fn no_state_change_is_a_noop() {
     );
 }
 
-/// The leave (`Depart`) executor arm is not yet wired and errors
-/// rather than silently no-op'ing.
+/// Depart removes a member: deletes the ACL row, applies the
+/// disposition (tombstone keeps the row but clears credentials), and
+/// revokes by flipping the member's revocation slot.
 #[tokio::test]
-async fn depart_is_not_yet_wired() {
+async fn depart_removes_member_and_revokes() {
     let (state, _dir) = build_state().await;
+    let subject = "did:key:zLeaver";
+
+    // Admit first so there's an ACL + Member + revocation slot to remove.
+    let admit = EffectPlan::Admit {
+        subject: subject.into(),
+        role: "member".into(),
+        obligations: vec![],
+    };
+    let EffectOutcome::Admitted(creds) = execute::apply(&state, admit, ACTOR_DID)
+        .await
+        .expect("admit")
+    else {
+        panic!("expected Admitted");
+    };
+    let slot = creds.status_list_index;
+
+    // Depart with tombstone.
+    let plan = EffectPlan::Depart {
+        subject: subject.into(),
+        disposition: Some("tombstone".into()),
+    };
+    let EffectOutcome::Departed(outcome) = execute::apply(&state, plan, ACTOR_DID)
+        .await
+        .expect("depart")
+    else {
+        panic!("expected Departed");
+    };
+    assert_eq!(outcome.disposition, Disposition::Tombstone);
+    assert_eq!(
+        outcome.revoked_slot,
+        Some(slot),
+        "the member's slot was flipped"
+    );
+
+    // ACL gone; Member row tombstoned (kept, removed_at set, VMC cleared).
+    assert!(
+        get_acl_entry(&state.acl_ks, subject)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let m = get_member(&state.members_ks, subject)
+        .await
+        .unwrap()
+        .expect("tombstoned member row is kept");
+    assert!(m.removed_at.is_some());
+    assert!(
+        m.current_vmc_id.is_none(),
+        "tombstone clears the VMC pointer"
+    );
+}
+
+/// Depart enforces the no-last-admin invariant: removing the sole
+/// admin is a conflict and leaves the ACL untouched.
+#[tokio::test]
+async fn depart_refuses_the_last_admin() {
+    let (state, _dir) = build_state().await;
+    let admin = "did:key:zSoleAdmin";
+
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            did: admin.into(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
 
     let plan = EffectPlan::Depart {
-        subject: "did:key:zLeaver".into(),
-        disposition: Some("revoke-vmc".into()),
+        subject: admin.into(),
+        disposition: Some("tombstone".into()),
     };
     let err = execute::apply(&state, plan, ACTOR_DID)
         .await
-        .expect_err("depart is not wired yet");
+        .expect_err("last admin must be protected");
     assert!(
-        matches!(err, vti_common::error::AppError::Internal(_)),
+        matches!(err, vti_common::error::AppError::Conflict(_)),
         "got {err:?}"
     );
+    // The refusal left the ACL row in place.
+    assert!(get_acl_entry(&state.acl_ks, admin).await.unwrap().is_some());
 }
