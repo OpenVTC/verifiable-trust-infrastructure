@@ -31,11 +31,16 @@
 //! - [`decide`] — the `evaluate → invariant` driver that turns a
 //!   [`VerifiedFacts`] + the purpose's policy into a final
 //!   [`Verdict`].
+//! - [`effects`] — plans the per-purpose state change a verdict
+//!   authorizes ([`effects::EffectPlan`]). The directory projection
+//!   (read-only) is fully realized; the write plans (admit / depart /
+//!   re-mint) await their async executor.
 //!
-//! Still to land on top of this spine (pipeline §11): the
-//! state-dependent invariants (no-last-admin, PII boundary — see
-//! [`invariant`]) and the per-purpose **effect** handlers that
-//! actually mutate state (issue VMC, revoke, project fields).
+//! Still to land on top of this spine (pipeline §11): the async
+//! **effect executor** that applies the write plans against
+//! `AppState` (reusing the issue-VMC / write-ACL helpers), and the
+//! remaining state-dependent invariant — no-last-admin (see
+//! [`invariant`]).
 //!
 //! ## Relationship to the existing `policy` + `join` modules
 //!
@@ -48,12 +53,14 @@
 //! until ceremonies are ported over (build-vs-reuse map, pipeline
 //! §10).
 
+pub mod effects;
 pub mod evaluate;
 pub mod facts;
 pub mod invariant;
 pub mod verdict;
 pub mod verify;
 
+pub use effects::{EffectPlan, plan};
 pub use evaluate::evaluate;
 pub use facts::{
     Actor, Context, Credential, CredentialStatus, Evidence, Facts, Invitation, MemberState,

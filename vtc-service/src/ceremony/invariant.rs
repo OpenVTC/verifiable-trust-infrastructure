@@ -22,22 +22,24 @@
 //!   `evidence.request.step_up == true`, so a policy edit can't grant
 //!   admin without the reauth ceremony.
 //!
-//! ## What's deferred (state-dependent invariants)
+//! ## Where the other §5 invariants live
 //!
-//! [`enforce`] is intentionally pure over `(Facts, Verdict)`. Two
-//! design §5 invariants need state this signature doesn't yet carry,
-//! and land with the effect stage that reads it:
+//! [`enforce`] is intentionally pure over `(Facts, Verdict)` — it is
+//! the *pre-effect* veto. Two design §5 invariants are naturally
+//! enforced elsewhere because they need more than the verdict:
 //!
-//! - **No-last-admin (leave, role-change)** — needs the community's
-//!   current admin count from the ACL keyspace; refuses a transition
-//!   that would drop it to zero.
-//! - **PII boundary (directory, registry)** — needs the community's
-//!   field whitelist; intersects it with `allow.with.fields` so a
-//!   policy can't project a field outside the boundary.
-//!
-//! They are listed here, not silently absent, so the gap is explicit:
-//! the host does **not** yet guarantee them, and the effect stage must
-//! before it ships leave / directory writes.
+//! - **PII boundary (directory, registry)** — enforced in the
+//!   **effect/projection** stage ([`super::effects::plan`]), not here:
+//!   the projection intersects `allow.with.fields` with the
+//!   community whitelist as it builds the field map, so a policy can't
+//!   project a field outside the boundary. It belongs with the
+//!   projection because that's the stage that handles the fields.
+//! - **No-last-admin (leave, role-change)** — still deferred. Needs
+//!   the community's current admin count from the ACL keyspace to
+//!   refuse a transition that would drop it to zero. Lands with the
+//!   async effect executor that reads that state. Listed here, not
+//!   silently absent: the host does **not** yet guarantee it, and the
+//!   leave / role-change executor must before it ships.
 
 use super::facts::{Facts, Purpose};
 use super::verdict::Verdict;
