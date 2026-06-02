@@ -104,6 +104,17 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    /// Manage the AAL2 step-up policy (offline; edits the config file).
+    ///
+    /// This is the local break-glass path: it reads and writes the config
+    /// file directly, bypassing the wire step-up gate — so an operator can
+    /// turn the policy off (or fix it) even when an over-strict policy has
+    /// locked everyone out over REST/DIDComm. Changes take effect on the
+    /// next daemon start.
+    StepUp {
+        #[command(subcommand)]
+        command: StepUpCommands,
+    },
     /// Create a did:key in a context (offline, no server required)
     CreateDidKey {
         /// Target context ID
@@ -1062,6 +1073,36 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum StepUpCommands {
+    /// Print the current step-up policy (enabled flag + per-op floors).
+    Show,
+    /// Enable step-up enforcement. Floors with a non-`none` mode then gate
+    /// their operations; configure them with `set-floor` first.
+    Enable,
+    /// Disable step-up enforcement — every operation proceeds at AAL1. The
+    /// break-glass switch when an enabled policy has locked you out.
+    Disable,
+    /// Add or replace a per-operation-class floor.
+    SetFloor {
+        /// Operation-class: `acl/grant`, `acl/change-role`, `acl/revoke`,
+        /// `acl/swap-key`, `context/delete`, `key/revoke`, or `*` for the
+        /// catch-all default.
+        operation: String,
+        /// Minimum mode: `none`, `self`, `delegated`, or `delegated-any`.
+        mode: String,
+        /// Admit a non-escalating self-service request (e.g. `acl/swap-key`)
+        /// at AAL1 even when the mode requires AAL2 — the rotation carve-out.
+        #[arg(long)]
+        allow_aal1_if_non_escalating: bool,
+    },
+    /// Remove the floor for an operation-class.
+    RemoveFloor {
+        /// Operation-class to clear.
+        operation: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AuthCommands {
     /// Sign an unseal challenge using a key from the local fjall keystore.
     ///
@@ -1317,6 +1358,13 @@ async fn main() {
             let result = match command {
                 ConfigCommands::Show => run_config_show(cli.config),
             };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::StepUp { command }) => {
+            let result = run_step_up(cli.config, command);
             if let Err(e) = result {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -1999,6 +2047,134 @@ async fn run_bootstrap_admin(
 /// Explicitly does NOT open the data store, so it works while the VTA
 /// process is running. Also doesn't resolve DIDs or touch the network —
 /// this is the quick, safe "what did setup write?" command.
+/// `vta step-up` — inspect and edit the AAL2 step-up policy in the config
+/// file (offline break-glass; changes take effect on the next daemon start).
+fn run_step_up(
+    config_path: Option<PathBuf>,
+    command: StepUpCommands,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
+
+    fn parse_mode(s: &str) -> Result<StepUpMode, Box<dyn std::error::Error>> {
+        Ok(match s {
+            "none" => StepUpMode::None,
+            "self" => StepUpMode::SelfApprove,
+            "delegated" => StepUpMode::Delegated,
+            "delegated-any" => StepUpMode::DelegatedAny,
+            other => {
+                return Err(format!(
+                    "unknown mode '{other}' (expected none|self|delegated|delegated-any)"
+                )
+                .into());
+            }
+        })
+    }
+    fn mode_token(m: StepUpMode) -> &'static str {
+        match m {
+            StepUpMode::None => "none",
+            StepUpMode::SelfApprove => "self",
+            StepUpMode::Delegated => "delegated",
+            StepUpMode::DelegatedAny => "delegated-any",
+        }
+    }
+
+    match command {
+        StepUpCommands::Show => {
+            let config = AppConfig::load(config_path)?;
+            let p = &config.auth.step_up;
+            println!();
+            println!(
+                "Step-up policy: {}",
+                if p.enabled {
+                    "ENABLED"
+                } else {
+                    "NOT ENFORCED (AAL1 everywhere)"
+                }
+            );
+            if p.floors.is_empty() {
+                println!("  (no floors configured)");
+            } else {
+                for f in &p.floors {
+                    let carve = if f.allow_aal1_if_non_escalating {
+                        "  [allow-aal1-if-non-escalating]"
+                    } else {
+                        ""
+                    };
+                    println!("  {:<18} {}{}", f.operation, mode_token(f.mode), carve);
+                }
+            }
+            println!();
+        }
+        StepUpCommands::Enable => {
+            let mut config = AppConfig::load(config_path)?;
+            config.auth.step_up.enabled = true;
+            let nothing_gated = config
+                .auth
+                .step_up
+                .floors
+                .iter()
+                .all(|f| !f.mode.requires_aal2());
+            config.save()?;
+            println!("Step-up enforcement ENABLED. Restart the daemon to apply.");
+            if nothing_gated {
+                println!("Note: no floor requires AAL2 yet, so nothing is gated. Use `set-floor`.");
+            }
+        }
+        StepUpCommands::Disable => {
+            let mut config = AppConfig::load(config_path)?;
+            config.auth.step_up.enabled = false;
+            config.save()?;
+            println!(
+                "Step-up enforcement DISABLED — AAL1 everywhere. Restart the daemon to apply."
+            );
+        }
+        StepUpCommands::SetFloor {
+            operation,
+            mode,
+            allow_aal1_if_non_escalating,
+        } => {
+            let parsed = parse_mode(&mode)?;
+            let mut config = AppConfig::load(config_path)?;
+            let floors = &mut config.auth.step_up.floors;
+            floors.retain(|f| f.operation != operation);
+            floors.push(StepUpFloor {
+                operation: operation.clone(),
+                mode: parsed,
+                allow_aal1_if_non_escalating,
+            });
+            let enabled = config.auth.step_up.enabled;
+            config.save()?;
+            println!(
+                "Floor set: {operation} -> {mode}{}.",
+                if allow_aal1_if_non_escalating {
+                    " (allow-aal1-if-non-escalating)"
+                } else {
+                    ""
+                }
+            );
+            if !enabled {
+                println!("Note: step-up is not enabled; run `vta step-up enable` to enforce.");
+            }
+        }
+        StepUpCommands::RemoveFloor { operation } => {
+            let mut config = AppConfig::load(config_path)?;
+            let before = config.auth.step_up.floors.len();
+            config
+                .auth
+                .step_up
+                .floors
+                .retain(|f| f.operation != operation);
+            if config.auth.step_up.floors.len() == before {
+                println!("No floor for '{operation}' — nothing to remove.");
+            } else {
+                config.save()?;
+                println!("Removed floor for '{operation}'.");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run_config_show(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
 
