@@ -80,11 +80,13 @@ The workspace has a **DID templates feature** (`docs/02-vta/did-templates.md`,
 template is a JSON file describing the **shape** of a DID document with
 `{TOKEN}` placeholders; the VTA renders them server-side, filling in keys it
 just minted + caller-supplied variables. Built-ins ship with the service
-(`didcomm-mediator`, `vta-admin`, `did-hosting-control`,
-`did-hosting-daemon`, `did-hosting-server`); operators can upload more.
-The previous `webvh-*` template names still resolve via the loader's
-alias table for one release — update operator configs to the canonical
-`did-hosting-*` names before the alias is removed.
+(`didcomm-mediator`, `vta-admin`, `did-host-http-didcomm`,
+`did-host-http`, `did-host-didcomm`); operators can upload more. The
+`did-host-*` names describe the DID-document shape (`http` = WebVHHosting
+endpoint, `didcomm` = DIDCommMessaging endpoint), not the service. The
+previous `webvh-*` and `did-hosting-*` template names still resolve via
+the loader's alias table for one release — update operator configs to the
+canonical `did-host-*` names before the aliases are removed.
 
 **Before inventing a new mint-a-DID path, reach for templates first.**
 

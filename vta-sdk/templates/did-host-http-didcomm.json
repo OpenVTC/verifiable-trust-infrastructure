@@ -1,11 +1,12 @@
 {
   "schemaVersion": 1,
-  "name": "did-hosting-daemon",
-  "kind": "did-hosting-daemon",
-  "description": "DID-hosting daemon — publishes did:webvh logs over HTTP via a WebVHHosting service endpoint. No DIDComm. Use this for a node whose only role is hosting DID logs for self-managed DIDs. If the daemon also needs to accept DIDComm (admin RPC, witness coordination, control-plane traffic), use 'did-hosting-control' instead.",
+  "name": "did-host-http-didcomm",
+  "kind": "did-host-http-didcomm",
+  "description": "DID-hosting node whose DID advertises both an HTTP resolution endpoint (WebVHHosting) AND a DIDComm endpoint (DIDCommMessaging via a shared mediator). Use this for any node that both publishes DID logs over HTTP and accepts DIDComm (admin RPC, witness coordination, control-plane traffic). A node with an HTTP endpoint but no DIDComm should use 'did-host-http' instead; a DIDComm-only node with no public URL should use 'did-host-didcomm'.",
   "methods": ["webvh", "web"],
-  "requiredVars": ["URL"],
+  "requiredVars": ["URL", "MEDIATOR_DID"],
   "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
     "HOSTING_PATH": "/webvh",
     "WEBVH_SERVER": null
   },
@@ -17,6 +18,7 @@
   "document": {
     "@context": [
       "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1",
       "https://w3id.org/security/multikey/v1"
     ],
     "id": "{DID}",
@@ -45,6 +47,13 @@
           "uri": "{URL}",
           "hostingPath": "{HOSTING_PATH}"
         }
+      },
+      {
+        "id": "{DID}#vta-didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          { "accept": "{ACCEPT}", "uri": "{MEDIATOR_DID}" }
+        ]
       }
     ]
   }

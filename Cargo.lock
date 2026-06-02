@@ -2194,7 +2194,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
 ]
 
 [[package]]
@@ -2968,7 +2968,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
 ]
 
 [[package]]
@@ -6269,7 +6269,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
 ]
 
 [[package]]
@@ -9470,7 +9470,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
  "x25519-dalek",
 ]
 
@@ -9507,7 +9507,7 @@ dependencies = [
  "tokio",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
 ]
 
 [[package]]
@@ -9540,7 +9540,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9656,7 +9656,7 @@ dependencies = [
  "uuid",
  "vaultrs",
  "vta-cli-common",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
  "vta-service",
  "vti-common",
  "vti-webauthn",
@@ -9732,7 +9732,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
  "vti-common",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -9775,7 +9775,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
  "webauthn-rs",
  "zeroize",
 ]
@@ -9802,7 +9802,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.9.5",
+ "vta-sdk 0.9.6",
  "vta-service",
  "vti-common",
 ]

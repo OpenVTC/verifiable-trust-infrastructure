@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "name": "did-hosting-server",
-  "kind": "did-hosting-server",
-  "description": "DID-hosting node that talks DIDComm via a shared mediator and exposes no public HTTP endpoint. Use this for a witness, watcher, or any service whose role is consumed via DIDComm rather than an inbound URL. The DID document carries a single DIDCommMessaging service pointing at the mediator. URL or WEBVH_SERVER is still required at provision time so the VTA knows where to publish the did:webvh log itself, but neither appears in the rendered document. Hosts that publish DID logs over HTTP should use 'did-hosting-daemon'; hosts that need both should use 'did-hosting-control'.",
+  "name": "did-host-didcomm",
+  "kind": "did-host-didcomm",
+  "description": "DID-hosting node whose DID advertises a DIDComm endpoint (DIDCommMessaging via a shared mediator) only — no HTTP resolution endpoint. Use this for a witness, watcher, or any service whose role is consumed via DIDComm rather than an inbound URL. The DID document carries a single DIDCommMessaging service pointing at the mediator. URL or WEBVH_SERVER is still required at provision time so the VTA knows where to publish the did:webvh log itself, but neither appears in the rendered document. Nodes that advertise an HTTP endpoint should use 'did-host-http'; nodes that need both should use 'did-host-http-didcomm'.",
   "methods": ["webvh"],
   "requiredVars": ["MEDIATOR_DID"],
   "optionalVars": {

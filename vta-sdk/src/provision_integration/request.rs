@@ -458,7 +458,7 @@ pub struct ProvisionRequestBuilder {
 
 impl ProvisionRequestBuilder {
     /// Start a new builder targeting the named DID template (e.g.
-    /// `"didcomm-mediator"`, `"did-hosting-daemon"`, or an operator-uploaded
+    /// `"didcomm-mediator"`, `"did-host-http"`, or an operator-uploaded
     /// custom template). Selects the [`BootstrapAsk::TemplateBootstrap`]
     /// intent — the VTA mints an integration DID via this template.
     pub fn new(template_name: impl Into<String>) -> Self {

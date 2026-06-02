@@ -14,7 +14,7 @@ consumer gets the new shape on the next create. No redeploy.
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
   file, no recompile. The built-ins (`didcomm-mediator`, `vta-admin`,
-  `vtc-host`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`)
+  `vtc-host`, `did-host-http-didcomm`, `did-host-http`, `did-host-didcomm`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
   `did:key` — the loader only knows about `{TOKEN}` placeholders. Method-
@@ -149,22 +149,26 @@ template without explicit scope is **context → global → builtin**:
     `runtime-service-management.md`). Requires `URL`; optional
     `STATUS_LIST_PATH` (default `/v1/status-lists`). `URL` must not have a
     trailing slash.
-  - `did-hosting-control` — DID-hosting control-plane node exposing both a
-    `WebVHHosting` service (URL-based) **and** a `DIDCommMessaging` service
-    routed through a mediator. Use for nodes that publish DID logs over
-    HTTP and accept DIDComm (admin RPC, witness coordination,
-    control-plane traffic).
-  - `did-hosting-daemon` — pure DID-hosting daemon with a `WebVHHosting`
-    service and **no** DIDComm. Use for nodes whose only role is hosting
-    DID logs. If you also need DIDComm, use `did-hosting-control`.
-  - `did-hosting-server` — DID-hosting node that talks DIDComm via a shared
-    mediator and exposes **no** public HTTP endpoint. Use for witness,
-    watcher, or any service consumed via DIDComm only.
+    The `did-host-*` names describe the DID-document shape the template
+    mints — `http` = a `WebVHHosting` (HTTP resolution) endpoint,
+    `didcomm` = a `DIDCommMessaging` endpoint — not the service that uses
+    it.
+  - `did-host-http-didcomm` — node whose DID exposes both a `WebVHHosting`
+    service (URL-based) **and** a `DIDCommMessaging` service routed through
+    a mediator. Use for nodes that publish DID logs over HTTP and accept
+    DIDComm (admin RPC, witness coordination, control-plane traffic).
+  - `did-host-http` — node whose DID exposes a `WebVHHosting` service and
+    **no** DIDComm. Use for nodes whose only role is hosting DID logs. If
+    you also need DIDComm, use `did-host-http-didcomm`.
+  - `did-host-didcomm` — node whose DID exposes a `DIDCommMessaging` service
+    via a shared mediator and **no** HTTP resolution endpoint. Use for
+    witness, watcher, or any service consumed via DIDComm only.
 
-  Legacy `webvh-control` / `webvh-daemon` / `webvh-server` template names
-  still resolve to the renamed templates for one release; update operator
-  configs to the canonical `did-hosting-*` names before the alias is
-  removed.
+  Legacy template names from two earlier generations still resolve to the
+  renamed templates for one release: `webvh-control` / `webvh-daemon` /
+  `webvh-server` and `did-hosting-control` / `did-hosting-daemon` /
+  `did-hosting-server` all map to the `did-host-*` canonical names. Update
+  operator configs to the canonical names before the aliases are removed.
 - **Global** (`tpl:global:<name>`) — super-admin-managed. Visible across every
   context.
 - **Context** (`tpl:ctx:<id>:<name>`) — context-admin-managed (or super

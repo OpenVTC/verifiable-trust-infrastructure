@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn server_managed_url_path_is_injected_as_webvh_path() {
         let mut ask = ProvisionAsk::for_template(
-            "did-hosting-control",
+            "did-host-http-didcomm",
             [(
                 "URL".to_string(),
                 json!("https://host.example.com/dids/daemon"),
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn serverless_leaves_webvh_path_unset() {
         let mut ask = ProvisionAsk::for_template(
-            "did-hosting-control",
+            "did-host-http-didcomm",
             [(
                 "URL".to_string(),
                 json!("https://host.example.com/dids/daemon"),

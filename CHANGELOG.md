@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Built-in DID templates renamed `did-hosting-*` → `did-host-*` (capability-named)
+
+The three did-hosting built-in templates are renamed from service-named to
+capability-named, so the name describes the DID-document shape the template
+mints rather than a particular binary. The suffix names the endpoints the
+DID advertises: `http` = a `WebVHHosting` (HTTP resolution) endpoint,
+`didcomm` = a `DIDCommMessaging` endpoint.
+
+- **Renames**: `did-hosting-control` → `did-host-http-didcomm`,
+  `did-hosting-daemon` → `did-host-http`, `did-hosting-server` →
+  `did-host-didcomm`. The on-disk JSON files, the embedded loader, the
+  `BUILTIN_DID_HOST_*_TEMPLATE` constants, and the `ProvisionAsk::did_host_*`
+  builders all carry the new names.
+- **Back-compat**: both prior generations resolve for one release.
+  `load_embedded` silently maps `webvh-*` **and** `did-hosting-*` to the
+  `did-host-*` templates; the returned `DidTemplate.name` carries the
+  canonical name. The `BUILTIN_DID_HOSTING_*_TEMPLATE` constants and
+  `ProvisionAsk::did_hosting_*` builders remain as `#[deprecated]` shims
+  (the `webvh_*` shims now delegate to the new names too). Update configs
+  to the `did-host-*` names before the aliases are dropped.
+- **Method lock unchanged**: these templates stay `did:webvh`-specific (the
+  `WebVHHosting` service type and `methods` field are baked into the
+  template body, not caller-set) — the rename is naming only.
+- `vta-sdk` 0.9.5 → 0.9.6 (additive: new canonical names, old names
+  deprecated but functional).
+
 ### DIDComm session: receive unsolicited inbound messages
 
 `vta-sdk`'s `DIDCommSession` gains `receive_next(timeout_secs)` — polls the
