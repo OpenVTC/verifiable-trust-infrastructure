@@ -9,8 +9,18 @@ import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { applyStoredTheme } from "@/lib/theme";
 import { ToastProvider } from "@/lib/toast";
 import { registerBuiltinPlugins } from "@/plugins";
-import "@fontsource-variable/inter";
-import "@fontsource-variable/jetbrains-mono";
+// Self-hosted "cryptographic blueprint" type: Fraunces (display,
+// roman + italic), IBM Plex Sans (body), IBM Plex Mono (data/labels).
+// Self-hosted rather than CDN so the admin UI stays offline-capable
+// and leaks no font request to a third party.
+import "@fontsource-variable/fraunces";
+import "@fontsource-variable/fraunces/wght-italic.css";
+import "@fontsource/ibm-plex-sans/400.css";
+import "@fontsource/ibm-plex-sans/500.css";
+import "@fontsource/ibm-plex-sans/600.css";
+import "@fontsource/ibm-plex-mono/400.css";
+import "@fontsource/ibm-plex-mono/500.css";
+import "@fontsource/ibm-plex-mono/600.css";
 import "@/styles.css";
 
 // Apply the persisted theme before first paint so the cascade picks

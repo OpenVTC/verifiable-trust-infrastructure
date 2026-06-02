@@ -21,11 +21,13 @@ import {
   Smartphone,
   Tag,
   Users,
+  Workflow,
 } from "lucide-react";
 
 import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Audit } from "@/plugins/audit";
+import { Ceremonies } from "@/plugins/ceremonies";
 import { Dashboard } from "@/plugins/dashboard";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
@@ -41,6 +43,14 @@ export function registerBuiltinPlugins(): void {
     path: "/",
     iconComponent: LayoutDashboard,
     reactComponent: Dashboard,
+  });
+
+  registerPlugin({
+    id: "ceremonies",
+    label: "Ceremonies",
+    path: "/ceremonies",
+    iconComponent: Workflow,
+    reactComponent: Ceremonies,
   });
 
   registerPlugin({

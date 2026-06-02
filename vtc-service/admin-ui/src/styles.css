@@ -10,13 +10,16 @@
 :root {
   color-scheme: light dark;
 
-  /* Type — 14px base, Inter Variable + JetBrains Mono self-hosted */
+  /* Type — "cryptographic blueprint": Fraunces display, IBM Plex
+   * Sans body, IBM Plex Mono for data/labels. 14px base. Matches the
+   * ceremony visual guide so the whole UX speaks one language. */
   --font-sans:
-    "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
-    "Segoe UI", Roboto, sans-serif;
+    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
   --font-mono:
-    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
-    "SF Mono", Menlo, Consolas, monospace;
+    "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace;
+  --font-display: "Fraunces", Georgia, "Times New Roman", serif;
 
   --text-xs: 11px;
   --text-xs-leading: 16px;
@@ -50,15 +53,15 @@
   --gray-900: #18181b;
   --gray-950: #09090b;
 
-  /* Brand — indigo (locked) */
-  --brand-50: #efeffe;
-  --brand-100: #e0e1fd;
-  --brand-200: #c5c5fa;
-  --brand-300: #a0a0f3;
-  --brand-400: #7c7ce8;
-  --brand-500: #5b5bd6;
-  --brand-600: #4a4ac4;
-  --brand-700: #3e3ea1;
+  /* Brand — teal ("structural"), from the ceremony blueprint */
+  --brand-50: #effcf9;
+  --brand-100: #d2f6ef;
+  --brand-200: #a6ece0;
+  --brand-300: #5eead4;
+  --brand-400: #2dd4bf;
+  --brand-500: #14b8a6;
+  --brand-600: #0d9488;
+  --brand-700: #0f766e;
 
   /* Semantic */
   --success-500: #16a34a;
@@ -92,35 +95,47 @@
   --motion-medium: 180ms cubic-bezier(0.16, 1, 0.3, 1);
   --motion-slow: 260ms cubic-bezier(0.16, 1, 0.3, 1);
 
-  /* Semantic surface tokens — auto-follow OS via light-dark() */
-  --bg: light-dark(#ffffff, var(--gray-950));
-  --bg-elev: light-dark(var(--gray-50), var(--gray-900));
-  --bg-subtle: light-dark(var(--gray-100), var(--gray-800));
-  --bg-hover: light-dark(var(--gray-100), color-mix(in srgb, var(--gray-800) 60%, transparent));
-  --border: light-dark(var(--gray-200), var(--gray-800));
-  --border-strong: light-dark(var(--gray-300), var(--gray-700));
-  --text: light-dark(var(--gray-900), var(--gray-50));
-  --text-muted: light-dark(var(--gray-600), var(--gray-400));
-  --text-faint: light-dark(var(--gray-500), var(--gray-500));
-  --brand: light-dark(var(--brand-500), var(--brand-400));
-  --brand-fg: #ffffff;
-  --brand-hover: light-dark(var(--brand-600), var(--brand-300));
+  /* Semantic surface tokens — "cryptographic blueprint".
+   * Dark is the primary identity (deep blue-black ground, bluish
+   * translucent rule lines, teal structural accent); light is a
+   * coherent draughting-paper counterpart. Auto-follows OS via
+   * light-dark(); the manual switcher pins via `color-scheme`. */
+  --bg: light-dark(#f6f8fb, #090c12);
+  --bg-elev: light-dark(#ffffff, #10141d);
+  --bg-subtle: light-dark(#eef2f7, #141a24);
+  --bg-hover: light-dark(#e9eef5, rgba(150, 170, 200, 0.06));
+  --border: light-dark(#e1e7ef, rgba(150, 170, 200, 0.13));
+  --border-strong: light-dark(#cdd5e0, rgba(150, 170, 200, 0.24));
+  --text: light-dark(#0d1320, #e7ecf4);
+  --text-muted: light-dark(#586176, #8a94a8);
+  --text-faint: light-dark(#8b94a4, #5b6577);
+  --brand: light-dark(var(--brand-600), var(--brand-400));
+  --brand-fg: light-dark(#ffffff, #04181a);
+  --brand-hover: light-dark(var(--brand-700), var(--brand-300));
   --brand-tint: light-dark(
-    color-mix(in srgb, var(--brand-500) 8%, transparent),
-    color-mix(in srgb, var(--brand-400) 14%, transparent)
+    color-mix(in srgb, var(--brand-600) 8%, transparent),
+    color-mix(in srgb, var(--brand-400) 12%, transparent)
   );
   --brand-tint-strong: light-dark(
-    color-mix(in srgb, var(--brand-500) 14%, transparent),
-    color-mix(in srgb, var(--brand-400) 22%, transparent)
+    color-mix(in srgb, var(--brand-600) 14%, transparent),
+    color-mix(in srgb, var(--brand-400) 20%, transparent)
   );
-  --focus-ring: light-dark(var(--brand-500), var(--brand-400));
-  --success: light-dark(var(--success-500), var(--success-400));
-  --warning: light-dark(var(--warning-500), var(--warning-400));
-  --danger: light-dark(var(--danger-500), var(--danger-400));
+  --focus-ring: light-dark(var(--brand-600), var(--brand-400));
+  --success: light-dark(var(--success-500), #34d399);
+  --warning: light-dark(var(--warning-500), #fbbf24);
+  --danger: light-dark(var(--danger-500), #fb7185);
   --danger-tint: light-dark(
     color-mix(in srgb, var(--danger-500) 9%, transparent),
-    color-mix(in srgb, var(--danger-400) 16%, transparent)
+    color-mix(in srgb, #fb7185 16%, transparent)
   );
+
+  /* Verdict palette — the four ceremony effects, shared by the
+   * ceremonies plugin and any surface that renders a decision.
+   * allow=emerald, deny=rose, refer=amber, request_more=violet. */
+  --vd-allow: light-dark(#059669, #34d399);
+  --vd-deny: light-dark(#e11d48, #fb7185);
+  --vd-refer: light-dark(#d97706, #fbbf24);
+  --vd-more: light-dark(#7c3aed, #a78bfa);
 
   /* Elevation — 1px border + optional faint shadow */
   --elev-0: none;
@@ -167,7 +182,60 @@ body {
   letter-spacing: var(--tracking-tight);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "cv11", "ss01";
+  min-height: 100vh;
+}
+
+/* Blueprint ground — a faint engineering grid + two structural
+ * radial washes, masked toward the top. Fixed + non-interactive so it
+ * sits behind the whole shell. The grid lines use the same bluish rule
+ * colour as borders, so light + dark both read as "draughting". */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 46px 46px;
+  mask: radial-gradient(125% 90% at 50% 0%, #000 30%, transparent 86%);
+  opacity: 0.55;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      1100px 560px at 82% -10%,
+      color-mix(in srgb, var(--brand) 9%, transparent),
+      transparent 60%
+    ),
+    radial-gradient(
+      820px 460px at 4% 2%,
+      color-mix(in srgb, var(--vd-more) 7%, transparent),
+      transparent 55%
+    );
+}
+
+/* Keep the app above the ground layers. */
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* Display type — Fraunces, the blueprint's serif voice, on the big
+ * structural headings. Component-level titles opt in via this. */
+h1,
+.page-title,
+.display {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: var(--tracking-tight);
 }
 
 /* Numeric surfaces — tabular nums so columns align. */
@@ -1445,4 +1513,384 @@ dd .copy-icon-btn {
 
 .toast-dismiss:hover {
   color: var(--text);
+}
+
+/* ── Ceremonies plugin ───────────────────────────────────────────
+ *
+ * The live-pipeline surface: the decision flow diagram, ceremony
+ * selector, decision-policy view, and the verdict simulator. Wires
+ * the ceremony visual guide to the running daemon. Verdict colours
+ * come from the shared --vd-* tokens. */
+
+.cer-kicker {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  color: var(--brand);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.cer-kicker::before {
+  content: "";
+  width: 26px;
+  height: 1px;
+  background: var(--brand);
+}
+.cer-h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1.04;
+  letter-spacing: var(--tracking-tight);
+  margin: var(--space-3) 0 var(--space-2);
+}
+.cer-h1 em {
+  font-style: italic;
+  color: var(--brand);
+}
+.cer-sub {
+  color: var(--text-muted);
+  max-width: 64ch;
+  font-size: var(--text-md);
+}
+
+/* Ceremony selector tabs */
+.cer-tabs {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-5) 0 var(--space-2);
+}
+.cer-tab {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--motion-fast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.cer-tab:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+.cer-tab.on {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: var(--brand-tint);
+}
+.cer-tab small {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+.cer-tab .nature {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+/* Pipeline flow diagram */
+.cer-flow {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+.cer-flow .node-box {
+  fill: var(--bg-subtle);
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  transition: all var(--motion-slow);
+}
+.cer-flow .node-box.hot {
+  stroke: var(--brand);
+  fill: color-mix(in srgb, var(--brand) 12%, var(--bg-subtle));
+}
+.cer-flow .node-t {
+  fill: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+}
+.cer-flow .node-s {
+  fill: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+.cer-flow .edge {
+  stroke: var(--border-strong);
+  stroke-width: 1.6;
+  fill: none;
+}
+.cer-flow marker path {
+  fill: var(--border-strong);
+}
+/* Verdict-coloured nodes — the Verdict (and, for an allow, Effects)
+ * node takes the decision's colour once it lands. */
+.cer-flow .node-box.vd-allow {
+  stroke: var(--vd-allow);
+  fill: color-mix(in srgb, var(--vd-allow) 13%, var(--bg-subtle));
+}
+.cer-flow .node-box.vd-deny {
+  stroke: var(--vd-deny);
+  fill: color-mix(in srgb, var(--vd-deny) 13%, var(--bg-subtle));
+}
+.cer-flow .node-box.vd-refer {
+  stroke: var(--vd-refer);
+  fill: color-mix(in srgb, var(--vd-refer) 13%, var(--bg-subtle));
+}
+.cer-flow .node-box.vd-more {
+  stroke: var(--vd-more);
+  fill: color-mix(in srgb, var(--vd-more) 13%, var(--bg-subtle));
+}
+.cer-flow .token {
+  fill: var(--brand);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--brand) 80%, transparent));
+}
+.cer-flow .stage-label {
+  fill: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Outcome chips below the flow */
+.cer-outcomes {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+}
+.cer-oc {
+  flex: 1 1 0;
+  min-width: 150px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-elev);
+  opacity: 0.5;
+  transition: all var(--motion-slow);
+}
+.cer-oc .oc-h {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.cer-oc .oc-d {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+}
+.cer-oc .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.cer-oc.allow .dot {
+  background: var(--vd-allow);
+}
+.cer-oc.deny .dot {
+  background: var(--vd-deny);
+}
+.cer-oc.refer .dot {
+  background: var(--vd-refer);
+}
+.cer-oc.request_more .dot {
+  background: var(--vd-more);
+}
+.cer-oc.lit {
+  opacity: 1;
+  transform: translateY(-2px);
+}
+.cer-oc.allow.lit {
+  border-color: var(--vd-allow);
+  box-shadow: 0 0 0 1px var(--vd-allow);
+}
+.cer-oc.deny.lit {
+  border-color: var(--vd-deny);
+  box-shadow: 0 0 0 1px var(--vd-deny);
+}
+.cer-oc.refer.lit {
+  border-color: var(--vd-refer);
+  box-shadow: 0 0 0 1px var(--vd-refer);
+}
+.cer-oc.request_more.lit {
+  border-color: var(--vd-more);
+  box-shadow: 0 0 0 1px var(--vd-more);
+}
+
+/* Workspace: facts/simulator on the left, policy on the right */
+.cer-work {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-5);
+  margin-top: var(--space-5);
+}
+@media (max-width: 940px) {
+  .cer-work {
+    grid-template-columns: 1fr;
+  }
+}
+.cer-panel-title {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.cer-panel-title .ln {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* Facts form rows */
+.cer-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-1);
+  border-bottom: 1px solid var(--border);
+}
+.cer-field:last-of-type {
+  border-bottom: none;
+}
+.cer-field label {
+  font-size: var(--text-base);
+  flex: 1;
+}
+.cer-field label small {
+  display: block;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin-top: 1px;
+}
+.cer-field select {
+  width: auto;
+  min-width: 150px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+/* Run button + verdict */
+.cer-run {
+  width: 100%;
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--brand);
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+.cer-run:hover {
+  background: var(--brand-tint-strong);
+}
+.cer-run:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.cer-verdict {
+  margin-top: var(--space-4);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border);
+  padding: var(--space-4);
+  background: var(--bg-elev);
+  animation: cer-pop 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes cer-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.cer-vbadge {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+}
+.cer-vbadge.allow {
+  background: color-mix(in srgb, var(--vd-allow) 16%, transparent);
+  color: var(--vd-allow);
+}
+.cer-vbadge.deny {
+  background: color-mix(in srgb, var(--vd-deny) 16%, transparent);
+  color: var(--vd-deny);
+}
+.cer-vbadge.refer {
+  background: color-mix(in srgb, var(--vd-refer) 16%, transparent);
+  color: var(--vd-refer);
+}
+.cer-vbadge.request_more {
+  background: color-mix(in srgb, var(--vd-more) 16%, transparent);
+  color: var(--vd-more);
+}
+.cer-vwith {
+  margin-top: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cer-policy {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  max-height: 420px;
+}
+.cer-meta-row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: var(--space-4);
+}
+.cer-chip {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+}
+.cer-chip b {
+  color: var(--text);
+  font-weight: 500;
 }
