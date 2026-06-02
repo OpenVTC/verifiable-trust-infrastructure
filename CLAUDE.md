@@ -73,6 +73,29 @@ This applies to both sides of `sealed_transfer` (`client_did`, `producer_did`),
 to CLI recipient flags (`--recipient-did`), and to any new protocol we add.
 Tests and docs refer to DIDs, not pubkeys.
 
+## Prefer DIDComm transport wherever possible
+
+**DIDComm (authcrypt) is the preferred transport/protocol for inter-component
+communication** — VTA ↔ mediator ↔ push-gateway ↔ devices ↔ integrations —
+wherever the counterparty can speak it. REST/HTTPS is a **fallback for parties
+that cannot do DIDComm**, not the default.
+
+When designing any new inter-component flow *or its authentication*, reach for
+DIDComm **first**. Do **not** default to "a REST endpoint plus a bespoke
+signature/DID-resolution scheme" — that is a recurring mistake.
+
+Why: with authcrypt, **sender authentication is intrinsic** — unpacking a
+message yields a cryptographically-authenticated sender DID (resolution handled
+inside the DIDComm stack), so there is no hand-rolled signature verification and
+no custom DID-resolution-in-verify, and `did:webvh` / `did:web` peers work
+without special handling. It also provides encryption and reuses the existing
+mediator infrastructure, and keeps everything on canonical DIDs (above).
+
+Add a REST/HTTPS path only for counterparties that genuinely can't speak
+DIDComm, and treat its (e.g. did-signed) auth as the secondary path. Concrete
+example — the push gateway is reachable both ways: a `WakeHandle.gateway` that
+is a **DID** means DIDComm (preferred); a **URL** means REST (for others).
+
 ## Use DID templates, don't hand-roll DID shapes
 
 The workspace has a **DID templates feature** (`docs/02-vta/did-templates.md`,
