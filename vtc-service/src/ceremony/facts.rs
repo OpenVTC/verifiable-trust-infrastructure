@@ -84,6 +84,27 @@ impl Purpose {
             Purpose::Directory => "directory",
         }
     }
+
+    /// The Rego package the Rule-IR compiler emits for this purpose.
+    /// Identifiers can't carry hyphens, so `role-change` →
+    /// `vtc.role_change`. Matches the package declarations in
+    /// `docs/05-design-notes/examples/*.rego`.
+    pub fn rego_package(self) -> &'static str {
+        match self {
+            Purpose::Join => "vtc.join",
+            Purpose::Leave => "vtc.leave",
+            Purpose::RoleChange => "vtc.role_change",
+            Purpose::Directory => "vtc.directory",
+        }
+    }
+
+    /// The full query the evaluate stage runs against a compiled
+    /// policy for this purpose — the `decision` rule in the purpose's
+    /// package. Every ceremony policy exposes a single `decision`
+    /// object (pipeline §4), so this is the one query the host needs.
+    pub fn decision_query(self) -> String {
+        format!("data.{}.decision", self.rego_package())
+    }
 }
 
 /// The purpose-agnostic policy input. Assembled by the host after
