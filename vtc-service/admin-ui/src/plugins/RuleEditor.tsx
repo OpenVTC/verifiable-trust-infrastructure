@@ -13,6 +13,7 @@ import {
   compileToRego,
   conditionsFor,
   effectsFor,
+  irToEnglish,
 } from "@/lib/rule-ir";
 
 function condId(c: Condition): string {
@@ -38,9 +39,11 @@ export function RuleEditor({
   saving: boolean;
 }) {
   const [ir, setIr] = useState<RuleIR>(initial);
+  const [view, setView] = useState<"english" | "rego">("english");
   const vocab = useMemo(() => conditionsFor(purpose), [purpose]);
   const effects = useMemo(() => effectsFor(purpose), [purpose]);
   const rego = useMemo(() => compileToRego(ir, pkg), [ir, pkg]);
+  const english = useMemo(() => irToEnglish(ir), [ir]);
 
   const setRoutes = (routes: Route[]) => setIr({ ...ir, routes });
   const patchRoute = (i: number, patch: Partial<Route>) =>
@@ -97,12 +100,33 @@ export function RuleEditor({
       </div>
 
       <div className="rule-preview">
-        <div className="cer-panel-title">
-          Compiled Rego <span className="ln" />
+        <div className="rule-view-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "english"}
+            className={view === "english" ? "on" : ""}
+            onClick={() => setView("english")}
+          >
+            Plain English
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "rego"}
+            className={view === "rego" ? "on" : ""}
+            onClick={() => setView("rego")}
+          >
+            Compiled Rego
+          </button>
         </div>
-        <pre className="cer-policy" style={{ maxHeight: 360 }}>
-          {rego}
-        </pre>
+        {view === "english" ? (
+          <EnglishView lines={english} />
+        ) : (
+          <pre className="cer-policy" style={{ maxHeight: 360 }}>
+            {rego}
+          </pre>
+        )}
         <div className="rule-actions">
           <button
             type="button"
@@ -123,6 +147,26 @@ export function RuleEditor({
         </div>
       </div>
     </div>
+  );
+}
+
+// A readable summary of a policy's routes — one line per route, the
+// effect colour-coded, first-match framing. Shared by the editor
+// preview and the read-only active-policy view.
+export function EnglishView({
+  lines,
+}: {
+  lines: ReturnType<typeof irToEnglish>;
+}) {
+  return (
+    <ul className="rule-english">
+      {lines.map((l, i) => (
+        <li key={i} className={`eng-line eff-${l.effect}`}>
+          <span className="eng-name">{l.name}</span>
+          <span className="eng-text">{l.text}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

@@ -2223,6 +2223,87 @@ dd .copy-icon-btn {
   display: flex;
   flex-direction: column;
 }
+
+/* English | Rego view toggle (editor preview + active-policy view) */
+.rule-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-3);
+  width: max-content;
+}
+.rule-view-tabs button {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.rule-view-tabs button.on {
+  background: var(--brand-tint-strong);
+  color: var(--text);
+}
+
+/* Plain-English route summary */
+.rule-english {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.eng-line {
+  position: relative;
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.eng-line::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+}
+.eng-line.eff-allow::before {
+  background: var(--vd-allow);
+}
+.eng-line.eff-deny::before {
+  background: var(--vd-deny);
+}
+.eng-line.eff-refer::before {
+  background: var(--vd-refer);
+}
+.eng-line.eff-request_more::before {
+  background: var(--vd-more);
+}
+.eng-name {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 2px;
+}
+.eng-text {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
 .rule-actions {
   display: flex;
   gap: var(--space-2);

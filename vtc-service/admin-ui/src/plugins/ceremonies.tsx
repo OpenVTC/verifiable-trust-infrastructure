@@ -28,8 +28,8 @@ import {
   fetchPolicies,
   uploadPolicy,
 } from "@/lib/policies-api";
-import { blankIR, parseRego } from "@/lib/rule-ir";
-import { RuleEditor } from "@/plugins/RuleEditor";
+import { blankIR, irToEnglish, parseRego } from "@/lib/rule-ir";
+import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
 import {
   type CeremonyKey,
   type CeremonyManifest,
@@ -355,6 +355,46 @@ function pkgFor(purpose: Purpose): string {
   return `vtc.${purpose === "roleChange" ? "role_change" : purpose}`;
 }
 
+// Active policy source — a plain-English summary when it was authored
+// visually (carries the IR header), with a toggle to the raw Rego. A
+// hand-written policy shows only the Rego.
+function ActivePolicyView({ source }: { source: string }) {
+  const ir = parseRego(source);
+  const [view, setView] = useState<"english" | "rego">(
+    ir ? "english" : "rego",
+  );
+  if (!ir) return <pre className="cer-policy">{source}</pre>;
+  return (
+    <>
+      <div className="rule-view-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "english"}
+          className={view === "english" ? "on" : ""}
+          onClick={() => setView("english")}
+        >
+          Plain English
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "rego"}
+          className={view === "rego" ? "on" : ""}
+          onClick={() => setView("rego")}
+        >
+          Rego
+        </button>
+      </div>
+      {view === "english" ? (
+        <EnglishView lines={irToEnglish(ir)} />
+      ) : (
+        <pre className="cer-policy">{source}</pre>
+      )}
+    </>
+  );
+}
+
 function PolicyManager({
   purpose,
   onEditingChange,
@@ -434,7 +474,7 @@ function PolicyManager({
               sha <b>{active.sha256.slice(0, 12)}…</b>
             </span>
           </div>
-          <pre className="cer-policy">{active.regoSource}</pre>
+          <ActivePolicyView source={active.regoSource} />
         </>
       )}
       {!query.isLoading && !active && (

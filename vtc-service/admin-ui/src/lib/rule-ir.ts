@@ -303,3 +303,85 @@ export function blankIR(purpose: string): RuleIR {
     routes: [{ name: "Catch-all", when: { all: ["always"] }, then: fallback }],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Plain-English rendering — turn an IR into a readable summary so an
+// operator who doesn't read Rego can confirm what the policy does.
+// ---------------------------------------------------------------------------
+
+export function condId(c: Condition): string {
+  return typeof c === "string" ? c : (Object.keys(c)[0] ?? "");
+}
+export function condArg(c: Condition): string | undefined {
+  return typeof c === "string" ? undefined : Object.values(c)[0];
+}
+function isCatchAll(when: { all: Condition[] }): boolean {
+  return (
+    when.all.length === 0 ||
+    (when.all.length === 1 && condId(when.all[0] as Condition) === "always")
+  );
+}
+
+/** A human phrase for a single condition, e.g. "holds a trusted
+ * credential WitnessCredential". */
+export function conditionToEnglish(cond: Condition, purpose: string): string {
+  const defs = conditionsFor(purpose);
+  const id = condId(cond);
+  const arg = condArg(cond);
+  const label = defs.find((x) => x.id === id)?.label ?? id;
+  return arg ? `${label} ${arg}` : label;
+}
+
+/** A human phrase for an effect, e.g. "admit as member" / "refer to the
+ * moderator queue". */
+export function effectToEnglish(effect: Effect): string {
+  const w = effect.with ?? {};
+  switch (effect.effect) {
+    case "allow":
+      if (typeof w.role === "string") return `admit — set role to ${w.role}`;
+      if (typeof w.disposition === "string")
+        return `allow — remove (${w.disposition})`;
+      if (Array.isArray(w.fields))
+        return `allow — share ${(w.fields as unknown[]).join(", ")}`;
+      return "allow";
+    case "deny":
+      return typeof w.code === "string" ? `deny (${w.code})` : "deny";
+    case "refer":
+      return typeof w.queue === "string"
+        ? `refer to the ${w.queue} queue`
+        : "refer for review";
+    case "request_more":
+      return Array.isArray(w.needs) && (w.needs as unknown[]).length
+        ? `ask for ${(w.needs as unknown[]).join(", ")}`
+        : "ask for more evidence";
+  }
+}
+
+export interface EnglishLine {
+  name: string;
+  effect: Effect["effect"];
+  /** A full sentence describing the route. */
+  text: string;
+  isCatchAll: boolean;
+}
+
+/** Render an IR as ordered plain-English lines (first-match framing). */
+export function irToEnglish(ir: RuleIR): EnglishLine[] {
+  return ir.routes.map((route, i) => {
+    const catchAll = isCatchAll(route.when);
+    const lead = i === 0 ? "If" : "else if";
+    const when = route.when.all
+      .map((c) => conditionToEnglish(c, ir.purpose))
+      .join(" and ");
+    const then = effectToEnglish(route.then);
+    const text = catchAll
+      ? `Otherwise, ${then}.`
+      : `${lead} ${when}, then ${then}.`;
+    return {
+      name: route.name,
+      effect: route.then.effect,
+      text,
+      isCatchAll: catchAll,
+    };
+  });
+}
