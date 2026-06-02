@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
 <title>VTC Ceremony Pipeline · Visual Guide</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -10,13 +11,27 @@
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
   :root{
+    color-scheme: light dark;
     --bg:#090c12; --bg-2:#0c1018; --panel:#10141d; --panel-2:#141a24;
-    --line:rgba(150,170,200,.12); --line-2:rgba(150,170,200,.22);
-    --ink:#e7ecf4; --muted:#8a94a8; --faint:#5b6577;
+    --line:rgba(150,170,200,.22); --line-2:rgba(150,170,200,.38);
+    --ink:#e7ecf4; --muted:#aab4c6; --faint:#9faabd;
     --brand:#2dd4bf;            /* structural / teal */
-    --admit:#34d399; --deny:#fb7185; --refer:#fbbf24; --more:#a78bfa;
+    --admit:#34d399; --deny:#ff8fa3; --refer:#fbbf24; --more:#b8a0ff;
     --shadow:0 24px 60px -24px rgba(0,0,0,.7);
     --r:14px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root{
+      --bg:#f3f5fa; --bg-2:#ffffff; --panel:#ffffff; --panel-2:#f7f9fc;
+      --line:rgba(15,25,45,.10); --line-2:rgba(15,25,45,.20);
+      --ink:#0f172a; --muted:#475569; --faint:#94a3b8;
+      --brand:#0d9488;
+      --admit:#059669; --deny:#e11d48; --refer:#d97706; --more:#7c3aed;
+      --shadow:0 20px 50px -28px rgba(15,25,45,.30);
+    }
+    /* All non-:root light-mode overrides live in a second @media block at
+       the bottom of this stylesheet — they need to follow the original
+       hardcoded-hex rules in source order to win the cascade. */
   }
   *{box-sizing:border-box}
   html,body{margin:0}
@@ -77,11 +92,11 @@
   /* ---- flow diagram ---- */
   .flow-card{padding:10px 8px 4px}
   #flow{width:100%; height:auto; display:block}
-  .node-box{fill:var(--panel-2); stroke:var(--line-2); stroke-width:1; rx:11; transition:.25s}
-  .node-box.hot{stroke:var(--brand); fill:#16202a}
-  .node-t{fill:var(--ink); font-family:'IBM Plex Sans'; font-size:14px; font-weight:500}
-  .node-s{fill:var(--faint); font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.04em}
-  .node-i{fill:var(--faint); font-family:'IBM Plex Mono'; font-size:10px}
+  .node-box{fill:#0d121b; stroke:rgba(170,190,220,.5); stroke-width:1; rx:11; transition:.25s}
+  .node-box.hot{stroke:var(--brand); fill:#0c1824}
+  .node-t{fill:#eef2f8; font-family:'IBM Plex Sans'; font-size:14px; font-weight:500}
+  .node-s{fill:#a0acc2; font-family:'IBM Plex Mono'; font-size:9.5px; letter-spacing:.04em}
+  .node-i{fill:#9faabd; font-family:'IBM Plex Mono'; font-size:10px}
   .edge{stroke:var(--line-2); stroke-width:1.6; fill:none; marker-end:url(#arrow)}
   .edge.loop{stroke:var(--more); stroke-dasharray:5 5; opacity:0; marker-end:url(#arrow-more)}
   .edge.loop.show{opacity:.9}
@@ -90,9 +105,9 @@
   #token{fill:var(--brand); filter:drop-shadow(0 0 7px rgba(45,212,191,.9))}
   .outcomes{display:flex; gap:10px; flex-wrap:wrap; padding:6px 14px 16px}
   .oc{flex:1 1 0; min-width:150px; border:1px solid var(--line); border-radius:11px; padding:11px 13px;
-    background:rgba(255,255,255,.012); opacity:.42; transition:.3s}
-  .oc .och{font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.12em; text-transform:uppercase; display:flex; gap:8px; align-items:center}
-  .oc .ocd{font-size:12px; color:var(--muted); margin-top:5px}
+    background:rgba(255,255,255,.012); opacity:.72; transition:.3s}
+  .oc .och{font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.12em; text-transform:uppercase; display:flex; gap:8px; align-items:center; color:#cfd6e3}
+  .oc .ocd{font-size:12px; color:#b0bbd0; margin-top:5px}
   .oc .dot{width:9px; height:9px; border-radius:50%; display:inline-block}
   .oc.allow .dot{background:var(--admit)} .oc.refer .dot{background:var(--refer)}
   .oc.deny .dot{background:var(--deny)} .oc.more .dot{background:var(--more)}
@@ -266,6 +281,34 @@
   .legend{display:flex; gap:18px; flex-wrap:wrap; margin-top:16px; font-family:'IBM Plex Mono'; font-size:11.5px; color:var(--muted)}
   .legend span{display:flex; gap:7px; align-items:center}
   .legend i{width:10px; height:10px; border-radius:3px; display:inline-block}
+
+  /* ---- light-mode rule overrides ----
+     These must come AFTER the dark-mode hardcoded-hex rules so they win on
+     source order (same specificity). The :root variable redefinitions live
+     in the @media block near the top of this stylesheet. */
+  @media (prefers-color-scheme: light) {
+    /* invert subtle white-on-dark tints to subtle dark-on-light tints */
+    .chip{background:rgba(15,25,45,.02)}
+    .oc{background:rgba(15,25,45,.02)}
+    .preset{background:rgba(15,25,45,.02)}
+    .cond{background:rgba(15,25,45,.03)}
+    /* SVG pipeline nodes */
+    .node-box{fill:#ffffff; stroke:rgba(15,25,45,.18)}
+    .node-box.hot{fill:#ecfeff}
+    .node-t{fill:#0f172a}
+    .node-s{fill:#475569}
+    .node-i{fill:#94a3b8}
+    /* outcome card text */
+    .oc .och{color:#334155}
+    .oc .ocd{color:#475569}
+    /* compiled code block — deeper colors than the palette accents because
+       thin 12px monospace strokes wash out at the normal weights */
+    pre{color:#0f172a}
+    pre .k{color:#6d28d9}
+    pre .s{color:#047857}
+    pre .c{color:#64748b}
+    pre .n{color:#b45309}
+  }
 </style>
 </head>
 <body>
