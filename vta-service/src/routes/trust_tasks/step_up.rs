@@ -632,6 +632,72 @@ async fn maybe_push_step_up(
             "failed to buffer delegated step-up push; relay fallback applies"
         );
     }
+
+    // VTA-trigger: wake the approver's device via its push gateway so a
+    // backgrounded device is roused now, rather than only finding the queued
+    // approve-request on its next voluntary pickup. Best-effort.
+    #[cfg(feature = "didcomm")]
+    trigger_gateway_wake(state, recipient, &mediator_did).await;
+}
+
+/// Send a `push/wake` to the approver device's push gateway over DIDComm
+/// (spawned, best-effort): a contentless doorbell telling the device to connect
+/// to `approver_mediator` and drain the queued `approve-request`. No-op if the
+/// approver has no wake channel (set via `device/set-wake`) or its gateway isn't
+/// a DID. The VTA authenticates to the gateway as the authcrypt sender (it is on
+/// the handle's allowlist, provisioned at set-wake).
+#[cfg(feature = "didcomm")]
+async fn trigger_gateway_wake(state: &AppState, recipient: &str, approver_mediator: &str) {
+    /// DIDComm message type that carries a Trust Task envelope in its body.
+    const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+
+    let wake = match get_acl_entry(&state.acl_ks, recipient).await {
+        Ok(Some(entry)) => entry.device.and_then(|d| d.wake),
+        _ => None,
+    };
+    let Some(wake) = wake else {
+        return; // approver has no push wake channel — mediator queue + pickup applies.
+    };
+    if !wake.gateway.starts_with("did:") {
+        return; // URL gateway → HTTPS path (follow-up).
+    }
+    let vta_did = state.config.read().await.vta_did.clone();
+    let wake_doc = json!({
+        "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+        "type": "https://trusttasks.org/spec/push/wake/0.1",
+        "issuer": vta_did,
+        "recipient": wake.gateway,
+        "payload": {
+            "handle": wake.handle,
+            "v": 1,
+            "mediator": approver_mediator,
+            "urgency": "interactive",
+        },
+    });
+    let bridge = state.didcomm_bridge.clone();
+    let gateway = wake.gateway.clone();
+    let approver = recipient.to_string();
+    tokio::spawn(async move {
+        match bridge
+            .send_and_wait(
+                &gateway,
+                TRUST_TASK_ENVELOPE_TYPE,
+                wake_doc,
+                TRUST_TASK_ENVELOPE_TYPE,
+                vta_sdk::protocols::PROBLEM_REPORT_TYPE,
+                15,
+            )
+            .await
+        {
+            Ok(_) => {
+                tracing::info!(gateway = %gateway, approver = %approver, "push/wake sent to gateway")
+            }
+            Err(e) => tracing::warn!(
+                error = %e, gateway = %gateway, approver = %approver,
+                "push/wake to gateway failed (best-effort)"
+            ),
+        }
+    });
 }
 
 /// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
