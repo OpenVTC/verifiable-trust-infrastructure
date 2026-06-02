@@ -96,11 +96,11 @@ const CEREMONIES: Ceremony[] = [
     key: "role-change",
     label: "Role change",
     nature: "mutating",
-    purpose: null,
+    purpose: "roleChange",
     pkg: "vtc.role_change",
-    wired: "unwired",
+    wired: "live",
     blurb:
-      "A member's role changes in place — the one ceremony whose allow may grant admin, gated by a step-up. Not yet wired into the executor (Remint).",
+      "A member's role changes in place (the DID + VMC are unchanged; the role VEC is re-minted). The one ceremony whose allow may grant admin — gated by a verified step-up; demotions are guarded by no-last-admin.",
   },
 ];
 
@@ -162,6 +162,9 @@ interface FormState {
   subjectRole: string;
   // leave
   selfLeave: boolean;
+  // role-change
+  targetRole: string;
+  stepUp: boolean;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -169,6 +172,8 @@ const DEFAULT_FORM: FormState = {
   subjectIsMember: true,
   subjectRole: "member",
   selfLeave: false,
+  targetRole: "moderator",
+  stepUp: false,
 };
 
 function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
@@ -201,6 +206,26 @@ function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
               joined_at: "2026-01-02T00:00:00Z",
             }
           : null,
+      },
+    };
+  }
+
+  if (c.key === "role-change") {
+    return {
+      purpose: "role-change",
+      now,
+      actor: { did: "did:key:zAdmin", role: "admin", authenticated: true },
+      subject: { did: "did:key:zTarget" },
+      context,
+      evidence: {
+        request: { target_role: f.targetRole, step_up: f.stepUp },
+      },
+      state: {
+        subject_member: {
+          role: "member",
+          status: "active",
+          joined_at: "2026-01-02T00:00:00Z",
+        },
       },
     };
   }
@@ -413,6 +438,9 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
               {ceremony.key === "leave" && (
                 <LeaveForm form={form} setForm={setForm} />
               )}
+              {ceremony.key === "role-change" && (
+                <RoleChangeForm form={form} setForm={setForm} />
+              )}
 
               <button
                 className="cer-run"
@@ -572,6 +600,46 @@ function LeaveForm({
             <option value="moderator">moderator</option>
             <option value="admin">admin</option>
           </select>
+        </div>
+      )}
+    </>
+  );
+}
+
+function RoleChangeForm({
+  form,
+  setForm,
+}: {
+  form: FormState;
+  setForm: (f: FormState) => void;
+}) {
+  return (
+    <>
+      <div className="cer-field">
+        <label>
+          Target role
+          <small>evidence.request.target_role</small>
+        </label>
+        <select
+          className="input"
+          value={form.targetRole}
+          onChange={(e) => setForm({ ...form, targetRole: e.target.value })}
+        >
+          <option value="member">member</option>
+          <option value="moderator">moderator</option>
+          <option value="admin">admin (promotion)</option>
+        </select>
+      </div>
+      {form.targetRole === "admin" && (
+        <div className="cer-field">
+          <label>
+            Step-up verified
+            <small>admin needs step-up — else the verdict refers</small>
+          </label>
+          <Toggle
+            on={form.stepUp}
+            onClick={() => setForm({ ...form, stepUp: !form.stepUp })}
+          />
         </div>
       )}
     </>

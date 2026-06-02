@@ -320,3 +320,101 @@ async fn depart_refuses_the_last_admin() {
     // The refusal left the ACL row in place.
     assert!(get_acl_entry(&state.acl_ks, admin).await.unwrap().is_some());
 }
+
+/// Remint changes a member's role in place and re-mints the role VEC —
+/// the ACL role updates and the member's role-VEC pointer moves.
+#[tokio::test]
+async fn remint_changes_role_and_reissues_vec() {
+    let (state, _dir) = build_state().await;
+    let subject = "did:key:zPromote";
+
+    // Admit as a member first.
+    let admit = EffectPlan::Admit {
+        subject: subject.into(),
+        role: "member".into(),
+        obligations: vec![],
+    };
+    execute::apply(&state, admit, ACTOR_DID)
+        .await
+        .expect("admit");
+    // The role-VEC pointer stamped at admit time.
+    let original_vec_id = get_member(&state.members_ks, subject)
+        .await
+        .unwrap()
+        .expect("member")
+        .current_role_vec_id;
+    assert!(original_vec_id.is_some(), "admit stamped a role VEC");
+
+    // Re-mint at moderator.
+    let plan = EffectPlan::Remint {
+        subject: subject.into(),
+        role: "moderator".into(),
+    };
+    let EffectOutcome::Reminted(outcome) = execute::apply(&state, plan, ACTOR_DID)
+        .await
+        .expect("remint")
+    else {
+        panic!("expected Reminted");
+    };
+    assert_eq!(outcome.previous_role, VtcRole::Member);
+
+    // ACL role updated; the member's role-VEC pointer moved to the new VEC.
+    let acl = get_acl_entry(&state.acl_ks, subject)
+        .await
+        .unwrap()
+        .expect("acl");
+    assert_eq!(acl.role, VtcRole::Moderator);
+    let m = get_member(&state.members_ks, subject)
+        .await
+        .unwrap()
+        .expect("member");
+    assert!(m.current_role_vec_id.is_some());
+    assert_ne!(
+        m.current_role_vec_id, original_vec_id,
+        "the role VEC was re-minted"
+    );
+}
+
+/// Remint enforces no-last-admin on demotion: changing the sole admin
+/// to a non-admin role is a conflict, leaving the ACL untouched.
+#[tokio::test]
+async fn remint_refuses_demoting_the_last_admin() {
+    let (state, _dir) = build_state().await;
+    let admin = "did:key:zSoleAdmin2";
+
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            did: admin.into(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: vtc_service::auth::session::now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let plan = EffectPlan::Remint {
+        subject: admin.into(),
+        role: "member".into(),
+    };
+    let err = execute::apply(&state, plan, ACTOR_DID)
+        .await
+        .expect_err("demoting the last admin must conflict");
+    assert!(
+        matches!(err, vti_common::error::AppError::Conflict(_)),
+        "got {err:?}"
+    );
+    // Still admin.
+    assert_eq!(
+        get_acl_entry(&state.acl_ks, admin)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        VtcRole::Admin
+    );
+}

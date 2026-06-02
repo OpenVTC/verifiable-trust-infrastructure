@@ -114,6 +114,11 @@ pub enum PolicyPurpose {
     CrossCommunityRoles,
     CrossCommunityRelationships,
     Relationships,
+    /// In-place change of a member's role — the role-change ceremony
+    /// (pipeline `vtc.role_change`). The one ceremony whose `allow`
+    /// may grant `admin`, gated by a verified step-up. Distinct from
+    /// [`Self::RoleDefinitions`] (the role→permission matrix).
+    RoleChange,
 }
 
 impl PolicyPurpose {
@@ -121,7 +126,7 @@ impl PolicyPurpose {
     /// boot-time default-policy loader (M2.5) so missing rows can
     /// be filled from the bundled defaults without listing each
     /// purpose explicitly at the call site.
-    pub const ALL: [PolicyPurpose; 9] = [
+    pub const ALL: [PolicyPurpose; 10] = [
         PolicyPurpose::Join,
         PolicyPurpose::Removal,
         PolicyPurpose::Personhood,
@@ -131,6 +136,7 @@ impl PolicyPurpose {
         PolicyPurpose::CrossCommunityRoles,
         PolicyPurpose::CrossCommunityRelationships,
         PolicyPurpose::Relationships,
+        PolicyPurpose::RoleChange,
     ];
 
     /// Lowercase camelCase wire form of this purpose. Stable wire
@@ -147,6 +153,7 @@ impl PolicyPurpose {
             PolicyPurpose::CrossCommunityRoles => "crossCommunityRoles",
             PolicyPurpose::CrossCommunityRelationships => "crossCommunityRelationships",
             PolicyPurpose::Relationships => "relationships",
+            PolicyPurpose::RoleChange => "roleChange",
         }
     }
 }
@@ -204,6 +211,7 @@ mod tests {
                 json!("crossCommunityRelationships"),
             ),
             (PolicyPurpose::Relationships, json!("relationships")),
+            (PolicyPurpose::RoleChange, json!("roleChange")),
         ];
         for (purpose, wire) in cases {
             assert_eq!(serde_json::to_value(purpose).unwrap(), wire);
@@ -242,7 +250,7 @@ mod tests {
         // the bundled default would silently never load. Drive the
         // count + exhaustiveness assertion off the same constant
         // so a missed entry surfaces at test time.
-        assert_eq!(PolicyPurpose::ALL.len(), 9);
+        assert_eq!(PolicyPurpose::ALL.len(), 10);
         for purpose in PolicyPurpose::ALL {
             // Compiles iff the match is total — `as_str` exhaustively
             // matches every variant; this exists so the assertion

@@ -83,6 +83,19 @@ async fn build_fixture() -> Fixture {
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
 
+    // Role changes (PATCH /v1/members/{did}) run through the
+    // role-change ceremony, which needs the active decision policy + a
+    // credential signer to re-mint the role VEC.
+    vtc_service::policy::default::install_defaults(&policies_ks, &active_policies_ks)
+        .await
+        .expect("install default policies");
+    let credential_signer = Some(Arc::new(
+        vtc_service::credentials::LocalSigner::from_ed25519_seed(
+            "did:webvh:vtc.example.com:abc".into(),
+            &[0xCC; 32],
+        ),
+    ));
+
     let install_store = InstallTokenStore::new(install_ks.clone());
     let webauthn = Some(Arc::new(build_webauthn(RP_ORIGIN).expect("build webauthn")));
 
@@ -173,7 +186,7 @@ async fn build_fixture() -> Fixture {
         endorsements_ks: endorsements_ks.clone(),
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
+        credential_signer,
         audit_ks,
         audit_key_ks,
         config: Arc::new(RwLock::new(config)),

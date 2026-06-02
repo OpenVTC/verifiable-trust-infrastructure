@@ -85,13 +85,17 @@ const DEFAULT_SOURCES: &[(PolicyPurpose, &str)] = &[
         PolicyPurpose::Relationships,
         include_str!("../../policies/default/relationships.rego"),
     ),
+    (
+        PolicyPurpose::RoleChange,
+        include_str!("../../policies/default/role_change.rego"),
+    ),
 ];
 
 /// Number of purposes the workspace ships defaults for. Asserted
 /// against [`PolicyPurpose::ALL`] at test time so a missed entry in
 /// `DEFAULT_SOURCES` surfaces as a build-time-ish failure rather
 /// than a silent runtime gap.
-pub const DEFAULT_COUNT: usize = 9;
+pub const DEFAULT_COUNT: usize = 10;
 
 /// Return the embedded default source for `purpose`. Useful to the
 /// admin UX layer that wants to show "reset to default" diffs
@@ -422,6 +426,47 @@ mod tests {
         assert_eq!(
             r.pointer("/result/0/expressions/0/value"),
             Some(&json!({ "effect": "deny", "with": { "code": "removal-denied" } })),
+        );
+    }
+
+    #[test]
+    fn role_change_default_decides_by_target_and_step_up() {
+        let c = compile_default(PolicyPurpose::RoleChange);
+
+        // Standard change to a non-admin role → allow that role.
+        let std = evaluate(
+            &c,
+            "data.vtc.role_change.decision",
+            json!({ "evidence": { "request": { "target_role": "moderator" } } }),
+        )
+        .unwrap();
+        assert_eq!(
+            std.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "moderator" } })),
+        );
+
+        // Promotion to admin WITH step-up → allow admin.
+        let promo = evaluate(
+            &c,
+            "data.vtc.role_change.decision",
+            json!({ "evidence": { "request": { "target_role": "admin", "step_up": true } } }),
+        )
+        .unwrap();
+        assert_eq!(
+            promo.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "admin" } })),
+        );
+
+        // Promotion to admin WITHOUT step-up → refer to step-up.
+        let refer = evaluate(
+            &c,
+            "data.vtc.role_change.decision",
+            json!({ "evidence": { "request": { "target_role": "admin" } } }),
+        )
+        .unwrap();
+        assert_eq!(
+            refer.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "refer", "with": { "queue": "step-up" } })),
         );
     }
 

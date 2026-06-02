@@ -27,12 +27,13 @@
 //!   the ACL row, apply the disposition to the Member row, and revoke
 //!   the credential (flip the revocation bit). Fully wired; the
 //!   `DELETE /v1/members/{me,did}` removal routes go through it.
+//! - **Remint** (role-change) — change the ACL role in place + re-mint
+//!   the role VEC, enforcing no-last-admin on demotion. Fully wired;
+//!   the `PATCH /v1/members/{did}` role change goes through it.
 //! - **NoStateChange** (deny / refer / request_more) — no-op.
 //! - **Project** (directory) — not handled here: the directory route
 //!   serializes the projection into its HTTP response inline, so a
 //!   `Project` plan reaching the executor is a caller bug.
-//! - **Remint** (role-change) — not yet wired (its ceremony doesn't
-//!   exist yet); returns a clear error until then.
 
 use std::sync::LazyLock;
 
@@ -73,6 +74,9 @@ pub enum EffectOutcome {
     /// A member departed; carries the applied disposition + the
     /// revocation slot that was flipped (for the caller's audit).
     Departed(DepartOutcome),
+    /// A member's role was changed in place; carries the previous role
+    /// + the re-minted role VEC. Boxed — the VC makes it large.
+    Reminted(Box<RemintOutcome>),
     /// No state was changed (the verdict was deny / refer /
     /// request_more).
     None,
@@ -84,6 +88,17 @@ pub struct AdmitOutcome {
     pub vmc: VerifiableCredential,
     pub role_vec: VerifiableCredential,
     pub status_list_index: u32,
+}
+
+/// The result of an in-place role change.
+#[derive(Debug)]
+pub struct RemintOutcome {
+    /// The role the subject held before the change (for the caller's
+    /// `RoleChanged` audit).
+    pub previous_role: VtcRole,
+    /// The role VEC re-minted at the new role. The DID + VMC are
+    /// unchanged; only the role assertion is re-issued.
+    pub role_vec: VerifiableCredential,
 }
 
 /// The result of a member departure.
@@ -132,12 +147,14 @@ pub async fn apply(
             let outcome = depart(state, &subject, disposition, actor_did).await?;
             Ok(EffectOutcome::Departed(outcome))
         }
+        EffectPlan::Remint { subject, role } => {
+            let role = parse_role(&role)?;
+            let outcome = remint(state, &subject, role).await?;
+            Ok(EffectOutcome::Reminted(Box::new(outcome)))
+        }
         EffectPlan::NoStateChange => Ok(EffectOutcome::None),
         EffectPlan::Project { .. } => Err(AppError::Internal(
             "directory projection is applied by the route, not the effect executor".into(),
-        )),
-        EffectPlan::Remint { .. } => Err(AppError::Internal(
-            "role-change effect executor is not yet wired".into(),
         )),
     }
 }
@@ -252,6 +269,79 @@ async fn issue_member_credentials(
     status_list::maybe_emit_occupancy_warning(&row);
 
     Ok((vmc, role_vec, slot))
+}
+
+/// Change a member's role in place: update the ACL row and re-mint the
+/// role VEC at the new role. The DID + VMC are unchanged.
+///
+/// Enforces the no-last-admin invariant on **demotion** (an admin
+/// being changed to a non-admin role) — host-enforced under
+/// [`LAST_ADMIN_LOCK`], so a demotion that would leave zero admins is
+/// refused (`Conflict` → 409) before any write. The privilege ceiling
+/// / step-up-for-admin invariant is enforced earlier, in
+/// [`super::invariant::enforce`], before the plan is built.
+async fn remint(
+    state: &AppState,
+    subject_did: &str,
+    new_role: VtcRole,
+) -> Result<RemintOutcome, AppError> {
+    let _guard = LAST_ADMIN_LOCK.lock().await;
+
+    let mut acl = get_acl_entry(&state.acl_ks, subject_did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("member not found: {subject_did}")))?;
+    let previous_role = acl.role.clone();
+
+    // No-last-admin on demotion: refuse to demote the community's only
+    // admin (the inverse of the leave guard).
+    if matches!(previous_role, VtcRole::Admin) && !matches!(new_role, VtcRole::Admin) {
+        let other_admins = list_acl_entries(&state.acl_ks)
+            .await?
+            .iter()
+            .filter(|e| e.did != subject_did && matches!(e.role, VtcRole::Admin))
+            .count();
+        if other_admins == 0 {
+            return Err(AppError::Conflict(format!(
+                "refusing to demote the last admin ({subject_did}) — promote another \
+                 member to admin first"
+            )));
+        }
+    }
+
+    acl.role = new_role.clone();
+    store_acl_entry(&state.acl_ks, &acl).await?;
+
+    // Re-mint the role VEC at the new role + repoint the member.
+    let role_vec = issue_role_vec(state, subject_did, new_role).await?;
+    if let Some(mut member) = get_member(&state.members_ks, subject_did).await? {
+        member.current_role_vec_id = top_level_id(&role_vec);
+        store_member(&state.members_ks, &member).await?;
+    }
+
+    Ok(RemintOutcome {
+        previous_role,
+        role_vec,
+    })
+}
+
+/// Mint a role VEC at `role` for `subject_did`. Used by role-change to
+/// re-issue the role assertion; the VMC + status list are untouched.
+async fn issue_role_vec(
+    state: &AppState,
+    subject_did: &str,
+    role: VtcRole,
+) -> Result<VerifiableCredential, AppError> {
+    let signer = state.credential_signer.as_ref().ok_or_else(|| {
+        AppError::Internal(
+            "credential signer not initialised — cannot re-mint role VEC (run setup first)".into(),
+        )
+    })?;
+    let vec_id = format!("urn:uuid:{}", Uuid::new_v4());
+    build_role_vec(
+        signer,
+        RoleVecParams::new(subject_did, role).with_id(vec_id),
+    )
+    .await
 }
 
 /// Parse the plan's disposition string into a concrete
