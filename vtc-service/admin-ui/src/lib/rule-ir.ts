@@ -365,6 +365,69 @@ export interface EnglishLine {
   isCatchAll: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Semantic diff — compare two IR revisions at the route level, so a
+// version bump reads as "what changed" rather than a Rego text diff.
+// ---------------------------------------------------------------------------
+
+function condKey(c: Condition): string {
+  const a = condArg(c);
+  return a ? `${condId(c)}:${a}` : condId(c);
+}
+
+export interface RouteDiff {
+  name: string;
+  status: "added" | "removed" | "changed" | "unchanged";
+  /** Human change lines, e.g. "when: + agreed to code-of-conduct". */
+  changes: string[];
+}
+
+/** Route-level diff of two IR revisions (prev → next), matched by name. */
+export function diffIR(prev: RuleIR, next: RuleIR): RouteDiff[] {
+  const prevByName = new Map(prev.routes.map((r) => [r.name, r]));
+  const nextByName = new Map(next.routes.map((r) => [r.name, r]));
+  const order: string[] = [];
+  for (const r of next.routes) order.push(r.name);
+  for (const r of prev.routes) if (!nextByName.has(r.name)) order.push(r.name);
+
+  const seen = new Set<string>();
+  const diffs: RouteDiff[] = [];
+  for (const name of order) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const a = prevByName.get(name);
+    const b = nextByName.get(name);
+    if (a && !b) {
+      diffs.push({ name, status: "removed", changes: [] });
+      continue;
+    }
+    if (!a && b) {
+      diffs.push({ name, status: "added", changes: [] });
+      continue;
+    }
+    if (!a || !b) continue;
+    const changes: string[] = [];
+    const ak = new Set(a.when.all.map(condKey));
+    const bk = new Set(b.when.all.map(condKey));
+    for (const c of b.when.all)
+      if (!ak.has(condKey(c)))
+        changes.push(`when: + ${conditionToEnglish(c, next.purpose)}`);
+    for (const c of a.when.all)
+      if (!bk.has(condKey(c)))
+        changes.push(`when: − ${conditionToEnglish(c, prev.purpose)}`);
+    if (JSON.stringify(a.then) !== JSON.stringify(b.then))
+      changes.push(
+        `then: ${effectToEnglish(a.then)} → ${effectToEnglish(b.then)}`,
+      );
+    diffs.push({
+      name,
+      status: changes.length ? "changed" : "unchanged",
+      changes,
+    });
+  }
+  return diffs;
+}
+
 /** Render an IR as ordered plain-English lines (first-match framing). */
 export function irToEnglish(ir: RuleIR): EnglishLine[] {
   return ir.routes.map((route, i) => {

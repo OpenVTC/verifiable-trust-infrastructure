@@ -20,6 +20,7 @@ import { postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
 import {
+  type PolicyRow,
   type Purpose,
   CEREMONY_PURPOSES,
   OTHER_PURPOSES,
@@ -28,7 +29,7 @@ import {
   fetchPolicies,
   uploadPolicy,
 } from "@/lib/policies-api";
-import { blankIR, irToEnglish, parseRego } from "@/lib/rule-ir";
+import { blankIR, diffIR, irToEnglish, parseRego } from "@/lib/rule-ir";
 import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
 import {
   type CeremonyKey,
@@ -433,6 +434,23 @@ function PolicyManager({
     },
   });
 
+  // Fail-forward rollback: never rewind the chain — copy the chosen
+  // revision's source into a NEW revision and activate that. History
+  // only ever grows; the active pointer always moves forward.
+  const rollback = useMutation({
+    mutationFn: async (row: PolicyRow) => {
+      const created = await uploadPolicy({
+        purpose,
+        regoSource: row.regoSource,
+      });
+      await activatePolicy(created.id);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["policies", purpose] });
+      void qc.invalidateQueries({ queryKey: ["active-policy", purpose] });
+    },
+  });
+
   const items = query.data?.items ?? [];
   const active = items.find((p) => p.isActive) ?? null;
   const canAuthor = CEREMONY_PURPOSES.includes(purpose);
@@ -492,34 +510,29 @@ function PolicyManager({
           </div>
           <div className="cer-versions">
             {items.map((p) => (
-              <div
+              <VersionRow
                 key={p.id}
-                className={`cer-ver${p.isActive ? " active" : ""}`}
-              >
-                <span className="cer-ver-v">v{p.version}</span>
-                <span className="cer-ver-meta">{formatIso(p.createdAt)}</span>
-                {p.isActive ? (
-                  <span className="cer-chip" style={{ color: "var(--vd-allow)" }}>
-                    active
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    className="cer-ver-activate"
-                    disabled={activate.isPending}
-                    onClick={async () => {
-                      const ok = await confirm({
-                        title: `Activate ${purpose} v${p.version}?`,
-                        message: `The current active policy for "${purpose}" becomes archived.`,
-                        confirmLabel: "Activate",
-                      });
-                      if (ok) activate.mutate(p.id);
-                    }}
-                  >
-                    Activate
-                  </button>
-                )}
-              </div>
+                row={p}
+                active={active}
+                purpose={purpose}
+                busy={activate.isPending || rollback.isPending}
+                onActivate={async () => {
+                  const ok = await confirm({
+                    title: `Activate ${purpose} v${p.version}?`,
+                    message: `The current active policy for "${purpose}" becomes archived.`,
+                    confirmLabel: "Activate",
+                  });
+                  if (ok) activate.mutate(p.id);
+                }}
+                onRollback={async () => {
+                  const ok = await confirm({
+                    title: `Roll back ${purpose} to v${p.version}?`,
+                    message: `Fail-forward: v${p.version}'s content is copied into a new revision and activated. The chain isn't rewound.`,
+                    confirmLabel: "Roll back",
+                  });
+                  if (ok) rollback.mutate(p);
+                }}
+              />
             ))}
           </div>
         </>
@@ -562,6 +575,122 @@ function PolicyManager({
         />
       )}
     </>
+  );
+}
+
+// One row in the version history. A non-active row can be compared to
+// the live policy (route-level diff) and either activated (a newer
+// draft) or rolled back to (an older revision, fail-forward).
+function VersionRow({
+  row,
+  active,
+  purpose,
+  busy,
+  onActivate,
+  onRollback,
+}: {
+  row: PolicyRow;
+  active: PolicyRow | null;
+  purpose: Purpose;
+  busy: boolean;
+  onActivate: () => void;
+  onRollback: () => void;
+}) {
+  const [comparing, setComparing] = useState(false);
+  const isOlder = active ? row.version < active.version : false;
+
+  return (
+    <div className={`cer-ver${row.isActive ? " active" : ""}`}>
+      <div className="cer-ver-head">
+        <span className="cer-ver-v">v{row.version}</span>
+        <span className="cer-ver-meta">{formatIso(row.createdAt)}</span>
+        {row.isActive ? (
+          <span className="cer-chip" style={{ color: "var(--vd-allow)" }}>
+            active
+          </span>
+        ) : (
+          <>
+            {active && !row.isActive && (
+              <button
+                type="button"
+                className="cer-ver-compare"
+                aria-expanded={comparing}
+                onClick={() => setComparing((v) => !v)}
+              >
+                {comparing ? "Hide diff" : "Compare ▾"}
+              </button>
+            )}
+            <button
+              type="button"
+              className="cer-ver-activate"
+              disabled={busy}
+              onClick={isOlder ? onRollback : onActivate}
+            >
+              {isOlder ? "Roll back" : "Activate"}
+            </button>
+          </>
+        )}
+      </div>
+      {comparing && active && (
+        <VersionDiff purpose={purpose} from={active} to={row} />
+      )}
+    </div>
+  );
+}
+
+// The route-level diff between the live policy and another revision —
+// "what changes if this becomes active". Falls back to a note when
+// either side wasn't authored visually (no IR to compare).
+function VersionDiff({
+  purpose,
+  from,
+  to,
+}: {
+  purpose: Purpose;
+  from: PolicyRow;
+  to: PolicyRow;
+}) {
+  const fromIr = parseRego(from.regoSource);
+  const toIr = parseRego(to.regoSource);
+  if (!fromIr || !toIr) {
+    return (
+      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+        A structured diff needs both revisions authored visually — one here
+        is hand-written Rego.
+      </p>
+    );
+  }
+  const diffs = diffIR(fromIr, toIr);
+  const changed = diffs.filter((d) => d.status !== "unchanged");
+  return (
+    <div className="cer-diff">
+      <div className="cer-diff-head">
+        v{from.version} <span aria-hidden>→</span> v{to.version}
+      </div>
+      {changed.length === 0 ? (
+        <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+          No route-level changes — the decision is identical.
+        </p>
+      ) : (
+        changed.map((d) => (
+          <div key={`${purpose}-${d.name}`} className={`diff-route ${d.status}`}>
+            <span className="diff-mark" aria-hidden>
+              {d.status === "added" ? "+" : d.status === "removed" ? "−" : "~"}
+            </span>
+            <div className="diff-body">
+              <span className="diff-name">{d.name}</span>
+              {d.status === "added" && <em> route added</em>}
+              {d.status === "removed" && <em> route removed</em>}
+              {d.changes.map((c, i) => (
+                <span key={i} className="diff-change">
+                  {c}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
   );
 }
 
