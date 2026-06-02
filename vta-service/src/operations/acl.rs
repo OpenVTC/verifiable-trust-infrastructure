@@ -78,6 +78,7 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
         created_at: e.created_at,
         created_by: e.created_by.clone(),
         expires_at: e.expires_at,
+        step_up_approver: e.step_up_approver.clone(),
     }
 }
 
@@ -92,6 +93,7 @@ pub async fn create_acl(
     label: Option<String>,
     allowed_contexts: Vec<String>,
     expires_at: Option<u64>,
+    step_up_approver: Option<String>,
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
@@ -108,7 +110,8 @@ pub async fn create_acl(
     let entry = AclEntry::new(did, role, auth.did.clone())
         .with_label(label)
         .with_contexts(allowed_contexts)
-        .with_expires_at(expires_at);
+        .with_expires_at(expires_at)
+        .with_step_up_approver(step_up_approver);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -665,6 +668,7 @@ mod tests {
             None,
             vec!["ctx-typo".into()],
             None,
+            None,
             "test",
         )
         .await
@@ -696,6 +700,7 @@ mod tests {
             Role::Admin,
             None,
             vec!["ctx-real".into()],
+            None,
             None,
             "test",
         )

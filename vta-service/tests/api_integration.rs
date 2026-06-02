@@ -593,6 +593,33 @@ async fn swap_key_gated_without_carve_out() {
 }
 
 #[tokio::test]
+async fn acl_grant_persists_step_up_approver() {
+    let (app, ctx) = TestApp::new().await;
+    // Step-up ships disabled, so an AAL1 admin can grant without a gate.
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/acl",
+            &token,
+            json!({
+                "did": "did:key:z6MkGrantee",
+                "role": "application",
+                "allowed_contexts": ["ctx1"],
+                "step_up_approver": "did:key:z6MkApprover"
+            }),
+        ))
+        .await;
+
+    assert!(status.is_success(), "grant should succeed: {status} {body}");
+    // The configured approver round-trips through the create result.
+    assert_eq!(
+        body["step_up_approver"], "did:key:z6MkApprover",
+        "grant must persist + reflect the step-up approver: {body}"
+    );
+}
+
+#[tokio::test]
 async fn delegated_step_up_routes_to_configured_approver() {
     use vti_common::acl::{AclEntry, Role, store_acl_entry};
     use vti_common::auth::step_up::{StepUpFloor, StepUpMode};

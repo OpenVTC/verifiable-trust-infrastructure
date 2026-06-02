@@ -41,6 +41,10 @@ pub struct CreateAclRequest {
     /// `null` for a permanent entry.
     #[serde(default)]
     pub expires_at: Option<u64>,
+    /// VID authorized to ratify a delegated AAL2 step-up for this subject
+    /// (the approve-request `recipient`). Omit for no delegated approver.
+    #[serde(default)]
+    pub step_up_approver: Option<String>,
 }
 
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
@@ -63,6 +67,7 @@ pub async fn create_acl(
         req.label,
         req.allowed_contexts,
         req.expires_at,
+        req.step_up_approver,
         "rest",
     )
     .await?;

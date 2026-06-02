@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Set a delegated step-up approver at grant time
+
+The ACL create/grant body gains an optional `step_up_approver` — the VID a
+delegated AAL2 step-up's approve-request is addressed to (the holder's
+mobile/browser approver). It's stored on the entry and read by the step-up
+gate's delegated mode. Makes delegated step-up operable end-to-end:
+previously the gate could route to an approver but there was no way to set
+one outside tests.
+
+- `vta-sdk` `CreateAclBody` + `CreateAclResultBody` gain
+  `step_up_approver: Option<String>` (additive, `serde(default)`); the REST
+  `POST /acl` request + the `vta/acl/create/1.0` trust task accept it and
+  the result reflects it. `vta-sdk` 0.9.2 → 0.9.3.
+- Still pending: setting/clearing the approver on an *existing* entry
+  (`acl/update`) and the wire `auth/step-up/policy/0.1` handler for remote
+  policy management.
+
 ### Key rotation goes through `acl/swap-key`
 
 The SDK's first-auth key rotation (`session::rotate_key`, REST path) now

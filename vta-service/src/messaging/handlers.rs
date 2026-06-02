@@ -540,6 +540,7 @@ pub async fn handle_create_acl(
             body.label,
             body.allowed_contexts,
             body.expires_at,
+            body.step_up_approver,
             "didcomm",
         )
         .await

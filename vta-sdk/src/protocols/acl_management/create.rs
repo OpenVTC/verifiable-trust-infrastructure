@@ -11,6 +11,12 @@ pub struct CreateAclBody {
     /// Unix-epoch seconds at which the entry auto-expires. `None` = permanent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// VID authorized to ratify a delegated AAL2 step-up for this subject —
+    /// the `recipient` an `auth/step-up/approve-request/0.1` is addressed to
+    /// (the holder's mobile/browser approver). Stored on the ACL entry as
+    /// `step_up_approver`. `None` = no delegated approver configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_approver: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,4 +30,8 @@ pub struct CreateAclResultBody {
     /// Unix-epoch seconds at which the entry auto-expires, if set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// The delegated step-up approver the maintainer now holds for this
+    /// subject, if any (echoes the stored `step_up_approver`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_approver: Option<String>,
 }

@@ -99,6 +99,7 @@ pub(super) async fn handle_create(
         req.label,
         req.allowed_contexts,
         req.expires_at,
+        req.step_up_approver,
         TRANSPORT_TRUST_TASK,
     )
     .await
