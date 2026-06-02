@@ -41,18 +41,22 @@ use axum::http::StatusCode;
 use chrono::Utc;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as JsonValue, json};
-use tracing::{info, warn};
+use serde_json::Value as JsonValue;
+use tracing::info;
 use uuid::Uuid;
 
 use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
 use vti_common::error::AppError;
 
-use crate::join::{JoinRequest, JoinStatus, JoinTransport, store_join_request};
-use crate::policy::{
-    PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy,
-    extract::extract_vp_claims, get_active_policy_id, get_policy,
+use crate::ceremony::execute::{self, AdmitOutcome};
+use crate::ceremony::{
+    Actor, Context, Credential, CredentialStatus, EffectOutcome, EffectPlan, Evidence, Facts,
+    Presentation, Purpose, State as FactsState, Subject, Verdict, VerifiedFacts,
 };
+use crate::community::load_profile;
+use crate::join::{JoinRequest, JoinStatus, JoinTransport, store_join_request};
+use crate::members::list_members;
+use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
 
 pub const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
@@ -75,13 +79,29 @@ pub struct SubmitRequestBody {
 pub struct SubmitResponse {
     pub request_id: Uuid,
     pub status: String,
+    /// Issued VMC — present only when the join policy **auto-admitted**
+    /// (verdict `allow`). The applicant, who proved holder-binding,
+    /// receives their membership credential inline. `None` when the
+    /// request was queued (`pending`/`deferred`) or rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmc: Option<JsonValue>,
+    /// Issued role VEC — same delivery story as [`Self::vmc`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_vec: Option<JsonValue>,
+}
+
+/// What [`submit_inner`] produced: the persisted request + the
+/// credentials minted if the policy auto-admitted (verdict `allow`).
+pub struct JoinSubmitOutcome {
+    pub request: JoinRequest,
+    pub admit: Option<Box<AdmitOutcome>>,
 }
 
 pub async fn submit(
     State(state): State<AppState>,
     Json(req): Json<SubmitRequestBody>,
 ) -> Result<(StatusCode, Json<SubmitResponse>), AppError> {
-    let request = submit_inner(
+    let outcome = submit_inner(
         &state,
         req.applicant_did,
         req.vp,
@@ -91,22 +111,47 @@ pub async fn submit(
         JoinTransport::Rest,
     )
     .await?;
+
+    let (vmc, role_vec) = match &outcome.admit {
+        Some(a) => (
+            Some(
+                serde_json::to_value(&a.vmc)
+                    .map_err(|e| AppError::Internal(format!("serialise VMC: {e}")))?,
+            ),
+            Some(
+                serde_json::to_value(&a.role_vec)
+                    .map_err(|e| AppError::Internal(format!("serialise VEC: {e}")))?,
+            ),
+        ),
+        None => (None, None),
+    };
+
     Ok((
         StatusCode::CREATED,
         Json(SubmitResponse {
-            request_id: request.id,
-            status: request.status.to_string(),
+            request_id: outcome.request.id,
+            status: outcome.request.status.to_string(),
+            vmc,
+            role_vec,
         }),
     ))
 }
 
-/// Shared inner implementation called by both REST and the
-/// DIDComm handler. Returns the persisted `JoinRequest`.
+/// Shared inner implementation called by both REST and the DIDComm
+/// handler — the join ceremony's decide → effect spine.
 ///
 /// `signature` is `Some` for REST (where the wire must carry an
-/// explicit holder-binding signature) and `None` for DIDComm
-/// (where the DIDComm envelope's authcrypt sender already
-/// authenticates `applicant_did`).
+/// explicit holder-binding signature) and `None` for DIDComm (where
+/// the DIDComm envelope's authcrypt sender already authenticates
+/// `applicant_did`).
+///
+/// The active `join` decision policy classifies the verified
+/// submission:
+/// - `allow` → **auto-admit** via the [`EffectPlan::Admit`] executor;
+///   the request lands `Approved` and the credentials are returned.
+/// - `refer` → `Pending` (queued for admin review → the approve route).
+/// - `request_more` → `Deferred` (more evidence needed).
+/// - `deny` → `Rejected`, with the verdict stored on `policy_decision`.
 pub async fn submit_inner(
     state: &AppState,
     applicant_did: String,
@@ -115,7 +160,7 @@ pub async fn submit_inner(
     extensions: JsonValue,
     signature_hex: Option<&str>,
     transport: JoinTransport,
-) -> Result<JoinRequest, AppError> {
+) -> Result<JoinSubmitOutcome, AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
@@ -126,142 +171,206 @@ pub async fn submit_inner(
         verify_holder_signature(&applicant_did, &vp, registry_consent, &extensions, hex_sig)?;
     }
 
-    // 2. Phase 2 policy step (M2.6). Extract the canonical
-    // `vp_claims` projection per plan §D4 and feed it to the
-    // active `join.rego`. `allow` → row stays Pending; `deny`
-    // → row lands as Rejected with the policy's output stored
-    // on `policy_decision`.
+    // 2. The lossy `vp_claims` projection is still stored on the row
+    // for the admin show + the approve path; the decision pipeline
+    // reads structured Facts instead (assembled below).
     let vp_claims = extract_vp_claims(&vp);
-    let policy_input = json!({
-        "applicant_did": applicant_did,
-        "vp_claims": vp_claims,
-        "action": "join",
-        "now": Utc::now().to_rfc3339(),
-    });
-    let decision = evaluate_join_policy(state, &policy_input).await?;
 
-    // 3. Persist. `vp_claims` is stored alongside the raw `vp`
-    // so the approve path doesn't have to re-extract.
+    // 3. Decide: assemble verified Facts and run the active join policy.
+    let facts = assemble_join_facts(state, &applicant_did, &vp).await?;
+    let verified = VerifiedFacts::assemble(facts)?;
+    let policy = load_active_compiled(
+        &state.active_policies_ks,
+        &state.policies_ks,
+        PolicyPurpose::Join,
+    )
+    .await?;
+    let verdict = crate::ceremony::decide(&verified, &policy)?;
+
+    // 4. Build the request + realize the verdict.
     let mut request = JoinRequest::new(applicant_did.clone(), vp);
     request.vp_claims = vp_claims;
     request.registry_consent = registry_consent;
     request.extensions = extensions;
-    match &decision {
-        JoinPolicyDecision::Allow => {
-            request.status = JoinStatus::Pending;
+
+    let mut admit: Option<Box<AdmitOutcome>> = None;
+    let rejected = matches!(verdict, Verdict::Deny(_));
+    match &verdict {
+        Verdict::Allow(allow) => {
+            // Auto-admit: the join effect (admit + issue VMC) runs now.
+            // A duplicate ACL (re-submit by an existing member) surfaces
+            // as the executor's `Conflict` → 409.
+            let role = allow.role.clone().unwrap_or_else(|| "member".to_string());
+            let plan = EffectPlan::Admit {
+                subject: applicant_did.clone(),
+                role,
+                obligations: allow.obligations.clone(),
+            };
+            if let EffectOutcome::Admitted(creds) =
+                execute::apply(state, plan, &applicant_did).await?
+            {
+                admit = Some(creds);
+            }
+            request.status = JoinStatus::Approved;
         }
-        JoinPolicyDecision::Deny { result } => {
+        Verdict::Refer(_) => request.status = JoinStatus::Pending,
+        Verdict::RequestMore(_) => {
+            request.status = JoinStatus::Deferred;
+            request.policy_decision = Some(serde_json::to_value(&verdict)?);
+        }
+        Verdict::Deny(_) => {
             request.status = JoinStatus::Rejected;
-            request.policy_decision = Some(result.clone());
+            request.policy_decision = Some(serde_json::to_value(&verdict)?);
         }
     }
     store_join_request(&state.join_requests_ks, &request).await?;
 
-    // 4. Audit. Allow → Submitted; deny → Rejected with the
-    // canonical `"policy denied"` reason marker so SIEM can
-    // distinguish admin rejections from policy rejections.
-    match &decision {
-        JoinPolicyDecision::Allow => {
-            audit_writer
-                .write(
-                    &applicant_did,
-                    None,
-                    AuditEvent::JoinRequestSubmitted(JoinRequestData {
-                        request_id: request.id.to_string(),
-                        transport: transport.as_str().to_string(),
-                    }),
-                )
-                .await?;
-        }
-        JoinPolicyDecision::Deny { .. } => {
-            audit_writer
-                .write(
-                    &applicant_did,
-                    None,
-                    AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
-                        request_id: request.id.to_string(),
-                        reason: "policy denied".into(),
-                    }),
-                )
-                .await?;
-        }
+    // 5. Audit — Rejected for a policy deny; Submitted otherwise.
+    if rejected {
+        audit_writer
+            .write(
+                &applicant_did,
+                None,
+                AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
+                    request_id: request.id.to_string(),
+                    reason: "policy denied".into(),
+                }),
+            )
+            .await?;
+    } else {
+        audit_writer
+            .write(
+                &applicant_did,
+                None,
+                AuditEvent::JoinRequestSubmitted(JoinRequestData {
+                    request_id: request.id.to_string(),
+                    transport: transport.as_str().to_string(),
+                }),
+            )
+            .await?;
     }
 
     info!(
         request_id = %request.id,
         applicant = %applicant_did,
         transport = transport.as_str(),
-        decision = decision.kind(),
+        verdict = verdict.effect(),
         "join request submitted"
     );
-    Ok(request)
+    Ok(JoinSubmitOutcome { request, admit })
 }
 
 // ---------------------------------------------------------------------------
-// Policy step (M2.6.1)
+// Join facts assembly (decision-pipeline input)
 // ---------------------------------------------------------------------------
 
-/// Outcome of evaluating the active `join.rego` against the
-/// canonical `input` for a fresh submission. Carries the raw
-/// regorus `QueryResults` JSON so the deny path can persist it on
-/// `JoinRequest.policy_decision` for the audit trail.
-enum JoinPolicyDecision {
-    Allow,
-    Deny { result: JsonValue },
-}
-
-impl JoinPolicyDecision {
-    fn kind(&self) -> &'static str {
-        match self {
-            JoinPolicyDecision::Allow => "allow",
-            JoinPolicyDecision::Deny { .. } => "deny",
-        }
-    }
-}
-
-/// Look up the active `join` policy, compile + evaluate it, and
-/// classify the result as allow / deny. Treats every error path
-/// as deny — a daemon misconfiguration must not silently accept
-/// applicants the operator hasn't authored a policy for.
-async fn evaluate_join_policy(
+/// Assemble purpose-`join` [`Facts`] from a verified submission. The
+/// applicant is the actor + subject (self-join); the VP becomes the
+/// verified presentation the policy decides over.
+async fn assemble_join_facts(
     state: &AppState,
-    input: &JsonValue,
-) -> Result<JoinPolicyDecision, AppError> {
-    let active_id = get_active_policy_id(&state.active_policies_ks, PolicyPurpose::Join).await?;
-    let id = match active_id {
-        Some(id) => id,
-        None => {
-            // M2.5's `install_defaults` should always have run by
-            // the time a request hits this path. Reaching here
-            // means the daemon is missing its default-policy
-            // bootstrap — fail closed.
-            warn!("no active join policy at submit time — refusing submission");
-            return Ok(JoinPolicyDecision::Deny {
-                result: json!({
-                    "error": "no active join policy",
-                }),
-            });
-        }
-    };
-    let policy = get_policy(&state.policies_ks, id)
+    applicant_did: &str,
+    vp: &JsonValue,
+) -> Result<Facts, AppError> {
+    let community_did = load_profile(&state.community_ks)
         .await?
-        .ok_or_else(|| AppError::Internal(format!("active join policy {id} not found")))?;
+        .map(|p| p.community_did)
+        .unwrap_or_default();
+    let member_count = list_members(&state.members_ks).await?.len() as u64;
 
-    // Compile per call. Same trade-off as `POST
-    // /v1/policies/{id}/test` makes (M2.3.1) — regorus's parse is
-    // cheap and per-call compile keeps this path independent of
-    // M2.8's in-memory hot-swap cache, which hasn't landed yet.
-    let compiled = compile_policy(&policy.rego_source, policy.id)?;
-    let result = evaluate_policy(&compiled, "data.vtc.join.allow", input.clone())?;
-    let allow = result
-        .pointer("/result/0/expressions/0/value")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if allow {
-        Ok(JoinPolicyDecision::Allow)
-    } else {
-        Ok(JoinPolicyDecision::Deny { result })
+    Ok(Facts {
+        purpose: Purpose::Join,
+        now: Utc::now(),
+        // The applicant proved holder-binding at the route layer; they
+        // are not (yet) a member, so they carry no community role.
+        actor: Actor {
+            did: applicant_did.to_string(),
+            role: None,
+            authenticated: true,
+        },
+        subject: Subject {
+            did: applicant_did.to_string(),
+        },
+        context: Context {
+            community_did,
+            channel: "rest".to_string(),
+            member_count,
+        },
+        evidence: Evidence {
+            invitation: None,
+            presentation: Some(presentation_from_vp(applicant_did, vp)),
+            request: None,
+        },
+        state: FactsState {
+            subject_member: None,
+        },
+    })
+}
+
+/// Project the VP into the verified [`Presentation`] the policy reads.
+/// Holder-binding is already checked (`verified: true`). Credentials
+/// surface with `issuer_trusted: false` / `status: valid` — issuer
+/// trust (TRQP) and status-list resolution are follow-ups; the
+/// structured shape is what matters for the decision contract.
+fn presentation_from_vp(applicant_did: &str, vp: &JsonValue) -> Presentation {
+    let holder = vp
+        .get("holder")
+        .and_then(|h| match h {
+            JsonValue::String(s) => Some(s.clone()),
+            JsonValue::Object(o) => o.get("id").and_then(|i| i.as_str()).map(str::to_string),
+            _ => None,
+        })
+        .unwrap_or_else(|| applicant_did.to_string());
+
+    let credentials = vp
+        .get("verifiableCredential")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(credential_from_vc).collect())
+        .unwrap_or_default();
+
+    Presentation {
+        verified: true,
+        holder,
+        credentials,
     }
+}
+
+/// Pull one VC into a [`Credential`]. JWT-encoded VCs (bare strings)
+/// are skipped — full JWT-VP support lands with VP verification.
+fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
+    let obj = vc.as_object()?;
+    let credential_type = obj
+        .get("type")
+        .and_then(|t| match t {
+            JsonValue::Array(a) => a
+                .iter()
+                .filter_map(|x| x.as_str())
+                .find(|s| *s != "VerifiableCredential")
+                .map(str::to_string),
+            JsonValue::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "VerifiableCredential".to_string());
+    let issuer = match obj.get("issuer") {
+        Some(JsonValue::String(s)) => s.clone(),
+        Some(JsonValue::Object(o)) => o
+            .get("id")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    };
+    Some(Credential {
+        credential_type,
+        issuer,
+        issuer_trusted: false,
+        status: CredentialStatus::Valid,
+        claims: obj
+            .get("credentialSubject")
+            .cloned()
+            .unwrap_or(JsonValue::Null),
+        valid_until: None,
+    })
 }
 
 /// Verify the Ed25519 signature over the canonical signing

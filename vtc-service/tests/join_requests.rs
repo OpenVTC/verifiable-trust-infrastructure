@@ -722,11 +722,9 @@ async fn reject_rejects_overlong_reason() {
 // M2.6 — Policy step at submit time
 // ---------------------------------------------------------------------------
 
-/// Upload + activate a join policy that always denies. Returns
-/// nothing — the active pointer is flipped server-side and
-/// subsequent submits see the deny semantics.
-async fn activate_deny_all_join_policy(fix: &Fixture) {
-    let source = "package vtc.join\nimport rego.v1\n\ndefault allow := false\n";
+/// Upload + activate a join policy. The active pointer is flipped
+/// server-side; subsequent submits see the new policy's semantics.
+async fn activate_join_policy(fix: &Fixture, source: &str) {
     let (status, body) = send(
         &fix.router,
         "POST",
@@ -748,6 +746,68 @@ async fn activate_deny_all_join_policy(fix: &Fixture) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "activate failed: {body}");
+}
+
+async fn activate_deny_all_join_policy(fix: &Fixture) {
+    activate_join_policy(
+        fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"closed\"}}\n",
+    )
+    .await;
+}
+
+/// An `allow` join policy auto-admits: the submit handler runs the
+/// Admit effect, the row lands `approved`, the membership credentials
+/// come back inline, and the applicant is now a member.
+#[tokio::test]
+async fn rest_submit_under_allow_policy_auto_admits() {
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
+    )
+    .await;
+
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
+    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": signature,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "got {body}");
+    assert_eq!(body["status"], "approved");
+    assert!(body["vmc"]["id"].is_string(), "VMC returned inline: {body}");
+    assert!(
+        body["roleVec"]["id"].is_string(),
+        "role VEC returned: {body}"
+    );
+
+    // The applicant is now a member (ACL + Member rows exist).
+    let acl = vtc_service::acl::get_acl_entry(&fix.acl_ks, &applicant_did)
+        .await
+        .unwrap()
+        .expect("auto-admitted applicant has an ACL row");
+    assert_eq!(acl.role, VtcRole::Member);
+    assert!(
+        vtc_service::members::get_member(&fix.members_ks, &applicant_did)
+            .await
+            .unwrap()
+            .is_some(),
+        "auto-admitted applicant has a Member row"
+    );
 }
 
 /// With the default `policies.open` join policy the submit
@@ -856,13 +916,12 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(row["status"], "rejected");
-    // `policyDecision` is the regorus QueryResults shape — at
-    // minimum it carries a `result` array with the rule's value.
-    let decision = &row["policyDecision"];
-    let value = decision
-        .pointer("/result/0/expressions/0/value")
-        .expect("policy_decision should carry regorus QueryResults");
-    assert_eq!(value, &json!(false));
+    // `policyDecision` now carries the four-valued verdict the policy
+    // returned — a deny with the policy's code.
+    assert_eq!(
+        row["policyDecision"],
+        json!({ "effect": "deny", "with": { "code": "closed" } }),
+    );
 }
 
 /// Trying to re-approve a policy-rejected row fails the same way

@@ -78,9 +78,9 @@ const CEREMONIES: Ceremony[] = [
     nature: "constructive",
     purpose: "join",
     pkg: "vtc.join",
-    wired: "legacy",
+    wired: "live",
     blurb:
-      "A DID joins the community. The effect admits the member and issues a credential; the join policy is still the legacy boolean shape pending its decision-pipeline migration.",
+      "A DID joins the community. A trusted presented credential auto-admits (allow → issue the membership credential); everything else is referred to the moderator queue for review.",
   },
   {
     key: "leave",
@@ -165,6 +165,8 @@ interface FormState {
   // role-change
   targetRole: string;
   stepUp: boolean;
+  // join
+  joinTrusted: boolean;
 }
 
 const DEFAULT_FORM: FormState = {
@@ -174,6 +176,7 @@ const DEFAULT_FORM: FormState = {
   selfLeave: false,
   targetRole: "moderator",
   stepUp: false,
+  joinTrusted: false,
 };
 
 function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
@@ -207,6 +210,32 @@ function buildFacts(c: Ceremony, f: FormState): Record<string, unknown> {
             }
           : null,
       },
+    };
+  }
+
+  if (c.key === "join") {
+    return {
+      purpose: "join",
+      now,
+      actor: { did: "did:key:zApplicant", authenticated: true },
+      subject: { did: "did:key:zApplicant" },
+      context,
+      evidence: {
+        presentation: {
+          verified: true,
+          holder: "did:key:zApplicant",
+          credentials: [
+            {
+              type: "WitnessCredential",
+              issuer: "did:webvh:notary.example",
+              issuer_trusted: f.joinTrusted,
+              status: "valid",
+              claims: {},
+            },
+          ],
+        },
+      },
+      state: { subject_member: null },
     };
   }
 
@@ -432,6 +461,9 @@ function CeremonyPanel({ ceremony }: { ceremony: Ceremony }) {
             </p>
           ) : (
             <>
+              {ceremony.key === "join" && (
+                <JoinForm form={form} setForm={setForm} />
+              )}
               {ceremony.key === "directory" && (
                 <DirectoryForm form={form} setForm={setForm} />
               )}
@@ -603,6 +635,27 @@ function LeaveForm({
         </div>
       )}
     </>
+  );
+}
+
+function JoinForm({
+  form,
+  setForm,
+}: {
+  form: FormState;
+  setForm: (f: FormState) => void;
+}) {
+  return (
+    <div className="cer-field">
+      <label>
+        Presented credential is trusted
+        <small>evidence.presentation.credentials[].issuer_trusted</small>
+      </label>
+      <Toggle
+        on={form.joinTrusted}
+        onClick={() => setForm({ ...form, joinTrusted: !form.joinTrusted })}
+      />
+    </div>
   );
 }
 

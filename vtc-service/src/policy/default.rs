@@ -347,26 +347,53 @@ mod tests {
     }
 
     #[test]
-    fn join_default_allows_well_formed_request() {
+    fn join_default_admits_on_trusted_credential() {
+        // The default join policy is now the decision spine: a trusted,
+        // valid presented credential auto-admits as a member.
         let c = compile_default(PolicyPurpose::Join);
-        let input = json!({
-            "applicant_did": "did:key:zApplicant",
-            "vp_claims": {},
-            "action": "join",
-            "now": "2026-05-12T00:00:00Z"
-        });
-        let r = evaluate(&c, "data.vtc.join.allow", input).unwrap();
-        assert!(
-            pluck_bool(&r),
-            "default join policy must allow valid submissions"
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "presentation": {
+                        "credentials": [
+                            { "type": "WitnessCredential", "issuer_trusted": true, "status": "valid" }
+                        ]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
         );
     }
 
     #[test]
-    fn join_default_denies_wrong_action() {
+    fn join_default_refers_without_trusted_credential() {
+        // No trusted credential → referred to the moderator queue
+        // (the request lands Pending for admin review).
         let c = compile_default(PolicyPurpose::Join);
-        let r = evaluate(&c, "data.vtc.join.allow", json!({ "action": "withdraw" })).unwrap();
-        assert!(!pluck_bool(&r));
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "presentation": {
+                        "credentials": [
+                            { "type": "EmailCredential", "issuer_trusted": false, "status": "valid" }
+                        ]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
+        );
     }
 
     #[test]

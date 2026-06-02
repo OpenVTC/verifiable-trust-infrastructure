@@ -1,19 +1,34 @@
-# Default `join` policy — `policies.open` template (spec §7.1).
+# Default `join` policy — the join ceremony decision spine
+# (ceremony-pipeline design §4; supersedes the `policies.open` boolean
+# shape).
 #
-# Accepts every well-formed join request. The submit handler
-# already verifies the holder-binding signature on the VP
-# (Phase 1 M1.8.2); this policy decides whether to surface the
-# request as `Pending` for admin review or reject it outright.
-# Operators replace this with a stricter policy by uploading
-# their own and activating it.
+# Join is the constructive ceremony: a DID asks to join the community.
+# The submit handler verifies the VP holder-binding, assembles verified
+# Facts, runs `data.vtc.join.decision`, and realizes the verdict —
+# `allow` auto-admits (issues the membership credential), `refer` queues
+# the request as Pending for admin review, `deny` rejects it, and
+# `request_more` defers pending more evidence.
 #
-# Input shape (spec §7.3):
-#   { applicant_did, vp_claims, action, now }
+# Default posture: a submission with a **trusted, valid** credential
+# auto-admits; everything else is referred to the moderator queue for
+# human review (the request lands Pending — the same gate the
+# pre-pipeline `policies.open` default produced). Operators replace this
+# with their own decision policy (e.g. admit on a specific credential
+# type, gate on an invitation, require a code-of-conduct agreement).
+#
+# The privilege ceiling is host-enforced around this policy: a `join`
+# verdict may never grant `admin`.
 
 package vtc.join
 
 import rego.v1
 
-default allow := false
+# structural totality — unmatched submissions go to moderator review
+default decision := {"effect": "refer", "with": {"queue": "moderator"}}
 
-allow if input.action == "join"
+# A presented credential from a trusted issuer auto-admits as a member.
+decision := {"effect": "allow", "with": {"role": "member"}} if {
+	some c in input.evidence.presentation.credentials
+	c.issuer_trusted
+	c.status == "valid"
+}

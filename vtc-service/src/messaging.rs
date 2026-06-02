@@ -191,7 +191,7 @@ async fn join_request_submit_handler(
     let body: JoinRequestSubmitBody = serde_json::from_value(message.body.clone())
         .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-request body: {e}")))?;
 
-    let request = submit_inner(
+    let outcome = submit_inner(
         &state,
         applicant_did,
         body.vp,
@@ -203,9 +203,12 @@ async fn join_request_submit_handler(
     .await
     .map_err(|e| DIDCommServiceError::Internal(format!("submit failed: {e}")))?;
 
+    // The DIDComm receipt carries the request id + status; a sealed
+    // credential bundle for an auto-admitted applicant lands in a
+    // follow-up DIDComm message.
     let receipt = JoinRequestSubmitReceiptBody {
-        request_id: request.id,
-        status: request.status.to_string(),
+        request_id: outcome.request.id,
+        status: outcome.request.status.to_string(),
     };
     let body = serde_json::to_value(&receipt)
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
