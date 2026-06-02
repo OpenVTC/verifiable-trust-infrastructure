@@ -1,0 +1,23 @@
+{
+  "purpose": "phase3",
+  "routes": [
+    {
+      "name": "Trust-anchor vouched",
+      "when": { "all": [
+        "has_valid_invitation",
+        { "invitation_issuer_has_role": "trustAnchor" },
+        { "holds_credential_from_role": {
+            "type": "VerifiableRelationshipCredential",
+            "role": "trustAnchor",
+            "exclude_invitation_issuer": true,
+            "min": 1 } }
+      ] },
+      "then": { "effect": "allow", "with": { "role": "member", "obligations": ["reciprocate_vmc"] } }
+    },
+    {
+      "name": "Almost there",
+      "when": { "all": ["always"] },
+      "then": { "effect": "request_more", "with": { "needs": ["invitation:from-trustAnchor", "vrc:from-different-trustAnchor"] } }
+    }
+  ]
+}

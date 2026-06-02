@@ -1,0 +1,9 @@
+{
+  "purpose": "phase1",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkInitiator", "role": "initiator", "authenticated": true },
+  "subject": { "did": "did:key:z6MkInitiator" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "pnm-bootstrap", "member_count": 0 },
+  "evidence": {},
+  "state": { "subject_member": null }
+}

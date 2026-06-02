@@ -1,0 +1,28 @@
+{
+  "purpose": "phase4",
+  "routes": [
+    {
+      "name": "Member-vouched + ID-verified",
+      "when": { "all": [
+        "has_valid_invitation",
+        { "invitation_issuer_has_role": "member" },
+        { "holds_credential_from_role": {
+            "type": "VerifiableRelationshipCredential",
+            "role": "member",
+            "exclude_invitation_issuer": true,
+            "distinct_issuers": true,
+            "min": 2 } },
+        { "holds_credential_from_role": {
+            "type": "IdentityVerificationCredential",
+            "role": "identityVerificationProvider",
+            "min": 1 } }
+      ] },
+      "then": { "effect": "allow", "with": { "role": "member", "obligations": ["reciprocate_vmc"] } }
+    },
+    {
+      "name": "Almost there",
+      "when": { "all": ["always"] },
+      "then": { "effect": "request_more", "with": { "needs": ["invitation:from-member", "vrc:from-other-members:distinct>=2", "idvc:from-approved-idvp"] } }
+    }
+  ]
+}

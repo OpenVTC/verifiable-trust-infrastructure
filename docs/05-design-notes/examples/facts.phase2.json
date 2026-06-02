@@ -1,0 +1,19 @@
+{
+  "purpose": "phase2",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkAnchorCandidate", "authenticated": false },
+  "subject": { "did": "did:key:z6MkAnchorCandidate" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 1 },
+  "evidence": {
+    "invitation": {
+      "verified": true,
+      "consumed": false,
+      "issuer": "did:key:z6MkSomeMember",
+      "issuer_role": "member",
+      "scopes": ["membership"]
+    },
+    "presentation": null,
+    "request": {}
+  },
+  "state": { "subject_member": null }
+}

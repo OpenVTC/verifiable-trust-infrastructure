@@ -1,0 +1,15 @@
+{
+  "purpose": "phase1",
+  "routes": [
+    {
+      "name": "Initiator self-bootstrap",
+      "when": { "all": ["actor_is_initiator"] },
+      "then": { "effect": "allow", "with": { "role": "initiator", "obligations": [] } }
+    },
+    {
+      "name": "Default deny",
+      "when": { "all": ["always"] },
+      "then": { "effect": "deny", "with": { "code": "phase1-initiator-only", "reason": "Phase 1 admits only the initiator (PNM-side bootstrap)." } }
+    }
+  ]
+}

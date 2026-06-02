@@ -1,0 +1,26 @@
+{
+  "purpose": "phase4",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkInvitee", "authenticated": false },
+  "subject": { "did": "did:key:z6MkInvitee" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 42 },
+  "evidence": {
+    "invitation": {
+      "verified": true,
+      "consumed": false,
+      "issuer": "did:key:z6MkMemberInviter",
+      "issuer_role": "member",
+      "scopes": ["membership"]
+    },
+    "presentation": {
+      "verified": true,
+      "holder": "did:key:z6MkInvitee",
+      "credentials": [
+        { "type": "VerifiableRelationshipCredential", "issuer": "did:key:z6MkMember2", "issuer_trusted": true, "issuer_role_in_community": "member", "status": "valid", "claims": { "kind": "knows" } },
+        { "type": "IdentityVerificationCredential", "issuer": "did:key:z6MkIDVP1", "issuer_trusted": true, "issuer_role_in_community": "identityVerificationProvider", "status": "valid", "claims": { "level": "AAL2" } }
+      ]
+    },
+    "request": {}
+  },
+  "state": { "subject_member": null }
+}

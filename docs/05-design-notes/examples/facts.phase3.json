@@ -1,0 +1,25 @@
+{
+  "purpose": "phase3",
+  "now": "2026-05-30T12:00:00Z",
+  "actor": { "did": "did:key:z6MkInvitee", "authenticated": false },
+  "subject": { "did": "did:key:z6MkInvitee" },
+  "context": { "community_did": "did:webvh:acme.example", "channel": "rest", "member_count": 7 },
+  "evidence": {
+    "invitation": {
+      "verified": true,
+      "consumed": false,
+      "issuer": "did:key:z6MkAnchorA",
+      "issuer_role": "trustAnchor",
+      "scopes": ["membership"]
+    },
+    "presentation": {
+      "verified": true,
+      "holder": "did:key:z6MkInvitee",
+      "credentials": [
+        { "type": "VerifiableRelationshipCredential", "issuer": "did:key:z6MkAnchorA", "issuer_trusted": true, "issuer_role_in_community": "trustAnchor", "status": "valid", "claims": { "kind": "knows" } }
+      ]
+    },
+    "request": {}
+  },
+  "state": { "subject_member": null }
+}

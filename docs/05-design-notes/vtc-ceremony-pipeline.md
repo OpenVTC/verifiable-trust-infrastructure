@@ -85,7 +85,9 @@ input = {
   "evidence": {
     "invitation":   null | { "verified", "issuer", "issuer_role", "scopes", "consumed" },
     "presentation": null | { "verified", "holder",
-                             "credentials": [ { "type", "issuer", "issuer_trusted", "status", "claims", "valid_until" } ] },
+                             "credentials": [ { "type", "issuer", "issuer_trusted",
+                                                "issuer_role_in_community",
+                                                "status", "claims", "valid_until" } ] },
     "request":      null | { /* ceremony params: disposition | target_role | fields_requested | … */ }
   },
 
@@ -96,6 +98,13 @@ input = {
 
 The compiler emits helper rules over this (`cred_trusted(t)`, `has_valid_invitation`, `actor_is_admin`,
 `subject_is_self`, …) so authors never hand-write traversals. Per-purpose worked instances live in the catalog.
+
+**Credential issuer decoration.** Verify decorates each entry in `evidence.presentation.credentials` with two
+issuer-side facts, both resolved before policy runs: `issuer_trusted` (boolean, from issuer-trust resolution
+— TRQP / built-in registry) and `issuer_role_in_community` (string or null, from ACL lookup by issuer DID
+against the community on `context.community_did`). The latter is what lets policies reason about *who* issued
+a credential in community terms — e.g. phase3's gate on credentials from members holding role `trustAnchor`. A
+credential whose issuer is not a member of this community has `issuer_role_in_community: null`.
 
 ---
 

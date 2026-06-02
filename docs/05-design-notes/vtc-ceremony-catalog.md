@@ -1,9 +1,10 @@
 # VTC Ceremony Catalog — Instances of the Pipeline
 
 **Status:** Design proposal (for review) · **Parent:** [`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md)
-**Purpose:** Prove the one pipeline generalizes by running four maximally-different ceremonies through it, then
-map the remaining purposes. If the abstraction only ever served *join*, it would be over-engineering. These four
-exercise it along every axis that matters.
+**Purpose:** Prove the one pipeline generalizes by running maximally-different ceremonies through it,
+then map the remaining purposes. If the abstraction only ever served admission, it would be
+over-engineering. The four matrix rows below exercise it along every axis that matters; admission
+itself is then instantiated four ways (§2.1–§2.4) for different stages of community maturity.
 
 > **Notation.** Bare `§N` references are to [`vtc-ceremony-pipeline.md`](./vtc-ceremony-pipeline.md). MVP
 > references are written `vtc-mvp.md §N`.
@@ -12,59 +13,128 @@ exercise it along every axis that matters.
 
 ## 1. The validation matrix
 
-The four ceremonies are chosen to differ on *every* axis — if one pipeline handles all four, it handles the rest.
+The active ceremony family is four community-lifecycle admission phases plus three member-lifecycle
+ceremonies, chosen to differ on *every* axis — if one pipeline handles all four matrix rows, it handles
+the rest.
 
 | Ceremony | Trigger / `actor` | `actor` = `subject`? | Evidence | Effects | Hard invariant | Threaded? | Direction |
 |---|---|---|---|---|---|---|---|
-| **Join** | applicant (unauth) | **yes** | VP (invitation? / credentials?) | issue VMC + VEC, write ACL+Member | privilege ceiling | yes | constructive |
+| **Admission** (Phase 1–4) | applicant (unauth) | **yes** | VP (invitation + relationship + identity credentials) | issue VMC + VEC, write ACL+Member | privilege ceiling | yes | constructive |
 | **Leave** | member (self) **or** admin | **no** (admin case) | disposition choice / removal reason | revoke VMC, apply disposition, registry departure | no-last-admin | optional | **destructive** |
 | **Role-change** | admin | **no** | target + desired role (+ step-up) | re-issue VEC, update ACL role | privilege ceiling + step-up | optional | **mutating** |
 | **Directory** | any member (a query) | **no** | the query (fields requested) | return a **field projection** (no write) | PII boundary | **no** (sync) | **read-only** |
 
-Join is constructive/self/threaded; Leave inverts it (destructive/other/one-shot); Role-change is in-place
-mutation with an escalation guard; Directory is a stateless read that returns a *filter*, not a boolean. All four
-are the **same** `verify → facts → evaluate → verdict → effects` pipeline with different plug-ins.
+Admission is constructive/self/threaded (instantiated four ways for different stages of community maturity
+— §2); Leave inverts it (destructive/other/one-shot); Role-change is in-place mutation with an escalation
+guard; Directory is a stateless read that returns a *filter*, not a boolean. All four matrix rows are the
+**same** `verify → facts → evaluate → verdict → effects` pipeline with different plug-ins.
 
 ---
 
-## 2. Join (onboarding)
+## 2. Admission — four phases of community growth
 
-The canonical evidence-bearing ceremony. Full treatment because it exercises all four verdicts.
+The canonical matrix row from §1, instantiated four ways. Per the *VTC Bootstrapping* spec, a community
+progresses through four phases as its web of trust matures: the **initiator** self-bootstraps, then
+invites **community trust anchors**, who then invite **members**, who can themselves invite new members
+(with identity verification). Each phase is the same pipeline shape — applicant is both actor and
+subject; allow issues a VMC + role VEC + reciprocal edge — but each requires a different credential
+bundle and grants a different role.
 
-- **Trigger:** applicant, unauthenticated, rate-limited. `actor` = `subject` = the applicant.
-- **Evidence:** a VP — optionally an `InvitationCredential` (VIC) and/or other credentials.
-- **Routes (policy):** first-match over `evidence`. e.g. `has_valid_invitation → allow(role from invitation)`;
-  `cred_trusted("WitnessCredential") AND agreed("code-of-conduct") → allow(member)`;
-  `cred_trusted("WitnessCredential") → request_more(code-of-conduct)`; else `refer(moderator)`.
-- **Verdict realization:** `allow` ⇒ admit; `request_more` ⇒ return a PD; `refer` ⇒ moderator queue;
-  `deny` ⇒ reject.
-- **Effects (allow):** allocate status-list index → mint VMC + role VEC → write ACL + Member → sealed-transfer →
-  audit. Obligation `reciprocate_vmc` (the member counter-signs → bidirectional DTG edge).
-- **Invariant:** privilege ceiling — join never grants `admin`.
+The privilege ceiling applies to every phase: no admission route grants `admin`. (Phase 1 grants
+`initiator`, which is distinct from `admin` and only ever applies at genesis.)
 
-**Worked example (request_more → allow), facts round 1:**
+### 2.1 Phase 1 — Initiation (genesis)
+
+- **Trigger:** the initiator, before the community exists. The PNM runs this client-side; the VTA
+  doesn't exist yet to evaluate the IR.
+- **Evidence:** none — no presentation, no invitation.
+- **Routes (`phase1.rego`):** `actor_is_initiator → allow(role: initiator)`; else `deny`.
+- **Verdict realization (out of band):** PNM generates a community DID (C-DID), instantiates the VTA via
+  a trust task with a DTG service provider, has the VTA mint the initiator's VMC, and writes
+  `{member: initiator M-DID, role: initiator}` to the trust registry.
+- **Invariant:** privilege ceiling holds vacuously (no `admin` grant possible).
+
+The IR is degenerate but kept for design completeness and the visual guide — it surfaces the
+layered-trust progression that begins at "initiator".
+
+### 2.2 Phase 2 — Initiator invites community trust anchors
+
+- **Trigger:** an invitee who holds a **VTC invitation credential (VIC)** issued by the initiator.
+- **Evidence:** `invitation: { verified, consumed, issuer, issuer_role, scopes }`.
+- **Routes (`phase2.rego`):** `has_valid_invitation AND invitation_issuer_has_role("initiator") →
+  allow(role: trustAnchor)`; else `request_more(needs: ["invitation:from-initiator"])`.
+- **Verdict realization:** `allow` ⇒ VTA issues VMC + role VEC for `trustAnchor`, writes
+  `{member: CTA M-DID, role: trustAnchor}` to the registry; `request_more` ⇒ PD asking for an
+  initiator-issued VIC.
+- **Effects (allow):** allocate status-list index → mint VMC + role VEC → write ACL + Member →
+  sealed-transfer → audit. Obligation `reciprocate_vmc`.
+- **Invariant:** privilege ceiling (no admin); plus the PEP may also enforce a community-policy limit
+  on how many CTAs may be admitted (out of scope for the IR).
+
+### 2.3 Phase 3 — Community trust anchors invite members
+
+- **Trigger:** an invitee with a VIC from a CTA **and** a verifiable relationship credential (VRC) from
+  a *different* CTA. The cross-anchor VRC means admission is independently witnessed.
+- **Evidence:** `invitation` (issued by a CTA) + `presentation.credentials` containing at least one
+  trusted VRC whose `issuer_role_in_community == "trustAnchor"` and whose issuer ≠ the VIC issuer.
+- **Routes (`phase3.rego`):** `has_valid_invitation AND invitation_issuer_has_role("trustAnchor") AND
+  holds_credential_from_role({type:"VerifiableRelationshipCredential", role:"trustAnchor",
+  exclude_invitation_issuer:true, min:1}) → allow(role: member)`; else
+  `request_more(needs: ["invitation:from-trustAnchor", "vrc:from-different-trustAnchor"])`.
+- **Verdict realization:** `allow` ⇒ VTA issues VMC + role VEC for `member`, writes
+  `{member: invitee M-DID, role: member}`. `request_more` ⇒ PD listing the missing artifacts.
+- **Effects (allow):** as Phase 2, with `role: member`.
+- **Invariant:** privilege ceiling; plus the `exclude_invitation_issuer` flag is what enforces the
+  "different CTA" semantic — a CTA can't both invite and self-vouch.
+
+**Worked example (1 VIC + 1 VRC from same CTA → request_more):**
 
 ```jsonc
-{ "purpose":"join", "now":"…",
-  "actor":   { "did":"did:key:z6MkHuman", "authenticated":true },
-  "subject": { "did":"did:key:z6MkHuman" },
-  "context": { "community_did":"did:webvh:acme.example", "channel":"rest", "member_count":1421 },
-  "evidence":{ "invitation":null,
-    "presentation":{ "verified":true, "holder":"did:key:z6MkHuman",
-      "credentials":[ { "type":"WitnessCredential", "issuer":"did:webvh:notary.example",
-                        "issuer_trusted":true, "status":"valid", "claims":{"kind":"proximity"} } ] } },
-  "state":   { "subject_member":null } }
+{ "purpose":"phase3", "now":"…",
+  "actor":   { "did":"did:key:z6MkInvitee", "authenticated":false },
+  "subject": { "did":"did:key:z6MkInvitee" },
+  "context": { "community_did":"did:webvh:acme.example", "channel":"rest", "member_count":7 },
+  "evidence":{
+    "invitation":{ "verified":true, "consumed":false,
+      "issuer":"did:key:z6MkAnchorA", "issuer_role":"trustAnchor", "scopes":["membership"] },
+    "presentation":{ "verified":true, "holder":"did:key:z6MkInvitee",
+      "credentials":[
+        { "type":"VerifiableRelationshipCredential", "issuer":"did:key:z6MkAnchorA",
+          "issuer_trusted":true, "issuer_role_in_community":"trustAnchor", "status":"valid",
+          "claims":{"kind":"knows"} } ] } },
+  "state":{ "subject_member":null } }
 ```
 
-Witness present, agreement absent → first-match yields `{"effect":"request_more","with":{"needs":["agreed:code-of-conduct"],
-"presentation_definition":{…}}}`. Round 2 (same thread) carries the agreement → `{"effect":"allow","with":{"role":"member",
-"obligations":["reciprocate_vmc"]}}`.
+The VRC's issuer equals the VIC issuer (z6MkAnchorA) → `credential_distinct_issuer_count_excl_inviter`
+yields 0 → first route fails → `request_more(needs: ["invitation:from-trustAnchor",
+"vrc:from-different-trustAnchor"])`. Swap the VRC's issuer to `z6MkAnchorB` (a different CTA) → the
+first route matches → `allow(role: member)`.
+
+### 2.4 Phase 4 — Members invite other members
+
+- **Trigger:** an invitee with a VIC from a member, **two** VRCs from two **other** distinct members
+  (excluding the inviter), **and** an identity verification credential (IDVC) from an approved IDVP.
+- **Evidence:** `invitation` (member-issued) + `presentation.credentials` with (a) at least two trusted
+  VRCs from distinct members, none equal to the inviter, and (b) one IDVC whose
+  `issuer_role_in_community == "identityVerificationProvider"`.
+- **Routes (`phase4.rego`):** four-clause `all`: `has_valid_invitation` + `invitation_issuer_has_role
+  ("member")` + `holds_credential_from_role({type:"VerifiableRelationshipCredential", role:"member",
+  exclude_invitation_issuer:true, distinct_issuers:true, min:2})` + `holds_credential_from_role
+  ({type:"IdentityVerificationCredential", role:"identityVerificationProvider", min:1})` →
+  `allow(role: member)`; else `request_more(needs: ["invitation:from-member",
+  "vrc:from-other-members:distinct>=2", "idvc:from-approved-idvp"])`.
+- **Verdict realization:** `allow` ⇒ VTA issues VMC + role VEC for `member`. The IDVP's role must be
+  registered as `identityVerificationProvider` in the community trust registry — that's a precondition
+  for `issuer_role_in_community` to populate correctly during Verify, not a Rego check.
+- **Effects (allow):** as Phase 2/3.
+- **Invariant:** privilege ceiling; the cross-issuer constraints (≠ inviter, distinct issuers) live in
+  the `holds_credential_from_role` helper's set comprehension, not in Rego boilerplate.
 
 ---
 
-## 3. Leave / Exit (offboarding) — *the inverse of join*
+## 3. Leave / Exit (offboarding) — *the inverse of admission*
 
-The second ceremony, chosen to invert join. Maps to MVP `removal` (`vtc-mvp.md` §10.2).
+Chosen to invert admission. Maps to MVP `removal` (`vtc-mvp.md` §10.2).
 
 - **Trigger:** the **member** (voluntary self-exit) **or** an **admin** (involuntary removal). So `actor` may be
   the subject or a third party — the pipeline carries both in `actor`/`subject`.
@@ -75,7 +145,7 @@ The second ceremony, chosen to invert join. Maps to MVP `removal` (`vtc-mvp.md` 
   `actor_is_admin AND not subject_is_admin → allow(disposition default)`;
   `actor_is_admin AND subject_is_admin → refer(second-admin)`; else `deny`.
 - **Verdict realization:** `allow.with.disposition` carries the departure disposition (the policy *decides* it,
-  generalizing join's `role`). `refer` ⇒ a second admin must co-sign. `request_more` ⇒ e.g. require a
+  generalizing admission's `role`). `refer` ⇒ a second admin must co-sign. `request_more` ⇒ e.g. require a
   documented-reason credential. `deny` ⇒ refuse (policy protects certain roles).
 - **Effects (allow):** revoke VMC (flip status-list bit, immediate) → delete/anonymize the Member record per
   disposition → enqueue registry departure → audit `MemberRemoved`. **Destructive — issues nothing.**
@@ -135,7 +205,7 @@ Deliberately included because it's the ceremony most likely to break a naïve "v
 
 **What this proves — the important one:** the pipeline **degrades to a stateless, synchronous read filter**.
 There is no thread, no issuance, no mutation; `allow` carries a *projection* rather than an obligation. If one
-abstraction spans a multi-day onboarding negotiation (join) *and* a sub-millisecond field filter (directory)
+abstraction spans a multi-day admission negotiation (phase 4) *and* a sub-millisecond field filter (directory)
 without special-casing, the pipeline is the right shape — and threads/effects are correctly modelled as
 *optional, purpose-specific* rather than mandatory.
 
@@ -172,6 +242,7 @@ Because the catalog is *instances*, the expensive machinery is built once and in
 Adding the *sixth* ceremony is writing a policy module, an evidence slot, an effect handler, and a vocabulary —
 not a new subsystem.
 
-Runnable policies for all four ceremonies above — the Rule IR, the compiled `.rego`, and sample `input` facts
-with expected verdicts — are in [`examples/`](./examples/) (`join`, `leave`, `role-change`, `directory`). The
-authoring vocabulary and compile mapping are in [`vtc-ceremony-rule-ir.md`](./vtc-ceremony-rule-ir.md).
+Runnable policies for every active ceremony — the Rule IR, the compiled `.rego`, and sample `input`
+facts with expected verdicts — are in [`examples/`](./examples/): admission phases `phase1` / `phase2`
+/ `phase3` / `phase4`, plus member-lifecycle `leave` / `role-change` / `directory`. The authoring
+vocabulary and compile mapping are in [`vtc-ceremony-rule-ir.md`](./vtc-ceremony-rule-ir.md).

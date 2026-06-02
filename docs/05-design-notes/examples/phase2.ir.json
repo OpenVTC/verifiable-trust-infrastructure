@@ -1,0 +1,18 @@
+{
+  "purpose": "phase2",
+  "routes": [
+    {
+      "name": "Invited by initiator",
+      "when": { "all": [
+        "has_valid_invitation",
+        { "invitation_issuer_has_role": "initiator" }
+      ] },
+      "then": { "effect": "allow", "with": { "role": "trustAnchor", "obligations": ["reciprocate_vmc"] } }
+    },
+    {
+      "name": "Almost there",
+      "when": { "all": ["always"] },
+      "then": { "effect": "request_more", "with": { "needs": ["invitation:from-initiator"] } }
+    }
+  ]
+}

@@ -320,12 +320,7 @@
     <p class="sub">Every community ceremony is an instance of one decision pipeline. Pick a ceremony, edit its
       routes, drop a sample scenario into the simulator, watch which route fires, then version the policy and roll
       it back — fail-forward. The vocabulary matches <b>vtc-ceremony-rule-ir.md</b> and <b>examples/</b>.</p>
-    <div class="cer-tabs" id="cerTabs">
-      <span class="cer-tab on" data-c="join">Join<small>onboard</small></span>
-      <span class="cer-tab" data-c="leave">Leave<small>offboard</small></span>
-      <span class="cer-tab" data-c="role-change">Role-change<small>mutate</small></span>
-      <span class="cer-tab" data-c="directory">Directory<small>read</small></span>
-    </div>
+    <div class="cer-tabs" id="cerTabs"></div>
     <div class="meta-row">
       <span class="chip">ceremony <b id="cerChip">join</b></span>
       <span class="chip">community <b>did:webvh:acme.example</b></span>
@@ -407,7 +402,7 @@
     <details class="compiled" open>
       <summary>generated from the current routes — regenerates on every edit</summary>
       <div class="tabs" id="tabs">
-        <span class="tab on" data-t="rego" id="regoTab">join.rego</span>
+        <span class="tab on" data-t="rego" id="regoTab">phase1.rego</span>
         <span class="tab" data-t="pd">presentation_definition.json</span>
         <span class="tab" data-t="en">human summary</span>
       </div>
@@ -439,68 +434,305 @@ function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
 
 /* ============================================================= CEREMONY CONFIGS */
 const CEREMONIES = {
-  join: {
-    label:'Join', simLabel:'applicant wallet', pkg:'vtc.join', family:'join-requests',
-    allowLabel:'admit', flowEffects:'issue + accept', genPD:true, allowObligation:'reciprocate_vmc',
-    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  “…/” = that prefix',
-    v1note:'Initial join policy — invitation, verified-human, almost-there, open review',
-    allowPayload:{key:'role', kind:'text', def:'member'},
-    effects:['allow','request_more','refer','deny'],
+  phase1: {
+    label:'Phase 1', tagline:'Initiation (genesis)', simLabel:'initiator wallet', pkg:'vtc.phase1', family:'join-requests',
+    allowLabel:'self-mint', flowEffects:'issue self VMC', genPD:false, allowObligation:null,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  genesis · PNM-side bootstrap',
+    v1note:'Phase 1 — initiator self-bootstrap (degenerate; PNM-side hardcoded policy)',
+    allowPayload:{key:'role', kind:'text', def:'initiator'},
+    effects:['allow','deny'],
     conds:{
-      has_valid_invitation:{label:'Valid invitation (VIC)', short:'has_valid_invitation', rego:'has_valid_invitation', cred:null},
-      witness:{label:'Trusted WitnessCredential',           short:'holds_trusted("WitnessCredential")', rego:'cred_trusted("WitnessCredential")', cred:'WitnessCredential'},
-      coc:{label:'Agrees to code of conduct',               short:'agreed("code-of-conduct")', rego:'agreed("code-of-conduct")', cred:null},
-      endorse2:{label:'≥2 member endorsements',             short:'endorsement_count >= 2', rego:'endorsement_count >= 2', cred:'EndorsementCredential'},
-      always:{label:'Any applicant',                        short:'true', rego:'true', cred:null},
+      actor_is_initiator:{label:'Actor is the initiator', short:'actor_is_initiator', rego:'input.actor.role == <span class="s">"initiator"</span>', cred:null},
+      always:{label:'Anyone',                              short:'true',               rego:'true', cred:null},
     },
     outcomes:{
-      allow:'issue VMC + role VEC · reciprocal edge · write ACL',
-      refer:'queue for a moderator — human-in-the-loop review',
-      request_more:'return a Presentation Definition for what’s missing',
+      allow:'PNM mints the C-DID, instantiates the VTA, issues the initiator’s VMC',
+      deny:'Phase 1 admits only the initiator — anyone else is rejected here',
+    },
+    helpers:[
+      '<span class="c"># No helpers — Phase 1 reads only `input.actor.role`.</span>',
+      '<span class="c"># Per the VTC Bootstrapping spec, Phase 1 policy is HARDCODED in the PNM;</span>',
+      '<span class="c"># this IR is kept for design completeness and the visual guide.</span>',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({isInitiator:true}),
+      fields:[
+        {id:'isInitiator', label:'Actor is the initiator', sub:'input.actor.role == "initiator"', type:'tog'},
+      ],
+      presets:[
+        {n:'Initiator',    w:{isInitiator:true}},
+        {n:'Anyone else',  w:{isInitiator:false}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'actor_is_initiator': return !!sc.isInitiator;
+        case 'always':             return true;
+        default:                   return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Initiator self-bootstrap', comb:'all', conds:['actor_is_initiator'], effect:{type:'allow', role:'initiator'},                                              listed:false},
+      {name:'Default deny',             comb:'all', conds:['always'],             effect:{type:'deny',  reason:'phase1-initiator-only'},                                listed:false},
+    ],
+  },
+
+  phase2: {
+    label:'Phase 2', tagline:'Initiator invites community trust anchors', simLabel:'invitee wallet', pkg:'vtc.phase2', family:'join-requests',
+    allowLabel:'admit as TA', flowEffects:'issue VMC + role VEC', genPD:true, allowObligation:'reciprocate_vmc',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  initiator invites community trust anchors',
+    v1note:'Phase 2 — admit as community trust anchor when invited by the initiator',
+    allowPayload:{key:'role', kind:'text', def:'trustAnchor'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      has_valid_invitation:{label:'Valid invitation (VIC)',                short:'has_valid_invitation',                         rego:'has_valid_invitation', cred:null},
+      invitation_from_initiator:{label:'VIC issued by the initiator',       short:'invitation_issuer_has_role("initiator")',      rego:'input.evidence.invitation.issuer_role == <span class="s">"initiator"</span>', cred:null},
+      always:{label:'Any candidate',                                       short:'true',                                          rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'issue VMC (role=trustAnchor) · reciprocal edge · write ACL',
+      request_more:'return a PD asking for an initiator-issued VIC',
       deny:'no matching route — structural default-deny',
     },
     helpers:[
-      'cred_trusted(t) <span class="k">if</span> { <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.status == <span class="s">"valid"</span> }',
       'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
-      'endorsement_count := <span class="n">count</span>([c | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == <span class="s">"EndorsementCredential"</span>])',
-      'agreed(tag) <span class="k">if</span> { input.evidence.request.agreements[tag] == <span class="k">true</span> }',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({hasInvitation:false, inviterIsInitiator:false}),
+      fields:[
+        {id:'hasInvitation',      label:'Holds a valid VIC',           sub:'evidence.invitation.verified && !consumed',     type:'tog'},
+        {id:'inviterIsInitiator', label:'VIC issuer is the initiator', sub:'evidence.invitation.issuer_role == "initiator"', type:'tog', dimWhen:'hasInvitation'},
+      ],
+      presets:[
+        {n:'Nothing',              w:{hasInvitation:false, inviterIsInitiator:false}},
+        {n:'VIC, wrong issuer',    w:{hasInvitation:true,  inviterIsInitiator:false}},
+        {n:'VIC from initiator',   w:{hasInvitation:true,  inviterIsInitiator:true}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'has_valid_invitation':       return !!sc.hasInvitation;
+        case 'invitation_from_initiator':  return !!sc.inviterIsInitiator;
+        case 'always':                     return true;
+        default:                           return false; } },
+      satisfy:(need,sc)=>{ if(need==='has_valid_invitation') sc.hasInvitation=true; else if(need==='invitation_from_initiator'){ sc.hasInvitation=true; sc.inviterIsInitiator=true; } },
+    },
+    defaultRoutes:()=>[
+      {name:'Invited by initiator', comb:'all', conds:['has_valid_invitation','invitation_from_initiator'], effect:{type:'allow', role:'trustAnchor'},                                listed:true},
+      {name:'Almost there',         comb:'all', conds:['always'],                                            effect:{type:'request_more', needs:['invitation_from_initiator']},        listed:true},
+    ],
+  },
+
+  phase3: {
+    label:'Phase 3', tagline:'Trust anchors invite other members', simLabel:'invitee wallet', pkg:'vtc.phase3', family:'join-requests',
+    allowLabel:'admit', flowEffects:'issue + accept', genPD:true, allowObligation:'reciprocate_vmc',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  trust anchors invite other members',
+    v1note:'Phase 3 — admit as member when a CTA invites AND a DIFFERENT CTA has a relationship',
+    allowPayload:{key:'role', kind:'text', def:'member'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      has_valid_invitation:{label:'Valid invitation (VIC)',                short:'has_valid_invitation',                                rego:'has_valid_invitation', cred:null},
+      invitation_from_ta:{label:'VIC issuer is a community trust anchor', short:'invitation_issuer_has_role("trustAnchor")',           rego:'input.evidence.invitation.issuer_role == <span class="s">"trustAnchor"</span>', cred:null},
+      vrc_from_different_ta:{label:'VRC from a DIFFERENT trust anchor',   short:'holds_credential_from_role({type:"VRC", role:"trustAnchor", excl_inviter:true, min:1})', rego:'credential_distinct_issuer_count_excl_inviter(<span class="s">"VerifiableRelationshipCredential"</span>, <span class="s">"trustAnchor"</span>) >= <span class="n">1</span>', cred:'VerifiableRelationshipCredential'},
+      always:{label:'Any candidate',                                       short:'true',                                                rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'issue VMC (role=member) · reciprocal edge · write ACL',
+      request_more:'return a PD asking for a CTA-issued VIC + a VRC from another CTA',
+      deny:'no matching route — structural default-deny',
+    },
+    helpers:[
+      'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
+      'credential_distinct_issuer_count_excl_inviter(t, role) := <span class="n">count</span>({c.issuer | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span>; c.issuer != input.evidence.invitation.issuer })',
+      '<span class="c"># {c.issuer | …} is a SET comprehension → distinct issuer DIDs; the final clause</span>',
+      '<span class="c"># excludes the VIC issuer so the same CTA can\'t both invite and self-vouch.</span>',
     ],
     usesIn:true,
     scenario:{
-      init:()=>({inv:false, witnessPresent:false, witnessTrusted:true, coc:false, endorsements:0}),
+      init:()=>({hasInvitation:false, inviterIsTA:false, hasVrcFromDifferentTA:false}),
       fields:[
-        {id:'inv',            label:'Valid invitation (VIC)', sub:'DTG InvitationCredential, issuer authorized', type:'tog'},
-        {id:'witnessPresent', label:'WitnessCredential',      sub:'holds a WitnessCredential',                   type:'tog'},
-        {id:'witnessTrusted', label:'…issuer recognized',     sub:'resolved via trust registry (TRQP)',          type:'tog', dimWhen:'witnessPresent'},
-        {id:'coc',            label:'Agrees to code of conduct', sub:'evidence.request.agreements["code-of-conduct"]', type:'tog'},
-        {id:'endorsements',   label:'Member endorsements',    sub:'EndorsementCredentials from members',          type:'step'},
+        {id:'hasInvitation',         label:'Holds a valid VIC',              sub:'evidence.invitation.verified && !consumed',          type:'tog'},
+        {id:'inviterIsTA',           label:'VIC issuer is a trust anchor',   sub:'evidence.invitation.issuer_role == "trustAnchor"',   type:'tog', dimWhen:'hasInvitation'},
+        {id:'hasVrcFromDifferentTA', label:'Holds VRC from a DIFFERENT CTA', sub:'VRC issuer ≠ VIC issuer, both have role trustAnchor', type:'tog'},
       ],
       presets:[
-        {n:'Unknown DID',     w:{inv:false,witnessPresent:false,witnessTrusted:true,coc:false,endorsements:0}},
-        {n:'Invited (VIC)',   w:{inv:true, witnessPresent:false,witnessTrusted:true,coc:false,endorsements:0}},
-        {n:'Verified human',  w:{inv:false,witnessPresent:true, witnessTrusted:true,coc:true, endorsements:0}},
-        {n:'Almost (no CoC)', w:{inv:false,witnessPresent:true, witnessTrusted:true,coc:false,endorsements:0}},
-        {n:'Untrusted issuer',w:{inv:false,witnessPresent:true, witnessTrusted:false,coc:true,endorsements:0}},
+        {n:'Nothing',                       w:{hasInvitation:false, inviterIsTA:false, hasVrcFromDifferentTA:false}},
+        {n:'VIC from CTA only',             w:{hasInvitation:true,  inviterIsTA:true,  hasVrcFromDifferentTA:false}},
+        {n:'VIC + VRC from same CTA',       w:{hasInvitation:true,  inviterIsTA:true,  hasVrcFromDifferentTA:false}},
+        {n:'VIC + VRC from different CTA',  w:{hasInvitation:true,  inviterIsTA:true,  hasVrcFromDifferentTA:true}},
       ],
       test:(id,sc)=>{ switch(id){
-        case 'has_valid_invitation': return !!sc.inv;
-        case 'witness':  return sc.witnessPresent && sc.witnessTrusted;
-        case 'coc':      return !!sc.coc;
-        case 'endorse2': return (sc.endorsements||0) >= 2;
-        case 'always':   return true;
-        default:         return false; } },
-      satisfy:(need,sc)=>{ if(need==='coc') sc.coc=true; else if(need==='witness'){ sc.witnessPresent=true; sc.witnessTrusted=true; } else if(need==='endorse2') sc.endorsements=2; },
+        case 'has_valid_invitation':   return !!sc.hasInvitation;
+        case 'invitation_from_ta':     return !!sc.inviterIsTA;
+        case 'vrc_from_different_ta':  return !!sc.hasVrcFromDifferentTA;
+        case 'always':                 return true;
+        default:                       return false; } },
+      satisfy:(need,sc)=>{
+        if(need==='has_valid_invitation') sc.hasInvitation=true;
+        else if(need==='invitation_from_ta'){ sc.hasInvitation=true; sc.inviterIsTA=true; }
+        else if(need==='vrc_from_different_ta') sc.hasVrcFromDifferentTA=true;
+      },
     },
     defaultRoutes:()=>[
-      {name:'Invitation',   comb:'all', conds:['has_valid_invitation'], effect:{type:'allow', role:'member'},        listed:false},
-      {name:'Verified human',comb:'all', conds:['witness','coc'],       effect:{type:'allow', role:'member'},        listed:true},
-      {name:'Almost there', comb:'all', conds:['witness'],              effect:{type:'request_more', needs:['coc']}, listed:true},
-      {name:'Open review',  comb:'all', conds:['always'],               effect:{type:'refer', queue:'moderator'},    listed:true},
+      {name:'Trust-anchor vouched', comb:'all', conds:['has_valid_invitation','invitation_from_ta','vrc_from_different_ta'], effect:{type:'allow', role:'member'},                                                              listed:true},
+      {name:'Almost there',         comb:'all', conds:['always'],                                                              effect:{type:'request_more', needs:['invitation_from_ta','vrc_from_different_ta']},                listed:true},
+    ],
+  },
+
+  phase4: {
+    label:'Phase 4', tagline:'Members invite other members', simLabel:'invitee wallet', pkg:'vtc.phase4', family:'join-requests',
+    allowLabel:'admit', flowEffects:'issue + accept', genPD:true, allowObligation:'reciprocate_vmc',
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/join-requests/  ·  members invite other members',
+    v1note:'Phase 4 — admit as member: VIC from a member + ≥2 VRCs from 2 other members + IDVC from approved IDVP',
+    allowPayload:{key:'role', kind:'text', def:'member'},
+    effects:['allow','request_more','deny'],
+    conds:{
+      has_valid_invitation:{label:'Valid invitation (VIC)',                short:'has_valid_invitation',                                                                       rego:'has_valid_invitation', cred:null},
+      invitation_from_member:{label:'VIC issuer is a member',              short:'invitation_issuer_has_role("member")',                                                       rego:'input.evidence.invitation.issuer_role == <span class="s">"member"</span>', cred:null},
+      vrcs_from_other_members_2:{label:'≥2 VRCs from 2 OTHER members',     short:'holds_credential_from_role({type:"VRC", role:"member", excl_inviter:true, distinct:true, min:2})', rego:'credential_distinct_issuer_count_excl_inviter(<span class="s">"VerifiableRelationshipCredential"</span>, <span class="s">"member"</span>) >= <span class="n">2</span>', cred:'VerifiableRelationshipCredential'},
+      idvc_from_idvp:{label:'IDVC from an approved IDVP',                   short:'holds_credential_from_role({type:"IDVC", role:"identityVerificationProvider", min:1})',         rego:'credential_distinct_issuer_count(<span class="s">"IdentityVerificationCredential"</span>, <span class="s">"identityVerificationProvider"</span>) >= <span class="n">1</span>', cred:'IdentityVerificationCredential'},
+      always:{label:'Any candidate',                                       short:'true',                                                                                       rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'issue VMC (role=member) · reciprocal edge · write ACL',
+      request_more:'return a PD asking for missing VIC / VRCs / IDVC',
+      deny:'no matching route — structural default-deny',
+    },
+    helpers:[
+      'has_valid_invitation <span class="k">if</span> { input.evidence.invitation.verified; <span class="k">not</span> input.evidence.invitation.consumed }',
+      'credential_distinct_issuer_count(t, role) := <span class="n">count</span>({c.issuer | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span> })',
+      'credential_distinct_issuer_count_excl_inviter(t, role) := <span class="n">count</span>({c.issuer | <span class="k">some</span> c <span class="k">in</span> input.evidence.presentation.credentials; c.type == t; c.issuer_trusted; c.issuer_role_in_community == role; c.status == <span class="s">"valid"</span>; c.issuer != input.evidence.invitation.issuer })',
+    ],
+    usesIn:true,
+    scenario:{
+      init:()=>({hasInvitation:false, inviterIsMember:false, vrcsFromOthers:0, hasIdvc:false}),
+      fields:[
+        {id:'hasInvitation',   label:'Holds a valid VIC',              sub:'evidence.invitation.verified && !consumed',                  type:'tog'},
+        {id:'inviterIsMember', label:'VIC issuer is a member',         sub:'evidence.invitation.issuer_role == "member"',                type:'tog', dimWhen:'hasInvitation'},
+        {id:'vrcsFromOthers',  label:'VRCs from OTHER members',        sub:'distinct member issuers excluding the inviter',              type:'step', max:3},
+        {id:'hasIdvc',         label:'Has IDVC from approved IDVP',    sub:'IdentityVerificationCredential, IDVP in registry',           type:'tog'},
+      ],
+      presets:[
+        {n:'Nothing',                  w:{hasInvitation:false, inviterIsMember:false, vrcsFromOthers:0, hasIdvc:false}},
+        {n:'VIC + 1 VRC + IDVC',       w:{hasInvitation:true,  inviterIsMember:true,  vrcsFromOthers:1, hasIdvc:true}},
+        {n:'VIC + 2 VRCs + IDVC',      w:{hasInvitation:true,  inviterIsMember:true,  vrcsFromOthers:2, hasIdvc:true}},
+        {n:'VIC + 2 VRCs, no IDVC',    w:{hasInvitation:true,  inviterIsMember:true,  vrcsFromOthers:2, hasIdvc:false}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'has_valid_invitation':       return !!sc.hasInvitation;
+        case 'invitation_from_member':     return !!sc.inviterIsMember;
+        case 'vrcs_from_other_members_2':  return (sc.vrcsFromOthers||0) >= 2;
+        case 'idvc_from_idvp':             return !!sc.hasIdvc;
+        case 'always':                     return true;
+        default:                           return false; } },
+      satisfy:(need,sc)=>{
+        if(need==='has_valid_invitation') sc.hasInvitation=true;
+        else if(need==='invitation_from_member'){ sc.hasInvitation=true; sc.inviterIsMember=true; }
+        else if(need==='vrcs_from_other_members_2') sc.vrcsFromOthers=2;
+        else if(need==='idvc_from_idvp') sc.hasIdvc=true;
+      },
+    },
+    defaultRoutes:()=>[
+      {name:'Member-vouched + ID-verified', comb:'all', conds:['has_valid_invitation','invitation_from_member','vrcs_from_other_members_2','idvc_from_idvp'], effect:{type:'allow', role:'member'},                                                                                      listed:true},
+      {name:'Almost there',                  comb:'all', conds:['always'],                                                                                       effect:{type:'request_more', needs:['invitation_from_member','vrcs_from_other_members_2','idvc_from_idvp']},          listed:true},
+    ],
+  },
+
+  directory: {
+    label:'Directory', tagline:'read', simLabel:'viewer', pkg:'vtc.directory', family:'directory',
+    allowLabel:'return fields', flowEffects:'return projection', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/directory/  ·  synchronous · no thread',
+    v1note:'Initial directory policy — admin sees full record, member sees did + role',
+    allowPayload:{key:'fields', kind:'text', def:'did, role'},
+    effects:['allow','deny'],
+    conds:{
+      viewer_is_admin:{label:'Viewer is an admin', short:'viewer_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
+      viewer_is_member:{label:'Viewer is a member', short:'viewer_is_member', rego:'input.actor.authenticated == <span class="k">true</span>', cred:null},
+      always:{label:'Anyone', short:'true', rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'return exactly the permitted field projection — inline, no write',
+      refer:'(unused for directory)',
+      request_more:'(unused for directory)',
+      deny:'non-member → empty result',
+    },
+    helpers:[],
+    usesIn:false,
+    scenario:{
+      init:()=>({viewer:'member'}),
+      fields:[
+        {id:'viewer', label:'Viewer', sub:'who is asking the directory', type:'select', opts:['admin','member','non-member']},
+      ],
+      presets:[
+        {n:'Admin viewer',  w:{viewer:'admin'}},
+        {n:'Member viewer', w:{viewer:'member'}},
+        {n:'Non-member',    w:{viewer:'non-member'}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'viewer_is_admin':  return sc.viewer==='admin';
+        case 'viewer_is_member': return sc.viewer!=='non-member';
+        case 'always':           return true;
+        default:                 return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Admin viewer', comb:'all', conds:['viewer_is_admin'],  effect:{type:'allow', fields:'did, role, joined_at, status, extensions'}, listed:false},
+      {name:'Member viewer',comb:'all', conds:['viewer_is_member'], effect:{type:'allow', fields:'did, role'},                                listed:false},
+    ],
+  },
+
+  'role-change': {
+    label:'Role-change', tagline:'mutate', simLabel:'role-change scenario', pkg:'vtc.role_change', regoFile:'role-change.rego', family:'role-changes',
+    allowLabel:'re-issue role', flowEffects:'re-issue VEC', genPD:false,
+    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  actor ≠ subject · escalation',
+    v1note:'Initial role-change policy — standard roles direct, admin promotion via step-up',
+    allowPayload:{key:'role', kind:'select', opts:['$target','member','moderator','admin'], def:'$target'},
+    effects:['allow','refer','request_more','deny'],
+    conds:{
+      target_role_standard:{label:'Target role is standard (not admin)', short:'target_role_standard', rego:'input.evidence.request.target_role != <span class="s">"admin"</span>', cred:null},
+      promotes_to_admin:{label:'Target role is admin',                    short:'promotes_to_admin',    rego:'input.evidence.request.target_role == <span class="s">"admin"</span>', cred:null},
+      step_up_done:{label:'Step-up reauth completed',                     short:'step_up_done',         rego:'input.evidence.request.step_up == <span class="k">true</span>', cred:null},
+      always:{label:'Anyone',                                            short:'true',                 rego:'true', cred:null},
+    },
+    outcomes:{
+      allow:'re-issue the role VEC · update the ACL role',
+      refer:'step-up reauth (or M-of-N) required before admin promotion',
+      request_more:'require additional evidence before the change',
+      deny:'policy refuses — no matching route',
+    },
+    helpers:[
+      '<span class="c"># "$target" → the requested target_role</span>',
+      'target_role := input.evidence.request.target_role',
+      '<span class="c"># admin promotion is allowed HERE (gated by step_up) — unlike admission ceremonies.</span>',
+      '<span class="c"># no-last-admin on demotion is HOST-enforced, never in Rego.</span>',
+    ],
+    usesIn:false,
+    scenario:{
+      init:()=>({targetRole:'moderator', stepUp:false}),
+      fields:[
+        {id:'targetRole', label:'Target role',               sub:'evidence.request.target_role',      type:'select', opts:['member','moderator','admin']},
+        {id:'stepUp',     label:'Step-up reauth completed',  sub:'fresh WebAuthn user-verification',  type:'tog'},
+      ],
+      presets:[
+        {n:'Promote to moderator',          w:{targetRole:'moderator', stepUp:false}},
+        {n:'Promote to admin (no step-up)', w:{targetRole:'admin',     stepUp:false}},
+        {n:'Promote to admin (verified)',   w:{targetRole:'admin',     stepUp:true}},
+      ],
+      test:(id,sc)=>{ switch(id){
+        case 'target_role_standard': return sc.targetRole!=='admin';
+        case 'promotes_to_admin':    return sc.targetRole==='admin';
+        case 'step_up_done':         return sc.stepUp===true;
+        case 'always':               return true;
+        default:                     return false; } },
+      satisfy:null,
+    },
+    defaultRoutes:()=>[
+      {name:'Standard role change',            comb:'all', conds:['target_role_standard'],           effect:{type:'allow', role:'$target'}, listed:false},
+      {name:'Promote to admin (verified)',     comb:'all', conds:['promotes_to_admin','step_up_done'], effect:{type:'allow', role:'admin'},   listed:false},
+      {name:'Promote to admin (needs step-up)',comb:'all', conds:['promotes_to_admin'],              effect:{type:'refer', queue:'step-up'}, listed:false},
     ],
   },
 
   leave: {
-    label:'Leave', simLabel:'departure scenario', pkg:'vtc.leave', family:'departures',
+    label:'Leave', tagline:'offboard', simLabel:'departure scenario', pkg:'vtc.leave', family:'departures',
     allowLabel:'execute departure', flowEffects:'revoke + disposition', genPD:false,
     manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/departures/  ·  actor ≠ subject · destructive',
     v1note:'Initial leave policy — self-exit, admin-removes-admin → second-admin, admin-removes-member',
@@ -552,105 +784,10 @@ const CEREMONIES = {
       {name:'Admin removes member',comb:'all',conds:['actor_is_admin'],                 effect:{type:'allow', disposition:'Tombstone'}, listed:false},
     ],
   },
-
-  directory: {
-    label:'Directory', simLabel:'viewer', pkg:'vtc.directory', family:'directory',
-    allowLabel:'return fields', flowEffects:'return projection', genPD:false,
-    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/directory/  ·  synchronous · no thread',
-    v1note:'Initial directory policy — admin sees full record, member sees did + role',
-    allowPayload:{key:'fields', kind:'text', def:'did, role'},
-    effects:['allow','deny'],
-    conds:{
-      viewer_is_admin:{label:'Viewer is an admin', short:'viewer_is_admin', rego:'input.actor.role == <span class="s">"admin"</span>', cred:null},
-      viewer_is_member:{label:'Viewer is a member', short:'viewer_is_member', rego:'input.actor.authenticated == <span class="k">true</span>', cred:null},
-      always:{label:'Anyone', short:'true', rego:'true', cred:null},
-    },
-    outcomes:{
-      allow:'return exactly the permitted field projection — inline, no write',
-      refer:'(unused for directory)',
-      request_more:'(unused for directory)',
-      deny:'non-member → empty result',
-    },
-    helpers:[],
-    usesIn:false,
-    scenario:{
-      init:()=>({viewer:'member'}),
-      fields:[
-        {id:'viewer', label:'Viewer', sub:'who is asking the directory', type:'select', opts:['admin','member','non-member']},
-      ],
-      presets:[
-        {n:'Admin viewer',  w:{viewer:'admin'}},
-        {n:'Member viewer', w:{viewer:'member'}},
-        {n:'Non-member',    w:{viewer:'non-member'}},
-      ],
-      test:(id,sc)=>{ switch(id){
-        case 'viewer_is_admin':  return sc.viewer==='admin';
-        case 'viewer_is_member': return sc.viewer!=='non-member';
-        case 'always':           return true;
-        default:                 return false; } },
-      satisfy:null,
-    },
-    defaultRoutes:()=>[
-      {name:'Admin viewer', comb:'all', conds:['viewer_is_admin'],  effect:{type:'allow', fields:'did, role, joined_at, status, extensions'}, listed:false},
-      {name:'Member viewer',comb:'all', conds:['viewer_is_member'], effect:{type:'allow', fields:'did, role'},                                listed:false},
-    ],
-  },
-
-  'role-change': {
-    label:'Role-change', simLabel:'role-change scenario', pkg:'vtc.role_change', regoFile:'role-change.rego', family:'role-changes',
-    allowLabel:'re-issue role', flowEffects:'re-issue VEC', genPD:false,
-    manifestNs:'tasks under https://trusttasks.org/openvtc/vtc/role-changes/  ·  actor ≠ subject · escalation',
-    v1note:'Initial role-change policy — standard roles direct, admin promotion via step-up',
-    allowPayload:{key:'role', kind:'select', opts:['$target','member','moderator','admin'], def:'$target'},
-    effects:['allow','refer','request_more','deny'],
-    conds:{
-      target_role_standard:{label:'Target role is standard (not admin)', short:'target_role_standard', rego:'input.evidence.request.target_role != <span class="s">"admin"</span>', cred:null},
-      promotes_to_admin:{label:'Target role is admin',                    short:'promotes_to_admin',    rego:'input.evidence.request.target_role == <span class="s">"admin"</span>', cred:null},
-      step_up_done:{label:'Step-up reauth completed',                     short:'step_up_done',         rego:'input.evidence.request.step_up == <span class="k">true</span>', cred:null},
-      always:{label:'Anyone',                                            short:'true',                 rego:'true', cred:null},
-    },
-    outcomes:{
-      allow:'re-issue the role VEC · update the ACL role',
-      refer:'step-up reauth (or M-of-N) required before admin promotion',
-      request_more:'require additional evidence before the change',
-      deny:'policy refuses — no matching route',
-    },
-    helpers:[
-      '<span class="c"># "$target" → the requested target_role</span>',
-      'target_role := input.evidence.request.target_role',
-      '<span class="c"># admin promotion is allowed HERE (gated by step_up) — unlike join.</span>',
-      '<span class="c"># no-last-admin on demotion is HOST-enforced, never in Rego.</span>',
-    ],
-    usesIn:false,
-    scenario:{
-      init:()=>({targetRole:'moderator', stepUp:false}),
-      fields:[
-        {id:'targetRole', label:'Target role',               sub:'evidence.request.target_role',      type:'select', opts:['member','moderator','admin']},
-        {id:'stepUp',     label:'Step-up reauth completed',  sub:'fresh WebAuthn user-verification',  type:'tog'},
-      ],
-      presets:[
-        {n:'Promote to moderator',          w:{targetRole:'moderator', stepUp:false}},
-        {n:'Promote to admin (no step-up)', w:{targetRole:'admin',     stepUp:false}},
-        {n:'Promote to admin (verified)',   w:{targetRole:'admin',     stepUp:true}},
-      ],
-      test:(id,sc)=>{ switch(id){
-        case 'target_role_standard': return sc.targetRole!=='admin';
-        case 'promotes_to_admin':    return sc.targetRole==='admin';
-        case 'step_up_done':         return sc.stepUp===true;
-        case 'always':               return true;
-        default:                     return false; } },
-      satisfy:null,
-    },
-    defaultRoutes:()=>[
-      {name:'Standard role change',            comb:'all', conds:['target_role_standard'],           effect:{type:'allow', role:'$target'}, listed:false},
-      {name:'Promote to admin (verified)',     comb:'all', conds:['promotes_to_admin','step_up_done'], effect:{type:'allow', role:'admin'},   listed:false},
-      {name:'Promote to admin (needs step-up)',comb:'all', conds:['promotes_to_admin'],              effect:{type:'refer', queue:'step-up'}, listed:false},
-    ],
-  },
 };
 
 /* ============================================================= STATE */
-let cur = 'join';
+let cur = 'phase1';
 const RT = {};
 const C = () => CEREMONIES[cur];
 const S = () => RT[cur];
@@ -903,7 +1040,7 @@ function renderScenario(){
       const st=c.append('div').attr('class','stepper');
       st.append('button').text('−').on('click',()=>{ sc[d.id]=Math.max(0,(sc[d.id]||0)-1); renderScenario(); });
       st.append('span').text(sc[d.id]||0);
-      st.append('button').text('+').on('click',()=>{ sc[d.id]=Math.min(5,(sc[d.id]||0)+1); renderScenario(); });
+      st.append('button').text('+').on('click',()=>{ sc[d.id]=Math.min(d.max||5,(sc[d.id]||0)+1); renderScenario(); });
     } else if(d.type==='select'){
       const s=c.append('select').on('change',function(){ sc[d.id]=this.value; renderScenario(); });
       d.opts.forEach(o=>s.append('option').attr('value',o).attr('selected',sc[d.id]===o?true:null).text(o));
@@ -1120,6 +1257,16 @@ function updateCompiled(){
 }
 
 /* ============================================================= CHROME / SWITCH */
+function renderCerTabs(){
+  const sel=d3.select('#cerTabs').selectAll('.cer-tab').data(Object.keys(CEREMONIES), d=>d);
+  sel.exit().remove();
+  const enter=sel.enter().append('span').attr('class','cer-tab').attr('data-c',d=>d)
+    .on('click',function(){ switchCeremony(this.getAttribute('data-c')); });
+  enter.merge(sel).html(d=>{
+    const cf=CEREMONIES[d];
+    return `${cf.label}${cf.tagline?`<small>${cf.tagline}</small>`:''}`;
+  });
+}
 function updateChrome(){
   d3.select('#cerChip').text(cur);
   d3.select('#legAllow').text(`allow (here: ${C().allowLabel})`);
@@ -1141,13 +1288,13 @@ function switchCeremony(id){
 function onEdit(){ S().lastResult=null; renderRoutes(); renderVersions(); updateCompiled(); }
 function renderAll(){ renderPresets(); renderRoutes(); renderScenario(); renderVersions(); updateCompiled(); }
 
-d3.select('#cerTabs').selectAll('.cer-tab').on('click',function(){ switchCeremony(this.getAttribute('data-c')); });
 d3.select('#addRoute').on('click',()=>{ S().routes.push({name:'New route', comb:'all', conds:['always'], effect:newEffect(C().effects.includes('refer')?'refer':C().effects[0]), listed:true}); onEdit(); });
 d3.select('#run').on('click',run);
 d3.select('#activateBtn').on('click',activateDraft);
 d3.select('#discardBtn').on('click',discardDraft);
 
 initAll();
+renderCerTabs();
 updateChrome();
 renderAll();
 </script>
