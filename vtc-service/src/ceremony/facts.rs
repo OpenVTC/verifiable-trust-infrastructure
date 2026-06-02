@@ -85,14 +85,22 @@ impl Purpose {
         }
     }
 
-    /// The Rego package the Rule-IR compiler emits for this purpose.
+    /// The Rego package whose `decision` rule decides this ceremony.
     /// Identifiers can't carry hyphens, so `role-change` →
-    /// `vtc.role_change`. Matches the package declarations in
-    /// `docs/05-design-notes/examples/*.rego`.
+    /// `vtc.role_change`.
+    ///
+    /// Note the [`Purpose::Leave`] → `vtc.removal` mapping: the
+    /// pipeline's friendly name for the destructive ceremony is
+    /// "leave", but it reuses the MVP's `removal` policy purpose
+    /// ([`crate::policy::model::PolicyPurpose::Removal`]) and package
+    /// rather than introducing a parallel `leave` purpose — settling
+    /// the leave/removal naming drift (pipeline §12) in favour of the
+    /// established runtime name. Facts still serialize `purpose:
+    /// "leave"`; only the policy package is `vtc.removal`.
     pub fn rego_package(self) -> &'static str {
         match self {
             Purpose::Join => "vtc.join",
-            Purpose::Leave => "vtc.leave",
+            Purpose::Leave => "vtc.removal",
             Purpose::RoleChange => "vtc.role_change",
             Purpose::Directory => "vtc.directory",
         }

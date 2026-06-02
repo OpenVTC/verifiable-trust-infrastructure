@@ -50,3 +50,30 @@ pub use storage::{
     clear_active_policy_id, delete_policy, get_active_policy_id, get_policy, list_policies,
     list_policies_paginated, max_version_for, new_policy, set_active_policy_id, store_policy,
 };
+
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
+
+/// Fetch the active policy for `purpose` and compile it.
+///
+/// Resolves the per-purpose active pointer → the stored `Policy` row →
+/// a [`CompiledPolicy`]. The shared loader every ceremony route uses to
+/// get the policy `decide()` evaluates. Fails closed: a missing active
+/// pointer or row is an [`AppError::Internal`] (the boot-time default
+/// loader guarantees one per purpose), not a silent allow.
+pub async fn load_active_compiled(
+    active_policies_ks: &KeyspaceHandle,
+    policies_ks: &KeyspaceHandle,
+    purpose: PolicyPurpose,
+) -> Result<CompiledPolicy, AppError> {
+    let id = get_active_policy_id(active_policies_ks, purpose)
+        .await?
+        .ok_or_else(|| AppError::Internal(format!("no active {} policy", purpose.as_str())))?;
+    let policy = get_policy(policies_ks, id).await?.ok_or_else(|| {
+        AppError::Internal(format!(
+            "active {} policy {id} points at a missing row",
+            purpose.as_str()
+        ))
+    })?;
+    compile(&policy.rego_source, policy.id)
+}

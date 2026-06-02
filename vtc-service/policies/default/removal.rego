@@ -1,35 +1,40 @@
-# Default `removal` policy — admin may remove any non-admin
-# (spec §7.1 + §10.2). The route layer enforces:
+# Default `removal` policy — the leave/removal ceremony decision spine
+# (ceremony-pipeline design §4; supersedes the boolean Phase-2 shape).
 #
-# 1. `AdminAuth` on the admin-remove endpoint — so the caller is
-#    already known to be an admin when this policy runs.
-# 2. The no-last-admin invariant — the route refuses to leave
-#    zero admins regardless of policy output.
-# 3. Self-remove is its own unconditional endpoint
-#    (`DELETE /v1/members/me`) and bypasses this policy entirely.
+# The leave ceremony is the destructive instance of the decision
+# pipeline: the host assembles verified Facts, runs
+# `data.vtc.removal.decision`, and realizes the verdict via the
+# effect executor (delete ACL + apply disposition + revoke). The
+# package stays `vtc.removal` (PolicyPurpose::Removal); the pipeline
+# calls the ceremony "leave".
 #
-# This policy therefore only gates the "may this admin remove
-# this target" question. Default: allow unless the target is
-# also an admin (admins can only be removed by promotion + the
-# step-up UV path, never via a casual admin-remove).
+# What the host enforces around this policy (never in Rego):
+# - the no-last-admin invariant (refuses to leave zero admins, 409),
+# - the AdminAuth gate on the admin-remove endpoint,
+# - the final disposition (caller request > member preference > the
+#   `with.disposition` below > tombstone).
 #
-# Input shape (spec §7.3):
-#   { actor_did, target_did, target_role, reason, action, now }
+# Decision logic:
+# - **self-leave** (`actor.did == subject.did`) is unconditional — a
+#   member may always leave.
+# - an **admin removing another member** is allowed unless the subject
+#   is themselves an admin (admins leave only via the promotion +
+#   step-up path, never a casual admin-remove).
+# - everything else denies.
 
 package vtc.removal
 
 import rego.v1
 
-default allow := false
+# structural totality — unmatched removals are refused
+default decision := {"effect": "deny", "with": {"code": "removal-denied"}}
 
-allow if {
-	input.action == "remove"
-	input.target_role != "admin"
+# Self-leave — a member may always remove themselves.
+decision := {"effect": "allow", "with": {"disposition": "tombstone"}} if {
+	input.actor.did == input.subject.did
 }
 
-# Phase 1 plan §D6: `Disposition::PolicyDefault` resolves to
-# whatever this policy emits. The default mirrors Phase 1's
-# hardcoded `Tombstone` so existing operator state survives the
-# Phase 1 → Phase 2 transition unchanged.
-default min_disposition := "tombstone"
-
+# Admin removing another member — allowed unless the subject is an admin.
+else := {"effect": "allow", "with": {"disposition": "tombstone"}} if {
+	input.state.subject_member.role != "admin"
+}

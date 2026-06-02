@@ -705,18 +705,20 @@ async fn admin_remove_member_blocked_by_deny_all_policy() {
     assert!(get_acl_entry(&fix.acl_ks, target).await.unwrap().is_some());
 }
 
-/// `min_disposition := "purge"` on the active removal.rego
-/// resolves `PolicyDefault` → `Purge`, replacing Phase 1's
-/// hardcoded Tombstone fallback (Phase 1 plan §D6 placeholder).
+/// A leave decision policy whose `allow` carries
+/// `with.disposition: "purge"` resolves `PolicyDefault` → `Purge`,
+/// feeding the policy's chosen disposition into the effect.
 #[tokio::test]
-async fn admin_remove_uses_policy_min_disposition_for_default() {
+async fn admin_remove_uses_policy_disposition_for_default() {
     let fix = build_fixture().await;
     activate_removal_policy(
         &fix,
         "package vtc.removal\nimport rego.v1\n\n\
-         default allow := false\n\
-         allow if {\n  input.action == \"remove\"\n  input.target_role != \"admin\"\n}\n\
-         default min_disposition := \"purge\"\n",
+         default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"removal-denied\"}}\n\
+         decision := {\"effect\": \"allow\", \"with\": {\"disposition\": \"purge\"}} if {\n  \
+           input.actor.did == input.subject.did\n}\n\
+         else := {\"effect\": \"allow\", \"with\": {\"disposition\": \"purge\"}} if {\n  \
+           input.state.subject_member.role != \"admin\"\n}\n",
     )
     .await;
 

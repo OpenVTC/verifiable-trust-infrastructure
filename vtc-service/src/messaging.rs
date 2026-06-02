@@ -239,20 +239,12 @@ async fn member_self_remove_handler(
         .transpose()
         .map_err(DIDCommServiceError::Internal)?;
 
-    // DIDComm self-remove — same bypass as the REST self-remove
-    // path: unconditional (spec §10.2), `removal.rego` is not
-    // consulted. Disposition still routes through the policy
-    // when the member prefers `PolicyDefault`.
-    let outcome = remove_inner(
-        &state,
-        &caller_did,
-        &caller_did,
-        disposition,
-        String::new(),
-        false,
-    )
-    .await
-    .map_err(|e| DIDCommServiceError::Internal(format!("self-remove: {e}")))?;
+    // DIDComm self-leave — actor == subject. The leave decision policy
+    // allows self-leave unconditionally (spec §10.2); the no-last-admin
+    // invariant still applies in the effect stage.
+    let outcome = remove_inner(&state, &caller_did, &caller_did, disposition, String::new())
+        .await
+        .map_err(|e| DIDCommServiceError::Internal(format!("self-remove: {e}")))?;
 
     let receipt = SelfRemoveReceiptBody {
         did: outcome.did,

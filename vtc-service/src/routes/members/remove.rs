@@ -1,23 +1,26 @@
 //! `DELETE /v1/members/me` (M1.11.1) + `DELETE /v1/members/{did}`
-//! (M1.12.1).
+//! (M1.12.1) — the **leave ceremony**.
 //!
-//! Both paths converge on `remove_inner` so the no-last-admin
-//! invariant + disposition resolution + audit emission live in
-//! exactly one place.
+//! Both paths converge on `remove_inner`, which is the leave instance
+//! of the ceremony decision pipeline ([`crate::ceremony`]):
 //!
-//! ## No-last-admin invariant
+//! 1. **Facts** — `assemble_leave_facts` reads the actor's + subject's
+//!    community roles into a purpose-`leave` [`Facts`] (`actor` may
+//!    differ from `subject`: an admin removing a member, or a member
+//!    removing themselves).
+//! 2. **Decide** — the active `removal`-purpose decision policy
+//!    (`data.vtc.removal.decision`) returns allow/deny. The default
+//!    policy allows self-leave unconditionally and an admin removing a
+//!    non-admin; it denies removing an admin.
+//! 3. **Effect** — the verdict is applied by the effect executor
+//!    ([`execute::apply`] with [`EffectPlan::Depart`]), which owns the
+//!    no-last-admin invariant (→ 409, host-enforced), the ACL/Member
+//!    deletion + disposition, and the credential revocation.
 //!
-//! Spec §10.2: a removal that would leave the community with
-//! zero admins is refused with 409 `LastAdminProtected`. The
-//! check + ACL delete run inside the same critical section
-//! guarded by [`LAST_ADMIN_LOCK`] so concurrent removals can't
-//! race past each other.
-//!
-//! Phase 1 implementation: snapshot every ACL row inside the
-//! lock, count Admin rows after removing the target, refuse if
-//! the count would hit zero. Fjall walks are O(n) but
-//! Phase-1 communities are small; Phase 2+ can swap in an
-//! admin-count index.
+//! Disposition precedence (resolved here, around the decision): the
+//! caller's explicit request wins, then the member's
+//! `departure_preference`, then the policy's chosen disposition, then
+//! `tombstone`.
 
 use affinidi_status_list::StatusPurpose;
 use axum::Json;
@@ -25,8 +28,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as JsonValue, json};
-use tracing::{info, warn};
+use serde_json::json;
+use tracing::info;
 
 use vti_common::audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
 use vti_common::error::AppError;
@@ -34,12 +37,13 @@ use vti_common::error::AppError;
 use crate::acl::get_acl_entry;
 use crate::auth::{AdminAuth, AuthClaims};
 use crate::ceremony::execute;
-use crate::ceremony::{EffectOutcome, EffectPlan};
-use crate::members::{Disposition, get_member};
-use crate::policy::{
-    PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
-    get_policy,
+use crate::ceremony::{
+    Actor, Context, EffectOutcome, EffectPlan, Evidence, Facts, MemberState, Purpose,
+    State as FactsState, Subject, Verdict, VerifiedFacts,
 };
+use crate::community::load_profile;
+use crate::members::{Disposition, get_member, list_members};
+use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]
@@ -75,6 +79,9 @@ pub async fn self_remove(
 ) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let target_did = auth.did.clone();
+    // Self-leave: actor == subject. The decision policy allows this
+    // unconditionally (it sees `actor.did == subject.did`); the
+    // no-last-admin invariant still applies in the effect stage.
     let outcome = remove_inner(
         &state,
         &auth.did,
@@ -84,11 +91,6 @@ pub async fn self_remove(
         // departure is the member's own decision and doesn't carry
         // an externally-meaningful justification field.
         String::new(),
-        // Self-remove is unconditional (spec §10.2) — bypasses
-        // the `removal.rego` allow gate. Disposition still
-        // routes through the policy when the member's preference
-        // is `PolicyDefault`.
-        false,
     )
     .await?;
     Ok((StatusCode::OK, Json(outcome)))
@@ -119,15 +121,7 @@ pub async fn admin_remove(
             reason.len(),
         )));
     }
-    let outcome = remove_inner(
-        &state,
-        &admin.0.did,
-        &target_did,
-        body.disposition,
-        reason,
-        true,
-    )
-    .await?;
+    let outcome = remove_inner(&state, &admin.0.did, &target_did, body.disposition, reason).await?;
     Ok((StatusCode::OK, Json(outcome)))
 }
 
@@ -135,20 +129,20 @@ pub async fn admin_remove(
 // Shared inner removal
 // ---------------------------------------------------------------------------
 
-/// Returns `Ok(RemoveResponse)` on success or
-/// `Err(AppError::Conflict)` for the no-last-admin invariant.
+/// The leave ceremony's decide → resolve → effect spine. Returns
+/// `Ok(RemoveResponse)` on departure, `Err(Forbidden)` when the policy
+/// denies, or `Err(Conflict)` for the executor's no-last-admin
+/// invariant.
 ///
-/// `actor_did` is the audit actor (self for self-remove, admin
-/// for admin-remove). `target_did` is the row being removed.
-/// `is_admin_remove` gates the `removal.rego` allow check —
-/// self-remove is unconditional per spec §10.2.
+/// `actor_did` is the initiator (self for self-leave, admin for
+/// admin-remove) — the policy distinguishes the two via `actor.did ==
+/// subject.did`. `target_did` is the subject being removed.
 pub async fn remove_inner(
     state: &AppState,
     actor_did: &str,
     target_did: &str,
     disposition: Option<Disposition>,
     reason: String,
-    is_admin_remove: bool,
 ) -> Result<RemoveResponse, AppError> {
     let audit_writer = state
         .audit_writer
@@ -161,38 +155,55 @@ pub async fn remove_inner(
 
     let target_member = get_member(&state.members_ks, target_did).await?;
 
-    // Decide. Admin-remove evaluates the active `removal.rego` `allow`
-    // rule against the canonical input (spec §7.3); self-remove is
-    // unconditional (spec §10.2). The no-last-admin invariant + the
-    // credential revocation are the *effect*, enforced by the executor
-    // below — not here.
-    if is_admin_remove {
-        let input = json!({
-            "actor_did": actor_did,
-            "target_did": target_did,
-            "target_role": target_acl.role.to_string(),
-            "reason": reason,
-            "action": "remove",
-            "now": Utc::now().to_rfc3339(),
-        });
-        if !evaluate_removal_allow(state, &input).await? {
-            return Err(AppError::Forbidden(
-                "removal denied by policy (removal.rego.allow returned false)".into(),
+    // Decide. Assemble verified leave Facts and run the active
+    // removal-purpose decision policy. The no-last-admin invariant +
+    // the credential revocation are the *effect* (executor below), not
+    // the policy.
+    let facts = assemble_leave_facts(
+        state,
+        actor_did,
+        target_did,
+        &target_acl.role.to_string(),
+        target_member.as_ref(),
+        disposition,
+        &reason,
+    )
+    .await?;
+    let verified = VerifiedFacts::assemble(facts)?;
+    let policy = load_active_compiled(
+        &state.active_policies_ks,
+        &state.policies_ks,
+        PolicyPurpose::Removal,
+    )
+    .await?;
+    let allow = match crate::ceremony::decide(&verified, &policy)? {
+        Verdict::Allow(a) => a,
+        Verdict::Deny(d) => {
+            return Err(AppError::Forbidden(format!(
+                "removal denied by policy ({})",
+                d.code
+            )));
+        }
+        // Leave is synchronous — a refer / request_more verdict is a
+        // misconfigured policy for this purpose.
+        Verdict::Refer(_) | Verdict::RequestMore(_) => {
+            return Err(AppError::Internal(
+                "removal policy returned a non-terminal verdict; leave is synchronous".into(),
             ));
         }
-    }
+    };
 
-    // Resolve disposition. Caller's request wins; the member's
-    // departure_preference is the fallback; `PolicyDefault` consults
-    // the active `removal.rego`'s `min_disposition` (a non-decodable
-    // output falls back to `Tombstone`). The resolved value is a
-    // concrete disposition handed to the effect executor.
+    // Resolve the final disposition: the caller's explicit request
+    // wins; then the member's `departure_preference`; then the policy's
+    // chosen disposition (`with.disposition`); then `Tombstone`.
     let initial = disposition
         .or_else(|| target_member.as_ref().map(|m| m.departure_preference))
         .unwrap_or(Disposition::PolicyDefault);
     let resolved = match initial {
-        Disposition::PolicyDefault => resolve_min_disposition(state)
-            .await
+        Disposition::PolicyDefault => allow
+            .disposition
+            .as_deref()
+            .and_then(parse_disposition_opt)
             .unwrap_or(Disposition::Tombstone),
         other => other,
     };
@@ -267,66 +278,97 @@ fn disposition_wire(d: Disposition) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Policy helpers (M2.7)
+// Leave-ceremony facts assembly
 // ---------------------------------------------------------------------------
 
-/// Evaluate the active `removal.rego`'s `allow` rule. Fails closed
-/// on every error path — a daemon misconfiguration must not let
-/// removals through that the operator hasn't authored a policy
-/// for.
-async fn evaluate_removal_allow(state: &AppState, input: &JsonValue) -> Result<bool, AppError> {
-    let active_id = get_active_policy_id(&state.active_policies_ks, PolicyPurpose::Removal).await?;
-    let id = match active_id {
-        Some(id) => id,
-        None => {
-            warn!("no active removal policy — refusing admin-remove");
-            return Ok(false);
-        }
-    };
-    let policy = get_policy(&state.policies_ks, id)
+/// Read the actor's community role + the subject's member facts into a
+/// purpose-`leave` [`Facts`] for the decision policy. `subject_role` is
+/// the subject's ACL role (already fetched by the caller for the 404
+/// gate); `subject_member` is their member row, if any.
+async fn assemble_leave_facts(
+    state: &AppState,
+    actor_did: &str,
+    subject_did: &str,
+    subject_role: &str,
+    subject_member: Option<&crate::members::Member>,
+    disposition: Option<Disposition>,
+    reason: &str,
+) -> Result<Facts, AppError> {
+    let actor_role = get_acl_entry(&state.acl_ks, actor_did)
         .await?
-        .ok_or_else(|| AppError::Internal(format!("active removal policy {id} not found")))?;
-    let compiled = compile_policy(&policy.rego_source, policy.id)?;
-    let result = evaluate_policy(&compiled, "data.vtc.removal.allow", input.clone())?;
-    Ok(result
-        .pointer("/result/0/expressions/0/value")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false))
+        .map(|e| e.role.to_string());
+
+    let subject_member_state = Some(MemberState {
+        role: subject_role.to_string(),
+        status: subject_member
+            .map(|m| {
+                if m.removed_at.is_some() {
+                    "removed"
+                } else {
+                    "active"
+                }
+            })
+            .unwrap_or("active")
+            .to_string(),
+        joined_at: subject_member.map(|m| m.joined_at).unwrap_or_else(Utc::now),
+        personhood: None,
+    });
+
+    let community_did = load_profile(&state.community_ks)
+        .await?
+        .map(|p| p.community_did)
+        .unwrap_or_default();
+    let member_count = list_members(&state.members_ks).await?.len() as u64;
+
+    // Ceremony request params: the operator's requested disposition +
+    // the admin-supplied reason. Absent when neither is set.
+    let request = if disposition.is_some() || !reason.is_empty() {
+        let mut m = serde_json::Map::new();
+        if let Some(d) = disposition {
+            m.insert("disposition".into(), json!(disposition_wire(d)));
+        }
+        if !reason.is_empty() {
+            m.insert("reason".into(), json!(reason));
+        }
+        Some(serde_json::Value::Object(m))
+    } else {
+        None
+    };
+
+    Ok(Facts {
+        purpose: Purpose::Leave,
+        now: Utc::now(),
+        actor: Actor {
+            did: actor_did.to_string(),
+            role: actor_role,
+            authenticated: true,
+        },
+        subject: Subject {
+            did: subject_did.to_string(),
+        },
+        context: Context {
+            community_did,
+            channel: "rest".to_string(),
+            member_count,
+        },
+        evidence: Evidence {
+            invitation: None,
+            presentation: None,
+            request,
+        },
+        state: FactsState {
+            subject_member: subject_member_state,
+        },
+    })
 }
 
-/// Read `data.vtc.removal.min_disposition` and convert to a
-/// concrete `Disposition`. Returns `None` when no policy is active
-/// or the policy emits a non-string / unknown value — callers
-/// fall back to `Tombstone`.
-async fn resolve_min_disposition(state: &AppState) -> Option<Disposition> {
-    let active_id = get_active_policy_id(&state.active_policies_ks, PolicyPurpose::Removal)
-        .await
-        .ok()
-        .flatten()?;
-    let policy = get_policy(&state.policies_ks, active_id)
-        .await
-        .ok()
-        .flatten()?;
-    let compiled = compile_policy(&policy.rego_source, policy.id).ok()?;
-    let result = evaluate_policy(
-        &compiled,
-        "data.vtc.removal.min_disposition",
-        JsonValue::Object(Default::default()),
-    )
-    .ok()?;
-    let s = result
-        .pointer("/result/0/expressions/0/value")
-        .and_then(|v| v.as_str())?;
+/// Parse a disposition wire string into a concrete `Disposition`.
+/// Unknown / `policydefault` → `None` (callers fall back to Tombstone).
+fn parse_disposition_opt(s: &str) -> Option<Disposition> {
     match s {
         "purge" => Some(Disposition::Purge),
         "tombstone" => Some(Disposition::Tombstone),
         "historical" => Some(Disposition::Historical),
-        other => {
-            warn!(
-                value = other,
-                "removal.rego min_disposition emitted an unknown disposition — using Tombstone"
-            );
-            None
-        }
+        _ => None,
     }
 }

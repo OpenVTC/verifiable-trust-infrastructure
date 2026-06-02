@@ -45,9 +45,8 @@ use crate::ceremony::{
 };
 use crate::community::load_profile;
 use crate::members::{get_member, list_members};
-use crate::policy::engine::{CompiledPolicy, compile};
+use crate::policy::load_active_compiled;
 use crate::policy::model::PolicyPurpose;
-use crate::policy::storage::{get_active_policy_id, get_policy};
 use crate::server::AppState;
 
 /// The PII boundary for the directory ceremony: the maximum set of
@@ -87,7 +86,12 @@ pub async fn query(
     let facts = assemble_directory_facts(&state, &viewer, &subject_did, q.fields).await?;
     let verified = VerifiedFacts::assemble(facts)?;
 
-    let policy = load_active_policy(&state, PolicyPurpose::Directory).await?;
+    let policy = load_active_compiled(
+        &state.active_policies_ks,
+        &state.policies_ks,
+        PolicyPurpose::Directory,
+    )
+    .await?;
     let verdict = ceremony::decide(&verified, &policy)?;
 
     match &verdict {
@@ -202,23 +206,4 @@ async fn assemble_directory_facts(
         },
         state: FactsState { subject_member },
     })
-}
-
-/// Fetch the active policy for a purpose and compile it. Generic over
-/// purpose so future ceremony routes reuse it; lives here until a
-/// second consumer pulls it up into the ceremony module.
-async fn load_active_policy(
-    state: &AppState,
-    purpose: PolicyPurpose,
-) -> Result<CompiledPolicy, AppError> {
-    let id = get_active_policy_id(&state.active_policies_ks, purpose)
-        .await?
-        .ok_or_else(|| AppError::Internal(format!("no active {} policy", purpose.as_str())))?;
-    let policy = get_policy(&state.policies_ks, id).await?.ok_or_else(|| {
-        AppError::Internal(format!(
-            "active {} policy {id} points at a missing row",
-            purpose.as_str()
-        ))
-    })?;
-    compile(&policy.rego_source, policy.id)
 }

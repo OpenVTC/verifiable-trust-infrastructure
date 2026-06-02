@@ -367,27 +367,42 @@ mod tests {
 
     #[test]
     fn removal_default_allows_admin_removing_member() {
+        // The removal default is now the leave-ceremony decision spine:
+        // it returns a {effect, with} object over the verified Facts.
         let c = compile_default(PolicyPurpose::Removal);
-        let input = json!({
-            "actor_did": "did:key:zAdmin",
-            "target_did": "did:key:zMember",
-            "target_role": "member",
-            "reason": "",
-            "action": "remove",
-            "now": "2026-05-12T00:00:00Z"
-        });
-        let r = evaluate(&c, "data.vtc.removal.allow", input).unwrap();
-        assert!(pluck_bool(&r));
+        let r = evaluate(
+            &c,
+            "data.vtc.removal.decision",
+            json!({
+                "actor": { "did": "did:key:zAdmin" },
+                "subject": { "did": "did:key:zMember" },
+                "state": { "subject_member": { "role": "member" } }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "disposition": "tombstone" } })),
+        );
     }
 
     #[test]
-    fn removal_default_min_disposition_is_tombstone() {
+    fn removal_default_allows_self_leave() {
+        // Self-leave (actor == subject) is unconditional.
         let c = compile_default(PolicyPurpose::Removal);
-        let r = evaluate(&c, "data.vtc.removal.min_disposition", json!({})).unwrap();
+        let r = evaluate(
+            &c,
+            "data.vtc.removal.decision",
+            json!({
+                "actor": { "did": "did:key:zSelf" },
+                "subject": { "did": "did:key:zSelf" },
+                "state": { "subject_member": { "role": "member" } }
+            }),
+        )
+        .unwrap();
         assert_eq!(
             r.pointer("/result/0/expressions/0/value"),
-            Some(&json!("tombstone")),
-            "removal default min_disposition mirrors Phase 1's hardcoded Tombstone"
+            Some(&json!({ "effect": "allow", "with": { "disposition": "tombstone" } })),
         );
     }
 
@@ -396,11 +411,18 @@ mod tests {
         let c = compile_default(PolicyPurpose::Removal);
         let r = evaluate(
             &c,
-            "data.vtc.removal.allow",
-            json!({ "action": "remove", "target_role": "admin" }),
+            "data.vtc.removal.decision",
+            json!({
+                "actor": { "did": "did:key:zAdmin" },
+                "subject": { "did": "did:key:zOtherAdmin" },
+                "state": { "subject_member": { "role": "admin" } }
+            }),
         )
         .unwrap();
-        assert!(!pluck_bool(&r));
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "deny", "with": { "code": "removal-denied" } })),
+        );
     }
 
     #[test]
