@@ -29,8 +29,10 @@
 //! ([`receive`], task 1.2) sits on top of it: it verifies an incoming
 //! SD-JWT-VC minimally (issuer signature + temporal validity), maps it into a
 //! [`StoredCredential`], and stores + indexes it through the storage layer.
-//! Still to come: search via DCQL (1.3), build presentations or disclose
-//! claims (1.4 present), mint (1.5), and resolve status lists (1.6).
+//! The **query** layer ([`query`], task 1.3) is the local DCQL-shaped search:
+//! it returns descriptors (never bodies) for credentials matching an explicit
+//! filter. Still to come: build presentations or disclose claims (1.4
+//! present), mint (1.5), and resolve status lists (1.6).
 //!
 //! It also exposes **no wallet-enumeration primitive** — there is no
 //! `list_all`. The only discovery path is [`storage::find_by_index`], which
@@ -42,11 +44,13 @@
 
 pub mod index;
 pub mod model;
+pub mod query;
 pub mod receive;
 pub mod storage;
 
 pub use model::{
     CredentialFormat, CredentialPurpose, CredentialStatus, IndexField, StoredCredential,
 };
+pub use query::{CredentialDescriptor, CredentialQuery, search};
 pub use receive::receive_sd_jwt_vc;
 pub use storage::{delete, find_by_index, get, put};
