@@ -490,6 +490,7 @@ mod tests {
                     name: (*id).into(),
                     did: None,
                     description: None,
+                    parent: None,
                     base_path: format!("m/26'/2'/{i}'"),
                     index: i as u32,
                     created_at: now,

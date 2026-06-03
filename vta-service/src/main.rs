@@ -585,6 +585,10 @@ enum ContextCommands {
         /// Free-form description.
         #[arg(long)]
         description: Option<String>,
+        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
+        /// sub-context; omit for a top-level context.
+        #[arg(long)]
+        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When
         /// set, atomically creates an ACL entry with role=admin scoped
         /// to this context.
@@ -1524,6 +1528,7 @@ async fn main() {
                     id,
                     name,
                     description,
+                    parent,
                     admin_did,
                     admin_label,
                     admin_expires,
@@ -1533,6 +1538,7 @@ async fn main() {
                         id,
                         name,
                         description,
+                        parent,
                         admin_did,
                         admin_label,
                         admin_expires,

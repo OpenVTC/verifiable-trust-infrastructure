@@ -151,10 +151,16 @@ pub struct WrappingKeyResponse {
 #[derive(Debug, Serialize)]
 #[must_use]
 pub struct CreateContextRequest {
+    /// The new context's id. A leaf segment when [`parent`](Self::parent) is set
+    /// (the full path becomes `<parent>/<id>`); a top-level segment otherwise.
     pub id: String,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Parent context path to nest under, or `None` for a top-level context.
+    /// Top-level creation is super-admin only; nesting requires admin of `parent`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
 }
 
 impl CreateContextRequest {
@@ -163,10 +169,16 @@ impl CreateContextRequest {
             id: id.into(),
             name: name.into(),
             description: None,
+            parent: None,
         }
     }
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
+        self
+    }
+    /// Nest the new context under `parent` (its full path becomes `<parent>/<id>`).
+    pub fn parent(mut self, parent: impl Into<String>) -> Self {
+        self.parent = Some(parent.into());
         self
     }
 }

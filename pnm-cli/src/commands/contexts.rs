@@ -17,11 +17,14 @@ pub(crate) async fn run(
             id,
             name,
             description,
+            parent,
             admin_did,
             admin_label,
             admin_expires,
         } => match resolve_admin_acl_options(admin_did, admin_label, admin_expires.as_deref()) {
-            Ok(admin) => contexts::cmd_context_create(client, &id, &name, description, admin).await,
+            Ok(admin) => {
+                contexts::cmd_context_create(client, &id, &name, description, parent, admin).await
+            }
             Err(e) => Err(e),
         },
         ContextCommands::Update {

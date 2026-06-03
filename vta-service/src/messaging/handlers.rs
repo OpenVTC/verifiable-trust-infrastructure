@@ -383,7 +383,9 @@ pub async fn handle_create_context(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
+    // Admin role required; `create_context` enforces the finer gate (super-admin
+    // for a top-level context, admin-of-parent for a sub-context).
+    app_try!(auth.require_admin());
     let body: vta_sdk::protocols::context_management::create::CreateContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = app_try!(
@@ -393,6 +395,7 @@ pub async fn handle_create_context(
             &body.id,
             body.name,
             body.description,
+            body.parent,
             "didcomm",
         )
         .await

@@ -463,6 +463,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
                 name: "ctx1".into(),
                 did: None,
                 description: None,
+                parent: None,
                 base_path: "m/26'/2'/0'".into(),
                 index: 0,
                 created_at: now,

@@ -340,7 +340,8 @@ enum ContextCommands {
     },
     /// Create a new application context
     Create {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context slug (lowercase alphanumeric + hyphens). When `--parent` is
+        /// set this is the leaf segment; the full id becomes `<parent>/<id>`.
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -349,6 +350,11 @@ enum ContextCommands {
         /// Optional description
         #[arg(long)]
         description: Option<String>,
+        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
+        /// sub-context — requires admin of the parent. Omit for a top-level
+        /// context (super-admin only).
+        #[arg(long)]
+        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When set,
         /// creates an ACL entry with role=admin scoped to this context.
         #[arg(long)]
@@ -976,6 +982,7 @@ async fn main() {
                 id,
                 name,
                 description,
+                parent,
                 admin_did,
                 admin_label,
                 admin_expires,
@@ -996,7 +1003,7 @@ async fn main() {
                     expires_at,
                     expires_duration: admin_expires.clone(),
                 };
-                contexts::cmd_context_create(&client, &id, &name, description, admin).await
+                contexts::cmd_context_create(&client, &id, &name, description, parent, admin).await
             }
             ContextCommands::Update {
                 id,

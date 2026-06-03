@@ -158,6 +158,7 @@ pub async fn ensure_target_context_or_create(
         context,
         context.to_string(),
         None,
+        None, // top-level context (provisioning never nests)
         "provision-integration",
     )
     .await?;

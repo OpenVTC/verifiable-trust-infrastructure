@@ -52,35 +52,85 @@ fn to_result_body(r: &ContextRecord) -> CreateContextResultBody {
         name: r.name.clone(),
         did: r.did.clone(),
         description: r.description.clone(),
+        parent: r.parent.clone(),
         base_path: r.base_path.clone(),
         created_at: r.created_at,
         updated_at: r.updated_at,
     }
 }
 
+/// Create a context — top-level, or a sub-context nested under `parent`.
+///
+/// `id` is the **leaf** segment; when `parent` is set the stored id is the full
+/// path `<parent>/<id>` (`docs/05-design-notes/hierarchical-contexts.md`).
+///
+/// **Authorization:**
+/// - **top-level** (`parent` is `None`) — super-admin only (unchanged).
+/// - **sub-context** (`parent` is `Some`) — the parent must exist and the caller
+///   must be **admin of it** (folder-level authority: `require_context(parent)`
+///   passes for an admin scoped to the parent or any ancestor, and for a
+///   super-admin). The route gates the admin *role*; this gates the *scope*.
+///
+/// The sub-context's BIP-32 base nests under the parent's, and the path depth is
+/// bounded by [`vti_common::context_path::child_path`].
 pub async fn create_context(
     contexts_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
     name: String,
     description: Option<String>,
+    parent: Option<String>,
     channel: &str,
 ) -> Result<CreateContextResultBody, AppError> {
-    auth.require_super_admin()?;
+    // The leaf id is always a single slug segment.
     validate_slug(id)?;
 
-    if get_context(contexts_ks, id).await?.is_some() {
-        return Err(AppError::Conflict(format!("context already exists: {id}")));
+    let (full_id, parent_field, base_prefix, counter_key) = match &parent {
+        None => {
+            // Top-level context creation stays super-admin only.
+            auth.require_super_admin()?;
+            (
+                id.to_string(),
+                None,
+                crate::contexts::CONTEXT_KEY_BASE.to_string(),
+                "ctx_counter".to_string(),
+            )
+        }
+        Some(parent_id) => {
+            // Sub-context: the parent must exist and the caller must be admin of
+            // it. `require_context` is the segment-aware ancestry gate; the route
+            // already required the admin role.
+            let parent_ctx = get_context(contexts_ks, parent_id).await?.ok_or_else(|| {
+                AppError::NotFound(format!("parent context not found: {parent_id}"))
+            })?;
+            auth.require_context(parent_id)?;
+            // Full path = `<parent>/<id>`; validates segment + total depth.
+            let full = vti_common::context_path::child_path(parent_id, id)?;
+            (
+                full,
+                Some(parent_id.clone()),
+                parent_ctx.base_path.clone(),
+                format!("ctx_counter:{parent_id}"),
+            )
+        }
+    };
+
+    if get_context(contexts_ks, &full_id).await?.is_some() {
+        return Err(AppError::Conflict(format!(
+            "context already exists: {full_id}"
+        )));
     }
 
-    let (index, base_path) = allocate_context_index(contexts_ks).await?;
+    let (index, base_path) =
+        allocate_context_index(contexts_ks, &base_prefix, &counter_key).await?;
 
     let now = Utc::now();
     let record = ContextRecord {
-        id: id.to_string(),
+        id: full_id,
         name,
         did: None,
         description,
+        parent: parent_field,
         base_path,
         index,
         created_at: now,
@@ -89,7 +139,7 @@ pub async fn create_context(
 
     store_context(contexts_ks, &record).await?;
 
-    info!(channel, id = %record.id, index, "context created");
+    info!(channel, id = %record.id, parent = ?record.parent, index, "context created");
     Ok(to_result_body(&record))
 }
 
@@ -362,4 +412,136 @@ async fn collect_context_resources(
     preview.did_templates = templates.into_iter().map(|r| r.template.name).collect();
 
     Ok(preview)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::Role;
+    use crate::auth::AuthClaims;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    fn fresh_contexts() -> (tempfile::TempDir, Store, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace("contexts").unwrap();
+        (dir, store, ks)
+    }
+
+    fn super_admin() -> AuthClaims {
+        AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(), // empty = super-admin
+            ..Default::default()
+        }
+    }
+
+    fn admin_of(context: &str) -> AuthClaims {
+        AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: vec![context.to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn creates_a_top_level_context() {
+        let (_d, _s, ks) = fresh_contexts();
+        let r = create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
+            .await
+            .expect("create top-level");
+        assert_eq!(r.id, "acme");
+        assert_eq!(r.parent, None);
+        assert_eq!(r.base_path, "m/26'/2'/0'");
+    }
+
+    #[tokio::test]
+    async fn top_level_creation_requires_super_admin() {
+        let (_d, _s, ks) = fresh_contexts();
+        // A context-admin (non-super) cannot create a top-level context.
+        let err = create_context(&ks, &admin_of("acme"), "ops", "Ops".into(), None, None, "t")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn admin_of_parent_creates_a_nested_context_with_nested_base_path() {
+        let (_d, _s, ks) = fresh_contexts();
+        let parent = create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
+            .await
+            .unwrap();
+
+        // An admin scoped to `acme` nests `eng` under it.
+        let child = create_context(
+            &ks,
+            &admin_of("acme"),
+            "eng",
+            "Engineering".into(),
+            None,
+            Some("acme".into()),
+            "t",
+        )
+        .await
+        .expect("nest under acme");
+
+        assert_eq!(child.id, "acme/eng");
+        assert_eq!(child.parent.as_deref(), Some("acme"));
+        // The child's BIP-32 base nests under the parent's.
+        assert_eq!(child.base_path, format!("{}/0'", parent.base_path));
+    }
+
+    #[tokio::test]
+    async fn nesting_requires_admin_of_the_parent() {
+        let (_d, _s, ks) = fresh_contexts();
+        create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
+            .await
+            .unwrap();
+        create_context(
+            &ks,
+            &super_admin(),
+            "other",
+            "Other".into(),
+            None,
+            None,
+            "t",
+        )
+        .await
+        .unwrap();
+
+        // An admin of `acme` cannot nest under `other`.
+        let err = create_context(
+            &ks,
+            &admin_of("acme"),
+            "team",
+            "Team".into(),
+            None,
+            Some("other".into()),
+            "t",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn nesting_under_a_missing_parent_is_not_found() {
+        let (_d, _s, ks) = fresh_contexts();
+        let err = create_context(
+            &ks,
+            &super_admin(),
+            "eng",
+            "Engineering".into(),
+            None,
+            Some("ghost".into()),
+            "t",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
 }

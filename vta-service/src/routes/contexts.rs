@@ -19,6 +19,9 @@ pub struct CreateContextRequest {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Parent context path to nest under, or absent for a top-level context.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,9 +46,11 @@ pub async fn list_contexts_handler(
     Ok(Json(result))
 }
 
-/// POST /contexts — create a new context. Auth: Super Admin only.
+/// POST /contexts — create a context. Auth: **admin** (the operation enforces
+/// the finer gate — super-admin for a top-level context, admin-of-parent for a
+/// sub-context).
 pub async fn create_context_handler(
-    auth: SuperAdminAuth,
+    auth: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateContextRequest>,
 ) -> Result<(StatusCode, Json<CreateContextResultBody>), AppError> {
@@ -55,6 +60,7 @@ pub async fn create_context_handler(
         &req.id,
         req.name,
         req.description,
+        req.parent,
         "rest",
     )
     .await?;

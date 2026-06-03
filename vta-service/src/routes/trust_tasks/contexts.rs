@@ -57,7 +57,9 @@ pub(super) async fn handle_create(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(e) = auth.require_super_admin() {
+    // Admin role required; `create_context` enforces the finer gate (super-admin
+    // for a top-level context, admin-of-parent for a sub-context).
+    if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
     let req: CreateContextBody = match parse_payload(&doc) {
@@ -70,6 +72,7 @@ pub(super) async fn handle_create(
         &req.id,
         req.name,
         req.description,
+        req.parent,
         TRANSPORT_TRUST_TASK,
     )
     .await

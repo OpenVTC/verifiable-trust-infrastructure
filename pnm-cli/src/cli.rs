@@ -1365,7 +1365,8 @@ pub(crate) enum ContextCommands {
     /// it — useful when the DID was minted on a fresh `pnm setup` and you
     /// want an automatic safety window.
     Create {
-        /// Context slug (lowercase alphanumeric + hyphens)
+        /// Context slug (lowercase alphanumeric + hyphens). When `--parent` is
+        /// set this is the leaf segment; the full id becomes `<parent>/<id>`.
         #[arg(long)]
         id: String,
         /// Human-readable name
@@ -1374,6 +1375,11 @@ pub(crate) enum ContextCommands {
         /// Optional description
         #[arg(long)]
         description: Option<String>,
+        /// Parent context path to nest under (e.g. `acme/eng`). Creates a
+        /// sub-context — requires admin of the parent. Omit for a top-level
+        /// context (super-admin only).
+        #[arg(long)]
+        parent: Option<String>,
         /// DID to grant admin access to (must start with `did:`). When set,
         /// creates an ACL entry with role=admin scoped to this context.
         #[arg(long)]

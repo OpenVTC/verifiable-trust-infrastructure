@@ -237,15 +237,22 @@ pub async fn cmd_context_create(
     id: &str,
     name: &str,
     description: Option<String>,
+    parent: Option<String>,
     admin: AdminAclOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::render::{RESET, YELLOW};
     use vta_sdk::error::VtaError;
 
+    // The full context path the server will assign (`<parent>/<id>` when nested)
+    // — used for the conflict hint before `resp` exists.
+    let effective_id = parent
+        .as_ref()
+        .map_or_else(|| id.to_string(), |p| format!("{p}/{id}"));
     let req = CreateContextRequest {
         id: id.to_string(),
         name: name.to_string(),
         description,
+        parent,
     };
     let resp = match client.create_context(req).await {
         Ok(r) => r,
@@ -258,13 +265,14 @@ pub async fn cmd_context_create(
             let did = admin.did.as_deref().unwrap_or_default();
             let bin = crate::render::bin_name();
             eprintln!(
-                "{YELLOW}\u{26a0}{RESET}  Context '{id}' already exists — skipping context creation."
+                "{YELLOW}\u{26a0}{RESET}  Context '{effective_id}' already exists — skipping context creation."
             );
             eprintln!();
             eprintln!("  The --admin-did was NOT added. To grant admin access to an existing");
             eprintln!("  context, use the ACL command directly:");
             eprintln!();
-            let mut hint = format!("    {bin} acl create --did {did} --role admin --contexts {id}");
+            let mut hint =
+                format!("    {bin} acl create --did {did} --role admin --contexts {effective_id}");
             if let Some(label) = admin.label.as_deref() {
                 hint.push_str(&format!(" --label '{label}'"));
             }
@@ -297,8 +305,10 @@ pub async fn cmd_context_create(
             )
             .into());
         }
+        // Scope the admin grant to the **full path** the server assigned
+        // (`<parent>/<id>` for a sub-context), not the leaf.
         let mut acl_req =
-            vta_sdk::client::CreateAclRequest::new(did, "admin").contexts(vec![id.to_string()]);
+            vta_sdk::client::CreateAclRequest::new(did, "admin").contexts(vec![resp.id.clone()]);
         if let Some(label) = admin.label.as_deref() {
             acl_req = acl_req.label(label);
         }

@@ -763,11 +763,13 @@ fn to_context_response(
 /// also writes an admin ACL entry scoped to the new context, mirroring
 /// the online `pnm contexts create --admin-did` shorthand.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_context_create(
     config_path: Option<PathBuf>,
     id: String,
     name: Option<String>,
     description: Option<String>,
+    parent: Option<String>,
     admin_did: Option<String>,
     admin_label: Option<String>,
     admin_expires: Option<String>,
@@ -789,6 +791,7 @@ pub async fn run_context_create(
         &id,
         display_name,
         description,
+        parent,
         "vta-context-create",
     )
     .await?;
@@ -815,10 +818,14 @@ pub async fn run_context_create(
             format!("vta-context-create:{}", auth.did),
         )
         .with_label(admin_label)
-        .with_contexts(vec![id.clone()])
+        // Scope to the full path the operation assigned (`<parent>/<id>` nested).
+        .with_contexts(vec![record.id.clone()])
         .with_expires_at(expires_at);
         crate::acl::store_acl_entry(&acl_ks, &entry).await?;
-        eprintln!("Admin ACL entry created for {did} (context: {id}).");
+        eprintln!(
+            "Admin ACL entry created for {did} (context: {}).",
+            record.id
+        );
     }
 
     store.persist().await?;
@@ -1271,6 +1278,7 @@ mod tests {
             &auth,
             "existing-ctx",
             "existing-ctx".into(),
+            None,
             None,
             "test-setup",
         )
