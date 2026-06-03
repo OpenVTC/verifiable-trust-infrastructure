@@ -186,6 +186,20 @@ ed25519-dalek = { workspace = true }
 affinidi-crypto = { workspace = true }
 getrandom = "0.4"
 base64 = { workspace = true }
+# Credential-format smoke test (tests/sd_jwt_vc_smoke.rs): exercises the
+# adopted TDK SD-JWT-VC issue/verify path end-to-end as part of wiring the
+# credential crates into the workspace (vti-credential-architecture §0.2).
+# Dev-only — the published SDK does not depend on these yet.
+affinidi-sd-jwt-vc = { workspace = true }
+affinidi-sd-jwt = { workspace = true }
+# The remaining adopted credential crates. Referenced from
+# tests/cred_formats_build.rs purely so `cargo test -p vta-sdk` compiles and
+# link-checks them as part of §0.2 ("the new deps build cleanly"), including
+# the BBS+ Data Integrity cryptosuite behind the `bbs-2023` feature. Functional
+# BBS / OID4VP-DCQL integration is later-phase work.
+affinidi-bbs = { workspace = true }
+affinidi-openid4vp = { workspace = true }
+affinidi-data-integrity = { workspace = true, features = ["bbs-2023"] }
 
 [lints]
 workspace = true

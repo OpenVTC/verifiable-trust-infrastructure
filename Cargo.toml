@@ -61,6 +61,27 @@ affinidi-crypto = "0.1"
 affinidi-vc = "0.1"
 affinidi-data-integrity = "0.6"
 affinidi-status-list = "0.1"
+
+# Credential formats for the credential-centric VTI architecture
+# (docs/05-design-notes/vti-credential-architecture.md). All published on
+# crates.io and validated upstream in the TDK:
+#   - affinidi-sd-jwt-vc  — SD-JWT-VC issue/verify (IETF draft-ietf-oauth-sd-jwt-vc).
+#     Near-term credential path; runs on existing Ed25519/JOSE, no new curve.
+#   - affinidi-bbs        — BBS+ signatures over bls12_381_plus (IETF
+#     draft-irtf-cfrg-bbs-signatures). The unlinkable, selective-disclosure
+#     track. Gated on an independent security audit before signing real
+#     credentials (tasks §0.5).
+#   - affinidi-openid4vp  — OID4VP presentation exchange (DCQL lands upstream
+#     in a later task; this is the published base).
+# The `bbs-2023` Data Integrity cryptosuite lives behind the
+# `affinidi-data-integrity` `bbs-2023` feature, enabled per-consumer where the
+# BBS proof path is wired. If you path-override these to the local TDK for an
+# unreleased change (e.g. DCQL), override the whole interdependent set together
+# to avoid a duplicate-version split.
+affinidi-sd-jwt-vc = "0.1.1"
+affinidi-sd-jwt = "0.1.2"
+affinidi-bbs = "0.1.1"
+affinidi-openid4vp = "0.1.1"
 affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.3"
 
