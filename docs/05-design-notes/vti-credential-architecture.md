@@ -72,10 +72,12 @@ server-side list.
 - **A credential is the unit of trust.** Membership, roles, invitations,
   endorsements, personhood — all are VCs. Everything server-side is a
   *projection* of credentials, never the source of truth.
-- **The VTA is the holder's agent.** It stores the holder's VCs (the
-  `vault`), signs/presents on the holder's behalf, and mints VCs the
-  holder issues. Key custody and consent live on the device (browser
-  plugin / mobile-core); the VTA never presents without consent.
+- **The VTA is the holder's agent — always.** It stores the holder's VCs
+  (the `vault`), holds the holder's keys, signs/presents on the holder's
+  behalf, and mints VCs the holder issues. **There is no browser-only
+  holder:** the browser plugin / mobile-core is the UX + consent surface
+  and is *always backed by a VTA*. Consent originates on the device; the
+  VTA never presents without it.
 - **The VTC is issuer + verifier + schema authority.** It is *not* a
   wallet. It declares what it issues and accepts, issues credentials, and
   verifies presented ones.
@@ -132,10 +134,40 @@ proofs (`eddsa-jcs-2022`). To get claim-level selective disclosure
   a *proof* that discloses a chosen subset of claims, and BBS+ gives
   **unlinkable** presentations (two presentations of the same credential
   can't be correlated by the proof).
-  - **Implication:** the issuer (VTC, and a VTA minting its own) needs a
-    **BLS12-381 G2** assertion key in addition to its Ed25519 key. The
-    holder's **key binding** can remain Ed25519 (`did:key`/`did:webvh`),
-    bound into the derived proof.
+- **DID keys: we ADD a key, we do not change one.** BBS runs over
+  BLS12-381 (a pairing-friendly curve, ≠ Ed25519), but the impact is
+  asymmetric:
+  - **Holders (Alice): no change at all.** Proof derivation (selective
+    disclosure) is a *public* operation on the issuer's signature — the
+    holder needs **no BLS key** to receive a credential or derive a
+    disclosure proof. Holder binding stays an **Ed25519** signature over
+    the verifier nonce (her existing `did:key`/`did:webvh`). Her DID +
+    keys are untouched.
+  - **Issuers (VTC, and a VTA that mints BBS credentials): add one
+    verification method.** A **BLS12-381 G2** assertion key
+    (`#bbs-key-0`, `Bls12381G2Key2020` / multicodec `0xeb`) **alongside**
+    the existing Ed25519 `#key-0`. Because issuers are **`did:webvh`**
+    (multi-key DID documents), this is purely additive — the DID
+    identifier is unchanged and Ed25519 is not rotated.
+  - **Caveat:** `did:key` is single-key, so an *ephemeral `did:key`
+    issuer* can't carry a BLS key; only durable `did:webvh` issuers mint
+    BBS credentials. `eddsa-jcs-2022` stays for anything a `did:key`
+    signs. The workspace's "default to Ed25519 `did:key`" principle thus
+    *expands* (issuer DID docs also carry a BLS G2 key) — it doesn't break.
+  - **Optional later:** cryptographically *unlinkable* holder binding
+    (inside the ZKP) uses the BBS **pseudonym/commitment** extension with
+    a wallet-managed BLS **link secret** — still **not** the holder's DID
+    key, just a blinding scalar the wallet holds. Start without it.
+- **Implementation: own it in `affinidi-tdk-rs`.** Rather than depend on
+  an external BBS crate of uncertain maturity, implement the `bbs-2023`
+  scheme as a reusable library in `affinidi-tdk-rs` — but **on top of a
+  vetted BLS12-381 pairing library** (`blstrs` / `arkworks`), never
+  hand-rolling curve arithmetic. BBS is fully specified
+  (`draft-irtf-cfrg-bbs-signatures`) and ships official **test vectors**,
+  so a clean-room implementation is verifiable. This turns the
+  library-maturity risk into a reusable asset, at the cost of an
+  **implement-and-audit-a-cryptographic-scheme** obligation: it must be
+  security-reviewed before it signs anything real.
 - **Holder binding** is mandatory on presentation: the derived proof is
   bound to a fresh holder-key signature over the verifier's nonce
   (prevents replay / credential lifting).
@@ -147,11 +179,12 @@ proofs (`eddsa-jcs-2022`). To get claim-level selective disclosure
   it would run as a *second* presentation format the verifier accepts,
   not a replacement.
 
-> **Risk (must spike first):** Rust BBS+/`bbs-2023` library maturity and
-> the BLS key management on the issuer. This is the highest-risk
-> dependency in the spec; Phase 0 is a spike that proves issue →
-> selectively-disclose → verify end-to-end before anything else is built.
-> Fallback path if the spike fails: ship SD-JWT-VC as primary instead.
+> **Risk (must spike first):** owning a `bbs-2023` implementation +
+> issuer BLS key management is the highest-risk dependency in the spec.
+> Phase 0 is a spike that **implements `bbs-2023` in `affinidi-tdk-rs`,
+> passes the IRTF test vectors, then proves issue → selectively-disclose
+> → verify (+ Ed25519 holder binding) end-to-end** before anything else
+> is built. Fallback if the spike stalls: ship SD-JWT-VC as primary.
 
 ---
 
@@ -464,18 +497,29 @@ The plugin is the consent + key + legibility surface:
 4. **Verified-assertion invalidation propagation** — push (revocation
    event → cache flip) vs pull (TTL + status re-check). Likely both;
    what's the max staleness window?
-5. **Where does the VTA wallet run for a browser-only Alice?** Hosted VTA
-   vs in-plugin lightweight agent vs both — affects key custody.
+5. ~~Where does the VTA wallet run for a browser-only Alice?~~
+   **RESOLVED:** there is no browser-only holder — the plugin is always
+   backed by a VTA, which holds the wallet + keys. (Open sub-question:
+   does the plugin also hold a device-side key for holder binding, or
+   does the VTA hold it? Lean device-side for the binding signature, VTA
+   for the credential store.)
 6. **OID4VP profile** — which DCQL/credential-format profile to target for
    external-wallet interop (and is that a near-term goal or future)?
+7. **BBS implementation home + audit** — confirm `affinidi-tdk-rs` is the
+   right home, the pairing-library choice (`blstrs` vs `arkworks`), and
+   who audits the scheme before it signs real credentials.
 
 ---
 
 ## 18. Phased plan (PLAN preview — not yet TASKS)
 
-- **Phase 0 — Spike (gating):** prove BBS+ (`bbs-2023`) issue →
-  selective-disclose → verify + holder binding in Rust. Decide proof
-  format. *Verify: a passing end-to-end crypto test.*
+- **Phase 0 — Spike (gating):** implement `bbs-2023` in `affinidi-tdk-rs`
+  over a vetted BLS12-381 pairing crate; pass the IRTF BBS test vectors;
+  add the issuer BLS G2 verification method to a `did:webvh` doc; prove
+  issue → selectively-disclose → verify + Ed25519 holder binding. Decide
+  proof format (BBS+ vs SD-JWT-VC fallback). *Verify: IRTF test vectors
+  pass + a passing end-to-end issue/disclose/verify test. Security review
+  scheduled before any real signing.*
 - **Phase 1 — Credential store:** promote the VTA `vault` to a real
   store (receive/store/index/search/present/mint). *Verify: store + DCQL
   local search + present round-trip.*
