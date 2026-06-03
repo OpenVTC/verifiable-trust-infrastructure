@@ -293,17 +293,72 @@ Dependency order: **2.0 → (2.1 ∥ 2.2) → 2.3 → 2.4**. 2.4 is gated on the
 
 ## Phase 3 — credential-exchange protocol  (Repo: `vti`: `vta-sdk` + `vta-service` + `vtc-service`)
 
-- [ ] 3.1 — `credential-exchange/*` Trust Task message types
-  (`offer`/`request`/`issue` + `query`/`present`) wrapping OID4VCI/OID4VP
-  bodies + DCQL — in `vta-sdk/src/protocols/credential_exchange/`.
-- [ ] 3.2 — Issuer side (VTC): `offer → issue` (OID4VCI).
-- [ ] 3.3 — Verifier side (VTC): `query (DCQL) → present (OID4VP)`
-  verification.
-- [ ] 3.4 — Holder side (VTA): handle `offer→request→store`;
-  `query→consent→present`.
-- [ ] 3.5 — relayer≠holder + `sealed_transfer` for secret-bearing
-  issuance.
-- [ ] CHECKPOINT 3 — VTC↔VTA issue + query + present round-trips.
+**Re-baseline (grounding survey + format decision).** Key facts: the Phase-1
+credential vault (`vta-service/src/vault/`) is **pure library — not yet wired
+to any wire route** (net-new exposure here). VTC↔VTA **already speak DIDComm**
+via a shared mediator (the `join_requests` flow is the precedent; prefer
+DIDComm). `provision-integration` is the working template for relayer≠holder +
+`sealed_transfer` + dual REST/DIDComm. `affinidi-openid4vp` is already a dep
+(carries DCQL); `affinidi-openid4vci` is **net-new** (added in 3.0). Trust-Task
+URIs are validated newtypes — the `trust-tasks/` descriptors + `index.json` are
+hand-maintained convention (not runtime-required).
+
+**Format decision (user, Option C — full format-agnostic bridge).** The vault +
+exchange abstract over credential **format**, driven by the DCQL `format`
+selector: **SD-JWT-VC** (Phase-1 path) + **W3C Data-Integrity** (what the VTC's
+DTG issuance emits) are first-class now; **BBS+** slots in additively once its
+security audit clears (Phase 0b gate). This makes the **format-agnostic vault
+(3.1) the keystone** — every wire op depends on it.
+
+Dependency order: **3.0 → 3.1 → (3.2 ∥ 3.3) issuance → (3.4 ∥ 3.5) presentation
+→ 3.6 → 3.7**.
+
+- [x] **3.0 — `credential-exchange/*` Trust Task message types.** *(this PR.)*
+  Add `affinidi-openid4vci`; the `offer`/`request`/`issue` + `query`/`present`
+  URIs + body shapes wrapping OID4VCI/OID4VP + DCQL, format-agnostic.
+  - Files: `vta-sdk/src/protocols/credential_exchange.rs`. Branch:
+    `feat/cred-3.0-exchange-types`.
+
+- [ ] **3.1 — Format-agnostic vault (the bridge).** Generalise the vault's
+  `receive` + `present` to dispatch on `StoredCredential.format`: SD-JWT-VC
+  (existing) **and** W3C-DI VC (verify DI proof / build a DI VP, holder-bound).
+  `query`/`match` is already format-aware (DCQL `format` → `CandidateCredential.
+  format`). BBS+ left as an additive variant (audit-gated).
+  - Acceptance: receive + present a W3C-DI VC and an SD-JWT-VC through one
+    format-dispatching surface; the DCQL `format` selector picks correctly.
+  - Files: `vta-service/src/vault/{receive,present}.rs` (+ a `format` dispatch).
+
+- [ ] **3.2 — Issuer side (VTC): `offer → request → issue` (OID4VCI).** VTC
+  emits an offer, validates the request's key-binding proof, issues the
+  credential (calls `credentials::dtg::issue_*` / an SD-JWT-VC issuer per the
+  negotiated format), **sealed** for an unknown holder (the invite case). REST
+  + DIDComm handler (extend `vtc-service/src/messaging.rs`). *(needs 3.0)*
+
+- [ ] **3.3 — Holder side (VTA): `offer → request → store`.** VTA handles an
+  inbound offer, builds the OID4VCI request (key-binding proof), receives the
+  issued credential, stores it via the format-agnostic vault (3.1). *(needs
+  3.0 + 3.1)*
+
+- [ ] **3.4 — Verifier side (VTC): `query (DCQL) → verify present (OID4VP)`.**
+  VTC emits a `query` (DCQL + nonce + mandatory `purpose`), receives a
+  `vp_token`, verifies the presentation (holder binding + status + issuer trust
+  + DCQL satisfaction). *(needs 3.0)*
+
+- [ ] **3.5 — Holder side (VTA): `query → consent → present`.** VTA runs
+  `DcqlQuery::match_credentials` locally over the vault, gates on a per-credential
+  consent record (§7a), builds the selectively-disclosed VP via the
+  format-dispatching `present`, returns the `vp_token`. *(needs 3.0 + 3.1)*
+
+- [ ] **3.6 — relayer≠holder + `sealed_transfer` for issuance.** A new
+  `SealedPayloadV1` variant (additive) for a sealed issued credential; reuse the
+  provision-integration auth onion (relayer authenticated outer, holder VP
+  inner, bundle HPKE-sealed to the holder).
+
+- [ ] **3.7 — Trust-Task descriptors + `index.json`** for the
+  `credential-exchange/*` family (hand-authored; trusttasks.org + soft-gate).
+
+- [ ] CHECKPOINT 3 — VTC↔VTA **issue + query + present** round-trips end-to-end
+  across both credential formats.
 
 ---
 

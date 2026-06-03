@@ -109,6 +109,10 @@ test-support = ["session"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
+# OID4VP (+ DCQL) and OID4VCI — the body formats wrapped by the
+# `protocols::credential_exchange` Trust Task family (Phase 3, always compiled).
+affinidi-openid4vp = { workspace = true }
+affinidi-openid4vci = { workspace = true }
 base64 = { workspace = true }
 multibase = { workspace = true }
 thiserror = { workspace = true }
@@ -198,7 +202,6 @@ affinidi-sd-jwt = { workspace = true }
 # the BBS+ Data Integrity cryptosuite behind the `bbs-2023` feature. Functional
 # BBS / OID4VP-DCQL integration is later-phase work.
 affinidi-bbs = { workspace = true }
-affinidi-openid4vp = { workspace = true }
 affinidi-data-integrity = { workspace = true, features = ["bbs-2023"] }
 
 [lints]

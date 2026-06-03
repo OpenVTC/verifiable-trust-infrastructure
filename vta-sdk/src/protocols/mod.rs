@@ -4,6 +4,7 @@ pub mod audit_management;
 pub mod auth;
 pub mod backup_management;
 pub mod context_management;
+pub mod credential_exchange;
 pub mod did_management;
 pub mod did_template_management;
 pub mod discovery;

@@ -486,6 +486,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-openid4vci"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4a082c3bc08f810d89dcbdba0349e429a9df3e3af54d5ea68b1f10806b7522"
+dependencies = [
+ "affinidi-oid4vc-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "affinidi-openid4vp"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9700,6 +9714,7 @@ dependencies = [
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
  "affinidi-openid4vp",
  "affinidi-sd-jwt",
  "affinidi-sd-jwt-vc",
