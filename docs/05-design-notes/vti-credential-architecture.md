@@ -20,7 +20,7 @@ privacy-preserving exchange protocol. The motivating user journey is
 | D1 | Exchange wire protocol | **Trust Tasks wrap OID4VCI (issuance) + OID4VP (query/presentation)**; DCQL is the query language. The same OID4VP shapes are exposable to the browser via the W3C Digital Credentials API. |
 | D2 | Role / session auth model | **Hybrid**: the VC is the source of truth; a fast local *verified-assertion record* (TTL + invalidation) backs every hot-path authorization check. Re-prove only on invalidation. |
 | D3 | Credential type layer | **Adopt `dtg-credentials` (DTC)** as the canonical type catalog; the bespoke VMC/VEC become thin wrappers (or are retired) onto DTC types. |
-| D4 | Selective disclosure | **Claim-level from the start.** Primary: **BBS+ (`bbs-2023` Data Integrity cryptosuite)** — stays inside W3C VCDM + Data Integrity, adds unlinkable selective disclosure. SD-JWT-VC is the interop alternative. |
+| D4 | Selective disclosure | **Implement BOTH, claim-level from the start.** **SD-JWT-VC** (no new curve, ships first, broad OID4VP interop) **and** **BBS+** (`bbs-2023` Data Integrity cryptosuite, unlinkable). The BLS12-381 foundation uses **`arkworks` / `ark-bls12-381`**. Both owned in `affinidi-tdk-rs`. |
 
 ---
 
@@ -126,14 +126,27 @@ central list.
 
 The workspace today issues W3C VCDM 2.0 credentials with Data Integrity
 proofs (`eddsa-jcs-2022`). To get claim-level selective disclosure
-(D4) **from the start**:
+(D4) **from the start**, we implement **both** SD-JWT-VC and BBS+ as
+first-class formats — the credential layer abstracts over *format*, not
+just over DI cryptosuite. They are complementary, not redundant:
 
-- **Primary: BBS+ via the `bbs-2023` Data Integrity cryptosuite.** Keeps
-  the W3C VCDM + Data Integrity + JSON-LD model already in place — a VC is
-  still a VC, just signed with a different cryptosuite. The holder derives
-  a *proof* that discloses a chosen subset of claims, and BBS+ gives
-  **unlinkable** presentations (two presentations of the same credential
-  can't be correlated by the proof).
+- **SD-JWT-VC** (IETF) — selective disclosure via **salted-hash
+  disclosures over a JWT**, with a key-binding JWT (`kb-jwt`) for holder
+  binding. *Needs no new curve* — it runs on the **Ed25519/JOSE** we
+  already have, so it can ship first and unblock the VTA/VTC layers
+  (Phases 1–6). Broadest **OID4VP / wallet ecosystem interop** (the
+  `dc+sd-jwt` format). A distinct serialization from W3C-DI VCs (not a DI
+  cryptosuite), so the credential-handling layer must span both shapes.
+- **BBS+** via the **`bbs-2023` Data Integrity cryptosuite** — keeps the
+  W3C VCDM + Data Integrity + JSON-LD model; the holder derives a *proof*
+  disclosing a chosen subset of claims, and BBS+ adds **unlinkable**
+  presentations (two presentations of the same credential can't be
+  correlated). This is the stronger-privacy format and the reason for the
+  BLS curve work below.
+
+The two share one contract: disclose **only** the DCQL-requested claims,
+mandatory holder binding, status-list revocability. The verifier accepts
+both; DCQL `format` selectors say which a given query wants.
 - **DID keys: we ADD a key, we do not change one.** BBS runs over
   BLS12-381 (a pairing-friendly curve, ≠ Ed25519), but the impact is
   asymmetric:
@@ -164,38 +177,37 @@ proofs (`eddsa-jcs-2022`). To get claim-level selective disclosure
   pull (`affinidi-crypto`, `affinidi-data-integrity` `eddsa-jcs-2022`,
   `affinidi-secrets-resolver`) is entirely Ed25519/X25519. So this is
   net-new foundational work, layered into `affinidi-tdk-rs`:
-  1. **Adopt** a vetted BLS12-381 pairing crate (`blstrs` — `blst`-backed,
-     fast, audited C core; or `arkworks`/`ark-bls12-381` — pure Rust).
-     Never hand-roll curve arithmetic.
-  2. **Implement `bbs-2023`** (keygen / sign / proofgen / proofverify per
-     `draft-irtf-cfrg-bbs-signatures`) — clean-room, validated against the
-     IRTF **test vectors**. Home: extend `affinidi-crypto` or a new
-     `affinidi-bbs` crate.
-  3. **Add a `bbs-2023` Data Integrity cryptosuite** to
+  1. **SD-JWT-VC** (no curve) — salted-hash disclosures + JWT + `kb-jwt`
+     over the existing Ed25519/JOSE. Lower effort; **ships first**.
+  2. **Adopt `arkworks` / `ark-bls12-381`** (D-locked, pure-Rust pairing
+     library) as the BLS12-381 foundation. Never hand-roll curve
+     arithmetic.
+  3. **Implement `bbs-2023`** (keygen / sign / proofgen / proofverify per
+     `draft-irtf-cfrg-bbs-signatures`) on `ark-bls12-381` — clean-room,
+     validated against the IRTF **test vectors**. Home: extend
+     `affinidi-crypto` or a new `affinidi-bbs` crate.
+  4. **Add a `bbs-2023` Data Integrity cryptosuite** to
      `affinidi-data-integrity` so a BBS VC is still a normal W3C
      Data-Integrity VC (parallel to `eddsa-jcs-2022`).
-  4. **Add BLS12-381 G2 key support** to `affinidi-crypto`'s key/DID layer
+  5. **Add BLS12-381 G2 key support** to `affinidi-crypto`'s key/DID layer
      (the issuer `#bbs-key-0` verification method).
   This turns the library-maturity risk into a reusable asset, at the cost
-  of an **implement-and-audit-a-cryptographic-scheme** obligation: it must
-  be security-reviewed before it signs anything real.
-- **Holder binding** is mandatory on presentation: the derived proof is
-  bound to a fresh holder-key signature over the verifier's nonce
-  (prevents replay / credential lifting).
+  of an **implement-and-audit-a-cryptographic-scheme** obligation: BBS+
+  must be security-reviewed before it signs anything real.
+- **Holder binding** is mandatory on presentation (both formats): bound to
+  a fresh holder-key signature over the verifier nonce — `kb-jwt` for
+  SD-JWT-VC, an Ed25519 binding (or the BBS pseudonym extension later) for
+  BBS+. Prevents replay / credential lifting.
 - **`eddsa-jcs-2022` is retained** for credentials where selective
-  disclosure adds nothing (e.g. status-list credentials, internal
-  authorization VCs) and for the holder key-binding signature.
-- **SD-JWT-VC** is the documented alternative if interop with the
-  SD-JWT-VC ecosystem (OID4VC profiles, mDL-adjacent wallets) is needed;
-  it would run as a *second* presentation format the verifier accepts,
-  not a replacement.
+  disclosure adds nothing (status-list credentials, internal authorization
+  VCs) and for the holder key-binding signature.
 
-> **Risk (must spike first):** owning a `bbs-2023` implementation +
-> issuer BLS key management is the highest-risk dependency in the spec.
-> Phase 0 is a spike that **implements `bbs-2023` in `affinidi-tdk-rs`,
-> passes the IRTF test vectors, then proves issue → selectively-disclose
-> → verify (+ Ed25519 holder binding) end-to-end** before anything else
-> is built. Fallback if the spike stalls: ship SD-JWT-VC as primary.
+> **Sequencing (de-risked):** SD-JWT-VC has no curve dependency, so
+> Phases 1–6 build on it **in parallel** while the BLS/BBS foundation
+> matures — and because the credential layer abstracts over format, adding
+> BBS+ later is additive (a new format + cryptosuite), not a rewrite. BBS+
+> is the gated, security-reviewed track; SD-JWT-VC is the unblock-now
+> track. Both land; neither blocks the other.
 
 ---
 
@@ -516,24 +528,30 @@ The plugin is the consent + key + legibility surface:
    for the credential store.)
 6. **OID4VP profile** — which DCQL/credential-format profile to target for
    external-wallet interop (and is that a near-term goal or future)?
-7. **BBS implementation home + audit** — confirm `affinidi-tdk-rs` is the
-   right home, the pairing-library choice (`blstrs` vs `arkworks`), and
-   who audits the scheme before it signs real credentials.
+7. ~~Pairing-library choice~~ **RESOLVED: `arkworks` / `ark-bls12-381`.**
+   ~~Which proof format~~ **RESOLVED: implement BOTH SD-JWT-VC and BBS+.**
+   Remaining: confirm the BBS home (`affinidi-crypto` vs new
+   `affinidi-bbs`) and **who audits** the BBS scheme before it signs real
+   credentials.
 
 ---
 
 ## 18. Phased plan (PLAN preview — not yet TASKS)
 
-- **Phase 0 — BBS foundation + spike (gating; net-new, the TDK has no
-  BLS today):** adopt a BLS12-381 pairing crate into `affinidi-tdk-rs`;
-  implement `bbs-2023` (extend `affinidi-crypto` or new `affinidi-bbs`)
-  and pass the IRTF BBS test vectors; add a `bbs-2023` Data Integrity
-  cryptosuite to `affinidi-data-integrity`; add BLS12-381 G2 key support +
-  the issuer `#bbs-key-0` verification method on a `did:webvh` doc; prove
-  issue → selectively-disclose → verify + Ed25519 holder binding. Decide
-  proof format (BBS+ vs SD-JWT-VC fallback). *Verify: IRTF test vectors
-  pass + a passing end-to-end issue/disclose/verify test. Security review
-  scheduled before any real signing.*
+- **Phase 0a — SD-JWT-VC (unblocks everything; no curve):** implement
+  SD-JWT-VC (salted-hash disclosures + `kb-jwt`) in `affinidi-tdk-rs` over
+  the existing Ed25519/JOSE. *Verify: issue → selectively-disclose →
+  verify + key-binding end-to-end.* Phases 1–6 build on this immediately.
+- **Phase 0b — BBS foundation (gated, parallel; net-new — the TDK has no
+  BLS today):** adopt `arkworks`/`ark-bls12-381`; implement `bbs-2023`
+  (extend `affinidi-crypto` or new `affinidi-bbs`) and pass the IRTF BBS
+  test vectors; add a `bbs-2023` Data Integrity cryptosuite to
+  `affinidi-data-integrity`; add BLS12-381 G2 key support + the issuer
+  `#bbs-key-0` verification method on a `did:webvh` doc; prove issue →
+  selectively-disclose → verify + Ed25519 holder binding. *Verify: IRTF
+  test vectors pass + end-to-end issue/disclose/verify. **Security review
+  before any real signing.*** Adding BBS+ to the credential layer is
+  additive (new format + cryptosuite), so it doesn't block 0a or 1–6.
 - **Phase 1 — Credential store:** promote the VTA `vault` to a real
   store (receive/store/index/search/present/mint). *Verify: store + DCQL
   local search + present round-trip.*
