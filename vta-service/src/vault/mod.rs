@@ -42,12 +42,16 @@
 //! on top in later tasks must preserve it (DCQL-targeted discovery only,
 //! never "return the whole set").
 
+pub mod consent;
 pub mod index;
 pub mod model;
 pub mod query;
 pub mod receive;
 pub mod storage;
 
+pub use consent::{
+    ConsentGrant, ConsentProcess, ConsentRecord, ConsentStatusEvent, ConsentStatusType, authorizes,
+};
 pub use model::{
     CredentialFormat, CredentialPurpose, CredentialStatus, IndexField, StoredCredential,
 };
