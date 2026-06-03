@@ -61,8 +61,15 @@ pub async fn list_acl(
     let entries: Vec<AclEntryResponse> = all_entries
         .into_iter()
         .filter(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)))
+        // Hierarchy-aware: an entry scoped to an *ancestor* of `ctx` grants
+        // access to `ctx`, so it's relevant to a query for `ctx`
+        // (`docs/05-design-notes/hierarchical-contexts.md`). For flat ids this
+        // is identical to an exact match.
         .filter(|e| match &query.context {
-            Some(ctx) => e.allowed_contexts.contains(ctx),
+            Some(ctx) => e
+                .allowed_contexts
+                .iter()
+                .any(|allowed| vti_common::context_path::is_ancestor_or_self(allowed, ctx)),
             None => true,
         })
         .map(AclEntryResponse::from)

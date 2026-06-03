@@ -76,3 +76,14 @@ derivation (unchanged contract; just deeper).
 3. **Subtree operations** — delete (cascade / refuse-non-empty), list-subtree,
    and admin-of-parent authority over descendant ACL / keys.
 4. **VTC** — mirror the relevant parts to the community/context surface.
+
+   **Finding (on investigation):** the VTC is **not** the key authority — it
+   never creates contexts or derives keys, and has **no `require_context`
+   authorization gate**. It only *references* VTA context ids as ACL metadata
+   (`VtcAclEntry.allowed_contexts`), used in a single place: the
+   `GET /acl?context=…` list filter. So there is no context *model* to make
+   hierarchical. The only consistent change is that list filter, which is now
+   **ancestry-aware** (an entry scoped to an ancestor of the queried context is
+   relevant to it), reusing `vti_common::context_path::is_ancestor_or_self`. The
+   hierarchical-contexts feature is therefore **complete on the VTA**, where the
+   context model, BIP-32 derivation, and authorization gate live.
