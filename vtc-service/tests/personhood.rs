@@ -304,6 +304,7 @@ async fn build_fixture() -> Fixture {
         relationships_ks,
         relationships_by_did_ks,
         endorsement_types_ks,
+        schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks,
         registry_client: None,
         registry_health: RegistryHealth::new(),

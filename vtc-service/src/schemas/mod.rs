@@ -17,6 +17,9 @@
 //! discipline, broadened to every catalog type + an Issues/Accepts dimension).
 
 pub mod storage;
+pub mod validate;
+
+pub use validate::{validate_instance, validate_issued};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

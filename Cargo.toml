@@ -88,6 +88,9 @@ affinidi-messaging-didcomm-service = "0.3"
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1.2"
 
+# JSON Schema validation (issue-time credentialSchema checks)
+jsonschema = "0.46"
+
 # Async runtime
 tokio = { version = "1", features = [
   "rt-multi-thread",

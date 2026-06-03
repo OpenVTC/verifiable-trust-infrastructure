@@ -3180,6 +3180,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtg-credentials"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59b7131aa259ef04decb22060173d96b669cffbe172f0ad431f5cb36f1ad9569"
+dependencies = [
+ "affinidi-data-integrity",
+ "affinidi-secrets-resolver",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5130,6 +5145,8 @@ dependencies = [
  "referencing",
  "regex",
  "regex-syntax",
+ "reqwest 0.13.4",
+ "rustls 0.23.40",
  "serde",
  "serde_json",
  "unicode-general-category",
@@ -7120,6 +7137,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "encoding_rs",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "h2 0.4.14",
@@ -9838,6 +9856,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "didwebvh-rs",
+ "dtg-credentials",
  "ed25519-dalek",
  "fjall",
  "flate2",
@@ -9849,6 +9868,7 @@ dependencies = [
  "hkdf 0.13.0",
  "http-body-util",
  "include_dir",
+ "jsonschema",
  "jsonwebtoken",
  "keyring-core",
  "mime_guess",

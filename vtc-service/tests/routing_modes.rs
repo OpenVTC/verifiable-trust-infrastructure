@@ -86,6 +86,7 @@ async fn build_router(routing: &RoutingConfig) -> (Router, tempfile::TempDir) {
         relationships_ks: store.keyspace("relationships").unwrap(),
         relationships_by_did_ks: store.keyspace("relationships_by_did").unwrap(),
         endorsement_types_ks: store.keyspace("endorsement_types").unwrap(),
+        schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: store.keyspace("endorsements").unwrap(),
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),

@@ -88,6 +88,8 @@ affinidi-secrets-resolver = { workspace = true }
 # (Membership, Endorsement, Invitation, …). Phase 2 sources every issued
 # credential's shape from this catalog rather than hand-rolling each VC.
 dtg-credentials = { workspace = true }
+# JSON Schema validation of issued credentials against their credentialSchema.
+jsonschema = { workspace = true }
 # Bitstring status list — privacy-preserving credential revocation
 # per W3C. Used by `crate::status_list` (Phase 2 M2.10).
 affinidi-status-list = { workspace = true }

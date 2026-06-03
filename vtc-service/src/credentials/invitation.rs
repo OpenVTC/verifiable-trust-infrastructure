@@ -36,6 +36,7 @@ pub const DEFAULT_INVITATION_VALIDITY: Duration = Duration::days(7);
 pub async fn issue_invitation(
     signer: &LocalSigner,
     status_lists_ks: &KeyspaceHandle,
+    schemas_ks: &KeyspaceHandle,
     subject_did: &str,
     validity: Duration,
 ) -> Result<Value, AppError> {
@@ -60,6 +61,12 @@ pub async fn issue_invitation(
     // Build first; persist the burned slot only on success.
     let vic =
         dtc::issue_invitation(signer, subject_did, Some(&id), Some(&status_ref), validity).await?;
+
+    // Issue-time schema validation (task 2.3): if an InvitationCredential schema
+    // is registered in the schema store, the VIC must conform before the slot is
+    // committed — so a non-conforming invite never burns a revocation slot.
+    crate::schemas::validate_issued(schemas_ks, &vic).await?;
+
     status_list::store_state(status_lists_ks, &row).await?;
 
     Ok(vic)
@@ -78,7 +85,8 @@ mod tests {
         LocalSigner::from_ed25519_seed(TEST_VTC_DID.into(), &[0xCC; 32])
     }
 
-    async fn provisioned_status_ks() -> (tempfile::TempDir, Store, KeyspaceHandle) {
+    /// A provisioned revocation status list + an (empty) schemas keyspace.
+    async fn provisioned() -> (tempfile::TempDir, Store, KeyspaceHandle, KeyspaceHandle) {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = Store::open(&StoreConfig {
             data_dir: dir.path().to_path_buf(),
@@ -87,6 +95,7 @@ mod tests {
         let ks = store
             .keyspace("status_lists")
             .expect("status_lists keyspace");
+        let schemas_ks = store.keyspace("schemas").expect("schemas keyspace");
         let state = StatusListState::new(
             StatusPurpose::Revocation,
             format!("{TEST_VTC_DID}/v1/status-lists/revocation"),
@@ -94,12 +103,12 @@ mod tests {
         status_list::store_state(&ks, &state)
             .await
             .expect("seed list");
-        (dir, store, ks)
+        (dir, store, ks, schemas_ks)
     }
 
     #[tokio::test]
     async fn issues_a_revocable_vic_and_burns_a_slot() {
-        let (_dir, _store, ks) = provisioned_status_ks().await;
+        let (_dir, _store, ks, schemas_ks) = provisioned().await;
         let s = signer();
 
         let assigned_before = get_state(&ks, StatusPurpose::Revocation)
@@ -108,7 +117,7 @@ mod tests {
             .unwrap()
             .count_assigned();
 
-        let vic = issue_invitation(&s, &ks, "did:key:zInvitee", Duration::days(7))
+        let vic = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
             .await
             .expect("issue VIC");
 
@@ -147,10 +156,58 @@ mod tests {
         })
         .unwrap();
         let ks = store.keyspace("status_lists").unwrap();
+        let schemas_ks = store.keyspace("schemas").unwrap();
         let s = signer();
-        let err = issue_invitation(&s, &ks, "did:key:zInvitee", Duration::days(7))
+        let err = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
             .await
             .expect_err("must refuse without a provisioned list");
         assert!(matches!(err, AppError::Internal(_)), "{err:?}");
+    }
+
+    /// A registered InvitationCredential schema is enforced at issue time, and a
+    /// non-conforming invite never burns a revocation slot.
+    #[tokio::test]
+    async fn registered_schema_is_enforced_and_slot_not_burned_on_violation() {
+        use crate::schemas::{SchemaEntry, SchemaKind, store_schema};
+        let (_dir, _store, ks, schemas_ks) = provisioned().await;
+        let s = signer();
+
+        // Require a `invitedBy` subject field the catalog VIC subject ({id})
+        // never has → every VIC fails validation.
+        store_schema(
+            &schemas_ks,
+            &SchemaEntry {
+                type_uri: "InvitationCredential".into(),
+                dtc_type: Some("InvitationCredential".into()),
+                credential_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "required": ["id", "invitedBy"]
+                })),
+                kind: SchemaKind::Issues,
+                description: None,
+                created_at: chrono::Utc::now(),
+                created_by_did: "did:key:zAdmin".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let before = get_state(&ks, StatusPurpose::Revocation)
+            .await
+            .unwrap()
+            .unwrap()
+            .count_assigned();
+
+        let err = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
+            .await
+            .expect_err("non-conforming VIC must be refused");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+
+        let after = get_state(&ks, StatusPurpose::Revocation)
+            .await
+            .unwrap()
+            .unwrap()
+            .count_assigned();
+        assert_eq!(after, before, "a rejected VIC must not burn a slot");
     }
 }

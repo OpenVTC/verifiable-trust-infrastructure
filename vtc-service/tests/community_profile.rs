@@ -103,6 +103,7 @@ async fn build() -> Fixture {
         relationships_ks: relationships_ks.clone(),
         relationships_by_did_ks: relationships_by_did_ks.clone(),
         endorsement_types_ks: endorsement_types_ks.clone(),
+        schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
