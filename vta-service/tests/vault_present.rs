@@ -177,12 +177,14 @@ async fn mint_and_put(
 
 fn grant<'a>(
     holder_did: &'a str,
+    credential_id: &'a str,
     verifier_did: &'a str,
     claims: Vec<String>,
     valid_until: DateTime<Utc>,
 ) -> ConsentGrant<'a> {
     ConsentGrant {
         holder_did,
+        credential_id,
         verifier_did,
         purpose: "join the Acme community",
         claims,
@@ -247,6 +249,7 @@ async fn present_discloses_only_consented_claims_with_kb_jwt_end_to_end() {
         &vault,
         &grant(
             &holder_did,
+            "cred-1",
             verifier,
             vec!["givenName".into(), "memberSince".into()],
             now + Duration::hours(1),
@@ -327,6 +330,7 @@ async fn present_refused_for_missing_withdrawn_and_expired_consent() {
         &vault,
         &grant(
             &holder_did,
+            "cred-1",
             verifier,
             vec!["givenName".into()],
             now + Duration::hours(1),
@@ -358,6 +362,7 @@ async fn present_refused_for_missing_withdrawn_and_expired_consent() {
         &vault,
         &grant(
             &holder_did,
+            "cred-1",
             verifier,
             vec!["givenName".into()],
             now - Duration::minutes(1),
@@ -419,20 +424,25 @@ async fn present_refused_for_revoked_or_temporally_invalid_credential() {
     )
     .await;
 
-    let rec = consent::create(
-        &vault,
-        &grant(
-            &holder_did,
-            verifier,
-            vec!["givenName".into()],
-            now + Duration::hours(1),
-        ),
-        &consent_key,
-    )
-    .await
-    .unwrap();
-
+    // One consent record per credential — consent is per-credential (§13), so
+    // each must be bound (`dct:source`) to the credential it gates. This also
+    // means we reach the status / temporal refusal rather than short-circuiting
+    // on a credential-binding mismatch.
     for cred_id in ["revoked", "expired"] {
+        let rec = consent::create(
+            &vault,
+            &grant(
+                &holder_did,
+                cred_id,
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &consent_key,
+        )
+        .await
+        .unwrap();
+
         let err = present_sd_jwt_vc(
             &vault,
             cred_id,

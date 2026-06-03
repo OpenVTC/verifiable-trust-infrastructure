@@ -58,6 +58,7 @@ async fn consent_lifecycle_end_to_end() {
     // create — build + sign + store.
     let grant = ConsentGrant {
         holder_did: &holder,
+        credential_id: "cred-1",
         verifier_did: verifier,
         purpose: "join the Acme community",
         claims: vec!["givenName".into(), "memberSince".into()],
@@ -68,6 +69,7 @@ async fn consent_lifecycle_end_to_end() {
     // The signed receipt carries every gating field and verifies.
     rec.verify_proof().expect("DI proof valid");
     assert_eq!(rec.data_subject, holder);
+    assert_eq!(rec.process.credential, "cred-1");
     assert_eq!(rec.process.recipient, verifier);
     assert_eq!(rec.process.purpose, "join the Acme community");
     assert_eq!(
@@ -83,22 +85,42 @@ async fn consent_lifecycle_end_to_end() {
         .expect("present");
     assert_eq!(got, rec);
 
-    // authorizes — true only for the right verifier + a claims subset.
-    assert!(authorizes(&got, verifier, &["givenName".into()], now));
+    // authorizes — true only for the right credential + verifier + a claims
+    // subset.
     assert!(authorizes(
         &got,
+        "cred-1",
+        verifier,
+        &["givenName".into()],
+        now
+    ));
+    assert!(authorizes(
+        &got,
+        "cred-1",
         verifier,
         &["givenName".into(), "memberSince".into()],
         now
     ));
-    // NEGATIVE: a different verifier, or a claim outside the reveal set.
+    // NEGATIVE: a different credential, a different verifier, or a claim
+    // outside the reveal set.
+    assert!(
+        !authorizes(&got, "cred-OTHER", verifier, &["givenName".into()], now),
+        "consent for cred-1 must not authorize a different credential"
+    );
     assert!(!authorizes(
         &got,
+        "cred-1",
         "did:web:evil.example",
         &["givenName".into()],
         now
     ));
-    assert!(!authorizes(&got, verifier, &["dateOfBirth".into()], now));
+    assert!(!authorizes(
+        &got,
+        "cred-1",
+        verifier,
+        &["dateOfBirth".into()],
+        now
+    ));
 
     // withdraw — appends a re-signed ConsentWithdrawn event; authority gone.
     let withdrawn = consent::withdraw(&vault, &rec.identifier, &key)
@@ -112,7 +134,7 @@ async fn consent_lifecycle_end_to_end() {
     );
     withdrawn.verify_proof().expect("re-signed proof valid");
     assert!(
-        !authorizes(&withdrawn, verifier, &["givenName".into()], now),
+        !authorizes(&withdrawn, "cred-1", verifier, &["givenName".into()], now),
         "withdrawn record authorizes nothing"
     );
 
@@ -139,6 +161,7 @@ async fn expired_consent_authorizes_nothing_end_to_end() {
 
     let grant = ConsentGrant {
         holder_did: &holder,
+        credential_id: "cred-1",
         verifier_did: verifier,
         purpose: "join",
         claims: vec!["givenName".into()],
@@ -146,9 +169,10 @@ async fn expired_consent_authorizes_nothing_end_to_end() {
     };
     let rec = consent::create(&vault, &grant, &key).await.unwrap();
 
-    // Even with the right verifier and an in-scope claim, expiry denies.
+    // Even with the right credential, verifier and an in-scope claim, expiry
+    // denies.
     assert!(
-        !authorizes(&rec, verifier, &["givenName".into()], Utc::now()),
+        !authorizes(&rec, "cred-1", verifier, &["givenName".into()], Utc::now()),
         "an expired consent record must authorize nothing"
     );
 }

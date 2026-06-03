@@ -83,9 +83,13 @@ use super::storage;
 ///   ([`AppError::NotFound`]);
 /// - the consent record's holder proof does not verify (surfaced by
 ///   [`consent::get`]);
-/// - [`consent::authorizes`] is `false` for `aud` and the consented reveal set
-///   — i.e. the record is withdrawn, expired, or its `dpv:hasRecipient` is not
-///   `aud` ([`AppError::Forbidden`]);
+/// - the credential's `subject_did` is absent or does not equal the consent
+///   record's `dpv:hasDataSubject` — the credential and the consent must be
+///   about the **same** holder (§13, [`AppError::Forbidden`]);
+/// - [`consent::authorizes`] is `false` — i.e. the record is not bound to this
+///   `credential_id` (`dct:source`, §13), is withdrawn or expired, its
+///   `dpv:hasRecipient` is not `aud`, or the reveal set is out of scope
+///   ([`AppError::Forbidden`]);
 /// - the stored credential is not [`CredentialStatus::Valid`], or `now` is
 ///   outside its `valid_from`/`valid_until` window ([`AppError::Forbidden`]);
 /// - the credential is not an SD-JWT-VC, or its stored body is malformed
@@ -121,18 +125,39 @@ pub async fn present_sd_jwt_vc(
             AppError::NotFound(format!("consent record `{consent_record_id}` not found"))
         })?;
 
+    // (2a) Subject binding (§13, §14.2). The consent record's `dpv:hasDataSubject`
+    // (the holder who signed it) MUST be the credential's subject. Without this
+    // a record authored by holder B could be used to present holder A's
+    // credential whenever the claim names line up — the credential and the
+    // consent must be about the *same* subject. `authorizes` separately binds
+    // the record to *this credential id* (`dct:source`); this check binds it to
+    // the credential's *subject*, so both the credential identity and its
+    // subject must agree with the consent.
+    match cred.subject_did.as_deref() {
+        Some(subject) if subject == record.data_subject => {}
+        _ => {
+            return Err(AppError::Forbidden(format!(
+                "credential `{credential_id}` subject does not match consent record \
+                 `{consent_record_id}` data subject `{}`; refusing to present",
+                record.data_subject
+            )));
+        }
+    }
+
     // The reveal set IS the consent record's `dpv:hasPersonalData`: present
     // discloses EXACTLY the consented set, no more. (5) derive-reveal-set.
     let reveal_set = &record.process.personal_data;
 
-    // (3) Gate. `authorizes` is judged against the same set we intend to
-    // disclose (requested_claims = the reveal set), so the request can never
-    // exceed what the holder consented to. Refuse on any of:
-    // missing/withdrawn/expired/recipient-mismatch.
-    if !consent::authorizes(&record, aud, reveal_set, now) {
+    // (3) Gate. `authorizes` binds the record to *this credential*
+    // (`dct:source == credential_id`, §13) and is judged against the same set
+    // we intend to disclose (requested_claims = the reveal set), so the request
+    // can never exceed what the holder consented to. Refuse on any of:
+    // wrong-credential/withdrawn/expired/recipient-mismatch.
+    if !consent::authorizes(&record, credential_id, aud, reveal_set, now) {
         return Err(AppError::Forbidden(format!(
-            "consent record `{consent_record_id}` does not authorize disclosure to `{aud}` \
-             (withdrawn, expired, recipient-mismatch, or claim out of scope)"
+            "consent record `{consent_record_id}` does not authorize disclosure of \
+             `{credential_id}` to `{aud}` (wrong credential, withdrawn, expired, \
+             recipient-mismatch, or claim out of scope)"
         )));
     }
 
@@ -401,12 +426,14 @@ mod tests {
 
     fn grant<'a>(
         holder_did: &'a str,
+        credential_id: &'a str,
         verifier_did: &'a str,
         claims: Vec<String>,
         valid_until: DateTime<Utc>,
     ) -> ConsentGrant<'a> {
         ConsentGrant {
             holder_did,
+            credential_id,
             verifier_did,
             purpose: "join the Acme community",
             claims,
@@ -475,6 +502,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into(), "memberSince".into()],
                 now + Duration::hours(1),
@@ -558,6 +586,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-2",
                 verifier,
                 vec!["memberSince".into()], // ONLY memberSince
                 now + Duration::hours(1),
@@ -602,6 +631,139 @@ mod tests {
         assert_eq!(
             parsed.disclosures[0].claim_name.as_deref(),
             Some("memberSince")
+        );
+    }
+
+    // ---- SECURITY: cross-subject consent must not present another's cred --
+
+    #[tokio::test]
+    async fn consent_by_a_different_holder_cannot_present_anothers_credential() {
+        // The attack the subject-binding gate closes: holder B authors a
+        // consent record (recipient V) naming claims that also exist on holder
+        // A's credential. Without the `subject_did == data_subject` check, B's
+        // consent would authorize disclosing A's credential to V. It must be
+        // refused — the credential and the consent must be about the SAME
+        // subject (§13, §14.2).
+        let (_dir, _store, vault) = fresh_vault();
+        let (issuer_signer, issuer_did, _ivk) = issuer(21);
+        let (holder_a_did, holder_a_kb, _a_key, _a_vk) = holder(22); // credential subject
+        let (holder_b_did, _b_kb, holder_b_key, _b_vk) = holder(23); // consent author
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        // A's credential, disclosable givenName.
+        let claims = json!({ "givenName": "Alice" });
+        mint_and_put(
+            &vault,
+            "cred-1",
+            &issuer_signer,
+            &issuer_did,
+            &holder_a_did, // subject = A
+            &claims,
+            &["givenName"],
+            CredentialStatus::Valid,
+            None,
+            None,
+        )
+        .await;
+
+        // B authors consent for cred-1 (claims overlap), signed by B's key —
+        // so data_subject == B, not A.
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_b_did,
+                "cred-1",
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &holder_b_key,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rec.data_subject, holder_b_did, "consent author is B");
+
+        // Presenting A's credential under B's consent must be refused before any
+        // disclosure — even though A's holder key signs the kb-jwt.
+        let err = present_sd_jwt_vc(
+            &vault,
+            "cred-1",
+            &rec.identifier,
+            &holder_a_kb,
+            "n",
+            verifier,
+            now.timestamp() as u64,
+            now,
+        )
+        .await
+        .expect_err("must refuse cross-subject presentation");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a consent record by a different subject must never present another's \
+             credential, got {err:?}"
+        );
+    }
+
+    // ---- SECURITY: consent for a different credential is refused ----------
+
+    #[tokio::test]
+    async fn consent_bound_to_another_credential_is_refused() {
+        // The consent record names a different credential (`dct:source`), so it
+        // must not authorize presenting THIS one even though subject, verifier,
+        // and claim names all match (§13: consent is per-credential).
+        let (_dir, _store, vault) = fresh_vault();
+        let (issuer_signer, issuer_did, _ivk) = issuer(31);
+        let (holder_did, kb_signer, consent_key, _hvk) = holder(32);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        let claims = json!({ "givenName": "Alice" });
+        mint_and_put(
+            &vault,
+            "cred-1",
+            &issuer_signer,
+            &issuer_did,
+            &holder_did,
+            &claims,
+            &["givenName"],
+            CredentialStatus::Valid,
+            None,
+            None,
+        )
+        .await;
+
+        // Consent is for "cred-OTHER", not "cred-1".
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "cred-OTHER",
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &consent_key,
+        )
+        .await
+        .unwrap();
+
+        let err = present_sd_jwt_vc(
+            &vault,
+            "cred-1",
+            &rec.identifier,
+            &kb_signer,
+            "n",
+            verifier,
+            now.timestamp() as u64,
+            now,
+        )
+        .await
+        .expect_err("must refuse: consent is for a different credential");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a consent record bound to a different credential must not authorize \
+             this one, got {err:?}"
         );
     }
 
@@ -675,6 +837,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now + Duration::hours(1),
@@ -736,6 +899,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now - Duration::minutes(1),
@@ -792,6 +956,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 "did:web:acme-verifier.example",
                 vec!["givenName".into()],
                 now + Duration::hours(1),
@@ -848,6 +1013,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now + Duration::hours(1),
@@ -905,6 +1071,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now + Duration::hours(1),
@@ -961,6 +1128,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now + Duration::hours(1),
@@ -1017,6 +1185,7 @@ mod tests {
             &vault,
             &grant(
                 &holder_did,
+                "cred-1",
                 verifier,
                 vec!["givenName".into()],
                 now + Duration::hours(1),

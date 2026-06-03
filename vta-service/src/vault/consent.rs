@@ -36,11 +36,13 @@
 //! - [`list`] / [`get`] are the **holder's own local audit surface** — never
 //!   a cross-trust-boundary enumeration. They scan only this VTA's own
 //!   `consent:` namespace; there is no wire endpoint that returns them.
-//! - [`authorizes`] returns `true` **only** for a record that is given
-//!   (latest status `dpv:ConsentGiven`, not withdrawn), unexpired
-//!   (`dct:valid > now`), whose `dpv:hasRecipient` matches the verifier, and
-//!   whose `dpv:hasPersonalData` is a superset of the requested claims. An
-//!   expired or withdrawn record authorizes **nothing**.
+//! - [`authorizes`] returns `true` **only** for a record that is bound to the
+//!   credential being presented (`dct:source` matches — consent is
+//!   per-credential, §13), is given (latest status `dpv:ConsentGiven`, not
+//!   withdrawn), unexpired (`dct:valid > now`), whose `dpv:hasRecipient`
+//!   matches the verifier, and whose `dpv:hasPersonalData` is a superset of
+//!   the requested claims. An expired or withdrawn record authorizes
+//!   **nothing**.
 //! - [`withdraw`] appends a re-signed `dpv:ConsentWithdrawn` status event;
 //!   the record stays for audit but no longer authorizes disclosure.
 
@@ -116,6 +118,14 @@ pub struct ConsentProcess {
     /// The verifier's stated purpose, shown to the holder (purpose binding).
     #[serde(rename = "dpv:hasPurpose")]
     pub purpose: String,
+    /// The **specific credential** this consent authorizes a disclosure *from*
+    /// (`dct:source` — the held credential's local id). Consent is
+    /// **per-credential** (`vti-credential-architecture.md` §13, §7): a record
+    /// captured to disclose claims of credential X never authorizes disclosing
+    /// a *different* credential, even one whose claim names overlap. The reveal
+    /// set below is interpreted as claim names *of this credential*.
+    #[serde(rename = "dct:source")]
+    pub credential: String,
     /// The reveal set — the exact claim names being disclosed.
     #[serde(rename = "dpv:hasPersonalData")]
     pub personal_data: Vec<String>,
@@ -281,6 +291,11 @@ pub struct ConsentGrant<'a> {
     /// The holder DID — `dpv:hasDataSubject`. Must be a `did:key` (the holder
     /// key signs the receipt).
     pub holder_did: &'a str,
+    /// The **specific held credential** this consent is *about* — its local
+    /// vault id (`dct:source`). Consent is per-credential (§13): the record
+    /// only authorizes disclosing claims of *this* credential. The capture
+    /// flow (device/plugin) knows which credential the holder is presenting.
+    pub credential_id: &'a str,
     /// The verifier DID the disclosure is authorized to — `dpv:hasRecipient`.
     pub verifier_did: &'a str,
     /// The verifier's stated purpose — `dpv:hasPurpose`.
@@ -318,6 +333,11 @@ pub async fn create(
             "consent verifier_did must be non-empty".into(),
         ));
     }
+    if grant.credential_id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "consent credential_id must be non-empty (consent is per-credential, §13)".into(),
+        ));
+    }
     if grant.claims.is_empty() {
         return Err(AppError::Validation(
             "consent claims must be non-empty (default-deny: an empty reveal set authorizes nothing)"
@@ -337,6 +357,7 @@ pub async fn create(
         process: ConsentProcess {
             type_: ProcessType::Process,
             purpose: grant.purpose.to_string(),
+            credential: grant.credential_id.to_string(),
             personal_data: grant.claims.clone(),
             recipient: grant.verifier_did.to_string(),
             processing: ProcessingType::Disclose,
@@ -430,30 +451,41 @@ pub async fn list(vault: &KeyspaceHandle) -> Result<Vec<ConsentRecord>, AppError
 
 /// The disclosure-gating decision. Returns `true` **only** when *all* hold:
 ///
-/// 1. The record is **given** — latest status is `dpv:ConsentGiven`, not
+/// 1. The record is **bound to this credential** — `dct:source ==
+///    credential_id`. Consent is per-credential (§13): a record captured for
+///    a different credential authorizes nothing here, even if its claim names
+///    happen to overlap.
+/// 2. The record is **given** — latest status is `dpv:ConsentGiven`, not
 ///    withdrawn.
-/// 2. The record is **unexpired** — `dpv:hasStorageCondition.dct:valid > now`.
-/// 3. The **recipient matches** — `dpv:hasRecipient == verifier_did`.
-/// 4. The requested claims are a **subset** of `dpv:hasPersonalData` — the
+/// 3. The record is **unexpired** — `dpv:hasStorageCondition.dct:valid > now`.
+/// 4. The **recipient matches** — `dpv:hasRecipient == verifier_did`.
+/// 5. The requested claims are a **subset** of `dpv:hasPersonalData` — the
 ///    verifier cannot extract a claim the holder did not consent to.
 ///
-/// Default-deny: any malformed timestamp, a recipient mismatch, a withdrawn
-/// or expired record, or a single out-of-scope requested claim returns
-/// `false`. The caller is responsible for having obtained the record via
-/// [`get`] (which verifies the holder proof) — `authorizes` decides
+/// Default-deny: a credential mismatch, any malformed timestamp, a recipient
+/// mismatch, a withdrawn or expired record, or a single out-of-scope requested
+/// claim returns `false`. The caller is responsible for having obtained the
+/// record via [`get`] (which verifies the holder proof) — `authorizes` decides
 /// *authority*, not *authenticity*.
 pub fn authorizes(
     record: &ConsentRecord,
+    credential_id: &str,
     verifier_did: &str,
     requested_claims: &[String],
     now: DateTime<Utc>,
 ) -> bool {
-    // 1. Given, not withdrawn.
+    // 1. Bound to this credential. Consent is per-credential (§13): the record
+    //    only authorizes disclosing the credential it was captured for.
+    if record.process.credential != credential_id {
+        return false;
+    }
+
+    // 2. Given, not withdrawn.
     if !record.is_given() {
         return false;
     }
 
-    // 2. Unexpired. A non-parseable validity is treated as expired
+    // 3. Unexpired. A non-parseable validity is treated as expired
     //    (default-deny) rather than authorizing.
     let valid_until = match record
         .process
@@ -468,12 +500,12 @@ pub fn authorizes(
         return false;
     }
 
-    // 3. Recipient match.
+    // 4. Recipient match.
     if record.process.recipient != verifier_did {
         return false;
     }
 
-    // 4. Requested claims ⊆ consented reveal set. An empty request is not a
+    // 5. Requested claims ⊆ consented reveal set. An empty request is not a
     //    licence to disclose anything; but it also discloses nothing, so it
     //    is trivially within scope — callers that disclose nothing need no
     //    consent. We still require the request be a subset.
@@ -532,6 +564,7 @@ mod tests {
     ) -> ConsentGrant<'a> {
         ConsentGrant {
             holder_did: holder,
+            credential_id: "cred-under-test",
             verifier_did: verifier,
             purpose: "join the Acme community",
             claims,
@@ -610,9 +643,16 @@ mod tests {
         let rec = create(&vault, &g, &key).await.unwrap();
 
         // Positive: given, unexpired, right verifier, subset of claims.
-        assert!(authorizes(&rec, verifier, &["givenName".into()], now));
         assert!(authorizes(
             &rec,
+            "cred-under-test",
+            verifier,
+            &["givenName".into()],
+            now
+        ));
+        assert!(authorizes(
+            &rec,
+            "cred-under-test",
             verifier,
             &["givenName".into(), "memberSince".into()],
             now
@@ -620,23 +660,96 @@ mod tests {
 
         // NEGATIVE — a verifier outside the record is refused.
         assert!(
-            !authorizes(&rec, "did:web:evil.example", &["givenName".into()], now),
+            !authorizes(
+                &rec,
+                "cred-under-test",
+                "did:web:evil.example",
+                &["givenName".into()],
+                now
+            ),
             "a different verifier must not be authorized"
         );
 
         // NEGATIVE — a claim outside the consented reveal set is refused.
         assert!(
-            !authorizes(&rec, verifier, &["dateOfBirth".into()], now),
+            !authorizes(
+                &rec,
+                "cred-under-test",
+                verifier,
+                &["dateOfBirth".into()],
+                now
+            ),
             "a claim outside hasPersonalData must not be authorized"
         );
         assert!(
             !authorizes(
                 &rec,
+                "cred-under-test",
                 verifier,
                 &["givenName".into(), "dateOfBirth".into()],
                 now
             ),
             "a request that mixes in an out-of-scope claim must be refused as a whole"
+        );
+    }
+
+    #[tokio::test]
+    async fn consent_is_bound_to_one_credential() {
+        // A record captured for credential A must authorize nothing for a
+        // *different* credential B, even with the right verifier and a claim
+        // subset that overlaps — consent is per-credential (§13).
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder, key) = holder_identity([9u8; 32]);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+        let valid_until = now + Duration::hours(1);
+
+        let g = ConsentGrant {
+            holder_did: &holder,
+            credential_id: "cred-A",
+            verifier_did: verifier,
+            purpose: "join the Acme community",
+            claims: vec!["givenName".into()],
+            valid_until,
+        };
+        let rec = create(&vault, &g, &key).await.unwrap();
+
+        // The record names cred-A as its source (`dct:source`).
+        assert_eq!(rec.process.credential, "cred-A");
+        let json = serde_json::to_value(&rec).unwrap();
+        assert_eq!(json["dpv:hasProcess"]["dct:source"], "cred-A");
+
+        // Authorizes cred-A …
+        assert!(authorizes(
+            &rec,
+            "cred-A",
+            verifier,
+            &["givenName".into()],
+            now
+        ));
+        // … but NOT a different credential, even though everything else matches.
+        assert!(
+            !authorizes(&rec, "cred-B", verifier, &["givenName".into()], now),
+            "a consent record for cred-A must not authorize disclosing cred-B"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_empty_credential_id() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder, key) = holder_identity([10u8; 32]);
+        let g = ConsentGrant {
+            holder_did: &holder,
+            credential_id: "",
+            verifier_did: "did:web:acme-verifier.example",
+            purpose: "join",
+            claims: vec!["givenName".into()],
+            valid_until: Utc::now() + Duration::hours(1),
+        };
+        let err = create(&vault, &g, &key).await.unwrap_err();
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "an empty credential_id must be refused (consent is per-credential), got {err:?}"
         );
     }
 
@@ -653,7 +766,13 @@ mod tests {
 
         // Even with the right verifier and an in-scope claim, expiry denies.
         assert!(
-            !authorizes(&rec, verifier, &["givenName".into()], Utc::now()),
+            !authorizes(
+                &rec,
+                "cred-under-test",
+                verifier,
+                &["givenName".into()],
+                Utc::now()
+            ),
             "an expired record must authorize nothing"
         );
     }
@@ -669,7 +788,13 @@ mod tests {
         let g = grant(&holder, verifier, vec!["givenName".into()], valid_until);
         let rec = create(&vault, &g, &key).await.unwrap();
         // Authorized before withdrawal.
-        assert!(authorizes(&rec, verifier, &["givenName".into()], now));
+        assert!(authorizes(
+            &rec,
+            "cred-under-test",
+            verifier,
+            &["givenName".into()],
+            now
+        ));
 
         let withdrawn = withdraw(&vault, &rec.identifier, &key)
             .await
@@ -693,7 +818,13 @@ mod tests {
 
         // authorizes() now returns false even though unexpired + right verifier.
         assert!(
-            !authorizes(&withdrawn, verifier, &["givenName".into()], now),
+            !authorizes(
+                &withdrawn,
+                "cred-under-test",
+                verifier,
+                &["givenName".into()],
+                now
+            ),
             "a withdrawn record must authorize nothing"
         );
 
@@ -760,6 +891,7 @@ mod tests {
             process: ConsentProcess {
                 type_: ProcessType::Process,
                 purpose: "steal".into(),
+                credential: "cred-under-test".into(),
                 personal_data: vec!["givenName".into()],
                 recipient: verifier.to_string(),
                 processing: ProcessingType::Disclose,
