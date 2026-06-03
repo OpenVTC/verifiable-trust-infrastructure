@@ -33,6 +33,7 @@
 //!   sealed-issuance slice (3.6).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4vpError};
 use affinidi_secrets_resolver::secrets::Secret;
@@ -43,6 +44,9 @@ use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody}
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::auth::AuthClaims;
+use crate::keys::seed_store::SeedStore;
+use crate::operations::holder_keys::resolve_holder_keys;
 use crate::vault::consent::{self, ConsentGrant};
 use crate::vault::model::{CredentialFormat, StoredCredential};
 use crate::vault::query::CredentialQuery as VaultQuery;
@@ -526,6 +530,59 @@ pub async fn present_or_defer(
     )
     .await?;
     Ok(PresentOutcome::Presented(present))
+}
+
+/// The full holder `query → present` path, end to end: match the verifier's
+/// query over the vault, **resolve the matched credential's holder key** (the
+/// ACL-gated [`resolve_holder_keys`] — the VTA's own derived subject key), then
+/// [`present_or_defer`] under the consent `policy`.
+///
+/// This is what the `credential-exchange/query` DIDComm handler drives: it
+/// composes match + key-resolution + consent into a [`PresentOutcome`] (a
+/// `vp_token`, or a "consent required" deferral). `auth` gates the holder-key
+/// access — the autonomous wire flow passes the VTA's own authority; an
+/// operator-initiated path passes the operator's claims.
+#[allow(clippy::too_many_arguments)]
+pub async fn present_query(
+    vault: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    query: &QueryBody,
+    verifier_did: &str,
+    policy: &ConsentPolicy,
+    now: DateTime<Utc>,
+) -> Result<PresentOutcome, AppError> {
+    // Match once to learn the subject whose holder key we must resolve.
+    let matched = match_vault(vault, &query.dcql_query).await?;
+    let first = matched.into_iter().next().ok_or_else(|| {
+        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
+    })?;
+    let stored = vault::storage::get(vault, &first.credential_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "matched credential `{}` is gone",
+                first.credential_id
+            ))
+        })?;
+    let subject = stored.subject_did.as_deref().ok_or_else(|| {
+        AppError::Validation("matched credential has no subject DID to present".into())
+    })?;
+
+    // Derive the holder key for that subject — ACL-gated to its context.
+    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+
+    present_or_defer(
+        vault,
+        query,
+        verifier_did,
+        policy,
+        &keys.signer,
+        &keys.consent_secret,
+        now,
+    )
+    .await
 }
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
@@ -1056,5 +1113,137 @@ mod tests {
             }
             other => panic!("expected ConsentRequired, got {other:?}"),
         }
+    }
+
+    // ── present_query: the full holder query→present path ──
+
+    #[tokio::test]
+    async fn present_query_runs_the_full_holder_present_path() {
+        use crate::acl::Role;
+        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+        use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let vault = store.keyspace("vault").unwrap();
+        let keys_ks = store.keyspace("keys").unwrap();
+
+        // The holder subject key is a VTA-derived key (context `acme`).
+        let seed = vec![42u8; 64];
+        let seed_store: Arc<dyn SeedStore> =
+            Arc::new(crate::test_support::TestSeedStore(seed.clone()));
+        let path = "m/26'/2'/0'/0'";
+        let bip32 = ExtendedSigningKey::from_seed(&seed).unwrap();
+        let derived = bip32
+            .derive(&path.parse::<DerivationPath>().unwrap())
+            .unwrap();
+        let subject_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            derived.signing_key.verifying_key().as_bytes(),
+        );
+        let multibase = subject_did.strip_prefix("did:key:").unwrap();
+        let key_id = format!("{subject_did}#{multibase}");
+        keys_ks
+            .insert(
+                crate::keys::store_key(&key_id),
+                &KeyRecord {
+                    key_id: key_id.clone(),
+                    derivation_path: path.into(),
+                    key_type: KeyType::Ed25519,
+                    status: KeyStatus::Active,
+                    public_key: multibase.into(),
+                    label: None,
+                    context_id: Some("acme".into()),
+                    seed_id: None,
+                    origin: KeyOrigin::Derived,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Mint + store an SD-JWT-VC bound to that subject (cnf = its key).
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = EddsaSigner {
+            key: issuer,
+            kid: format!("{issuer_did}#key-0"),
+        };
+        let compact = crate::vault::mint::mint_sd_jwt_vc(
+            &crate::vault::mint::MintRequest {
+                vct: MEMBERSHIP_VCT,
+                issuer_did: &issuer_did,
+                subject_did: &subject_did,
+                claims: &json!({ "givenName": "Alice" }),
+                disclosable: &["givenName"],
+                iat: 1_700_000_000,
+                exp: Some(1_900_000_000),
+            },
+            &issuer_signer,
+        )
+        .unwrap();
+        let cred = receive_issued_credential(
+            &vault,
+            &issue_body(Value::String(compact), None),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cred.subject_did.as_deref(), Some(subject_did.as_str()));
+
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+        // The VTA acts on its own behalf (super-admin over its own contexts).
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        let query = membership_query();
+
+        // Trusted verifier → present, end to end (key resolved + kb-jwt signed).
+        let outcome = present_query(
+            &vault,
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &query,
+            verifier,
+            &ConsentPolicy::trusting([verifier]),
+            now,
+        )
+        .await
+        .expect("present_query");
+        match outcome {
+            PresentOutcome::Presented(body) => {
+                let token = body.vp_token.as_str().expect("compact vp_token");
+                let parsed =
+                    affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher)
+                        .unwrap();
+                assert_eq!(parsed.disclosures.len(), 1);
+                assert!(parsed.kb_jwt.is_some(), "holder kb-jwt must be present");
+            }
+            other => panic!("expected Presented, got {other:?}"),
+        }
+
+        // Untrusted verifier → deferral.
+        let deferred = present_query(
+            &vault,
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &query,
+            "did:web:stranger.example",
+            &ConsentPolicy::default(),
+            now,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(deferred, PresentOutcome::ConsentRequired { .. }));
     }
 }
