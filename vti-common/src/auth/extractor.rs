@@ -181,10 +181,22 @@ impl AuthClaims {
         self.role == Role::Admin && self.allowed_contexts.is_empty()
     }
 
-    /// Returns `true` if the caller has access to the given context,
-    /// either as a super admin or by explicit context assignment.
+    /// Returns `true` if the caller has access to the given context — as a super
+    /// admin, or because one of their `allowed_contexts` is `context_id` itself
+    /// **or an ancestor of it** (folder-level authority: admin of a parent
+    /// context covers the whole subtree).
+    ///
+    /// Ancestry is the segment-aware
+    /// [`is_ancestor_or_self`](crate::context_path::is_ancestor_or_self) — a
+    /// pure, store-free check over the verified JWT's contexts. For today's flat
+    /// (single-segment, childless) contexts this is identical to the previous
+    /// exact match.
     pub fn has_context_access(&self, context_id: &str) -> bool {
-        self.is_super_admin() || self.allowed_contexts.iter().any(|c| c == context_id)
+        self.is_super_admin()
+            || self
+                .allowed_contexts
+                .iter()
+                .any(|allowed| crate::context_path::is_ancestor_or_self(allowed, context_id))
     }
 
     /// Check that the caller has access to the given context.
@@ -435,8 +447,45 @@ fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "cli-synthesis")]
     use super::*;
+
+    #[test]
+    fn has_context_access_grants_the_subtree_to_a_parent_admin() {
+        // A context admin scoped to `acme/eng` (not super-admin — the list is
+        // non-empty), so ancestry applies.
+        let claims = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: vec!["acme/eng".into()],
+            ..Default::default()
+        };
+        assert!(!claims.is_super_admin());
+
+        // Self + every descendant.
+        assert!(claims.has_context_access("acme/eng"));
+        assert!(claims.has_context_access("acme/eng/team-a"));
+        assert!(claims.has_context_access("acme/eng/team-a/squad-1"));
+
+        // NOT the parent, a sibling, or a prefix-confusion look-alike.
+        assert!(!claims.has_context_access("acme"));
+        assert!(!claims.has_context_access("acme/ops"));
+        assert!(!claims.has_context_access("acme/engineering"));
+
+        assert!(claims.require_context("acme/eng/team-a").is_ok());
+        assert!(claims.require_context("acme/ops").is_err());
+    }
+
+    #[test]
+    fn flat_context_grant_is_exact_match_only() {
+        // A single-segment grant with no sub-contexts behaves exactly as before.
+        let claims = AuthClaims {
+            role: Role::Reader,
+            allowed_contexts: vec!["prod-mediator".into()],
+            ..Default::default()
+        };
+        assert!(claims.has_context_access("prod-mediator"));
+        assert!(!claims.has_context_access("prod-mediator-2"));
+        assert!(!claims.has_context_access("other"));
+    }
 
     #[cfg(feature = "cli-synthesis")]
     #[test]
