@@ -21,6 +21,12 @@ package vtc.role_change
 
 import rego.v1
 
+# This default is the visual form of the policy below — the admin-UI
+# reads the header to render it in plain English, show a decision
+# trace, and open it in the route-card editor. Keep it in step with the
+# body if you hand-edit the Rego.
+# @vtc-rule-ir: eyJwdXJwb3NlIjoicm9sZUNoYW5nZSIsInJvdXRlcyI6W3sibmFtZSI6IlN0YW5kYXJkIHJvbGUiLCJ3aGVuIjp7ImFsbCI6WyJ0YXJnZXRfcm9sZV9zdGFuZGFyZCJdfSwidGhlbiI6eyJlZmZlY3QiOiJhbGxvdyIsIndpdGgiOnsicm9sZSI6IiR0YXJnZXQifX19LHsibmFtZSI6IkFkbWluIHdpdGggc3RlcC11cCIsIndoZW4iOnsiYWxsIjpbInByb21vdGVzX3RvX2FkbWluIiwic3RlcF91cF9kb25lIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6eyJyb2xlIjoiYWRtaW4ifX19LHsibmFtZSI6IkFkbWluIG5lZWRzIHN0ZXAtdXAiLCJ3aGVuIjp7ImFsbCI6WyJwcm9tb3Rlc190b19hZG1pbiJdfSwidGhlbiI6eyJlZmZlY3QiOiJyZWZlciIsIndpdGgiOnsicXVldWUiOiJzdGVwLXVwIn19fSx7Im5hbWUiOiJSZWZ1c2VkIiwid2hlbiI6eyJhbGwiOlsiYWx3YXlzIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImRlbnkiLCJ3aXRoIjp7ImNvZGUiOiJuby1tYXRjaGluZy1yb3V0ZSJ9fX1dfQ==
+
 # structural totality — unmatched role changes are refused
 default decision := {"effect": "deny", "with": {"code": "no-matching-route"}}
 

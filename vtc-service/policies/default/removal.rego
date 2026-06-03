@@ -26,6 +26,12 @@ package vtc.removal
 
 import rego.v1
 
+# This default is the visual form of the policy below — the admin-UI
+# reads the header to render it in plain English, show a decision
+# trace, and open it in the route-card editor. Keep it in step with the
+# body if you hand-edit the Rego.
+# @vtc-rule-ir: eyJwdXJwb3NlIjoicmVtb3ZhbCIsInJvdXRlcyI6W3sibmFtZSI6IlNlbGYtbGVhdmUiLCJ3aGVuIjp7ImFsbCI6WyJhY3Rvcl9pc19zZWxmIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6eyJkaXNwb3NpdGlvbiI6InRvbWJzdG9uZSJ9fX0seyJuYW1lIjoiQWRtaW4gcmVtb3ZlcyBub24tYWRtaW4iLCJ3aGVuIjp7ImFsbCI6WyJzdWJqZWN0X25vdF9hZG1pbiJdfSwidGhlbiI6eyJlZmZlY3QiOiJhbGxvdyIsIndpdGgiOnsiZGlzcG9zaXRpb24iOiJ0b21ic3RvbmUifX19LHsibmFtZSI6IlJlZnVzZWQiLCJ3aGVuIjp7ImFsbCI6WyJhbHdheXMiXX0sInRoZW4iOnsiZWZmZWN0IjoiZGVueSIsIndpdGgiOnsiY29kZSI6InJlbW92YWwtZGVuaWVkIn19fV19
+
 # structural totality — unmatched removals are refused
 default decision := {"effect": "deny", "with": {"code": "removal-denied"}}
 

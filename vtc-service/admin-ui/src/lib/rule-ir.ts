@@ -83,6 +83,8 @@ const HELPERS: Record<string, string> = {
     'cred_held(t) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == t\n\tc.status == "valid"\n}',
   cred_trusted:
     'cred_trusted(t) if {\n\tsome c in input.evidence.presentation.credentials\n\tc.type == t\n\tc.issuer_trusted\n\tc.status == "valid"\n}',
+  cred_any_trusted:
+    'cred_any_trusted if {\n\tsome c in input.evidence.presentation.credentials\n\tc.issuer_trusted\n\tc.status == "valid"\n}',
   has_valid_invitation:
     "has_valid_invitation if {\n\tinput.evidence.invitation.verified\n\tnot input.evidence.invitation.consumed\n}",
   agreed:
@@ -123,6 +125,16 @@ const JOIN: ConditionDef[] = [
       f.evidence?.invitation?.consumed !== true,
   },
   {
+    id: "holds_any_trusted",
+    label: "holds any trusted credential",
+    expr: () => "cred_any_trusted",
+    helper: "cred_any_trusted",
+    test: (f) =>
+      creds(f).some(
+        (c) => c.issuer_trusted === true && c.status === "valid",
+      ),
+  },
+  {
     id: "holds_trusted",
     label: "holds a trusted credential",
     arg: { label: "credential type", placeholder: "WitnessCredential" },
@@ -153,6 +165,12 @@ const JOIN: ConditionDef[] = [
 ];
 
 const LEAVE: ConditionDef[] = [
+  {
+    id: "subject_not_admin",
+    label: "subject is not an admin",
+    expr: () => 'input.state.subject_member.role != "admin"',
+    test: (f) => f.state?.subject_member?.role !== "admin",
+  },
   {
     id: "disposition_requested",
     label: "a disposition was requested",
@@ -387,6 +405,7 @@ export function effectToEnglish(effect: Effect): string {
   const w = effect.with ?? {};
   switch (effect.effect) {
     case "allow":
+      if (w.role === "$target") return "admit — set the requested role";
       if (typeof w.role === "string") return `admit — set role to ${w.role}`;
       if (typeof w.disposition === "string")
         return `allow — remove (${w.disposition})`;

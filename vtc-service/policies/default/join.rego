@@ -23,6 +23,12 @@ package vtc.join
 
 import rego.v1
 
+# This default is the visual form of the policy below — the admin-UI
+# reads the header to render it in plain English, show a decision
+# trace, and open it in the route-card editor. Keep it in step with the
+# body if you hand-edit the Rego.
+# @vtc-rule-ir: eyJwdXJwb3NlIjoiam9pbiIsInJvdXRlcyI6W3sibmFtZSI6IlRydXN0ZWQgY3JlZGVudGlhbCIsIndoZW4iOnsiYWxsIjpbImhvbGRzX2FueV90cnVzdGVkIl19LCJ0aGVuIjp7ImVmZmVjdCI6ImFsbG93Iiwid2l0aCI6eyJyb2xlIjoibWVtYmVyIn19fSx7Im5hbWUiOiJNb2RlcmF0b3IgcmV2aWV3Iiwid2hlbiI6eyJhbGwiOlsiYWx3YXlzIl19LCJ0aGVuIjp7ImVmZmVjdCI6InJlZmVyIiwid2l0aCI6eyJxdWV1ZSI6Im1vZGVyYXRvciJ9fX1dfQ==
+
 # structural totality — unmatched submissions go to moderator review
 default decision := {"effect": "refer", "with": {"queue": "moderator"}}
 
