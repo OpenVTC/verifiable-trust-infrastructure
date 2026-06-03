@@ -45,12 +45,14 @@
 //! later task) and adds **no route / DIDComm handler** — the credential vault
 //! exposes no wire surface yet, so receive is a library operation only.
 
+use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, crypto_suites::CryptoSuite};
 use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::signer::JwtVerifier;
 use affinidi_sd_jwt::verifier::{VerificationOptions, verify};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, Utc};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 use vti_common::error::AppError;
@@ -252,6 +254,184 @@ pub async fn receive_sd_jwt_vc(
     storage::put(vault, &cred).await?;
 
     Ok(cred)
+}
+
+/// Receive a **W3C Data-Integrity VC** (`eddsa-jcs-2022`) into the vault: verify
+/// the issuer proof + temporal validity, map, and store (spec D4 — the
+/// format-agnostic bridge; the W3C-DI sibling of [`receive_sd_jwt_vc`]).
+///
+/// `vc_json` is the credential as the holder received it (a W3C VC 2.0 JSON
+/// document with a `proof`). `issuer_pub` is the issuer's Ed25519 public key —
+/// **the caller resolves the issuer DID** (the vault stays network-free,
+/// mirroring the injected-signer pattern in [`super::present`]; the wire layer
+/// resolves a `did:webvh` / `did:web` issuer, a test passes the known key).
+/// `now` anchors the temporal check.
+///
+/// ## Failure modes (all reject **without** storing)
+/// - `id` empty, or `vc_json` not a JSON object → [`AppError::Validation`];
+/// - no `proof`, or a non-`eddsa-jcs-2022` cryptosuite (BBS+ is audit-gated and
+///   routed elsewhere) → [`AppError::Validation`];
+/// - the issuer proof does not verify against `issuer_pub` → [`AppError::Validation`];
+/// - `now` is outside `validFrom`/`validUntil` → [`AppError::Validation`].
+pub async fn receive_di_vc(
+    vault: &KeyspaceHandle,
+    id: &str,
+    vc_json: &[u8],
+    issuer_pub: &[u8],
+    source: Provenance,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, AppError> {
+    if id.trim().is_empty() {
+        return Err(AppError::Validation(
+            "credential id must be non-empty".to_string(),
+        ));
+    }
+
+    let vc: Value = serde_json::from_slice(vc_json)
+        .map_err(|e| AppError::Validation(format!("malformed Data-Integrity VC JSON: {e}")))?;
+
+    // Pull the proof and require eddsa-jcs-2022 (BBS+ is audit-gated, routed by
+    // [`receive`] to an explicit error).
+    let proof_val = vc
+        .get("proof")
+        .cloned()
+        .ok_or_else(|| AppError::Validation("Data-Integrity VC has no `proof`".to_string()))?;
+    let proof: DataIntegrityProof = serde_json::from_value(proof_val)
+        .map_err(|e| AppError::Validation(format!("unparseable Data-Integrity proof: {e}")))?;
+    if !matches!(proof.cryptosuite, CryptoSuite::EddsaJcs2022) {
+        return Err(AppError::Validation(format!(
+            "unsupported cryptosuite {:?} (expected eddsa-jcs-2022; BBS+ is audit-gated)",
+            proof.cryptosuite
+        )));
+    }
+
+    // Verify over the document with `proof` removed — JCS is presence-sensitive,
+    // so sign-time and verify-time both strip it. A tampered credential fails
+    // here, before any trust is placed in the bytes.
+    let mut signing_doc = vc.clone();
+    signing_doc
+        .as_object_mut()
+        .ok_or_else(|| AppError::Validation("Data-Integrity VC is not a JSON object".to_string()))?
+        .remove("proof");
+    proof
+        .verify_with_public_key(&signing_doc, issuer_pub, VerifyOptions::new())
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "issuer Data-Integrity proof verification failed: {e}"
+            ))
+        })?;
+
+    // Temporal validity over W3C VC 2.0 `validFrom` / `validUntil`.
+    di_temporal_valid(&vc, now)?;
+
+    // --- map verified VC → StoredCredential envelope ---
+    let types = extract_types(&vc);
+    let subject_did = vc
+        .get("credentialSubject")
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let issuer_did = vc.get("issuer").and_then(|i| {
+        i.as_str()
+            .map(str::to_string)
+            .or_else(|| i.get("id").and_then(Value::as_str).map(str::to_string))
+    });
+    let purpose = infer_purpose(&types);
+    let valid_from = vc
+        .get("validFrom")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let valid_until = vc
+        .get("validUntil")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let cred = StoredCredential {
+        id: id.to_string(),
+        format: CredentialFormat::EddsaJcs2022,
+        types,
+        schema_id: None,
+        community_did: None,
+        subject_did,
+        issuer_did,
+        purpose,
+        status: CredentialStatus::Valid,
+        valid_from,
+        valid_until,
+        received_at: now.to_rfc3339(),
+        source,
+        tags: std::collections::BTreeMap::new(),
+        body: vc_json.to_vec(),
+    };
+
+    storage::put(vault, &cred).await?;
+    Ok(cred)
+}
+
+/// Format-dispatching receive — the vault's single entry point for storing an
+/// incoming credential of any format (spec D4).
+///
+/// `SdJwtVc` resolves its issuer `did:key` internally; the Data-Integrity
+/// formats take a caller-resolved `issuer_pub` (the wire layer resolves the
+/// issuer DID). `Bbs2023` is audit-gated; `Other` is rejected.
+pub async fn receive(
+    vault: &KeyspaceHandle,
+    id: &str,
+    format: &CredentialFormat,
+    body: &[u8],
+    issuer_pub: Option<&[u8]>,
+    source: Provenance,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, AppError> {
+    match format {
+        CredentialFormat::SdJwtVc => {
+            let compact = std::str::from_utf8(body).map_err(|e| {
+                AppError::Validation(format!("SD-JWT-VC body is not valid UTF-8: {e}"))
+            })?;
+            receive_sd_jwt_vc(vault, id, compact, source, now.timestamp().max(0) as u64).await
+        }
+        CredentialFormat::EddsaJcs2022 => {
+            let pubkey = issuer_pub.ok_or_else(|| {
+                AppError::Validation(
+                    "a Data-Integrity credential needs a caller-resolved issuer key".to_string(),
+                )
+            })?;
+            receive_di_vc(vault, id, body, pubkey, source, now).await
+        }
+        CredentialFormat::Bbs2023 => Err(AppError::Validation(
+            "BBS+ receive is audit-gated (Phase 0b) and not yet supported".to_string(),
+        )),
+        CredentialFormat::Other(tag) => Err(AppError::Validation(format!(
+            "unsupported credential format `{tag}`"
+        ))),
+    }
+}
+
+/// True iff `now` lies within a W3C VC 2.0 `validFrom`/`validUntil` window.
+/// Either bound may be absent; a malformed RFC-3339 bound is a hard error
+/// (default-deny — never store a credential whose window can't be evaluated).
+fn di_temporal_valid(vc: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
+    if let Some(from) = vc.get("validFrom").and_then(Value::as_str) {
+        let from = from.parse::<DateTime<Utc>>().map_err(|e| {
+            AppError::Validation(format!("`validFrom` ({from}) is not RFC-3339: {e}"))
+        })?;
+        if now < from {
+            return Err(AppError::Validation(
+                "credential is not yet valid (`validFrom` is in the future)".to_string(),
+            ));
+        }
+    }
+    if let Some(until) = vc.get("validUntil").and_then(Value::as_str) {
+        let until = until.parse::<DateTime<Utc>>().map_err(|e| {
+            AppError::Validation(format!("`validUntil` ({until}) is not RFC-3339: {e}"))
+        })?;
+        if now >= until {
+            return Err(AppError::Validation(
+                "credential has expired (`validUntil` is in the past)".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Extract VC `type` tags from the verified claims.
@@ -636,5 +816,138 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), types.len());
+    }
+
+    // ---- Data-Integrity (eddsa-jcs-2022) receive ------------------------
+
+    use affinidi_data_integrity::{
+        DataIntegrityProof as DiProof, SignOptions, crypto_suites::CryptoSuite as Suite,
+    };
+    use affinidi_secrets_resolver::secrets::Secret;
+
+    /// Build + sign a W3C-DI VC (eddsa-jcs-2022); returns `(vc_bytes,
+    /// issuer_public_key_bytes)`.
+    async fn signed_di_vc(seed: u8, valid_until: Option<&str>) -> (Vec<u8>, Vec<u8>) {
+        let secret =
+            Secret::generate_ed25519(Some("did:web:issuer.example#key-0"), Some(&[seed; 32]));
+        let mut vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:issuer.example",
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": "did:key:zMember", "givenName": "Alice" }
+        });
+        if let Some(u) = valid_until {
+            vc["validUntil"] = json!(u);
+        }
+        let proof = DiProof::sign(
+            &vc,
+            &secret,
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(Suite::EddsaJcs2022),
+        )
+        .await
+        .expect("sign DI VC");
+        vc["proof"] = serde_json::to_value(&proof).unwrap();
+        (
+            serde_json::to_vec(&vc).unwrap(),
+            secret.get_public_bytes().to_vec(),
+        )
+    }
+
+    #[tokio::test]
+    async fn di_vc_verifies_and_stores() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (vc, issuer_pub) = signed_di_vc(9, Some("2100-01-01T00:00:00Z")).await;
+        let cred = receive_di_vc(&vault, "c1", &vc, &issuer_pub, None, Utc::now())
+            .await
+            .expect("receive DI VC");
+        assert_eq!(cred.format, CredentialFormat::EddsaJcs2022);
+        assert_eq!(cred.subject_did.as_deref(), Some("did:key:zMember"));
+        assert_eq!(cred.issuer_did.as_deref(), Some("did:web:issuer.example"));
+        assert!(cred.types.contains(&"MembershipCredential".to_string()));
+        assert!(
+            crate::vault::storage::get(&vault, "c1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn di_vc_tampered_is_rejected_and_not_stored() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (vc, issuer_pub) = signed_di_vc(9, None).await;
+        let mut v: Value = serde_json::from_slice(&vc).unwrap();
+        v["credentialSubject"]["givenName"] = json!("Mallory"); // tamper after signing
+        let tampered = serde_json::to_vec(&v).unwrap();
+        let err = receive_di_vc(&vault, "c1", &tampered, &issuer_pub, None, Utc::now())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(
+            crate::vault::storage::get(&vault, "c1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn di_vc_expired_is_rejected() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (vc, issuer_pub) = signed_di_vc(9, Some("2001-01-01T00:00:00Z")).await;
+        let err = receive_di_vc(&vault, "c1", &vc, &issuer_pub, None, Utc::now())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_routes_di_requires_key_and_gates_bbs() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (vc, issuer_pub) = signed_di_vc(9, None).await;
+        // DI without a resolved issuer key → rejected.
+        assert!(
+            receive(
+                &vault,
+                "c1",
+                &CredentialFormat::EddsaJcs2022,
+                &vc,
+                None,
+                None,
+                Utc::now()
+            )
+            .await
+            .is_err()
+        );
+        // With the key → routed to receive_di_vc + stored.
+        let cred = receive(
+            &vault,
+            "c1",
+            &CredentialFormat::EddsaJcs2022,
+            &vc,
+            Some(&issuer_pub),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect("dispatch DI");
+        assert_eq!(cred.format, CredentialFormat::EddsaJcs2022);
+        // BBS+ is audit-gated.
+        assert!(
+            receive(
+                &vault,
+                "c2",
+                &CredentialFormat::Bbs2023,
+                &vc,
+                Some(&issuer_pub),
+                None,
+                Utc::now()
+            )
+            .await
+            .is_err()
+        );
     }
 }
