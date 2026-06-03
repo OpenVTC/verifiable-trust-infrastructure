@@ -82,7 +82,7 @@ pub struct AppState {
     /// M4.8.0). Only registered types are issuable.
     pub endorsement_types_ks: KeyspaceHandle,
     /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
-    /// registry binding each type to a DTC catalog type + JSON Schema.
+    /// registry binding each type to a DTG catalog type + JSON Schema.
     pub schemas_ks: KeyspaceHandle,
     /// Issued custom endorsement rows (Phase 4 M4.7).
     /// Tracked here for list + revoke surfaces; the VEC body

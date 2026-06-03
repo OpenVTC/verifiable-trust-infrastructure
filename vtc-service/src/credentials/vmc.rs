@@ -41,7 +41,7 @@ use vti_common::error::AppError;
 use super::LocalSigner;
 
 /// The membership type the catalog stamps in the VC's `type` array (alongside
-/// the universal `VerifiableCredential`). Sourced from the DTC catalog
+/// the universal `VerifiableCredential`). Sourced from the DTG catalog
 /// (`DTGCredentialType::Membership`).
 pub const VMC_TYPE: &str = "MembershipCredential";
 
@@ -146,15 +146,15 @@ impl VmcParams {
 /// `validFrom = now()`, `validUntil = now() + params.validity`.
 /// Returns the signed VC with `proof` attached.
 ///
-/// The credential's canonical shape comes from the DTC catalog
-/// ([`super::dtc::issue_membership`]); the signed JSON is carried as a
+/// The credential's canonical shape comes from the DTG catalog
+/// ([`super::dtg::issue_membership`]); the signed JSON is carried as a
 /// (lossless, JSON-backed) [`VerifiableCredential`] so every consumer is
 /// unchanged.
 pub async fn build_vmc(
     signer: &LocalSigner,
     params: VmcParams,
 ) -> Result<VerifiableCredential, AppError> {
-    let doc = super::dtc::issue_membership(
+    let doc = super::dtg::issue_membership(
         signer,
         &params.member_did,
         params.id.as_deref(),
@@ -164,7 +164,7 @@ pub async fn build_vmc(
     )
     .await?;
     serde_json::from_value(doc)
-        .map_err(|e| AppError::Internal(format!("DTC VMC -> VerifiableCredential: {e}")))
+        .map_err(|e| AppError::Internal(format!("DTG VMC -> VerifiableCredential: {e}")))
 }
 
 #[cfg(test)]
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!((vu - vf).num_seconds(), validity.num_seconds());
     }
 
-    /// Personhood adds a `PersonhoodCredential` to the `type` array (the DTC
+    /// Personhood adds a `PersonhoodCredential` to the `type` array (the DTG
     /// catalog convention) rather than a `credentialSubject` field.
     #[tokio::test]
     async fn vmc_personhood_adds_personhood_type() {

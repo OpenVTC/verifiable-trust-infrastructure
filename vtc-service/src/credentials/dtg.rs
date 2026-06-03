@@ -1,5 +1,5 @@
-//! Issue catalog credentials from the **DTG / Decentralized Trust Credentials**
-//! catalog (`dtg-credentials`) — task 2.0.
+//! Issue catalog credentials from the **DTG (Decentralized Trust Graph)**
+//! credentials catalog (`dtg-credentials`) — task 2.0.
 //!
 //! Every credential the VTC mints (Membership, role/custom Endorsement,
 //! Invitation, …) gets its **canonical shape** here from the `dtg-credentials`
@@ -53,10 +53,10 @@ async fn finalize(
     // The wire VC is the catalog's `DTGCommon` body; the `DTGCredential`
     // wrapper's `type_`/`version` helpers are not part of the credential.
     let mut doc = serde_json::to_value(dtg.credential())
-        .map_err(|e| AppError::Internal(format!("DTC credential -> value: {e}")))?;
+        .map_err(|e| AppError::Internal(format!("DTG credential -> value: {e}")))?;
     let obj = doc
         .as_object_mut()
-        .ok_or_else(|| AppError::Internal("DTC credential is not a JSON object".into()))?;
+        .ok_or_else(|| AppError::Internal("DTG credential is not a JSON object".into()))?;
 
     if let Some(id) = id {
         obj.insert("id".into(), Value::String(id.to_string()));

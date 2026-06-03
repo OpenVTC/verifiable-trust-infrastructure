@@ -27,7 +27,7 @@ use crate::acl::VtcRole;
 use super::LocalSigner;
 
 /// The endorsement type the catalog stamps in the VEC's `type` array (alongside
-/// the universal `VerifiableCredential`). Sourced from the DTC catalog
+/// the universal `VerifiableCredential`). Sourced from the DTG catalog
 /// (`DTGCredentialType::Endorsement`).
 pub const VEC_TYPE: &str = "EndorsementCredential";
 
@@ -82,11 +82,11 @@ pub async fn build_role_vec(
     signer: &LocalSigner,
     params: RoleVecParams,
 ) -> Result<VerifiableCredential, AppError> {
-    // Canonical role-grant shape from the DTC catalog. `issue_role` keeps the
+    // Canonical role-grant shape from the DTG catalog. `issue_role` keeps the
     // `credentialSubject.endorsement.{type,role,communityDid}` shape that
     // `recognition` parses. Role VECs carry no credentialStatus today
     // (`status_ref = None`).
-    let doc = super::dtc::issue_role(
+    let doc = super::dtg::issue_role(
         signer,
         &params.member_did,
         &params.role,
@@ -96,7 +96,7 @@ pub async fn build_role_vec(
     )
     .await?;
     serde_json::from_value(doc)
-        .map_err(|e| AppError::Internal(format!("DTC VEC -> VerifiableCredential: {e}")))
+        .map_err(|e| AppError::Internal(format!("DTG VEC -> VerifiableCredential: {e}")))
 }
 
 #[cfg(test)]

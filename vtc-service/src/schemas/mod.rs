@@ -4,7 +4,7 @@
 //! A community declares the credential types it deals in:
 //!
 //! - **Issues** — the types this VTC *mints* (Invitation, Membership, Role, and
-//!   operator-defined endorsements), each bound to a DTC catalog type and an
+//!   operator-defined endorsements), each bound to a DTG catalog type and an
 //!   optional JSON Schema (`credentialSchema`). Issuance consults this registry,
 //!   and issue-time validation (task 2.3) checks a minted credential against the
 //!   schema.
@@ -53,11 +53,11 @@ pub enum SchemaKind {
 pub struct SchemaEntry {
     /// The credential type URI / `vct`. Primary key — URL-encoded into the key.
     pub type_uri: String,
-    /// The DTC catalog type this binds to (a `DTGCredentialType` string, e.g.
+    /// The DTG catalog type this binds to (a `DTGCredentialType` string, e.g.
     /// `"MembershipCredential"`). `None` for community-defined endorsement types
     /// that map onto the generic `EndorsementCredential`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dtc_type: Option<String>,
+    pub dtg_type: Option<String>,
     /// The JSON Schema (W3C `credentialSchema`) an issued/accepted credential
     /// must conform to. Validated at issue time (task 2.3). `None` means
     /// "registered, but no schema constraint".

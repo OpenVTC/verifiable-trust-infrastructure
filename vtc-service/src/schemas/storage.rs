@@ -106,7 +106,7 @@ mod tests {
     fn membership_issues() -> SchemaEntry {
         SchemaEntry {
             type_uri: "https://openvtc.org/credentials/MembershipCredential".into(),
-            dtc_type: Some("MembershipCredential".into()),
+            dtg_type: Some("MembershipCredential".into()),
             credential_schema: Some(json!({
                 "type": "object",
                 "properties": { "id": { "type": "string" } },

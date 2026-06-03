@@ -103,8 +103,8 @@ impl LocalSigner {
     /// resulting `DataIntegrityProof` into its `proof` field.
     ///
     /// Unlike [`sign`](Self::sign) (a typed [`VerifiableCredential`]), this signs
-    /// a raw `serde_json::Value`. It's the signing surface for the DTC issuance
-    /// layer ([`super::dtc`]): a credential's canonical shape is sourced from the
+    /// a raw `serde_json::Value`. It's the signing surface for the DTG issuance
+    /// layer ([`super::dtg`]): a credential's canonical shape is sourced from the
     /// `dtg-credentials` catalog, then fields the catalog struct doesn't model
     /// (a top-level `id`, a `credentialStatus` block) are spliced **before**
     /// signing so the proof covers them. Any pre-existing `proof` is removed

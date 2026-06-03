@@ -123,7 +123,7 @@ mod tests {
         let ks = store.keyspace("schemas").unwrap();
         let entry = SchemaEntry {
             type_uri: "MembershipCredential".into(),
-            dtc_type: Some("MembershipCredential".into()),
+            dtg_type: Some("MembershipCredential".into()),
             credential_schema: schema,
             kind: SchemaKind::Issues,
             description: None,

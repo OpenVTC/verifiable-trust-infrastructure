@@ -4,7 +4,7 @@
 //! their key and delivered out-of-band (the relayer≠holder / air-gap pattern;
 //! the transport itself is Phase 3). This module is the **issuance op**: it
 //! allocates a revocation-list slot (so the invite is revocable), issues the
-//! VIC through the DTC catalog ([`super::dtc::issue_invitation`]) signed by the
+//! VIC through the DTG catalog ([`super::dtg::issue_invitation`]) signed by the
 //! community's local key, and persists the status-list state only after the VIC
 //! builds — so a build failure never permanently burns a slot.
 
@@ -17,7 +17,7 @@ use vti_common::store::KeyspaceHandle;
 
 use crate::status_list;
 
-use super::dtc;
+use super::dtg;
 use super::signer::LocalSigner;
 use super::vmc::CredentialStatusRef;
 
@@ -60,7 +60,7 @@ pub async fn issue_invitation(
 
     // Build first; persist the burned slot only on success.
     let vic =
-        dtc::issue_invitation(signer, subject_did, Some(&id), Some(&status_ref), validity).await?;
+        dtg::issue_invitation(signer, subject_did, Some(&id), Some(&status_ref), validity).await?;
 
     // Issue-time schema validation (task 2.3): if an InvitationCredential schema
     // is registered in the schema store, the VIC must conform before the slot is
@@ -178,7 +178,7 @@ mod tests {
             &schemas_ks,
             &SchemaEntry {
                 type_uri: "InvitationCredential".into(),
-                dtc_type: Some("InvitationCredential".into()),
+                dtg_type: Some("InvitationCredential".into()),
                 credential_schema: Some(serde_json::json!({
                     "type": "object",
                     "required": ["id", "invitedBy"]

@@ -130,7 +130,7 @@ pub async fn build_custom_endorsement(
     }
 
     // Custom-endorsement shape: `credentialSubject.endorsement = { type, claim,
-    // communityDid }`, sourced through the DTC catalog (`issue_endorsement`),
+    // communityDid }`, sourced through the DTG catalog (`issue_endorsement`),
     // with the operator's required `credentialStatus`.
     let endorsement = serde_json::json!({
         "type": params.endorsement_type,
@@ -138,7 +138,7 @@ pub async fn build_custom_endorsement(
         "communityDid": signer.issuer_did(),
     });
 
-    let doc = super::dtc::issue_endorsement(
+    let doc = super::dtg::issue_endorsement(
         signer,
         &params.subject_did,
         endorsement,
@@ -149,7 +149,7 @@ pub async fn build_custom_endorsement(
     .await?;
     serde_json::from_value(doc).map_err(|e| {
         AppError::Internal(format!(
-            "DTC custom endorsement -> VerifiableCredential: {e}"
+            "DTG custom endorsement -> VerifiableCredential: {e}"
         ))
     })
 }
