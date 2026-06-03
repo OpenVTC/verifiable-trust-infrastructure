@@ -20,7 +20,7 @@ privacy-preserving exchange protocol. The motivating user journey is
 | D1 | Exchange wire protocol | **Trust Tasks wrap OID4VCI (issuance) + OID4VP (query/presentation)**; DCQL is the query language. The same OID4VP shapes are exposable to the browser via the W3C Digital Credentials API. |
 | D2 | Role / session auth model | **Hybrid**: the VC is the source of truth; a fast local *verified-assertion record* (TTL + invalidation) backs every hot-path authorization check. Re-prove only on invalidation. |
 | D3 | Credential type layer | **Adopt `dtg-credentials` (DTC)** as the canonical type catalog; the bespoke VMC/VEC become thin wrappers (or are retired) onto DTC types. |
-| D4 | Selective disclosure | **Implement BOTH, claim-level from the start.** **SD-JWT-VC** (no new curve, ships first, broad OID4VP interop) **and** **BBS+** (`bbs-2023` Data Integrity cryptosuite, unlinkable). The BLS12-381 foundation uses **`arkworks` / `ark-bls12-381`**. Both owned in `affinidi-tdk-rs`. |
+| D4 | Selective disclosure | **BOTH, claim-level — and ALREADY BUILT in the TDK** (`affinidi-sd-jwt`/`-vc`, `affinidi-bbs`, the `bbs_2023` DI cryptosuite — validated, tests green). So this is **adopt, not build**. BBS curve = **`bls12_381_plus`** (the existing `affinidi-bbs`; supersedes the earlier `arkworks` call). One net-new TDK gap: **DCQL** (add to `affinidi-openid4vp`, which uses DIF PE today). |
 
 ---
 
@@ -171,37 +171,34 @@ both; DCQL `format` selectors say which a given query wants.
     (inside the ZKP) uses the BBS **pseudonym/commitment** extension with
     a wallet-managed BLS **link secret** — still **not** the holder's DID
     key, just a blinding scalar the wallet holds. Start without it.
-- **Implementation: own it in `affinidi-tdk-rs` — starting from zero.**
-  Confirmed against `Cargo.lock`: there is **no BBS+ and no BLS12-381
-  curve anywhere in the dependency tree today**. The Affinidi crypto we
-  pull (`affinidi-crypto`, `affinidi-data-integrity` `eddsa-jcs-2022`,
-  `affinidi-secrets-resolver`) is entirely Ed25519/X25519. So this is
-  net-new foundational work, layered into `affinidi-tdk-rs`:
-  1. **SD-JWT-VC** (no curve) — salted-hash disclosures + JWT + `kb-jwt`
-     over the existing Ed25519/JOSE. Lower effort; **ships first**.
-  2. **Adopt `arkworks` / `ark-bls12-381`** (D-locked, pure-Rust pairing
-     library) as the BLS12-381 foundation. Never hand-roll curve
-     arithmetic.
-  3. **Implement `bbs-2023`** (keygen / sign / proofgen / proofverify per
-     `draft-irtf-cfrg-bbs-signatures`) on `ark-bls12-381` — clean-room,
-     validated against the IRTF **test vectors**. Home: a **new
-     `affinidi-bbs` crate** (D-locked) that *depends on `affinidi-crypto`*
-     for the shared key/DID/multikey abstractions — keeps `affinidi-crypto`
-     curve-free and the audit-pending BLS code **structurally isolated**
-     (BBS is linked iff a build depends on `affinidi-bbs`, with no
-     workspace feature-unification surprises). The BLS12-381 G2 key type
-     lives here too.
-  4. **Add a `bbs-2023` Data Integrity cryptosuite** to
-     `affinidi-data-integrity` so a BBS VC is still a normal W3C
-     Data-Integrity VC (parallel to `eddsa-jcs-2022`).
-  5. **BLS12-381 G2 key support** — `affinidi-bbs` defines the G2 key
-     type + multicodec (`0xeb`) and implements `affinidi-crypto`'s shared
-     key/DID/multikey traits, so the issuer `#bbs-key-0` verification
-     method plugs into the existing did:key/did:webvh machinery without
-     putting the curve in `affinidi-crypto`.
-  This turns the library-maturity risk into a reusable asset, at the cost
-  of an **implement-and-audit-a-cryptographic-scheme** obligation: BBS+
-  must be security-reviewed before it signs anything real.
+- **Implementation: ADOPT — the TDK already has it (validated).** The
+  earlier "build from scratch" framing was wrong: the `Cargo.lock` grep
+  came back empty only because *this workspace doesn't depend on the
+  credential crates yet*. They exist and pass their suites (validated
+  `cargo test`, exit 0):
+  | TDK crate | LOC | tests | what it is |
+  |---|---|---|---|
+  | `affinidi-sd-jwt` | ~2.3k | 90 | SD-JWT core (issuer/holder/verifier, key binding) |
+  | `affinidi-sd-jwt-vc` | ~0.5k | 11 | the SD-JWT-VC profile (`SdJwtVc`, `issue`, `verify_temporal`) |
+  | `affinidi-bbs` | ~2.1k | 52 | BBS over **BLS12-381 (`bls12_381_plus`)**, IETF `draft-irtf-cfrg-bbs-signatures` |
+  | `affinidi-data-integrity` | ~3k | ✓ | includes **`bbs_2023.rs`** — the DI cryptosuite, parallel to `eddsa-jcs-2022` |
+  | `affinidi-openid4vp` / `-vci` | ~0.8k ea | 13 | OID4VP/VCI (**DIF Presentation Exchange today, not DCQL**) |
+
+  So the BBS curve is **`bls12_381_plus`** (D-revised — the original
+  `arkworks` call predated finding `affinidi-bbs`; we keep the existing,
+  tested crate rather than rewrite it). The crates are
+  `publish.workspace = true` (crates.io-publishable, like the
+  `affinidi-vc = "0.1"` deps VTI already uses), so VTI **adopts them as
+  dependencies** — no new TDK crate, no `arkworks`.
+  - **The one net-new TDK gap is DCQL** (D-locked). `affinidi-openid4vp`
+    uses the older DIF Presentation Exchange (`PresentationDefinition` /
+    `InputDescriptor`); DCQL is absent across the whole TDK. We add a DCQL
+    query + match module to `affinidi-openid4vp`.
+  - **Still to confirm during adoption:** SD-JWT-VC profile completeness
+    (`vct` / `cnf` / `status`); a BLS12-381 G2 verification-method
+    representation for `#bbs-key-0` in the did:key/did:webvh layer.
+  - **BBS audit** remains a gate before BBS signs anything real (the crate
+    is implemented + unit-tested, not yet independently audited).
 - **Holder binding** is mandatory on presentation (both formats): bound to
   a fresh holder-key signature over the verifier nonce — `kb-jwt` for
   SD-JWT-VC, an Ed25519 binding (or the BBS pseudonym extension later) for
@@ -210,12 +207,13 @@ both; DCQL `format` selectors say which a given query wants.
   disclosure adds nothing (status-list credentials, internal authorization
   VCs) and for the holder key-binding signature.
 
-> **Sequencing (de-risked):** SD-JWT-VC has no curve dependency, so
-> Phases 1–6 build on it **in parallel** while the BLS/BBS foundation
-> matures — and because the credential layer abstracts over format, adding
-> BBS+ later is additive (a new format + cryptosuite), not a rewrite. BBS+
-> is the gated, security-reviewed track; SD-JWT-VC is the unblock-now
-> track. Both land; neither blocks the other.
+> **Sequencing (de-risked — the foundation is already built):** both
+> formats exist + pass tests in the TDK, so Phase 0 is *validate + adopt*,
+> not *build*. Integrate **SD-JWT-VC first** (simplest to wire — JOSE over
+> Ed25519); **BBS+ is additive** (register a second format + the
+> `bbs_2023` cryptosuite) and gated only by its independent **security
+> audit** before real signing. The one net-new TDK build is **DCQL**.
+> Neither blocks the VTA/VTC integration (Phases 1–6).
 
 ---
 
@@ -518,9 +516,11 @@ The plugin is the consent + key + legibility surface:
 
 ## 17. Open questions
 
-1. **BBS+ library maturity (highest risk).** Does a production-grade
-   `bbs-2023` Data Integrity implementation exist for Rust, with the
-   `affinidi-*` stack? Phase 0 spike decides BBS+ vs SD-JWT-VC-primary.
+1. ~~BBS+ library maturity (highest risk)~~ **RESOLVED: it exists +
+   passes tests.** `affinidi-bbs` (BBS over `bls12_381_plus`, 52 tests) +
+   `affinidi-data-integrity::bbs_2023` are implemented and validated
+   (`cargo test` exit 0). Remaining real risk is the **independent
+   security audit** before BBS signs anything real — not existence.
 2. **Issuer BLS key lifecycle.** How are BLS12-381 issuer keys minted,
    stored (the VTC `LocalSigner`), and rotated alongside the Ed25519 key?
 3. **Trust-registry binding for issuer trust** — reuse Phase-3
@@ -536,30 +536,30 @@ The plugin is the consent + key + legibility surface:
    for the credential store.)
 6. **OID4VP profile** — which DCQL/credential-format profile to target for
    external-wallet interop (and is that a near-term goal or future)?
-7. ~~Pairing-library choice~~ **RESOLVED: `arkworks` / `ark-bls12-381`.**
-   ~~Which proof format~~ **RESOLVED: implement BOTH SD-JWT-VC and BBS+.**
-   ~~BBS home~~ **RESOLVED: a new `affinidi-bbs` crate** (depends on
-   `affinidi-crypto`; curve stays out of the base crate). Remaining:
-   **who audits** the BBS scheme before it signs real credentials.
+7. ~~Pairing-library choice~~ **RESOLVED: `bls12_381_plus`** — keep the
+   existing, tested `affinidi-bbs` (the earlier `arkworks` + new-crate
+   plan predated finding it). ~~Proof format~~ **RESOLVED: BOTH, and both
+   already built.** ~~BBS home~~ **RESOLVED: existing `affinidi-bbs`.**
+   Remaining: **who audits** BBS before real signing.
+8. **DCQL shape** — confirm the DCQL profile/version to implement in
+   `affinidi-openid4vp`, and how it maps onto both SD-JWT-VC and BBS
+   credential formats.
 
 ---
 
 ## 18. Phased plan (PLAN preview — not yet TASKS)
 
-- **Phase 0a — SD-JWT-VC (unblocks everything; no curve):** implement
-  SD-JWT-VC (salted-hash disclosures + `kb-jwt`) in `affinidi-tdk-rs` over
-  the existing Ed25519/JOSE. *Verify: issue → selectively-disclose →
-  verify + key-binding end-to-end.* Phases 1–6 build on this immediately.
-- **Phase 0b — BBS foundation (gated, parallel; net-new — the TDK has no
-  BLS today):** adopt `arkworks`/`ark-bls12-381`; implement `bbs-2023`
-  in a new **`affinidi-bbs`** crate (depends on `affinidi-crypto`) and
-  pass the IRTF BBS test vectors; add a `bbs-2023` Data Integrity cryptosuite to
-  `affinidi-data-integrity`; add BLS12-381 G2 key support + the issuer
-  `#bbs-key-0` verification method on a `did:webvh` doc; prove issue →
-  selectively-disclose → verify + Ed25519 holder binding. *Verify: IRTF
-  test vectors pass + end-to-end issue/disclose/verify. **Security review
-  before any real signing.*** Adding BBS+ to the credential layer is
-  additive (new format + cryptosuite), so it doesn't block 0a or 1–6.
+- **Phase 0 — Validate + adopt the TDK formats (mostly DONE).** The
+  credential foundation already exists and passes its tests (`affinidi-sd-jwt`,
+  `affinidi-sd-jwt-vc`, `affinidi-bbs` on `bls12_381_plus`, the `bbs_2023`
+  DI cryptosuite). *Verify: ✅ `cargo test` exit 0 across the crates.*
+  Remaining adoption tasks: wire them as VTI deps; confirm the SD-JWT-VC
+  profile (`vct`/`cnf`/`status`) + a BLS12-381 G2 verification method for
+  `#bbs-key-0`; schedule the **BBS security audit** before real signing.
+- **Phase 0c — DCQL (the one net-new TDK build):** add a DCQL query +
+  match module to `affinidi-openid4vp` (it uses DIF Presentation Exchange
+  today). *Verify: a DCQL query matches/selects credentials against the
+  SD-JWT-VC + BBS formats.* Unblocks the privacy-first discovery (§7).
 - **Phase 1 — Credential store:** promote the VTA `vault` to a real
   store (receive/store/index/search/present/mint). *Verify: store + DCQL
   local search + present round-trip.*

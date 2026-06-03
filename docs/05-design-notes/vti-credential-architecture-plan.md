@@ -18,14 +18,21 @@ lies.
 
 | Repo | Owns |
 |---|---|
-| **`affinidi-tdk-rs`** (external; published crates) | the credential *crypto + formats*: SD-JWT-VC, BBS+ (`affinidi-bbs`), the `bbs-2023` Data Integrity cryptosuite, BLS12-381 keys. |
+| **`affinidi-tdk-rs`** (external; published crates) | the credential *crypto + formats* — **already built + validated**: `affinidi-sd-jwt`/`-vc`, `affinidi-bbs` (BBS over `bls12_381_plus`), `affinidi-data-integrity::bbs_2023`, `affinidi-openid4vp`/`-vci`. One net-new gap: **DCQL**. |
 | **`verifiable-trust-infrastructure`** (this workspace) | everything that *uses* credentials: the VTA store, VTC schema store + issuer, the exchange protocol, role-by-VC + the verified-assertion cache, the ceremony integration, plugin UX. |
 
-**Coordination rule:** a this-repo phase that consumes a new format
-cannot start until that format is available as a published/path/git dep
-from `affinidi-tdk-rs`. The plan front-loads the format work (Phase 0a)
-and keeps the format-agnostic this-repo work (the store's model/index)
-able to start in parallel.
+> **Re-baseline (validated):** the credential foundation the spec once
+> said to "build from scratch" **already exists in the TDK and passes its
+> tests** (`cargo test` exit 0 across the crates). Phase 0 is therefore
+> **validate + adopt**, not build — the BBS curve is `bls12_381_plus`
+> (keep `affinidi-bbs`, not `arkworks`), and the only net-new TDK work is
+> **DCQL**. This collapses the original Phase 0a/0b into a short adoption
+> step and moves the real work to DCQL + Phases 1–6.
+
+**Coordination rule:** a this-repo phase that consumes a TDK format wires
+it as a dep (the crates are `publish.workspace = true` — crates.io, like
+the `affinidi-vc = "0.1"` deps VTI already uses; path/git to the local
+TDK for unreleased changes like DCQL).
 
 ---
 
@@ -33,14 +40,14 @@ able to start in parallel.
 
 ```
                  ┌─────────────────────────── (affinidi-tdk-rs) ───────────────────────────┐
-   Phase 0a  SD-JWT-VC ──────────────┐
-   Phase 0b  BBS foundation ─────────┤  (additive: a new format + cryptosuite; never blocks 1–6)
-                                     │
-                 └─────────────────── │ ───────── (verifiable-trust-infrastructure) ────────┘
-                                     ▼
+   Phase 0   validate + adopt SD-JWT-VC + BBS (DONE: tests green) ─┐
+   Phase 0c  DCQL  (the one net-new TDK build) ───────────────────┤
+                                                                  │
+                 └────────────────────────────────────────────────│── (verifiable-trust-infrastructure) ──┘
+                                                                  ▼
    Phase 1   VTA credential store    │   1.1–1.3 (model / receive / search) are FORMAT-AGNOSTIC →
-             ────────────────────────┘   can start NOW, parallel to 0a.
-                                         1.4–1.6 (present / mint / status) need a format (0a).
+             ────────────────────────┘   can start NOW (adopt SD-JWT-VC at 1.4).
+                                         1.4–1.6 (present / mint / status) wire the adopted format.
                                      ▼
    Phase 2   DTC catalog + VTC schema store + VIC
                                      ▼
@@ -54,13 +61,13 @@ able to start in parallel.
 ```
 
 **What can start immediately, in parallel:**
-- **Track A (affinidi-tdk-rs):** Phase 0a (SD-JWT-VC). Phase 0b (BBS) on
-  its own audited track.
+- **Track A (affinidi-tdk-rs):** Phase 0c (DCQL) — the one net-new TDK
+  build. (Phase 0 adopt = already validated; BBS audit on its own track.)
 - **Track B (this repo):** Phase 1 tasks **1.1–1.3** — the
   `StoredCredential` model, the `vault` keyspace + index, and local
   DCQL-shaped search — are format-agnostic (they index opaque credential
-  bodies + metadata) and don't need 0a. They converge with 0a at task 1.4
-  (present), which needs a real format verifier/presenter.
+  bodies + metadata). They converge with the adopted SD-JWT-VC at task 1.4
+  (present).
 
 ---
 
@@ -74,40 +81,40 @@ search, then present.
 
 ---
 
-## Phase 0a — SD-JWT-VC  (repo: `affinidi-tdk-rs`)
+## Phase 0 — Validate + adopt the TDK formats  (repo: `affinidi-tdk-rs`; mostly DONE)
 
-**Goal:** a selective-disclosure credential format with no new curve —
-runs on the existing Ed25519/JOSE — so the this-repo phases can build on
-it immediately. **Home:** a new `affinidi-sd-jwt` crate (mirrors the
-`affinidi-bbs` isolation decision; keeps the disclosure machinery out of
-the base crypto crate). *Final home is an `affinidi-tdk-rs` repo call.*
+The credential foundation already exists and passes its tests. Validated
+`cargo test` (exit 0) across `affinidi-sd-jwt` (90), `affinidi-sd-jwt-vc`
+(11), `affinidi-bbs` (52, BBS over `bls12_381_plus`),
+`affinidi-data-integrity` (incl. `bbs_2023`), `affinidi-openid4vp`/`-vci`.
 
-Slices (detail in the tasks doc): SD-JWT core round-trip → selective
-disclosure → key binding (`kb-jwt`) → the SD-JWT-VC profile (`vct`/`cnf`/
-`status`) → IETF interop fixtures → the public `issue/present/verify` API.
+Remaining adoption work (small): wire the crates as VTI deps; confirm the
+SD-JWT-VC profile carries `vct`/`cnf`/`status`; confirm/add a BLS12-381 G2
+verification-method representation for `#bbs-key-0` in the
+did:key/did:webvh layer; schedule the **BBS security audit** (the crate is
+unit-tested, not yet independently audited) as a gate before BBS signs
+anything real.
 
-**CHECKPOINT 0a:** `affinidi-sd-jwt` exposes `issue` / `present` (select
-+ bind) / `verify` (returns the disclosed claim set + holder DID), green
-against the IETF SD-JWT examples. *This is the gate that unblocks Phase 1
+**CHECKPOINT 0:** the TDK credential crates wired as VTI deps; a smoke
+test issues + verifies an SD-JWT-VC from this workspace. *Unblocks Phase 1
 present/mint and Phase 3.*
 
 ---
 
-## Phase 0b — BBS foundation  (repo: `affinidi-tdk-rs`; gated, parallel, audited)
+## Phase 0c — DCQL  (repo: `affinidi-tdk-rs`; the one net-new build)
 
-**Goal:** unlinkable claim-level selective disclosure as a W3C Data
-Integrity cryptosuite. **Net-new** — the dependency tree has no BLS today.
+**Goal:** the Digital Credentials Query Language — the privacy-first,
+"no fishing" query model (§7). `affinidi-openid4vp` uses the older DIF
+Presentation Exchange (`PresentationDefinition`/`InputDescriptor`) today;
+DCQL is absent across the whole TDK.
 
-Milestones: adopt `arkworks`/`ark-bls12-381` → BLS12-381 G2 keygen +
-`affinidi-crypto` trait impls (`#bbs-key-0`) → `bbs-2023` sign/verify vs
-IRTF test vectors → `bbs-2023` proofgen/proofverify (selective disclosure)
-vs IRTF vectors → the `bbs-2023` Data Integrity cryptosuite in
-`affinidi-data-integrity` → Ed25519 holder binding → **security review**.
+Slices: a DCQL query/credential-set model → a local match engine against
+held credentials → mapping onto both the SD-JWT-VC and BBS formats →
+integration with the OID4VP authorization request/response.
 
-**CHECKPOINT 0b:** IRTF test vectors pass + end-to-end issue/disclose/
-verify; **audited before any real signing.** Additive — adding BBS+ to
-the credential layer is a new format registration, so 0b never blocks 0a
-or 1–6.
+**CHECKPOINT 0c:** a DCQL query selects matching credentials (SD-JWT-VC +
+BBS) and produces an OID4VP presentation. *Unblocks the VTA local search
+(1.3) and the exchange (Phase 3).*
 
 ---
 

@@ -10,62 +10,75 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
 
 ---
 
-## Phase 0a — SD-JWT-VC  (Repo: `tdk`, new crate `affinidi-sd-jwt`)
+## Phase 0 — Validate + adopt TDK formats  (Repo: `tdk` + `vti`)
 
-- [ ] **0a.1 — SD-JWT core round-trip.** Build an SD-JWT (issuer JWT with
-  an `_sd` digest array + appended `~`-separated disclosures), serialize,
-  parse, and verify the issuer signature + recompute every disclosure
-  digest.
-  - Acceptance: a credential with all claims disclosed verifies; flipping
-    one byte of a disclosure or the signature fails verification.
-  - Verify: unit tests (`cargo test -p affinidi-sd-jwt`).
-  - Files: `affinidi-sd-jwt/src/{lib,sd_jwt,disclosure,hash}.rs`.
+> The SD-JWT/-VC + BBS + `bbs_2023` crates already exist and pass tests —
+> "build from scratch" was wrong. This phase **adopts** them.
 
-- [ ] **0a.2 — Selective disclosure.** Holder presents a *subset* of
-  disclosures; verifier returns only revealed claims; undisclosed claims
-  are absent and unrecoverable from the digests.
-  - Acceptance: present `{a}` of `{a,b,c}` → verifier sees `a`, never
-    `b`/`c`; the digests of `b`/`c` reveal nothing.
-  - Verify: unit test asserting the disclosed set and the absence of the
-    rest.
-  - Files: `affinidi-sd-jwt/src/present.rs`, `verify.rs`.
+- [x] **0.1 — Validate the foundation builds + passes.** `cargo test -p
+  affinidi-bbs -p affinidi-sd-jwt -p affinidi-sd-jwt-vc -p
+  affinidi-data-integrity -p affinidi-openid4vp`.
+  - Acceptance: exit 0. **DONE** (validated).
+  - Verify: ✅ exit 0.
 
-- [ ] **0a.3 — Key binding (`kb-jwt`).** Holder appends a `kb-jwt` over
-  `(sd_hash, aud, nonce, iat)` signed by the holder key (`cnf`); verifier
-  enforces it.
-  - Acceptance: a presentation with no / wrong / replayed (stale
-    `nonce`/`aud`) `kb-jwt` is rejected; a correct one passes and yields
-    the bound holder DID.
-  - Verify: unit tests for each rejection case + the happy path.
-  - Files: `affinidi-sd-jwt/src/key_binding.rs`, `verify.rs`.
+- [ ] **0.2 — Wire the crates as VTI deps.** Add `affinidi-sd-jwt-vc`,
+  `affinidi-bbs`, `affinidi-data-integrity` (bbs_2023), `affinidi-openid4vp`
+  to the VTI workspace (crates.io versions, or path/git to the local TDK
+  for unreleased DCQL).
+  - Acceptance: a VTI smoke test issues + verifies an SD-JWT-VC.
+  - Verify: `cargo test` in `vta-sdk`/`vti-common` smoke module.
+  - Files: `Cargo.toml` (workspace deps), a smoke test.
 
-- [ ] **0a.4 — SD-JWT-VC profile.** Add the VC profile fields: `vct`
-  (credential type), `iss`, `cnf`, `status`, `iat`/`exp`; map to the
-  workspace VC semantics.
-  - Acceptance: a typed SD-JWT-VC issues + verifies carrying
-    `vct`+`cnf`+`status`; an unknown/absent `vct` is surfaced to the
-    caller.
-  - Verify: unit test + a committed fixture credential.
-  - Files: `affinidi-sd-jwt/src/vc.rs`, `fixtures/`.
+- [ ] **0.3 — Confirm SD-JWT-VC profile completeness.** Verify
+  `affinidi-sd-jwt-vc` carries `vct` / `cnf` / `status`; fill any gap
+  upstream (TDK).
+  - Acceptance: a typed SD-JWT-VC with `vct`+`cnf`+`status` round-trips.
+  - Verify: unit test (TDK).
 
-- [ ] **0a.5 — IETF interop fixtures.** Validate against the published
-  SD-JWT / SD-JWT-VC examples (known-answer tests).
-  - Acceptance: the IETF example issuance + presentation verify;
-    digests/disclosures match byte-for-byte where the spec fixes them.
-  - Verify: KAT tests over `fixtures/ietf/`.
-  - Files: `affinidi-sd-jwt/tests/interop.rs`, `fixtures/ietf/`.
+- [ ] **0.4 — BLS12-381 G2 verification method.** Confirm/add a
+  `#bbs-key-0` representation in the did:key/did:webvh layer for the BBS
+  issuer key.
+  - Acceptance: a `did:webvh` doc resolves a BLS12-381 G2 VM usable by the
+    `bbs_2023` verifier.
+  - Verify: resolve + verify test (TDK).
 
-- [ ] **0a.6 — Public API + docs.** Stabilise `issue(claims, sd_paths,
-  issuer_key)`, `present(sd_jwt, reveal, holder_key, nonce, aud)`,
-  `verify(presentation, trusted_issuer) -> {claims, holder_did}`.
-  - Acceptance: the three-call flow runs in a doctest; the API is what the
-    VTA store (1.4/1.5) and the exchange (P3) will consume.
-  - Verify: doctest + `cargo doc` clean.
-  - Files: `affinidi-sd-jwt/src/lib.rs` (public surface).
+- [ ] **0.5 — Schedule the BBS security audit** (gate before BBS signs
+  anything real; SD-JWT-VC carries the near-term path meanwhile).
 
-- [ ] **CHECKPOINT 0a** — crate green end-to-end (issue → disclose →
-  verify + binding) + IETF fixtures pass; wired as a path/git dep into
-  this workspace. *Gate: unblocks 1.4–1.6 and Phase 3.*
+- [ ] **CHECKPOINT 0** — TDK formats wired into VTI; SD-JWT-VC
+  issue/verify smoke test green. *Gate: unblocks 1.4–1.6 + Phase 3.*
+
+---
+
+## Phase 0c — DCQL  (Repo: `tdk`, `affinidi-openid4vp`; the one net-new build)
+
+- [ ] **0c.1 — DCQL query model.** The DCQL `credentials` / `claims` /
+  `credential_sets` query structures (serde).
+  - Acceptance: parse/serialize the DCQL spec examples.
+  - Verify: unit tests over spec fixtures.
+  - Files: `affinidi-openid4vp/src/dcql/{model,parse}.rs`.
+
+- [ ] **0c.2 — Local match engine.** Match a DCQL query against a set of
+  held credentials → the satisfying credential(s)/claims, or no-match.
+  - Acceptance: a query for "InvitationCredential with claim X" selects
+    only matching held creds; returns descriptors, never the whole set.
+  - Verify: unit tests incl. a negative (no-fishing) case.
+  - Files: `affinidi-openid4vp/src/dcql/match.rs`.
+
+- [ ] **0c.3 — Format mapping.** Map DCQL onto **SD-JWT-VC** and **BBS**
+  credentials (the `format`/`meta` selectors).
+  - Acceptance: a DCQL query targets each format and disclosures honour
+    the requested claims.
+  - Verify: per-format unit tests.
+
+- [ ] **0c.4 — OID4VP integration.** Carry DCQL in the authorization
+  request/response alongside (or instead of) DIF PE.
+  - Acceptance: a DCQL authorization request → a conforming `vp_token`.
+  - Verify: round-trip test.
+  - Files: `affinidi-openid4vp/src/authorization*.rs`.
+
+- [ ] **CHECKPOINT 0c** — a DCQL query selects + presents SD-JWT-VC and
+  BBS credentials over OID4VP. *Gate: unblocks VTA search (1.3) + Phase 3.*
 
 ---
 
@@ -129,20 +142,22 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
 
 ---
 
-## Phase 0b — BBS foundation  (Repo: `tdk`, new crate `affinidi-bbs`; gated/audited)
+## Phase 0b — BBS (Repo: `tdk`, existing `affinidi-bbs`; adopt + audit)
 
-- [ ] 0b.1 — Adopt `ark-bls12-381`; BLS12-381 G2 keygen; implement
-  `affinidi-crypto` key/DID/multikey traits (`#bbs-key-0`, multicodec
-  `0xeb`).
-- [ ] 0b.2 — `bbs-2023` sign/verify vs IRTF test vectors.
-- [ ] 0b.3 — `bbs-2023` proofgen/proofverify (selective disclosure) vs
-  IRTF vectors.
-- [ ] 0b.4 — `bbs-2023` Data Integrity cryptosuite in
-  `affinidi-data-integrity`.
-- [ ] 0b.5 — Ed25519 holder binding for BBS presentations.
-- [ ] 0b.6 — **Security review** before any real signing.
-- [ ] CHECKPOINT 0b — IRTF vectors pass + e2e issue/disclose/verify;
-  audited. Additive to the credential-format registry.
+> `affinidi-bbs` (BBS over `bls12_381_plus`, 52 tests) + the `bbs_2023` DI
+> cryptosuite **already exist** — superseding the original "build on
+> arkworks" tasks. Remaining is adoption + the audit.
+
+- [x] 0b.1 — BBS sign/verify + proofgen/proofverify exist & pass (52
+  tests). **DONE.**
+- [x] 0b.2 — `bbs_2023` Data Integrity cryptosuite exists in
+  `affinidi-data-integrity`. **DONE.**
+- [ ] 0b.3 — Ed25519 holder binding for BBS presentations (confirm/wire
+  at integration).
+- [ ] 0b.4 — **Independent security review** before BBS signs anything
+  real. *(the one real gate)*
+- [ ] CHECKPOINT 0b — adopted as a registered credential format; audited
+  before real signing. Additive — never blocks SD-JWT-VC or 1–6.
 
 ---
 
@@ -218,6 +233,7 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
 
 ## Start here (parallel)
 
-- **Track A (`tdk`):** 0a.1 → … → CHECKPOINT 0a. (0b on the audited track.)
-- **Track B (`vti`):** 1.1 → 1.2 → 1.3 now (format-agnostic); converge
-  with 0a at 1.4.
+- **Track A (`tdk`):** Phase 0c (DCQL) — 0c.1 → … (the one net-new build).
+  Phase 0 adopt = validated; BBS audit on its own track.
+- **Track B (`vti`):** 1.1 → 1.2 → 1.3 now (format-agnostic); + 0.2 (wire
+  the TDK formats as deps); converge at 1.4 (present with SD-JWT-VC).
