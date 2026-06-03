@@ -81,7 +81,7 @@ affinidi-status-list = "0.1.3"
 affinidi-sd-jwt-vc = "0.1.1"
 affinidi-sd-jwt = "0.1.2"
 affinidi-bbs = "0.1.1"
-affinidi-openid4vp = "0.1.1"
+affinidi-openid4vp = "0.1.2"
 affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.3"
 

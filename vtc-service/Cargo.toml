@@ -90,6 +90,8 @@ affinidi-secrets-resolver = { workspace = true }
 dtg-credentials = { workspace = true }
 # JSON Schema validation of issued credentials against their credentialSchema.
 jsonschema = { workspace = true }
+# DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
+affinidi-openid4vp = { workspace = true }
 # Bitstring status list — privacy-preserving credential revocation
 # per W3C. Used by `crate::status_list` (Phase 2 M2.10).
 affinidi-status-list = { workspace = true }
