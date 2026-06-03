@@ -215,6 +215,10 @@ pub async fn run(
     let relationships_by_did_ks = store.keyspace("relationships_by_did")?;
     let endorsement_types_ks = store.keyspace("endorsement_types")?;
     let schemas_ks = store.keyspace("schemas")?;
+    // Seed the schema store with the built-in catalog Issues types (idempotent;
+    // never overwrites operator edits) so the registry reflects what the VTC
+    // mints out of the box.
+    crate::schemas::seed_default_issues(&schemas_ks).await?;
     let endorsements_ks = store.keyspace("endorsements")?;
     let audit_ks = store.keyspace("audit")?;
     let audit_key_ks = store.keyspace("audit_key")?;

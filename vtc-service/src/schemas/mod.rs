@@ -17,6 +17,7 @@
 //! discipline, broadened to every catalog type + an Issues/Accepts dimension).
 
 pub mod accepts;
+pub mod defaults;
 pub mod storage;
 pub mod validate;
 
@@ -24,6 +25,7 @@ pub use accepts::{
     AcceptsCriterion, delete_accepts, get_accepts, list_accepts, store_accepts,
     validate_accepts_query,
 };
+pub use defaults::{DEFAULT_ISSUES_TYPES, seed_default_issues};
 pub use validate::{validate_instance, validate_issued};
 
 use chrono::{DateTime, Utc};
