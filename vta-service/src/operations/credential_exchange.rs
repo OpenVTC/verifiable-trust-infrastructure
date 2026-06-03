@@ -8,10 +8,12 @@
 //!   response, and this infers the format and stores it through the
 //!   format-agnostic [`crate::vault::receive`] (SD-JWT-VC + W3C Data-Integrity,
 //!   tasks 3.1a/3.1b).
-//! - [`match_held`] (task 3.5, query→match half) — runs a verifier's DCQL query
-//!   locally over the held credentials, returning which satisfy it and the claim
-//!   paths to disclose. The consent gate + selectively-disclosed `present` that
-//!   turns a match into a `vp_token` is the next slice.
+//! - [`match_vault`] / [`match_held`] (task 3.5, query→match half) — run a
+//!   verifier's DCQL query locally over the held credentials ([`match_vault`]
+//!   gathers them from the live vault via the type index, no enumeration;
+//!   [`match_held`] matches an explicit set), returning which satisfy it and the
+//!   claim paths to disclose. The consent gate + selectively-disclosed `present`
+//!   that turns a match into a `vp_token` is the next slice.
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -32,6 +34,7 @@ use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
 use crate::vault::model::{CredentialFormat, StoredCredential};
+use crate::vault::query::CredentialQuery as VaultQuery;
 use crate::vault::{self};
 
 /// Receive a credential delivered in a credential-exchange `issue` message into
@@ -254,6 +257,72 @@ fn candidate_from_stored(
         doctype: None,
         supports_holder_binding,
     }))
+}
+
+/// Run a verifier's DCQL `query` over the **live vault**: gather candidate
+/// credentials via the type index (no enumeration), then [`match_held`] them.
+///
+/// This is [`match_held`] against the holder's own store — the entry point a
+/// `credential-exchange/query` handler calls.
+pub async fn match_vault(
+    vault: &KeyspaceHandle,
+    query: &DcqlQuery,
+) -> Result<Vec<HeldMatch>, AppError> {
+    let held = gather_for_query(vault, query).await?;
+    match_held(query, &held)
+}
+
+/// Collect held credentials whose `type` / `vct` index matches a discriminator
+/// in the DCQL query's per-credential `meta` (`vct_values` / `type_values`).
+///
+/// The vault has **no enumeration primitive** (`vti-credential-architecture` §14),
+/// so a credential query carrying no such discriminator contributes no
+/// candidates — a privacy property: the holder never blind-scans its whole
+/// wallet to answer a query.
+async fn gather_for_query(
+    vault: &KeyspaceHandle,
+    query: &DcqlQuery,
+) -> Result<Vec<StoredCredential>, AppError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for cq in &query.credentials {
+        for type_value in meta_type_values(cq.meta.as_ref()) {
+            let descriptors = vault::search(
+                vault,
+                &VaultQuery {
+                    r#type: Some(type_value),
+                    community_did: None,
+                    issuer_did: None,
+                    purpose: None,
+                    status: None,
+                },
+            )
+            .await?;
+            for descriptor in descriptors {
+                if seen.insert(descriptor.id.clone())
+                    && let Some(stored) = vault::storage::get(vault, &descriptor.id).await?
+                {
+                    out.push(stored);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Type discriminators from a credential query's `meta`: `vct_values`
+/// (SD-JWT-VC) and `type_values` (W3C), flattened to owned strings.
+fn meta_type_values(meta: Option<&serde_json::Map<String, Value>>) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(meta) = meta else {
+        return out;
+    };
+    for key in ["vct_values", "type_values"] {
+        if let Some(array) = meta.get(key).and_then(Value::as_array) {
+            out.extend(array.iter().filter_map(|v| v.as_str().map(str::to_string)));
+        }
+    }
+    out
 }
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
@@ -533,5 +602,44 @@ mod tests {
 
         // Skipped → no candidates → no match, but Ok (not Err).
         assert!(match_held(&query, &[zkp]).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn match_vault_gathers_via_the_type_index_and_matches() {
+        let (_dir, _store, vault) = fresh_vault();
+        let stored = mint_and_store(&vault).await;
+
+        let query = DcqlQuery::from_json(&json!({
+            "credentials": [{
+                "id": "membership",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": [MEMBERSHIP_VCT] },
+                "claims": [{ "path": ["givenName"] }]
+            }]
+        }))
+        .unwrap();
+
+        let matches = match_vault(&vault, &query).await.expect("match vault");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].credential_id, stored.id);
+        assert_eq!(
+            matches[0].disclosed_paths,
+            vec![vec!["givenName".to_string()]]
+        );
+    }
+
+    #[tokio::test]
+    async fn match_vault_is_empty_without_a_type_discriminator() {
+        let (_dir, _store, vault) = fresh_vault();
+        let _stored = mint_and_store(&vault).await;
+
+        // No `meta` → no targeted index search → no candidates (the vault has no
+        // enumeration primitive, so the holder doesn't blind-scan its wallet).
+        let query = DcqlQuery::from_json(&json!({
+            "credentials": [{ "id": "x", "format": "dc+sd-jwt" }]
+        }))
+        .unwrap();
+
+        assert!(match_vault(&vault, &query).await.unwrap().is_empty());
     }
 }
