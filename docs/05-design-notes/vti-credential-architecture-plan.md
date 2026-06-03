@@ -49,7 +49,7 @@ TDK for unreleased changes like DCQL).
              ────────────────────────┘   can start NOW (adopt SD-JWT-VC at 1.4).
                                          1.4–1.6 (present / mint / status) wire the adopted format.
                                      ▼
-   Phase 2   DTC catalog + VTC schema store + VIC
+   Phase 2   DTG catalog + VTC schema store + VIC
                                      ▼
    Phase 3   credential-exchange protocol  (Trust-Tasks ⊃ OID4VCI/OID4VP + DCQL)
                                      ▼
@@ -141,10 +141,10 @@ by a test. *Unblocks Phase 3.*
 
 ## Phases 2–6 — milestones (own PLAN pass before each starts)
 
-- **Phase 2 — DTC catalog + VTC schema store + VIC** (this repo:
+- **Phase 2 — DTG catalog + VTC schema store + VIC** (this repo:
   `vtc-service`, `dtg-credentials`). Adopt `dtg-credentials`; port VMC/VEC
-  onto DTC; build the `schemas` keyspace + registry (issues + accepts,
-  JSON Schema + DTC binding, admin CRUD); add the InvitationCredential
+  onto DTG; build the `schemas` keyspace + registry (issues + accepts,
+  JSON Schema + DTG binding, admin CRUD); add the InvitationCredential
   (VIC); validate issued credentials against their schema at issue time.
   *Checkpoint: each catalog type issues against its schema.*
 

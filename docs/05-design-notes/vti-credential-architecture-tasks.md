@@ -21,7 +21,7 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
   - Acceptance: exit 0. **DONE** (validated).
   - Verify: ✅ exit 0.
 
-- [ ] **0.2 — Wire the crates as VTI deps.** Add `affinidi-sd-jwt-vc`,
+- [x] **0.2 — Wire the crates as VTI deps.** Add `affinidi-sd-jwt-vc`,
   `affinidi-bbs`, `affinidi-data-integrity` (bbs_2023), `affinidi-openid4vp`
   to the VTI workspace (crates.io versions, or path/git to the local TDK
   for unreleased DCQL).
@@ -84,7 +84,7 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
 
 ## Phase 1 — VTA credential store  (Repo: `vti`, `vta-service`)
 
-- [ ] **1.1 — `StoredCredential` model + `vault` storage + index.**
+- [x] **1.1 — `StoredCredential` model + `vault` storage + index.**
   *(format-agnostic — start now, parallel to 0a)*
   - Acceptance: store + get by id; prefix-scan the index by `type`,
     `community_did`, `issuer_did`, `purpose`, `status`. Encrypted at rest
@@ -93,7 +93,7 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
   - Files: `vta-service/src/vault/{model,storage,index}.rs`, `server.rs`
     (keyspace wiring; `vault` already exists).
 
-- [ ] **1.2 — Receive a credential.** An operation that verifies-minimally
+- [x] **1.2 — Receive a credential.** An operation that verifies-minimally
   (issuer signature via the format verifier + not-expired), indexes, and
   stores.
   - Acceptance: receiving a valid SD-JWT-VC (from 0a) stores + indexes it;
@@ -102,7 +102,7 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
   - Files: `vta-service/src/operations/vault/receive.rs`,
     `vta-service/src/routes/vault.rs` (+ DIDComm handler).
 
-- [ ] **1.3 — Local DCQL search → descriptors only.** Match stored
+- [x] **1.3 — Local DCQL search → descriptors only.** Match stored
   credentials by `{type, claims, issuer, purpose}`; return **descriptors**
   (never bulk bodies across a trust boundary). **No "list all" endpoint.**
   - Acceptance: a DCQL query for "InvitationCredential for community X"
@@ -113,23 +113,48 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
     no-enumeration invariant.
   - Files: `vta-service/src/vault/query.rs` (DCQL match engine).
 
-- [ ] **1.4 — Present.** Build a presentation from a stored credential +
-  a holder-signed consent/selection → an SD-JWT-VC presentation with
-  `kb-jwt`.
-  - Acceptance: presenting a consented credential yields a verifiable
-    presentation (disclosing only the requested claims); without a valid
-    consent token the VTA refuses. *(needs 0a)*
-  - Verify: integration test (present → verify via `affinidi-sd-jwt`).
-  - Files: `vta-service/src/operations/vault/present.rs`, `routes/vault.rs`.
+- [x] **1.3.5 — Consent records (ISO/IEC 27560 + DPV).** *(PR #235 merged; consent bound per-credential via `dct:source` in #237.)* A `ConsentRecord`
+  type serializing to the 27560/DPV JSON-LD shape (§7a) + a `consent`
+  keyspace (create / get / withdraw / list) + the status event log +
+  validity. **Non-repudiation from day one:** every record carries a
+  holder `eddsa-jcs-2022` Data Integrity proof signed with the holder's
+  **VTA-managed** key (a signed consent receipt). Withdraw appends a
+  signed `dpv:ConsentWithdrawn` event.
+  - Acceptance: create a signed consent record (verifies; carries
+    dataSubject/recipient/purpose/personalData/validity); withdraw flips
+    it to ConsentWithdrawn (re-signed) and it no longer authorizes; an
+    expired record authorizes nothing; `list`/`get` is the holder's own
+    surface (no cross-boundary enumeration). cargo fmt/build/test/clippy/
+    deny clean.
+  - Verify: unit + integration tests over the consent keyspace.
+  - Files: `vta-service/src/vault/consent.rs` (new) + `vault/mod.rs`;
+    `affinidi-data-integrity` as a normal `vta-service` dep (signing).
+  - Branch: `feat/cred-1.3.5-consent-records`. *(prerequisite for 1.4)*
 
-- [ ] **1.5 — Mint.** The VTA issues its own SD-JWT-VC via the format
+- [x] **1.4 — Present (consent-gated).** *(PR #237.)* Build a holder-bound,
+  selectively-disclosed presentation from a stored credential — a
+  **library op** (the wire surface is Phase 3). Signature:
+  `present(credential_id, consent_record_id, nonce, aud)`.
+  - Acceptance: checks the consent record is *given* / unexpired /
+    signature-valid / matches the verifier (`hasRecipient`), derives the
+    reveal set from `hasPersonalData`, produces an SD-JWT-VC presentation
+    disclosing **only** those claims + a `kb-jwt` signed by the
+    **VTA-held holder signer** (injected `&dyn JwtSigner`); refuses a
+    revoked/expired credential or a missing/withdrawn consent record;
+    a NEGATIVE test proves the disclosed set never exceeds the consented
+    set. *(needs 1.3.5 + 0.2)*
+  - Verify: integration test (present → verify via `affinidi-sd-jwt`).
+  - Files: `vta-service/src/vault/present.rs` (new) + `vault/mod.rs`.
+  - Branch: `feat/cred-1.4-vault-present`.
+
+- [x] **1.5 — Mint.** *(PR #236 merged.)* The VTA issues its own SD-JWT-VC via the format
   issuer + the VTA signing key (the signing oracle path).
   - Acceptance: a VTA-minted credential verifies; the issuer key never
     leaves the VTA.
   - Verify: integration test (mint → verify).
   - Files: `vta-service/src/operations/vault/mint.rs`.
 
-- [ ] **1.6 — Status refresh.** Poll/refresh status-list state; mark
+- [x] **1.6 — Status refresh.** *(PR #238.)* Poll/refresh status-list state; mark
   revoked/expired so search + present exclude them.
   - Acceptance: a credential whose status-list bit is set is excluded from
     search results and refused for presentation.
@@ -161,15 +186,108 @@ Each task: **Acceptance** (true when done) · **Verify** (evidence) ·
 
 ---
 
-## Phase 2 — DTC catalog + VTC schema store + VIC  (Repo: `vti` + `dtg-credentials`)
+## Phase 2 — DTG catalog + VTC schema store + VIC  (Repo: `vti` + `dtg-credentials`)
 
-- [ ] 2.1 — Adopt `dtg-credentials`; port VMC/VEC onto DTC types (thin
-  wrappers).
-- [ ] 2.2 — VTC `schemas` keyspace + registry (issues + accepts; JSON
-  Schema + DTC binding) + admin CRUD.
-- [ ] 2.3 — InvitationCredential (VIC) builder (DTC).
-- [ ] 2.4 — Issue-time schema validation for every issued credential.
-- [ ] CHECKPOINT 2 — each catalog type issues against its schema.
+**Re-baseline (codebase survey, 2026-06).** Phase 2 is smaller than the
+milestone implied — much already exists in `vtc-service`:
+
+- **`dtg-credentials` 0.1.2** (the DTG catalog, a declared-but-**unused**
+  crates.io dep) already ships `create::{new_vmc, new_vrc, new_vec,
+  new_vic, new_vpc, new_vwc, new_rcard}` over `DTGCredential` / `DTGCommon`
+  / `DTGCredentialType{Membership, Relationship, **Invitation**, Persona,
+  Endorsement, Witness, RCard}` (W3C VC 2.0, `verify_proof_with_public_key`).
+  **`new_vic` IS the InvitationCredential** — VIC is adopt-not-build.
+- VTC's current credential builders are **hand-rolled and bypass** the
+  catalog: `credentials/{vmc.rs (build_vmc), vec.rs (build_role_vec),
+  custom_endorsement.rs}` + `credentials/signer.rs (LocalSigner)`. "Port
+  onto DTG" = swap these to `dtg_credentials::create::new_*` signed by the
+  existing `LocalSigner`. Callers to update: `ceremony/execute.rs` (Admit →
+  membership), `endorsements/`.
+- An **`endorsement_types` registry already exists** (`EndorsementType
+  {type_uri, claim_schema: Option<JsonValue>, description, created_at,
+  created_by_did}` + `storage::{get,store,delete,list,exists}_type` over a
+  keyspace) — the proven pattern the `schemas` registry generalises.
+- A **`status_lists` keyspace + `status_list/mod.rs` allocator already
+  exists** → "every issued credential revocable" reuses it (and this is the
+  VTC-side answer to the Phase 1 task 1.5 follow-up). `vmc.rs` already
+  attaches `credentialStatus` via `CredentialStatusRef::revocation`.
+- **No `schemas` keyspace yet** (net-new). DCQL types for the "accepts"
+  half now exist in `affinidi-openid4vp` 0.1.2 (#343 + #344).
+
+Dependency order: **2.0 → (2.1 ∥ 2.2) → 2.3 → 2.4**. 2.4 is gated on the
+`affinidi-openid4vp` 0.1.2 publish landing on crates.io.
+
+- [ ] **2.0 — Adopt `dtg-credentials` (DTG catalog).** Wire `dtg-credentials`
+  as a real `vtc-service` dep; add a thin `credentials::dtc` layer that
+  builds + signs a `DTGCredential` of a given type via the existing
+  `LocalSigner` (issuer key never exported). Port `build_vmc`→`new_vmc`,
+  `build_role_vec`→`new_vrc`/`new_vec`, `build_custom_endorsement`→`new_vec`;
+  update the `ceremony/execute.rs` + `endorsements/` callers.
+  - Acceptance: each ported type issues and `verify_proof_with_public_key`
+    verifies; issuer key stays in `LocalSigner`; existing ceremony Admit
+    still issues a (now DTG) membership. The VC wire shape changes — a
+    pre-wire breaking change (greenfield, OK); update affected tests.
+  - Verify: unit + the ceremony Admit integration test.
+  - Files: `vtc-service/src/credentials/{dtc.rs (new), vmc.rs, vec.rs,
+    custom_endorsement.rs, mod.rs}`, `ceremony/execute.rs`,
+    `endorsements/mod.rs`; root `Cargo.toml` (`dtg-credentials` → used).
+  - Branch: `feat/cred-2.0-adopt-dtc`.
+
+- [ ] **2.1 — InvitationCredential (VIC).** Issue a VIC to a **non-member**
+  DID via `dtg_credentials::create::new_vic` + `LocalSigner` + a status-list
+  allocation (revocable). Library op (the OOB/sealed delivery transport is
+  Phase 3; reuses the relayer≠holder / `sealed_transfer` pattern). Optional
+  delegated-invite gate (`can_invite`) deferred to Phase 5.
+  - Acceptance: a VTC issues a VIC to a DID with no membership record; it
+    verifies; it carries a `credentialStatus` and can be revoked.
+  - Verify: unit test (issue VIC to unknown DID → verify + revoke).
+  - Files: `vtc-service/src/credentials/invitation.rs (new)` + `mod.rs`;
+    `status_list/` (reuse). *(needs 2.0)*
+  - Branch: `feat/cred-2.1-invitation`.
+
+- [ ] **2.2 — Schema store: the `schemas` keyspace + Issues registry.** A
+  `schemas` keyspace + `SchemaEntry{type_uri, dtc_type (DTGCredentialType
+  binding), credential_schema (JSON Schema), kind: Issues, description,
+  created_*}` + CRUD, generalising the `endorsement_types` registry. The
+  **Issues** half: the types this VTC mints, each with a JSON Schema + DTG
+  binding. Admin CRUD endpoints/CLI.
+  - Acceptance: register an Issues type with a schema; `list`/`get`/`delete`
+    round-trip; issuance (2.0/2.1) consults it (issue refused if the type
+    isn't registered as Issues).
+  - Verify: unit + integration over the `schemas` keyspace.
+  - Files: `vtc-service/src/schemas/{mod.rs, storage.rs, registry.rs}
+    (new)`; `routes`/`*_cli` for admin CRUD. *(needs 2.0)*
+  - Branch: `feat/cred-2.2-schema-store`.
+
+- [ ] **2.3 — Issue-time schema validation.** When issuing any catalog
+    credential, validate the produced VC against its registered
+    `credentialSchema` (JSON Schema). Reuse an existing JSON-Schema validator
+    crate (check the tree first — likely already present; else add one).
+  - Acceptance: a credential whose subject violates its schema is rejected
+    at issue; a conforming one passes. Wired into 2.0/2.1 issue paths.
+  - Verify: unit (conforming pass / violating reject) per catalog type.
+  - Files: `vtc-service/src/schemas/validate.rs (new)`, hooked into
+    `credentials/dtc.rs`. *(needs 2.2)*
+  - Branch: `feat/cred-2.3-issue-validation`.
+
+- [ ] **2.4 — Schema store: Accepts (DCQL over the registry).** The
+    **Accepts** half: criteria the community recognises as evidence,
+    expressed as an `affinidi_openid4vp::DcqlQuery` whose `meta.vct_values`
+    reference registered schema-store types. This is what a ceremony's
+    required-evidence becomes (the join "manifest", now concrete).
+  - Acceptance: store an Accepts criterion as a **validated** `DcqlQuery`
+    that references only registered types (reject dangling type refs);
+    round-trips; retrievable for a ceremony to run via
+    `DcqlQuery::match_credentials` (Phase 5).
+  - Verify: unit (valid DCQL accepted; one referencing an unregistered type
+    rejected).
+  - Files: `vtc-service/src/schemas/accepts.rs (new)`; dep
+    `affinidi-openid4vp = "0.1.2"`. *(needs 2.2; gated on #344 publish)*
+  - Branch: `feat/cred-2.4-accepts-dcql`.
+
+- [ ] CHECKPOINT 2 — each catalog type issues against its schema; a VIC
+  issues to a non-member; an Accepts criterion is a DCQL query over the
+  registry.
 
 ---
 

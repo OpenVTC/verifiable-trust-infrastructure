@@ -19,7 +19,7 @@ privacy-preserving exchange protocol. The motivating user journey is
 |---|---|---|
 | D1 | Exchange wire protocol | **Trust Tasks wrap OID4VCI (issuance) + OID4VP (query/presentation)**; DCQL is the query language. The same OID4VP shapes are exposable to the browser via the W3C Digital Credentials API. |
 | D2 | Role / session auth model | **Hybrid**: the VC is the source of truth; a fast local *verified-assertion record* (TTL + invalidation) backs every hot-path authorization check. Re-prove only on invalidation. |
-| D3 | Credential type layer | **Adopt `dtg-credentials` (DTC)** as the canonical type catalog; the bespoke VMC/VEC become thin wrappers (or are retired) onto DTC types. |
+| D3 | Credential type layer | **Adopt `dtg-credentials` (DTG)** as the canonical type catalog; the bespoke VMC/VEC become thin wrappers (or are retired) onto DTG types. |
 | D4 | Selective disclosure | **BOTH, claim-level — and ALREADY BUILT in the TDK** (`affinidi-sd-jwt`/`-vc`, `affinidi-bbs`, the `bbs_2023` DI cryptosuite — validated, tests green). So this is **adopt, not build**. BBS curve = **`bls12_381_plus`** (the existing `affinidi-bbs`; supersedes the earlier `arkworks` call). One net-new TDK gap: **DCQL** (add to `affinidi-openid4vp`, which uses DIF PE today). |
 
 ---
@@ -96,9 +96,9 @@ server-side list.
 
 ---
 
-## 3. The credential catalog (DTC)
+## 3. The credential catalog (DTG)
 
-Adopt `dtg-credentials` (DTC) as the canonical type layer. The community
+Adopt `dtg-credentials` (DTG) as the canonical type layer. The community
 catalog (a superset of `docs/05-design-notes/vtc-mvp.md` §6.1):
 
 | Credential | Issuer | Subject | Purpose | Selective disclosure |
@@ -110,7 +110,7 @@ catalog (a superset of `docs/05-design-notes/vtc-mvp.md` §6.1):
 | **RecognitionCredential (VRC)** | member (self-issued) | another member | peer trust edge | n/a (Phase 3) |
 | **PersonhoodCredential** | personhood oracle / community | member | Sybil resistance | yes |
 
-`vtc-service/src/credentials/{vmc,vec}.rs` become thin adapters over DTC
+`vtc-service/src/credentials/{vmc,vec}.rs` become thin adapters over DTG
 types (or are retired). The JSON-LD `@context` documents live under
 `https://openvtc.org/contexts/` and are `include_str!`-baked for offline
 verification.
@@ -319,13 +319,76 @@ discloses only the requested claims).
 
 ---
 
+## 7a. Consent records (ISO/IEC 27560 + W3C DPV)
+
+Consent is a **first-class, persisted, signed, withdrawable, auditable
+record** — not an ephemeral parameter. Every disclosure is gated by a
+**consent record** modelled on **ISO/IEC 27560** (consent record
+structure) expressed with the **W3C DPV** vocabulary
+(`w3c.github.io/dpv/guides/consent-27560`). This makes the
+consent-before-disclosure + purpose-binding invariants (§14) enforced by
+a real artifact, and gives the holder a provable, revocable record of
+what they shared and why.
+
+**Shape** (a pragmatic 27560/DPV subset — the essential fields with DPV
+terms + `@context`, not the full DPV ontology; the richer purpose/
+processing taxonomy can layer in later):
+
+```jsonld
+{
+  "@context": ["https://w3id.org/dpv", ...],
+  "@type": "dpv:ConsentRecord",
+  "dct:identifier": "<record id>",
+  "dct:conformsTo": "<27560/DPV schema>",
+  "dpv:hasDataSubject": "<holder DID>",
+  "dpv:hasProcess": {
+    "@type": "dpv:Process",
+    "dpv:hasPurpose":      "<verifier's stated purpose>",
+    "dct:source":          "<credential id>",            // the held credential this consent is FOR (per-credential, §13)
+    "dpv:hasPersonalData": ["<claim a>", "<claim b>"],   // the reveal set (claim names OF that credential)
+    "dpv:hasRecipient":    "<verifier DID>",
+    "dpv:hasProcessing":   "dpv:Disclose",
+    "dpv:hasStorageCondition": { "dct:valid": "<expiry>" }
+  },
+  "dpv:hasStatus": { "@type": "dpv:ConsentGiven", "dct:date": "<ts>" },
+  "proof": { /* eddsa-jcs-2022 Data Integrity, signed by the holder */ }
+}
+```
+
+**Non-repudiation from day one.** The record carries a holder
+`eddsa-jcs-2022` Data Integrity proof — signed with the holder's
+**VTA-managed** key (keys are always VTA-managed). So a consent record is
+a **signed consent receipt**: the holder cannot later deny it, and any
+party can verify it offline.
+
+**Lifecycle** (a `consent` keyspace, VTA-side):
+- **create** — on the holder's authorization (the device/plugin captures
+  the decision; the VTA constructs + signs + stores the record).
+- **withdraw** — appends a signed `dpv:ConsentWithdrawn` status event;
+  the record stays (audit trail) but no longer authorizes disclosure.
+- **get / list** — the holder's own audit surface (never a
+  cross-boundary enumeration).
+- **validity** — `dct:valid` / storage-condition expiry; an expired or
+  withdrawn record authorizes nothing.
+
+**Gating.** A presentation (§ present) takes a consent-record id, checks
+it is **given, unexpired, signature-valid, bound to the credential being
+presented (`dct:source`), whose `dpv:hasDataSubject` is that credential's
+subject, and matches the verifier (`hasRecipient`)**, derives the reveal
+set from `hasPersonalData`, and discloses **only** those claims. Consent
+is **per-credential** (§13): a record captured for one credential never
+authorizes disclosing a different one, even when claim names overlap. No
+valid consent record → no disclosure.
+
+---
+
 ## 8. VTC schema store
 
 A `schemas` keyspace + registry. The community declares:
 
 - **Issues** — the credential types this VTC mints (Invitation,
   Membership, Role, plus operator-defined endorsement types), each with a
-  JSON Schema (`credentialSchema`) and a DTC type binding.
+  JSON Schema (`credentialSchema`) and a DTG type binding.
 - **Accepts** — the credential types/criteria the community recognises as
   evidence, expressed so a ceremony's required evidence is a **DCQL query
   over the schema store** (this is the "manifest" / Presentation
@@ -488,7 +551,7 @@ The plugin is the consent + key + legibility surface:
 | Keyspace | Node | New/changed | Holds |
 |---|---|---|---|
 | `vault` | VTA | **promote** (was M1 stub) | StoredCredential envelopes + index |
-| `schemas` | VTC | **new** | issued + accepted credential schemas (DTC + JSON Schema) |
+| `schemas` | VTC | **new** | issued + accepted credential schemas (DTG + JSON Schema) |
 | `verified_assertions` | VTC (+VTA) | **new** | the hot-path auth cache (§10) |
 | `acl` | VTC | **repurpose** | from "role source of truth" → derived index / legacy gate |
 | `status_lists` | VTC | reuse | revocation/suspension |
@@ -528,12 +591,13 @@ The plugin is the consent + key + legibility surface:
 4. **Verified-assertion invalidation propagation** — push (revocation
    event → cache flip) vs pull (TTL + status re-check). Likely both;
    what's the max staleness window?
-5. ~~Where does the VTA wallet run for a browser-only Alice?~~
-   **RESOLVED:** there is no browser-only holder — the plugin is always
-   backed by a VTA, which holds the wallet + keys. (Open sub-question:
-   does the plugin also hold a device-side key for holder binding, or
-   does the VTA hold it? Lean device-side for the binding signature, VTA
-   for the credential store.)
+5. ~~Where does the VTA wallet run for a browser-only Alice? / device vs
+   VTA holder-binding key?~~ **RESOLVED:** there is no browser-only
+   holder — the plugin is always backed by a VTA. **Keys are *always*
+   VTA-managed** — including the holder's `kb-jwt` binding key and the key
+   that signs consent receipts. The plugin captures consent + authorizes;
+   the VTA holds the keys and signs. (A device-held binding key is out of
+   scope — not a future enhancement.)
 6. **OID4VP profile** — which DCQL/credential-format profile to target for
    external-wallet interop (and is that a near-term goal or future)?
 7. ~~Pairing-library choice~~ **RESOLVED: `bls12_381_plus`** — keep the
@@ -563,7 +627,7 @@ The plugin is the consent + key + legibility surface:
 - **Phase 1 — Credential store:** promote the VTA `vault` to a real
   store (receive/store/index/search/present/mint). *Verify: store + DCQL
   local search + present round-trip.*
-- **Phase 2 — DTC catalog + schema store:** adopt `dtg-credentials`;
+- **Phase 2 — DTG catalog + schema store:** adopt `dtg-credentials`;
   build the VTC `schemas` registry; port VMC/VEC; add InvitationCredential.
   *Verify: issue each catalog type against its schema.*
 - **Phase 3 — Exchange protocol:** the `credential-exchange/*` Trust Task
