@@ -50,11 +50,14 @@
 //! credential committed to in its `cnf.jwk` at issuance, or a verifier's
 //! key-binding check will (correctly) fail.
 
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use affinidi_sd_jwt::SdJwt;
 use affinidi_sd_jwt::hasher::Sha256Hasher;
 use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
 use affinidi_sd_jwt::signer::JwtSigner;
+use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -104,10 +107,10 @@ pub async fn present_sd_jwt_vc(
     iat_unix: u64,
     now: DateTime<Utc>,
 ) -> Result<String, AppError> {
-    // (1) Load the stored credential — its body is the SD-JWT-VC compact form.
-    let cred = storage::get(vault, credential_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("credential `{credential_id}` not found")))?;
+    // Consent + subject-binding + authorization + status + temporal gate. Shared
+    // with the Data-Integrity path ([`present_di_vc`]) — the single source of
+    // truth for the security-critical disclosure gate.
+    let (cred, record) = gate_present(vault, credential_id, consent_record_id, aud, now).await?;
 
     if cred.format != CredentialFormat::SdJwtVc {
         return Err(AppError::Validation(format!(
@@ -116,66 +119,9 @@ pub async fn present_sd_jwt_vc(
         )));
     }
 
-    // (2) Load the consent record. `consent::get` re-verifies the holder DI
-    // proof (the non-repudiation anchor) before returning it — a record whose
-    // proof no longer verifies is surfaced as an error, never presented.
-    let record = consent::get(vault, consent_record_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("consent record `{consent_record_id}` not found"))
-        })?;
-
-    // (2a) Subject binding (§13, §14.2). The consent record's `dpv:hasDataSubject`
-    // (the holder who signed it) MUST be the credential's subject. Without this
-    // a record authored by holder B could be used to present holder A's
-    // credential whenever the claim names line up — the credential and the
-    // consent must be about the *same* subject. `authorizes` separately binds
-    // the record to *this credential id* (`dct:source`); this check binds it to
-    // the credential's *subject*, so both the credential identity and its
-    // subject must agree with the consent.
-    match cred.subject_did.as_deref() {
-        Some(subject) if subject == record.data_subject => {}
-        _ => {
-            return Err(AppError::Forbidden(format!(
-                "credential `{credential_id}` subject does not match consent record \
-                 `{consent_record_id}` data subject `{}`; refusing to present",
-                record.data_subject
-            )));
-        }
-    }
-
     // The reveal set IS the consent record's `dpv:hasPersonalData`: present
-    // discloses EXACTLY the consented set, no more. (5) derive-reveal-set.
+    // discloses EXACTLY the consented set, no more.
     let reveal_set = &record.process.personal_data;
-
-    // (3) Gate. `authorizes` binds the record to *this credential*
-    // (`dct:source == credential_id`, §13) and is judged against the same set
-    // we intend to disclose (requested_claims = the reveal set), so the request
-    // can never exceed what the holder consented to. Refuse on any of:
-    // wrong-credential/withdrawn/expired/recipient-mismatch.
-    if !consent::authorizes(&record, credential_id, aud, reveal_set, now) {
-        return Err(AppError::Forbidden(format!(
-            "consent record `{consent_record_id}` does not authorize disclosure of \
-             `{credential_id}` to `{aud}` (wrong credential, withdrawn, expired, \
-             recipient-mismatch, or claim out of scope)"
-        )));
-    }
-
-    // (4) Never present a revoked or temporally-invalid credential (§14.5).
-    // The stored status must be `Valid` (task 1.6 resolves real revocation
-    // state into this tag) and `now` must be inside the credential's own
-    // validity window.
-    if cred.status != CredentialStatus::Valid {
-        return Err(AppError::Forbidden(format!(
-            "credential `{credential_id}` is not valid (status {:?}); cannot present",
-            cred.status
-        )));
-    }
-    if !credential_temporally_valid(cred.valid_from.as_deref(), cred.valid_until.as_deref(), now)? {
-        return Err(AppError::Forbidden(format!(
-            "credential `{credential_id}` is outside its temporal validity window; cannot present"
-        )));
-    }
 
     // (6) Build the presentation. Parse the stored compact form, select ONLY
     // the consented disclosures, and produce a presentation with a mandatory
@@ -222,6 +168,169 @@ pub async fn present_sd_jwt_vc(
         .map_err(|e| AppError::Internal(format!("build SD-JWT-VC presentation: {e}")))?;
 
     Ok(presentation.serialize())
+}
+
+/// The shared disclosure gate for both present paths (the single source of truth
+/// for the security-critical gate): load the credential + the proof-re-verified
+/// consent record, enforce **subject binding** (§13/§14.2), the per-credential
+/// **`authorizes`** decision (`dct:source` + recipient + claims-subset + given +
+/// unexpired, §13), the **`Valid`** status (§14.5), and **temporal** validity.
+/// Returns the credential + record; the caller builds the format-specific,
+/// consent-scoped presentation.
+async fn gate_present(
+    vault: &KeyspaceHandle,
+    credential_id: &str,
+    consent_record_id: &str,
+    aud: &str,
+    now: DateTime<Utc>,
+) -> Result<(super::model::StoredCredential, consent::ConsentRecord), AppError> {
+    let cred = storage::get(vault, credential_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("credential `{credential_id}` not found")))?;
+
+    // `consent::get` re-verifies the holder DI proof (the non-repudiation
+    // anchor); a record whose proof no longer verifies is an error, never used.
+    let record = consent::get(vault, consent_record_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("consent record `{consent_record_id}` not found"))
+        })?;
+
+    // Subject binding (§13/§14.2): the consent's `dpv:hasDataSubject` must be the
+    // credential's subject — so holder B's consent can't present holder A's
+    // credential.
+    match cred.subject_did.as_deref() {
+        Some(subject) if subject == record.data_subject => {}
+        _ => {
+            return Err(AppError::Forbidden(format!(
+                "credential `{credential_id}` subject does not match consent record \
+                 `{consent_record_id}` data subject `{}`; refusing to present",
+                record.data_subject
+            )));
+        }
+    }
+
+    // Per-credential authorization (§13): bound to this credential (`dct:source`),
+    // recipient = `aud`, claims ⊆ reveal set, given + unexpired.
+    if !consent::authorizes(
+        &record,
+        credential_id,
+        aud,
+        &record.process.personal_data,
+        now,
+    ) {
+        return Err(AppError::Forbidden(format!(
+            "consent record `{consent_record_id}` does not authorize disclosure of \
+             `{credential_id}` to `{aud}` (wrong credential, withdrawn, expired, \
+             recipient-mismatch, or claim out of scope)"
+        )));
+    }
+
+    // Never present a revoked / temporally-invalid credential (§14.5).
+    if cred.status != CredentialStatus::Valid {
+        return Err(AppError::Forbidden(format!(
+            "credential `{credential_id}` is not valid (status {:?}); cannot present",
+            cred.status
+        )));
+    }
+    if !credential_temporally_valid(cred.valid_from.as_deref(), cred.valid_until.as_deref(), now)? {
+        return Err(AppError::Forbidden(format!(
+            "credential `{credential_id}` is outside its temporal validity window; cannot present"
+        )));
+    }
+
+    Ok((cred, record))
+}
+
+/// Build a consent-gated, holder-bound **W3C Data-Integrity Verifiable
+/// Presentation** of a stored DI VC — the format-agnostic sibling of
+/// [`present_sd_jwt_vc`] (spec D4).
+///
+/// Plain `eddsa-jcs-2022` has **no claim-level selective disclosure** (only BBS+
+/// does), so a DI presentation is **whole-credential**: every claim is
+/// disclosed. The gate therefore additionally requires the credential's claims
+/// to be a **subset of the consented reveal set** — refusing rather than
+/// over-disclosing. Holder binding (§14.4) is mandatory: the holder signs the VP
+/// (which carries the verifier `nonce` + `domain`/`aud`) with an
+/// `eddsa-jcs-2022` DI proof, so freshness + audience are covered by the
+/// signature.
+///
+/// `holder_secret` is the holder's VTA-managed DI signing key. Returns the VP as
+/// a JSON string.
+pub async fn present_di_vc(
+    vault: &KeyspaceHandle,
+    credential_id: &str,
+    consent_record_id: &str,
+    holder_secret: &Secret,
+    nonce: &str,
+    aud: &str,
+    now: DateTime<Utc>,
+) -> Result<String, AppError> {
+    let (cred, record) = gate_present(vault, credential_id, consent_record_id, aud, now).await?;
+
+    if cred.format != CredentialFormat::EddsaJcs2022 {
+        return Err(AppError::Validation(format!(
+            "credential `{credential_id}` is not an eddsa-jcs-2022 Data-Integrity VC \
+             (format {:?}); cannot present via present_di_vc",
+            cred.format
+        )));
+    }
+
+    let vc: Value = serde_json::from_slice(&cred.body)
+        .map_err(|e| AppError::Validation(format!("stored DI VC body is not JSON: {e}")))?;
+
+    // Whole-credential disclosure guard: every `credentialSubject` claim (besides
+    // `id`) MUST be in the consented reveal set, else presenting the whole VC
+    // would over-disclose (plain DI cannot redact).
+    let reveal_set = &record.process.personal_data;
+    if let Some(subject) = vc.get("credentialSubject").and_then(Value::as_object) {
+        for name in subject.keys() {
+            if name == "id" {
+                continue;
+            }
+            if !reveal_set.iter().any(|c| c == name) {
+                return Err(AppError::Forbidden(format!(
+                    "a Data-Integrity presentation discloses the whole credential, but claim \
+                     `{name}` is not in the consent reveal set; refusing to over-disclose \
+                     (use SD-JWT-VC or BBS+ for partial disclosure)"
+                )));
+            }
+        }
+    }
+
+    // Build the VP wrapping the VC, carrying the verifier nonce + domain so the
+    // holder proof binds freshness + audience.
+    let holder_did = holder_secret
+        .id
+        .split_once('#')
+        .map(|(d, _)| d)
+        .unwrap_or(holder_secret.id.as_str());
+    let mut vp = serde_json::json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiablePresentation"],
+        "holder": holder_did,
+        "verifiableCredential": [vc],
+        "nonce": nonce,
+        "domain": aud,
+    });
+
+    // Holder binding (§14.4): sign the VP (covering nonce + domain).
+    let proof = DataIntegrityProof::sign(
+        &vp,
+        holder_secret,
+        SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("sign VP: {e}")))?;
+    vp.as_object_mut().expect("vp is an object").insert(
+        "proof".into(),
+        serde_json::to_value(proof)
+            .map_err(|e| AppError::Internal(format!("serialize VP proof: {e}")))?,
+    );
+
+    serde_json::to_string(&vp).map_err(|e| AppError::Internal(format!("serialize VP: {e}")))
 }
 
 /// True iff `now` lies within `[valid_from, valid_until]`.
@@ -1208,5 +1317,206 @@ mod tests {
         .await
         .expect_err("must refuse");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    // ---- Data-Integrity present (present_di_vc) -------------------------
+
+    use affinidi_data_integrity::VerifyOptions;
+
+    /// Store a plain W3C-DI VC (format `EddsaJcs2022`) with `subject_did` + the
+    /// given `subject_claims` merged into `credentialSubject`. (present_di_vc
+    /// wraps the stored body into the VP; it does not re-verify the issuer proof
+    /// — that happened at receive — so a plain VC body suffices here.)
+    async fn di_put(vault: &KeyspaceHandle, id: &str, subject_did: &str, subject_claims: Value) {
+        let mut cs = serde_json::Map::new();
+        cs.insert("id".into(), serde_json::json!(subject_did));
+        if let Some(obj) = subject_claims.as_object() {
+            for (k, v) in obj {
+                cs.insert(k.clone(), v.clone());
+            }
+        }
+        let vc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": cs,
+        });
+        let cred = StoredCredential {
+            id: id.to_string(),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: None,
+            subject_did: Some(subject_did.to_string()),
+            issuer_did: Some("did:web:issuer.example".into()),
+            purpose: None,
+            status: CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&vc).unwrap(),
+        };
+        storage::put(vault, &cred).await.expect("put DI VC");
+    }
+
+    #[tokio::test]
+    async fn present_di_vc_produces_a_verifiable_holder_bound_vp() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder_did, _kb, holder_secret, _vk) = holder(7);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        di_put(
+            &vault,
+            "di-1",
+            &holder_did,
+            serde_json::json!({ "givenName": "Alice" }),
+        )
+        .await;
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "di-1",
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &holder_secret,
+        )
+        .await
+        .unwrap();
+
+        let vp_json = present_di_vc(
+            &vault,
+            "di-1",
+            &rec.identifier,
+            &holder_secret,
+            "nonce-1",
+            verifier,
+            now,
+        )
+        .await
+        .expect("present DI VC");
+        let vp: Value = serde_json::from_str(&vp_json).unwrap();
+
+        assert_eq!(vp["type"][0], "VerifiablePresentation");
+        assert_eq!(vp["holder"], holder_did);
+        assert_eq!(vp["nonce"], "nonce-1"); // freshness, covered by the holder proof
+        assert_eq!(vp["domain"], verifier); // audience binding
+        assert_eq!(
+            vp["verifiableCredential"][0]["credentialSubject"]["givenName"],
+            "Alice"
+        );
+
+        // The holder proof verifies over the VP with `proof` stripped — so the
+        // nonce + domain binding is cryptographically attested.
+        let proof: DataIntegrityProof = serde_json::from_value(vp["proof"].clone()).unwrap();
+        let mut unsigned = vp.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        proof
+            .verify_with_public_key(
+                &unsigned,
+                holder_secret.get_public_bytes(),
+                VerifyOptions::new(),
+            )
+            .expect("holder VP proof must verify");
+    }
+
+    #[tokio::test]
+    async fn present_di_vc_refuses_to_over_disclose() {
+        // The credential carries givenName + dateOfBirth, but consent covers only
+        // givenName. Plain DI can't redact, so presenting would over-disclose →
+        // refuse.
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder_did, _kb, holder_secret, _vk) = holder(8);
+        let verifier = "did:web:v.example";
+        let now = Utc::now();
+
+        di_put(
+            &vault,
+            "di-2",
+            &holder_did,
+            serde_json::json!({ "givenName": "Alice", "dateOfBirth": "1990-01-01" }),
+        )
+        .await;
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "di-2",
+                verifier,
+                vec!["givenName".into()], // NOT dateOfBirth
+                now + Duration::hours(1),
+            ),
+            &holder_secret,
+        )
+        .await
+        .unwrap();
+
+        let err = present_di_vc(
+            &vault,
+            "di-2",
+            &rec.identifier,
+            &holder_secret,
+            "n",
+            verifier,
+            now,
+        )
+        .await
+        .expect_err("over-disclosure must be refused");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn present_di_vc_refuses_a_non_di_credential() {
+        // An SD-JWT-VC can't be presented via the DI path.
+        let (_dir, _store, vault) = fresh_vault();
+        let (issuer_signer, issuer_did, _ivk) = issuer(9);
+        let (holder_did, _kb, holder_secret, _vk) = holder(7);
+        let verifier = "did:web:v.example";
+        let now = Utc::now();
+
+        mint_and_put(
+            &vault,
+            "sd-1",
+            &issuer_signer,
+            &issuer_did,
+            &holder_did,
+            &serde_json::json!({ "givenName": "Alice" }),
+            &["givenName"],
+            CredentialStatus::Valid,
+            None,
+            None,
+        )
+        .await;
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "sd-1",
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &holder_secret,
+        )
+        .await
+        .unwrap();
+
+        let err = present_di_vc(
+            &vault,
+            "sd-1",
+            &rec.identifier,
+            &holder_secret,
+            "n",
+            verifier,
+            now,
+        )
+        .await
+        .expect_err("SD-JWT-VC must not present via the DI path");
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 }
