@@ -8,12 +8,15 @@
 //!   response, and this infers the format and stores it through the
 //!   format-agnostic [`crate::vault::receive`] (SD-JWT-VC + W3C Data-Integrity,
 //!   tasks 3.1a/3.1b).
-//! - [`match_vault`] / [`match_held`] (task 3.5, query→match half) — run a
-//!   verifier's DCQL query locally over the held credentials ([`match_vault`]
-//!   gathers them from the live vault via the type index, no enumeration;
-//!   [`match_held`] matches an explicit set), returning which satisfy it and the
-//!   claim paths to disclose. The consent gate + selectively-disclosed `present`
-//!   that turns a match into a `vp_token` is the next slice.
+//! - [`match_vault`] / [`match_held`] (task 3.5, query→match) — run a verifier's
+//!   DCQL query locally over the held credentials ([`match_vault`] gathers them
+//!   from the live vault via the type index, no enumeration; [`match_held`]
+//!   matches an explicit set), returning which satisfy it and the claim paths to
+//!   disclose.
+//! - [`present_for_query`] (task 3.5c) — turn a match into a `vp_token`: build a
+//!   consent-gated, selectively-disclosed VP of the matched credential (SD-JWT-VC
+//!   in this slice). The `credential-exchange/query → present` DIDComm handler
+//!   (which sources the holder key + resolves consent) is the wire slice on top.
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -29,7 +32,7 @@ use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4v
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
-use vta_sdk::protocols::credential_exchange::IssueBody;
+use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -323,6 +326,72 @@ fn meta_type_values(meta: Option<&serde_json::Map<String, Value>>) -> Vec<String
         }
     }
     out
+}
+
+/// Answer a verifier's `credential-exchange/query` with a presentation: match
+/// the query over the vault, then build a **consent-gated, selectively-disclosed**
+/// VP of the matched credential and return it as a `vp_token`.
+///
+/// - `holder_signer` is the holder's SD-JWT-VC key-binding signer (the subject
+///   key the VTA controls).
+/// - `consent_record_id` names the [`crate::vault::consent::ConsentRecord`] that
+///   authorizes disclosure to `verifier_aud`; the present gate enforces it
+///   (disclose exactly the consented claims, refuse a revoked/expired credential).
+/// - `verifier_aud` is the verifier identity the holder `kb-jwt` binds to (the
+///   DIDComm sender); `iat_unix` stamps the kb-jwt.
+///
+/// `NotFound` when nothing the holder holds satisfies the query. This slice
+/// presents **SD-JWT-VC** matches; a W3C Data-Integrity present path (a
+/// different holder-key abstraction) is a follow-up.
+pub async fn present_for_query(
+    vault: &KeyspaceHandle,
+    query: &QueryBody,
+    holder_signer: &dyn affinidi_sd_jwt::signer::JwtSigner,
+    consent_record_id: &str,
+    verifier_aud: &str,
+    iat_unix: u64,
+    now: DateTime<Utc>,
+) -> Result<PresentBody, AppError> {
+    let matched = match_vault(vault, &query.dcql_query).await?;
+    // Single-credential VP for this slice; a multi-credential / credential-set
+    // response is a follow-up. Take the first match in credential-query order.
+    let first = matched.into_iter().next().ok_or_else(|| {
+        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
+    })?;
+
+    let stored = vault::storage::get(vault, &first.credential_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "matched credential `{}` is gone",
+                first.credential_id
+            ))
+        })?;
+
+    let vp_token = match stored.format {
+        CredentialFormat::SdJwtVc => {
+            let compact = vault::present_sd_jwt_vc(
+                vault,
+                &first.credential_id,
+                consent_record_id,
+                holder_signer,
+                &query.nonce,
+                verifier_aud,
+                iat_unix,
+                now,
+            )
+            .await?;
+            Value::String(compact)
+        }
+        other => {
+            return Err(AppError::Validation(format!(
+                "present_for_query currently presents SD-JWT-VC; presenting {other:?} via DCQL \
+                 is a follow-up slice"
+            )));
+        }
+    };
+
+    Ok(PresentBody { vp_token })
 }
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
@@ -641,5 +710,129 @@ mod tests {
         .unwrap();
 
         assert!(match_vault(&vault, &query).await.unwrap().is_empty());
+    }
+
+    // ── present_for_query (task 3.5c) ──
+
+    /// Holder key material for the credential `mint_and_store` binds (subject
+    /// seed `[5;32]`): the SD-JWT-VC kb-jwt signer + the consent-record signing
+    /// secret, both over the subject's `did:key`.
+    fn subject_holder() -> (
+        String,
+        EddsaSigner,
+        affinidi_secrets_resolver::secrets::Secret,
+    ) {
+        let seed = [5u8; 32];
+        let signing = SigningKey::from_bytes(&seed);
+        let did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(signing.verifying_key().as_bytes());
+        let vm = format!("{did}#{}", did.strip_prefix("did:key:").unwrap());
+        let kb_signer = EddsaSigner {
+            key: SigningKey::from_bytes(&seed),
+            kid: vm.clone(),
+        };
+        let mut consent_key =
+            affinidi_secrets_resolver::secrets::Secret::generate_ed25519(Some(&vm), Some(&seed));
+        consent_key.id = vm;
+        (did, kb_signer, consent_key)
+    }
+
+    #[tokio::test]
+    async fn present_for_query_builds_a_consent_gated_selective_vp() {
+        use crate::vault::consent::{ConsentGrant, create as create_consent};
+
+        let (_dir, _store, vault) = fresh_vault();
+        let stored = mint_and_store(&vault).await; // subject did:key[5], givenName disclosable
+        let (subject_did, kb_signer, consent_key) = subject_holder();
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        // Consent to disclose givenName to this verifier for this credential.
+        let rec = create_consent(
+            &vault,
+            &ConsentGrant {
+                holder_did: &subject_did,
+                credential_id: &stored.id,
+                verifier_did: verifier,
+                purpose: "join the Acme community",
+                claims: vec!["givenName".into()],
+                valid_until: now + chrono::Duration::hours(1),
+            },
+            &consent_key,
+        )
+        .await
+        .expect("create consent");
+
+        let query = QueryBody {
+            dcql_query: DcqlQuery::from_json(&json!({
+                "credentials": [{
+                    "id": "membership",
+                    "format": "dc+sd-jwt",
+                    "meta": { "vct_values": [MEMBERSHIP_VCT] },
+                    "claims": [{ "path": ["givenName"] }]
+                }]
+            }))
+            .unwrap(),
+            nonce: "verifier-nonce-1".into(),
+            purpose: "join the Acme community".into(),
+        };
+
+        let present = present_for_query(
+            &vault,
+            &query,
+            &kb_signer,
+            &rec.identifier,
+            verifier,
+            now.timestamp() as u64,
+            now,
+        )
+        .await
+        .expect("present for query");
+
+        // vp_token is a compact SD-JWT-VC: discloses exactly givenName + a kb-jwt.
+        let token = present.vp_token.as_str().expect("compact-string vp_token");
+        let parsed =
+            affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher).unwrap();
+        assert_eq!(parsed.disclosures.len(), 1);
+        assert_eq!(
+            parsed.disclosures[0].claim_name.as_deref(),
+            Some("givenName")
+        );
+        assert!(
+            parsed.kb_jwt.is_some(),
+            "mandatory holder kb-jwt must be present"
+        );
+    }
+
+    #[tokio::test]
+    async fn present_for_query_is_not_found_when_nothing_matches() {
+        let (_dir, _store, vault) = fresh_vault();
+        let _stored = mint_and_store(&vault).await;
+        let (_did, kb_signer, _key) = subject_holder();
+
+        let query = QueryBody {
+            dcql_query: DcqlQuery::from_json(&json!({
+                "credentials": [{
+                    "id": "x", "format": "dc+sd-jwt",
+                    "meta": { "vct_values": ["https://example.org/Other"] }
+                }]
+            }))
+            .unwrap(),
+            nonce: "n".into(),
+            purpose: "p".into(),
+        };
+
+        let err = present_for_query(
+            &vault,
+            &query,
+            &kb_signer,
+            "consent-x",
+            "did:web:v",
+            0,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 }
