@@ -1,11 +1,17 @@
-//! Holder-side credential-exchange operations (Phase 3, spec §6) — the VTA
-//! receiving an issued credential and storing it in its credential vault.
+//! Holder-side credential-exchange operations (Phase 3, spec §6) — the VTA's
+//! side of `credential-exchange/*`: receiving issued credentials and answering
+//! a verifier's DCQL query against the held vault.
 //!
-//! This is the **credential vault's first wire exposure**: a
-//! `credential-exchange/issue` message ([`vta_sdk::protocols::credential_exchange`])
-//! carries an OID4VCI credential response, and [`receive_issued_credential`]
-//! infers the format and stores it through the format-agnostic
-//! [`crate::vault::receive`] (SD-JWT-VC + W3C Data-Integrity, from tasks 3.1a/3.1b).
+//! - [`receive_issued_credential`] (task 3.3) — the **credential vault's first
+//!   wire exposure**: a `credential-exchange/issue` message
+//!   ([`vta_sdk::protocols::credential_exchange`]) carries an OID4VCI credential
+//!   response, and this infers the format and stores it through the
+//!   format-agnostic [`crate::vault::receive`] (SD-JWT-VC + W3C Data-Integrity,
+//!   tasks 3.1a/3.1b).
+//! - [`match_held`] (task 3.5, query→match half) — runs a verifier's DCQL query
+//!   locally over the held credentials, returning which satisfy it and the claim
+//!   paths to disclose. The consent gate + selectively-disclosed `present` that
+//!   turns a match into a `vp_token` is the next slice.
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -17,6 +23,7 @@
 //! - A **`sealed`** bundle (the unknown-holder / invite case) is deferred to the
 //!   sealed-issuance slice (3.6).
 
+use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4vpError};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
@@ -127,6 +134,147 @@ fn resolve_issuer_ed25519(did: &str) -> Result<Vec<u8>, AppError> {
              slice; SD-JWT-VC and did:key Data-Integrity issuers are wired"
         )))
     }
+}
+
+// ── Holder-side DCQL match (Phase 3, task 3.5: query → match) ──
+//
+// A verifier's `credential-exchange/query` carries a DCQL query; the holder
+// runs it **locally** over its own vault and learns which held credentials
+// satisfy it (and which claim paths the query asks to disclose). This is the
+// read/match half — the consent gate + selectively-disclosed `present` that
+// turns a match into a `vp_token` is the next slice.
+
+/// One held credential that satisfied a credential query, with the claim paths
+/// the query asked to disclose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldMatch {
+    /// The DCQL `CredentialQuery.id` that matched.
+    pub credential_query_id: String,
+    /// The local vault id of the [`StoredCredential`] that satisfied it.
+    pub credential_id: String,
+    /// The claim paths to disclose, each rendered segment-by-segment
+    /// (`Name` → the name, `Index` → `[i]`, `Wildcard` → `[*]`). **Empty** when
+    /// the query named no `claims` (disclose per the holder's own policy).
+    pub disclosed_paths: Vec<Vec<String>>,
+}
+
+/// Run a verifier's DCQL `query` over the holder's `held` credentials, returning
+/// the matches (which credential satisfied which query, and the claim paths to
+/// disclose). The query is validated first (it came off the wire). Credentials
+/// in a format not yet presentable via DCQL are skipped, not errored.
+///
+/// An **empty** result means the holder has nothing that satisfies the query —
+/// a legitimate outcome (the verifier gets a "no presentation" answer), distinct
+/// from an `Err` (a malformed query or an unparseable stored body).
+pub fn match_held(
+    query: &DcqlQuery,
+    held: &[StoredCredential],
+) -> Result<Vec<HeldMatch>, AppError> {
+    query
+        .validate()
+        .map_err(|e| AppError::Validation(format!("invalid DCQL query: {e}")))?;
+
+    let mut candidates = Vec::with_capacity(held.len());
+    for stored in held {
+        if let Some(candidate) = candidate_from_stored(stored)? {
+            candidates.push(candidate);
+        }
+    }
+
+    let matched = match query.match_credentials(&candidates) {
+        Ok(matched) => matched,
+        // "Nothing the holder holds satisfies the request" — not an error here.
+        Err(Oid4vpError::NoMatchingCredentials(_)) => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Validation(format!("DCQL match failed: {e}"))),
+    };
+
+    Ok(matched
+        .matches
+        .into_iter()
+        .map(|m| HeldMatch {
+            credential_query_id: m.credential_query_id,
+            credential_id: m.candidate_id,
+            disclosed_paths: m.disclosed_paths.into_iter().map(render_path).collect(),
+        })
+        .collect())
+}
+
+/// Build a DCQL [`CandidateCredential`] from a stored credential by parsing its
+/// body for the claims tree. Returns `None` for formats not yet presentable via
+/// DCQL (`Zkp` / `Other`).
+fn candidate_from_stored(
+    stored: &StoredCredential,
+) -> Result<Option<CandidateCredential>, AppError> {
+    let Some(format) = dcql_format(&stored.format) else {
+        return Ok(None);
+    };
+
+    let (claims, vct, supports_holder_binding) = match stored.format {
+        CredentialFormat::SdJwtVc => {
+            let compact = std::str::from_utf8(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not UTF-8: {e}", stored.id))
+            })?;
+            let hasher = affinidi_sd_jwt::hasher::Sha256Hasher;
+            let sd = affinidi_sd_jwt::SdJwt::parse(compact, &hasher).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not SD-JWT-VC: {e}", stored.id))
+            })?;
+            let payload = sd.payload().map_err(|e| {
+                AppError::Validation(format!("credential `{}` payload: {e}", stored.id))
+            })?;
+            let claims = affinidi_sd_jwt::holder::resolve_claims(&payload, &sd.disclosures)
+                .map_err(|e| {
+                    AppError::Validation(format!("credential `{}` claims: {e}", stored.id))
+                })?;
+            let vct = payload
+                .get("vct")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            // SD-JWT-VC carries holder binding via the `cnf` confirmation claim.
+            let holder_binding = payload.get("cnf").is_some();
+            (claims, vct, holder_binding)
+        }
+        CredentialFormat::EddsaJcs2022 | CredentialFormat::Bbs2023 => {
+            // The claims tree is the whole VC object — a verifier path walks it
+            // (e.g. `["credentialSubject","givenName"]`). Our DI present builds a
+            // holder-bound VP, so holder binding is supported.
+            let vc: Value = serde_json::from_slice(&stored.body).map_err(|e| {
+                AppError::Validation(format!("credential `{}` is not JSON: {e}", stored.id))
+            })?;
+            (vc, None, true)
+        }
+        // Unreachable: `dcql_format` returned `Some` only for the arms above.
+        CredentialFormat::Zkp | CredentialFormat::Other(_) => return Ok(None),
+    };
+
+    Ok(Some(CandidateCredential {
+        id: stored.id.clone(),
+        format: format.to_string(),
+        claims,
+        vct,
+        doctype: None,
+        supports_holder_binding,
+    }))
+}
+
+/// Map a stored credential format to its DCQL `format` selector, or `None` if
+/// the format is not yet presentable via DCQL.
+fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
+    match format {
+        CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
+        CredentialFormat::EddsaJcs2022 | CredentialFormat::Bbs2023 => Some("ldp_vc"),
+        CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
+    }
+}
+
+/// Render a DCQL claim path's segments as strings for [`HeldMatch`].
+fn render_path(path: Vec<ClaimPathSegment>) -> Vec<String> {
+    path.into_iter()
+        .map(|seg| match seg {
+            ClaimPathSegment::Name(name) => name,
+            ClaimPathSegment::Index(i) => format!("[{i}]"),
+            ClaimPathSegment::Wildcard => "[*]".to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -280,5 +428,110 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    // ── DCQL match (task 3.5) ──
+
+    const MEMBERSHIP_VCT: &str = "https://openvtc.org/credentials/MembershipCredential";
+
+    /// Mint a real SD-JWT-VC and store it in `vault`, returning the
+    /// `StoredCredential` (the holder's vault entry).
+    async fn mint_and_store(vault: &KeyspaceHandle) -> StoredCredential {
+        let signing = SigningKey::from_bytes(&[9u8; 32]);
+        let did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(signing.verifying_key().as_bytes());
+        let signer = EddsaSigner {
+            key: signing,
+            kid: format!("{did}#key-0"),
+        };
+        let subject = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            SigningKey::from_bytes(&[5u8; 32])
+                .verifying_key()
+                .as_bytes(),
+        );
+        let compact = crate::vault::mint::mint_sd_jwt_vc(
+            &crate::vault::mint::MintRequest {
+                vct: MEMBERSHIP_VCT,
+                issuer_did: &did,
+                subject_did: &subject,
+                claims: &json!({ "givenName": "Alice" }),
+                disclosable: &["givenName"],
+                iat: 1_700_000_000,
+                exp: Some(1_900_000_000),
+            },
+            &signer,
+        )
+        .expect("mint SD-JWT-VC");
+        let body = issue_body(Value::String(compact), None);
+        let cred = receive_issued_credential(vault, &body, None, Utc::now())
+            .await
+            .expect("receive");
+        crate::vault::storage::get(vault, &cred.id)
+            .await
+            .unwrap()
+            .expect("stored")
+    }
+
+    #[tokio::test]
+    async fn matches_a_held_sd_jwt_vc_by_vct_and_discloses_the_named_claim() {
+        let (_dir, _store, vault) = fresh_vault();
+        let stored = mint_and_store(&vault).await;
+
+        let query = DcqlQuery::from_json(&json!({
+            "credentials": [{
+                "id": "membership",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": [MEMBERSHIP_VCT] },
+                "claims": [{ "path": ["givenName"] }]
+            }]
+        }))
+        .unwrap();
+
+        let matches = match_held(&query, std::slice::from_ref(&stored)).expect("match");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].credential_query_id, "membership");
+        assert_eq!(matches[0].credential_id, stored.id);
+        assert_eq!(
+            matches[0].disclosed_paths,
+            vec![vec!["givenName".to_string()]]
+        );
+    }
+
+    #[tokio::test]
+    async fn does_not_match_a_different_vct() {
+        let (_dir, _store, vault) = fresh_vault();
+        let stored = mint_and_store(&vault).await;
+
+        let query = DcqlQuery::from_json(&json!({
+            "credentials": [{
+                "id": "x",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": ["https://example.org/Other"] }
+            }]
+        }))
+        .unwrap();
+
+        assert!(match_held(&query, &[stored]).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_not_yet_presentable_formats_without_erroring() {
+        let (_dir, _store, vault) = fresh_vault();
+        let mut zkp = mint_and_store(&vault).await;
+        // A ZKP credential isn't presentable via DCQL yet — it must be skipped,
+        // not error the whole match.
+        zkp.format = CredentialFormat::Zkp;
+
+        let query = DcqlQuery::from_json(&json!({
+            "credentials": [{
+                "id": "membership",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": [MEMBERSHIP_VCT] }
+            }]
+        }))
+        .unwrap();
+
+        // Skipped → no candidates → no match, but Ok (not Err).
+        assert!(match_held(&query, &[zkp]).unwrap().is_empty());
     }
 }

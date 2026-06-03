@@ -107,6 +107,9 @@ affinidi-data-integrity = { workspace = true }
 # and not pulled in here.
 affinidi-sd-jwt-vc = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
+# DCQL matcher — the holder runs a verifier's DCQL query over held credentials
+# (`credential-exchange/query`, task 3.5). Same crate vta-sdk's QueryBody uses.
+affinidi-openid4vp = { workspace = true }
 # Holder-side status refresh for held credentials (task 1.6): decode the
 # issuer's BitstringStatusList and read the bit at the credential's index.
 affinidi-status-list = { workspace = true }

@@ -9765,6 +9765,7 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
+ "affinidi-openid4vp",
  "affinidi-sd-jwt",
  "affinidi-sd-jwt-vc",
  "affinidi-secrets-resolver",
