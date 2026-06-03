@@ -15,8 +15,12 @@
 //!   disclose.
 //! - [`present_for_query`] (task 3.5c) — turn a match into a `vp_token`: build a
 //!   consent-gated, selectively-disclosed VP of the matched credential (SD-JWT-VC
-//!   in this slice). The `credential-exchange/query → present` DIDComm handler
-//!   (which sources the holder key + resolves consent) is the wire slice on top.
+//!   in this slice).
+//! - [`present_or_defer`] (task 3.5d) — apply the holder's [`ConsentPolicy`]:
+//!   auto-consent + present for a **trusted** verifier, else defer with
+//!   [`PresentOutcome::ConsentRequired`] for an out-of-band approval. The
+//!   `credential-exchange/query → present` DIDComm handler (which sources the
+//!   holder key + persists the pending approval) is the wire slice on top.
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -28,7 +32,10 @@
 //! - A **`sealed`** bundle (the unknown-holder / invite case) is deferred to the
 //!   sealed-issuance slice (3.6).
 
+use std::collections::BTreeSet;
+
 use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4vpError};
+use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
@@ -36,6 +43,7 @@ use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody}
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+use crate::vault::consent::{self, ConsentGrant};
 use crate::vault::model::{CredentialFormat, StoredCredential};
 use crate::vault::query::CredentialQuery as VaultQuery;
 use crate::vault::{self};
@@ -392,6 +400,132 @@ pub async fn present_for_query(
     };
 
     Ok(PresentBody { vp_token })
+}
+
+/// How the holder decides consent when a verifier's query arrives.
+///
+/// Default behaviour is **deferred** — a query the holder hasn't pre-approved
+/// returns [`PresentOutcome::ConsentRequired`] for an out-of-band approval. A
+/// verifier on [`trusted_verifiers`](Self::trusted_verifiers) is auto-consented:
+/// the holder mints a query-scoped consent and presents immediately (the
+/// frictionless join flow, bounded to verifiers the operator trusts).
+#[derive(Debug, Clone, Default)]
+pub struct ConsentPolicy {
+    /// Verifier DIDs the holder auto-consents to. Everything else defers.
+    pub trusted_verifiers: BTreeSet<String>,
+}
+
+impl ConsentPolicy {
+    /// A policy that auto-consents to the given verifier DIDs.
+    pub fn trusting<I, S>(verifiers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            trusted_verifiers: verifiers.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// The outcome of [`present_or_defer`].
+#[derive(Debug)]
+pub enum PresentOutcome {
+    /// A consent-gated, selectively-disclosed presentation was produced.
+    Presented(PresentBody),
+    /// The query matched a held credential, but the verifier is not trusted and
+    /// no consent has been granted — disclosure needs an out-of-band approval
+    /// (which mints the consent record, after which the holder re-presents).
+    ConsentRequired {
+        /// The verifier asking for the presentation.
+        verifier_did: String,
+        /// The held credential that would satisfy the query.
+        credential_id: String,
+        /// The claims the query asks to disclose (what the approver authorizes).
+        claims: Vec<String>,
+        /// The verifier's stated purpose (shown to the approver).
+        purpose: String,
+    },
+}
+
+/// Answer a verifier's `credential-exchange/query` under a [`ConsentPolicy`]:
+/// auto-consent + present for a trusted verifier, otherwise defer to approval.
+///
+/// Matches the query over the vault; for a **trusted** verifier it mints a
+/// query-scoped consent (signed by `holder_consent_key`) and presents via
+/// [`present_for_query`]; for any other verifier it returns
+/// [`PresentOutcome::ConsentRequired`] (the wire layer turns this into a
+/// "consent required" reply / pending approval). `NotFound` when nothing the
+/// holder holds satisfies the query.
+#[allow(clippy::too_many_arguments)]
+pub async fn present_or_defer(
+    vault: &KeyspaceHandle,
+    query: &QueryBody,
+    verifier_did: &str,
+    policy: &ConsentPolicy,
+    holder_signer: &dyn affinidi_sd_jwt::signer::JwtSigner,
+    holder_consent_key: &Secret,
+    now: DateTime<Utc>,
+) -> Result<PresentOutcome, AppError> {
+    let matched = match_vault(vault, &query.dcql_query).await?;
+    let first = matched.into_iter().next().ok_or_else(|| {
+        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
+    })?;
+
+    // The claims the query asks to disclose — the leaf of each disclosed path.
+    let claims: Vec<String> = first
+        .disclosed_paths
+        .iter()
+        .filter_map(|path| path.last().cloned())
+        .collect();
+
+    if !policy.trusted_verifiers.contains(verifier_did) {
+        return Ok(PresentOutcome::ConsentRequired {
+            verifier_did: verifier_did.to_string(),
+            credential_id: first.credential_id,
+            claims,
+            purpose: query.purpose.clone(),
+        });
+    }
+
+    // Trusted verifier → mint a query-scoped consent record, then present.
+    let stored = vault::storage::get(vault, &first.credential_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "matched credential `{}` is gone",
+                first.credential_id
+            ))
+        })?;
+    let subject = stored.subject_did.as_deref().ok_or_else(|| {
+        AppError::Validation("matched credential has no subject DID to bind consent to".into())
+    })?;
+
+    let record = consent::create(
+        vault,
+        &ConsentGrant {
+            holder_did: subject,
+            credential_id: &first.credential_id,
+            verifier_did,
+            purpose: &query.purpose,
+            claims: claims.clone(),
+            valid_until: now + chrono::Duration::minutes(5),
+        },
+        holder_consent_key,
+    )
+    .await?;
+
+    let present = present_for_query(
+        vault,
+        query,
+        holder_signer,
+        &record.identifier,
+        verifier_did,
+        now.timestamp() as u64,
+        now,
+    )
+    .await?;
+    Ok(PresentOutcome::Presented(present))
 }
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
@@ -834,5 +968,93 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    // ── present_or_defer: consent policy ──
+
+    fn membership_query() -> QueryBody {
+        QueryBody {
+            dcql_query: DcqlQuery::from_json(&json!({
+                "credentials": [{
+                    "id": "membership",
+                    "format": "dc+sd-jwt",
+                    "meta": { "vct_values": [MEMBERSHIP_VCT] },
+                    "claims": [{ "path": ["givenName"] }]
+                }]
+            }))
+            .unwrap(),
+            nonce: "verifier-nonce-1".into(),
+            purpose: "join the Acme community".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn present_or_defer_auto_consents_for_a_trusted_verifier() {
+        let (_dir, _store, vault) = fresh_vault();
+        let _stored = mint_and_store(&vault).await;
+        let (_did, kb_signer, consent_key) = subject_holder();
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        let policy = ConsentPolicy::trusting([verifier]);
+        let outcome = present_or_defer(
+            &vault,
+            &membership_query(),
+            verifier,
+            &policy,
+            &kb_signer,
+            &consent_key,
+            now,
+        )
+        .await
+        .expect("present_or_defer");
+
+        match outcome {
+            PresentOutcome::Presented(body) => {
+                let token = body.vp_token.as_str().expect("compact vp_token");
+                let parsed =
+                    affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher)
+                        .unwrap();
+                assert_eq!(parsed.disclosures.len(), 1);
+                assert!(parsed.kb_jwt.is_some());
+            }
+            other => panic!("expected Presented, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn present_or_defer_defers_for_an_untrusted_verifier() {
+        let (_dir, _store, vault) = fresh_vault();
+        let _stored = mint_and_store(&vault).await;
+        let (_did, kb_signer, consent_key) = subject_holder();
+        let now = Utc::now();
+
+        // Empty policy → no verifier is trusted → defer.
+        let policy = ConsentPolicy::default();
+        let outcome = present_or_defer(
+            &vault,
+            &membership_query(),
+            "did:web:stranger.example",
+            &policy,
+            &kb_signer,
+            &consent_key,
+            now,
+        )
+        .await
+        .expect("present_or_defer");
+
+        match outcome {
+            PresentOutcome::ConsentRequired {
+                verifier_did,
+                claims,
+                purpose,
+                ..
+            } => {
+                assert_eq!(verifier_did, "did:web:stranger.example");
+                assert_eq!(claims, vec!["givenName".to_string()]);
+                assert_eq!(purpose, "join the Acme community");
+            }
+            other => panic!("expected ConsentRequired, got {other:?}"),
+        }
     }
 }
