@@ -99,6 +99,32 @@ impl LocalSigner {
         Ok(())
     }
 
+    /// Sign an arbitrary JSON credential document **in place**, splicing the
+    /// resulting `DataIntegrityProof` into its `proof` field.
+    ///
+    /// Unlike [`sign`](Self::sign) (a typed [`VerifiableCredential`]), this signs
+    /// a raw `serde_json::Value`. It's the signing surface for the DTC issuance
+    /// layer ([`super::dtc`]): a credential's canonical shape is sourced from the
+    /// `dtg-credentials` catalog, then fields the catalog struct doesn't model
+    /// (a top-level `id`, a `credentialStatus` block) are spliced **before**
+    /// signing so the proof covers them. Any pre-existing `proof` is removed
+    /// first — a proof never covers itself.
+    pub async fn sign_doc(&self, doc: &mut serde_json::Value) -> Result<(), AppError> {
+        let obj = doc
+            .as_object_mut()
+            .ok_or_else(|| AppError::Internal("credential document is not a JSON object".into()))?;
+        obj.remove("proof");
+        let proof = DataIntegrityProof::sign(&*doc, &self.secret, SignOptions::new())
+            .await
+            .map_err(|e| AppError::Internal(format!("sign VC doc: {e}")))?;
+        let proof_value = serde_json::to_value(&proof)
+            .map_err(|e| AppError::Internal(format!("serialize VC doc proof: {e}")))?;
+        doc.as_object_mut()
+            .expect("doc was an object above")
+            .insert("proof".into(), proof_value);
+        Ok(())
+    }
+
     /// Verify a previously-signed VC against this signer's public
     /// key. Used by tests + the M2.13 renewal path that hands
     /// freshly-issued VCs to verifiers. Returns `Ok(())` on

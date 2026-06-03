@@ -84,6 +84,10 @@ affinidi-messaging-didcomm-service = { workspace = true }
 affinidi-vc = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
+# DTG / Decentralized Trust Credentials catalog — canonical credential shapes
+# (Membership, Endorsement, Invitation, …). Phase 2 sources every issued
+# credential's shape from this catalog rather than hand-rolling each VC.
+dtg-credentials = { workspace = true }
 # Bitstring status list — privacy-preserving credential revocation
 # per W3C. Used by `crate::status_list` (Phase 2 M2.10).
 affinidi-status-list = { workspace = true }

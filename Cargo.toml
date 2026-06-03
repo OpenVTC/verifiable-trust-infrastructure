@@ -86,7 +86,7 @@ affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.3"
 
 # Decentralized Trust Graph Credentials
-dtg-credentials = "0.1"
+dtg-credentials = "0.1.2"
 
 # Async runtime
 tokio = { version = "1", features = [
