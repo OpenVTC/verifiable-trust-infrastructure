@@ -118,9 +118,11 @@ pub async fn update_context_did_handler(
     Ok(Json(result))
 }
 
-/// GET /contexts/{id}/delete-preview — preview resources affected by deleting a context. Auth: Super Admin only.
+/// GET /contexts/{id}/delete-preview — preview resources affected by deleting a
+/// context. Auth: **admin** (the operation enforces access to the context or an
+/// ancestor — folder authority).
 pub async fn preview_delete_context_handler(
-    auth: SuperAdminAuth,
+    auth: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DeleteContextPreviewResultBody>, AppError> {
@@ -139,9 +141,11 @@ pub async fn preview_delete_context_handler(
     Ok(Json(result))
 }
 
-/// DELETE /contexts/{id} — delete a context and its associated resources. Auth: Super Admin only.
+/// DELETE /contexts/{id} — delete a context and its subtree + resources. Auth:
+/// **admin** (the operation enforces access to the context or an ancestor —
+/// folder authority); `force` cascades through sub-contexts.
 pub async fn delete_context_handler(
-    auth: SuperAdminAuth,
+    auth: AdminAuth,
     // Deleting a context requires a stepped-up (AAL2) session when the
     // `context/delete` policy floor demands it.
     _step_up: RequireStepUp<ContextDeleteOp>,

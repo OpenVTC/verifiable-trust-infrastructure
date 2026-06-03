@@ -169,7 +169,8 @@ pub(super) async fn handle_preview_delete(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(e) = auth.require_super_admin() {
+    // Admin role; the operation enforces access to the context or an ancestor.
+    if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
     let req: DeleteContextPreviewBody = match parse_payload(&doc) {
@@ -194,13 +195,15 @@ pub(super) async fn handle_preview_delete(
     }
 }
 
-/// Handler for `spec/vta/contexts/delete/1.0`. Super-admin only.
+/// Handler for `spec/vta/contexts/delete/1.0`. Admin role; the operation
+/// enforces access to the context or an ancestor (folder authority) and
+/// cascades the subtree with `force`.
 pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(e) = auth.require_super_admin() {
+    if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
     // Deleting a context is gated per the `context/delete` step-up floor.

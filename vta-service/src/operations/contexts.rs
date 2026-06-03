@@ -239,7 +239,9 @@ pub async fn preview_delete_context(
     id: &str,
     channel: &str,
 ) -> Result<DeleteContextPreviewResultBody, AppError> {
-    auth.require_super_admin()?;
+    // Admin role + access to the context (or an ancestor) — folder authority.
+    auth.require_admin()?;
+    auth.require_context(id)?;
 
     get_context(contexts_ks, id)
         .await?
@@ -279,13 +281,21 @@ pub async fn delete_context(
     let did_templates_ks = ks.did_templates;
     #[cfg(feature = "webvh")]
     let webvh_ks = ks.webvh;
-    auth.require_super_admin()?;
+    // Admin role + access to the context (or an ancestor) — folder authority: a
+    // parent-admin may delete a sub-context and its subtree.
+    auth.require_admin()?;
+    auth.require_context(id)?;
 
     get_context(contexts_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("context not found: {id}")))?;
 
-    let preview = collect_context_resources(
+    // The subtree below `id`, deepest first (so children are removed before
+    // parents and ACL re-classification stays correct each step).
+    let descendants = list_descendants(contexts_ks, id).await?;
+
+    // Resources directly on `id`.
+    let own = collect_context_resources(
         keys_ks,
         acl_ks,
         did_templates_ks,
@@ -294,64 +304,123 @@ pub async fn delete_context(
         id,
     )
     .await?;
+    let own_has_resources = !own.keys.is_empty()
+        || !own.webvh_dids.is_empty()
+        || !own.acl_entries_removed.is_empty()
+        || !own.acl_entries_updated.is_empty()
+        || !own.did_templates.is_empty();
 
-    let has_resources = !preview.keys.is_empty()
-        || !preview.webvh_dids.is_empty()
-        || !preview.acl_entries_removed.is_empty()
-        || !preview.acl_entries_updated.is_empty()
-        || !preview.did_templates.is_empty();
-
-    if has_resources && !force {
-        return Err(AppError::Validation(
-            "context has associated resources; use force=true to delete, or preview first".into(),
-        ));
-    }
-
-    // Delete keys
-    for key_id in &preview.keys {
-        keys_ks.remove(crate::keys::store_key(key_id)).await?;
-    }
-
-    // Delete WebVH DIDs and their logs
-    #[cfg(feature = "webvh")]
-    for did in &preview.webvh_dids {
-        crate::webvh_store::delete_did(webvh_ks, did).await?;
-        // Remove the log entry (best-effort, may not exist for serverless DIDs)
-        let _ = webvh_ks.remove(format!("log:{did}")).await;
-    }
-
-    // Remove or update ACL entries
-    for did in &preview.acl_entries_removed {
-        crate::acl::delete_acl_entry(acl_ks, did).await?;
-    }
-    for did in &preview.acl_entries_updated {
-        if let Some(mut entry) = crate::acl::get_acl_entry(acl_ks, did).await? {
-            entry.allowed_contexts.retain(|c| c != id);
-            crate::acl::store_acl_entry(acl_ks, &entry).await?;
+    // Refuse a destructive delete (sub-contexts and/or resources) without force.
+    if (own_has_resources || !descendants.is_empty()) && !force {
+        let mut reasons = Vec::new();
+        if !descendants.is_empty() {
+            reasons.push(format!("{} sub-context(s)", descendants.len()));
         }
+        if own_has_resources {
+            reasons.push("associated resources".to_string());
+        }
+        return Err(AppError::Validation(format!(
+            "context has {}; use force=true to delete the whole subtree, or preview first",
+            reasons.join(" and "),
+        )));
     }
 
-    // Delete any DID templates scoped to this context
-    let templates_removed =
-        crate::did_templates::delete_all_context_templates(did_templates_ks, id).await?;
+    // Delete the subtree: each descendant (deepest first), then `id`.
+    let mut to_delete = descendants;
+    to_delete.push(id.to_string());
 
-    // Delete the context record itself
-    delete_context_store(contexts_ks, id).await?;
+    let (mut keys, mut dids, mut acl_removed, mut acl_updated, mut templates) = (0, 0, 0, 0, 0);
+    for ctx_id in &to_delete {
+        let purged = purge_context_resources(
+            keys_ks,
+            acl_ks,
+            did_templates_ks,
+            #[cfg(feature = "webvh")]
+            webvh_ks,
+            ctx_id,
+        )
+        .await?;
+        keys += purged.keys.len();
+        dids += purged.webvh_dids.len();
+        acl_removed += purged.acl_entries_removed.len();
+        acl_updated += purged.acl_entries_updated.len();
+        templates += purged.did_templates.len();
+        delete_context_store(contexts_ks, ctx_id).await?;
+    }
 
     info!(
         channel,
         id = %id,
-        keys_removed = preview.keys.len(),
-        dids_removed = preview.webvh_dids.len(),
-        acl_removed = preview.acl_entries_removed.len(),
-        acl_updated = preview.acl_entries_updated.len(),
-        templates_removed,
-        "context deleted with cascade"
+        contexts_removed = to_delete.len(),
+        keys_removed = keys,
+        dids_removed = dids,
+        acl_removed,
+        acl_updated,
+        templates_removed = templates,
+        "context (and subtree) deleted"
     );
     Ok(DeleteContextResultBody {
         id: id.to_string(),
         deleted: true,
     })
+}
+
+/// Strict descendant contexts of `id` (the subtree below it, excluding `id`),
+/// ordered **deepest first** so a cascade removes children before parents.
+async fn list_descendants(contexts_ks: &KeyspaceHandle, id: &str) -> Result<Vec<String>, AppError> {
+    use vti_common::context_path::{depth, is_ancestor_or_self};
+    let mut descendants: Vec<String> = list_contexts_store(contexts_ks)
+        .await?
+        .into_iter()
+        .map(|r| r.id)
+        .filter(|cid| cid != id && is_ancestor_or_self(id, cid))
+        .collect();
+    // Deepest first.
+    descendants.sort_by_key(|cid| std::cmp::Reverse(depth(cid)));
+    Ok(descendants)
+}
+
+/// Collect **and delete** every resource (keys, WebVH DIDs, ACL refs, DID
+/// templates) attached to a single `context_id`. Returns the collected preview
+/// (for counts). Does NOT delete the context record itself.
+async fn purge_context_resources(
+    keys_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<DeleteContextPreviewResultBody, AppError> {
+    let preview = collect_context_resources(
+        keys_ks,
+        acl_ks,
+        did_templates_ks,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+        context_id,
+    )
+    .await?;
+
+    for key_id in &preview.keys {
+        keys_ks.remove(crate::keys::store_key(key_id)).await?;
+    }
+    #[cfg(feature = "webvh")]
+    for did in &preview.webvh_dids {
+        crate::webvh_store::delete_did(webvh_ks, did).await?;
+        // Best-effort: serverless DIDs have no log entry.
+        let _ = webvh_ks.remove(format!("log:{did}")).await;
+    }
+    for did in &preview.acl_entries_removed {
+        crate::acl::delete_acl_entry(acl_ks, did).await?;
+    }
+    for did in &preview.acl_entries_updated {
+        if let Some(mut entry) = crate::acl::get_acl_entry(acl_ks, did).await? {
+            entry.allowed_contexts.retain(|c| c != context_id);
+            crate::acl::store_acl_entry(acl_ks, &entry).await?;
+        }
+    }
+    crate::did_templates::delete_all_context_templates(did_templates_ks, context_id).await?;
+
+    Ok(preview)
 }
 
 /// Scan all keyspaces and collect resources associated with a context.
@@ -543,5 +612,146 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    // ── subtree delete (slice 3) ──
+
+    struct OwnedKs {
+        _dir: tempfile::TempDir,
+        _store: Store,
+        keys: KeyspaceHandle,
+        acl: KeyspaceHandle,
+        contexts: KeyspaceHandle,
+        did_templates: KeyspaceHandle,
+        audit: KeyspaceHandle,
+        imported: KeyspaceHandle,
+        #[cfg(feature = "webvh")]
+        webvh: KeyspaceHandle,
+    }
+
+    impl OwnedKs {
+        fn as_ks(&self) -> super::super::Keyspaces<'_> {
+            super::super::Keyspaces {
+                keys: &self.keys,
+                acl: &self.acl,
+                contexts: &self.contexts,
+                did_templates: &self.did_templates,
+                audit: &self.audit,
+                imported: &self.imported,
+                #[cfg(feature = "webvh")]
+                webvh: &self.webvh,
+            }
+        }
+    }
+
+    fn fresh_keyspaces() -> OwnedKs {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let k = |n: &str| store.keyspace(n).unwrap();
+        OwnedKs {
+            keys: k("keys"),
+            acl: k("acl"),
+            contexts: k("contexts"),
+            did_templates: k("did_templates"),
+            audit: k("audit"),
+            imported: k("imported"),
+            #[cfg(feature = "webvh")]
+            webvh: k("webvh"),
+            _dir: dir,
+            _store: store,
+        }
+    }
+
+    /// Seed a context (super-admin) by its full path; `parent` must already exist.
+    async fn seed(ks: &KeyspaceHandle, id: &str, parent: Option<&str>) {
+        create_context(
+            ks,
+            &super_admin(),
+            id.rsplit('/').next().unwrap(),
+            id.into(),
+            None,
+            parent.map(str::to_string),
+            "seed",
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_a_context_with_sub_contexts_without_force() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+
+        let err = delete_context(&ks.as_ks(), &super_admin(), "acme", false, "t")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("sub-context")),
+            "{err:?}"
+        );
+        // Nothing was deleted.
+        assert!(get_context(&ks.contexts, "acme").await.unwrap().is_some());
+        assert!(
+            get_context(&ks.contexts, "acme/eng")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn force_delete_cascades_the_whole_subtree() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+        seed(&ks.contexts, "acme/eng/team", Some("acme/eng")).await;
+        seed(&ks.contexts, "acme/ops", Some("acme")).await;
+
+        delete_context(&ks.as_ks(), &super_admin(), "acme", true, "t")
+            .await
+            .expect("cascade delete");
+
+        for id in ["acme", "acme/eng", "acme/eng/team", "acme/ops"] {
+            assert!(
+                get_context(&ks.contexts, id).await.unwrap().is_none(),
+                "{id} should be gone"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn parent_admin_can_delete_a_sub_context() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "acme/eng", Some("acme")).await;
+
+        // An admin scoped to `acme` deletes the leaf sub-context.
+        delete_context(&ks.as_ks(), &admin_of("acme"), "acme/eng", false, "t")
+            .await
+            .expect("parent-admin deletes sub-context");
+        assert!(
+            get_context(&ks.contexts, "acme/eng")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(get_context(&ks.contexts, "acme").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn an_admin_cannot_delete_a_context_outside_its_subtree() {
+        let ks = fresh_keyspaces();
+        seed(&ks.contexts, "acme", None).await;
+        seed(&ks.contexts, "other", None).await;
+
+        let err = delete_context(&ks.as_ks(), &admin_of("acme"), "other", false, "t")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        assert!(get_context(&ks.contexts, "other").await.unwrap().is_some());
     }
 }

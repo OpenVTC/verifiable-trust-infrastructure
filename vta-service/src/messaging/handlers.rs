@@ -482,7 +482,7 @@ pub async fn handle_preview_delete_context(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
+    app_try!(auth.require_admin());
     let body: vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let result = app_try!(
@@ -508,7 +508,7 @@ pub async fn handle_delete_context(
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
     let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
+    app_try!(auth.require_admin());
     let body: vta_sdk::protocols::context_management::delete::DeleteContextBody =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let ks = operations::Keyspaces::from_vta_state(&state);
