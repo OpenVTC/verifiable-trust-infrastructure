@@ -227,6 +227,22 @@ pub async fn run(
         Err(e) => warn!("failed to install default policies: {e}"),
     }
 
+    // Self-heal a binary-upgrade-over-old-data state: a ceremony purpose
+    // whose active policy predates the decision-pipeline migration
+    // (defines `allow`, not `decision`) is non-functional — the routes
+    // evaluate `data.<pkg>.decision`. Replace those with the shipped
+    // decision-shaped defaults; operator decision-policies are untouched.
+    match crate::policy::default::upgrade_legacy_ceremony_defaults(
+        &policies_ks,
+        &active_policies_ks,
+    )
+    .await
+    {
+        Ok(0) => {}
+        Ok(n) => info!("upgraded {n} legacy ceremony policy(ies) to decision-shaped defaults"),
+        Err(e) => warn!("failed to upgrade legacy ceremony policies: {e}"),
+    }
+
     // M2.10 + M2.11: provision the two BitstringStatusLists.
     // Idempotent — only seeds decoys when the row is brand new.
     // Skipped when `public_url` is unset (pre-setup deployment) —

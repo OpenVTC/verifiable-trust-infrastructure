@@ -34,9 +34,12 @@ use uuid::Uuid;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
-use super::engine::compile;
-use super::model::PolicyPurpose;
-use super::storage::{get_active_policy_id, new_policy, set_active_policy_id, store_policy};
+use super::engine::{compile, evaluate};
+use super::model::{Policy, PolicyPurpose};
+use super::storage::{
+    get_active_policy_id, get_policy, max_version_for, new_policy, set_active_policy_id,
+    store_policy,
+};
 
 /// Pseudo-DID stamped on every default policy's `author_did`
 /// field. Not a resolvable DID — purely a marker so operators
@@ -191,6 +194,104 @@ pub async fn install_defaults(
     Ok(installed)
 }
 
+/// The ceremony purposes the decision pipeline evaluates as
+/// `data.<pkg>.decision`. An active policy here that doesn't define a
+/// `decision` rule is a pre-migration boolean leftover.
+const CEREMONY_DECISION_PACKAGES: &[(PolicyPurpose, &str)] = &[
+    (PolicyPurpose::Directory, "vtc.directory"),
+    (PolicyPurpose::Join, "vtc.join"),
+    (PolicyPurpose::Removal, "vtc.removal"),
+    (PolicyPurpose::RoleChange, "vtc.role_change"),
+];
+
+/// True when the policy defines a `decision` rule that yields a
+/// four-valued verdict (the decision-pipeline shape). A pre-migration
+/// boolean policy defines `allow`, not `decision`, so this is false.
+fn yields_decision(policy: &Policy, pkg: &str) -> bool {
+    let Ok(compiled) = compile(&policy.rego_source, policy.id) else {
+        return false;
+    };
+    match evaluate(
+        &compiled,
+        &format!("data.{pkg}.decision"),
+        serde_json::json!({}),
+    ) {
+        Ok(results) => results
+            .pointer("/result/0/expressions/0/value")
+            .and_then(|v| v.get("effect"))
+            .and_then(|e| e.as_str())
+            .is_some(),
+        Err(_) => false,
+    }
+}
+
+/// Upgrade any ceremony purpose whose **active** policy predates the
+/// decision-pipeline migration (defines no `decision` rule) to the
+/// shipped decision-shaped default.
+///
+/// A binary upgrade over an existing data store leaves the old boolean
+/// policies active — [`install_defaults`] only fills *missing* pointers,
+/// so it won't touch them — but the routes now evaluate
+/// `data.<pkg>.decision`, which those policies don't define. The route
+/// default-denies and the simulator reports "no decision". This heals
+/// that: a legacy ceremony policy is non-functional, so replacing it
+/// with the shipped default is strictly a repair. Operator-authored
+/// *decision* policies (which define `decision`) are left untouched.
+///
+/// The replacement is appended fail-forward — a new revision at
+/// `max_version + 1`, the active pointer moved to it — never an in-place
+/// rewrite. Returns the number of purposes upgraded.
+pub async fn upgrade_legacy_ceremony_defaults(
+    policies_ks: &KeyspaceHandle,
+    active_policies_ks: &KeyspaceHandle,
+) -> Result<usize, AppError> {
+    let mut upgraded = 0_usize;
+    for &(purpose, pkg) in CEREMONY_DECISION_PACKAGES {
+        let Some(active_id) = get_active_policy_id(active_policies_ks, purpose).await? else {
+            continue; // install_defaults handles the missing case
+        };
+        let Some(active) = get_policy(policies_ks, active_id).await? else {
+            continue;
+        };
+        if yields_decision(&active, pkg) {
+            continue; // already decision-shaped (default or operator's own)
+        }
+
+        let source = default_source(purpose);
+        let id = Uuid::new_v4();
+        let compiled = compile(source, id).map_err(|e| {
+            AppError::Internal(format!(
+                "default policy for {} failed to compile: {e}",
+                purpose.as_str()
+            ))
+        })?;
+        let sha = *compiled.source_sha256();
+        let version = max_version_for(policies_ks, purpose).await? + 1;
+
+        let mut policy = new_policy(
+            purpose,
+            source.to_string(),
+            sha,
+            DEFAULTS_AUTHOR.to_string(),
+            version,
+        );
+        policy.id = id;
+        policy.activated_at = Some(Utc::now());
+
+        store_policy(policies_ks, &policy).await?;
+        set_active_policy_id(active_policies_ks, purpose, id).await?;
+
+        upgraded += 1;
+        warn!(
+            purpose = purpose.as_str(),
+            replaced = %active_id,
+            policy_id = %id,
+            "upgraded a pre-migration ceremony policy to the decision-shaped default"
+        );
+    }
+    Ok(upgraded)
+}
+
 /// Verify every [`PolicyPurpose`] has an active pointer. Called
 /// after [`install_defaults`] succeeds — under normal boot every
 /// purpose should be live. A gap here means a default-install
@@ -289,6 +390,72 @@ mod tests {
         // Re-run is a no-op.
         let again = install_defaults(&policies_ks, &active_ks).await.unwrap();
         assert_eq!(again, 0, "second install must be a no-op");
+    }
+
+    /// A binary-upgrade-over-old-data state: a pre-migration boolean
+    /// ceremony policy (defines `allow`, not `decision`) is replaced by
+    /// the decision-shaped default, while a healthy decision policy and
+    /// the upgrade itself stay idempotent.
+    #[tokio::test]
+    async fn upgrade_replaces_only_legacy_ceremony_policies() {
+        let (policies_ks, active_ks, _dir) = temp_keyspaces().await;
+
+        // A pre-migration boolean policy active for Join.
+        let legacy = "package vtc.join\nimport rego.v1\n\ndefault allow := false\n";
+        let legacy_id = Uuid::new_v4();
+        let sha = *compile_policy(legacy, legacy_id).unwrap().source_sha256();
+        let mut p = new_policy(
+            PolicyPurpose::Join,
+            legacy.to_string(),
+            sha,
+            "did:key:zOperator".into(),
+            1,
+        );
+        p.id = legacy_id;
+        p.activated_at = Some(Utc::now());
+        store_policy(&policies_ks, &p).await.unwrap();
+        set_active_policy_id(&active_ks, PolicyPurpose::Join, legacy_id)
+            .await
+            .unwrap();
+
+        // Fill the remaining purposes with the (decision-shaped)
+        // defaults. install_defaults skips Join — it has an active row.
+        install_defaults(&policies_ks, &active_ks).await.unwrap();
+        let removal_before = get_active_policy_id(&active_ks, PolicyPurpose::Removal)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let upgraded = upgrade_legacy_ceremony_defaults(&policies_ks, &active_ks)
+            .await
+            .unwrap();
+        assert_eq!(upgraded, 1, "only the legacy Join policy is upgraded");
+
+        // Join now points at a decision-shaped policy at a fresh version.
+        let join_after = get_active_policy_id(&active_ks, PolicyPurpose::Join)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(join_after, legacy_id, "Join active pointer moved forward");
+        let join_policy = get_policy(&policies_ks, join_after).await.unwrap().unwrap();
+        assert!(
+            yields_decision(&join_policy, "vtc.join"),
+            "upgraded Join policy yields a decision"
+        );
+        assert_eq!(join_policy.version, 2, "appended fail-forward");
+
+        // The healthy decision-shaped Removal policy is untouched.
+        let removal_after = get_active_policy_id(&active_ks, PolicyPurpose::Removal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(removal_before, removal_after, "Removal default untouched");
+
+        // Idempotent — a second pass finds nothing to upgrade.
+        let again = upgrade_legacy_ceremony_defaults(&policies_ks, &active_ks)
+            .await
+            .unwrap();
+        assert_eq!(again, 0, "second upgrade pass is a no-op");
     }
 
     /// An operator-uploaded policy already pointed at by the active

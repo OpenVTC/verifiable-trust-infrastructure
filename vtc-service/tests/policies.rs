@@ -481,6 +481,43 @@ async fn test_does_not_mutate_state() {
     );
 }
 
+/// The shipped decision-shaped default policy, evaluated through the
+/// real `/test` endpoint with the query + facts the simulator sends,
+/// produces a four-valued decision object — proving the backend +
+/// default + wire shape are sound end-to-end (the simulator's
+/// "no decision" error is a non-decision-shaped *active* policy, not a
+/// backend bug).
+#[tokio::test]
+async fn shipped_directory_default_yields_a_decision_via_test() {
+    const DIRECTORY_DEFAULT: &str = include_str!("../policies/default/directory.rego");
+    let fix = build_fixture().await;
+    let uploaded = upload_policy(&fix, "directory", DIRECTORY_DEFAULT).await;
+    let id: Uuid = uploaded["id"].as_str().unwrap().parse().unwrap();
+
+    let req = auth_request(
+        "POST",
+        &format!("/v1/policies/{id}/test"),
+        TEST_TASK,
+        &fix.admin_token,
+        json!({
+            "query": "data.vtc.directory.decision",
+            "input": { "actor": { "role": "admin", "authenticated": true } }
+        }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = body_json(resp.into_body()).await;
+    let decision = body
+        .pointer("/result/result/0/expressions/0/value")
+        .expect("decision query must yield a value");
+    assert_eq!(
+        decision["effect"], "allow",
+        "admin viewer → allow, got {decision}"
+    );
+    assert!(decision["with"]["fields"].is_array());
+}
+
 /// Upload + activate each emit one audit envelope. The audit
 /// keyspace gains exactly two rows (plus the boot-time
 /// `AuditKeyRotated::Initial` row from `ensure_initial`).
