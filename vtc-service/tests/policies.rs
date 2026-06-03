@@ -663,6 +663,54 @@ async fn list_filters_by_status() {
     assert_eq!(items[0]["isActive"], false);
 }
 
+/// Regression: the simulator's active-policy lookup
+/// (`?purpose=X&status=active&limit=1`) must return X's active row even
+/// when several purposes have active policies. The purpose/status
+/// filters run *after* pagination, so `limit=1` used to fetch one
+/// arbitrary keyspace row and filter it — surfacing the active policy
+/// for a single purpose only (whichever sorted first). status=active is
+/// now resolved from the per-purpose active pointers directly.
+#[tokio::test]
+async fn list_active_by_purpose_is_exact_under_limit_one() {
+    let fix = build_fixture().await;
+    let join = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
+    let removal = upload_policy(&fix, "removal", ALT_POLICY).await;
+    let join_id = join["id"].as_str().unwrap();
+    let removal_id = removal["id"].as_str().unwrap();
+
+    // Activate a policy for both purposes.
+    for id in [join_id, removal_id] {
+        let req = auth_request(
+            "POST",
+            &format!("/v1/policies/{id}/activate"),
+            ACTIVATE_TASK,
+            &fix.admin_token,
+            json!({}),
+        );
+        fix.router.clone().oneshot(req).await.unwrap();
+    }
+
+    // Each purpose's active lookup returns ITS row, despite limit=1.
+    for (purpose, id) in [("join", join_id), ("removal", removal_id)] {
+        let resp = fix
+            .router
+            .clone()
+            .oneshot(auth_get(
+                &format!("/v1/policies?purpose={purpose}&status=active&limit=1"),
+                LIST_TASK,
+                &fix.admin_token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp.into_body()).await;
+        let items = body["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{purpose}: active lookup returns one row");
+        assert_eq!(items[0]["id"], id, "{purpose}: active id");
+        assert_eq!(items[0]["isActive"], true);
+    }
+}
+
 /// `GET /v1/policies/{id}` returns the full row + isActive flag.
 #[tokio::test]
 async fn show_returns_full_row() {

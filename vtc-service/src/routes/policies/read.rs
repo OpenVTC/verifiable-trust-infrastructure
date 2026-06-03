@@ -93,6 +93,34 @@ pub async fn list_policies(
     State(state): State<AppState>,
     Query(query): Query<ListPoliciesQuery>,
 ) -> Result<Json<Paginated<PolicyResponse>>, AppError> {
+    // `status=active` is resolved directly from the per-purpose active
+    // pointers, not the paginated keyspace scan. The purpose/status
+    // filters below run *after* pagination, so a small `limit` (the
+    // simulator's active-policy lookup sends `limit=1`) would drop the
+    // active row for every purpose whose row isn't in the first page —
+    // surfacing the active policy for one arbitrary purpose only. The
+    // active set is at most one row per `PolicyPurpose`, so resolve it
+    // deterministically and ignore limit/cursor.
+    if matches!(query.status, Some(PolicyStatusFilter::Active)) {
+        let mut items = Vec::new();
+        for purpose in PolicyPurpose::ALL {
+            if query.purpose.is_some_and(|f| f != purpose) {
+                continue;
+            }
+            if let Some(id) = get_active_policy_id(&state.active_policies_ks, purpose).await?
+                && let Some(p) = get_policy(&state.policies_ks, id).await?
+            {
+                items.push(PolicyResponse::from_policy(p, true));
+            }
+        }
+        let total = items.len() as u64;
+        return Ok(Json(Paginated {
+            items,
+            next_cursor: None,
+            total_estimate: Some(total),
+        }));
+    }
+
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
 
     let audit_writer = state
