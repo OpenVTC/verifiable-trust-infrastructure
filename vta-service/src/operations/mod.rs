@@ -18,6 +18,10 @@ pub mod did_webvh;
 /// `vta keys bundle` CLIs for cold-start environments where PNM can't
 /// reach the VTA over the network.
 pub mod export;
+/// ACL-gated holder-key resolution for credential presentation — derive the
+/// VTA-managed subject key (kb-jwt signer + consent secret), refusing keys
+/// outside the caller's authorised context.
+pub mod holder_keys;
 pub mod internal_authority;
 pub mod keys;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
