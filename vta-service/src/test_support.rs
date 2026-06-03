@@ -607,3 +607,91 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
 
     (router, ctx)
 }
+
+/// A **mock VTA** bound to an ephemeral local port — a real, listening HTTP
+/// server a test harness can drive over the wire, with no setup ceremony.
+///
+/// Wraps [`build_test_app`] (ephemeral in-memory state — no TEE/KMS, no mediator,
+/// no on-disk seed) and serves it on `127.0.0.1:<random-port>`. The server runs
+/// in a background task and shuts down when the `MockVta` is dropped (or via
+/// [`shutdown`](Self::shutdown)).
+///
+/// ```no_run
+/// # async fn demo() {
+/// use vta_service::test_support::MockVta;
+/// let mock = MockVta::start().await;
+/// let base = mock.base_url();              // e.g. http://127.0.0.1:54321
+/// // … point a client at `base`, or seed ACL/sessions via `mock.ctx` …
+/// mock.shutdown().await;
+/// # }
+/// ```
+pub struct MockVta {
+    base_url: String,
+    /// The bootstrapped app context (keyspaces, JWT keys, config) so a harness
+    /// can seed ACL rows / sessions before driving the API. Owns the temp data
+    /// dir — kept alive for the lifetime of the `MockVta`.
+    pub ctx: TestAppContext,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl MockVta {
+    /// Start a mock VTA on a random loopback port and return once it is bound
+    /// and serving.
+    pub async fn start() -> MockVta {
+        let (router, ctx) = build_test_app().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral loopback port");
+        let addr = listener.local_addr().expect("resolve local addr");
+        let base_url = format!("http://{addr}");
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            // `ConnectInfo<SocketAddr>` is required — the unauth routes carry the
+            // per-source-IP rate limiter, same as production.
+            let _ = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await;
+        });
+
+        MockVta {
+            base_url,
+            ctx,
+            shutdown: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    /// The base URL to point a client at (e.g. `http://127.0.0.1:54321`).
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Stop the server and wait for it to wind down gracefully.
+    pub async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for MockVta {
+    fn drop(&mut self) {
+        // Signal graceful shutdown; abort as a backstop if the task is still up.
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
