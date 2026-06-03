@@ -1,5 +1,6 @@
-//! Issuer-side credential-exchange (Phase 3, spec §6) — the VTC answering an
-//! OID4VCI `credential-exchange/request` by issuing the credential.
+//! VTC credential-exchange (Phase 3, spec §6) — the issuer answering an OID4VCI
+//! `credential-exchange/request` by issuing a credential, and the verifier
+//! checking a `credential-exchange/present` [`verify_presentation`].
 //!
 //! The [`vta_sdk::protocols::credential_exchange`] Trust Tasks carry OID4VCI on
 //! the wire; the `affinidi-openid4vci` crate gives us the offer/response
@@ -31,6 +32,11 @@ use affinidi_openid4vci::issuer::{
     create_credential_offer, create_credential_response, validate_credential_request,
 };
 use affinidi_openid4vci::{CredentialOffer, CredentialRequest, CredentialResponse};
+use affinidi_sd_jwt::SdJwt;
+use affinidi_sd_jwt::error::SdJwtError;
+use affinidi_sd_jwt::hasher::Sha256Hasher;
+use affinidi_sd_jwt::signer::JwtVerifier;
+use affinidi_sd_jwt::verifier::{VerificationOptions, verify as verify_sd_jwt};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
@@ -223,6 +229,201 @@ pub fn credential_offer(
     pre_authorized_code: String,
 ) -> CredentialOffer {
     create_credential_offer(issuer_id, config_ids, Some(pre_authorized_code))
+}
+
+// ── Verifier side: verify a presented vp_token (Phase 3, task 3.4) ──
+//
+// The VTC verifier emits a `credential-exchange/query` and receives a
+// `credential-exchange/present` carrying a `vp_token`. This verifies that token:
+// the issuer signature, the holder key-binding (bound to our nonce + identity),
+// and temporal validity — so a holder can prove it holds a credential we (or a
+// trusted issuer) issued, without us re-reading the wire bytes by hand.
+
+/// A production Ed25519 verifier for the SD-JWT [`JwtVerifier`] trait: checks the
+/// compact JWS signature with `verify_strict` and returns the decoded payload.
+struct EdDsaJwtVerifier {
+    key: VerifyingKey,
+}
+
+impl JwtVerifier for EdDsaJwtVerifier {
+    fn verify_jwt(&self, jws: &str) -> Result<Value, SdJwtError> {
+        let parts: Vec<&str> = jws.split('.').collect();
+        if parts.len() != 3 {
+            return Err(SdJwtError::Verification("malformed JWS".into()));
+        }
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let sig_bytes = URL_SAFE_NO_PAD
+            .decode(parts[2])
+            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
+        let signature = Signature::from_slice(&sig_bytes)
+            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
+        self.key
+            .verify_strict(signing_input.as_bytes(), &signature)
+            .map_err(|_| SdJwtError::Verification("signature did not verify".into()))?;
+        let payload = URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .map_err(|e| SdJwtError::Verification(e.to_string()))?;
+        serde_json::from_slice(&payload).map_err(|e| SdJwtError::Verification(e.to_string()))
+    }
+}
+
+/// A cryptographically-verified SD-JWT-VC presentation.
+///
+/// Typestate: only constructable via [`verify_presentation`], so any code that
+/// takes a `VerifiedPresentation` is guaranteed to be looking at a presentation
+/// whose issuer signature, holder binding, and freshness all checked out.
+#[derive(Debug, Clone)]
+pub struct VerifiedPresentation {
+    /// The issuer DID (`iss`) whose signature verified.
+    pub issuer_did: String,
+    /// The credential type (`vct`), if present.
+    pub vct: Option<String>,
+    /// The disclosed claims (issuer-protected claims + the revealed subset).
+    pub claims: Value,
+}
+
+/// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
+///
+/// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
+/// JWS signature (issuer `did:key` resolved from the `iss` claim); the holder
+/// key-binding JWT — bound to `expected_aud` + `expected_nonce`, signed by the
+/// `cnf.jwk` key the issuer committed to (RFC 9901 §8.3); and temporal validity
+/// (`nbf` / `exp`).
+///
+/// Deferred to follow-up slices: status-list revocation, issuer-trust (TRQP),
+/// and re-checking DCQL satisfaction. A `did:webvh` / `did:web` issuer needs
+/// resolver-based key resolution (here a non-`did:key` issuer is rejected).
+pub fn verify_presentation(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentation, AppError> {
+    let compact = vp_token.as_str().ok_or_else(|| {
+        AppError::Validation("vp_token must be a compact SD-JWT-VC string".into())
+    })?;
+
+    let hasher = Sha256Hasher;
+    let sd = SdJwt::parse(compact, &hasher)
+        .map_err(|e| AppError::Validation(format!("vp_token is not a parseable SD-JWT-VC: {e}")))?;
+    if sd.kb_jwt.is_none() {
+        return Err(AppError::Validation(
+            "presentation carries no holder kb-jwt (unbound presentation refused)".into(),
+        ));
+    }
+
+    let payload = sd
+        .payload()
+        .map_err(|e| AppError::Validation(format!("presentation payload: {e}")))?;
+
+    let issuer_did = payload
+        .get("iss")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("presentation has no `iss`".into()))?
+        .to_string();
+    let issuer_verifier = EdDsaJwtVerifier {
+        key: resolve_ed25519_verifying_key(&issuer_did)?,
+    };
+
+    let cnf_jwk = payload
+        .get("cnf")
+        .and_then(|c| c.get("jwk"))
+        .ok_or_else(|| {
+            AppError::Validation("presentation has no `cnf.jwk` (holder binding)".into())
+        })?;
+    let holder_verifier = EdDsaJwtVerifier {
+        key: ed25519_from_okp_jwk(cnf_jwk)?,
+    };
+
+    let options = VerificationOptions {
+        verify_kb: true,
+        expected_audience: Some(expected_aud),
+        expected_nonce: Some(expected_nonce),
+    };
+    let result = verify_sd_jwt(
+        &sd,
+        &issuer_verifier,
+        &hasher,
+        &options,
+        Some(&holder_verifier),
+    )
+    .map_err(|e| AppError::Validation(format!("presentation verification failed: {e}")))?;
+    if !result.is_verified() {
+        return Err(AppError::Validation(
+            "holder key-binding (kb-jwt) did not verify".into(),
+        ));
+    }
+
+    check_temporal(&result.claims, now)?;
+
+    let vct = result
+        .claims
+        .get("vct")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Ok(VerifiedPresentation {
+        issuer_did,
+        vct,
+        claims: result.claims,
+    })
+}
+
+/// Resolve an Ed25519 `did:key` to its verifying key (issuer-key resolution).
+fn resolve_ed25519_verifying_key(did: &str) -> Result<VerifyingKey, AppError> {
+    if !did.starts_with("did:key:") {
+        return Err(AppError::Validation(format!(
+            "issuer `{did}` is not a `did:key` — resolver-based resolution is a follow-up slice"
+        )));
+    }
+    let bytes = affinidi_crypto::did_key::did_key_to_ed25519_pub(did).map_err(|e| {
+        AppError::Validation(format!("issuer `{did}` is not a resolvable did:key: {e}"))
+    })?;
+    VerifyingKey::from_bytes(&bytes)
+        .map_err(|e| AppError::Validation(format!("issuer key is invalid: {e}")))
+}
+
+/// Build a verifying key from an RFC 8037 OKP / Ed25519 JWK (the `cnf.jwk`).
+fn ed25519_from_okp_jwk(jwk: &Value) -> Result<VerifyingKey, AppError> {
+    if jwk.get("kty").and_then(Value::as_str) != Some("OKP")
+        || jwk.get("crv").and_then(Value::as_str) != Some("Ed25519")
+    {
+        return Err(AppError::Validation(
+            "cnf.jwk is not an OKP / Ed25519 key".into(),
+        ));
+    }
+    let x = jwk
+        .get("x")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("cnf.jwk has no `x`".into()))?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(x)
+        .map_err(|e| AppError::Validation(format!("cnf.jwk `x` is not base64url: {e}")))?;
+    let arr: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| AppError::Validation("cnf.jwk `x` is not 32 bytes".into()))?;
+    VerifyingKey::from_bytes(&arr)
+        .map_err(|e| AppError::Validation(format!("cnf.jwk key is invalid: {e}")))
+}
+
+/// Enforce temporal validity over the presentation's protected claims.
+fn check_temporal(claims: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
+    let now_s = now.timestamp();
+    if let Some(nbf) = claims.get("nbf").and_then(Value::as_i64)
+        && now_s < nbf
+    {
+        return Err(AppError::Validation(
+            "presentation is not yet valid (`nbf` in the future)".into(),
+        ));
+    }
+    if let Some(exp) = claims.get("exp").and_then(Value::as_i64)
+        && now_s > exp
+    {
+        return Err(AppError::Validation(
+            "presentation has expired (`exp` in the past)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Decode a base64url JWT segment into JSON.
@@ -679,5 +880,179 @@ mod tests {
         // The legitimate offer was NOT consumed — the real holder still redeems.
         let good = request_with(bound.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
         assert!(redeem(&ks, &good, now).await.is_ok());
+    }
+
+    // ── verify_presentation (task 3.4) ──
+
+    const MEMBERSHIP_VCT: &str = "https://openvtc.org/credentials/MembershipCredential";
+
+    /// An Ed25519 SD-JWT signer (issuer or holder).
+    struct SdSigner {
+        key: SigningKey,
+        kid: String,
+    }
+    impl affinidi_sd_jwt::signer::JwtSigner for SdSigner {
+        fn algorithm(&self) -> &str {
+            "EdDSA"
+        }
+        fn key_id(&self) -> Option<&str> {
+            Some(&self.kid)
+        }
+        fn sign_jwt(&self, header: &Value, payload: &Value) -> Result<String, SdJwtError> {
+            let h = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(header).map_err(|e| SdJwtError::Verification(e.to_string()))?,
+            );
+            let p = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(payload).map_err(|e| SdJwtError::Verification(e.to_string()))?,
+            );
+            let input = format!("{h}.{p}");
+            let sig: Signature = self.key.sign(input.as_bytes());
+            Ok(format!(
+                "{input}.{}",
+                URL_SAFE_NO_PAD.encode(sig.to_bytes())
+            ))
+        }
+    }
+
+    fn okp_jwk(vk: &VerifyingKey) -> Value {
+        json!({ "kty": "OKP", "crv": "Ed25519", "x": URL_SAFE_NO_PAD.encode(vk.to_bytes()) })
+    }
+
+    /// Issue an SD-JWT-VC (issuer seed 9, holder seed 5, `givenName` disclosable)
+    /// and present it. Returns `(issuer_did, vp_token)`. With `with_kb`, the
+    /// presentation carries a holder kb-jwt bound to `aud` + `nonce`.
+    fn make_presentation(
+        aud: &str,
+        nonce: &str,
+        iat: u64,
+        exp: i64,
+        with_kb: bool,
+    ) -> (String, Value) {
+        use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
+
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = SdSigner {
+            key: SigningKey::from_bytes(&[9u8; 32]),
+            kid: format!("{issuer_did}#key-0"),
+        };
+
+        let holder = SigningKey::from_bytes(&[5u8; 32]);
+        let holder_vk = holder.verifying_key();
+        let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(holder_vk.as_bytes());
+        let holder_signer = SdSigner {
+            key: SigningKey::from_bytes(&[5u8; 32]),
+            kid: format!(
+                "{holder_did}#{}",
+                holder_did.strip_prefix("did:key:").unwrap()
+            ),
+        };
+
+        let claims = json!({
+            "iss": issuer_did, "sub": holder_did, "vct": MEMBERSHIP_VCT,
+            "iat": iat, "exp": exp, "givenName": "Alice"
+        });
+        let frame = json!({ "_sd": ["givenName"] });
+        let hasher = Sha256Hasher;
+        let holder_jwk = okp_jwk(&holder_vk);
+        let sd = affinidi_sd_jwt::issuer::issue(
+            &claims,
+            &frame,
+            &issuer_signer,
+            &hasher,
+            Some(&holder_jwk),
+        )
+        .unwrap();
+        let selected = select_disclosures(&sd, &["givenName"]);
+        let kb = KbJwtInput {
+            audience: aud,
+            nonce,
+            signer: &holder_signer,
+            iat,
+        };
+        let presentation = present(
+            &sd,
+            &selected,
+            if with_kb { Some(&kb) } else { None },
+            &hasher,
+        )
+        .unwrap();
+        (issuer_did, json!(presentation.serialize()))
+    }
+
+    #[test]
+    fn verifies_a_well_formed_presentation() {
+        let aud = "did:web:vtc.example";
+        let nonce = "verifier-nonce-1";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (issuer_did, vp) = make_presentation(aud, nonce, iat, exp, true);
+
+        let verified = verify_presentation(&vp, aud, nonce, now).expect("verify");
+        assert_eq!(verified.issuer_did, issuer_did);
+        assert_eq!(verified.vct.as_deref(), Some(MEMBERSHIP_VCT));
+        assert_eq!(verified.claims["givenName"], "Alice");
+    }
+
+    #[test]
+    fn rejects_a_wrong_nonce_or_audience() {
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_did, vp) = make_presentation("did:web:vtc.example", "right-nonce", iat, exp, true);
+
+        assert!(verify_presentation(&vp, "did:web:vtc.example", "wrong-nonce", now).is_err());
+        assert!(verify_presentation(&vp, "did:web:attacker.example", "right-nonce", now).is_err());
+    }
+
+    #[test]
+    fn rejects_an_expired_presentation() {
+        let now = Utc::now();
+        let iat = (now - Duration::hours(3)).timestamp() as u64;
+        let exp = (now - Duration::hours(2)).timestamp();
+        let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, true);
+
+        let err = verify_presentation(&vp, "did:web:vtc.example", "n", now).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("expired")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_an_unbound_presentation_without_a_kb_jwt() {
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, false);
+
+        let err = verify_presentation(&vp, "did:web:vtc.example", "n", now).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("kb-jwt")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_tampered_issuer_signature() {
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_did, vp) = make_presentation(aud, nonce, iat, exp, true);
+
+        // Flip the last char of the issuer JWS (the segment before the first `~`)
+        // — its signature no longer covers the header.payload bytes.
+        let compact = vp.as_str().unwrap();
+        let tilde = compact.find('~').unwrap();
+        let mut chars: Vec<char> = compact.chars().collect();
+        let i = tilde - 1;
+        chars[i] = if chars[i] == 'A' { 'B' } else { 'A' };
+        let tampered: String = chars.into_iter().collect();
+
+        assert!(verify_presentation(&json!(tampered), aud, nonce, now).is_err());
     }
 }

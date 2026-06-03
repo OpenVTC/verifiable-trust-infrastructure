@@ -54,8 +54,8 @@ pub mod vmc;
 
 pub use custom_endorsement::{CustomEndorsementParams, build_custom_endorsement};
 pub use exchange::{
-    DEFAULT_OFFER_TTL, ProvenHolderProof, credential_offer, issue_on_request, make_offer, redeem,
-    verify_oid4vci_proof,
+    DEFAULT_OFFER_TTL, ProvenHolderProof, VerifiedPresentation, credential_offer, issue_on_request,
+    make_offer, redeem, verify_oid4vci_proof, verify_presentation,
 };
 pub use signer::LocalSigner;
 pub use vec::{RoleVecParams, build_role_vec};

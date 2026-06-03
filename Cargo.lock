@@ -9854,6 +9854,7 @@ dependencies = [
  "affinidi-messaging-didcomm-service",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
+ "affinidi-sd-jwt",
  "affinidi-secrets-resolver",
  "affinidi-status-list",
  "affinidi-tdk",
