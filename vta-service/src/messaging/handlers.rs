@@ -1871,6 +1871,88 @@ pub async fn handle_credential_issue(
     Ok(None)
 }
 
+/// `credential-exchange/query` over DIDComm (Phase 3) — the holder answers a
+/// verifier's DCQL query with a presentation.
+///
+/// The authcrypt sender is the **verifier**. The VTA presents its **own** held
+/// credentials, so it acts with its own authority (super-admin over its own
+/// contexts) — the **consent policy** (trusted verifiers from config) is the
+/// gate. `present_query` does match → ACL-gated holder-key resolution →
+/// consent-policy → present. A **trusted** verifier gets a `present` reply with
+/// the `vp_token`; any other **defers** (the pending-approval persistence + the
+/// re-present loop is a follow-up).
+pub async fn handle_credential_query(
+    ctx: HandlerContext,
+    message: Message,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    let verifier_did = ctx
+        .sender_did
+        .clone()
+        .ok_or_else(|| handler_err("credential query has no authcrypt sender"))?;
+    let body: credential_exchange::QueryBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+
+    // Trusted-verifier policy + the VTA's own identity, from config.
+    let (policy, vta_did) = {
+        let config = app_state.config.read().await;
+        (
+            operations::credential_exchange::ConsentPolicy::trusting(
+                config.trusted_presentation_verifiers.clone(),
+            ),
+            config.vta_did.clone().unwrap_or_else(|| "vta:self".into()),
+        )
+    };
+    // The VTA presents its own held credentials — its own authority.
+    let auth = crate::auth::AuthClaims {
+        did: vta_did,
+        role: Role::Admin,
+        allowed_contexts: Vec::new(),
+        ..Default::default()
+    };
+
+    let outcome = app_try!(
+        operations::credential_exchange::present_query(
+            &app_state.vault_ks,
+            &app_state.keys_ks,
+            &app_state.seed_store,
+            &auth,
+            &body,
+            &verifier_did,
+            &policy,
+            chrono::Utc::now(),
+        )
+        .await
+    );
+
+    use operations::credential_exchange::PresentOutcome;
+    match outcome {
+        PresentOutcome::Presented(present_body) => {
+            info!(verifier = %verifier_did, "presented a vp_token via DIDComm");
+            response(credential_exchange::PRESENT, &present_body)
+        }
+        PresentOutcome::ConsentRequired {
+            claims, purpose, ..
+        } => {
+            info!(
+                verifier = %verifier_did,
+                ?claims,
+                %purpose,
+                "credential query deferred — holder consent required"
+            );
+            // Deferred-approval store + re-present loop is a follow-up; signal
+            // the verifier that holder consent is required.
+            Ok(Some(DIDCommResponse::problem_report(
+                ProblemReport::bad_request(
+                    "presentation requires holder consent (verifier not trusted); \
+                     an out-of-band approval is needed"
+                        .to_string(),
+                ),
+            )))
+        }
+    }
+}
+
 pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
     let from = message.from.as_deref().unwrap_or("unknown");
     let thid = message.thid.as_deref().unwrap_or("none");

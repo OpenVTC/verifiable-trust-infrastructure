@@ -346,6 +346,12 @@ pub fn build_handler(
         .route(
             credential_exchange::ISSUE,
             handler_fn(handlers::handle_credential_issue),
+        )?
+        // Credential exchange — holder answers a verifier's DCQL query with a
+        // presentation (spec §6 / task 3.5). Uses `AppState` for vault + keys.
+        .route(
+            credential_exchange::QUERY,
+            handler_fn(handlers::handle_credential_query),
         )?;
 
     // WebVH handlers (feature-gated)

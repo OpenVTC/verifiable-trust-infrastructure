@@ -699,6 +699,7 @@ pub async fn run_setup_wizard(
     } else {
         // All other backends: store via the seed store
         let seed_store = create_seed_store(&AppConfig {
+            trusted_presentation_verifiers: Vec::new(),
             vta_did: None,
             vta_name: None,
             public_url: None,
@@ -738,6 +739,7 @@ pub async fn run_setup_wizard(
 
     // Create a temporary AppConfig for the seed store (config hasn't been saved yet)
     let mut wizard_config = AppConfig {
+        trusted_presentation_verifiers: Vec::new(),
         vta_did: None,
         vta_name: None,
         public_url: public_url.clone(),
@@ -820,6 +822,7 @@ pub async fn run_setup_wizard(
 
     // 15. Save config
     let config = AppConfig {
+        trusted_presentation_verifiers: Vec::new(),
         vta_did,
         vta_name,
         public_url: public_url.clone(),

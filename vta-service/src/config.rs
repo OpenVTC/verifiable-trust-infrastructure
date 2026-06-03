@@ -35,6 +35,12 @@ pub struct AppConfig {
     pub audit: AuditConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// Verifier DIDs the holder **auto-consents** to when answering a
+    /// `credential-exchange/query` (`present_or_defer`'s `ConsentPolicy`). Any
+    /// verifier not listed **defers** to an out-of-band approval. Default empty
+    /// (defer everything) — a safe default; operators trust specific verifiers.
+    #[serde(default)]
+    pub trusted_presentation_verifiers: Vec<String>,
     #[cfg(feature = "tee")]
     #[serde(default)]
     pub tee: TeeConfig,
