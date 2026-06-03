@@ -92,6 +92,9 @@ dtg-credentials = { workspace = true }
 jsonschema = { workspace = true }
 # DCQL (via OpenID4VP) — the schema store's Accepts criterion is a DCQL query.
 affinidi-openid4vp = { workspace = true }
+# OID4VCI — the issuer side of credential-exchange (offer/request/issue);
+# the body the `credential-exchange/*` Trust Tasks carry (Phase 3 §6).
+affinidi-openid4vci = { workspace = true }
 # Bitstring status list — privacy-preserving credential revocation
 # per W3C. Used by `crate::status_list` (Phase 2 M2.10).
 affinidi-status-list = { workspace = true }
