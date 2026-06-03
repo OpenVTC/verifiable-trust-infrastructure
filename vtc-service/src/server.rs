@@ -81,6 +81,9 @@ pub struct AppState {
     /// Operator-uploaded endorsement type registry (Phase 4
     /// M4.8.0). Only registered types are issuable.
     pub endorsement_types_ks: KeyspaceHandle,
+    /// Credential-type schema store (Phase 2 task 2.2): the Issues / Accepts
+    /// registry binding each type to a DTC catalog type + JSON Schema.
+    pub schemas_ks: KeyspaceHandle,
     /// Issued custom endorsement rows (Phase 4 M4.7).
     /// Tracked here for list + revoke surfaces; the VEC body
     /// itself is signed + returned at issuance time.
@@ -211,6 +214,7 @@ pub async fn run(
     let relationships_ks = store.keyspace("relationships")?;
     let relationships_by_did_ks = store.keyspace("relationships_by_did")?;
     let endorsement_types_ks = store.keyspace("endorsement_types")?;
+    let schemas_ks = store.keyspace("schemas")?;
     let endorsements_ks = store.keyspace("endorsements")?;
     let audit_ks = store.keyspace("audit")?;
     let audit_key_ks = store.keyspace("audit_key")?;
@@ -387,6 +391,7 @@ pub async fn run(
         relationships_ks,
         relationships_by_did_ks,
         endorsement_types_ks,
+        schemas_ks,
         endorsements_ks,
         audit_ks,
         audit_key_ks,
