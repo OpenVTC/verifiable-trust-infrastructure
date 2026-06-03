@@ -33,8 +33,8 @@ use vta_sdk::protocols::protocol_management;
 // `vta-sdk` feature list in vta-service's Cargo.toml — no cfg gate.
 use vta_sdk::protocols::provision_integration_management;
 use vta_sdk::protocols::{
-    self, acl_management, audit_management, context_management, key_management, seed_management,
-    vta_management,
+    self, acl_management, audit_management, context_management, credential_exchange,
+    key_management, seed_management, vta_management,
 };
 
 /// Shared state injected into all DIDComm handlers via `Extension<Arc<VtaState>>`.
@@ -340,6 +340,12 @@ pub fn build_handler(
         .route(
             protocols::backup_management::IMPORT_BACKUP,
             handler_fn(handlers::handle_backup_import),
+        )?
+        // Credential exchange — holder-side receive of an issued credential
+        // (spec §6 / task 3.3). Uses `AppState` for the credential vault.
+        .route(
+            credential_exchange::ISSUE,
+            handler_fn(handlers::handle_credential_issue),
         )?;
 
     // WebVH handlers (feature-gated)

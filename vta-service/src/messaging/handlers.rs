@@ -26,8 +26,8 @@ use crate::server::AppState;
 use super::router::VtaState;
 
 use vta_sdk::protocols::{
-    acl_management, audit_management, context_management, key_management, seed_management,
-    vta_management,
+    acl_management, audit_management, context_management, credential_exchange, key_management,
+    seed_management, vta_management,
 };
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
@@ -1826,6 +1826,46 @@ pub async fn handle_step_up_approve(
         STEP_UP_APPROVE_RESPONSE_TYPE,
         &StepUpApproveResponseBody { approval_token },
     )
+}
+
+/// Holder-side receive of a credential delivered over DIDComm
+/// (`credential-exchange/issue`, spec §6 / task 3.3).
+///
+/// The authcrypt sender (`message.from`) is the issuer; unpacking already
+/// proved that DID cryptographically, so there is **no ACL gate** — the issuer
+/// is a credential counterparty, not an operator of this VTA. The proven sender
+/// DID is recorded as the stored credential's provenance (falling back to the
+/// exchange thread id). The credential format is inferred and the body stored
+/// through the format-agnostic vault by
+/// [`operations::credential_exchange::receive_issued_credential`].
+///
+/// `issue` is a one-way deposit: it returns `Ok(None)` (no response body) on
+/// success, or a typed problem-report on a validation failure.
+pub async fn handle_credential_issue(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    let body: credential_exchange::IssueBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+    // Provenance: the cryptographically-proven issuer DID, else the thread id.
+    let source = message.from.clone().or_else(|| message.thid.clone());
+    let stored = app_try!(
+        operations::credential_exchange::receive_issued_credential(
+            &app_state.vault_ks,
+            &body,
+            source,
+            chrono::Utc::now(),
+        )
+        .await
+    );
+    info!(
+        credential_id = %stored.id,
+        format = ?stored.format,
+        from = message.from.as_deref().unwrap_or("unknown"),
+        "received issued credential into vault via DIDComm"
+    );
+    Ok(None)
 }
 
 pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
