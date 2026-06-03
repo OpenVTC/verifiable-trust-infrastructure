@@ -46,6 +46,7 @@
 
 pub mod custom_endorsement;
 pub mod dtc;
+pub mod invitation;
 pub mod signer;
 pub mod vec;
 pub mod vmc;

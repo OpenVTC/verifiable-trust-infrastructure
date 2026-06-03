@@ -2,13 +2,13 @@
 //!
 //! ## Wire shape
 //!
-//! The VC carries the same `VerifiableEndorsementCredential`
+//! The VC carries the same catalog `EndorsementCredential`
 //! type as role VECs — wire-compatible. The discriminator
 //! lives on `endorsement.type`:
 //!
 //! ```json
 //! {
-//!   "type": ["VerifiableCredential", "VerifiableEndorsementCredential"],
+//!   "type": ["VerifiableCredential", "EndorsementCredential"],
 //!   "issuer": "did:webvh:vtc.example.com:abc",
 //!   "credentialSubject": {
 //!     "id": "<subject-did>",

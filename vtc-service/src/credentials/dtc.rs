@@ -139,6 +139,27 @@ pub async fn issue_endorsement(
     finalize(signer, dtg, id, status_ref).await
 }
 
+/// Issue a signed **Invitation** credential (VIC) as JSON to a `subject_did`
+/// that is **not** (yet) a member. The issue-to-unknown-holder transport
+/// (sealed + delivered out-of-band) is Phase 3; this is the issuance op. Pass a
+/// `status_ref` to make the invite revocable.
+pub async fn issue_invitation(
+    signer: &LocalSigner,
+    subject_did: &str,
+    id: Option<&str>,
+    status_ref: Option<&CredentialStatusRef>,
+    validity: Duration,
+) -> Result<Value, AppError> {
+    let (valid_from, valid_until) = window(validity);
+    let dtg = DTGCredential::new_vic(
+        signer.issuer_did().to_string(),
+        subject_did.to_string(),
+        valid_from,
+        Some(valid_until),
+    );
+    finalize(signer, dtg, id, status_ref).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +250,35 @@ mod tests {
         assert_eq!(endorsement["type"], "CommunityRole");
         assert_eq!(endorsement["role"], VtcRole::Admin.to_string());
         assert_eq!(endorsement["communityDid"], TEST_DID);
+    }
+
+    #[tokio::test]
+    async fn invitation_issues_to_a_non_member_and_verifies() {
+        // A VIC is issued to a DID with no membership record (an invite); it
+        // verifies, carries the Invitation type, and is revocable.
+        let s = signer();
+        let status = CredentialStatusRef::revocation("urn:uuid:invite-list", 3);
+        let doc = issue_invitation(
+            &s,
+            "did:key:zInvitee",
+            Some("urn:uuid:vic-1"),
+            Some(&status),
+            Duration::days(7),
+        )
+        .await
+        .expect("issue VIC");
+
+        verify(&doc, &s).expect("VIC proof verifies");
+        assert_eq!(doc["credentialSubject"]["id"], "did:key:zInvitee");
+        let types: Vec<String> = serde_json::from_value(doc["type"].clone()).unwrap();
+        assert!(
+            types.iter().any(|t| t == "InvitationCredential"),
+            "{types:?}"
+        );
+        assert!(
+            doc.get("credentialStatus").is_some(),
+            "VIC must be revocable"
+        );
     }
 
     #[tokio::test]
