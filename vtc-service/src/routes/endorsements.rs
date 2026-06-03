@@ -165,6 +165,15 @@ pub async fn issue(
     .with_validity(validity);
     let vec = build_custom_endorsement(signer, params).await?;
 
+    // Issue-time schema validation: enforce a registered credentialSchema for
+    // this endorsement type, if any (no-op when none is registered).
+    crate::schemas::validate_issued(
+        &state.schemas_ks,
+        &serde_json::to_value(&vec)
+            .map_err(|e| AppError::Internal(format!("endorsement -> value: {e}")))?,
+    )
+    .await?;
+
     // 7. Persist the Endorsement row.
     let now = Utc::now();
     let valid_until = now + validity;

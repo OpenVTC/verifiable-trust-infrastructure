@@ -265,6 +265,17 @@ async fn issue_member_credentials(
     )
     .await?;
 
+    // Issue-time schema validation: if the operator registered a credentialSchema
+    // for these catalog types, the minted credentials must conform before the
+    // slot is committed. No-op when no schema is registered (seeded defaults
+    // carry none), so this is inert until an operator opts in.
+    let to_value = |vc| {
+        serde_json::to_value(vc)
+            .map_err(|e| AppError::Internal(format!("credential -> value: {e}")))
+    };
+    crate::schemas::validate_issued(&state.schemas_ks, &to_value(&vmc)?).await?;
+    crate::schemas::validate_issued(&state.schemas_ks, &to_value(&role_vec)?).await?;
+
     status_list::store_state(&state.status_lists_ks, &row).await?;
     status_list::maybe_emit_occupancy_warning(&row);
 
