@@ -33,19 +33,17 @@
 //! tests can construct a VMC with `status_ref = None` to exercise
 //! the proof + validity-window paths in isolation.
 
-use affinidi_vc::{CredentialBuilder, VerifiableCredential};
-use chrono::{Duration, Utc};
+use affinidi_vc::VerifiableCredential;
+use chrono::Duration;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value as JsonValue, json};
 use vti_common::error::AppError;
 
 use super::LocalSigner;
-use super::VMC_CONTEXT_URL;
 
-/// Type the VC's `type` array carries in addition to the
-/// universal `VerifiableCredential` value. Spec §6.1 names this
-/// credential the "Verifiable Membership Credential".
-pub const VMC_TYPE: &str = "VerifiableMembershipCredential";
+/// The membership type the catalog stamps in the VC's `type` array (alongside
+/// the universal `VerifiableCredential`). Sourced from the DTC catalog
+/// (`DTGCredentialType::Membership`).
+pub const VMC_TYPE: &str = "MembershipCredential";
 
 /// `credentialStatus` reference for a VMC. Mirrors the
 /// `BitstringStatusListEntry` shape per spec §6.2. M2.10 + M2.11
@@ -147,90 +145,32 @@ impl VmcParams {
 /// Build + sign a VMC. `issuer = signer.issuer_did()`,
 /// `validFrom = now()`, `validUntil = now() + params.validity`.
 /// Returns the signed VC with `proof` attached.
+///
+/// The credential's canonical shape comes from the DTC catalog
+/// ([`super::dtc::issue_membership`]); the signed JSON is carried as a
+/// (lossless, JSON-backed) [`VerifiableCredential`] so every consumer is
+/// unchanged.
 pub async fn build_vmc(
     signer: &LocalSigner,
     params: VmcParams,
 ) -> Result<VerifiableCredential, AppError> {
-    let now = Utc::now();
-    let valid_until = now + params.validity;
-
-    let mut subject = Map::new();
-    subject.insert("id".into(), JsonValue::String(params.member_did.clone()));
-    subject.insert("personhood".into(), JsonValue::Bool(params.personhood));
-
-    let mut vc = CredentialBuilder::v2()
-        .context(VMC_CONTEXT_URL)
-        .issuer_uri(signer.issuer_did().to_string())
-        .add_type(VMC_TYPE)
-        .valid_from(rfc3339(now))
-        .valid_until(rfc3339(valid_until))
-        .subject(subject)
-        .build()
-        .map_err(|e| AppError::Internal(format!("VMC build: {e}")))?;
-
-    if let Some(id) = &params.id {
-        attach_top_level_field(&mut vc, "id", JsonValue::String(id.clone()))?;
-    }
-
-    if let Some(status_ref) = &params.status_ref {
-        // `affinidi-vc` 0.1's typed VC doesn't expose a public
-        // `credentialStatus` setter (the type carries common
-        // fields; richer fields are operator-defined). Round-trip
-        // through JSON so we can splice the block in without
-        // forking the crate.
-        attach_credential_status(&mut vc, status_ref)?;
-    }
-
-    signer.sign(&mut vc).await?;
-    Ok(vc)
-}
-
-/// Splice a `credentialStatus` object onto the VC. Goes through
-/// JSON because the upstream typed `VerifiableCredential` doesn't
-/// expose the field as a builder method.
-fn attach_credential_status(
-    vc: &mut VerifiableCredential,
-    status_ref: &CredentialStatusRef,
-) -> Result<(), AppError> {
-    let status = serde_json::to_value(status_ref)
-        .map_err(|e| AppError::Internal(format!("credentialStatus -> value: {e}")))?;
-    attach_top_level_field(vc, "credentialStatus", status)
-}
-
-/// Splice an arbitrary top-level field onto the VC. Same
-/// JSON-round-trip trick used for `credentialStatus`; shared so
-/// the `id` setter doesn't duplicate the round-trip dance.
-fn attach_top_level_field(
-    vc: &mut VerifiableCredential,
-    key: &str,
-    value: JsonValue,
-) -> Result<(), AppError> {
-    let mut as_value =
-        serde_json::to_value(&*vc).map_err(|e| AppError::Internal(format!("VMC -> value: {e}")))?;
-    as_value
-        .as_object_mut()
-        .ok_or_else(|| AppError::Internal("VMC not an object".into()))?
-        .insert(key.to_string(), value);
-    *vc = serde_json::from_value(as_value)
-        .map_err(|e| AppError::Internal(format!("value -> VMC: {e}")))?;
-    Ok(())
-}
-
-/// Format a `DateTime<Utc>` as RFC 3339 — same shape the VTA SDK
-/// uses (`rfc3339(now)`), kept here so the VMC builder doesn't
-/// reach across crate boundaries for a one-liner.
-fn rfc3339(t: chrono::DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-#[allow(dead_code)]
-fn vmc_subject_template() -> JsonValue {
-    json!({ "id": "", "personhood": false })
+    let doc = super::dtc::issue_membership(
+        signer,
+        &params.member_did,
+        params.id.as_deref(),
+        params.status_ref.as_ref(),
+        params.validity,
+        params.personhood,
+    )
+    .await?;
+    serde_json::from_value(doc)
+        .map_err(|e| AppError::Internal(format!("DTC VMC -> VerifiableCredential: {e}")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value as JsonValue;
 
     const TEST_VTC_DID: &str = "did:webvh:vtc.example.com:abc";
     const MEMBER_DID: &str = "did:key:zMember1";
@@ -283,18 +223,19 @@ mod tests {
         assert_eq!((vu - vf).num_seconds(), validity.num_seconds());
     }
 
-    /// Personhood flag propagates onto credentialSubject.
+    /// Personhood adds a `PersonhoodCredential` to the `type` array (the DTC
+    /// catalog convention) rather than a `credentialSubject` field.
     #[tokio::test]
-    async fn vmc_personhood_flag_set_in_credential_subject() {
+    async fn vmc_personhood_adds_personhood_type() {
         let signer = signer();
         let vc = build_vmc(&signer, VmcParams::new(MEMBER_DID).with_personhood(true))
             .await
             .unwrap();
-        let subject = match &vc.credential_subject {
-            affinidi_vc::SubjectValue::Single(m) => m.clone(),
-            affinidi_vc::SubjectValue::Multiple(v) => v[0].clone(),
-        };
-        assert_eq!(subject.get("personhood"), Some(&JsonValue::Bool(true)));
+        assert!(
+            vc.types.iter().any(|t| t == "PersonhoodCredential"),
+            "personhood=true must add the PersonhoodCredential type, got {:?}",
+            vc.types
+        );
     }
 
     /// A status_ref produces a `credentialStatus` block in the

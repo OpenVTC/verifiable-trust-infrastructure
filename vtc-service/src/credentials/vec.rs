@@ -18,21 +18,18 @@
 //! and on every renewal (spec §6.3 step 2) so the external chain
 //! stays consistent.
 
-use affinidi_vc::{CredentialBuilder, VerifiableCredential};
-use chrono::{Duration, Utc};
-use serde_json::{Map, Value as JsonValue, json};
+use affinidi_vc::VerifiableCredential;
+use chrono::Duration;
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;
 
 use super::LocalSigner;
-use super::VEC_CONTEXT_URL;
 
-/// Type the VEC's `type` array carries alongside
-/// `VerifiableCredential`. Spec §6.1 names this credential the
-/// "Verifiable Endorsement Credential"; role grants are one
-/// canonical shape.
-pub const VEC_TYPE: &str = "VerifiableEndorsementCredential";
+/// The endorsement type the catalog stamps in the VEC's `type` array (alongside
+/// the universal `VerifiableCredential`). Sourced from the DTC catalog
+/// (`DTGCredentialType::Endorsement`).
+pub const VEC_TYPE: &str = "EndorsementCredential";
 
 /// `endorsement.type` value for a role-grant VEC. Custom
 /// endorsements (Phase 3+) use community-defined types.
@@ -85,59 +82,28 @@ pub async fn build_role_vec(
     signer: &LocalSigner,
     params: RoleVecParams,
 ) -> Result<VerifiableCredential, AppError> {
-    let now = Utc::now();
-    let valid_until = now + params.validity;
-
-    let endorsement = json!({
-        "type": COMMUNITY_ROLE_ENDORSEMENT_TYPE,
-        "role": params.role.to_string(),
-        "communityDid": signer.issuer_did(),
-    });
-
-    let mut subject = Map::new();
-    subject.insert("id".into(), JsonValue::String(params.member_did.clone()));
-    subject.insert("endorsement".into(), endorsement);
-
-    let mut vc = CredentialBuilder::v2()
-        .context(VEC_CONTEXT_URL)
-        .issuer_uri(signer.issuer_did().to_string())
-        .add_type(VEC_TYPE)
-        .valid_from(rfc3339(now))
-        .valid_until(rfc3339(valid_until))
-        .subject(subject)
-        .build()
-        .map_err(|e| AppError::Internal(format!("VEC build: {e}")))?;
-
-    if let Some(id) = &params.id {
-        attach_top_level_id(&mut vc, id)?;
-    }
-
-    signer.sign(&mut vc).await?;
-    Ok(vc)
-}
-
-/// Splice a top-level `id` onto the VC. Same JSON-round-trip
-/// trick the VMC builder uses for `credentialStatus`.
-fn attach_top_level_id(vc: &mut VerifiableCredential, id: &str) -> Result<(), AppError> {
-    let mut as_value =
-        serde_json::to_value(&*vc).map_err(|e| AppError::Internal(format!("VEC -> value: {e}")))?;
-    as_value
-        .as_object_mut()
-        .ok_or_else(|| AppError::Internal("VEC not an object".into()))?
-        .insert("id".into(), JsonValue::String(id.into()));
-    *vc = serde_json::from_value(as_value)
-        .map_err(|e| AppError::Internal(format!("value -> VEC: {e}")))?;
-    Ok(())
-}
-
-fn rfc3339(t: chrono::DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    // Canonical role-grant shape from the DTC catalog. `issue_role` keeps the
+    // `credentialSubject.endorsement.{type,role,communityDid}` shape that
+    // `recognition` parses. Role VECs carry no credentialStatus today
+    // (`status_ref = None`).
+    let doc = super::dtc::issue_role(
+        signer,
+        &params.member_did,
+        &params.role,
+        params.id.as_deref(),
+        None,
+        params.validity,
+    )
+    .await?;
+    serde_json::from_value(doc)
+        .map_err(|e| AppError::Internal(format!("DTC VEC -> VerifiableCredential: {e}")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use affinidi_vc::SubjectValue;
+    use serde_json::{Map, Value as JsonValue};
 
     const TEST_VTC_DID: &str = "did:webvh:vtc.example.com:abc";
     const MEMBER_DID: &str = "did:key:zMember1";

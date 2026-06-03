@@ -31,14 +31,12 @@
 //! - `claim` body fits the 8 KiB cap.
 //! - `type` is a non-empty string.
 
-use affinidi_vc::{CredentialBuilder, VerifiableCredential};
-use chrono::{Duration, Utc};
-use serde_json::{Map, Value as JsonValue, json};
+use affinidi_vc::VerifiableCredential;
+use chrono::Duration;
+use serde_json::Value as JsonValue;
 use vti_common::error::AppError;
 
 use super::LocalSigner;
-use super::VEC_CONTEXT_URL;
-use super::vec::VEC_TYPE;
 use super::vmc::CredentialStatusRef;
 
 /// 8 KiB cap on the `endorsement.claim` body. Mirrors the
@@ -131,76 +129,37 @@ pub async fn build_custom_endorsement(
         )));
     }
 
-    let now = Utc::now();
-    let valid_until = now + params.validity;
-
-    let endorsement = json!({
+    // Custom-endorsement shape: `credentialSubject.endorsement = { type, claim,
+    // communityDid }`, sourced through the DTC catalog (`issue_endorsement`),
+    // with the operator's required `credentialStatus`.
+    let endorsement = serde_json::json!({
         "type": params.endorsement_type,
         "claim": params.claim,
         "communityDid": signer.issuer_did(),
     });
 
-    let mut subject = Map::new();
-    subject.insert("id".into(), JsonValue::String(params.subject_did.clone()));
-    subject.insert("endorsement".into(), endorsement);
-
-    let mut vc = CredentialBuilder::v2()
-        .context(VEC_CONTEXT_URL)
-        .issuer_uri(signer.issuer_did().to_string())
-        .add_type(VEC_TYPE)
-        .valid_from(rfc3339(now))
-        .valid_until(rfc3339(valid_until))
-        .subject(subject)
-        .build()
-        .map_err(|e| AppError::Internal(format!("custom endorsement build: {e}")))?;
-
-    if let Some(id) = &params.id {
-        attach_top_level_id(&mut vc, id)?;
-    }
-    attach_credential_status(&mut vc, &params.status_ref)?;
-    signer.sign(&mut vc).await?;
-    Ok(vc)
-}
-
-fn rfc3339(t: chrono::DateTime<Utc>) -> String {
-    t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn attach_top_level_id(vc: &mut VerifiableCredential, id: &str) -> Result<(), AppError> {
-    let mut as_value = serde_json::to_value(&*vc)
-        .map_err(|e| AppError::Internal(format!("custom endorsement -> value: {e}")))?;
-    as_value
-        .as_object_mut()
-        .ok_or_else(|| AppError::Internal("VC not an object".into()))?
-        .insert("id".into(), JsonValue::String(id.into()));
-    *vc = serde_json::from_value(as_value)
-        .map_err(|e| AppError::Internal(format!("value -> VC: {e}")))?;
-    Ok(())
-}
-
-fn attach_credential_status(
-    vc: &mut VerifiableCredential,
-    status_ref: &CredentialStatusRef,
-) -> Result<(), AppError> {
-    let mut as_value = serde_json::to_value(&*vc)
-        .map_err(|e| AppError::Internal(format!("custom endorsement -> value: {e}")))?;
-    as_value
-        .as_object_mut()
-        .ok_or_else(|| AppError::Internal("VC not an object".into()))?
-        .insert(
-            "credentialStatus".into(),
-            serde_json::to_value(status_ref)
-                .map_err(|e| AppError::Internal(format!("status_ref -> value: {e}")))?,
-        );
-    *vc = serde_json::from_value(as_value)
-        .map_err(|e| AppError::Internal(format!("value -> VC: {e}")))?;
-    Ok(())
+    let doc = super::dtc::issue_endorsement(
+        signer,
+        &params.subject_did,
+        endorsement,
+        params.id.as_deref(),
+        Some(&params.status_ref),
+        params.validity,
+    )
+    .await?;
+    serde_json::from_value(doc).map_err(|e| {
+        AppError::Internal(format!(
+            "DTC custom endorsement -> VerifiableCredential: {e}"
+        ))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::vec::VEC_TYPE;
     use super::*;
     use affinidi_vc::SubjectValue;
+    use serde_json::json;
 
     const TEST_VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 
