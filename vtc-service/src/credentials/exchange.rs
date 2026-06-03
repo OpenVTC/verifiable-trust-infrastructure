@@ -11,9 +11,11 @@
 //! the credential's intended subject.
 //!
 //! This is the issuer mirror of the VTA holder-receive
-//! (`vta-service/src/operations/credential_exchange.rs`, task 3.3): a pure
-//! operation, unit-tested in isolation; a later slice wires it to the VTC
-//! DIDComm router with a pending-offer store.
+//! (`vta-service/src/operations/credential_exchange.rs`, task 3.3). The core
+//! [`issue_on_request`] gate is a pure operation; [`make_offer`] + [`redeem`]
+//! add the persisted single-use pending-offer store, and the VTC DIDComm
+//! `credential-exchange/request` handler (`messaging.rs`) drives `redeem` to
+//! complete the `offer → request → issue` loop with the VTA holder side.
 //!
 //! ## Scope of this slice
 //! - **`did:key` holders** — fully wired (the proof `kid` is a `did:key`,
@@ -31,10 +33,13 @@ use affinidi_openid4vci::issuer::{
 use affinidi_openid4vci::{CredentialOffer, CredentialRequest, CredentialResponse};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use ed25519_dalek::{Signature, VerifyingKey};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 /// OID4VCI proof-JWT `typ` header (OID4VCI §7.2.1).
 const OID4VCI_PROOF_TYP: &str = "openid4vci-proof+jwt";
@@ -238,6 +243,143 @@ fn aud_matches(aud: Option<&Value>, expected: &str) -> bool {
     }
 }
 
+// ── Pending-issuance store + the offer→request→issue wire flow ──
+//
+// When the community decides to issue a credential (e.g. ceremony admit mints a
+// VMC), the VTC emits a pre-authorized-code offer and persists a *pending
+// issuance* keyed by that code. The holder later redeems it with a
+// `credential-exchange/request` carrying a key-binding proof; the issuer looks
+// the pending record up, verifies the proof binds the intended subject, and
+// returns the credential. The **pre-authorized code doubles as the proof
+// `nonce`** (the issuer-generated freshness value the holder commits to) — no
+// separate token-endpoint round-trip in the DIDComm collapse.
+
+/// Key prefix for pending issuances. Stored in the `join_requests` keyspace
+/// (credential issuance is the terminal step of the join/admit lifecycle that
+/// keyspace already tracks); the join retention sweeper walks `join_requests:`,
+/// a disjoint prefix, so the two never collide. A dedicated keyspace is a clean
+/// future migration — the prefix is the single source of truth for the shape.
+const PENDING_PREFIX: &str = "credx-pending:";
+
+/// Default lifetime of a pending offer before it expires unredeemed.
+pub const DEFAULT_OFFER_TTL: Duration = Duration::minutes(30);
+
+fn pending_key(code: &str) -> String {
+    format!("{PENDING_PREFIX}{code}")
+}
+
+/// A credential the VTC has decided to issue, awaiting redemption by the holder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingIssuance {
+    /// The credential to deliver (already minted; opaque here).
+    credential: Value,
+    /// The subject the credential is bound to — only this DID, proving key
+    /// possession, may redeem.
+    expected_holder_did: String,
+    /// The Credential Issuer Identifier the holder's proof `aud` must name.
+    issuer_id: String,
+    /// Expiry, seconds since the Unix epoch.
+    expires_at: i64,
+}
+
+/// Emit a pre-authorized-code credential offer and persist the pending issuance.
+///
+/// Returns the [`CredentialOffer`] to send to the holder and the single-use
+/// `pre_authorized_code` (which the holder echoes as the proof `nonce`). The
+/// credential is bound to `expected_holder_did`; only that subject can redeem.
+#[allow(clippy::too_many_arguments)]
+pub async fn make_offer(
+    ks: &KeyspaceHandle,
+    issuer_id: &str,
+    config_ids: Vec<String>,
+    credential: Value,
+    expected_holder_did: &str,
+    ttl: Duration,
+    now: DateTime<Utc>,
+) -> Result<(CredentialOffer, String), AppError> {
+    let code = format!("pac_{}", Uuid::new_v4().simple());
+    let pending = PendingIssuance {
+        credential,
+        expected_holder_did: expected_holder_did.to_string(),
+        issuer_id: issuer_id.to_string(),
+        expires_at: (now + ttl).timestamp(),
+    };
+    ks.insert(pending_key(&code), &pending).await?;
+    Ok((credential_offer(issuer_id, config_ids, code.clone()), code))
+}
+
+/// Redeem a credential request against a persisted pending offer.
+///
+/// Looks the pending issuance up by the request's proof `nonce` (the
+/// pre-authorized code), checks it hasn't expired, then [`issue_on_request`]
+/// verifies the key-binding proof and binds the holder. The pending record is
+/// consumed (single-use) **only on success** — a forged or wrong-party request
+/// returns an error without burning the legitimate holder's offer.
+pub async fn redeem(
+    ks: &KeyspaceHandle,
+    request: &CredentialRequest,
+    now: DateTime<Utc>,
+) -> Result<CredentialResponse, AppError> {
+    let code = proof_nonce(request)?.ok_or_else(|| {
+        AppError::Validation(
+            "credential request proof carries no nonce (the pre-authorized code)".into(),
+        )
+    })?;
+
+    let pending = get_pending(ks, &code).await?.ok_or_else(|| {
+        AppError::NotFound(
+            "no pending issuance for this code (unknown, already redeemed, or expired)".into(),
+        )
+    })?;
+
+    if now.timestamp() > pending.expires_at {
+        // Best-effort cleanup of the expired record; ignore the result.
+        let _ = ks.remove(pending_key(&code)).await;
+        return Err(AppError::Validation("pending issuance has expired".into()));
+    }
+
+    // Verifies the proof signature, audience, freshness, and that the proven
+    // holder DID equals the credential's bound subject (else `Forbidden`).
+    let response = issue_on_request(
+        request,
+        pending.credential.clone(),
+        &pending.expected_holder_did,
+        &pending.issuer_id,
+        now,
+    )?;
+
+    // Single-use: consume the offer now that issuance succeeded.
+    ks.remove(pending_key(&code)).await?;
+    Ok(response)
+}
+
+async fn get_pending(ks: &KeyspaceHandle, code: &str) -> Result<Option<PendingIssuance>, AppError> {
+    match ks.get_raw(pending_key(code)).await? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| AppError::Internal(format!("PendingIssuance decode: {e}"))),
+        None => Ok(None),
+    }
+}
+
+/// Structurally read the `nonce` claim from a credential request's proof JWT —
+/// the lookup key for the pending offer. This is an **unverified** peek; the
+/// real cryptographic verification happens in [`issue_on_request`], and the
+/// credential is only released after the holder-binding check there.
+fn proof_nonce(request: &CredentialRequest) -> Result<Option<String>, AppError> {
+    let Some(proof) = request.proof.as_ref() else {
+        return Ok(None);
+    };
+    let payload_b64 = proof.jwt.split('.').nth(1).ok_or_else(|| {
+        AppError::Validation("credential request proof is not a compact JWT".into())
+    })?;
+    let payload = decode_segment(payload_b64, "proof payload")?;
+    Ok(payload
+        .get("nonce")
+        .and_then(Value::as_str)
+        .map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +565,119 @@ mod tests {
         );
         let grant = offer.grants.unwrap().pre_authorized_code.unwrap();
         assert_eq!(grant.pre_authorized_code, "code-xyz");
+    }
+
+    // ── pending-offer store + redeem flow ──
+
+    fn fresh_ks() -> (tempfile::TempDir, vti_common::store::Store, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace("join_requests").unwrap();
+        (dir, store, ks)
+    }
+
+    #[tokio::test]
+    async fn make_offer_then_redeem_delivers_and_consumes() {
+        let (_d, _s, ks) = fresh_ks();
+        let holder = Holder::new(30);
+        let now = Utc::now();
+
+        let (offer, code) = make_offer(
+            &ks,
+            ISSUER,
+            vec!["MembershipCredential".into()],
+            a_credential(),
+            &holder.did,
+            DEFAULT_OFFER_TTL,
+            now,
+        )
+        .await
+        .expect("make offer");
+        // The offer advertises the same pre-authorized code we persisted.
+        assert_eq!(
+            offer
+                .grants
+                .unwrap()
+                .pre_authorized_code
+                .unwrap()
+                .pre_authorized_code,
+            code
+        );
+
+        // Holder redeems: proof nonce == the pre-authorized code.
+        let req = request_with(holder.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
+        let resp = redeem(&ks, &req, now).await.expect("redeem");
+        assert_eq!(resp.credential, Some(a_credential()));
+
+        // Single-use: the offer is consumed.
+        let again = redeem(&ks, &req, now).await.unwrap_err();
+        assert!(matches!(again, AppError::NotFound(_)), "{again:?}");
+    }
+
+    #[tokio::test]
+    async fn redeem_rejects_unknown_code() {
+        let (_d, _s, ks) = fresh_ks();
+        let holder = Holder::new(31);
+        let now = Utc::now();
+        let req = request_with(holder.proof_jwt(ISSUER, now.timestamp(), Some("pac_missing")));
+        let err = redeem(&ks, &req, now).await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn redeem_rejects_an_expired_offer() {
+        let (_d, _s, ks) = fresh_ks();
+        let holder = Holder::new(32);
+        let issued = Utc::now();
+        let (_offer, code) = make_offer(
+            &ks,
+            ISSUER,
+            vec!["m".into()],
+            a_credential(),
+            &holder.did,
+            Duration::seconds(1),
+            issued,
+        )
+        .await
+        .unwrap();
+
+        let later = issued + Duration::seconds(30);
+        let req = request_with(holder.proof_jwt(ISSUER, later.timestamp(), Some(&code)));
+        let err = redeem(&ks, &req, later).await.unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("expired")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redeem_refuses_wrong_holder_without_burning_the_offer() {
+        let (_d, _s, ks) = fresh_ks();
+        let bound = Holder::new(33);
+        let attacker = Holder::new(34);
+        let now = Utc::now();
+        let (_offer, code) = make_offer(
+            &ks,
+            ISSUER,
+            vec!["m".into()],
+            a_credential(),
+            &bound.did,
+            DEFAULT_OFFER_TTL,
+            now,
+        )
+        .await
+        .unwrap();
+
+        // Attacker signs a valid proof for *their own* DID, echoing the code.
+        let bad = request_with(attacker.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
+        let err = redeem(&ks, &bad, now).await.unwrap_err();
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+
+        // The legitimate offer was NOT consumed — the real holder still redeems.
+        let good = request_with(bound.proof_jwt(ISSUER, now.timestamp(), Some(&code)));
+        assert!(redeem(&ks, &good, now).await.is_ok());
     }
 }

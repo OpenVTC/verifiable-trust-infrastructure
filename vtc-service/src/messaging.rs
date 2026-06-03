@@ -13,6 +13,10 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use vta_sdk::protocols::credential_exchange::REQUEST as CREDENTIAL_REQUEST_TYPE;
+use vta_sdk::protocols::credential_exchange::{
+    ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, RequestBody,
+};
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody,
     JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE,
@@ -99,6 +103,12 @@ pub async fn run_didcomm_service(
             r.route(
                 MEMBER_SELF_REMOVE_TYPE,
                 handler_fn(member_self_remove_handler),
+            )
+        })
+        .and_then(|r| {
+            r.route(
+                CREDENTIAL_REQUEST_TYPE,
+                handler_fn(credential_request_handler),
             )
         }) {
         Ok(r) => r,
@@ -258,6 +268,47 @@ async fn member_self_remove_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(MEMBER_SELF_REMOVE_RECEIPT_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `credential-exchange/request/1.0` over DIDComm (Phase 3, task 3.2 wire).
+///
+/// The holder redeems a pre-authorized offer: the body carries an OID4VCI
+/// credential request with a key-binding proof. [`credentials::redeem`] looks
+/// up the pending issuance by the proof `nonce` (the pre-authorized code),
+/// verifies the proof binds the intended subject, and returns the credential —
+/// which we wrap in a `credential-exchange/issue` reply (the same shape the VTA
+/// holder-receive handler consumes). Single-use: the offer is consumed on
+/// success only.
+///
+/// The DIDComm `from` (authcrypt sender) authenticates the *relayer*; the
+/// **inner key-binding proof** authenticates the *holder*, and the credential
+/// is released only to the proven subject — so a relayer ≠ holder is safe (it
+/// can't satisfy the proof), mirroring the provision-integration onion.
+async fn credential_request_handler(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let body: RequestBody = serde_json::from_value(message.body.clone())
+        .map_err(|e| DIDCommServiceError::Internal(format!("malformed credential request: {e}")))?;
+
+    let response = crate::credentials::redeem(
+        &state.join_requests_ks,
+        &body.credential_request,
+        chrono::Utc::now(),
+    )
+    .await
+    .map_err(|e| DIDCommServiceError::Internal(format!("credential issuance: {e}")))?;
+
+    let issue = IssueBody {
+        credential_response: Some(response),
+        sealed: None,
+    };
+    let issue_body = serde_json::to_value(&issue)
+        .map_err(|e| DIDCommServiceError::Internal(format!("issue serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(CREDENTIAL_ISSUE_TYPE, issue_body).thid(message.id),
     ))
 }
 
