@@ -18,6 +18,7 @@ pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
 mod relationships;
+mod schemas;
 pub(crate) mod status_lists;
 #[cfg(feature = "website")]
 mod website;
@@ -598,6 +599,23 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             "/endorsement-types/{type_uri}",
             delete(endorsement_types::delete),
             endorsement_types_delete,
+        )
+        // Phase 2 §8 — community schema store (Issues + Accepts
+        // registry). Plain admin-gated CRUD (AdminAuth extractor),
+        // exempt from the Trust-Task soft-gate. (`accepts` static
+        // segments bind before the `{type_uri}` param via matchit.)
+        .route_exempt(
+            "/schemas/accepts",
+            post(schemas::register_accepts).get(schemas::list_accepts_route),
+        )
+        .route_exempt(
+            "/schemas/accepts/{id}",
+            get(schemas::get_accepts_route).delete(schemas::delete_accepts_route),
+        )
+        .route_exempt("/schemas", post(schemas::register).get(schemas::list))
+        .route_exempt(
+            "/schemas/{type_uri}",
+            get(schemas::get_one).delete(schemas::delete_one),
         )
         // Phase 4 M4.8.2-4 — custom endorsement issuance +
         // retrieval + revocation. Admin OR Issuer-role member.
