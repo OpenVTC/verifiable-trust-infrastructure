@@ -158,16 +158,27 @@ proofs (`eddsa-jcs-2022`). To get claim-level selective disclosure
     (inside the ZKP) uses the BBS **pseudonym/commitment** extension with
     a wallet-managed BLS **link secret** — still **not** the holder's DID
     key, just a blinding scalar the wallet holds. Start without it.
-- **Implementation: own it in `affinidi-tdk-rs`.** Rather than depend on
-  an external BBS crate of uncertain maturity, implement the `bbs-2023`
-  scheme as a reusable library in `affinidi-tdk-rs` — but **on top of a
-  vetted BLS12-381 pairing library** (`blstrs` / `arkworks`), never
-  hand-rolling curve arithmetic. BBS is fully specified
-  (`draft-irtf-cfrg-bbs-signatures`) and ships official **test vectors**,
-  so a clean-room implementation is verifiable. This turns the
-  library-maturity risk into a reusable asset, at the cost of an
-  **implement-and-audit-a-cryptographic-scheme** obligation: it must be
-  security-reviewed before it signs anything real.
+- **Implementation: own it in `affinidi-tdk-rs` — starting from zero.**
+  Confirmed against `Cargo.lock`: there is **no BBS+ and no BLS12-381
+  curve anywhere in the dependency tree today**. The Affinidi crypto we
+  pull (`affinidi-crypto`, `affinidi-data-integrity` `eddsa-jcs-2022`,
+  `affinidi-secrets-resolver`) is entirely Ed25519/X25519. So this is
+  net-new foundational work, layered into `affinidi-tdk-rs`:
+  1. **Adopt** a vetted BLS12-381 pairing crate (`blstrs` — `blst`-backed,
+     fast, audited C core; or `arkworks`/`ark-bls12-381` — pure Rust).
+     Never hand-roll curve arithmetic.
+  2. **Implement `bbs-2023`** (keygen / sign / proofgen / proofverify per
+     `draft-irtf-cfrg-bbs-signatures`) — clean-room, validated against the
+     IRTF **test vectors**. Home: extend `affinidi-crypto` or a new
+     `affinidi-bbs` crate.
+  3. **Add a `bbs-2023` Data Integrity cryptosuite** to
+     `affinidi-data-integrity` so a BBS VC is still a normal W3C
+     Data-Integrity VC (parallel to `eddsa-jcs-2022`).
+  4. **Add BLS12-381 G2 key support** to `affinidi-crypto`'s key/DID layer
+     (the issuer `#bbs-key-0` verification method).
+  This turns the library-maturity risk into a reusable asset, at the cost
+  of an **implement-and-audit-a-cryptographic-scheme** obligation: it must
+  be security-reviewed before it signs anything real.
 - **Holder binding** is mandatory on presentation: the derived proof is
   bound to a fresh holder-key signature over the verifier's nonce
   (prevents replay / credential lifting).
@@ -513,9 +524,12 @@ The plugin is the consent + key + legibility surface:
 
 ## 18. Phased plan (PLAN preview — not yet TASKS)
 
-- **Phase 0 — Spike (gating):** implement `bbs-2023` in `affinidi-tdk-rs`
-  over a vetted BLS12-381 pairing crate; pass the IRTF BBS test vectors;
-  add the issuer BLS G2 verification method to a `did:webvh` doc; prove
+- **Phase 0 — BBS foundation + spike (gating; net-new, the TDK has no
+  BLS today):** adopt a BLS12-381 pairing crate into `affinidi-tdk-rs`;
+  implement `bbs-2023` (extend `affinidi-crypto` or new `affinidi-bbs`)
+  and pass the IRTF BBS test vectors; add a `bbs-2023` Data Integrity
+  cryptosuite to `affinidi-data-integrity`; add BLS12-381 G2 key support +
+  the issuer `#bbs-key-0` verification method on a `did:webvh` doc; prove
   issue → selectively-disclose → verify + Ed25519 holder binding. Decide
   proof format (BBS+ vs SD-JWT-VC fallback). *Verify: IRTF test vectors
   pass + a passing end-to-end issue/disclose/verify test. Security review
