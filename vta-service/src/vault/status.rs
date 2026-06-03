@@ -1,6 +1,6 @@
 //! Holder-side status refresh for held credentials (task 1.6,
 //! `docs/05-design-notes/vti-credential-architecture.md` §5 "Track validity",
-//! §14.5).
+//! §14 invariant 5).
 //!
 //! A stored credential may carry a `credentialStatus`
 //! ([`BitstringStatusListEntry`][w3c]): a status-list credential URL plus an
@@ -32,7 +32,7 @@
 //! verifying the *status-list credential's own* issuer signature are the
 //! resolver's responsibility, not this module's.
 //!
-//! ## Security invariants upheld (§14.5)
+//! ## Security invariants upheld (§14 invariant 5)
 //!
 //! - **A set bit revokes.** When the resolved bitstring's bit at the
 //!   credential's index is `1`, the stored status becomes
@@ -287,16 +287,24 @@ pub enum RefreshOutcome {
 /// at the credential's `statusListIndex`, and persists the resulting
 /// [`CredentialStatus`] via the storage layer.
 ///
-/// Transition rules (§14.5):
+/// Transition rules (this module's design; spec §14 invariant 5 mandates only
+/// that a revoked credential is never surfaced and status is re-verified — the
+/// suspension/terminal-revocation refinements below are how we satisfy it):
 /// - **bit set, list purpose = revocation** → [`CredentialStatus::Revoked`]
 ///   (terminal).
 /// - **bit set, list purpose = suspension** → [`CredentialStatus::Revoked`]
 ///   for now (search/present must not surface a suspended credential).
-/// - **bit clear** → [`CredentialStatus::Valid`], *unless* the credential was
-///   already `Revoked` under a `revocation` list (terminal — a clear read does
-///   not resurrect a revoked credential). An already-`Revoked` credential
-///   whose list is a `suspension` list **is** restored to `Valid` on a clear
-///   read.
+/// - **bit clear** → [`CredentialStatus::Valid`], with two exceptions: a
+///   credential already `Revoked` under a `revocation` list stays `Revoked`
+///   (terminal — a clear read does not resurrect a revoked credential; an
+///   already-`Revoked` credential under a `suspension` list **is** restored),
+///   and a time-`Expired` credential stays `Expired` (a clear status-list bit
+///   is not authority over the credential's own `valid_until`).
+///
+/// The credential entry's declared `statusPurpose` (when present) MUST match
+/// the resolved list's purpose, or the refresh is rejected
+/// ([`AppError::Validation`]) before any transition — a mismatched list could
+/// otherwise silently flip terminal/reversible semantics.
 ///
 /// Errors (and what they leave behind):
 /// - credential `id` not found → [`AppError::NotFound`]; nothing written.
@@ -318,6 +326,25 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
     };
 
     let resolved = resolver.resolve(&status_ref.status_list_credential).await?;
+
+    // Enforce the declared-purpose binding (W3C vc-bitstring-status-list §). When
+    // the credential's entry declares a `statusPurpose`, it MUST match the
+    // resolved list's purpose. A mismatch (issuer/resolver misconfig, or a
+    // resolver that returned the wrong list) would silently switch the
+    // terminal-revocation vs reversible-suspension transition semantics below —
+    // e.g. an entry declaring `revocation` read against a `suspension` list
+    // would become un-revocable on a later clear read. Reject it. The SD-JWT-VC
+    // shape carries no per-entry purpose (`None`); there the resolved list's
+    // purpose legitimately stands alone.
+    if let Some(entry_purpose) = status_ref.status_purpose
+        && entry_purpose != resolved.status_purpose
+    {
+        return Err(AppError::Validation(format!(
+            "status entry purpose {entry_purpose:?} does not match the resolved status \
+             list purpose {:?}; refusing to apply",
+            resolved.status_purpose
+        )));
+    }
 
     // Decode the bitstring and read the single bit. The decoder is
     // size-parameterised; the resolver supplies the authoritative size and
@@ -365,15 +392,23 @@ fn next_status(
         return CredentialStatus::Revoked;
     }
 
-    // Bit clear.
-    match purpose {
-        // A revocation list is terminal: a previously-revoked credential is
-        // not resurrected by a later clear read (defends against a tampered or
-        // rolled-back list flipping a revoked credential back to valid).
-        StatusPurpose::Revocation if previous == CredentialStatus::Revoked => {
+    // Bit clear. A clear status-list bit is authority over *list* state
+    // (revoked / suspended) only — never over the orthogonal time-expiry
+    // dimension.
+    match previous {
+        // Time-expiry is not the status list's to undo: a clear bit must not
+        // resurrect a credential that expired on its own `valid_until`. Preserve
+        // Expired regardless of list purpose.
+        CredentialStatus::Expired => CredentialStatus::Expired,
+        // A revocation list is terminal: a previously-revoked credential is not
+        // resurrected by a later clear read (defends against a tampered or
+        // rolled-back list flipping a revoked credential back to valid). A
+        // suspension list is reversible, so a previously-suspended (stored as
+        // Revoked) credential is restored.
+        CredentialStatus::Revoked if purpose == StatusPurpose::Revocation => {
             CredentialStatus::Revoked
         }
-        // Suspension is reversible, and a fresh/valid credential reads valid.
+        // Fresh/valid/unknown, or a cleared suspension → valid.
         _ => CredentialStatus::Valid,
     }
 }
@@ -528,7 +563,7 @@ mod tests {
         let stored = storage::get(&vault, "cred-revoked").await.unwrap().unwrap();
         assert_eq!(stored.status, CredentialStatus::Revoked);
 
-        // CRITICAL (§14.5): the revoked credential is EXCLUDED from search.
+        // CRITICAL (§14 invariant 5): the revoked credential is EXCLUDED from search.
         let hits = search(&vault, &q).await.unwrap();
         assert!(
             hits.is_empty(),
@@ -688,6 +723,54 @@ mod tests {
             next_status(CredentialStatus::Valid, true, StatusPurpose::Revocation),
             CredentialStatus::Revoked
         );
+    }
+
+    #[test]
+    fn clear_bit_does_not_resurrect_a_time_expired_credential() {
+        // A clear status-list bit is authority over list state only, never over
+        // the credential's own time-expiry. An Expired credential stays Expired
+        // on a clear read, under either list purpose.
+        assert_eq!(
+            next_status(CredentialStatus::Expired, false, StatusPurpose::Revocation),
+            CredentialStatus::Expired
+        );
+        assert_eq!(
+            next_status(CredentialStatus::Expired, false, StatusPurpose::Suspension),
+            CredentialStatus::Expired
+        );
+        // But a set bit still revokes even an expired credential (list state is
+        // independent and revocation is the stronger signal for search/present).
+        assert_eq!(
+            next_status(CredentialStatus::Expired, true, StatusPurpose::Revocation),
+            CredentialStatus::Revoked
+        );
+    }
+
+    #[tokio::test]
+    async fn entry_purpose_mismatch_is_rejected_and_status_unchanged() {
+        // The credential's entry declares `revocation`, but the resolver returns
+        // a `suspension` list. The declared-purpose binding must reject this
+        // before any transition, leaving the stored status untouched.
+        let (_dir, _store, vault) = fresh_vault();
+        let cred = cred_with_status("cred-mismatch", 5, "revocation");
+        put(&vault, &cred).await.unwrap();
+
+        let resolver = MockResolver::new(Some(5), StatusPurpose::Suspension);
+        let err = refresh_status(&vault, "cred-mismatch", &resolver)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Validation(_)),
+            "a status-list whose purpose differs from the entry's declared purpose \
+             must be rejected, got {err:?}"
+        );
+
+        // Nothing was written — the credential stays Valid.
+        let stored = storage::get(&vault, "cred-mismatch")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, CredentialStatus::Valid);
     }
 
     #[test]

@@ -40,13 +40,13 @@
 //! three properties; this module gives them only a targeted primitive to
 //! build on, never a firehose.
 //!
-//! ## Revoked / expired credentials are never surfaced (§14.5)
+//! ## Revoked / expired credentials are never surfaced (§14 invariant 5)
 //!
 //! Search **unconditionally excludes** any matched credential whose
 //! [`CredentialStatus`] is [`CredentialStatus::Revoked`] or
 //! [`CredentialStatus::Expired`]. A credential the status task ([`super::status`])
 //! has marked revoked must not reach a verifier as a candidate to present
-//! (`vti-credential-architecture.md` §14.5: *a revoked credential MUST be
+//! (`vti-credential-architecture.md` §14 invariant 5: *a revoked credential MUST be
 //! excluded from search results*). The exclusion is applied **after** the
 //! indexed filter match, so it holds even when the caller does not constrain
 //! on `status` — and even if a caller explicitly asks for
@@ -230,7 +230,7 @@ pub async fn search(
 
     let mut out = Vec::new();
     for cred in &candidates {
-        // §14.5: a revoked (or expired) credential is never a search result,
+        // §14 invariant 5: a revoked (or expired) credential is never a search result,
         // regardless of the filter — not even when the caller explicitly asks
         // for `status = revoked`. This is the load-bearing exclusion that keeps
         // the status task's revocation verdict from being undone by search
@@ -251,7 +251,7 @@ pub async fn search(
 }
 
 /// `true` for the lifecycle states that must never appear in a search result
-/// (§14.5). A [`CredentialStatus::Revoked`] credential is unpresentable, and an
+/// (§14 invariant 5). A [`CredentialStatus::Revoked`] credential is unpresentable, and an
 /// [`CredentialStatus::Expired`] one is past its validity window — neither is a
 /// candidate the holder's agent should offer. [`CredentialStatus::Valid`] and
 /// [`CredentialStatus::Unknown`] are surfaced.
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(hits[0].status, CredentialStatus::Valid);
     }
 
-    /// §14.5: revoked credentials are excluded from search — even when the
+    /// §14 invariant 5: revoked credentials are excluded from search — even when the
     /// caller explicitly filters `status = revoked`, there is no "show me my
     /// revoked credentials" surface here.
     #[tokio::test]
