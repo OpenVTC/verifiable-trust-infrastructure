@@ -184,13 +184,21 @@ both; DCQL `format` selectors say which a given query wants.
      arithmetic.
   3. **Implement `bbs-2023`** (keygen / sign / proofgen / proofverify per
      `draft-irtf-cfrg-bbs-signatures`) on `ark-bls12-381` — clean-room,
-     validated against the IRTF **test vectors**. Home: extend
-     `affinidi-crypto` or a new `affinidi-bbs` crate.
+     validated against the IRTF **test vectors**. Home: a **new
+     `affinidi-bbs` crate** (D-locked) that *depends on `affinidi-crypto`*
+     for the shared key/DID/multikey abstractions — keeps `affinidi-crypto`
+     curve-free and the audit-pending BLS code **structurally isolated**
+     (BBS is linked iff a build depends on `affinidi-bbs`, with no
+     workspace feature-unification surprises). The BLS12-381 G2 key type
+     lives here too.
   4. **Add a `bbs-2023` Data Integrity cryptosuite** to
      `affinidi-data-integrity` so a BBS VC is still a normal W3C
      Data-Integrity VC (parallel to `eddsa-jcs-2022`).
-  5. **Add BLS12-381 G2 key support** to `affinidi-crypto`'s key/DID layer
-     (the issuer `#bbs-key-0` verification method).
+  5. **BLS12-381 G2 key support** — `affinidi-bbs` defines the G2 key
+     type + multicodec (`0xeb`) and implements `affinidi-crypto`'s shared
+     key/DID/multikey traits, so the issuer `#bbs-key-0` verification
+     method plugs into the existing did:key/did:webvh machinery without
+     putting the curve in `affinidi-crypto`.
   This turns the library-maturity risk into a reusable asset, at the cost
   of an **implement-and-audit-a-cryptographic-scheme** obligation: BBS+
   must be security-reviewed before it signs anything real.
@@ -530,9 +538,9 @@ The plugin is the consent + key + legibility surface:
    external-wallet interop (and is that a near-term goal or future)?
 7. ~~Pairing-library choice~~ **RESOLVED: `arkworks` / `ark-bls12-381`.**
    ~~Which proof format~~ **RESOLVED: implement BOTH SD-JWT-VC and BBS+.**
-   Remaining: confirm the BBS home (`affinidi-crypto` vs new
-   `affinidi-bbs`) and **who audits** the BBS scheme before it signs real
-   credentials.
+   ~~BBS home~~ **RESOLVED: a new `affinidi-bbs` crate** (depends on
+   `affinidi-crypto`; curve stays out of the base crate). Remaining:
+   **who audits** the BBS scheme before it signs real credentials.
 
 ---
 
@@ -544,8 +552,8 @@ The plugin is the consent + key + legibility surface:
   verify + key-binding end-to-end.* Phases 1–6 build on this immediately.
 - **Phase 0b — BBS foundation (gated, parallel; net-new — the TDK has no
   BLS today):** adopt `arkworks`/`ark-bls12-381`; implement `bbs-2023`
-  (extend `affinidi-crypto` or new `affinidi-bbs`) and pass the IRTF BBS
-  test vectors; add a `bbs-2023` Data Integrity cryptosuite to
+  in a new **`affinidi-bbs`** crate (depends on `affinidi-crypto`) and
+  pass the IRTF BBS test vectors; add a `bbs-2023` Data Integrity cryptosuite to
   `affinidi-data-integrity`; add BLS12-381 G2 key support + the issuer
   `#bbs-key-0` verification method on a `did:webvh` doc; prove issue →
   selectively-disclose → verify + Ed25519 holder binding. *Verify: IRTF
