@@ -1,0 +1,18 @@
+{
+  "$id": "https://trusttasks.org/spec/credential-exchange/offer/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Credential Exchange — Offer",
+  "description": "issuer → holder. An OID4VCI credential offer carried as the Trust Task body.",
+  "type": "object",
+  "properties": {
+    "didcommBody": {
+      "type": "object",
+      "required": ["credential_offer"],
+      "properties": {
+        "credential_offer": {
+          "description": "An OID4VCI Credential Offer object (RFC-shaped by affinidi-openid4vci)."
+        }
+      }
+    }
+  }
+}

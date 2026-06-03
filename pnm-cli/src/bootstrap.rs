@@ -225,6 +225,23 @@ pub async fn run_open(
             println!();
             println!("Install via the provision-integration flow on the integration host.");
         }
+        SealedPayloadV1::IssuedCredential(c) => {
+            println!("Payload: IssuedCredential");
+            println!("  Issuer DID: {}", c.issuer_did);
+            if let Some(ref label) = c.label {
+                println!("  Label:      {label}");
+            }
+            let kind = if c.credential.is_string() {
+                "SD-JWT-VC (compact)"
+            } else {
+                "W3C Data-Integrity VC"
+            };
+            println!("  Format:     {kind}");
+            println!();
+            println!(
+                "Receive this credential into the holder vault via the credential-exchange flow."
+            );
+        }
     }
 
     Ok(())
@@ -528,6 +545,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::RawPrivateKey(_) => "RawPrivateKey",
         SealedPayloadV1::TemplateBootstrap(_) => "TemplateBootstrap",
         SealedPayloadV1::AdminRotation(_) => "AdminRotation",
+        SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
     }
 }
 

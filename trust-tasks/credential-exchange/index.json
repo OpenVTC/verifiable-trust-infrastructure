@@ -1,0 +1,39 @@
+{
+  "$schema": "https://trusttasks.org/manifest/v1.json",
+  "version": 1,
+  "org": "spec",
+  "domain": "credential-exchange",
+  "description": "Canonical credential-exchange Trust Task family (spec §6). The Trust Task is the transport / auth / threading / relayer envelope; the body is OID4VCI (issuance) or OID4VP + DCQL (presentation). Format-agnostic: SD-JWT-VC, W3C Data-Integrity, or BBS+. Published under trusttasks.org/spec/ (cross-org canonical), not org-scoped.",
+  "tasks": [
+    {
+      "id": "https://trusttasks.org/spec/credential-exchange/offer/1.0",
+      "status": "Draft",
+      "path": "offer/1.0",
+      "didcomm": "https://trusttasks.org/spec/credential-exchange/offer/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/spec/credential-exchange/request/1.0",
+      "status": "Draft",
+      "path": "request/1.0",
+      "didcomm": "https://trusttasks.org/spec/credential-exchange/request/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/spec/credential-exchange/issue/1.0",
+      "status": "Draft",
+      "path": "issue/1.0",
+      "didcomm": "https://trusttasks.org/spec/credential-exchange/issue/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/spec/credential-exchange/query/1.0",
+      "status": "Draft",
+      "path": "query/1.0",
+      "didcomm": "https://trusttasks.org/spec/credential-exchange/query/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/spec/credential-exchange/present/1.0",
+      "status": "Draft",
+      "path": "present/1.0",
+      "didcomm": "https://trusttasks.org/spec/credential-exchange/present/1.0"
+    }
+  ]
+}

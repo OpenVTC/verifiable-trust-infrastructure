@@ -55,6 +55,35 @@ pub enum SealedPayloadV1 {
     /// only needs to roll the ephemeral setup `did:key` over to a
     /// long-term admin identity at the VTA.
     AdminRotation(Box<super::template_bootstrap::AdminRotationPayload>),
+    /// An issued credential sealed for an invite / unknown-holder (spec §6,
+    /// task 3.6). The issuer seals a freshly-minted credential to the holder's
+    /// known `did:key`; the holder opens it and receives it into its vault. See
+    /// [`IssuedCredentialBundle`].
+    IssuedCredential(Box<IssuedCredentialBundle>),
+}
+
+/// An issued credential sealed for delivery to a holder the issuer cannot yet
+/// reach over DIDComm — the **invite / unknown-holder** issuance case (spec
+/// §6, task 3.6). The issuer mints the credential bound to the holder's known
+/// `did:key` (from the invite), seals it to that holder's X25519 derivation,
+/// and frames it in armor. The holder opens it with the same derived key and
+/// receives it into its vault via the format-agnostic receive path.
+///
+/// The `credential` carries the issued credential exactly as an OID4VCI
+/// credential response does — a JSON **string** for an SD-JWT-VC compact
+/// serialization, or a JSON **object** for a W3C Data-Integrity VC (with its
+/// `proof`). The holder infers the format from the value shape, identically to
+/// the over-DIDComm `credential-exchange/issue` path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IssuedCredentialBundle {
+    /// The issued credential — an SD-JWT-VC compact string or a W3C DI VC object.
+    pub credential: serde_json::Value,
+    /// The issuer DID, recorded as provenance on the stored credential.
+    pub issuer_did: String,
+    /// Optional human label / context hint shown to the holder at open time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A single raw private key transferred inside a sealed bundle. The

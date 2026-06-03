@@ -1932,22 +1932,41 @@ pub async fn handle_credential_query(
             response(credential_exchange::PRESENT, &present_body)
         }
         PresentOutcome::ConsentRequired {
-            claims, purpose, ..
+            credential_id,
+            claims,
+            purpose,
+            ..
         } => {
+            // Persist the deferral so an out-of-band approval can re-present. The
+            // thread id is the approval handle the verifier (and the holder's
+            // approval UI) refer to.
+            let approval_id = message.thid.clone().unwrap_or_else(|| message.id.clone());
+            app_try!(
+                operations::credential_exchange::defer_presentation(
+                    &app_state.vault_ks,
+                    &approval_id,
+                    &verifier_did,
+                    &credential_id,
+                    claims.clone(),
+                    &body,
+                    chrono::Utc::now(),
+                )
+                .await
+            );
             info!(
                 verifier = %verifier_did,
+                approval_id = %approval_id,
                 ?claims,
                 %purpose,
-                "credential query deferred — holder consent required"
+                "credential query deferred — holder consent required (pending approval persisted)"
             );
-            // Deferred-approval store + re-present loop is a follow-up; signal
-            // the verifier that holder consent is required.
+            // Signal the verifier that holder consent is required; once approved
+            // out-of-band, the holder re-presents on this thread.
             Ok(Some(DIDCommResponse::problem_report(
-                ProblemReport::bad_request(
+                ProblemReport::bad_request(format!(
                     "presentation requires holder consent (verifier not trusted); \
-                     an out-of-band approval is needed"
-                        .to_string(),
-                ),
+                     an out-of-band approval is needed (pending `{approval_id}`)"
+                )),
             )))
         }
     }

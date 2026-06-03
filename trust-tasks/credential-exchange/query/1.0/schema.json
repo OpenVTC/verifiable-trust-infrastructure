@@ -1,0 +1,26 @@
+{
+  "$id": "https://trusttasks.org/spec/credential-exchange/query/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Credential Exchange — Query",
+  "description": "verifier → holder. An OID4VP DCQL query with a freshness nonce and a mandatory, holder-shown purpose.",
+  "type": "object",
+  "properties": {
+    "didcommBody": {
+      "type": "object",
+      "required": ["dcql_query", "nonce", "purpose"],
+      "properties": {
+        "dcql_query": {
+          "description": "An OID4VP DCQL query (affinidi-openid4vp). Per-credential format + meta (vct_values / type_values) + claims constraints."
+        },
+        "nonce": {
+          "type": "string",
+          "description": "Verifier freshness nonce — bound into the holder presentation."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "The verifier's stated reason, MANDATORY and shown to the holder (purpose binding). A verifier cannot ask without stating why."
+        }
+      }
+    }
+  }
+}

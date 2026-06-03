@@ -67,8 +67,8 @@ pub async fn receive_issued_credential(
 ) -> Result<StoredCredential, AppError> {
     if issue.sealed.is_some() {
         return Err(AppError::Validation(
-            "sealed credential issuance (unknown-holder / invite) is not yet wired \
-             (sealed-issuance slice 3.6)"
+            "this issue message carries a `sealed` bundle — open it with \
+             `receive_sealed_issued_credential` (the holder's X25519 key is required)"
                 .into(),
         ));
     }
@@ -79,6 +79,21 @@ pub async fn receive_issued_credential(
         .and_then(|r| r.credential.as_ref())
         .ok_or_else(|| AppError::Validation("issue message carries no credential".to_string()))?;
 
+    store_issued_credential(vault_ks, credential, source, now).await
+}
+
+/// Store an issued credential value (the OID4VCI `credential` field shape) into
+/// the holder's vault, inferring the format from the value: a JSON **string** is
+/// an SD-JWT-VC compact serialization; a JSON **object** with a `proof` is a W3C
+/// Data-Integrity VC. Shared by the plaintext over-DIDComm path
+/// ([`receive_issued_credential`]) and the sealed invite path
+/// ([`receive_sealed_issued_credential`]).
+async fn store_issued_credential(
+    vault_ks: &KeyspaceHandle,
+    credential: &Value,
+    source: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, AppError> {
     let id = format!("urn:uuid:{}", Uuid::new_v4());
 
     match credential {
@@ -125,6 +140,91 @@ pub async fn receive_issued_credential(
                 .to_string(),
         )),
     }
+}
+
+/// Open a **sealed** issued credential (the invite / unknown-holder case, spec
+/// §6 task 3.6) and receive it into the holder's vault.
+///
+/// The issuer minted the credential bound to this holder's `did:key` and sealed
+/// it to the holder's X25519 derivation via [`vta_sdk::sealed_transfer`]. The
+/// holder opens it with `holder_x25519_secret` (derived from the same key the
+/// invite pinned) and stores the credential through the format-agnostic path.
+///
+/// `expect_digest` is the out-of-band SHA-256 digest pinning (mandatory in
+/// practice — see the sealed-transfer invariants): we require a pinned digest so
+/// a party that merely knows the holder pubkey cannot inject a bundle.
+pub async fn receive_sealed_issued_credential(
+    vault_ks: &KeyspaceHandle,
+    armored: &str,
+    holder_x25519_secret: &[u8; 32],
+    expect_digest: Option<&str>,
+    source: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<StoredCredential, AppError> {
+    use vta_sdk::sealed_transfer::{SealedPayloadV1, armor, open_bundle};
+
+    let bundles = armor::decode(armored)
+        .map_err(|e| AppError::Validation(format!("sealed issuance armor decode failed: {e}")))?;
+    let bundle = bundles.into_iter().next().ok_or_else(|| {
+        AppError::Validation("sealed issuance carried no armored bundle".to_string())
+    })?;
+
+    let opened = open_bundle(holder_x25519_secret, &bundle, expect_digest)
+        .map_err(|e| AppError::Validation(format!("sealed issuance open failed: {e}")))?;
+
+    let credential_bundle = match opened.payload {
+        SealedPayloadV1::IssuedCredential(boxed) => *boxed,
+        other => {
+            return Err(AppError::Validation(format!(
+                "sealed bundle is not an issued credential (got {other:?})"
+            )));
+        }
+    };
+
+    // Provenance: the sealed issuer DID, unless the caller supplied one.
+    let source = source.or(Some(credential_bundle.issuer_did.clone()));
+    store_issued_credential(vault_ks, &credential_bundle.credential, source, now).await
+}
+
+/// Seal a freshly-issued credential for an invite / unknown holder (spec §6 task
+/// 3.6, the **issuer** half). Mints an HPKE-sealed, armored bundle the holder
+/// opens with [`receive_sealed_issued_credential`].
+///
+/// `holder_did` is the holder's `did:key` from the invite — the credential was
+/// minted bound to it, and the bundle is sealed to its X25519 derivation.
+/// `bundle_id` is the single-use nonce; `producer` asserts who issued (typically
+/// `DidSigned` by the issuer). Returns `(armored_text, sha256_digest)` — the
+/// digest is communicated out-of-band for the holder's `expect_digest` pin.
+pub async fn seal_issued_credential(
+    holder_did: &str,
+    credential: Value,
+    issuer_did: &str,
+    label: Option<String>,
+    bundle_id: [u8; 16],
+    producer: vta_sdk::sealed_transfer::ProducerAssertion,
+    nonce_store: &dyn vta_sdk::sealed_transfer::NonceStore,
+) -> Result<(String, String), AppError> {
+    use vta_sdk::sealed_transfer::{
+        IssuedCredentialBundle, SealedPayloadV1, armor, bundle_digest, seal_payload,
+    };
+
+    // The holder's X25519 sealing target, derived from its Ed25519 `did:key`.
+    let holder_ed = affinidi_crypto::did_key::did_key_to_ed25519_pub(holder_did)
+        .map_err(|e| AppError::Validation(format!("holder DID is not an Ed25519 did:key: {e}")))?;
+    let holder_x = affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(&holder_ed)
+        .map_err(|e| AppError::Internal(format!("holder X25519 derivation failed: {e}")))?;
+
+    let payload = SealedPayloadV1::IssuedCredential(Box::new(IssuedCredentialBundle {
+        credential,
+        issuer_did: issuer_did.to_string(),
+        label,
+    }));
+
+    let bundle = seal_payload(&holder_x, bundle_id, producer, &payload, nonce_store)
+        .await
+        .map_err(|e| AppError::Internal(format!("sealing issued credential failed: {e}")))?;
+    let digest = bundle_digest(&bundle);
+    Ok((armor::encode(&bundle), digest))
 }
 
 /// The issuer DID from a VC `issuer` field — a string, or an object with `id`.
@@ -352,13 +452,16 @@ fn meta_type_values(meta: Option<&serde_json::Map<String, Value>>) -> Vec<String
 /// - `verifier_aud` is the verifier identity the holder `kb-jwt` binds to (the
 ///   DIDComm sender); `iat_unix` stamps the kb-jwt.
 ///
-/// `NotFound` when nothing the holder holds satisfies the query. This slice
-/// presents **SD-JWT-VC** matches; a W3C Data-Integrity present path (a
-/// different holder-key abstraction) is a follow-up.
+/// `NotFound` when nothing the holder holds satisfies the query. Presents both
+/// **SD-JWT-VC** (via `holder_signer`, the kb-jwt) and **W3C Data-Integrity**
+/// (via `holder_secret`, the holder DI key) matches — the two abstractions of
+/// the same derived holder key.
+#[allow(clippy::too_many_arguments)]
 pub async fn present_for_query(
     vault: &KeyspaceHandle,
     query: &QueryBody,
     holder_signer: &dyn affinidi_sd_jwt::signer::JwtSigner,
+    holder_secret: &Secret,
     consent_record_id: &str,
     verifier_aud: &str,
     iat_unix: u64,
@@ -395,10 +498,27 @@ pub async fn present_for_query(
             .await?;
             Value::String(compact)
         }
+        CredentialFormat::EddsaJcs2022 => {
+            // W3C Data-Integrity VP: the holder signs an `eddsa-jcs-2022` proof
+            // over the matched VC with the same derived holder key (here as a
+            // raw `Secret`, not the kb-jwt abstraction). The VP is a JSON object,
+            // not a compact string — carry it through as structured JSON.
+            let vp = vault::present_di_vc(
+                vault,
+                &first.credential_id,
+                consent_record_id,
+                holder_secret,
+                &query.nonce,
+                verifier_aud,
+                now,
+            )
+            .await?;
+            serde_json::from_str(&vp).unwrap_or(Value::String(vp))
+        }
         other => {
             return Err(AppError::Validation(format!(
-                "present_for_query currently presents SD-JWT-VC; presenting {other:?} via DCQL \
-                 is a follow-up slice"
+                "present_for_query presents SD-JWT-VC and W3C Data-Integrity; presenting \
+                 {other:?} via DCQL is a follow-up slice"
             )));
         }
     };
@@ -523,6 +643,7 @@ pub async fn present_or_defer(
         vault,
         query,
         holder_signer,
+        holder_consent_key,
         &record.identifier,
         verifier_did,
         now.timestamp() as u64,
@@ -583,6 +704,236 @@ pub async fn present_query(
         now,
     )
     .await
+}
+
+/// Deferred-approval store (task 3.5d, the defer half) — when
+/// [`present_or_defer`] returns [`PresentOutcome::ConsentRequired`] for an
+/// untrusted verifier, the wire layer persists a [`PendingPresentation`] here.
+/// An out-of-band approval ([`approve_pending_presentation`]) mints the
+/// query-scoped consent and re-presents; a denial ([`deny_pending_presentation`])
+/// records the refusal. The holder's own [`pending::list`] is the approval
+/// surface a UI drives.
+///
+/// Records live in the `vault` keyspace under the disjoint `pending-present:`
+/// namespace (alongside `cred:` / `consent:` / `vault:`), encrypted at rest by
+/// the keyspace wrapper.
+pub mod pending {
+    use super::*;
+
+    /// Primary-key prefix. Disjoint from `cred:` / `idx:` / `consent:` / `vault:`.
+    const PREFIX: &str = "pending-present:";
+
+    fn key(id: &str) -> Vec<u8> {
+        format!("{PREFIX}{id}").into_bytes()
+    }
+
+    /// Where a deferred presentation stands.
+    #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum PendingStatus {
+        /// Awaiting the holder's out-of-band approval.
+        Pending,
+        /// Approved — the `vp_token` was produced and sent.
+        Approved,
+        /// Denied by the holder; no presentation was made.
+        Denied,
+    }
+
+    /// A verifier's query the holder deferred, persisted until an out-of-band
+    /// approval mints consent and re-presents. Carries the **whole query** so the
+    /// re-present is byte-faithful (same nonce, same claims).
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    pub struct PendingPresentation {
+        /// The approval id — the DIDComm thread id, so the verifier can be told
+        /// "your request `<id>` is pending" and a later present replies on-thread.
+        pub id: String,
+        /// The verifier that asked (the authcrypt sender). The presentation, once
+        /// approved, binds to this audience.
+        pub verifier_did: String,
+        /// The held credential that would satisfy the query (informational — the
+        /// approve path re-matches to be robust to vault changes).
+        pub credential_id: String,
+        /// The claims the query asks to disclose — what the approver authorizes.
+        pub claims: Vec<String>,
+        /// The verifier's stated purpose, shown to the approver.
+        pub purpose: String,
+        /// The full query, stored so [`approve_pending_presentation`] re-presents
+        /// faithfully (same nonce + claim set).
+        pub query: QueryBody,
+        /// Lifecycle state.
+        pub status: PendingStatus,
+        /// When the deferral was recorded.
+        pub created_at: DateTime<Utc>,
+        /// After this the deferral is stale — approval refuses (the verifier's
+        /// nonce is no longer fresh).
+        pub expires_at: DateTime<Utc>,
+    }
+
+    /// Persist (or overwrite) a pending-presentation record.
+    pub async fn put(vault: &KeyspaceHandle, record: &PendingPresentation) -> Result<(), AppError> {
+        vault.insert(key(&record.id), record).await
+    }
+
+    /// Load one pending-presentation record.
+    pub async fn get(
+        vault: &KeyspaceHandle,
+        id: &str,
+    ) -> Result<Option<PendingPresentation>, AppError> {
+        vault.get(key(id)).await
+    }
+
+    /// The holder's own local approval surface — every pending-presentation
+    /// record. Scans only this VTA's `pending-present:` namespace; never a
+    /// cross-trust-boundary enumeration.
+    pub async fn list(vault: &KeyspaceHandle) -> Result<Vec<PendingPresentation>, AppError> {
+        let raw = vault.prefix_iter_raw(PREFIX.as_bytes().to_vec()).await?;
+        let mut out = Vec::with_capacity(raw.len());
+        for (_k, v) in raw {
+            out.push(
+                serde_json::from_slice(&v)
+                    .map_err(|e| AppError::Internal(format!("pending record decode: {e}")))?,
+            );
+        }
+        Ok(out)
+    }
+}
+
+/// Record a deferred presentation for later out-of-band approval. Called by the
+/// wire layer when [`present_query`] returns [`PresentOutcome::ConsentRequired`].
+/// `id` is the request/thread id the verifier can poll on.
+pub async fn defer_presentation(
+    vault: &KeyspaceHandle,
+    id: &str,
+    verifier_did: &str,
+    credential_id: &str,
+    claims: Vec<String>,
+    query: &QueryBody,
+    now: DateTime<Utc>,
+) -> Result<pending::PendingPresentation, AppError> {
+    let record = pending::PendingPresentation {
+        id: id.to_string(),
+        verifier_did: verifier_did.to_string(),
+        credential_id: credential_id.to_string(),
+        claims,
+        purpose: query.purpose.clone(),
+        query: query.clone(),
+        status: pending::PendingStatus::Pending,
+        created_at: now,
+        // The verifier's nonce ages out; keep the approval window bounded.
+        expires_at: now + chrono::Duration::hours(24),
+    };
+    pending::put(vault, &record).await?;
+    Ok(record)
+}
+
+/// Approve a deferred presentation: mint the query-scoped consent the holder is
+/// authorizing and **re-present**. ACL-gated via `auth` (the same holder-key
+/// gate as [`present_query`]). Marks the record `Approved` and returns the
+/// `vp_token`.
+///
+/// Refuses a record that isn't `Pending` (already approved / denied) or whose
+/// deferral window has lapsed (`expires_at` past — the verifier's nonce is stale).
+pub async fn approve_pending_presentation(
+    vault: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    id: &str,
+    now: DateTime<Utc>,
+) -> Result<PresentBody, AppError> {
+    let mut record = pending::get(vault, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("no pending presentation `{id}`")))?;
+
+    if record.status != pending::PendingStatus::Pending {
+        return Err(AppError::Validation(format!(
+            "pending presentation `{id}` is {:?}, not awaiting approval",
+            record.status
+        )));
+    }
+    if now >= record.expires_at {
+        return Err(AppError::Validation(format!(
+            "pending presentation `{id}` expired at {} — the verifier must re-ask",
+            record.expires_at
+        )));
+    }
+
+    // Re-match the stored query to find the credential + subject (robust to vault
+    // changes since the deferral — mirrors `present_query`).
+    let matched = match_vault(vault, &record.query.dcql_query).await?;
+    let first = matched.into_iter().next().ok_or_else(|| {
+        AppError::NotFound("no held credential satisfies the deferred query".to_string())
+    })?;
+    let stored = vault::storage::get(vault, &first.credential_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::Internal(format!(
+                "matched credential `{}` is gone",
+                first.credential_id
+            ))
+        })?;
+    let subject = stored.subject_did.as_deref().ok_or_else(|| {
+        AppError::Validation("matched credential has no subject DID to present".into())
+    })?;
+
+    // ACL-gated holder key for that subject.
+    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+
+    // Mint the query-scoped consent the approver is authorizing.
+    let claims: Vec<String> = first
+        .disclosed_paths
+        .iter()
+        .filter_map(|path| path.last().cloned())
+        .collect();
+    let consent_record = consent::create(
+        vault,
+        &ConsentGrant {
+            holder_did: subject,
+            credential_id: &first.credential_id,
+            verifier_did: &record.verifier_did,
+            purpose: &record.query.purpose,
+            claims,
+            valid_until: now + chrono::Duration::minutes(5),
+        },
+        &keys.consent_secret,
+    )
+    .await?;
+
+    let present = present_for_query(
+        vault,
+        &record.query,
+        &keys.signer,
+        &keys.consent_secret,
+        &consent_record.identifier,
+        &record.verifier_did,
+        now.timestamp() as u64,
+        now,
+    )
+    .await?;
+
+    record.status = pending::PendingStatus::Approved;
+    pending::put(vault, &record).await?;
+    Ok(present)
+}
+
+/// Deny a deferred presentation — the holder refuses disclosure. Records the
+/// refusal (no presentation is made) and returns the updated record.
+pub async fn deny_pending_presentation(
+    vault: &KeyspaceHandle,
+    id: &str,
+) -> Result<pending::PendingPresentation, AppError> {
+    let mut record = pending::get(vault, id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("no pending presentation `{id}`")))?;
+    if record.status != pending::PendingStatus::Pending {
+        return Err(AppError::Validation(format!(
+            "pending presentation `{id}` is {:?}, not awaiting approval",
+            record.status
+        )));
+    }
+    record.status = pending::PendingStatus::Denied;
+    pending::put(vault, &record).await?;
+    Ok(record)
 }
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
@@ -717,13 +1068,104 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_a_sealed_bundle_for_now() {
+    async fn refuses_a_sealed_bundle_on_the_plaintext_path() {
         let (_dir, _store, vault) = fresh_vault();
+        // The plaintext receive path now redirects a `sealed` bundle to the
+        // dedicated opener rather than claiming it is unimplemented.
         let body = issue_body(Value::Null, Some("-----BEGIN VTA SEALED-----…".into()));
         let err = receive_issued_credential(&vault, &body, None, Utc::now())
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("receive_sealed_issued_credential")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn seal_then_receive_an_issued_credential_round_trips() {
+        use vta_sdk::sealed_transfer::{
+            AssertionProof, InMemoryNonceStore, ProducerAssertion, ed25519_seed_to_x25519_secret,
+        };
+
+        let (_dir, _store, vault) = fresh_vault();
+
+        // Issuer mints an SD-JWT-VC bound to the holder's did:key (seed [5;32]).
+        let holder_seed = [5u8; 32];
+        let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&holder_seed)
+                .verifying_key()
+                .to_bytes(),
+        );
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = EddsaSigner {
+            key: issuer,
+            kid: format!("{issuer_did}#key-0"),
+        };
+        let compact = crate::vault::mint::mint_sd_jwt_vc(
+            &crate::vault::mint::MintRequest {
+                vct: MEMBERSHIP_VCT,
+                issuer_did: &issuer_did,
+                subject_did: &holder_did,
+                claims: &json!({ "givenName": "Alice" }),
+                disclosable: &["givenName"],
+                iat: 1_700_000_000,
+                exp: Some(1_900_000_000),
+            },
+            &issuer_signer,
+        )
+        .unwrap();
+
+        // Issuer seals it to the holder (PinnedOnly + out-of-band digest).
+        let nonce_store = InMemoryNonceStore::new();
+        let producer = ProducerAssertion {
+            producer_did: issuer_did.clone(),
+            proof: AssertionProof::PinnedOnly,
+        };
+        let (armored, digest) = seal_issued_credential(
+            &holder_did,
+            Value::String(compact),
+            &issuer_did,
+            Some("Acme membership".into()),
+            [7u8; 16],
+            producer,
+            &nonce_store,
+        )
+        .await
+        .expect("seal issued credential");
+
+        // Holder opens it with its X25519 derivation + the OOB digest pin.
+        let holder_x = ed25519_seed_to_x25519_secret(&holder_seed);
+        let stored = receive_sealed_issued_credential(
+            &vault,
+            &armored,
+            &holder_x,
+            Some(&digest),
+            None,
+            Utc::now(),
+        )
+        .await
+        .expect("receive sealed issued credential");
+
+        assert_eq!(stored.format, CredentialFormat::SdJwtVc);
+        assert_eq!(stored.subject_did.as_deref(), Some(holder_did.as_str()));
+        // Provenance defaults to the sealed issuer DID.
+        assert_eq!(stored.source.as_deref(), Some(issuer_did.as_str()));
+
+        // A wrong out-of-band digest is rejected (no TOFU).
+        let bad = receive_sealed_issued_credential(
+            &vault,
+            &armored,
+            &holder_x,
+            Some("deadbeef"),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(bad, AppError::Validation(_)), "{bad:?}");
     }
 
     #[tokio::test]
@@ -972,6 +1414,7 @@ mod tests {
             &vault,
             &query,
             &kb_signer,
+            &consent_key,
             &rec.identifier,
             verifier,
             now.timestamp() as u64,
@@ -999,7 +1442,7 @@ mod tests {
     async fn present_for_query_is_not_found_when_nothing_matches() {
         let (_dir, _store, vault) = fresh_vault();
         let _stored = mint_and_store(&vault).await;
-        let (_did, kb_signer, _key) = subject_holder();
+        let (_did, kb_signer, consent_key) = subject_holder();
 
         let query = QueryBody {
             dcql_query: DcqlQuery::from_json(&json!({
@@ -1017,6 +1460,7 @@ mod tests {
             &vault,
             &query,
             &kb_signer,
+            &consent_key,
             "consent-x",
             "did:web:v",
             0,
@@ -1025,6 +1469,107 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
+    }
+
+    /// Store a plain W3C-DI VC (`EddsaJcs2022`) bound to `subject_did`, indexed
+    /// under `MembershipCredential` so a `type_values` DCQL query gathers it.
+    async fn store_di_membership(vault: &KeyspaceHandle, id: &str, subject_did: &str) {
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": { "id": subject_did, "givenName": "Alice" },
+        });
+        let cred = crate::vault::model::StoredCredential {
+            id: id.to_string(),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: None,
+            subject_did: Some(subject_did.to_string()),
+            issuer_did: Some("did:web:issuer.example".into()),
+            purpose: None,
+            status: crate::vault::model::CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&vc).unwrap(),
+        };
+        crate::vault::storage::put(vault, &cred)
+            .await
+            .expect("put DI VC");
+    }
+
+    #[tokio::test]
+    async fn present_for_query_presents_a_w3c_di_vc_as_a_json_vp() {
+        use crate::vault::consent::{ConsentGrant, create as create_consent};
+
+        let (_dir, _store, vault) = fresh_vault();
+        let (subject_did, _kb_signer, holder_secret) = subject_holder();
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        store_di_membership(&vault, "di-membership", &subject_did).await;
+
+        // Plain DI cannot redact, so consent must cover the whole subject.
+        let rec = create_consent(
+            &vault,
+            &ConsentGrant {
+                holder_did: &subject_did,
+                credential_id: "di-membership",
+                verifier_did: verifier,
+                purpose: "join the Acme community",
+                claims: vec!["givenName".into()],
+                valid_until: now + chrono::Duration::hours(1),
+            },
+            &holder_secret,
+        )
+        .await
+        .expect("create consent");
+
+        // A `ldp_vc` DCQL query selecting the DI credential by W3C `type_values`.
+        let query = QueryBody {
+            dcql_query: DcqlQuery::from_json(&json!({
+                "credentials": [{
+                    "id": "membership",
+                    "format": "ldp_vc",
+                    "meta": { "type_values": ["MembershipCredential"] },
+                    "claims": [{ "path": ["credentialSubject", "givenName"] }]
+                }]
+            }))
+            .unwrap(),
+            nonce: "verifier-nonce-di".into(),
+            purpose: "join the Acme community".into(),
+        };
+
+        // The kb-jwt signer is unused on the DI arm — pass the subject's anyway.
+        let (_d, kb_signer, _k) = subject_holder();
+        let present = present_for_query(
+            &vault,
+            &query,
+            &kb_signer,
+            &holder_secret,
+            &rec.identifier,
+            verifier,
+            now.timestamp() as u64,
+            now,
+        )
+        .await
+        .expect("present DI for query");
+
+        // The DI vp_token is a JSON VP object (not a compact string), holder-bound.
+        let vp = present.vp_token.as_object().expect("JSON-object vp_token");
+        assert_eq!(vp["type"][0], "VerifiablePresentation");
+        assert_eq!(vp["holder"], subject_did);
+        assert_eq!(vp["nonce"], "verifier-nonce-di");
+        assert_eq!(vp["domain"], verifier);
+        assert_eq!(
+            vp["verifiableCredential"][0]["credentialSubject"]["givenName"],
+            "Alice"
+        );
+        assert!(vp.contains_key("proof"), "holder VP proof must be present");
     }
 
     // ── present_or_defer: consent policy ──
@@ -1245,5 +1790,243 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(deferred, PresentOutcome::ConsentRequired { .. }));
+    }
+
+    // ── deferred approval store (task 3.5d, the defer half) ──
+
+    /// Full holder fixture: a VTA-derived subject key (context `acme`) registered
+    /// in `keys_ks` + an SD-JWT-VC bound to it stored in the vault. Returns the
+    /// pieces `present_query` / `approve_pending_presentation` need.
+    async fn holder_fixture() -> (
+        tempfile::TempDir,
+        KeyspaceHandle,
+        KeyspaceHandle,
+        Arc<dyn SeedStore>,
+        String,
+    ) {
+        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+        use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = vti_common::store::Store::open(&vti_common::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let vault = store.keyspace("vault").unwrap();
+        let keys_ks = store.keyspace("keys").unwrap();
+
+        let seed = vec![42u8; 64];
+        let seed_store: Arc<dyn SeedStore> =
+            Arc::new(crate::test_support::TestSeedStore(seed.clone()));
+        let path = "m/26'/2'/0'/0'";
+        let bip32 = ExtendedSigningKey::from_seed(&seed).unwrap();
+        let derived = bip32
+            .derive(&path.parse::<DerivationPath>().unwrap())
+            .unwrap();
+        let subject_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            derived.signing_key.verifying_key().as_bytes(),
+        );
+        let multibase = subject_did.strip_prefix("did:key:").unwrap();
+        let key_id = format!("{subject_did}#{multibase}");
+        keys_ks
+            .insert(
+                crate::keys::store_key(&key_id),
+                &KeyRecord {
+                    key_id: key_id.clone(),
+                    derivation_path: path.into(),
+                    key_type: KeyType::Ed25519,
+                    status: KeyStatus::Active,
+                    public_key: multibase.into(),
+                    label: None,
+                    context_id: Some("acme".into()),
+                    seed_id: None,
+                    origin: KeyOrigin::Derived,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = EddsaSigner {
+            key: issuer,
+            kid: format!("{issuer_did}#key-0"),
+        };
+        let compact = crate::vault::mint::mint_sd_jwt_vc(
+            &crate::vault::mint::MintRequest {
+                vct: MEMBERSHIP_VCT,
+                issuer_did: &issuer_did,
+                subject_did: &subject_did,
+                claims: &json!({ "givenName": "Alice" }),
+                disclosable: &["givenName"],
+                iat: 1_700_000_000,
+                exp: Some(1_900_000_000),
+            },
+            &issuer_signer,
+        )
+        .unwrap();
+        receive_issued_credential(
+            &vault,
+            &issue_body(Value::String(compact), None),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+        (dir, vault, keys_ks, seed_store, subject_did)
+    }
+
+    #[tokio::test]
+    async fn defer_then_approve_presents_and_marks_approved() {
+        use crate::acl::Role;
+
+        let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let verifier = "did:web:stranger.example";
+        let now = Utc::now();
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        let query = membership_query();
+
+        // 1. Untrusted verifier defers → no presentation yet, but a pending record.
+        let outcome = present_query(
+            &vault,
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &query,
+            verifier,
+            &ConsentPolicy::default(),
+            now,
+        )
+        .await
+        .expect("present_query");
+        let credential_id = match outcome {
+            PresentOutcome::ConsentRequired {
+                credential_id,
+                claims,
+                ..
+            } => {
+                let rec = defer_presentation(
+                    &vault,
+                    "req-1",
+                    verifier,
+                    &credential_id,
+                    claims,
+                    &query,
+                    now,
+                )
+                .await
+                .expect("defer");
+                assert_eq!(rec.status, pending::PendingStatus::Pending);
+                credential_id
+            }
+            other => panic!("expected ConsentRequired, got {other:?}"),
+        };
+
+        // It shows up on the holder's local approval surface.
+        let list = pending::list(&vault).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "req-1");
+        assert_eq!(list[0].credential_id, credential_id);
+
+        // 2. Out-of-band approval mints consent + re-presents.
+        let present =
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", now)
+                .await
+                .expect("approve");
+        let token = present.vp_token.as_str().expect("compact vp_token");
+        let parsed =
+            affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher).unwrap();
+        assert_eq!(parsed.disclosures.len(), 1);
+        assert!(parsed.kb_jwt.is_some(), "holder kb-jwt must be present");
+
+        // The record is now Approved, and a second approval refuses.
+        assert_eq!(
+            pending::get(&vault, "req-1").await.unwrap().unwrap().status,
+            pending::PendingStatus::Approved
+        );
+        let twice =
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", now)
+                .await
+                .unwrap_err();
+        assert!(matches!(twice, AppError::Validation(_)), "{twice:?}");
+    }
+
+    #[tokio::test]
+    async fn deny_marks_denied_and_blocks_approval() {
+        use crate::acl::Role;
+
+        let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let verifier = "did:web:stranger.example";
+        let now = Utc::now();
+        let query = membership_query();
+
+        defer_presentation(
+            &vault,
+            "req-2",
+            verifier,
+            "urn:cred:1",
+            vec!["givenName".into()],
+            &query,
+            now,
+        )
+        .await
+        .expect("defer");
+
+        let denied = deny_pending_presentation(&vault, "req-2")
+            .await
+            .expect("deny");
+        assert_eq!(denied.status, pending::PendingStatus::Denied);
+
+        // A denied record cannot then be approved.
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        let err = approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-2", now)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn approve_refuses_an_expired_deferral() {
+        use crate::acl::Role;
+
+        let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let query = membership_query();
+        let created = Utc::now() - chrono::Duration::hours(48);
+
+        // A deferral recorded 48h ago — past the 24h window.
+        defer_presentation(
+            &vault,
+            "req-3",
+            "did:web:stranger.example",
+            "urn:cred:1",
+            vec!["givenName".into()],
+            &query,
+            created,
+        )
+        .await
+        .expect("defer");
+
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        let err =
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-3", Utc::now())
+                .await
+                .unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 }

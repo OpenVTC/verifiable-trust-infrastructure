@@ -1,0 +1,25 @@
+{
+  "$id": "https://trusttasks.org/spec/credential-exchange/issue/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Credential Exchange — Issue",
+  "description": "issuer → holder. The issued credential — cleartext for a known holder, or a sealed bundle for an unknown / invite holder. Exactly one of credential_response or sealed.",
+  "type": "object",
+  "properties": {
+    "didcommBody": {
+      "type": "object",
+      "oneOf": [
+        { "required": ["credential_response"] },
+        { "required": ["sealed"] }
+      ],
+      "properties": {
+        "credential_response": {
+          "description": "Cleartext OID4VCI Credential Response. The `credential` is a JSON string (SD-JWT-VC compact) or a JSON object (W3C Data-Integrity VC with its proof). The holder infers the format from the value shape."
+        },
+        "sealed": {
+          "type": "string",
+          "description": "An armored vta-sdk sealed-transfer bundle (SealedPayloadV1::IssuedCredential). Used when the credential is secret-bearing or issued to an unknown holder (invite / air-gap). Only the holder can open it; an out-of-band SHA-256 digest pins integrity."
+        }
+      }
+    }
+  }
+}

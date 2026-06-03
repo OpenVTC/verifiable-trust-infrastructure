@@ -1,0 +1,18 @@
+{
+  "$id": "https://trusttasks.org/spec/credential-exchange/present/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Credential Exchange — Present",
+  "description": "holder → verifier. The OID4VP vp_token carrying the selectively-disclosed, holder-bound presentation.",
+  "type": "object",
+  "properties": {
+    "didcommBody": {
+      "type": "object",
+      "required": ["vp_token"],
+      "properties": {
+        "vp_token": {
+          "description": "The OID4VP vp_token. Format-agnostic: a JSON string (SD-JWT-VC + kb-jwt holder binding) or a JSON object (W3C Data-Integrity VP with the holder's eddsa-jcs-2022 proof). Carries exactly the consented claims; the nonce + verifier audience are bound by the holder proof."
+        }
+      }
+    }
+  }
+}

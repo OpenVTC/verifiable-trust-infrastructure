@@ -1,0 +1,18 @@
+{
+  "$id": "https://trusttasks.org/spec/credential-exchange/request/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Credential Exchange — Request",
+  "description": "holder → issuer. An OID4VCI credential request carrying the holder's key-binding proof.",
+  "type": "object",
+  "properties": {
+    "didcommBody": {
+      "type": "object",
+      "required": ["credential_request"],
+      "properties": {
+        "credential_request": {
+          "description": "An OID4VCI Credential Request object. Carries the holder key-binding proof (openid4vci-proof+jwt) binding the issued credential to the holder's key."
+        }
+      }
+    }
+  }
+}

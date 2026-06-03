@@ -340,6 +340,19 @@ fn print_opened(
                 "  \x1b[1;33m⚠ VC verification not yet wired for AdminRotation — relying on digest pinning.\x1b[0m"
             );
         }
+        SealedPayloadV1::IssuedCredential(c) => {
+            println!("Payload: IssuedCredential");
+            println!("  Issuer DID: {}", c.issuer_did);
+            if let Some(ref label) = c.label {
+                println!("  Label:      {label}");
+            }
+            let kind = if c.credential.is_string() {
+                "SD-JWT-VC (compact)"
+            } else {
+                "W3C Data-Integrity VC"
+            };
+            println!("  Format:     {kind}");
+        }
     }
     Ok(())
 }
@@ -762,7 +775,6 @@ fn to_context_response(
 /// record directly to the local keystore. When `--admin-did` is set,
 /// also writes an admin ACL entry scoped to the new context, mirroring
 /// the online `pnm contexts create --admin-did` shorthand.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_context_create(
     config_path: Option<PathBuf>,

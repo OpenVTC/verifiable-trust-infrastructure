@@ -336,6 +336,11 @@ pub fn extract_admin_credential(
              flow to install"
                 .into(),
         ),
+        SealedPayloadV1::IssuedCredential(_) => Err(
+            "IssuedCredential payloads carry a holder credential, not an admin CredentialBundle \
+             — receive it into the holder vault via the credential-exchange flow"
+                .into(),
+        ),
     }
 }
 

@@ -21,8 +21,9 @@ pub mod template_bootstrap;
 pub mod verify;
 
 pub use bundle::{
-    ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion, LabeledKey,
-    ProducerAssertion, RawPrivateKey, SealedBundle, SealedPayloadV1,
+    ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion,
+    IssuedCredentialBundle, LabeledKey, ProducerAssertion, RawPrivateKey, SealedBundle,
+    SealedPayloadV1,
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;
