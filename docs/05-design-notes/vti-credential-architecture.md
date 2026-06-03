@@ -171,6 +171,19 @@ both; DCQL `format` selectors say which a given query wants.
     (inside the ZKP) uses the BBS **pseudonym/commitment** extension with
     a wallet-managed BLS **link secret** — still **not** the holder's DID
     key, just a blinding scalar the wallet holds. Start without it.
+- **Second ZKP option (`CredentialFormat::Zkp`) — Circom ecosystem,
+  Phase-0-gated.** Alongside BBS+, a Circom-compatible ZKP credential:
+  **BabyJubJub-EdDSA over a Poseidon commitment** via
+  [`affinidi-zkp-crypto`](https://github.com/affinidi/affinidi-zkp-crypto-rs)
+  (BabyJubJub EdDSA + Poseidon over BN254). This is *not* a self-contained
+  scheme like BBS+ — the library provides only the issuance-side commitment
+  + signature primitives; the **Circom circuit + Groth16 prover/verifier**
+  (server-side VTA proving) live outside it and are deferred. The vault
+  carries the additive `Zkp` format variant + a gated `receive`/`present`
+  arm (mirroring the BBS+ audit gate); adopting the primitives needs
+  `affinidi-zkp-crypto` published to crates.io first (it is git/FFI-only
+  today, and `vta-service` is `publish = true`), most naturally as a thin
+  edition-2024 wrapper in `affinidi-tdk-rs`.
 - **Implementation: ADOPT — the TDK already has it (validated).** The
   earlier "build from scratch" framing was wrong: the `Cargo.lock` grep
   came back empty only because *this workspace doesn't depend on the

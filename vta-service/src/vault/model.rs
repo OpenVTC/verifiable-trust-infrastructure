@@ -34,6 +34,12 @@ use serde::{Deserialize, Serialize};
 pub enum CredentialFormat {
     /// BBS+ Data-Integrity proof (`bbs-2023`) — selective disclosure.
     Bbs2023,
+    /// Circom-ecosystem ZKP credential — BabyJubJub-EdDSA over a Poseidon
+    /// commitment (`affinidi-zkp-crypto`), the second ZKP option alongside
+    /// [`Self::Bbs2023`]. **Phase-0-gated:** the format identity + storage
+    /// seam exist, but the commitment primitives and the Circom/Groth16
+    /// prover+verifier are not yet wired (server-side proving, deferred).
+    Zkp,
     /// Ed25519 JCS Data-Integrity proof (`eddsa-jcs-2022`).
     EddsaJcs2022,
     /// IETF SD-JWT-VC.

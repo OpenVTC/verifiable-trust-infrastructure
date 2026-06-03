@@ -373,7 +373,8 @@ pub async fn receive_di_vc(
 ///
 /// `SdJwtVc` resolves its issuer `did:key` internally; the Data-Integrity
 /// formats take a caller-resolved `issuer_pub` (the wire layer resolves the
-/// issuer DID). `Bbs2023` is audit-gated; `Other` is rejected.
+/// issuer DID). `Bbs2023` is audit-gated and `Zkp` is Phase-0-gated; `Other`
+/// is rejected.
 pub async fn receive(
     vault: &KeyspaceHandle,
     id: &str,
@@ -400,6 +401,11 @@ pub async fn receive(
         }
         CredentialFormat::Bbs2023 => Err(AppError::Validation(
             "BBS+ receive is audit-gated (Phase 0b) and not yet supported".to_string(),
+        )),
+        CredentialFormat::Zkp => Err(AppError::Validation(
+            "ZKP receive is Phase-0-gated and not yet supported (commitment primitives \
+             + Circom/Groth16 verifier not yet wired)"
+                .to_string(),
         )),
         CredentialFormat::Other(tag) => Err(AppError::Validation(format!(
             "unsupported credential format `{tag}`"
@@ -949,5 +955,31 @@ mod tests {
             .await
             .is_err()
         );
+        // ZKP is Phase-0-gated.
+        let zkp_err = receive(
+            &vault,
+            "c3",
+            &CredentialFormat::Zkp,
+            &vc,
+            Some(&issuer_pub),
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&zkp_err, AppError::Validation(m) if m.contains("ZKP")),
+            "{zkp_err:?}"
+        );
+    }
+
+    #[test]
+    fn zkp_format_tag_round_trips_as_kebab_case() {
+        // The additive variant must serialise to a stable wire tag so stored
+        // credentials and DCQL `format` selectors agree on it.
+        let json = serde_json::to_string(&CredentialFormat::Zkp).unwrap();
+        assert_eq!(json, "\"zkp\"");
+        let back: CredentialFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, CredentialFormat::Zkp);
     }
 }
