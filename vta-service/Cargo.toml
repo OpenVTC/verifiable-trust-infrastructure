@@ -99,6 +99,14 @@ affinidi-secrets-resolver = { workspace = true }
 # Data Integrity (eddsa-jcs-2022) — used by the vault/sign-trust-task
 # handler to attach proofs to envelopes on behalf of the holder.
 affinidi-data-integrity = { workspace = true }
+# SD-JWT-VC issue/verify — the credential-vault receive path
+# (`vault::receive`, vti-credential-architecture §5, task 1.2) verifies an
+# incoming SD-JWT-VC's issuer signature + temporal validity before storing
+# it. Promoted from a vta-sdk dev-dep (task 0.2) to a normal vta-service dep
+# for this verify path. SD-JWT-VC only — BBS (`affinidi-bbs`) is audit-gated
+# and not pulled in here.
+affinidi-sd-jwt-vc = { workspace = true }
+affinidi-sd-jwt = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.15"

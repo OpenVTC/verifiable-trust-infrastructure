@@ -22,12 +22,15 @@
 //!
 //! ## Scope of task 1.1 (and what is deliberately absent)
 //!
-//! This module is **format-agnostic** and does **no cryptography**: it
-//! stores opaque credential bodies plus an indexed metadata envelope, with
-//! encryption-at-rest delegated to the keyspace's AES-256-GCM wrapper. It
-//! does **not** verify issuer signatures (task 1.2 receive), search via DCQL
-//! (1.3), build presentations or disclose claims (1.4 present), mint (1.5),
-//! or resolve status lists (1.6).
+//! The **storage** layer ([`storage`], [`index`], [`model`]) is
+//! format-agnostic and does **no cryptography**: it stores opaque credential
+//! bodies plus an indexed metadata envelope, with encryption-at-rest
+//! delegated to the keyspace's AES-256-GCM wrapper. The **receive** layer
+//! ([`receive`], task 1.2) sits on top of it: it verifies an incoming
+//! SD-JWT-VC minimally (issuer signature + temporal validity), maps it into a
+//! [`StoredCredential`], and stores + indexes it through the storage layer.
+//! Still to come: search via DCQL (1.3), build presentations or disclose
+//! claims (1.4 present), mint (1.5), and resolve status lists (1.6).
 //!
 //! It also exposes **no wallet-enumeration primitive** — there is no
 //! `list_all`. The only discovery path is [`storage::find_by_index`], which
@@ -39,9 +42,11 @@
 
 pub mod index;
 pub mod model;
+pub mod receive;
 pub mod storage;
 
 pub use model::{
     CredentialFormat, CredentialPurpose, CredentialStatus, IndexField, StoredCredential,
 };
+pub use receive::receive_sd_jwt_vc;
 pub use storage::{delete, find_by_index, get, put};
