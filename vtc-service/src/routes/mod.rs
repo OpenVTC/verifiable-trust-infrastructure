@@ -4,6 +4,7 @@ mod admin;
 mod admin_ui;
 mod audit;
 mod auth;
+mod ceremonies;
 mod community;
 mod config;
 pub(crate) mod did_log;
@@ -216,6 +217,8 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
     let members_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/show/1.0")
         .expect("static Trust-Task URL");
     let directory_query = TrustTask::new("https://trusttasks.org/openvtc/vtc/directory/query/1.0")
+        .expect("static Trust-Task URL");
+    let ceremonies_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/ceremonies/list/1.0")
         .expect("static Trust-Task URL");
     // `members_update` (`members/update/1.0`) shares the
     // `members/{did}` mount with `show` for now — TrustTaskRouter
@@ -506,6 +509,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
         .route_with_task("/directory/{did}", get(directory::query), directory_query)
+        // Ceremony registry — the admin-UI renders its flow + simulator
+        // from these manifests (purpose / fields / facts template).
+        .route_with_task("/ceremonies", get(ceremonies::list), ceremonies_list)
         // Members (Phase 1 M1.4–M1.6).
         .route_with_task("/members", get(members::read::list_members), members_list)
         // `/v1/members/me` for self-remove (M1.11.1). Must be

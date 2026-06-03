@@ -40,12 +40,13 @@ import {
 } from "@/lib/rule-ir";
 import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
 import {
-  type CeremonyKey,
   type CeremonyManifest,
   type FieldDef,
   type FieldValues,
-  CEREMONIES,
   defaultValues,
+  evalShowWhen,
+  fetchCeremonies,
+  materializeFacts,
   natureColor,
 } from "@/lib/ceremony-manifest";
 
@@ -155,8 +156,17 @@ function satisfyNeed(facts: Facts, need: string): Facts {
 // ---------------------------------------------------------------------------
 
 export function Ceremonies() {
-  const [active, setActive] = useState<CeremonyKey | "other">("directory");
-  const ceremony = CEREMONIES.find((c) => c.key === active);
+  // The daemon is the source of truth for the ceremony registry.
+  const query = useQuery({ queryKey: ["ceremonies"], queryFn: fetchCeremonies });
+  const ceremonies = query.data ?? [];
+  const [active, setActive] = useState<string>("");
+
+  // Default to the first ceremony once the registry loads.
+  useEffect(() => {
+    if (!active && ceremonies[0]) setActive(ceremonies[0].purpose);
+  }, [ceremonies, active]);
+
+  const ceremony = ceremonies.find((c) => c.purpose === active) ?? null;
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -171,14 +181,21 @@ export function Ceremonies() {
         live verdict the daemon would reach.
       </p>
 
+      {query.isLoading && <p className="cer-sub">Loading the registry…</p>}
+      {query.error && (
+        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+          {(query.error as Error).message}
+        </p>
+      )}
+
       <div className="cer-tabs" role="tablist">
-        {CEREMONIES.map((c) => (
+        {ceremonies.map((c) => (
           <button
-            key={c.key}
+            key={c.purpose}
             role="tab"
-            aria-selected={c.key === active}
-            className={`cer-tab${c.key === active ? " on" : ""}`}
-            onClick={() => setActive(c.key)}
+            aria-selected={c.purpose === active}
+            className={`cer-tab${c.purpose === active ? " on" : ""}`}
+            onClick={() => setActive(c.purpose)}
           >
             <span
               className="nature"
@@ -205,7 +222,11 @@ export function Ceremonies() {
         </button>
       </div>
 
-      {ceremony ? <CeremonyPanel ceremony={ceremony} /> : <OtherPolicies />}
+      {active === "other" ? (
+        <OtherPolicies />
+      ) : ceremony ? (
+        <CeremonyPanel key={ceremony.purpose} ceremony={ceremony} />
+      ) : null}
     </div>
   );
 }
@@ -225,7 +246,6 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   const policyQuery = useQuery({
     queryKey: ["active-policy", ceremony.purpose],
     queryFn: () => fetchActivePolicy(ceremony.purpose as Purpose),
-    enabled: ceremony.purpose !== null,
   });
 
   // Reset the form + verdict whenever the ceremony changes.
@@ -270,7 +290,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     }
 
     try {
-      let facts = ceremony.buildFacts(form);
+      let facts = materializeFacts(ceremony.factsTemplate, form);
       for (const need of satisfied) facts = satisfyNeed(facts, need);
       setLastFacts(facts as ExplainFacts);
       const resp = await postJson<TestResponse>(
@@ -308,7 +328,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
 
       <div className="cer-meta-row">
         <span className="cer-chip">
-          purpose <b>{ceremony.purpose ?? "—"}</b>
+          purpose <b>{ceremony.purpose}</b>
         </span>
         <span className="cer-chip">
           package <b>{ceremony.pkg}</b>
@@ -436,15 +456,11 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
           <div className="cer-panel-title">
             Decision policy <span className="ln" />
           </div>
-          {ceremony.purpose === null ? (
-            <p className="cer-sub">No policy purpose for this ceremony yet.</p>
-          ) : (
-            <PolicyManager
-              key={ceremony.purpose}
-              purpose={ceremony.purpose as Purpose}
-              onEditingChange={setAuthoring}
-            />
-          )}
+          <PolicyManager
+            key={ceremony.purpose}
+            purpose={ceremony.purpose as Purpose}
+            onEditingChange={setAuthoring}
+          />
         </div>
       </div>
     </>
@@ -892,7 +908,7 @@ function SimFields({
   return (
     <>
       {fields
-        .filter((f) => !f.showWhen || f.showWhen(values))
+        .filter((f) => evalShowWhen(f.showWhen, values))
         .map((f) => (
           <div className="cer-field" key={f.key}>
             <label>
