@@ -107,6 +107,9 @@ affinidi-data-integrity = { workspace = true }
 # and not pulled in here.
 affinidi-sd-jwt-vc = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
+# Holder-side status refresh for held credentials (task 1.6): decode the
+# issuer's BitstringStatusList and read the bit at the credential's index.
+affinidi-status-list = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.15"

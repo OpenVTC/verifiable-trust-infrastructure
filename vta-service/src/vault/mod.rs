@@ -51,6 +51,7 @@ pub mod mint;
 pub mod model;
 pub mod query;
 pub mod receive;
+pub mod status;
 pub mod storage;
 
 pub use consent::{
@@ -62,4 +63,8 @@ pub use model::{
 };
 pub use query::{CredentialDescriptor, CredentialQuery, search};
 pub use receive::receive_sd_jwt_vc;
+pub use status::{
+    RefreshOutcome, ResolvedStatusList, StatusListRef, StatusListResolver, extract_status_ref,
+    refresh_status,
+};
 pub use storage::{delete, find_by_index, get, put};

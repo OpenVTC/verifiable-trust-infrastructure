@@ -39,6 +39,21 @@
 //! Higher layers (routes / operations / DCQL) built on top must preserve all
 //! three properties; this module gives them only a targeted primitive to
 //! build on, never a firehose.
+//!
+//! ## Revoked / expired credentials are never surfaced (§14.5)
+//!
+//! Search **unconditionally excludes** any matched credential whose
+//! [`CredentialStatus`] is [`CredentialStatus::Revoked`] or
+//! [`CredentialStatus::Expired`]. A credential the status task ([`super::status`])
+//! has marked revoked must not reach a verifier as a candidate to present
+//! (`vti-credential-architecture.md` §14.5: *a revoked credential MUST be
+//! excluded from search results*). The exclusion is applied **after** the
+//! indexed filter match, so it holds even when the caller does not constrain
+//! on `status` — and even if a caller explicitly asks for
+//! `status = revoked`, the result is empty (there is no "show me my revoked
+//! credentials" surface here). `Unknown` and `Valid` are surfaced; resolving
+//! `Unknown` → `Valid`/`Revoked` is the status task's job, run before a
+//! present.
 
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
@@ -215,6 +230,14 @@ pub async fn search(
 
     let mut out = Vec::new();
     for cred in &candidates {
+        // §14.5: a revoked (or expired) credential is never a search result,
+        // regardless of the filter — not even when the caller explicitly asks
+        // for `status = revoked`. This is the load-bearing exclusion that keeps
+        // the status task's revocation verdict from being undone by search
+        // surfacing the credential to a verifier as presentable.
+        if is_excluded_status(cred.status) {
+            continue;
+        }
         // The anchor already matched via the index; re-check the remaining
         // constraints in memory. AND semantics: any miss drops the record.
         let all_match = constraints[1..]
@@ -225,6 +248,18 @@ pub async fn search(
         }
     }
     Ok(out)
+}
+
+/// `true` for the lifecycle states that must never appear in a search result
+/// (§14.5). A [`CredentialStatus::Revoked`] credential is unpresentable, and an
+/// [`CredentialStatus::Expired`] one is past its validity window — neither is a
+/// candidate the holder's agent should offer. [`CredentialStatus::Valid`] and
+/// [`CredentialStatus::Unknown`] are surfaced.
+fn is_excluded_status(status: CredentialStatus) -> bool {
+    matches!(
+        status,
+        CredentialStatus::Revoked | CredentialStatus::Expired
+    )
 }
 
 #[cfg(test)]
@@ -420,24 +455,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_by_status_filter() {
+    async fn search_by_status_filter_surfaces_valid() {
+        let (_dir, _store, vault) = fresh_vault();
+        let mut valid = sample("cred-valid");
+        valid.status = CredentialStatus::Valid;
+        put(&vault, &valid).await.unwrap();
+
+        let q = CredentialQuery {
+            status: Some(CredentialStatus::Valid),
+            ..Default::default()
+        };
+        let hits = search(&vault, &q).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].id, "cred-valid");
+        assert_eq!(hits[0].status, CredentialStatus::Valid);
+    }
+
+    /// §14.5: revoked credentials are excluded from search — even when the
+    /// caller explicitly filters `status = revoked`, there is no "show me my
+    /// revoked credentials" surface here.
+    #[tokio::test]
+    async fn revoked_and_expired_are_excluded_from_search() {
         let (_dir, _store, vault) = fresh_vault();
         let mut valid = sample("cred-valid");
         valid.status = CredentialStatus::Valid;
         let mut revoked = sample("cred-revoked");
         revoked.status = CredentialStatus::Revoked;
         revoked.issuer_did = Some("did:web:issuer-r".into());
+        let mut expired = sample("cred-expired");
+        expired.status = CredentialStatus::Expired;
+        expired.issuer_did = Some("did:web:issuer-e".into());
         put(&vault, &valid).await.unwrap();
         put(&vault, &revoked).await.unwrap();
+        put(&vault, &expired).await.unwrap();
 
+        // A shared-community search returns ONLY the valid credential; the
+        // revoked and expired ones are dropped.
         let q = CredentialQuery {
-            status: Some(CredentialStatus::Revoked),
+            community_did: Some("did:web:acme".into()),
             ..Default::default()
         };
         let hits = search(&vault, &q).await.unwrap();
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "cred-revoked");
-        assert_eq!(hits[0].status, CredentialStatus::Revoked);
+        assert_eq!(hits[0].id, "cred-valid");
+
+        // Explicitly asking for revoked still returns nothing.
+        let q = CredentialQuery {
+            status: Some(CredentialStatus::Revoked),
+            ..Default::default()
+        };
+        assert!(
+            search(&vault, &q).await.unwrap().is_empty(),
+            "there is no search surface that returns revoked credentials"
+        );
+
+        // Likewise for expired.
+        let q = CredentialQuery {
+            status: Some(CredentialStatus::Expired),
+            ..Default::default()
+        };
+        assert!(search(&vault, &q).await.unwrap().is_empty());
     }
 
     #[tokio::test]
