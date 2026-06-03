@@ -34,8 +34,12 @@
 //! filter. The **mint** layer ([`mint`], task 1.5) is the issue path: the VTA
 //! signs its *own* SD-JWT-VC (selected claims selectively disclosable, holder
 //! key bound as `cnf`) through a sign-only signer abstraction, never exporting
-//! the issuer key. Still to come: build presentations or disclose claims (1.4
-//! present) and resolve status lists (1.6).
+//! the issuer key. The **present** layer ([`present`], task 1.4) is the
+//! consent-gated disclosure path: it loads a stored SD-JWT-VC + a signed
+//! consent record, gates disclosure on [`consent::authorizes`], refuses any
+//! revoked / temporally-invalid credential, and emits a selectively-disclosed
+//! presentation revealing **only** the consented claims plus a mandatory holder
+//! `kb-jwt`. Still to come: resolve status lists (1.6).
 //!
 //! It also exposes **no wallet-enumeration primitive** — there is no
 //! `list_all`. The only discovery path is [`storage::find_by_index`], which
@@ -49,6 +53,7 @@ pub mod consent;
 pub mod index;
 pub mod mint;
 pub mod model;
+pub mod present;
 pub mod query;
 pub mod receive;
 pub mod storage;
@@ -60,6 +65,7 @@ pub use mint::{MintRequest, mint_and_store_sd_jwt_vc, mint_sd_jwt_vc};
 pub use model::{
     CredentialFormat, CredentialPurpose, CredentialStatus, IndexField, StoredCredential,
 };
+pub use present::present_sd_jwt_vc;
 pub use query::{CredentialDescriptor, CredentialQuery, search};
 pub use receive::receive_sd_jwt_vc;
 pub use storage::{delete, find_by_index, get, put};
