@@ -13,6 +13,10 @@ repository.workspace = true
 [features]
 default = ["setup", "keyring", "website", "admin-ui"]
 setup = ["dep:dialoguer", "dep:didwebvh-rs", "dep:url"]
+# BBS+ (`bbs-2023`) verifier support — lets the join verifier accept
+# selectively-disclosed bbs-2023 presentations. Pulls in the BLS12-381 curve
+# (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by default.
+bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
 # Public community website (§12.1). Filesystem-backed static
 # hosting at `website.root_dir`. Default-on so MVP `cargo run`
 # serves a site; operators who host externally can compile it
@@ -83,6 +87,8 @@ affinidi-messaging-didcomm-service = { workspace = true }
 # canonical workspace path for credential issuance.
 affinidi-vc = { workspace = true }
 affinidi-data-integrity = { workspace = true }
+# BBS+ verifier primitives + G2 issuer keys — only under the `bbs` feature.
+affinidi-bbs = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true }
 # DTG (Decentralized Trust Graph) credentials catalog — canonical credential shapes
 # (Membership, Endorsement, Invitation, …). Phase 2 sources every issued

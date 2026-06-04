@@ -397,6 +397,66 @@ impl<'a> DidVmResolver<'a> {
             ))
         })
     }
+
+    /// Resolve a verification-method URI (or a bare `did:key`) to its 96-byte
+    /// compressed BLS12-381 G2 public key — a BBS+ issuer key. Mirrors
+    /// [`Self::resolve_ed25519`] (a `z`-prefixed Multikey is exactly the
+    /// `did:key` suffix), decoding via the `0xeb` multicodec.
+    #[cfg(feature = "bbs")]
+    pub(crate) async fn resolve_bbs_g2(&self, vm: &str) -> Result<[u8; 96], AppError> {
+        let base_did = vm.split('#').next().unwrap_or(vm);
+        if base_did.starts_with("did:key:") {
+            return affinidi_crypto::bls12381::did_key_to_g2_pub(base_did).map_err(|e| {
+                AppError::Validation(format!("`{base_did}` is not a BBS did:key: {e}"))
+            });
+        }
+        let resolver = self.resolver.ok_or_else(|| {
+            AppError::Validation(format!(
+                "resolving `{base_did}` needs a DID resolver to verify did:webvh / did:web \
+                 BBS issuers"
+            ))
+        })?;
+        let resolved = resolver
+            .resolve(base_did)
+            .await
+            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
+        let doc: Value = serde_json::to_value(&resolved.doc)
+            .map_err(|e| AppError::Internal(format!("DID document serialise failed: {e}")))?;
+        let vms = doc
+            .get("verificationMethod")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                AppError::Validation(format!("DID `{base_did}` has no verificationMethod array"))
+            })?;
+        let relative = vm
+            .split_once('#')
+            .map(|(_, f)| format!("#{f}"))
+            .unwrap_or_default();
+        let entry = vms
+            .iter()
+            .find(|e| {
+                let id = e.get("id").and_then(Value::as_str).unwrap_or("");
+                id == vm || id == relative
+            })
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "verificationMethod `{vm}` not found in DID `{base_did}`"
+                ))
+            })?;
+        let multibase = entry
+            .get("publicKeyMultibase")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "verificationMethod `{vm}` has no publicKeyMultibase (BLS12-381 G2 Multikey)"
+                ))
+            })?;
+        affinidi_crypto::bls12381::did_key_to_g2_pub(&format!("did:key:{multibase}")).map_err(|e| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` is not a BLS12-381 G2 Multikey: {e}"
+            ))
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -590,10 +650,15 @@ pub async fn verify_vp_token(
     let mut presentations = Vec::with_capacity(entries.len());
     let mut holder: Option<String> = None;
     for entry in entries {
-        // A JSON **object** is a W3C Data-Integrity VP (may carry several VCs); a
+        // A JSON **object** is a W3C Data-Integrity VP (eddsa-jcs-2022 holder
+        // proof, may carry several VCs) **or** a bbs-2023 derived-proof VC; a
         // **string** is one SD-JWT-VC presentation.
         let verified: Vec<VerifiedPresentation> = if entry.is_object() {
-            verify_di_vp(entry, expected_aud, expected_nonce, did_resolver, now).await?
+            if is_bbs_2023_presentation(entry) {
+                verify_bbs_dispatch(entry, expected_nonce, did_resolver, now).await?
+            } else {
+                verify_di_vp(entry, expected_aud, expected_nonce, did_resolver, now).await?
+            }
         } else {
             vec![verify_presentation(entry, expected_aud, expected_nonce, did_resolver, now).await?]
         };
@@ -754,6 +819,136 @@ async fn verify_di_vp(
         });
     }
     Ok(out)
+}
+
+/// True iff `entry` is a `bbs-2023` derived-proof presentation — a JSON VC whose
+/// `proof.cryptosuite` is `bbs-2023`. Used to route a vp_token entry to the BBS
+/// verifier rather than the eddsa-jcs Data-Integrity VP path. Pure JSON
+/// inspection, so it works (to produce a clean error) even without the `bbs`
+/// feature.
+fn is_bbs_2023_presentation(entry: &Value) -> bool {
+    entry
+        .get("proof")
+        .and_then(|p| p.get("cryptosuite"))
+        .and_then(Value::as_str)
+        == Some("bbs-2023")
+}
+
+/// Dispatch a detected bbs-2023 presentation to the verifier, or fail cleanly
+/// when the crate was built without the `bbs` feature.
+async fn verify_bbs_dispatch(
+    entry: &Value,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    now: DateTime<Utc>,
+) -> Result<Vec<VerifiedPresentation>, AppError> {
+    #[cfg(feature = "bbs")]
+    {
+        Ok(vec![
+            verify_bbs_presentation(entry, expected_nonce, did_resolver, now).await?,
+        ])
+    }
+    #[cfg(not(feature = "bbs"))]
+    {
+        let _ = (entry, expected_nonce, did_resolver, now);
+        Err(AppError::Validation(
+            "a bbs-2023 presentation was received but this VTC was built without the `bbs` \
+             feature"
+                .into(),
+        ))
+    }
+}
+
+/// Verify a **bbs-2023 derived-proof** presentation and project it into a
+/// [`VerifiedPresentation`].
+///
+/// The derived proof (the disclosed VC's `proof`) proves the holder possesses a
+/// credential validly issued by the VC `issuer` and discloses only the revealed
+/// claims, bound to the verifier's `expected_nonce` (the presentation header).
+/// The issuer's BLS12-381 G2 key resolves from its DID (the proof's
+/// `verificationMethod`, bound to `issuer`).
+///
+/// **Holder semantics (deliberate):** unlike SD-JWT-VC (kb-jwt) or DI VP
+/// (holder proof), a basic bbs-2023 derived proof carries **no holder-key
+/// binding** — it is unlinkable and possession-based. The applicant
+/// (`holder_did`) is therefore taken to be the **disclosed `credentialSubject.id`**
+/// (which a well-formed presentation discloses as a mandatory claim). The join
+/// policy decides whether possession-based holdership is acceptable; stronger
+/// holder binding (BBS pseudonyms) is a follow-up.
+#[cfg(feature = "bbs")]
+async fn verify_bbs_presentation(
+    vc: &Value,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentation, AppError> {
+    use affinidi_bbs::PublicKey;
+    use affinidi_data_integrity::bbs_2023;
+
+    let issuer_did = vc
+        .get("issuer")
+        .and_then(|i| match i {
+            Value::String(s) => Some(s.clone()),
+            Value::Object(o) => o.get("id").and_then(Value::as_str).map(str::to_string),
+            _ => None,
+        })
+        .ok_or_else(|| AppError::Validation("bbs-2023 VC has no `issuer`".into()))?;
+
+    // Bind the signing key to the issuer, then resolve its G2 key.
+    let vm = vc
+        .get("proof")
+        .and_then(|p| p.get("verificationMethod"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
+    if vm.split('#').next().unwrap_or_default() != issuer_did {
+        return Err(AppError::Validation(format!(
+            "bbs-2023 proof verificationMethod `{vm}` is not under the issuer `{issuer_did}`"
+        )));
+    }
+    let g2 = DidVmResolver::new(did_resolver).resolve_bbs_g2(vm).await?;
+    let pk = PublicKey::from_bytes(&g2)
+        .map_err(|e| AppError::Validation(format!("bbs-2023 issuer key is invalid: {e}")))?;
+
+    // Verify the derived proof binds the verifier's nonce (presentation header).
+    if !bbs_2023::verify_vc_derived(vc, expected_nonce.as_bytes(), &pk)
+        .map_err(|e| AppError::Validation(format!("bbs-2023 presentation did not verify: {e}")))?
+    {
+        return Err(AppError::Validation(
+            "bbs-2023 presentation proof did not verify".into(),
+        ));
+    }
+    check_w3c_temporal(vc, now)?;
+
+    let holder_did = vc
+        .get("credentialSubject")
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            AppError::Validation(
+                "bbs-2023 presentation discloses no `credentialSubject.id` (the applicant); \
+                 the subject id must be a mandatory-disclosed claim"
+                    .into(),
+            )
+        })?;
+    let vct = vc.get("type").and_then(|t| match t {
+        Value::Array(a) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .find(|s| *s != "VerifiableCredential")
+            .map(str::to_string),
+        Value::String(s) => Some(s.clone()),
+        _ => None,
+    });
+    let credential_status = extract_credential_status(vc);
+
+    Ok(VerifiedPresentation {
+        issuer_did,
+        holder_did,
+        vct,
+        claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
+        credential_status,
+    })
 }
 
 /// Enforce W3C VCDM v2 temporal validity (`validFrom` / `validUntil`, RFC-3339).
@@ -1802,6 +1997,104 @@ mod tests {
 
         assert!(
             verify_presentation(&json!(tampered), aud, nonce, None, now)
+                .await
+                .is_err()
+        );
+    }
+
+    // ---- bbs-2023 verifier (feature `bbs`) ------------------------------
+
+    #[cfg(feature = "bbs")]
+    fn bbs_derived_presentation(nonce: &str, subject: &str, disclose: &[&str]) -> (Value, String) {
+        use affinidi_bbs as bbs;
+        use affinidi_data_integrity::bbs_2023::{derive_vc, sign_vc_base};
+
+        let sk = bbs::keygen(b"vtc-bbs-verify-key-material-32by", b"").unwrap();
+        let pk = bbs::sk_to_pk(&sk);
+        let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "validUntil": "2100-01-01T00:00:00Z",
+            "credentialSubject": { "id": subject, "memberLevel": "gold", "secret": "hidden" }
+        });
+        let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
+        let base = sign_vc_base(
+            &vc,
+            &mandatory,
+            &format!("{issuer_did}#bbs-key-0"),
+            &sk,
+            &pk,
+        )
+        .unwrap();
+        let derived = derive_vc(&base, disclose, nonce.as_bytes(), &pk).unwrap();
+        (derived, issuer_did)
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn verify_vp_token_accepts_a_bbs_2023_presentation() {
+        let nonce = "vtc-challenge-xyz";
+        let subject = "did:key:zApplicant";
+        let (derived, issuer_did) =
+            bbs_derived_presentation(nonce, subject, &["/credentialSubject/memberLevel"]);
+
+        // vp_token is the DCQL map keyed by query id → the derived VC.
+        let vp_token = json!({ "membership": derived });
+        let set = verify_vp_token(&vp_token, "did:web:vtc.example", nonce, None, Utc::now())
+            .await
+            .expect("a valid bbs-2023 presentation must verify");
+
+        assert_eq!(set.holder, subject, "holder is the disclosed subject id");
+        assert_eq!(set.presentations.len(), 1);
+        let p = &set.presentations[0];
+        assert_eq!(p.issuer_did, issuer_did);
+        assert_eq!(p.vct.as_deref(), Some("MembershipCredential"));
+        assert_eq!(p.claims["memberLevel"], "gold");
+        assert!(
+            p.claims.get("secret").is_none(),
+            "an undisclosed claim must not appear"
+        );
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn verify_vp_token_rejects_a_bbs_presentation_with_a_wrong_nonce() {
+        let (derived, _issuer) = bbs_derived_presentation(
+            "the-real-nonce",
+            "did:key:zApplicant",
+            &["/credentialSubject/memberLevel"],
+        );
+        let vp_token = json!({ "membership": derived });
+        // The verifier expects a different challenge than the proof was bound to.
+        assert!(
+            verify_vp_token(
+                &vp_token,
+                "did:web:vtc.example",
+                "a-different-nonce",
+                None,
+                Utc::now()
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn verify_vp_token_rejects_a_tampered_bbs_disclosed_claim() {
+        let nonce = "vtc-challenge-xyz";
+        let (mut derived, _issuer) = bbs_derived_presentation(
+            nonce,
+            "did:key:zApplicant",
+            &["/credentialSubject/memberLevel"],
+        );
+        derived["credentialSubject"]["memberLevel"] = json!("platinum");
+        let vp_token = json!({ "membership": derived });
+        assert!(
+            verify_vp_token(&vp_token, "did:web:vtc.example", nonce, None, Utc::now())
                 .await
                 .is_err()
         );
