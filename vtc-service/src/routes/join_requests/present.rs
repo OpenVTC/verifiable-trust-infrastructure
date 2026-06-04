@@ -38,6 +38,7 @@ use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use crate::join::JoinTransport;
+use crate::recognition::{HttpStatusListFetcher, StatusListFetcher};
 use crate::registry::TrustRegistryClient;
 use crate::schemas::accepts::get_accepts;
 use crate::server::AppState;
@@ -246,19 +247,25 @@ async fn push_credential_query(
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony
 /// [`Presentation`]. Crypto is already resolved, so `verified: true`. Each
 /// credential's `issuer_trusted` is resolved per-issuer via TRQP
-/// ([`issuer_trusted`]); status-list resolution stays `Valid` (a follow-up). The
-/// credential `type` is the SD-JWT-VC `vct`.
+/// ([`issuer_trusted`]) and its lifecycle `status` is resolved live against the
+/// issuer's status list ([`resolve_presented_status`]). The credential `type` is
+/// the SD-JWT-VC `vct`.
 async fn presentation_from_verified_set(
     state: &AppState,
     set: &VerifiedPresentationSet,
 ) -> Presentation {
     let own_did = state.config.read().await.vtc_did.clone();
     let registry = state.registry_client.as_deref();
+    // A presented credential's revocation is checked against the *issuer's*
+    // status list (a foreign URL): same fetcher + SSRF guard the recognition
+    // path uses. Built once for the whole set.
+    let status_fetcher = HttpStatusListFetcher::new(reqwest::Client::new());
 
     let mut credentials = Vec::with_capacity(set.presentations.len());
     for p in &set.presentations {
         let trusted = issuer_trusted(registry, own_did.as_deref(), &p.issuer_did).await;
-        credentials.push(credential_from_verified(p, trusted));
+        let status = resolve_presented_status(p.credential_status.as_ref(), &status_fetcher).await;
+        credentials.push(credential_from_verified(p, trusted, status));
     }
 
     Presentation {
@@ -269,9 +276,14 @@ async fn presentation_from_verified_set(
 }
 
 /// Pure projection of a single [`VerifiedPresentation`] into a ceremony
-/// [`Credential`], with the caller-resolved `issuer_trusted` verdict. Kept
-/// separate from the TRQP lookup so it stays unit-testable without a registry.
-fn credential_from_verified(p: &VerifiedPresentation, issuer_trusted: bool) -> Credential {
+/// [`Credential`], with the caller-resolved `issuer_trusted` verdict and
+/// lifecycle `status`. Kept separate from the TRQP + status-list lookups so it
+/// stays unit-testable without a registry or network.
+fn credential_from_verified(
+    p: &VerifiedPresentation,
+    issuer_trusted: bool,
+    status: CredentialStatus,
+) -> Credential {
     Credential {
         credential_type: p
             .vct
@@ -279,7 +291,7 @@ fn credential_from_verified(p: &VerifiedPresentation, issuer_trusted: bool) -> C
             .unwrap_or_else(|| "VerifiableCredential".to_string()),
         issuer: p.issuer_did.clone(),
         issuer_trusted,
-        status: CredentialStatus::Valid,
+        status,
         claims: p.claims.clone(),
         // SD-JWT-VC carries expiry in `exp` (epoch seconds).
         valid_until: p
@@ -287,6 +299,89 @@ fn credential_from_verified(p: &VerifiedPresentation, issuer_trusted: bool) -> C
             .get("exp")
             .and_then(JsonValue::as_i64)
             .and_then(|s| DateTime::from_timestamp(s, 0)),
+    }
+}
+
+/// Resolve a presented credential's lifecycle [`CredentialStatus`] against the
+/// issuer's status list.
+///
+/// The verifier must not accept a **revoked** credential at join. Resolution is
+/// surfaced into the ceremony evidence rather than enforced here, so the join
+/// policy decides (the ceremony [`CredentialStatus`] model carries `Unknown`
+/// exactly for this):
+///
+/// - no `credentialStatus` entry → [`CredentialStatus::Valid`] (the issuer opted
+///   into no status list — an implicit "not revocable" claim, matching the
+///   recognition path).
+/// - status bit clear → [`CredentialStatus::Valid`].
+/// - status bit set → [`CredentialStatus::Revoked`], or
+///   [`CredentialStatus::Suspended`] when the entry's `statusPurpose` is
+///   `suspension`.
+/// - entry present but unresolvable (malformed, or the list unreachable) →
+///   [`CredentialStatus::Unknown`]: **surfaced, not guessed**, so the policy can
+///   refuse rather than the verifier silently trusting an uncheckable credential.
+async fn resolve_presented_status(
+    status_entry: Option<&JsonValue>,
+    fetcher: &dyn StatusListFetcher,
+) -> CredentialStatus {
+    // No status block → the credential never opted into revocation.
+    let Some(entry) = status_entry else {
+        return CredentialStatus::Valid;
+    };
+
+    // Accept both the W3C `BitstringStatusListEntry`
+    // (`{ statusListCredential, statusListIndex, statusPurpose }`) and the
+    // SD-JWT-VC IETF `status` object (`{ status_list: { uri, idx } }`).
+    let (url, index, suspension) = match parse_status_entry(entry) {
+        Some(parts) => parts,
+        // A malformed entry is suspicious — surface Unknown, don't trust it.
+        None => return CredentialStatus::Unknown,
+    };
+
+    match fetcher.check_status_bit(&url, index).await {
+        Ok(false) => CredentialStatus::Valid,
+        Ok(true) if suspension => CredentialStatus::Suspended,
+        Ok(true) => CredentialStatus::Revoked,
+        Err(e) => {
+            warn!(
+                url = %url,
+                error = %e,
+                "presented credential's status list did not resolve — surfacing Unknown for the join policy"
+            );
+            CredentialStatus::Unknown
+        }
+    }
+}
+
+/// Parse a status entry into `(status_list_url, index, is_suspension)`. Handles
+/// the W3C `BitstringStatusListEntry` and the SD-JWT-VC IETF `status.status_list`
+/// shapes. Returns `None` if neither yields a usable URL + index.
+fn parse_status_entry(entry: &JsonValue) -> Option<(String, usize, bool)> {
+    // W3C: { statusListCredential, statusListIndex, statusPurpose }.
+    if let Some(url) = entry
+        .get("statusListCredential")
+        .and_then(JsonValue::as_str)
+    {
+        let index = parse_status_index(entry.get("statusListIndex"))?;
+        let suspension =
+            entry.get("statusPurpose").and_then(JsonValue::as_str) == Some("suspension");
+        return Some((url.to_string(), index, suspension));
+    }
+    // SD-JWT-VC IETF: { status_list: { uri, idx } } — no per-entry purpose.
+    if let Some(sl) = entry.get("status_list") {
+        let url = sl.get("uri").and_then(JsonValue::as_str)?;
+        let index = parse_status_index(sl.get("idx"))?;
+        return Some((url.to_string(), index, false));
+    }
+    None
+}
+
+/// Parse a `statusListIndex` / `idx` that may be a JSON string or number.
+fn parse_status_index(v: Option<&JsonValue>) -> Option<usize> {
+    match v {
+        Some(JsonValue::String(s)) => s.parse::<usize>().ok(),
+        Some(JsonValue::Number(n)) => n.as_u64().map(|u| u as usize),
+        _ => None,
     }
 }
 
@@ -351,6 +446,7 @@ fn vp_claims_from_set(set: &VerifiedPresentationSet) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::recognition::RecognitionError;
     use crate::registry::MockRegistryClient;
 
     fn sample_presentation() -> VerifiedPresentation {
@@ -359,12 +455,38 @@ mod tests {
             holder_did: "did:key:zHolder".into(),
             vct: Some("https://openvtc.org/credentials/MembershipCredential".into()),
             claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
+            credential_status: None,
         }
+    }
+
+    /// A `StatusListFetcher` stub: returns a fixed bit, or an error, without
+    /// touching the network.
+    struct StubFetcher(Result<bool, ()>);
+
+    #[async_trait::async_trait]
+    impl StatusListFetcher for StubFetcher {
+        async fn check_status_bit(
+            &self,
+            _url: &str,
+            _index: usize,
+        ) -> Result<bool, RecognitionError> {
+            self.0
+                .map_err(|()| RecognitionError::StatusListFailed("stub".into()))
+        }
+    }
+
+    fn w3c_status(purpose: &str) -> JsonValue {
+        json!({
+            "type": "BitstringStatusListEntry",
+            "statusPurpose": purpose,
+            "statusListIndex": "42",
+            "statusListCredential": "https://issuer.example/status/1",
+        })
     }
 
     #[test]
     fn projects_a_verified_presentation_into_a_ceremony_credential() {
-        let c = credential_from_verified(&sample_presentation(), true);
+        let c = credential_from_verified(&sample_presentation(), true, CredentialStatus::Valid);
         assert_eq!(
             c.credential_type,
             "https://openvtc.org/credentials/MembershipCredential"
@@ -377,8 +499,64 @@ mod tests {
     }
 
     #[test]
+    fn resolved_status_carries_through_to_the_credential() {
+        let c = credential_from_verified(&sample_presentation(), true, CredentialStatus::Revoked);
+        assert_eq!(c.status, CredentialStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn no_status_block_is_valid_without_a_fetch() {
+        let status = resolve_presented_status(None, &StubFetcher(Ok(true))).await;
+        assert_eq!(status, CredentialStatus::Valid);
+    }
+
+    #[tokio::test]
+    async fn clear_bit_is_valid() {
+        let entry = w3c_status("revocation");
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(false))).await;
+        assert_eq!(status, CredentialStatus::Valid);
+    }
+
+    #[tokio::test]
+    async fn set_revocation_bit_is_revoked() {
+        let entry = w3c_status("revocation");
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        assert_eq!(status, CredentialStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn set_suspension_bit_is_suspended() {
+        let entry = w3c_status("suspension");
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        assert_eq!(status, CredentialStatus::Suspended);
+    }
+
+    #[tokio::test]
+    async fn sd_jwt_status_list_shape_resolves() {
+        let entry = json!({ "status_list": { "idx": 7, "uri": "https://issuer.example/sl" } });
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        assert_eq!(status, CredentialStatus::Revoked);
+    }
+
+    #[tokio::test]
+    async fn unreachable_status_list_is_unknown_not_valid() {
+        // The verifier must not silently trust an uncheckable credential —
+        // surface Unknown so the join policy can refuse.
+        let entry = w3c_status("revocation");
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Err(()))).await;
+        assert_eq!(status, CredentialStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn malformed_status_entry_is_unknown() {
+        let entry = json!({ "type": "BitstringStatusListEntry" }); // no url/index
+        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(false))).await;
+        assert_eq!(status, CredentialStatus::Unknown);
+    }
+
+    #[test]
     fn untrusted_issuer_carries_through_to_the_credential() {
-        let c = credential_from_verified(&sample_presentation(), false);
+        let c = credential_from_verified(&sample_presentation(), false, CredentialStatus::Valid);
         assert!(!c.issuer_trusted);
     }
 

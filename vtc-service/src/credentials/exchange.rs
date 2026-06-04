@@ -283,6 +283,24 @@ pub struct VerifiedPresentation {
     pub vct: Option<String>,
     /// The disclosed claims (issuer-protected claims + the revealed subset).
     pub claims: Value,
+    /// The raw `credentialStatus` entry (W3C `BitstringStatusListEntry`) or
+    /// SD-JWT-VC IETF `status` object, captured at verify time so the join
+    /// verifier can resolve revocation. `None` when the credential opted into no
+    /// status list (treated as "not revocable"). Captured here rather than read
+    /// from [`Self::claims`] because the DI path stores only `credentialSubject`
+    /// in `claims`, while `credentialStatus` is a sibling top-level VC field.
+    pub credential_status: Option<Value>,
+}
+
+/// Extract a credential's status entry from a verified SD-JWT-VC payload or a DI
+/// VC object: the W3C `credentialStatus` (a sibling of `credentialSubject`), or
+/// the SD-JWT-VC IETF `status` object (`{ status_list: { uri, idx } }`) as a
+/// fallback. `None` when neither is present (the credential is not revocable).
+fn extract_credential_status(source: &Value) -> Option<Value> {
+    source
+        .get("credentialStatus")
+        .or_else(|| source.get("status"))
+        .cloned()
 }
 
 /// A [`VerificationMethodResolver`] over the VTC's optional [`DIDCacheClient`].
@@ -497,11 +515,13 @@ pub async fn verify_presentation(
         .get("vct")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let credential_status = extract_credential_status(&result.claims);
     Ok(VerifiedPresentation {
         issuer_did,
         holder_did,
         vct,
         claims: result.claims,
+        credential_status,
     })
 }
 
@@ -722,11 +742,15 @@ async fn verify_di_vp(
             Value::String(s) => Some(s.clone()),
             _ => None,
         });
+        // The W3C `credentialStatus` is a top-level VC field (sibling of
+        // `credentialSubject`); capture it from the full VC, not the subject.
+        let credential_status = extract_credential_status(vc);
         out.push(VerifiedPresentation {
             issuer_did,
             holder_did: holder_did.clone(),
             vct,
             claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
+            credential_status,
         });
     }
     Ok(out)
