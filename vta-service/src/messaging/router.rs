@@ -352,6 +352,12 @@ pub fn build_handler(
         .route(
             credential_exchange::QUERY,
             handler_fn(handlers::handle_credential_query),
+        )?
+        // Credential exchange — holder answers an issuer's offer with a request
+        // (spec §6 / task 3.2). Opt-in via `credential_holder_did`.
+        .route(
+            credential_exchange::OFFER,
+            handler_fn(handlers::handle_credential_offer),
         )?;
 
     // WebVH handlers (feature-gated)

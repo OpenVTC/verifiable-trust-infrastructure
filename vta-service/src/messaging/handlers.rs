@@ -1872,6 +1872,74 @@ pub async fn handle_credential_issue(
     Ok(None)
 }
 
+/// `credential-exchange/offer` over DIDComm (Phase 3, task 3.2) — the holder side
+/// of the issuance negotiation: an issuer offered a credential, and the VTA
+/// answers with a `request` carrying a key-binding proof.
+///
+/// **Opt-in**: the VTA accepts an offer only when `credential_holder_did` is
+/// configured — the registered VTA-managed holder identity the new credential
+/// binds to. With it unset (the default), an unsolicited offer is declined; the
+/// VTA does not auto-request credentials from arbitrary issuers. When set, the
+/// VTA acts with its own authority, signs an `openid4vci-proof+jwt` bound to that
+/// holder key + the offer's issuer/pre-auth code, and replies `request/1.0`
+/// on-thread. The issuer's redeem path returns the credential via `issue/1.0`,
+/// which [`handle_credential_issue`] receives.
+pub async fn handle_credential_offer(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    let body: credential_exchange::OfferBody =
+        serde_json::from_value(message.body).map_err(handler_err)?;
+
+    let subject_did = match app_state.config.read().await.credential_holder_did.clone() {
+        Some(did) => did,
+        None => {
+            info!(
+                from = message.from.as_deref().unwrap_or("unknown"),
+                "credential offer received but no credential_holder_did configured — declining"
+            );
+            return Ok(Some(DIDCommResponse::problem_report(
+                ProblemReport::bad_request(
+                    "this VTA does not accept unsolicited credential offers \
+                     (no credential_holder_did configured)"
+                        .to_string(),
+                ),
+            )));
+        }
+    };
+
+    // The VTA accepts on its own behalf (super-admin over its own contexts); the
+    // holder-key resolution is still ACL-gated to the subject's context.
+    let auth = crate::auth::AuthClaims {
+        role: Role::Admin,
+        allowed_contexts: Vec::new(),
+        ..Default::default()
+    };
+
+    let request = app_try!(
+        operations::credential_exchange::build_credential_request_for_offer(
+            &app_state.keys_ks,
+            &app_state.seed_store,
+            &auth,
+            &body.credential_offer,
+            &subject_did,
+            chrono::Utc::now(),
+        )
+        .await
+    );
+
+    let request_body = serde_json::to_value(&request).map_err(handler_err)?;
+    info!(
+        from = message.from.as_deref().unwrap_or("unknown"),
+        subject = %subject_did,
+        "answered credential offer with a request"
+    );
+    Ok(Some(
+        DIDCommResponse::new(credential_exchange::REQUEST, request_body).thid(message.id),
+    ))
+}
+
 /// `credential-exchange/query` over DIDComm (Phase 3) — the holder answers a
 /// verifier's DCQL query with a presentation.
 ///

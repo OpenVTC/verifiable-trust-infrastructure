@@ -110,6 +110,7 @@ pub async fn open_test_store() -> TestStore {
 pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
     AppConfig {
         trusted_presentation_verifiers: Vec::new(),
+        credential_holder_did: None,
         vta_did: None,
         vta_name: None,
         public_url: None,

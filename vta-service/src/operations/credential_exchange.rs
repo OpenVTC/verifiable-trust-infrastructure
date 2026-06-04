@@ -40,7 +40,7 @@ use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
-use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody};
+use vta_sdk::protocols::credential_exchange::{IssueBody, PresentBody, QueryBody, RequestBody};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -235,6 +235,75 @@ pub async fn seal_issued_credential(
         .map_err(|e| AppError::Internal(format!("sealing issued credential failed: {e}")))?;
     let digest = bundle_digest(&bundle);
     Ok((armor::encode(&bundle), digest))
+}
+
+/// Build a `credential-exchange/request` from a received OID4VCI **offer** — the
+/// holder side of the issuance negotiation (spec §6, task 3.2). This is the
+/// `offer → request` leg: the issuer offered a credential, and the holder asks
+/// for it, proving control of the key the credential will bind to.
+///
+/// Resolves the **ACL-gated** VTA-managed holder key for `subject_did` (the same
+/// derived-key model as the present path — `auth` gates which context's key may
+/// be used), signs an `openid4vci-proof+jwt` key-binding proof — `iss` + `kid` =
+/// the holder, `aud` = the offer's `credential_issuer`, `nonce` = the offer's
+/// **pre-authorized code** (the issuer's freshness value the redeem path looks
+/// up), `iat` = `now` — and wraps it in a `CredentialRequest`. The issued
+/// credential binds to `subject_did`; the holder later presents it under the same
+/// key.
+pub async fn build_credential_request_for_offer(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    offer: &affinidi_openid4vci::CredentialOffer,
+    subject_did: &str,
+    now: DateTime<Utc>,
+) -> Result<RequestBody, AppError> {
+    use affinidi_sd_jwt::signer::JwtSigner;
+
+    // The pre-authorized code is the issuer-issued freshness value the holder
+    // commits to (the VTC redeem path looks the pending issuance up by it).
+    let pre_auth_code = offer
+        .grants
+        .as_ref()
+        .and_then(|g| g.pre_authorized_code.as_ref())
+        .map(|c| c.pre_authorized_code.clone())
+        .ok_or_else(|| {
+            AppError::Validation("credential offer has no pre-authorized-code grant".into())
+        })?;
+
+    // The credential the offer advertises (its configuration id doubles as the
+    // requested `vct` for the SD-JWT-VC format).
+    let vct = offer
+        .credential_configuration_ids
+        .first()
+        .cloned()
+        .ok_or_else(|| {
+            AppError::Validation("credential offer names no credential_configuration_ids".into())
+        })?;
+
+    // ACL-gated holder key for the subject the credential will bind to.
+    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject_did).await?;
+    let kid = keys.signer.key_id().unwrap_or(subject_did).to_string();
+
+    let header = serde_json::json!({
+        "typ": "openid4vci-proof+jwt",
+        "alg": "EdDSA",
+        "kid": kid,
+    });
+    let payload = serde_json::json!({
+        "iss": subject_did,
+        "aud": offer.credential_issuer,
+        "iat": now.timestamp(),
+        "nonce": pre_auth_code,
+    });
+    let proof_jwt = keys
+        .signer
+        .sign_jwt(&header, &payload)
+        .map_err(|e| AppError::Internal(format!("signing key-binding proof failed: {e}")))?;
+
+    let credential_request =
+        affinidi_openid4vci::wallet::build_sd_jwt_vc_request(&vct, Some(proof_jwt));
+    Ok(RequestBody { credential_request })
 }
 
 /// The issuer DID from a VC `issuer` field — a string, or an object with `id`.
@@ -2033,6 +2102,121 @@ mod tests {
         .unwrap();
 
         (dir, vault, keys_ks, seed_store, subject_did)
+    }
+
+    #[tokio::test]
+    async fn build_credential_request_for_offer_signs_a_keybinding_proof() {
+        use crate::acl::Role;
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use ed25519_dalek::Verifier;
+        use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
+
+        let (_dir, _vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        let now = Utc::now();
+
+        let offer = affinidi_openid4vci::wallet::parse_credential_offer(
+            r#"{
+                "credential_issuer": "did:webvh:vtc.example",
+                "credential_configuration_ids": ["https://openvtc.org/credentials/MembershipCredential"],
+                "grants": {
+                    "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
+                        "pre-authorized_code": "code-abc-123"
+                    }
+                }
+            }"#,
+        )
+        .expect("parse offer");
+
+        let request = build_credential_request_for_offer(
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &offer,
+            &subject_did,
+            now,
+        )
+        .await
+        .expect("build credential request");
+
+        let req = request.credential_request;
+        assert_eq!(
+            req.vct.as_deref(),
+            Some("https://openvtc.org/credentials/MembershipCredential")
+        );
+        let proof = req.proof.expect("key-binding proof present");
+        assert_eq!(proof.proof_type, "jwt");
+
+        // Decode the openid4vci-proof+jwt and check its bindings.
+        let parts: Vec<&str> = proof.jwt.split('.').collect();
+        assert_eq!(parts.len(), 3, "compact JWS");
+        let header: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[0]).unwrap()).unwrap();
+        let payload: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).unwrap()).unwrap();
+        assert_eq!(header["typ"], "openid4vci-proof+jwt");
+        assert_eq!(header["alg"], "EdDSA");
+        assert!(
+            header["kid"].as_str().unwrap().starts_with(&subject_did),
+            "kid names the holder"
+        );
+        assert_eq!(payload["iss"], subject_did);
+        assert_eq!(payload["aud"], "did:webvh:vtc.example");
+        assert_eq!(
+            payload["nonce"], "code-abc-123",
+            "bound to the pre-auth code"
+        );
+
+        // The signature verifies under the holder's ACL-gated derived key.
+        let signing_input = format!("{}.{}", parts[0], parts[1]);
+        let sig = ed25519_dalek::Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).unwrap())
+            .unwrap();
+        let derived = ExtendedSigningKey::from_seed(&[42u8; 64])
+            .unwrap()
+            .derive(&"m/26'/2'/0'/0'".parse::<DerivationPath>().unwrap())
+            .unwrap();
+        derived
+            .signing_key
+            .verifying_key()
+            .verify(signing_input.as_bytes(), &sig)
+            .expect("key-binding proof signature verifies under the holder key");
+    }
+
+    #[tokio::test]
+    async fn build_credential_request_for_offer_refuses_an_offer_without_a_code() {
+        use crate::acl::Role;
+
+        let (_dir, _vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+        // No `grants` → no pre-authorized code.
+        let offer = affinidi_openid4vci::wallet::parse_credential_offer(
+            r#"{ "credential_issuer": "did:webvh:vtc.example", "credential_configuration_ids": ["x"] }"#,
+        )
+        .expect("parse offer");
+
+        let err = build_credential_request_for_offer(
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &offer,
+            &subject_did,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("pre-authorized")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]

@@ -619,6 +619,7 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
     // 13. Save AppConfig.
     let config = AppConfig {
         trusted_presentation_verifiers: Vec::new(),
+        credential_holder_did: None,
         vta_did: vta_did.clone(),
         vta_name: inputs.vta_name.clone(),
         public_url: inputs.public_url.clone(),
@@ -951,6 +952,7 @@ fn scratch_config_for_seed_store(
 ) -> AppConfig {
     AppConfig {
         trusted_presentation_verifiers: Vec::new(),
+        credential_holder_did: None,
         vta_did: None,
         vta_name: None,
         public_url: None,

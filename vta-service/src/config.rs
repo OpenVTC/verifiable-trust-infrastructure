@@ -41,6 +41,13 @@ pub struct AppConfig {
     /// (defer everything) — a safe default; operators trust specific verifiers.
     #[serde(default)]
     pub trusted_presentation_verifiers: Vec<String>,
+    /// The VTA-managed holder identity (a registered derived `subject_did`) the
+    /// VTA **auto-accepts** offered credentials for: when set, an inbound
+    /// `credential-exchange/offer` is answered with a `request` binding the new
+    /// credential to this DID. Default unset — the VTA does **not** accept
+    /// unsolicited offers (a safe default; opt in by naming the holder identity).
+    #[serde(default)]
+    pub credential_holder_did: Option<String>,
     #[cfg(feature = "tee")]
     #[serde(default)]
     pub tee: TeeConfig,
