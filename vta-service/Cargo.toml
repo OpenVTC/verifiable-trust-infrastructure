@@ -16,6 +16,11 @@ rest = []
 didcomm = []
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
 setup = ["webvh", "dep:tempfile"]
+# BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
+# curve (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by
+# default; the holder/verifier paths (receive, present, verify) build behind
+# it. Issuer signing stays audit-gated (not exposed from the VTA).
+bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
 # Enables the offline CLI command helpers (bootstrap_cli, webvh_cli) that
 # synthesize super-admin `AuthClaims` without wire-level verification. The
 # local `vta` binary enables this; the enclave binary does not (its
@@ -107,6 +112,8 @@ affinidi-data-integrity = { workspace = true }
 # and not pulled in here.
 affinidi-sd-jwt-vc = { workspace = true }
 affinidi-sd-jwt = { workspace = true }
+# BBS+ primitives + G2 issuer keys — only under the `bbs` feature.
+affinidi-bbs = { workspace = true, optional = true }
 # DCQL matcher — the holder runs a verifier's DCQL query over held credentials
 # (`credential-exchange/query`, task 3.5). Same crate vta-sdk's QueryBody uses.
 affinidi-openid4vp = { workspace = true }

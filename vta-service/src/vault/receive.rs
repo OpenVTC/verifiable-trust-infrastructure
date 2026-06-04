@@ -399,9 +399,22 @@ pub async fn receive(
             })?;
             receive_di_vc(vault, id, body, pubkey, source, now).await
         }
-        CredentialFormat::Bbs2023 => Err(AppError::Validation(
-            "BBS+ receive is audit-gated (Phase 0b) and not yet supported".to_string(),
-        )),
+        CredentialFormat::Bbs2023 => {
+            #[cfg(feature = "bbs")]
+            {
+                let pubkey = issuer_pub.ok_or_else(|| {
+                    AppError::Validation(
+                        "a BBS (bbs-2023) credential needs a caller-resolved 96-byte G2 issuer key"
+                            .to_string(),
+                    )
+                })?;
+                super::bbs::receive_bbs(vault, id, body, pubkey, source, now).await
+            }
+            #[cfg(not(feature = "bbs"))]
+            Err(AppError::Validation(
+                "BBS+ receive requires the `bbs` feature (audit-gated, Phase 0b)".to_string(),
+            ))
+        }
         CredentialFormat::Zkp => Err(AppError::Validation(
             "ZKP receive is Phase-0-gated and not yet supported (commitment primitives \
              + Circom/Groth16 verifier not yet wired)"
@@ -416,7 +429,7 @@ pub async fn receive(
 /// True iff `now` lies within a W3C VC 2.0 `validFrom`/`validUntil` window.
 /// Either bound may be absent; a malformed RFC-3339 bound is a hard error
 /// (default-deny — never store a credential whose window can't be evaluated).
-fn di_temporal_valid(vc: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
+pub(super) fn di_temporal_valid(vc: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
     if let Some(from) = vc.get("validFrom").and_then(Value::as_str) {
         let from = from.parse::<DateTime<Utc>>().map_err(|e| {
             AppError::Validation(format!("`validFrom` ({from}) is not RFC-3339: {e}"))
@@ -447,7 +460,7 @@ fn di_temporal_valid(vc: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
 /// JSON-LD-style `type` / `vc.type` arrays a richer credential carries, so a
 /// match on either the SD-JWT-VC `vct` or a classic VC `type` tag finds the
 /// credential. Duplicates are de-duplicated; order is preserved.
-fn extract_types(claims: &Value) -> Vec<String> {
+pub(super) fn extract_types(claims: &Value) -> Vec<String> {
     let mut types: Vec<String> = Vec::new();
     let mut push_unique = |s: String| {
         if !s.is_empty() && !types.contains(&s) {
@@ -489,7 +502,7 @@ fn collect_type_field(field: Option<&Value>, push: &mut impl FnMut(String)) {
 /// without the caller having to classify it. Matching is case-insensitive and
 /// substring-based against the known catalog families; an unrecognised type
 /// leaves `purpose` unset (rather than guessing wrong).
-fn infer_purpose(types: &[String]) -> Option<CredentialPurpose> {
+pub(super) fn infer_purpose(types: &[String]) -> Option<CredentialPurpose> {
     for t in types {
         let lower = t.to_ascii_lowercase();
         if lower.contains("invitation") || lower.contains("invite") {

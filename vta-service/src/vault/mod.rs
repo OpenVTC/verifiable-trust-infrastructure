@@ -49,6 +49,8 @@
 //! on top in later tasks must preserve it (DCQL-targeted discovery only,
 //! never "return the whole set").
 
+#[cfg(feature = "bbs")]
+pub mod bbs;
 pub mod consent;
 pub mod di_verify;
 pub mod index;
