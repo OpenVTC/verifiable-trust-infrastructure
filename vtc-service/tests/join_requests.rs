@@ -58,6 +58,7 @@ fn init_jwt_provider() {
 
 struct Fixture {
     router: axum::Router,
+    state: AppState,
     admin_token: String,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
@@ -231,10 +232,11 @@ async fn build_fixture() -> Fixture {
         supervisor: None,
     };
 
-    let router = routes::router().with_state(state);
+    let router = routes::router().with_state(state.clone());
 
     Fixture {
         router,
+        state,
         admin_token,
         acl_ks,
         members_ks,
@@ -981,4 +983,209 @@ async fn list_requires_authentication() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Credential-exchange present → join decision (close-the-join-loop, part 2)
+// ---------------------------------------------------------------------------
+
+/// Build a real SD-JWT-VC `MembershipCredential` presentation bound to
+/// `aud` + `nonce`, framed as an OID4VP DCQL `vp_token` map (keyed by
+/// credential-query id) — exactly the shape `vta-service`'s `present_query`
+/// emits. Returns `(holder_did, vp_token)`.
+fn build_membership_vp_token(
+    holder_seed: u8,
+    aud: &str,
+    nonce: &str,
+    now_ts: i64,
+) -> (String, Value) {
+    use affinidi_sd_jwt::error::SdJwtError;
+    use affinidi_sd_jwt::hasher::Sha256Hasher;
+    use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
+    use affinidi_sd_jwt::signer::JwtSigner;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    struct SdSigner {
+        key: SigningKey,
+        kid: String,
+    }
+    impl JwtSigner for SdSigner {
+        fn algorithm(&self) -> &str {
+            "EdDSA"
+        }
+        fn key_id(&self) -> Option<&str> {
+            Some(&self.kid)
+        }
+        fn sign_jwt(&self, header: &Value, payload: &Value) -> Result<String, SdJwtError> {
+            let h = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(header).map_err(|e| SdJwtError::Verification(e.to_string()))?,
+            );
+            let p = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(payload).map_err(|e| SdJwtError::Verification(e.to_string()))?,
+            );
+            let input = format!("{h}.{p}");
+            let sig = self.key.sign(input.as_bytes());
+            Ok(format!(
+                "{input}.{}",
+                URL_SAFE_NO_PAD.encode(sig.to_bytes())
+            ))
+        }
+    }
+
+    let issuer = SigningKey::from_bytes(&[9u8; 32]);
+    let issuer_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+    let issuer_signer = SdSigner {
+        key: SigningKey::from_bytes(&[9u8; 32]),
+        kid: format!("{issuer_did}#key-0"),
+    };
+
+    let holder = SigningKey::from_bytes(&[holder_seed; 32]);
+    let holder_vk = holder.verifying_key();
+    let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(holder_vk.as_bytes());
+    let holder_signer = SdSigner {
+        key: SigningKey::from_bytes(&[holder_seed; 32]),
+        kid: format!(
+            "{holder_did}#{}",
+            holder_did.strip_prefix("did:key:").unwrap()
+        ),
+    };
+
+    let vct = "https://openvtc.org/credentials/MembershipCredential";
+    let claims = json!({
+        "iss": issuer_did, "sub": holder_did, "vct": vct,
+        "iat": now_ts, "exp": now_ts + 3600, "givenName": "Alice"
+    });
+    let frame = json!({ "_sd": ["givenName"] });
+    let hasher = Sha256Hasher;
+    let holder_jwk = json!({
+        "kty": "OKP", "crv": "Ed25519", "x": URL_SAFE_NO_PAD.encode(holder_vk.to_bytes())
+    });
+    let sd =
+        affinidi_sd_jwt::issuer::issue(&claims, &frame, &issuer_signer, &hasher, Some(&holder_jwk))
+            .unwrap();
+    let selected = select_disclosures(&sd, &["givenName"]);
+    let kb = KbJwtInput {
+        audience: aud,
+        nonce,
+        signer: &holder_signer,
+        iat: now_ts as u64,
+    };
+    let presentation = present(&sd, &selected, Some(&kb), &hasher).unwrap();
+    (
+        holder_did,
+        json!({ "membership": presentation.serialize() }),
+    )
+}
+
+const VTC_AUD: &str = "did:webvh:vtc.example.com:abc";
+
+/// A cryptographically-verified credential-exchange presentation drives the join
+/// decision: under an `allow` policy the holder is auto-admitted and the
+/// MembershipCredential is issued inline.
+#[tokio::test]
+async fn credential_exchange_present_auto_admits_under_allow_policy() {
+    use vtc_service::join::{JoinStatus, JoinTransport};
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
+    )
+    .await;
+
+    let now = chrono::Utc::now();
+    let nonce = "vtc-issued-nonce-1";
+    let (holder_did, vp_token) = build_membership_vp_token(0x42, VTC_AUD, nonce, now.timestamp());
+
+    let outcome = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        VTC_AUD,
+        nonce,
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .expect("present and decide");
+
+    assert_eq!(outcome.request.status, JoinStatus::Approved);
+    assert!(
+        outcome.admit.is_some(),
+        "MembershipCredential issued on allow"
+    );
+    // The proven holder is now a member.
+    let acl = vtc_service::acl::get_acl_entry(&fix.acl_ks, &holder_did)
+        .await
+        .unwrap()
+        .expect("auto-admitted holder has an ACL row");
+    assert_eq!(acl.role, VtcRole::Member);
+    assert!(
+        vtc_service::members::get_member(&fix.members_ks, &holder_did)
+            .await
+            .unwrap()
+            .is_some(),
+        "auto-admitted holder has a Member row"
+    );
+}
+
+/// Under the default join policy a verified presentation lands `pending` (the
+/// decision pipeline routed it; no auto-admit).
+#[tokio::test]
+async fn credential_exchange_present_defers_under_default_policy() {
+    use vtc_service::join::{JoinStatus, JoinTransport};
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    let now = chrono::Utc::now();
+    let nonce = "n";
+    let (_holder, vp_token) = build_membership_vp_token(0x43, VTC_AUD, nonce, now.timestamp());
+
+    let outcome = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        VTC_AUD,
+        nonce,
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .expect("present and decide");
+
+    assert_eq!(outcome.request.status, JoinStatus::Pending);
+    assert!(outcome.admit.is_none());
+}
+
+/// A presentation bound to a different nonce than the verifier expects is
+/// refused — no decision runs (replay / wrong-challenge protection at the
+/// crypto layer).
+#[tokio::test]
+async fn credential_exchange_present_rejects_a_wrong_nonce() {
+    use vtc_service::join::JoinTransport;
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    let now = chrono::Utc::now();
+    let (_holder, vp_token) =
+        build_membership_vp_token(0x44, VTC_AUD, "right-nonce", now.timestamp());
+
+    let refused = matches!(
+        present_and_decide_join(
+            &fix.state,
+            &vp_token,
+            VTC_AUD,
+            "wrong-nonce",
+            JoinTransport::DIDComm,
+            now,
+        )
+        .await,
+        Err(vti_common::error::AppError::Validation(_))
+    );
+    assert!(
+        refused,
+        "a presentation bound to a different nonce must be refused"
+    );
 }

@@ -13,7 +13,7 @@ mod endorsement_types;
 mod endorsements;
 mod health;
 pub(crate) mod install;
-pub(crate) mod join_requests;
+pub mod join_requests;
 pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;

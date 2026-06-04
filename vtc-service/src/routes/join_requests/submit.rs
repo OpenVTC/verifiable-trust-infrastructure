@@ -161,11 +161,6 @@ pub async fn submit_inner(
     signature_hex: Option<&str>,
     transport: JoinTransport,
 ) -> Result<JoinSubmitOutcome, AppError> {
-    let audit_writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-
     // 1. Holder binding (REST only).
     if let Some(hex_sig) = signature_hex {
         verify_holder_signature(&applicant_did, &vp, registry_consent, &extensions, hex_sig)?;
@@ -176,8 +171,36 @@ pub async fn submit_inner(
     // reads structured Facts instead (assembled below).
     let vp_claims = extract_vp_claims(&vp);
 
-    // 3. Decide: assemble verified Facts and run the active join policy.
-    let facts = assemble_join_facts(state, &applicant_did, &vp).await?;
+    // 3. Decide: assemble verified Facts (the route-layer holder-binding
+    // makes this presentation `verified`) and run the active join policy.
+    let presentation = presentation_from_vp(&applicant_did, &vp);
+    let verdict = decide_join(state, &applicant_did, presentation).await?;
+
+    // 4. Realize the verdict (store + audit + auto-admit on allow).
+    realize_join_verdict(
+        state,
+        &applicant_did,
+        vp,
+        vp_claims,
+        registry_consent,
+        extensions,
+        verdict,
+        transport,
+    )
+    .await
+}
+
+/// Assemble verified join [`Facts`] from a `presentation` and run the active
+/// join policy, returning the [`Verdict`]. The caller supplies a `presentation`
+/// it has already established as `verified` (route-layer holder-binding for the
+/// VP path; cryptographic `vp_token` verification for the credential-exchange
+/// path).
+pub(crate) async fn decide_join(
+    state: &AppState,
+    applicant_did: &str,
+    presentation: Presentation,
+) -> Result<Verdict, AppError> {
+    let facts = assemble_join_facts(state, applicant_did, presentation).await?;
     let verified = VerifiedFacts::assemble(facts)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -185,10 +208,29 @@ pub async fn submit_inner(
         PolicyPurpose::Join,
     )
     .await?;
-    let verdict = crate::ceremony::decide(&verified, &policy)?;
+    crate::ceremony::decide(&verified, &policy)
+}
 
-    // 4. Build the request + realize the verdict.
-    let mut request = JoinRequest::new(applicant_did.clone(), vp);
+/// Realize a join [`Verdict`]: build + persist the [`JoinRequest`], auto-admit on
+/// `allow` (the [`EffectPlan::Admit`] executor issues the VMC), and write the
+/// audit event. Shared by the VP submit and the credential-exchange present path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn realize_join_verdict(
+    state: &AppState,
+    applicant_did: &str,
+    vp: JsonValue,
+    vp_claims: JsonValue,
+    registry_consent: bool,
+    extensions: JsonValue,
+    verdict: Verdict,
+    transport: JoinTransport,
+) -> Result<JoinSubmitOutcome, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    let mut request = JoinRequest::new(applicant_did.to_string(), vp);
     request.vp_claims = vp_claims;
     request.registry_consent = registry_consent;
     request.extensions = extensions;
@@ -202,12 +244,12 @@ pub async fn submit_inner(
             // as the executor's `Conflict` → 409.
             let role = allow.role.clone().unwrap_or_else(|| "member".to_string());
             let plan = EffectPlan::Admit {
-                subject: applicant_did.clone(),
+                subject: applicant_did.to_string(),
                 role,
                 obligations: allow.obligations.clone(),
             };
             if let EffectOutcome::Admitted(creds) =
-                execute::apply(state, plan, &applicant_did).await?
+                execute::apply(state, plan, applicant_did).await?
             {
                 admit = Some(creds);
             }
@@ -225,11 +267,11 @@ pub async fn submit_inner(
     }
     store_join_request(&state.join_requests_ks, &request).await?;
 
-    // 5. Audit — Rejected for a policy deny; Submitted otherwise.
+    // Audit — Rejected for a policy deny; Submitted otherwise.
     if rejected {
         audit_writer
             .write(
-                &applicant_did,
+                applicant_did,
                 None,
                 AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
                     request_id: request.id.to_string(),
@@ -240,7 +282,7 @@ pub async fn submit_inner(
     } else {
         audit_writer
             .write(
-                &applicant_did,
+                applicant_did,
                 None,
                 AuditEvent::JoinRequestSubmitted(JoinRequestData {
                     request_id: request.id.to_string(),
@@ -255,7 +297,7 @@ pub async fn submit_inner(
         applicant = %applicant_did,
         transport = transport.as_str(),
         verdict = verdict.effect(),
-        "join request submitted"
+        "join request realized"
     );
     Ok(JoinSubmitOutcome { request, admit })
 }
@@ -270,7 +312,7 @@ pub async fn submit_inner(
 async fn assemble_join_facts(
     state: &AppState,
     applicant_did: &str,
-    vp: &JsonValue,
+    presentation: Presentation,
 ) -> Result<Facts, AppError> {
     let community_did = load_profile(&state.community_ks)
         .await?
@@ -281,8 +323,9 @@ async fn assemble_join_facts(
     Ok(Facts {
         purpose: Purpose::Join,
         now: Utc::now(),
-        // The applicant proved holder-binding at the route layer; they
-        // are not (yet) a member, so they carry no community role.
+        // The applicant proved holder-binding (route-layer for the VP path,
+        // cryptographic kb-jwt for the credential-exchange path); they are not
+        // (yet) a member, so they carry no community role.
         actor: Actor {
             did: applicant_did.to_string(),
             role: None,
@@ -298,7 +341,7 @@ async fn assemble_join_facts(
         },
         evidence: Evidence {
             invitation: None,
-            presentation: Some(presentation_from_vp(applicant_did, vp)),
+            presentation: Some(presentation),
             request: None,
         },
         state: FactsState {
