@@ -151,6 +151,11 @@ pub struct AppState {
     pub config: Arc<RwLock<AppConfig>>,
     pub seed_store: Arc<dyn SeedStore>,
     pub did_resolver: Option<DIDCacheClient>,
+    /// Live status-list resolver for the present path: when set, the holder
+    /// **re-resolves** a credential's revocation status at present time rather
+    /// than trusting the stored tag (§14.5). `None` falls back to the stored
+    /// status (the pre-live behaviour).
+    pub status_list_resolver: Option<Arc<dyn crate::vault::status::StatusListResolver>>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     /// Verification-method id for the VTA's signing key (e.g.
     /// `{did}#key-0`). Populated by `init_auth`. Needed by the
@@ -296,6 +301,7 @@ pub async fn build_app_state(
         config: Arc::new(RwLock::new(config)),
         seed_store,
         did_resolver: auth.did_resolver,
+        status_list_resolver: crate::vault::status::default_status_resolver(),
         secrets_resolver: auth.secrets_resolver,
         #[cfg(feature = "didcomm")]
         signing_vm_id: auth.signing_vm_id,
@@ -614,6 +620,7 @@ pub async fn run(
             config: Arc::new(RwLock::new(config.clone())),
             seed_store: seed_store.clone(),
             did_resolver: auth.did_resolver,
+            status_list_resolver: crate::vault::status::default_status_resolver(),
             secrets_resolver: auth.secrets_resolver.clone(),
             #[cfg(feature = "didcomm")]
             signing_vm_id: auth.signing_vm_id.clone(),

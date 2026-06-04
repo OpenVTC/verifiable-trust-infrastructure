@@ -55,6 +55,8 @@ use serde::{Deserialize, Serialize};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+#[cfg(feature = "webvh")]
+use affinidi_status_list::DEFAULT_BITSTRING_SIZE;
 use affinidi_status_list::{BitstringStatusList, StatusPurpose};
 
 use super::model::{CredentialStatus, StoredCredential};
@@ -98,13 +100,102 @@ pub struct ResolvedStatusList {
     pub status_purpose: StatusPurpose,
 }
 
+/// The default live status resolver wired into a running VTA: an HTTP resolver
+/// when the `webvh` feature (which pulls in `reqwest`) is built, else `None` —
+/// in which case the present path falls back to the stored status tag.
+pub fn default_status_resolver() -> Option<std::sync::Arc<dyn StatusListResolver>> {
+    #[cfg(feature = "webvh")]
+    {
+        Some(std::sync::Arc::new(HttpStatusListResolver::new()))
+    }
+    #[cfg(not(feature = "webvh"))]
+    {
+        None
+    }
+}
+
+/// Production [`StatusListResolver`]: HTTP-fetches the `BitstringStatusListCredential`
+/// an issuer (e.g. the VTC) publishes at the entry URL and decodes its
+/// `credentialSubject` (`encodedList` + `statusPurpose`), using the standard list
+/// size ([`DEFAULT_BITSTRING_SIZE`], the W3C minimum the issuers allocate).
+///
+/// NOTE (hardening follow-up): this does **not** yet verify the status-list
+/// credential's own issuer signature — a holder should ideally verify it before
+/// trusting the list (needs issuer-key resolution). The present gate falls back
+/// to the stored tag on any resolver error, so an outage does not block
+/// presentation.
+#[cfg(feature = "webvh")]
+pub struct HttpStatusListResolver {
+    http: reqwest::Client,
+}
+
+#[cfg(feature = "webvh")]
+impl HttpStatusListResolver {
+    /// A resolver over a fresh HTTP client.
+    pub fn new() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+        }
+    }
+}
+
+#[cfg(feature = "webvh")]
+impl Default for HttpStatusListResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "webvh")]
+#[async_trait::async_trait]
+impl StatusListResolver for HttpStatusListResolver {
+    async fn resolve(&self, url: &str) -> Result<ResolvedStatusList, AppError> {
+        let body: serde_json::Value = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("status list fetch `{url}` failed: {e}")))?
+            .error_for_status()
+            .map_err(|e| AppError::Internal(format!("status list `{url}` returned an error: {e}")))?
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(format!("status list `{url}` is not JSON: {e}")))?;
+
+        let subject = body.get("credentialSubject").ok_or_else(|| {
+            AppError::Validation(format!("status list `{url}` has no credentialSubject"))
+        })?;
+        let encoded_list = subject
+            .get("encodedList")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::Validation(format!("status list `{url}` has no encodedList")))?
+            .to_string();
+        let purpose_str = subject
+            .get("statusPurpose")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                AppError::Validation(format!("status list `{url}` has no statusPurpose"))
+            })?;
+        let status_purpose = parse_purpose(purpose_str).ok_or_else(|| {
+            AppError::Validation(format!(
+                "status list `{url}` has unknown statusPurpose `{purpose_str}`"
+            ))
+        })?;
+        Ok(ResolvedStatusList {
+            encoded_list,
+            size: DEFAULT_BITSTRING_SIZE,
+            status_purpose,
+        })
+    }
+}
+
 /// Resolves a status-list-credential URL to its decoded-ready bitstring.
 ///
-/// Injected so tests provide a mock (no network) and production wires an
-/// HTTP-fetching, list-credential-verifying implementation. The single method
-/// is `async` so a real resolver can perform I/O.
+/// Injected so tests provide a mock (no network) and production wires the
+/// HTTP-fetching [`HttpStatusListResolver`]. The single method is `async` so a
+/// real resolver can perform I/O.
 #[async_trait::async_trait]
-pub trait StatusListResolver {
+pub trait StatusListResolver: Send + Sync {
     /// Fetch and return the status list referenced by `url`.
     ///
     /// Implementations should verify the status-list *credential's* own issuer

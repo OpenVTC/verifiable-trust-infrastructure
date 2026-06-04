@@ -1989,6 +1989,7 @@ pub async fn handle_credential_query(
             &body,
             &verifier_did,
             &policy,
+            app_state.status_list_resolver.as_deref(),
             chrono::Utc::now(),
         )
         .await

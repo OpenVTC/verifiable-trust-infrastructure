@@ -97,6 +97,7 @@ use super::storage;
 ///   outside its `valid_from`/`valid_until` window ([`AppError::Forbidden`]);
 /// - the credential is not an SD-JWT-VC, or its stored body is malformed
 ///   ([`AppError::Validation`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn present_sd_jwt_vc(
     vault: &KeyspaceHandle,
     credential_id: &str,
@@ -105,12 +106,21 @@ pub async fn present_sd_jwt_vc(
     nonce: &str,
     aud: &str,
     iat_unix: u64,
+    status_resolver: Option<&dyn super::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<String, AppError> {
     // Consent + subject-binding + authorization + status + temporal gate. Shared
     // with the Data-Integrity path ([`present_di_vc`]) — the single source of
     // truth for the security-critical disclosure gate.
-    let (cred, record) = gate_present(vault, credential_id, consent_record_id, aud, now).await?;
+    let (cred, record) = gate_present(
+        vault,
+        credential_id,
+        consent_record_id,
+        aud,
+        status_resolver,
+        now,
+    )
+    .await?;
 
     if cred.format != CredentialFormat::SdJwtVc {
         return Err(AppError::Validation(format!(
@@ -182,6 +192,7 @@ async fn gate_present(
     credential_id: &str,
     consent_record_id: &str,
     aud: &str,
+    status_resolver: Option<&dyn super::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<(super::model::StoredCredential, consent::ConsentRecord), AppError> {
     let cred = storage::get(vault, credential_id)
@@ -226,6 +237,32 @@ async fn gate_present(
         )));
     }
 
+    // Live status re-check (§14.5): when a resolver is configured, re-resolve the
+    // credential's status list **now** rather than trusting the stored tag — so a
+    // credential revoked since receive is refused at present time. `refresh_status`
+    // persists any change; re-read to gate on the live status.
+    //
+    // Resilient: a transient fetch failure (status-list host unreachable) falls
+    // back to the stored tag rather than blocking every presentation — fail-open
+    // on a fetch error, but fail-closed on a successfully-fetched `revoked` bit.
+    let cred = if let Some(resolver) = status_resolver {
+        match super::status::refresh_status(vault, credential_id, resolver).await {
+            Ok(_) => storage::get(vault, credential_id).await?.ok_or_else(|| {
+                AppError::NotFound(format!("credential `{credential_id}` not found"))
+            })?,
+            Err(e) => {
+                tracing::warn!(
+                    credential_id,
+                    error = %e,
+                    "live status re-check failed; falling back to the stored status"
+                );
+                cred
+            }
+        }
+    } else {
+        cred
+    };
+
     // Never present a revoked / temporally-invalid credential (§14.5).
     if cred.status != CredentialStatus::Valid {
         return Err(AppError::Forbidden(format!(
@@ -257,6 +294,7 @@ async fn gate_present(
 ///
 /// `holder_secret` is the holder's VTA-managed DI signing key. Returns the VP as
 /// a JSON string.
+#[allow(clippy::too_many_arguments)]
 pub async fn present_di_vc(
     vault: &KeyspaceHandle,
     credential_id: &str,
@@ -264,9 +302,18 @@ pub async fn present_di_vc(
     holder_secret: &Secret,
     nonce: &str,
     aud: &str,
+    status_resolver: Option<&dyn super::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<String, AppError> {
-    let (cred, record) = gate_present(vault, credential_id, consent_record_id, aud, now).await?;
+    let (cred, record) = gate_present(
+        vault,
+        credential_id,
+        consent_record_id,
+        aud,
+        status_resolver,
+        now,
+    )
+    .await?;
 
     if cred.format != CredentialFormat::EddsaJcs2022 {
         return Err(AppError::Validation(format!(
@@ -630,6 +677,7 @@ mod tests {
             nonce,
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -714,6 +762,7 @@ mod tests {
             nonce,
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -803,6 +852,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -865,6 +915,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -907,6 +958,7 @@ mod tests {
             "n",
             "did:web:acme-verifier.example",
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -968,6 +1020,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1026,6 +1079,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1083,6 +1137,7 @@ mod tests {
             "n",
             "did:web:evil-verifier.example", // mismatched aud
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1140,6 +1195,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1198,6 +1254,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1255,6 +1312,7 @@ mod tests {
             "the-right-nonce",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1312,6 +1370,7 @@ mod tests {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1361,6 +1420,121 @@ mod tests {
         storage::put(vault, &cred).await.expect("put DI VC");
     }
 
+    /// A held DI VC carrying a W3C `BitstringStatusListEntry` at `index`,
+    /// stored with the `Valid` tag (as if status hadn't been re-checked since
+    /// receive).
+    async fn di_put_with_status(vault: &KeyspaceHandle, id: &str, subject_did: &str, index: usize) {
+        let vc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": { "id": subject_did, "givenName": "Alice" },
+            "credentialStatus": {
+                "type": "BitstringStatusListEntry",
+                "statusPurpose": "revocation",
+                "statusListIndex": index.to_string(),
+                "statusListCredential": "https://issuer.example/status/1",
+            },
+        });
+        let cred = StoredCredential {
+            id: id.to_string(),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: None,
+            subject_did: Some(subject_did.to_string()),
+            issuer_did: Some("did:web:issuer.example".into()),
+            purpose: None,
+            status: CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&vc).unwrap(),
+        };
+        storage::put(vault, &cred).await.expect("put DI VC");
+    }
+
+    /// A live status resolver whose list marks `revoked` index as revoked.
+    struct RevokedAt(usize);
+
+    #[async_trait::async_trait]
+    impl super::super::status::StatusListResolver for RevokedAt {
+        async fn resolve(
+            &self,
+            _url: &str,
+        ) -> Result<super::super::status::ResolvedStatusList, AppError> {
+            use affinidi_status_list::{BitstringStatusList, StatusPurpose};
+            let mut list = BitstringStatusList::new(1024, StatusPurpose::Revocation);
+            list.set(self.0, true).unwrap();
+            Ok(super::super::status::ResolvedStatusList {
+                encoded_list: list.encode().unwrap(),
+                size: 1024,
+                status_purpose: StatusPurpose::Revocation,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_present_live_status_refuses_a_since_revoked_credential() {
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder_did, _kb, holder_secret, _vk) = holder(7);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        // Stored with the Valid tag, status index 5.
+        di_put_with_status(&vault, "di-rev", &holder_did, 5).await;
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "di-rev",
+                verifier,
+                vec!["givenName".into()],
+                now + chrono::Duration::hours(1),
+            ),
+            &holder_secret,
+        )
+        .await
+        .unwrap();
+
+        // No resolver → the stored tag (Valid) is trusted → the gate passes.
+        gate_present(&vault, "di-rev", &rec.identifier, verifier, None, now)
+            .await
+            .expect("stored-tag gate passes");
+
+        // Live resolver whose list does NOT revoke index 5 → the gate re-resolves
+        // and still passes.
+        gate_present(
+            &vault,
+            "di-rev",
+            &rec.identifier,
+            verifier,
+            Some(&RevokedAt(999)),
+            now,
+        )
+        .await
+        .expect("live gate passes when the list says valid");
+
+        // Live resolver whose list **revokes** index 5 → the gate re-resolves and
+        // refuses, even though the stored tag still said Valid.
+        let err = gate_present(
+            &vault,
+            "di-rev",
+            &rec.identifier,
+            verifier,
+            Some(&RevokedAt(5)),
+            now,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Forbidden(m) if m.contains("not valid")),
+            "{err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn present_di_vc_produces_a_verifiable_holder_bound_vp() {
         let (_dir, _store, vault) = fresh_vault();
@@ -1396,6 +1570,7 @@ mod tests {
             &holder_secret,
             "nonce-1",
             verifier,
+            None,
             now,
         )
         .await
@@ -1463,6 +1638,7 @@ mod tests {
             &holder_secret,
             "n",
             verifier,
+            None,
             now,
         )
         .await
@@ -1513,6 +1689,7 @@ mod tests {
             &holder_secret,
             "n",
             verifier,
+            None,
             now,
         )
         .await

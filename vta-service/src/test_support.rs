@@ -572,6 +572,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         did_resolver: DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
             .await
             .ok(),
+        status_list_resolver: None,
         secrets_resolver: None,
         #[cfg(feature = "didcomm")]
         signing_vm_id: None,

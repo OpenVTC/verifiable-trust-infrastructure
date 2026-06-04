@@ -268,6 +268,7 @@ async fn present_discloses_only_consented_claims_with_kb_jwt_end_to_end() {
         nonce,
         verifier,
         now.timestamp() as u64,
+        None,
         now,
     )
     .await
@@ -319,6 +320,7 @@ async fn present_refused_for_missing_withdrawn_and_expired_consent() {
         "n",
         verifier,
         now.timestamp() as u64,
+        None,
         now,
     )
     .await
@@ -351,6 +353,7 @@ async fn present_refused_for_missing_withdrawn_and_expired_consent() {
         "n",
         verifier,
         now.timestamp() as u64,
+        None,
         now,
     )
     .await
@@ -379,6 +382,7 @@ async fn present_refused_for_missing_withdrawn_and_expired_consent() {
         "n",
         verifier,
         now.timestamp() as u64,
+        None,
         now,
     )
     .await
@@ -451,6 +455,7 @@ async fn present_refused_for_revoked_or_temporally_invalid_credential() {
             "n",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await

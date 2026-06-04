@@ -644,6 +644,7 @@ async fn present_single(
     nonce: &str,
     verifier_aud: &str,
     iat_unix: u64,
+    status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<Value, AppError> {
     match &stored.format {
@@ -656,6 +657,7 @@ async fn present_single(
                 nonce,
                 verifier_aud,
                 iat_unix,
+                status_resolver,
                 now,
             )
             .await?;
@@ -671,6 +673,7 @@ async fn present_single(
                 holder_secret,
                 nonce,
                 verifier_aud,
+                status_resolver,
                 now,
             )
             .await?;
@@ -692,6 +695,7 @@ async fn present_single(
 /// When a credential query asked for `multiple` candidates and more than one
 /// satisfied it, that id maps to an **array** of presentations; otherwise to the
 /// single presentation value.
+#[allow(clippy::too_many_arguments)]
 async fn present_matched_set(
     vault: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
@@ -700,6 +704,7 @@ async fn present_matched_set(
     matches: &[HeldMatch],
     query: &QueryBody,
     verifier_did: &str,
+    status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentBody, AppError> {
     // Accumulate per credential-query id; collapse to a value (1) or array (>1).
@@ -750,6 +755,7 @@ async fn present_matched_set(
             &query.nonce,
             verifier_did,
             now.timestamp() as u64,
+            status_resolver,
             now,
         )
         .await?;
@@ -856,6 +862,7 @@ pub async fn present_query(
     query: &QueryBody,
     verifier_did: &str,
     policy: &ConsentPolicy,
+    status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentOutcome, AppError> {
     let matched = match_vault(vault, &query.dcql_query).await?;
@@ -882,6 +889,7 @@ pub async fn present_query(
         &matched,
         query,
         verifier_did,
+        status_resolver,
         now,
     )
     .await?;
@@ -1028,12 +1036,14 @@ pub async fn defer_presentation(
 ///
 /// Refuses a record that isn't `Pending` (already approved / denied) or whose
 /// deferral window has lapsed (`expires_at` past — the verifier's nonce is stale).
+#[allow(clippy::too_many_arguments)]
 pub async fn approve_pending_presentation(
     vault: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     id: &str,
+    status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentBody, AppError> {
     let mut record = pending::get(vault, id)
@@ -1069,6 +1079,7 @@ pub async fn approve_pending_presentation(
         &matched,
         &record.query,
         &record.verifier_did,
+        status_resolver,
         now,
     )
     .await?;
@@ -1648,6 +1659,7 @@ mod tests {
             "verifier-nonce-1",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1741,6 +1753,7 @@ mod tests {
             "verifier-nonce-di",
             verifier,
             now.timestamp() as u64,
+            None,
             now,
         )
         .await
@@ -1878,6 +1891,7 @@ mod tests {
             &query,
             verifier,
             &ConsentPolicy::trusting([verifier]),
+            None,
             now,
         )
         .await
@@ -1906,6 +1920,7 @@ mod tests {
             &query,
             "did:web:stranger.example",
             &ConsentPolicy::default(),
+            None,
             now,
         )
         .await
@@ -1992,6 +2007,7 @@ mod tests {
             &query,
             verifier,
             &ConsentPolicy::trusting([verifier]),
+            None,
             now,
         )
         .await
@@ -2242,6 +2258,7 @@ mod tests {
             &query,
             verifier,
             &ConsentPolicy::default(),
+            None,
             now,
         )
         .await
@@ -2269,7 +2286,7 @@ mod tests {
 
         // 2. Out-of-band approval mints consent + re-presents.
         let present =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", now)
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", None, now)
                 .await
                 .expect("approve");
         // vp_token is the OID4VP DCQL map keyed by credential-query id.
@@ -2287,7 +2304,7 @@ mod tests {
             pending::PendingStatus::Approved
         );
         let twice =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", now)
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", None, now)
                 .await
                 .unwrap_err();
         assert!(matches!(twice, AppError::Validation(_)), "{twice:?}");
@@ -2322,9 +2339,10 @@ mod tests {
             allowed_contexts: Vec::new(),
             ..Default::default()
         };
-        let err = approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-2", now)
-            .await
-            .unwrap_err();
+        let err =
+            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-2", None, now)
+                .await
+                .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 
@@ -2358,10 +2376,17 @@ mod tests {
             allowed_contexts: Vec::new(),
             ..Default::default()
         };
-        let err =
-            approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-3", Utc::now())
-                .await
-                .unwrap_err();
+        let err = approve_pending_presentation(
+            &vault,
+            &keys_ks,
+            &seed_store,
+            &auth,
+            "req-3",
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
     }
 }
