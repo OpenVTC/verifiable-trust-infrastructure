@@ -13,9 +13,10 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use vta_sdk::protocols::credential_exchange::PRESENT as CREDENTIAL_PRESENT_TYPE;
 use vta_sdk::protocols::credential_exchange::REQUEST as CREDENTIAL_REQUEST_TYPE;
 use vta_sdk::protocols::credential_exchange::{
-    ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, RequestBody,
+    ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody,
@@ -109,6 +110,12 @@ pub async fn run_didcomm_service(
             r.route(
                 CREDENTIAL_REQUEST_TYPE,
                 handler_fn(credential_request_handler),
+            )
+        })
+        .and_then(|r| {
+            r.route(
+                CREDENTIAL_PRESENT_TYPE,
+                handler_fn(credential_present_handler),
             )
         }) {
         Ok(r) => r,
@@ -309,6 +316,67 @@ async fn credential_request_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("issue serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(CREDENTIAL_ISSUE_TYPE, issue_body).thid(message.id),
+    ))
+}
+
+/// `credential-exchange/present/1.0` over DIDComm (close-the-join-loop, part 3).
+///
+/// The holder answers the VTC's DCQL query with an OID4VP `vp_token`. The present
+/// replies on the query's thread (`thid`); the VTC consumes the **single-use
+/// presentation challenge** keyed by that thread
+/// ([`crate::credentials::present_challenge`]) to recover the expected nonce +
+/// audience (freshness / replay), cryptographically verifies the `vp_token`, runs
+/// the join decision, and — on `allow` — admits the proven holder and issues the
+/// MembershipCredential. Replies with a join receipt (request id + status).
+///
+/// The DIDComm `from` (authcrypt sender) authenticates the *relayer*; the
+/// **holder kb-jwt** inside the `vp_token` authenticates the *holder* and binds
+/// the verifier's nonce + audience — so a relayer ≠ holder is safe (it cannot
+/// forge the kb-jwt), mirroring the request-handler onion.
+async fn credential_present_handler(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let body: PresentBody = serde_json::from_value(message.body.clone())
+        .map_err(|e| DIDCommServiceError::Internal(format!("malformed present body: {e}")))?;
+
+    // The present replies on the query's thread; the challenge is keyed by it.
+    let thread_id = message.thid.clone().ok_or_else(|| {
+        DIDCommServiceError::Internal(
+            "present carries no thread id (thid) to correlate its challenge".into(),
+        )
+    })?;
+
+    let now = chrono::Utc::now();
+    let challenge =
+        crate::credentials::present_challenge::consume(&state.join_requests_ks, &thread_id, now)
+            .await
+            .map_err(|e| DIDCommServiceError::Internal(format!("present challenge: {e}")))?;
+
+    let outcome = crate::routes::join_requests::present::present_and_decide_join(
+        &state,
+        &body.vp_token,
+        &challenge.aud,
+        &challenge.nonce,
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .map_err(|e| DIDCommServiceError::Internal(format!("present decision: {e}")))?;
+
+    let status = serde_json::to_value(outcome.request.status)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
+    let receipt = JoinRequestSubmitReceiptBody {
+        request_id: outcome.request.id,
+        status,
+    };
+    let receipt_body = serde_json::to_value(&receipt)
+        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, receipt_body).thid(message.id),
     ))
 }
 

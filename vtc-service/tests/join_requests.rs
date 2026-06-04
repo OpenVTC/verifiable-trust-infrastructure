@@ -1189,3 +1189,75 @@ async fn credential_exchange_present_rejects_a_wrong_nonce() {
         "a presentation bound to a different nonce must be refused"
     );
 }
+
+/// The wire freshness model end to end: the VTC issues a single-use challenge
+/// (nonce keyed by the query's thread), the holder presents bound to it, the
+/// `present` handler consumes the challenge and decides — and a replay on the
+/// same thread is refused (single-use). Exercises the same path the
+/// `credential-exchange/present` DIDComm handler drives.
+#[tokio::test]
+async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop() {
+    use vtc_service::credentials::present_challenge::{DEFAULT_CHALLENGE_TTL, consume, issue};
+    use vtc_service::join::{JoinStatus, JoinTransport};
+    use vtc_service::routes::join_requests::present::present_and_decide_join;
+
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
+    )
+    .await;
+
+    let now = chrono::Utc::now();
+    let thread = "query-thread-1";
+
+    // VTC issues the single-use challenge it sent with its DCQL query.
+    let nonce = issue(
+        &fix.state.join_requests_ks,
+        thread,
+        VTC_AUD,
+        DEFAULT_CHALLENGE_TTL,
+        now,
+    )
+    .await
+    .expect("issue challenge");
+
+    // Holder presents bound to (aud, nonce).
+    let (holder_did, vp_token) = build_membership_vp_token(0x45, VTC_AUD, &nonce, now.timestamp());
+
+    // Handler: consume the challenge (freshness/replay), then decide.
+    let challenge = consume(&fix.state.join_requests_ks, thread, now)
+        .await
+        .expect("consume challenge");
+    assert_eq!(challenge.nonce, nonce);
+    assert_eq!(challenge.aud, VTC_AUD);
+
+    let outcome = present_and_decide_join(
+        &fix.state,
+        &vp_token,
+        &challenge.aud,
+        &challenge.nonce,
+        JoinTransport::DIDComm,
+        now,
+    )
+    .await
+    .expect("present and decide");
+    assert_eq!(outcome.request.status, JoinStatus::Approved);
+    assert!(outcome.admit.is_some(), "VMC issued on allow");
+    assert!(
+        vtc_service::acl::get_acl_entry(&fix.acl_ks, &holder_did)
+            .await
+            .unwrap()
+            .is_some(),
+        "admitted holder has an ACL row"
+    );
+
+    // Replay: the challenge for this thread is gone — single-use.
+    assert!(
+        consume(&fix.state.join_requests_ks, thread, now)
+            .await
+            .is_err(),
+        "a replayed presentation finds no challenge"
+    );
+}
