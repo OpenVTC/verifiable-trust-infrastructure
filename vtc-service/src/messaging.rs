@@ -365,6 +365,26 @@ async fn credential_present_handler(
     .await
     .map_err(|e| DIDCommServiceError::Internal(format!("present decision: {e}")))?;
 
+    // On auto-admit, deliver the issued MembershipCredential (+ role VEC) to the
+    // proven holder's wallet over DIDComm — the holder only gets a receipt on the
+    // reply thread, so without this the credential it just earned would never
+    // reach it. Best-effort: the credential is already issued + persisted, so a
+    // delivery failure is logged (the holder/admin can re-fetch), not fatal.
+    if let Some(admit) = outcome.admit.as_deref() {
+        let holder_did = outcome.request.applicant_did.clone();
+        if let Err(e) = crate::routes::join_requests::present::deliver_membership_credentials(
+            &state,
+            &holder_did,
+            admit,
+        )
+        .await
+        {
+            warn!(holder = %holder_did, request = %outcome.request.id, error = %e, "membership-credential delivery failed; credential is issued and can be re-delivered");
+        } else {
+            info!(holder = %holder_did, request = %outcome.request.id, "delivered membership credentials to holder over DIDComm");
+        }
+    }
+
     let status = serde_json::to_value(outcome.request.status)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))

@@ -24,6 +24,7 @@
 use std::sync::Arc;
 
 use affinidi_messaging_didcomm::Message;
+use affinidi_openid4vci::issuer::create_credential_response;
 use affinidi_openid4vp::DcqlQuery;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use axum::Json;
@@ -33,12 +34,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 use uuid::Uuid;
-use vta_sdk::protocols::credential_exchange::{QUERY as CREDENTIAL_QUERY_TYPE, QueryBody};
+use vta_sdk::protocols::credential_exchange::{
+    ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, QUERY as CREDENTIAL_QUERY_TYPE, QueryBody,
+};
 
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
-use crate::ceremony::{Credential, CredentialStatus, Presentation};
+use crate::ceremony::{AdmitOutcome, Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use crate::join::JoinTransport;
@@ -234,6 +237,76 @@ async fn push_credential_query(
     thread_id: &str,
     query: &QueryBody,
 ) -> Result<(), AppError> {
+    let body = serde_json::to_value(query)
+        .map_err(|e| AppError::Internal(format!("query serialise: {e}")))?;
+    // The message id is the thread root; the holder replies with `thid = thread_id`.
+    push_to_holder(state, holder_did, thread_id, CREDENTIAL_QUERY_TYPE, body).await
+}
+
+/// Deliver the credentials a holder earned by joining — the MembershipCredential
+/// and role EndorsementCredential — into the holder's wallet over DIDComm.
+///
+/// On a DIDComm auto-admit the VTC issues the VMC + role VEC (the
+/// [`AdmitOutcome`]) and stores its own copy, but the holder, who only received
+/// a join receipt, never gets the credential it just earned. (The REST submit
+/// path returns them inline in the response; the DIDComm path has no inline
+/// channel.) Each credential is wrapped in a `credential-exchange/issue` message
+/// — the same one-way-deposit shape the holder's VTA receives via its
+/// `handle_credential_issue` handler — packed authcrypt **to the proven holder**
+/// (not the relayer) and forwarded via the holder's own mediator.
+///
+/// Best-effort by nature (mediator delivery is end-to-end): a failure is returned
+/// so the caller can log it, but it must not unwind the admit — the credential is
+/// already issued and persisted, and an admin can re-deliver.
+pub(crate) async fn deliver_membership_credentials(
+    state: &AppState,
+    holder_did: &str,
+    admit: &AdmitOutcome,
+) -> Result<(), AppError> {
+    for credential in [&admit.vmc, &admit.role_vec] {
+        let credential_json = serde_json::to_value(credential)
+            .map_err(|e| AppError::Internal(format!("issued credential serialise: {e}")))?;
+        let body = issue_message_body(credential_json)?;
+        // A fresh thread per delivered credential — `issue` is a one-way deposit,
+        // not a request/response, so it needs no correlation to a prior thread.
+        let msg_id = Uuid::new_v4().to_string();
+        push_to_holder(state, holder_did, &msg_id, CREDENTIAL_ISSUE_TYPE, body).await?;
+    }
+    Ok(())
+}
+
+/// Wrap an issued credential JSON value in a `credential-exchange/issue` body —
+/// the exact shape the holder's VTA extracts in its `handle_credential_issue` →
+/// `store_issued_credential` path (`credential_response.credential`, here a W3C
+/// Data-Integrity VC object). `sealed` is `None`: the holder is a proven,
+/// resolvable DID, so the message is authcrypt-encrypted to it rather than
+/// HPKE-sealed (sealing is the unknown-holder / invite case).
+fn issue_message_body(credential_json: JsonValue) -> Result<JsonValue, AppError> {
+    let issue = IssueBody {
+        credential_response: Some(create_credential_response(credential_json, None, None)),
+        sealed: None,
+    };
+    serde_json::to_value(&issue)
+        .map_err(|e| AppError::Internal(format!("issue body serialise: {e}")))
+}
+
+/// Pack `body` as a DIDComm message (`msg_id` / `msg_type`) authcrypt to
+/// `holder_did`, wrap it in a mediator forward, and send it.
+///
+/// The forward is addressed to the **holder's own mediator** (resolved from the
+/// holder's DID document) and sent through the **VTC's own mediator** — the
+/// mediator the VTC has a connection to. The VTC's mediator routes the forward
+/// onward to the holder's mediator, which delivers it. When the holder advertises
+/// no mediator, the VTC's own mediator is used as the forward target (the
+/// shared-mediator deployment). Shared by the query push and the issued-credential
+/// delivery.
+async fn push_to_holder(
+    state: &AppState,
+    holder_did: &str,
+    msg_id: &str,
+    msg_type: &str,
+    body: serde_json::Value,
+) -> Result<(), AppError> {
     let atm = state
         .atm
         .as_ref()
@@ -270,17 +343,10 @@ async fn push_credential_query(
         .await
         .map_err(|e| AppError::Internal(format!("mediator websocket failed: {e}")))?;
 
-    let body = serde_json::to_value(query)
-        .map_err(|e| AppError::Internal(format!("query serialise: {e}")))?;
-    // The message id is the thread root; the holder replies with `thid = thread_id`.
-    let msg = Message::build(
-        thread_id.to_string(),
-        CREDENTIAL_QUERY_TYPE.to_string(),
-        body,
-    )
-    .from(vtc_did.clone())
-    .to(holder_did.to_string())
-    .finalize();
+    let msg = Message::build(msg_id.to_string(), msg_type.to_string(), body)
+        .from(vtc_did.clone())
+        .to(holder_did.to_string())
+        .finalize();
 
     let (jwe, _meta) = atm
         .pack_encrypted(&msg, holder_did, Some(&vtc_did), None)
@@ -291,7 +357,7 @@ async fn push_credential_query(
         &profile,
         false,
         &jwe,
-        Some(thread_id),
+        Some(msg_id),
         &target_mediator,
         holder_did,
         None,
@@ -497,6 +563,37 @@ mod tests {
                 "did:webvh:stranger.example"
             )
             .await
+        );
+    }
+
+    #[test]
+    fn issue_message_body_matches_the_vta_receive_shape() {
+        // A W3C-DI MembershipCredential as the VTC issues it.
+        let vmc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:vtc.example",
+            "credentialSubject": { "id": "did:key:zHolder", "community": "acme" },
+            "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022" },
+        });
+
+        let body = issue_message_body(vmc.clone()).expect("wrap issue body");
+
+        // The holder's VTA parses exactly this with IssueBody, then reads
+        // `credential_response.credential` (a DI VC object) in store_issued_credential.
+        let issue: IssueBody = serde_json::from_value(body).expect("parse as IssueBody");
+        assert!(
+            issue.sealed.is_none(),
+            "a proven holder gets authcrypt, not a seal"
+        );
+        let credential = issue
+            .credential_response
+            .expect("credential_response present")
+            .credential
+            .expect("credential present");
+        assert_eq!(
+            credential, vmc,
+            "the delivered credential round-trips intact"
         );
     }
 
