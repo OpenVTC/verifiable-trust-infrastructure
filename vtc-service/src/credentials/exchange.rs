@@ -276,6 +276,9 @@ impl JwtVerifier for EdDsaJwtVerifier {
 pub struct VerifiedPresentation {
     /// The issuer DID (`iss`) whose signature verified.
     pub issuer_did: String,
+    /// The proven holder DID — the `did:key` of the `cnf.jwk` key whose kb-jwt
+    /// signature verified against `expected_aud` + `expected_nonce`.
+    pub holder_did: String,
     /// The credential type (`vct`), if present.
     pub vct: Option<String>,
     /// The disclosed claims (issuer-protected claims + the revealed subset).
@@ -331,9 +334,10 @@ pub fn verify_presentation(
         .ok_or_else(|| {
             AppError::Validation("presentation has no `cnf.jwk` (holder binding)".into())
         })?;
-    let holder_verifier = EdDsaJwtVerifier {
-        key: ed25519_from_okp_jwk(cnf_jwk)?,
-    };
+    let holder_key = ed25519_from_okp_jwk(cnf_jwk)?;
+    // The proven holder DID is the did:key of the cnf binding key.
+    let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&holder_key.to_bytes());
+    let holder_verifier = EdDsaJwtVerifier { key: holder_key };
 
     let options = VerificationOptions {
         verify_kb: true,
@@ -363,8 +367,104 @@ pub fn verify_presentation(
         .map(str::to_string);
     Ok(VerifiedPresentation {
         issuer_did,
+        holder_did,
         vct,
         claims: result.claims,
+    })
+}
+
+/// A cryptographically-verified set of presentations — the verified projection
+/// of an OID4VP DCQL `vp_token`.
+///
+/// Typestate: only constructable via [`verify_vp_token`], so any code that takes
+/// a `VerifiedPresentationSet` is guaranteed every presentation's issuer
+/// signature, holder binding, and freshness checked out, **and** that every
+/// presentation is bound to the same holder.
+#[derive(Debug, Clone)]
+pub struct VerifiedPresentationSet {
+    /// The single proven holder DID — every presentation in the set is bound to
+    /// it (a multi-credential `vp_token` whose entries disagree on the holder is
+    /// refused; a join is one applicant).
+    pub holder: String,
+    /// Each verified presentation, in DCQL `credential_query_id` order.
+    pub presentations: Vec<VerifiedPresentation>,
+}
+
+/// Verify an OID4VP DCQL `vp_token` — the map the VTA holder produces, keyed by
+/// DCQL `credential_query_id`. Each entry is verified against `expected_aud` +
+/// `expected_nonce`; every entry must bind the **same holder** (a join is one
+/// applicant). Returns the verified set.
+///
+/// Accepts three shapes for forward/backward compatibility:
+/// - a JSON **object** (the canonical DCQL `vp_token`): each value is one
+///   presentation, or an **array** of presentations under one query id;
+/// - a bare **string** (a single SD-JWT-VC presentation — the pre-map form).
+///
+/// **SD-JWT-VC** entries (compact strings) are fully verified. A **W3C
+/// Data-Integrity VP** entry (a JSON object) needs holder-proof verification — a
+/// follow-up slice; it is refused here with a clear error.
+pub fn verify_vp_token(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentationSet, AppError> {
+    // Flatten the vp_token into the individual presentation values to verify.
+    let entries: Vec<&Value> = match vp_token {
+        Value::String(_) => vec![vp_token],
+        Value::Object(map) => {
+            if map.is_empty() {
+                return Err(AppError::Validation(
+                    "vp_token is an empty object (no presentations)".into(),
+                ));
+            }
+            let mut out = Vec::new();
+            for value in map.values() {
+                match value {
+                    Value::Array(items) => out.extend(items.iter()),
+                    other => out.push(other),
+                }
+            }
+            out
+        }
+        _ => {
+            return Err(AppError::Validation(
+                "vp_token must be a DCQL object or a compact SD-JWT-VC string".into(),
+            ));
+        }
+    };
+
+    let mut presentations = Vec::with_capacity(entries.len());
+    let mut holder: Option<String> = None;
+    for entry in entries {
+        if entry.is_object() {
+            return Err(AppError::Validation(
+                "a W3C Data-Integrity VP entry in the vp_token is not yet verifiable here \
+                 (SD-JWT-VC presentations are wired; DI-VP verification is a follow-up slice)"
+                    .into(),
+            ));
+        }
+        let verified = verify_presentation(entry, expected_aud, expected_nonce, now)?;
+        match &holder {
+            None => holder = Some(verified.holder_did.clone()),
+            Some(h) if h != &verified.holder_did => {
+                return Err(AppError::Validation(format!(
+                    "vp_token presentations disagree on the holder (`{h}` vs \
+                     `{}`) — a single presentation must bind one holder",
+                    verified.holder_did
+                )));
+            }
+            Some(_) => {}
+        }
+        presentations.push(verified);
+    }
+
+    let holder = holder.ok_or_else(|| {
+        AppError::Validation("vp_token carried no presentations to verify".into())
+    })?;
+    Ok(VerifiedPresentationSet {
+        holder,
+        presentations,
     })
 }
 
@@ -979,6 +1079,159 @@ mod tests {
         )
         .unwrap();
         (issuer_did, json!(presentation.serialize()))
+    }
+
+    /// Like [`make_presentation`] but parameterized on the holder seed + `vct`,
+    /// returning the holder DID too. Lets a test build a multi-credential
+    /// `vp_token` and exercise the holder-consistency check.
+    fn make_presentation_holder(
+        holder_seed: u8,
+        vct: &str,
+        aud: &str,
+        nonce: &str,
+        iat: u64,
+        exp: i64,
+    ) -> (String, String, Value) {
+        use affinidi_sd_jwt::holder::{KbJwtInput, present, select_disclosures};
+
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = SdSigner {
+            key: SigningKey::from_bytes(&[9u8; 32]),
+            kid: format!("{issuer_did}#key-0"),
+        };
+
+        let holder = SigningKey::from_bytes(&[holder_seed; 32]);
+        let holder_vk = holder.verifying_key();
+        let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(holder_vk.as_bytes());
+        let holder_signer = SdSigner {
+            key: SigningKey::from_bytes(&[holder_seed; 32]),
+            kid: format!(
+                "{holder_did}#{}",
+                holder_did.strip_prefix("did:key:").unwrap()
+            ),
+        };
+
+        let claims = json!({
+            "iss": issuer_did, "sub": holder_did, "vct": vct,
+            "iat": iat, "exp": exp, "givenName": "Alice"
+        });
+        let frame = json!({ "_sd": ["givenName"] });
+        let hasher = Sha256Hasher;
+        let holder_jwk = okp_jwk(&holder_vk);
+        let sd = affinidi_sd_jwt::issuer::issue(
+            &claims,
+            &frame,
+            &issuer_signer,
+            &hasher,
+            Some(&holder_jwk),
+        )
+        .unwrap();
+        let selected = select_disclosures(&sd, &["givenName"]);
+        let kb = KbJwtInput {
+            audience: aud,
+            nonce,
+            signer: &holder_signer,
+            iat,
+        };
+        let presentation = present(&sd, &selected, Some(&kb), &hasher).unwrap();
+        (issuer_did, holder_did, json!(presentation.serialize()))
+    }
+
+    #[test]
+    fn verify_vp_token_verifies_a_dcql_map() {
+        let aud = "did:web:vtc.example";
+        let nonce = "verifier-nonce-multi";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+
+        // Two presentations from the SAME holder under different query ids.
+        let (_i1, holder_did, vp_membership) =
+            make_presentation_holder(5, MEMBERSHIP_VCT, aud, nonce, iat, exp);
+        let (_i2, _h2, vp_invitation) = make_presentation_holder(
+            5,
+            "https://openvtc.org/credentials/InvitationCredential",
+            aud,
+            nonce,
+            iat,
+            exp,
+        );
+        let vp_token = json!({ "membership": vp_membership, "invitation": vp_invitation });
+
+        let set = verify_vp_token(&vp_token, aud, nonce, now).expect("verify map");
+        assert_eq!(set.holder, holder_did);
+        assert_eq!(set.presentations.len(), 2);
+        assert_eq!(set.presentations[0].claims["givenName"], "Alice");
+    }
+
+    #[test]
+    fn verify_vp_token_accepts_a_bare_string() {
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_did, vp) = make_presentation(aud, nonce, iat, exp, true);
+
+        let set = verify_vp_token(&vp, aud, nonce, now).expect("verify bare string");
+        assert_eq!(set.presentations.len(), 1);
+    }
+
+    #[test]
+    fn verify_vp_token_rejects_mixed_holders() {
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+
+        // Two presentations from DIFFERENT holders (seeds 5 and 6).
+        let (_i1, _h1, vp_a) = make_presentation_holder(5, MEMBERSHIP_VCT, aud, nonce, iat, exp);
+        let (_i2, _h2, vp_b) = make_presentation_holder(6, MEMBERSHIP_VCT, aud, nonce, iat, exp);
+        let vp_token = json!({ "a": vp_a, "b": vp_b });
+
+        let err = verify_vp_token(&vp_token, aud, nonce, now).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("disagree on the holder")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_vp_token_defers_a_di_vp_object() {
+        let now = Utc::now();
+        // A DI VP is a JSON object (not a compact string) — refused for now.
+        let vp_token = json!({ "membership": { "type": ["VerifiablePresentation"], "proof": {} } });
+        let err = verify_vp_token(&vp_token, "did:web:vtc.example", "n", now).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("Data-Integrity VP")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_vp_token_rejects_an_empty_object() {
+        let now = Utc::now();
+        let err = verify_vp_token(&json!({}), "did:web:vtc.example", "n", now).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("empty object")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_vp_token_propagates_a_wrong_nonce() {
+        let aud = "did:web:vtc.example";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_i, _h, vp) = make_presentation_holder(5, MEMBERSHIP_VCT, aud, "right", iat, exp);
+        let vp_token = json!({ "membership": vp });
+
+        // A presentation bound to a different nonce than the verifier expects.
+        assert!(verify_vp_token(&vp_token, aud, "wrong", now).is_err());
     }
 
     #[test]
