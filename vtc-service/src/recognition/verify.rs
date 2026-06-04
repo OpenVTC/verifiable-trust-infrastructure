@@ -222,8 +222,8 @@ pub async fn verify_foreign_vec(
     // revocation surface" (the credential never opted into
     // BitstringStatusList). A *present* status block whose
     // bit is set rejects the credential.
-    check_status_list(vec, status_fetcher, "VEC").await?;
-    check_status_list(vmc, status_fetcher, "VMC").await?;
+    check_status_list(vec, status_fetcher, &issuer, "VEC").await?;
+    check_status_list(vmc, status_fetcher, &issuer, "VMC").await?;
 
     // Step 3: registry recognition. The most operator-visible
     // failure mode — fails when the operator hasn't added the
@@ -287,6 +287,7 @@ async fn verify_proof(
 async fn check_status_list(
     vc: &VerifiableCredential,
     fetcher: &dyn StatusListFetcher,
+    expected_issuer: &str,
     label: &str,
 ) -> Result<(), RecognitionError> {
     let Some(status) = vc.credential_status.as_ref() else {
@@ -307,11 +308,12 @@ async fn check_status_list(
     let index: usize = index_str.parse().map_err(|e| {
         RecognitionError::Malformed(format!("{label} statusListIndex {index_str}: {e}"))
     })?;
-    // Recognition uses a non-verifying fetcher today (see
-    // `HttpStatusListFetcher::new`); `None` documents that the list's own
-    // signature is not yet bound here. Hardening this path is a deliberate
-    // follow-up (foreign communities must first all sign their lists).
-    let bit_set = fetcher.check_status_bit(url, index, None).await?;
+    // The status list MUST be signed by the foreign issuer (the same issuer that
+    // signed the VEC/VMC). The production fetcher verifies this; a substituted or
+    // forged list is rejected before the bit is read.
+    let bit_set = fetcher
+        .check_status_bit(url, index, Some(expected_issuer))
+        .await?;
     if bit_set {
         return Err(RecognitionError::StatusListFailed(format!(
             "{label} status bit at {index} is set (revoked/suspended)"

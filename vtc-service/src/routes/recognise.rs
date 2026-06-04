@@ -37,8 +37,8 @@ use crate::policy::{
     get_policy,
 };
 use crate::recognition::{
-    DidResolverKeyResolver, HttpStatusListFetcher, RecognitionError, VerifiedForeignCredential,
-    verify_foreign_vec,
+    DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, RecognitionError,
+    VerifiedForeignCredential, verify_foreign_vec,
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
@@ -99,8 +99,15 @@ pub async fn recognise(
         .as_ref()
         .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
 
-    let key_resolver = DidResolverKeyResolver::new(resolver);
-    let status_fetcher = HttpStatusListFetcher::new(reqwest::Client::new());
+    let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
+        Arc::new(DidResolverKeyResolver::new(resolver));
+    // Verify the foreign status list's own issuer signature (bound to the
+    // VEC/VMC issuer) before trusting it — the same key resolver the proof check
+    // uses.
+    let status_fetcher = HttpStatusListFetcher::with_issuer_verification(
+        reqwest::Client::new(),
+        key_resolver.clone(),
+    );
 
     let actor_did_for_audit = req.vec.credential_subject_id_for_audit();
 
@@ -109,7 +116,7 @@ pub async fn recognise(
     let verified = match verify_foreign_vec(
         &req.vec,
         &req.vmc,
-        &key_resolver,
+        key_resolver.as_ref(),
         &status_fetcher,
         Arc::clone(&registry),
         Utc::now(),
