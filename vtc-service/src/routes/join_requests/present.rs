@@ -21,14 +21,19 @@
 //! [`send_query`]): the VTC issues the challenge and builds the DCQL query (from
 //! a registered Accepts criterion) the holder answers.
 
+use std::sync::Arc;
+
+use affinidi_messaging_didcomm::Message;
 use affinidi_openid4vp::DcqlQuery;
+use affinidi_tdk::messaging::profiles::ATMProfile;
 use axum::Json;
 use axum::extract::State;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use tracing::{info, warn};
 use uuid::Uuid;
-use vta_sdk::protocols::credential_exchange::QueryBody;
+use vta_sdk::protocols::credential_exchange::{QUERY as CREDENTIAL_QUERY_TYPE, QueryBody};
 
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
@@ -167,14 +172,19 @@ pub struct SendQueryResponse {
     pub holder_did: String,
     /// The `credential-exchange/query` body to deliver to the holder.
     pub query: QueryBody,
+    /// Whether the VTC pushed the query to the holder over DIDComm. `false` when
+    /// no mediator is configured or the push failed — the caller can still relay
+    /// the returned [`query`](Self::query) out-of-band (relayer ≠ holder).
+    pub delivered: bool,
 }
 
 /// `POST /v1/join-requests/query` (admin) — prepare a `credential-exchange/query`
 /// for `holderDid` from the Accepts criterion `criterionId`: issue the single-use
-/// challenge and return the [`QueryBody`] to deliver. The VTC relays it over
-/// DIDComm (or an out-of-band relayer delivers it — relayer ≠ holder is
-/// supported); the holder presents on the returned `threadId`, and the
-/// `credential-exchange/present` handler consumes the challenge.
+/// challenge, **push the query to the holder over DIDComm** when a mediator is
+/// configured, and return the [`QueryBody`] (so a relayer can deliver it when the
+/// push is unavailable — relayer ≠ holder is supported). The holder presents on
+/// the returned `threadId`, and the `credential-exchange/present` handler
+/// consumes the challenge.
 pub async fn send_query(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -182,11 +192,103 @@ pub async fn send_query(
 ) -> Result<Json<SendQueryResponse>, AppError> {
     let thread_id = Uuid::new_v4().to_string();
     let query = prepare_join_query(&state, &thread_id, &body.criterion_id, Utc::now()).await?;
+
+    // Best-effort DIDComm push. A failure (no mediator, unreachable holder) is not
+    // fatal — the query is still returned for relay delivery.
+    let delivered = match push_credential_query(&state, &body.holder_did, &thread_id, &query).await
+    {
+        Ok(()) => {
+            info!(holder = %body.holder_did, thread = %thread_id, "pushed credential query over DIDComm");
+            true
+        }
+        Err(e) => {
+            warn!(holder = %body.holder_did, thread = %thread_id, error = %e, "credential-query push failed — returning query for relay");
+            false
+        }
+    };
+
     Ok(Json(SendQueryResponse {
         thread_id,
         holder_did: body.holder_did,
         query,
+        delivered,
     }))
+}
+
+/// Push a `credential-exchange/query` to `holder_did` over DIDComm: pack it
+/// authcrypt to the holder, wrap it in a mediator forward, and send. The query
+/// message id **is** `thread_id` (the thread root), so the holder's `present`
+/// reply threads back to the single-use challenge the VTC just issued.
+///
+/// Uses the shared mediator (`config.messaging.mediator_did`) as the forward
+/// target — the common deployment where the VTC and holder share a mediator.
+/// Resolving the holder's own mediator from its DID document is a follow-up.
+async fn push_credential_query(
+    state: &AppState,
+    holder_did: &str,
+    thread_id: &str,
+    query: &QueryBody,
+) -> Result<(), AppError> {
+    let atm = state
+        .atm
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("messaging (ATM) not configured".into()))?;
+
+    let (vtc_did, mediator_did) = {
+        let config = state.config.read().await;
+        let vtc_did = config
+            .vtc_did
+            .clone()
+            .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
+        let mediator_did = config
+            .messaging
+            .as_ref()
+            .map(|m| m.mediator_did.clone())
+            .ok_or_else(|| AppError::Internal("no mediator configured for messaging".into()))?;
+        (vtc_did, mediator_did)
+    };
+
+    let profile = Arc::new(
+        ATMProfile::new(atm, None, vtc_did.clone(), Some(mediator_did.clone()))
+            .await
+            .map_err(|e| AppError::Internal(format!("ATM profile setup failed: {e}")))?,
+    );
+    atm.profile_enable_websocket(&profile)
+        .await
+        .map_err(|e| AppError::Internal(format!("mediator websocket failed: {e}")))?;
+
+    let body = serde_json::to_value(query)
+        .map_err(|e| AppError::Internal(format!("query serialise: {e}")))?;
+    // The message id is the thread root; the holder replies with `thid = thread_id`.
+    let msg = Message::build(
+        thread_id.to_string(),
+        CREDENTIAL_QUERY_TYPE.to_string(),
+        body,
+    )
+    .from(vtc_did.clone())
+    .to(holder_did.to_string())
+    .finalize();
+
+    let (jwe, _meta) = atm
+        .pack_encrypted(&msg, holder_did, Some(&vtc_did), None)
+        .await
+        .map_err(|e| AppError::Internal(format!("pack_encrypted failed: {e}")))?;
+
+    atm.forward_and_send_message(
+        &profile,
+        false,
+        &jwe,
+        Some(thread_id),
+        &mediator_did,
+        holder_did,
+        None,
+        None,
+        false,
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("mediator forward failed: {e}")))?;
+
+    Ok(())
 }
 
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony

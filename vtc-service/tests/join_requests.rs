@@ -1313,6 +1313,9 @@ async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
         body["query"]["purpose"],
         "present a MembershipCredential to join"
     );
+    // No mediator is configured in the fixture, so the DIDComm push is skipped —
+    // the query is returned for relay delivery.
+    assert_eq!(body["delivered"], false, "no mediator → not pushed: {body}");
 
     // The single-use challenge is consumable on that thread, bound to the VTC DID.
     let challenge = consume(&fix.state.join_requests_ks, &thread_id, chrono::Utc::now())
