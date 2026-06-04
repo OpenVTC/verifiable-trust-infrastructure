@@ -142,6 +142,75 @@ pub async fn receive_bbs(
     Ok(cred)
 }
 
+/// Build a consent-gated, **selectively-disclosed** BBS (`bbs-2023`)
+/// presentation of a stored credential — the holder's side of selective
+/// disclosure.
+///
+/// Gating is the shared [`super::present::gate_present`] (subject binding,
+/// per-credential consent, live status, temporal — same as the SD-JWT / DI
+/// paths). Unlike the eddsa-jcs path (which is whole-credential), BBS discloses
+/// **exactly** the consent record's reveal set (`dpv:hasPersonalData`) as
+/// `credentialSubject` claims, plus the issuer's mandatory claims — it redacts
+/// everything else, so there's no over-disclosure.
+///
+/// `issuer_pub` is the caller-resolved 96-byte G2 key (deriving a proof needs
+/// the issuer key); `nonce` is the verifier's presentation challenge (bound into
+/// the proof for freshness). Returns the derived VC as a JSON string.
+#[allow(clippy::too_many_arguments)]
+pub async fn present_bbs(
+    vault: &KeyspaceHandle,
+    credential_id: &str,
+    consent_record_id: &str,
+    issuer_pub: &[u8],
+    nonce: &str,
+    aud: &str,
+    status_resolver: Option<&dyn super::status::StatusListResolver>,
+    now: DateTime<Utc>,
+) -> Result<String, AppError> {
+    let (cred, record) = super::present::gate_present(
+        vault,
+        credential_id,
+        consent_record_id,
+        aud,
+        status_resolver,
+        now,
+    )
+    .await?;
+
+    if cred.format != CredentialFormat::Bbs2023 {
+        return Err(AppError::Validation(format!(
+            "credential `{credential_id}` is not a bbs-2023 credential (format {:?}); \
+             cannot present via present_bbs",
+            cred.format
+        )));
+    }
+    let pk = g2_public_key(issuer_pub)?;
+    let vc: Value = serde_json::from_slice(&cred.body)
+        .map_err(|e| AppError::Validation(format!("stored BBS VC body is not JSON: {e}")))?;
+
+    // Disclose EXACTLY the consented claims (the reveal set) as `credentialSubject`
+    // pointers; BBS redacts the rest, so the gate's claim-scope check is enforced
+    // cryptographically rather than by a whole-credential guard.
+    let selective: Vec<String> = record
+        .process
+        .personal_data
+        .iter()
+        .map(|name| format!("/credentialSubject/{}", rfc6901_escape(name)))
+        .collect();
+    let selective_refs: Vec<&str> = selective.iter().map(String::as_str).collect();
+
+    let derived = bbs_2023::derive_vc(&vc, &selective_refs, nonce.as_bytes(), &pk)
+        .map_err(|e| AppError::Validation(format!("BBS selective disclosure failed: {e}")))?;
+    serde_json::to_string(&derived)
+        .map_err(|e| AppError::Internal(format!("serialise BBS presentation: {e}")))
+}
+
+/// RFC 6901 token escaping (`~` -> `~0`, `/` -> `~1`) for a claim name embedded
+/// in a JSON pointer.
+fn rfc6901_escape(token: &str) -> String {
+    token.replace('~', "~0").replace('/', "~1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -187,7 +187,7 @@ pub async fn present_sd_jwt_vc(
 /// unexpired, §13), the **`Valid`** status (§14.5), and **temporal** validity.
 /// Returns the credential + record; the caller builds the format-specific,
 /// consent-scoped presentation.
-async fn gate_present(
+pub(super) async fn gate_present(
     vault: &KeyspaceHandle,
     credential_id: &str,
     consent_record_id: &str,
@@ -622,6 +622,100 @@ mod tests {
         assert!(result.is_verified(), "kb-jwt must verify");
         assert_eq!(result.kb_verified, Some(true));
         result.claims
+    }
+
+    // ---- BBS+ selective disclosure (feature `bbs`) ----------------------
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn present_bbs_discloses_only_consented_claims() {
+        use crate::vault::bbs::{present_bbs, receive_bbs};
+        use affinidi_bbs as bbs;
+        use affinidi_data_integrity::bbs_2023::{sign_vc_base, verify_vc_derived};
+
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder_did, _kb, consent_key, _vk) = holder(7);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        // Issuer signs a BBS base-proof VC bound to the holder as subject.
+        let sk = bbs::keygen(b"present-bbs-issuer-key-material!!", b"").unwrap();
+        let pk = bbs::sk_to_pk(&sk);
+        let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": {
+                "id": holder_did,
+                "givenName": "Alice",
+                "memberSince": "2020",
+                "dateOfBirth": "1990-01-01"
+            }
+        });
+        let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
+        let signed = sign_vc_base(
+            &vc,
+            &mandatory,
+            &format!("{issuer_did}#bbs-key-0"),
+            &sk,
+            &pk,
+        )
+        .unwrap();
+        let body = serde_json::to_vec(&signed).unwrap();
+        receive_bbs(&vault, "bbs-cred", &body, &pk.to_bytes(), None, now)
+            .await
+            .expect("receive BBS base proof");
+
+        // Consent to disclose ONLY givenName + memberSince (NOT dateOfBirth).
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "bbs-cred",
+                verifier,
+                vec!["givenName".into(), "memberSince".into()],
+                now + Duration::hours(1),
+            ),
+            &consent_key,
+        )
+        .await
+        .unwrap();
+
+        let nonce = "verifier-nonce-bbs";
+        let pres = present_bbs(
+            &vault,
+            "bbs-cred",
+            &rec.identifier,
+            &pk.to_bytes(),
+            nonce,
+            verifier,
+            None,
+            now,
+        )
+        .await
+        .expect("present BBS");
+
+        let derived: Value = serde_json::from_str(&pres).unwrap();
+        let cs = &derived["credentialSubject"];
+        assert_eq!(cs["givenName"], "Alice");
+        assert_eq!(cs["memberSince"], "2020");
+        assert!(
+            cs.get("dateOfBirth").is_none(),
+            "dateOfBirth was not consented and MUST be redacted by BBS"
+        );
+        assert_eq!(
+            cs["id"],
+            holder_did.as_str(),
+            "mandatory subject id disclosed"
+        );
+
+        // The derived proof verifies against the issuer key + the verifier nonce.
+        assert!(
+            verify_vc_derived(&derived, nonce.as_bytes(), &pk).unwrap(),
+            "BBS derived presentation must verify"
+        );
     }
 
     // ---- ACCEPTANCE: happy path -----------------------------------------
