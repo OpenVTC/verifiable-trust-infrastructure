@@ -300,8 +300,8 @@ pub async fn build_app_state(
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: Arc::new(RwLock::new(config)),
         seed_store,
-        did_resolver: auth.did_resolver,
-        status_list_resolver: crate::vault::status::default_status_resolver(),
+        did_resolver: auth.did_resolver.clone(),
+        status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
         secrets_resolver: auth.secrets_resolver,
         #[cfg(feature = "didcomm")]
         signing_vm_id: auth.signing_vm_id,
@@ -619,8 +619,8 @@ pub async fn run(
             wrapping_cache,
             config: Arc::new(RwLock::new(config.clone())),
             seed_store: seed_store.clone(),
-            did_resolver: auth.did_resolver,
-            status_list_resolver: crate::vault::status::default_status_resolver(),
+            did_resolver: auth.did_resolver.clone(),
+            status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
             secrets_resolver: auth.secrets_resolver.clone(),
             #[cfg(feature = "didcomm")]
             signing_vm_id: auth.signing_vm_id.clone(),

@@ -1464,6 +1464,7 @@ mod tests {
         async fn resolve(
             &self,
             _url: &str,
+            _expected_issuer: Option<&str>,
         ) -> Result<super::super::status::ResolvedStatusList, AppError> {
             use affinidi_status_list::{BitstringStatusList, StatusPurpose};
             let mut list = BitstringStatusList::new(1024, StatusPurpose::Revocation);

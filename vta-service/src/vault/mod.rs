@@ -50,6 +50,7 @@
 //! never "return the whole set").
 
 pub mod consent;
+pub mod di_verify;
 pub mod index;
 pub mod mint;
 pub mod model;

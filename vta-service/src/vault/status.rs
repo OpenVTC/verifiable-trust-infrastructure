@@ -51,10 +51,13 @@
 //!   [`CredentialStatus::Valid`]. A `revocation`-purpose set bit is terminal:
 //!   once revoked, a subsequent clear read does **not** un-revoke it.
 
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde::{Deserialize, Serialize};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
+#[cfg(feature = "webvh")]
+use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions, crypto_suites::CryptoSuite};
 #[cfg(feature = "webvh")]
 use affinidi_status_list::DEFAULT_BITSTRING_SIZE;
 use affinidi_status_list::{BitstringStatusList, StatusPurpose};
@@ -103,53 +106,71 @@ pub struct ResolvedStatusList {
 /// The default live status resolver wired into a running VTA: an HTTP resolver
 /// when the `webvh` feature (which pulls in `reqwest`) is built, else `None` —
 /// in which case the present path falls back to the stored status tag.
-pub fn default_status_resolver() -> Option<std::sync::Arc<dyn StatusListResolver>> {
+///
+/// `did_resolver` resolves the status-list credential's issuer key for the
+/// signature check (`did:webvh` / `did:web` issuers; `did:key` resolves
+/// locally). It is unused in the non-`webvh` build.
+pub fn default_status_resolver(
+    did_resolver: Option<DIDCacheClient>,
+) -> Option<std::sync::Arc<dyn StatusListResolver>> {
     #[cfg(feature = "webvh")]
     {
-        Some(std::sync::Arc::new(HttpStatusListResolver::new()))
+        Some(std::sync::Arc::new(HttpStatusListResolver::new(
+            did_resolver,
+        )))
     }
     #[cfg(not(feature = "webvh"))]
     {
+        let _ = did_resolver;
         None
     }
 }
 
 /// Production [`StatusListResolver`]: HTTP-fetches the `BitstringStatusListCredential`
-/// an issuer (e.g. the VTC) publishes at the entry URL and decodes its
-/// `credentialSubject` (`encodedList` + `statusPurpose`), using the standard list
-/// size ([`DEFAULT_BITSTRING_SIZE`], the W3C minimum the issuers allocate).
+/// an issuer (e.g. the VTC) publishes at the entry URL, **verifies its issuer
+/// Data-Integrity signature**, and decodes its `credentialSubject`
+/// (`encodedList` + `statusPurpose`), using the standard list size
+/// ([`DEFAULT_BITSTRING_SIZE`], the W3C minimum the issuers allocate).
 ///
-/// NOTE (hardening follow-up): this does **not** yet verify the status-list
-/// credential's own issuer signature — a holder should ideally verify it before
-/// trusting the list (needs issuer-key resolution). The present gate falls back
-/// to the stored tag on any resolver error, so an outage does not block
-/// presentation.
+/// Signature verification (eddsa-jcs-2022) is mandatory: the proof's
+/// `verificationMethod` is bound to the list credential's own `issuer`, and —
+/// when an `expected_issuer` is supplied — that `issuer` is bound to the issuer
+/// of the credential whose status is being checked. This closes the
+/// fail-open hole where anyone able to serve the status-list URL could forge a
+/// (terminal) revocation of a valid credential, or hide a real one. A resolver
+/// error (fetch failure, bad signature, issuer mismatch) leaves the present gate
+/// to fall back to the stored tag, so an outage does not block presentation but a
+/// *forged* list is rejected rather than trusted.
 #[cfg(feature = "webvh")]
 pub struct HttpStatusListResolver {
     http: reqwest::Client,
+    /// Resolves the status-list credential's issuer key (`did:webvh` / `did:web`
+    /// via the cache; `did:key` is resolved locally without it). `None` is
+    /// tolerated for `did:key`-issued lists only — a `did:webvh` list then fails
+    /// closed (resolver error → stored-tag fallback).
+    did_resolver: Option<DIDCacheClient>,
 }
 
 #[cfg(feature = "webvh")]
 impl HttpStatusListResolver {
-    /// A resolver over a fresh HTTP client.
-    pub fn new() -> Self {
+    /// A resolver over a fresh HTTP client, using `did_resolver` for issuer-key
+    /// resolution of the status-list credential's signature.
+    pub fn new(did_resolver: Option<DIDCacheClient>) -> Self {
         Self {
             http: reqwest::Client::new(),
+            did_resolver,
         }
-    }
-}
-
-#[cfg(feature = "webvh")]
-impl Default for HttpStatusListResolver {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[cfg(feature = "webvh")]
 #[async_trait::async_trait]
 impl StatusListResolver for HttpStatusListResolver {
-    async fn resolve(&self, url: &str) -> Result<ResolvedStatusList, AppError> {
+    async fn resolve(
+        &self,
+        url: &str,
+        expected_issuer: Option<&str>,
+    ) -> Result<ResolvedStatusList, AppError> {
         let body: serde_json::Value = self
             .http
             .get(url)
@@ -161,6 +182,12 @@ impl StatusListResolver for HttpStatusListResolver {
             .json()
             .await
             .map_err(|e| AppError::Internal(format!("status list `{url}` is not JSON: {e}")))?;
+
+        // Verify the list credential's own issuer signature BEFORE trusting any
+        // of its bytes (issuer key bound to the list's `issuer`), then bind that
+        // issuer to the credential's issuer when known.
+        verify_status_list_signature(self.did_resolver.as_ref(), &body, expected_issuer, url)
+            .await?;
 
         let subject = body.get("credentialSubject").ok_or_else(|| {
             AppError::Validation(format!("status list `{url}` has no credentialSubject"))
@@ -189,6 +216,80 @@ impl StatusListResolver for HttpStatusListResolver {
     }
 }
 
+/// Verify a fetched `BitstringStatusListCredential`'s own issuer signature and,
+/// when `expected_issuer` is known, bind its `issuer` to the credential whose
+/// status is being checked.
+///
+/// 1. **Issuer binding (within the list):** [`crate::vault::di_verify`] resolves
+///    the proof's signing key, requiring its `verificationMethod` to belong to
+///    the list credential's own `issuer` (no cross-DID signing).
+/// 2. **Issuer binding (to the checked credential):** when `expected_issuer` is
+///    `Some`, the list's `issuer` MUST equal it — a validly-signed but unrelated
+///    issuer's list cannot be substituted.
+/// 3. **Signature:** the `eddsa-jcs-2022` proof is verified over the list
+///    credential with `proof` removed (BBS+ is audit-gated and rejected here).
+///
+/// Any failure is an error — the caller treats a resolver error as
+/// "leave the stored status unchanged" (fail-safe to the stored tag).
+#[cfg(feature = "webvh")]
+async fn verify_status_list_signature(
+    did_resolver: Option<&DIDCacheClient>,
+    list_credential: &serde_json::Value,
+    expected_issuer: Option<&str>,
+    url: &str,
+) -> Result<(), AppError> {
+    use crate::vault::di_verify::{credential_issuer, resolve_di_issuer_key};
+
+    // Bind the list's self-asserted issuer to the credential's issuer first —
+    // cheap, and it rejects a substituted (even if validly-signed) list outright.
+    let list_issuer = credential_issuer(list_credential).ok_or_else(|| {
+        AppError::Validation(format!("status list `{url}` has no `issuer` to verify"))
+    })?;
+    if let Some(expected) = expected_issuer
+        && list_issuer != expected
+    {
+        return Err(AppError::Validation(format!(
+            "status list `{url}` issuer `{list_issuer}` is not the credential's issuer \
+             `{expected}` — refusing a substituted status list"
+        )));
+    }
+
+    // Resolve the signing key (bound to the list's own issuer) and verify the
+    // eddsa-jcs-2022 proof over the credential with `proof` removed.
+    let issuer_pub = resolve_di_issuer_key(did_resolver, list_credential).await?;
+
+    let proof_val = list_credential.get("proof").cloned().ok_or_else(|| {
+        AppError::Validation(format!("status list `{url}` has no `proof` to verify"))
+    })?;
+    let proof: DataIntegrityProof = serde_json::from_value(proof_val).map_err(|e| {
+        AppError::Validation(format!("status list `{url}` has an unparseable proof: {e}"))
+    })?;
+    if !matches!(proof.cryptosuite, CryptoSuite::EddsaJcs2022) {
+        return Err(AppError::Validation(format!(
+            "status list `{url}` proof cryptosuite {:?} is unsupported \
+             (expected eddsa-jcs-2022; BBS+ is audit-gated)",
+            proof.cryptosuite
+        )));
+    }
+
+    // JCS is presence-sensitive: strip `proof` exactly as the issuer did at
+    // signing time.
+    let mut signing_doc = list_credential.clone();
+    signing_doc
+        .as_object_mut()
+        .ok_or_else(|| AppError::Validation(format!("status list `{url}` is not a JSON object")))?
+        .remove("proof");
+    proof
+        .verify_with_public_key(&signing_doc, &issuer_pub, VerifyOptions::new())
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "status list `{url}` issuer signature verification failed: {e}"
+            ))
+        })?;
+
+    Ok(())
+}
+
 /// Resolves a status-list-credential URL to its decoded-ready bitstring.
 ///
 /// Injected so tests provide a mock (no network) and production wires the
@@ -198,12 +299,25 @@ impl StatusListResolver for HttpStatusListResolver {
 pub trait StatusListResolver: Send + Sync {
     /// Fetch and return the status list referenced by `url`.
     ///
-    /// Implementations should verify the status-list *credential's* own issuer
+    /// Implementations MUST verify the status-list *credential's* own issuer
     /// signature before returning (the holder must not trust an unverified
-    /// list); that verification is out of scope for this module, which only
-    /// decodes and reads the bit. Returns an error the caller can surface or
-    /// retry; on error this module leaves the stored status unchanged.
-    async fn resolve(&self, url: &str) -> Result<ResolvedStatusList, AppError>;
+    /// list) — otherwise anyone who can serve `url` could forge a revocation
+    /// (terminal!) of a valid credential, or hide a real one. When
+    /// `expected_issuer` is `Some`, the implementation MUST also bind the
+    /// resolved list's `issuer` to it (the issuer of the credential whose
+    /// status is being checked), so a *validly-signed but unrelated* list
+    /// can't be substituted. `expected_issuer` is `None` only when the held
+    /// credential records no issuer; binding is then skipped (signature
+    /// verification still applies).
+    ///
+    /// Returns an error the caller can surface or retry; on error this module
+    /// leaves the stored status unchanged (the present gate falls back to the
+    /// stored tag — fail-safe).
+    async fn resolve(
+        &self,
+        url: &str,
+        expected_issuer: Option<&str>,
+    ) -> Result<ResolvedStatusList, AppError>;
 }
 
 /// Extract the `credentialStatus` `BitstringStatusListEntry` from a stored
@@ -416,7 +530,14 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
         return Ok(RefreshOutcome::NotTracked);
     };
 
-    let resolved = resolver.resolve(&status_ref.status_list_credential).await?;
+    // Bind the resolved list to this credential's issuer: the issuer that issued
+    // the credential is the only party allowed to publish its status list.
+    let resolved = resolver
+        .resolve(
+            &status_ref.status_list_credential,
+            cred.issuer_did.as_deref(),
+        )
+        .await?;
 
     // Enforce the declared-purpose binding (W3C vc-bitstring-status-list §). When
     // the credential's entry declares a `statusPurpose`, it MUST match the
@@ -562,7 +683,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StatusListResolver for MockResolver {
-        async fn resolve(&self, _url: &str) -> Result<ResolvedStatusList, AppError> {
+        async fn resolve(
+            &self,
+            _url: &str,
+            _expected_issuer: Option<&str>,
+        ) -> Result<ResolvedStatusList, AppError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(self.list.clone())
         }
@@ -574,7 +699,11 @@ mod tests {
 
     #[async_trait::async_trait]
     impl StatusListResolver for ErrResolver {
-        async fn resolve(&self, _url: &str) -> Result<ResolvedStatusList, AppError> {
+        async fn resolve(
+            &self,
+            _url: &str,
+            _expected_issuer: Option<&str>,
+        ) -> Result<ResolvedStatusList, AppError> {
             Err(AppError::Internal("status list unreachable".to_string()))
         }
     }
@@ -919,5 +1048,117 @@ mod tests {
         c.body = serde_json::to_vec(&body).unwrap();
         let err = extract_status_ref(&c).unwrap_err();
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // ---- status-list-credential signature verification (webvh) ----------
+    //
+    // The production resolver MUST verify the list credential's own issuer
+    // signature and bind it to the checked credential's issuer, so a forged
+    // list served at the entry URL is rejected rather than trusted (a forged
+    // revocation is terminal — this is the hole these tests close).
+
+    #[cfg(feature = "webvh")]
+    mod signature {
+        use super::*;
+        use affinidi_crypto::did_key::ed25519_pub_to_did_key;
+        use affinidi_data_integrity::{
+            DataIntegrityProof as DiProof, SignOptions, crypto_suites::CryptoSuite as Suite,
+        };
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        /// Build + eddsa-jcs-2022-sign a `BitstringStatusListCredential` issued
+        /// by a `did:key` derived from `seed`. Returns `(credential, issuer_did)`.
+        async fn signed_status_list(seed: u8, purpose: &str) -> (serde_json::Value, String) {
+            // The signing key and the issuer `did:key` must be the same key:
+            // generate once to read the public bytes + form the did:key, then
+            // re-generate with the matching verificationMethod id (deterministic
+            // from the seed, so the key is identical).
+            let probe = Secret::generate_ed25519(None, Some(&[seed; 32]));
+            let pub_bytes: [u8; 32] = probe.get_public_bytes().try_into().unwrap();
+            let issuer_did = ed25519_pub_to_did_key(&pub_bytes);
+            let vm_id = format!("{issuer_did}#key-0");
+            let secret = Secret::generate_ed25519(Some(&vm_id), Some(&[seed; 32]));
+
+            let encoded = encoded_list_with(Some(7), parse_purpose(purpose).unwrap());
+            let mut cred = serde_json::json!({
+                "@context": ["https://www.w3.org/ns/credentials/v2"],
+                "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+                "issuer": issuer_did,
+                "credentialSubject": {
+                    "type": "BitstringStatusList",
+                    "statusPurpose": purpose,
+                    "encodedList": encoded,
+                },
+            });
+            let proof = DiProof::sign(
+                &cred,
+                &secret,
+                SignOptions::new()
+                    .with_proof_purpose("assertionMethod")
+                    .with_cryptosuite(Suite::EddsaJcs2022),
+            )
+            .await
+            .expect("sign status list");
+            cred["proof"] = serde_json::to_value(&proof).unwrap();
+            (cred, issuer_did)
+        }
+
+        #[tokio::test]
+        async fn valid_signature_and_matching_issuer_passes() {
+            let (cred, issuer) = signed_status_list(11, "revocation").await;
+            // did:key issuer → resolved locally, no DID resolver needed.
+            verify_status_list_signature(None, &cred, Some(&issuer), "https://x/sl")
+                .await
+                .expect("a correctly-signed, issuer-matched list must verify");
+        }
+
+        #[tokio::test]
+        async fn no_expected_issuer_still_verifies_the_signature() {
+            let (cred, _issuer) = signed_status_list(12, "revocation").await;
+            // Binding is skipped (the held credential recorded no issuer), but the
+            // signature is still checked.
+            verify_status_list_signature(None, &cred, None, "https://x/sl")
+                .await
+                .expect("signature must still verify when binding is skipped");
+        }
+
+        #[tokio::test]
+        async fn substituted_issuer_is_rejected() {
+            let (cred, _issuer) = signed_status_list(13, "revocation").await;
+            // A validly-signed list, but from a different issuer than the
+            // credential's → refused (substitution attack).
+            let err = verify_status_list_signature(
+                None,
+                &cred,
+                Some("did:key:zStranger"),
+                "https://x/sl",
+            )
+            .await
+            .expect_err("a list whose issuer != the credential's must be refused");
+            assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        }
+
+        #[tokio::test]
+        async fn tampered_list_fails_the_signature() {
+            let (mut cred, issuer) = signed_status_list(14, "revocation").await;
+            // Flip the encoded bitstring after signing (e.g. a forged all-clear) —
+            // the JCS proof no longer verifies.
+            cred["credentialSubject"]["encodedList"] =
+                serde_json::json!(encoded_list_with(None, StatusPurpose::Revocation));
+            let err = verify_status_list_signature(None, &cred, Some(&issuer), "https://x/sl")
+                .await
+                .expect_err("a tampered list must fail signature verification");
+            assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        }
+
+        #[tokio::test]
+        async fn unsigned_list_is_rejected() {
+            let (mut cred, issuer) = signed_status_list(15, "revocation").await;
+            cred.as_object_mut().unwrap().remove("proof");
+            let err = verify_status_list_signature(None, &cred, Some(&issuer), "https://x/sl")
+                .await
+                .expect_err("an unsigned list must be refused");
+            assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        }
     }
 }
