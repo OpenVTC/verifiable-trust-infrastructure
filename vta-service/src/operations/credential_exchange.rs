@@ -25,16 +25,18 @@
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
 //!   `receive`).
-//! - **W3C Data-Integrity** from a **`did:key`** issuer — fully wired.
-//! - A DI VC from a **`did:webvh` / `did:web`** issuer needs resolver-based
-//!   issuer-key resolution — a follow-up slice (the VTC issues under
-//!   `did:webvh`, so this lands next).
+//! - **W3C Data-Integrity** from a **`did:key`** issuer — fully wired (resolved
+//!   locally, no I/O).
+//! - **W3C Data-Integrity** from a **`did:webvh` / `did:web`** issuer — wired via
+//!   the app-state DID resolver (the VTC issues under `did:webvh`). The proof's
+//!   `verificationMethod` is resolved and **bound to the credential `issuer`**.
 //! - A **`sealed`** bundle (the unknown-holder / invite case) is deferred to the
 //!   sealed-issuance slice (3.6).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_openid4vp::{CandidateCredential, ClaimPathSegment, DcqlQuery, Oid4vpError};
 use affinidi_secrets_resolver::secrets::Secret;
 use chrono::{DateTime, Utc};
@@ -54,14 +56,20 @@ use crate::vault::{self};
 
 /// Receive a credential delivered in a credential-exchange `issue` message into
 /// the holder's `vault`. Infers the credential format from the body, resolves
-/// the issuer DID for the Data-Integrity path, and stores via the
+/// the issuer key for the Data-Integrity path, and stores via the
 /// format-agnostic [`vault::receive`]. Returns the persisted credential.
+///
+/// `did_resolver` resolves a `did:webvh` / `did:web` issuer's verification
+/// method for the Data-Integrity path (`did:key` issuers resolve locally with no
+/// I/O). Pass `None` for a resolver-less context — then only `did:key` DI
+/// issuers (and all SD-JWT-VC) are accepted.
 ///
 /// `source` is recorded as the stored credential's provenance (e.g. the exchange
 /// thread id or the authenticated issuer DID). `now` anchors the temporal check.
 pub async fn receive_issued_credential(
     vault_ks: &KeyspaceHandle,
     issue: &IssueBody,
+    did_resolver: Option<&DIDCacheClient>,
     source: Option<String>,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -79,7 +87,7 @@ pub async fn receive_issued_credential(
         .and_then(|r| r.credential.as_ref())
         .ok_or_else(|| AppError::Validation("issue message carries no credential".to_string()))?;
 
-    store_issued_credential(vault_ks, credential, source, now).await
+    store_issued_credential(vault_ks, credential, did_resolver, source, now).await
 }
 
 /// Store an issued credential value (the OID4VCI `credential` field shape) into
@@ -91,6 +99,7 @@ pub async fn receive_issued_credential(
 async fn store_issued_credential(
     vault_ks: &KeyspaceHandle,
     credential: &Value,
+    did_resolver: Option<&DIDCacheClient>,
     source: Option<String>,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -112,15 +121,10 @@ async fn store_issued_credential(
             .await
         }
         // A JSON object carrying a `proof` → a W3C Data-Integrity VC. Resolve the
-        // issuer DID to its key and store via the DI path.
+        // issuer's signing key (binding it to the credential `issuer`) and store
+        // via the DI path. The vault stays network-free — resolution happens here.
         Value::Object(_) if credential.get("proof").is_some() => {
-            let issuer_did = credential
-                .get("issuer")
-                .and_then(issuer_str)
-                .ok_or_else(|| {
-                    AppError::Validation("Data-Integrity credential has no `issuer`".to_string())
-                })?;
-            let issuer_pub = resolve_issuer_ed25519(&issuer_did)?;
+            let issuer_pub = resolve_di_issuer_key(did_resolver, credential).await?;
             let body = serde_json::to_vec(credential)
                 .map_err(|e| AppError::Internal(format!("credential -> bytes: {e}")))?;
             vault::receive(
@@ -158,6 +162,7 @@ pub async fn receive_sealed_issued_credential(
     armored: &str,
     holder_x25519_secret: &[u8; 32],
     expect_digest: Option<&str>,
+    did_resolver: Option<&DIDCacheClient>,
     source: Option<String>,
     now: DateTime<Utc>,
 ) -> Result<StoredCredential, AppError> {
@@ -183,7 +188,14 @@ pub async fn receive_sealed_issued_credential(
 
     // Provenance: the sealed issuer DID, unless the caller supplied one.
     let source = source.or(Some(credential_bundle.issuer_did.clone()));
-    store_issued_credential(vault_ks, &credential_bundle.credential, source, now).await
+    store_issued_credential(
+        vault_ks,
+        &credential_bundle.credential,
+        did_resolver,
+        source,
+        now,
+    )
+    .await
 }
 
 /// Seal a freshly-issued credential for an invite / unknown holder (spec §6 task
@@ -235,23 +247,127 @@ fn issuer_str(issuer: &Value) -> Option<String> {
         .or_else(|| issuer.get("id").and_then(Value::as_str).map(str::to_string))
 }
 
-/// Resolve an issuer DID to its Ed25519 public key bytes.
+/// Resolve the Ed25519 public key a Data-Integrity VC's proof is signed with,
+/// **binding it to the credential `issuer`**.
 ///
-/// `did:key` is resolved locally. Resolver-based resolution of `did:webvh` /
-/// `did:web` issuers (via the app-state DID resolver) is a follow-up slice.
-fn resolve_issuer_ed25519(did: &str) -> Result<Vec<u8>, AppError> {
-    if did.starts_with("did:key:") {
-        affinidi_crypto::did_key::did_key_to_ed25519_pub(did)
+/// The proof's `verificationMethod` names the signing key; its base DID MUST be
+/// the credential `issuer` — otherwise a key belonging to some *other* DID could
+/// sign a credential that claims a different issuer (issuer spoofing). `did:key`
+/// issuers resolve locally with no I/O even when a resolver is configured;
+/// `did:webvh` / `did:web` issuers are resolved through `did_resolver`, which
+/// must then be present.
+async fn resolve_di_issuer_key(
+    did_resolver: Option<&DIDCacheClient>,
+    credential: &Value,
+) -> Result<Vec<u8>, AppError> {
+    let issuer_did = credential
+        .get("issuer")
+        .and_then(issuer_str)
+        .ok_or_else(|| AppError::Validation("Data-Integrity credential has no `issuer`".into()))?;
+
+    let vm = credential
+        .get("proof")
+        .and_then(|p| p.get("verificationMethod"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::Validation("Data-Integrity proof has no `verificationMethod`".into())
+        })?;
+
+    // Binding: the signing key MUST belong to the stated issuer.
+    let vm_base = vm.split('#').next().unwrap_or_default();
+    if vm_base != issuer_did {
+        return Err(AppError::Validation(format!(
+            "DI proof verificationMethod `{vm}` is not under the credential issuer \
+             `{issuer_did}` — refusing a credential signed by a key outside the issuer DID"
+        )));
+    }
+
+    // `did:key` is its own key — resolve locally, no network even if configured.
+    if issuer_did.starts_with("did:key:") {
+        return affinidi_crypto::did_key::did_key_to_ed25519_pub(&issuer_did)
             .map(|k| k.to_vec())
             .map_err(|e| {
-                AppError::Validation(format!("issuer `{did}` is not a resolvable did:key: {e}"))
-            })
-    } else {
-        Err(AppError::Validation(format!(
-            "resolving a non-did:key issuer (`{did}`) needs the DID resolver — a follow-up \
-             slice; SD-JWT-VC and did:key Data-Integrity issuers are wired"
-        )))
+                AppError::Validation(format!(
+                    "issuer `{issuer_did}` is not a resolvable did:key: {e}"
+                ))
+            });
     }
+
+    let resolver = did_resolver.ok_or_else(|| {
+        AppError::Validation(format!(
+            "resolving issuer `{issuer_did}` needs a DID resolver, but none is configured — \
+             configure the DID cache client to receive Data-Integrity credentials from \
+             did:webvh / did:web issuers"
+        ))
+    })?;
+    resolve_vm_ed25519(resolver, &issuer_did, vm).await
+}
+
+/// Resolve a DID's verification method to its Ed25519 public-key bytes via the
+/// DID cache. Mirrors the DID-document JSON navigation in
+/// [`crate::operations::passkey_login::VtaVmResolver`] but yields raw Ed25519
+/// bytes for Data-Integrity verification. Only `publicKeyMultibase`
+/// (Multikey-encoded) Ed25519 VMs are supported.
+async fn resolve_vm_ed25519(
+    resolver: &DIDCacheClient,
+    did: &str,
+    vm: &str,
+) -> Result<Vec<u8>, AppError> {
+    let resolved = resolver
+        .resolve(did)
+        .await
+        .map_err(|e| AppError::Validation(format!("issuer DID `{did}` did not resolve: {e}")))?;
+
+    // Serialise to JSON for shape-agnostic navigation (the DID-Core JSON shape is
+    // the stable contract, decoupled from the resolver's struct version).
+    let doc: Value = serde_json::to_value(&resolved.doc)
+        .map_err(|e| AppError::Internal(format!("issuer DID document serialise failed: {e}")))?;
+
+    let vms = doc
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "issuer DID `{did}` has no verificationMethod array"
+            ))
+        })?;
+
+    // VM ids can be absolute (`did:webvh:...#key-0`) or relative (`#key-0`).
+    let relative = vm
+        .split_once('#')
+        .map(|(_, frag)| format!("#{frag}"))
+        .unwrap_or_default();
+    let entry = vms
+        .iter()
+        .find(|e| {
+            let id = e.get("id").and_then(Value::as_str).unwrap_or("");
+            id == vm || id == relative
+        })
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` not found in issuer DID `{did}`"
+            ))
+        })?;
+
+    let multibase = entry
+        .get("publicKeyMultibase")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` has no publicKeyMultibase (only Multikey-encoded \
+                 Ed25519 VMs are supported)"
+            ))
+        })?;
+
+    // A `z`-prefixed Ed25519 Multikey is exactly the `did:key` suffix — reuse the
+    // canonical decoder, which also rejects a non-Ed25519 multicodec.
+    affinidi_crypto::did_key::did_key_to_ed25519_pub(&format!("did:key:{multibase}"))
+        .map(|k| k.to_vec())
+        .map_err(|e| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` is not an Ed25519 Multikey: {e}"
+            ))
+        })
 }
 
 // ── Holder-side DCQL match (Phase 3, task 3.5: query → match) ──
@@ -1054,9 +1170,10 @@ mod tests {
         .expect("mint SD-JWT-VC");
 
         let body = issue_body(Value::String(compact), None);
-        let cred = receive_issued_credential(&vault, &body, Some("thread-1".into()), Utc::now())
-            .await
-            .expect("receive issued SD-JWT-VC");
+        let cred =
+            receive_issued_credential(&vault, &body, None, Some("thread-1".into()), Utc::now())
+                .await
+                .expect("receive issued SD-JWT-VC");
         assert_eq!(cred.format, CredentialFormat::SdJwtVc);
         assert_eq!(cred.subject_did.as_deref(), Some(subject.as_str()));
         assert!(
@@ -1073,7 +1190,7 @@ mod tests {
         // The plaintext receive path now redirects a `sealed` bundle to the
         // dedicated opener rather than claiming it is unimplemented.
         let body = issue_body(Value::Null, Some("-----BEGIN VTA SEALED-----…".into()));
-        let err = receive_issued_credential(&vault, &body, None, Utc::now())
+        let err = receive_issued_credential(&vault, &body, None, None, Utc::now())
             .await
             .unwrap_err();
         assert!(
@@ -1144,6 +1261,7 @@ mod tests {
             &holder_x,
             Some(&digest),
             None,
+            None,
             Utc::now(),
         )
         .await
@@ -1161,6 +1279,7 @@ mod tests {
             &holder_x,
             Some("deadbeef"),
             None,
+            None,
             Utc::now(),
         )
         .await
@@ -1169,23 +1288,101 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_a_di_vc_from_a_non_did_key_issuer_for_now() {
+    async fn refuses_a_di_vc_from_a_did_web_issuer_without_a_resolver() {
         let (_dir, _store, vault) = fresh_vault();
-        // A DI VC (object + proof) from a did:web issuer → resolver path deferred.
+        // A DI VC from a did:web issuer whose proof key is under the issuer DID
+        // (binding holds), but no DID resolver is configured → graceful refusal.
         let vc = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiableCredential", "MembershipCredential"],
             "issuer": "did:web:issuer.example",
             "credentialSubject": { "id": "did:key:zMember" },
-            "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022" }
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "verificationMethod": "did:web:issuer.example#key-0"
+            }
         });
-        let err = receive_issued_credential(&vault, &issue_body(vc, None), None, Utc::now())
+        let err = receive_issued_credential(&vault, &issue_body(vc, None), None, None, Utc::now())
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, AppError::Validation(m) if m.contains("did:key")),
-            "expected a did:key follow-up error, got {err:?}"
+            matches!(&err, AppError::Validation(m) if m.contains("DID resolver")),
+            "expected a resolver-not-configured error, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn refuses_a_di_vc_whose_signing_key_is_outside_the_issuer() {
+        let (_dir, _store, vault) = fresh_vault();
+        // Issuer-spoofing attempt: the credential claims `issuer` A but the proof
+        // is signed by a key under a *different* DID B. Must be refused before any
+        // resolution — the signing key has to belong to the stated issuer.
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": { "id": "did:key:zMember" },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "verificationMethod": "did:web:attacker.example#key-0"
+            }
+        });
+        let err = receive_issued_credential(&vault, &issue_body(vc, None), None, None, Utc::now())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("not under the credential issuer")),
+            "expected an issuer-binding rejection, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn receives_a_di_vc_from_a_did_key_issuer() {
+        use affinidi_data_integrity::{
+            DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
+        };
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let (_dir, _store, vault) = fresh_vault();
+
+        // A real eddsa-jcs-2022 VC from a did:key issuer: the proof key is the
+        // issuer DID itself, so the issuer-binding holds and resolution is local.
+        let seed = [3u8; 32];
+        let issuer_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&seed).verifying_key().to_bytes(),
+        );
+        let vm = format!(
+            "{issuer_did}#{}",
+            issuer_did.strip_prefix("did:key:").unwrap()
+        );
+        let secret = Secret::generate_ed25519(Some(&vm), Some(&seed));
+
+        let mut vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": "did:key:zMember", "givenName": "Alice" }
+        });
+        let proof = DataIntegrityProof::sign(
+            &vc,
+            &secret,
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .expect("sign DI VC");
+        vc["proof"] = serde_json::to_value(&proof).unwrap();
+
+        // No resolver needed — did:key resolves locally.
+        let cred = receive_issued_credential(&vault, &issue_body(vc, None), None, None, Utc::now())
+            .await
+            .expect("receive did:key DI VC");
+        assert_eq!(cred.format, CredentialFormat::EddsaJcs2022);
+        assert_eq!(cred.issuer_did.as_deref(), Some(issuer_did.as_str()));
     }
 
     #[tokio::test]
@@ -1195,7 +1392,7 @@ mod tests {
             credential_response: None,
             sealed: None,
         };
-        let err = receive_issued_credential(&vault, &empty, None, Utc::now())
+        let err = receive_issued_credential(&vault, &empty, None, None, Utc::now())
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
@@ -1234,7 +1431,7 @@ mod tests {
         )
         .expect("mint SD-JWT-VC");
         let body = issue_body(Value::String(compact), None);
-        let cred = receive_issued_credential(vault, &body, None, Utc::now())
+        let cred = receive_issued_credential(vault, &body, None, None, Utc::now())
             .await
             .expect("receive");
         crate::vault::storage::get(vault, &cred.id)
@@ -1735,6 +1932,7 @@ mod tests {
             &vault,
             &issue_body(Value::String(compact), None),
             None,
+            None,
             Utc::now(),
         )
         .await
@@ -1871,6 +2069,7 @@ mod tests {
         receive_issued_credential(
             &vault,
             &issue_body(Value::String(compact), None),
+            None,
             None,
             Utc::now(),
         )

@@ -1857,6 +1857,7 @@ pub async fn handle_credential_issue(
         operations::credential_exchange::receive_issued_credential(
             &app_state.vault_ks,
             &body,
+            app_state.did_resolver.as_ref(),
             source,
             chrono::Utc::now(),
         )
