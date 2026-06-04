@@ -40,8 +40,9 @@ use vti_common::error::AppError;
 
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
-use crate::credentials::{VerifiedPresentationSet, verify_vp_token};
+use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use crate::join::JoinTransport;
+use crate::registry::TrustRegistryClient;
 use crate::schemas::accepts::get_accepts;
 use crate::server::AppState;
 
@@ -75,8 +76,9 @@ pub async fn present_and_decide_join(
     .await?;
     let applicant_did = set.holder.clone();
 
-    // 2. Project the verified set into the ceremony evidence shape.
-    let presentation = presentation_from_verified_set(&set);
+    // 2. Project the verified set into the ceremony evidence shape, resolving
+    //    each issuer's trust via TRQP against the community's recognition graph.
+    let presentation = presentation_from_verified_set(state, &set).await;
 
     // 3 + 4. Decide under the active join policy, then realize the verdict.
     let verdict = decide_join(state, &applicant_did, presentation).await?;
@@ -324,36 +326,89 @@ async fn resolve_holder_mediator(state: &AppState, holder_did: &str) -> Option<S
 }
 
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony
-/// [`Presentation`]. Crypto is already resolved, so `verified: true`. Issuer
-/// trust (TRQP) and status-list resolution stay `false` / `Valid` — both are
-/// follow-ups (the structured shape is what the policy decides over); the
+/// [`Presentation`]. Crypto is already resolved, so `verified: true`. Each
+/// credential's `issuer_trusted` is resolved per-issuer via TRQP
+/// ([`issuer_trusted`]); status-list resolution stays `Valid` (a follow-up). The
 /// credential `type` is the SD-JWT-VC `vct`.
-fn presentation_from_verified_set(set: &VerifiedPresentationSet) -> Presentation {
-    let credentials = set
-        .presentations
-        .iter()
-        .map(|p| Credential {
-            credential_type: p
-                .vct
-                .clone()
-                .unwrap_or_else(|| "VerifiableCredential".to_string()),
-            issuer: p.issuer_did.clone(),
-            issuer_trusted: false,
-            status: CredentialStatus::Valid,
-            claims: p.claims.clone(),
-            // SD-JWT-VC carries expiry in `exp` (epoch seconds).
-            valid_until: p
-                .claims
-                .get("exp")
-                .and_then(JsonValue::as_i64)
-                .and_then(|s| DateTime::from_timestamp(s, 0)),
-        })
-        .collect();
+async fn presentation_from_verified_set(
+    state: &AppState,
+    set: &VerifiedPresentationSet,
+) -> Presentation {
+    let own_did = state.config.read().await.vtc_did.clone();
+    let registry = state.registry_client.as_deref();
+
+    let mut credentials = Vec::with_capacity(set.presentations.len());
+    for p in &set.presentations {
+        let trusted = issuer_trusted(registry, own_did.as_deref(), &p.issuer_did).await;
+        credentials.push(credential_from_verified(p, trusted));
+    }
 
     Presentation {
         verified: true,
         holder: set.holder.clone(),
         credentials,
+    }
+}
+
+/// Pure projection of a single [`VerifiedPresentation`] into a ceremony
+/// [`Credential`], with the caller-resolved `issuer_trusted` verdict. Kept
+/// separate from the TRQP lookup so it stays unit-testable without a registry.
+fn credential_from_verified(p: &VerifiedPresentation, issuer_trusted: bool) -> Credential {
+    Credential {
+        credential_type: p
+            .vct
+            .clone()
+            .unwrap_or_else(|| "VerifiableCredential".to_string()),
+        issuer: p.issuer_did.clone(),
+        issuer_trusted,
+        status: CredentialStatus::Valid,
+        claims: p.claims.clone(),
+        // SD-JWT-VC carries expiry in `exp` (epoch seconds).
+        valid_until: p
+            .claims
+            .get("exp")
+            .and_then(JsonValue::as_i64)
+            .and_then(|s| DateTime::from_timestamp(s, 0)),
+    }
+}
+
+/// Resolve whether the community trusts `issuer_did` to issue credentials, for
+/// the ceremony evidence shape. The community's **own** DID is always trusted
+/// (it issued the credential itself). Any other issuer is resolved via TRQP
+/// `recognise` against the trust registry:
+///
+/// - `Ok(true)` → the issuer is in the recognition graph → trusted.
+/// - `Ok(false)` (clean not-found) → not trusted.
+/// - transport / parse `Err` → not trusted (**fail-soft** + warn): the join
+///   policy still gets to decide over a `false` rather than the whole request
+///   erroring on a flaky registry.
+/// - no-registry mode (`registry` is `None`) → not trusted.
+///
+/// Trust is **never cached** here (spec §8.4): a peer removed from the
+/// recognition graph loses trust on the next presentation, not when a TTL
+/// elapses. The verdict feeds the Rego `cred_trusted` policy helper — it is an
+/// input to the decision, not the decision itself.
+async fn issuer_trusted(
+    registry: Option<&dyn TrustRegistryClient>,
+    own_did: Option<&str>,
+    issuer_did: &str,
+) -> bool {
+    if own_did == Some(issuer_did) {
+        return true;
+    }
+    let Some(registry) = registry else {
+        return false;
+    };
+    match registry.recognise(issuer_did).await {
+        Ok(trusted) => trusted,
+        Err(e) => {
+            warn!(
+                issuer = %issuer_did,
+                error = %e,
+                "trust-registry recognise failed — treating issuer as untrusted; join policy decides"
+            );
+            false
+        }
     }
 }
 
@@ -378,33 +433,95 @@ fn vp_claims_from_set(set: &VerifiedPresentationSet) -> JsonValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::MockRegistryClient;
+
+    fn sample_presentation() -> VerifiedPresentation {
+        VerifiedPresentation {
+            issuer_did: "did:key:zIssuer".into(),
+            holder_did: "did:key:zHolder".into(),
+            vct: Some("https://openvtc.org/credentials/MembershipCredential".into()),
+            claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
+        }
+    }
 
     #[test]
-    fn projects_a_verified_set_into_ceremony_presentation() {
-        use crate::credentials::VerifiedPresentation;
-
-        let set = VerifiedPresentationSet {
-            holder: "did:key:zHolder".into(),
-            presentations: vec![VerifiedPresentation {
-                issuer_did: "did:key:zIssuer".into(),
-                holder_did: "did:key:zHolder".into(),
-                vct: Some("https://openvtc.org/credentials/MembershipCredential".into()),
-                claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
-            }],
-        };
-
-        let p = presentation_from_verified_set(&set);
-        assert!(p.verified);
-        assert_eq!(p.holder, "did:key:zHolder");
-        assert_eq!(p.credentials.len(), 1);
+    fn projects_a_verified_presentation_into_a_ceremony_credential() {
+        let c = credential_from_verified(&sample_presentation(), true);
         assert_eq!(
-            p.credentials[0].credential_type,
+            c.credential_type,
             "https://openvtc.org/credentials/MembershipCredential"
         );
-        assert_eq!(p.credentials[0].issuer, "did:key:zIssuer");
-        assert!(!p.credentials[0].issuer_trusted);
-        assert_eq!(p.credentials[0].status, CredentialStatus::Valid);
-        assert!(p.credentials[0].valid_until.is_some());
-        assert_eq!(p.credentials[0].claims["givenName"], "Alice");
+        assert_eq!(c.issuer, "did:key:zIssuer");
+        assert!(c.issuer_trusted);
+        assert_eq!(c.status, CredentialStatus::Valid);
+        assert!(c.valid_until.is_some());
+        assert_eq!(c.claims["givenName"], "Alice");
+    }
+
+    #[test]
+    fn untrusted_issuer_carries_through_to_the_credential() {
+        let c = credential_from_verified(&sample_presentation(), false);
+        assert!(!c.issuer_trusted);
+    }
+
+    #[tokio::test]
+    async fn own_did_is_trusted_without_consulting_the_registry() {
+        let registry = MockRegistryClient::new();
+        // Own DID short-circuits — recognise is never called.
+        assert!(issuer_trusted(Some(&registry), Some("did:vtc:home"), "did:vtc:home").await);
+        assert_eq!(registry.call_counts().await.recognise, 0);
+    }
+
+    #[tokio::test]
+    async fn recognised_foreign_issuer_is_trusted() {
+        let registry = MockRegistryClient::new();
+        registry.set_recognised("did:webvh:peer.example:abc").await;
+        assert!(
+            issuer_trusted(
+                Some(&registry),
+                Some("did:vtc:home"),
+                "did:webvh:peer.example:abc"
+            )
+            .await
+        );
+        assert_eq!(registry.call_counts().await.recognise, 1);
+    }
+
+    #[tokio::test]
+    async fn unrecognised_foreign_issuer_is_not_trusted() {
+        let registry = MockRegistryClient::new();
+        assert!(
+            !issuer_trusted(
+                Some(&registry),
+                Some("did:vtc:home"),
+                "did:webvh:stranger.example"
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_error_fails_soft_to_untrusted() {
+        let registry = MockRegistryClient::new();
+        registry
+            .fail_next_recognise(crate::registry::RegistryError::Unreachable("dns".into()))
+            .await;
+        // A flaky registry must not error the request — it degrades to untrusted
+        // and lets the join policy decide.
+        assert!(
+            !issuer_trusted(
+                Some(&registry),
+                Some("did:vtc:home"),
+                "did:webvh:peer.example"
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn no_registry_mode_is_not_trusted() {
+        // No-registry deployment: no recognition graph, so no foreign issuer is
+        // trusted (the own-DID short-circuit still applies elsewhere).
+        assert!(!issuer_trusted(None, Some("did:vtc:home"), "did:webvh:peer.example").await);
     }
 }
