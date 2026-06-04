@@ -92,9 +92,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-crypto"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "181b6e6fe074cf7ef7c39c24a4eed69781d1872387269409e4cf6e6e507c0d76"
+checksum = "b3b42d67853904ddcbf3e69dc9522b7088f1557b50e6e49b07d5469b30ed6d93"
 dependencies = [
  "aes 0.8.4",
  "affinidi-encoding",
@@ -2800,7 +2800,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
