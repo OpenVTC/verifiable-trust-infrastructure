@@ -13,7 +13,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use vti_common::audit::{
@@ -37,10 +37,10 @@ const REJECT_REASON_MAX: usize = 1024;
 pub struct DecideResponse {
     pub request_id: Uuid,
     pub status: String,
-    /// Issued VMC (M2.12). Inline so the admin caller can hand
-    /// it to the applicant out-of-band; sealed-transfer to the
-    /// applicant's DID lands in a follow-up milestone. `None` on
-    /// the reject path.
+    /// Issued VMC (M2.12). Also pushed to the applicant's wallet over
+    /// DIDComm on approve (best-effort); kept inline so the admin caller
+    /// can still hand it over out-of-band if that delivery doesn't land.
+    /// `None` on the reject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vmc: Option<JsonValue>,
     /// Issued role VEC. Same delivery story as `vmc`.
@@ -87,6 +87,28 @@ pub async fn approve(
             "admit effect did not produce credentials".into(),
         ));
     };
+
+    // Deliver the issued credentials to the applicant's wallet over DIDComm. A
+    // referred-then-approved applicant presented over DIDComm and is not
+    // connected now, so — like the auto-admit path — push the VMC + role VEC to
+    // its mediator. Best-effort: the credentials are already issued and are also
+    // returned inline below for out-of-band hand-off, so a delivery failure (no
+    // mediator, unreachable holder) is logged, not fatal.
+    if let Err(e) = crate::routes::join_requests::present::deliver_membership_credentials(
+        &state,
+        &req.applicant_did,
+        &creds,
+    )
+    .await
+    {
+        warn!(
+            request_id = %id,
+            applicant = %req.applicant_did,
+            error = %e,
+            "membership-credential delivery failed on approve; credentials issued and returned inline"
+        );
+    }
+
     let (vmc, role_vec, status_list_index) = (creds.vmc, creds.role_vec, creds.status_list_index);
 
     req.status = JoinStatus::Approved;
