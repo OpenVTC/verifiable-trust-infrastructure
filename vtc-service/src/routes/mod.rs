@@ -683,6 +683,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             post(join_requests::decide::reject),
             join_reject,
         )
+        // Credential-exchange query send (admin): prepare a DCQL query + issue a
+        // single-use presentation challenge for a holder. Plain admin route (no
+        // Trust-Task descriptor) — the holder answers over the credential-exchange
+        // DIDComm `present` surface.
+        .route_exempt(
+            "/join-requests/query",
+            post(join_requests::present::send_query),
+        )
         // Policies (Phase 2 M2.3). Three POST endpoints, three
         // Trust Tasks. `upload` mints + persists; `activate` flips
         // the per-purpose active pointer; `test` evaluates a stored

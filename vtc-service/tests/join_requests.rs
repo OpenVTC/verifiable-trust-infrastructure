@@ -1261,3 +1261,95 @@ async fn credential_exchange_present_over_a_single_use_challenge_closes_the_loop
         "a replayed presentation finds no challenge"
     );
 }
+
+/// The query-send side: an admin asks the VTC to prepare a credential-exchange
+/// query from a registered Accepts criterion. The VTC issues a single-use
+/// challenge (bound to its own DID) and returns the DCQL `QueryBody` to deliver;
+/// the challenge is then consumable on the returned thread.
+#[tokio::test]
+async fn admin_query_send_prepares_a_dcql_query_and_issues_a_challenge() {
+    use vtc_service::credentials::present_challenge::consume;
+    use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+
+    let fix = build_fixture().await;
+
+    // A `type_values` DCQL query references no `vct_values` types, so it stores
+    // without registering schemas first.
+    let criterion = AcceptsCriterion {
+        id: "join-evidence".into(),
+        query: json!({
+            "credentials": [{
+                "id": "membership",
+                "format": "ldp_vc",
+                "meta": { "type_values": ["MembershipCredential"] }
+            }]
+        }),
+        description: Some("present a MembershipCredential to join".into()),
+        created_at: chrono::Utc::now(),
+        created_by_did: ADMIN_DID.into(),
+    };
+    store_accepts(&fix.state.schemas_ks, &criterion)
+        .await
+        .expect("store accepts criterion");
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests/query",
+        "x",
+        Some(&fix.admin_token),
+        Some(json!({ "holderDid": "did:key:zHolder", "criterionId": "join-evidence" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    let thread_id = body["threadId"].as_str().expect("threadId").to_string();
+    assert_eq!(body["holderDid"], "did:key:zHolder");
+    assert!(
+        body["query"]["dcql_query"]["credentials"].is_array(),
+        "DCQL query present: {body}"
+    );
+    let nonce = body["query"]["nonce"].as_str().expect("nonce").to_string();
+    assert_eq!(
+        body["query"]["purpose"],
+        "present a MembershipCredential to join"
+    );
+
+    // The single-use challenge is consumable on that thread, bound to the VTC DID.
+    let challenge = consume(&fix.state.join_requests_ks, &thread_id, chrono::Utc::now())
+        .await
+        .expect("consume challenge");
+    assert_eq!(challenge.aud, VTC_AUD);
+    assert_eq!(challenge.nonce, nonce);
+}
+
+/// An unregistered criterion id is a 404 (no challenge issued).
+#[tokio::test]
+async fn admin_query_send_404s_an_unknown_criterion() {
+    let fix = build_fixture().await;
+    let (status, _body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests/query",
+        "x",
+        Some(&fix.admin_token),
+        Some(json!({ "holderDid": "did:key:zHolder", "criterionId": "does-not-exist" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// The query-send route is admin-gated.
+#[tokio::test]
+async fn admin_query_send_requires_admin() {
+    let fix = build_fixture().await;
+    let (status, _body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests/query",
+        "x",
+        None,
+        Some(json!({ "holderDid": "did:key:zHolder", "criterionId": "join-evidence" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
