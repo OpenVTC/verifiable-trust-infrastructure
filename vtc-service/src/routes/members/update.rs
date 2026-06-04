@@ -17,6 +17,7 @@ use axum::extract::{Path, State};
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
+use tracing::warn;
 
 use vti_common::audit::{AuditEvent, MemberUpdatedData, RoleChangedData};
 
@@ -215,6 +216,22 @@ async fn role_change_via_pipeline(
             "remint effect did not produce an outcome".into(),
         ));
     };
+
+    // Deliver the re-minted role VEC to the member's wallet over DIDComm so it
+    // can present its updated role. Best-effort: the VEC is already issued and
+    // persisted (the old one is short-lived and expires on its own validUntil —
+    // role VECs carry no status entry), so a delivery failure is logged, not
+    // fatal.
+    if let Err(e) =
+        crate::credentials::delivery::deliver_credentials(state, subject_did, &[&outcome.role_vec])
+            .await
+    {
+        warn!(
+            subject = %subject_did,
+            error = %e,
+            "role-VEC delivery failed on role change; the credential is issued and can be re-delivered"
+        );
+    }
 
     Ok(RoleChangeResult {
         previous_role: outcome.previous_role.to_string(),

@@ -45,6 +45,7 @@
 //! pre-status-list state in tests.
 
 pub mod custom_endorsement;
+pub mod delivery;
 pub mod dtg;
 pub mod exchange;
 pub mod invitation;

@@ -94,7 +94,7 @@ pub async fn approve(
     // its mediator. Best-effort: the credentials are already issued and are also
     // returned inline below for out-of-band hand-off, so a delivery failure (no
     // mediator, unreachable holder) is logged, not fatal.
-    if let Err(e) = crate::routes::join_requests::present::deliver_membership_credentials(
+    if let Err(e) = crate::credentials::delivery::deliver_membership_credentials(
         &state,
         &req.applicant_did,
         &creds,

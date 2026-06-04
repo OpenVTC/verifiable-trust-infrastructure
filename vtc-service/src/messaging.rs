@@ -372,12 +372,9 @@ async fn credential_present_handler(
     // delivery failure is logged (the holder/admin can re-fetch), not fatal.
     if let Some(admit) = outcome.admit.as_deref() {
         let holder_did = outcome.request.applicant_did.clone();
-        if let Err(e) = crate::routes::join_requests::present::deliver_membership_credentials(
-            &state,
-            &holder_did,
-            admit,
-        )
-        .await
+        if let Err(e) =
+            crate::credentials::delivery::deliver_membership_credentials(&state, &holder_did, admit)
+                .await
         {
             warn!(holder = %holder_did, request = %outcome.request.id, error = %e, "membership-credential delivery failed; credential is issued and can be re-delivered");
         } else {
