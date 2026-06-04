@@ -99,6 +99,46 @@ fn build_check_name_body(
     body
 }
 
+/// Project a `did/check-name/0.1#response` payload into the local
+/// [`RequestUriResponse`].
+///
+/// The v0.1 response carries top-level `available` + `reserved`, and —
+/// when reserved — a `record: DidRecord` whose `mnemonic` + `didUrl` we
+/// project out. Legacy did-hosting-control hosts (pre-v0.7) flatten the
+/// fields at the top level and omit `reserved`; we fall back to the flat
+/// body and to the snake_case `did_url` alias so both wire dialects work,
+/// mirroring `register_did_atomic`'s parser.
+fn parse_check_name_response(body: serde_json::Value) -> Result<RequestUriResponse, AppError> {
+    let reserved = body
+        .get("reserved")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !reserved {
+        let available = body
+            .get("available")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        return Err(AppError::Internal(format!(
+            "remote refused reservation (available={available}); \
+             check-name with reserve=true expected to succeed"
+        )));
+    }
+    // Prefer the spec `record`; fall back to the flat legacy body.
+    let record = body.get("record").cloned().unwrap_or_else(|| body.clone());
+    let mnemonic = record
+        .get("mnemonic")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("check-name response missing `mnemonic`".to_string()))?
+        .to_string();
+    let did_url = record
+        .get("didUrl")
+        .or_else(|| record.get("did_url"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("check-name response missing `didUrl`".to_string()))?
+        .to_string();
+    Ok(RequestUriResponse { mnemonic, did_url })
+}
+
 /// DIDComm-based client for communicating with a WebVH server.
 ///
 /// Routes messages through the DIDComm service's listener connection,
@@ -147,39 +187,7 @@ impl<'a> WebvhDIDCommClient<'a> {
             )
             .await?;
 
-        // The v0.1 check-name response shape carries `available`,
-        // `reserved`, and (when reserved) `mnemonic` + `didUrl`.
-        // Translate into the local `RequestUriResponse` shape the
-        // rest of vta-service expects.
-        let body: serde_json::Value = response.body;
-        let reserved = body
-            .get("reserved")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !reserved {
-            let available = body
-                .get("available")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            return Err(AppError::Internal(format!(
-                "remote refused reservation (available={available}); \
-                 check-name with reserve=true expected to succeed"
-            )));
-        }
-        let mnemonic = body
-            .get("mnemonic")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Internal("check-name response missing `mnemonic`".to_string())
-            })?
-            .to_string();
-        let did_url = body
-            .get("didUrl")
-            .or_else(|| body.get("did_url"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| AppError::Internal("check-name response missing `didUrl`".to_string()))?
-            .to_string();
-        Ok(RequestUriResponse { mnemonic, did_url })
+        parse_check_name_response(response.body)
     }
 
     /// Atomic claim-and-publish (v0.1 `did-management/did/register/0.1`).
@@ -333,7 +341,7 @@ impl<'a> WebvhDIDCommClient<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_check_name_body;
+    use super::{build_check_name_body, parse_check_name_response};
     use serde_json::json;
 
     /// Regression for `e.p.did.path-invalid`: auto-assign (`path == None`)
@@ -373,5 +381,73 @@ mod tests {
         assert_eq!(with.get("domain"), Some(&json!("acme.example.com")));
         let without = build_check_name_body(Some("alice"), None);
         assert!(!without.contains_key("domain"));
+    }
+
+    /// The v0.1 (and current host) response nests the assigned mnemonic +
+    /// didUrl inside `record`. This is the shape that the auto-assign fix
+    /// makes the host emit; the parser must read through `record`.
+    #[test]
+    fn parses_spec_record_shaped_response() {
+        let body = json!({
+            "available": true,
+            "reserved": true,
+            "record": {
+                "mnemonic": "brave-otter",
+                "owner": "did:key:z6MkAlice",
+                "createdAt": "2026-06-04T10:00:01Z",
+                "updatedAt": "2026-06-04T10:00:01Z",
+                "versionCount": 0,
+                "domain": "did.example.com",
+                "didUrl": "https://did.example.com/brave-otter/did.jsonl",
+                "disabled": false
+            }
+        });
+        let resp = parse_check_name_response(body).expect("spec record parses");
+        assert_eq!(resp.mnemonic, "brave-otter");
+        assert_eq!(
+            resp.did_url,
+            "https://did.example.com/brave-otter/did.jsonl"
+        );
+    }
+
+    /// Legacy did-hosting-control hosts (pre-v0.7) flatten the fields at
+    /// the top level and use the snake_case `did_url` alias. The parser
+    /// must still accept them so a VTA can talk to an un-upgraded host.
+    #[test]
+    fn parses_legacy_flat_response() {
+        let body = json!({
+            "available": true,
+            "reserved": true,
+            "mnemonic": "alice",
+            "did_url": "https://did.example.com/alice/did.jsonl"
+        });
+        let resp = parse_check_name_response(body).expect("legacy flat parses");
+        assert_eq!(resp.mnemonic, "alice");
+        assert_eq!(resp.did_url, "https://did.example.com/alice/did.jsonl");
+    }
+
+    /// A response with `reserved: false` is the host declining the
+    /// reservation (an explicit taken path); surface the `available` flag
+    /// in the error rather than silently fabricating a mnemonic.
+    #[test]
+    fn not_reserved_is_an_error_carrying_availability() {
+        let body = json!({ "available": false, "reserved": false });
+        let err = parse_check_name_response(body).expect_err("must error");
+        assert!(
+            err.to_string().contains("available=false"),
+            "error should surface availability: {err}"
+        );
+    }
+
+    /// A reserved response that omits the locator is malformed — fail
+    /// loudly rather than returning an empty `did_url` downstream.
+    #[test]
+    fn reserved_without_did_url_errors() {
+        let body = json!({
+            "reserved": true,
+            "record": { "mnemonic": "alice" }
+        });
+        let err = parse_check_name_response(body).expect_err("must error");
+        assert!(err.to_string().contains("didUrl"), "got: {err}");
     }
 }
