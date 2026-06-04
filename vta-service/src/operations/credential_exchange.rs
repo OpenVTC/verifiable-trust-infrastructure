@@ -13,14 +13,12 @@
 //!   from the live vault via the type index, no enumeration; [`match_held`]
 //!   matches an explicit set), returning which satisfy it and the claim paths to
 //!   disclose.
-//! - [`present_for_query`] (task 3.5c) — turn a match into a `vp_token`: build a
-//!   consent-gated, selectively-disclosed VP of the matched credential (SD-JWT-VC
-//!   in this slice).
-//! - [`present_or_defer`] (task 3.5d) — apply the holder's [`ConsentPolicy`]:
-//!   auto-consent + present for a **trusted** verifier, else defer with
-//!   [`PresentOutcome::ConsentRequired`] for an out-of-band approval. The
-//!   `credential-exchange/query → present` DIDComm handler (which sources the
-//!   holder key + persists the pending approval) is the wire slice on top.
+//! - [`present_query`] (tasks 3.5c/3.5d) — the full holder `query → present`
+//!   path: match, then under the holder's [`ConsentPolicy`] either present
+//!   **every** matched credential ([`present_matched_set`], one consent record +
+//!   ACL-gated holder key per credential, OID4VP DCQL `vp_token` keyed by
+//!   credential-query id) for a **trusted** verifier, or defer with
+//!   [`PresentOutcome::ConsentRequired`] for an out-of-band approval.
 //!
 //! ## Scope of this slice
 //! - **SD-JWT-VC** — fully wired (the issuer `did:key` is resolved inside
@@ -556,89 +554,156 @@ fn meta_type_values(meta: Option<&serde_json::Map<String, Value>>) -> Vec<String
     out
 }
 
-/// Answer a verifier's `credential-exchange/query` with a presentation: match
-/// the query over the vault, then build a **consent-gated, selectively-disclosed**
-/// VP of the matched credential and return it as a `vp_token`.
+/// Present **one** matched credential into an OID4VP presentation value,
+/// consent-gated by `consent_record_id`. Format-agnostic:
 ///
-/// - `holder_signer` is the holder's SD-JWT-VC key-binding signer (the subject
-///   key the VTA controls).
-/// - `consent_record_id` names the [`crate::vault::consent::ConsentRecord`] that
-///   authorizes disclosure to `verifier_aud`; the present gate enforces it
-///   (disclose exactly the consented claims, refuse a revoked/expired credential).
-/// - `verifier_aud` is the verifier identity the holder `kb-jwt` binds to (the
-///   DIDComm sender); `iat_unix` stamps the kb-jwt.
+/// - **SD-JWT-VC** → a compact string (with the mandatory `kb-jwt` holder
+///   binding, signed by `holder_signer`).
+/// - **W3C Data-Integrity** → a holder-bound VP **object** (signed by
+///   `holder_secret`, the same derived key as a raw `Secret`).
 ///
-/// `NotFound` when nothing the holder holds satisfies the query. Presents both
-/// **SD-JWT-VC** (via `holder_signer`, the kb-jwt) and **W3C Data-Integrity**
-/// (via `holder_secret`, the holder DI key) matches — the two abstractions of
-/// the same derived holder key.
+/// The two key forms are the two abstractions of the same VTA-derived holder
+/// key. The gate enforces consent (disclose exactly the consented claims, refuse
+/// a revoked/expired credential).
 #[allow(clippy::too_many_arguments)]
-pub async fn present_for_query(
+async fn present_single(
     vault: &KeyspaceHandle,
-    query: &QueryBody,
+    stored: &StoredCredential,
+    consent_record_id: &str,
     holder_signer: &dyn affinidi_sd_jwt::signer::JwtSigner,
     holder_secret: &Secret,
-    consent_record_id: &str,
+    nonce: &str,
     verifier_aud: &str,
     iat_unix: u64,
     now: DateTime<Utc>,
-) -> Result<PresentBody, AppError> {
-    let matched = match_vault(vault, &query.dcql_query).await?;
-    // Single-credential VP for this slice; a multi-credential / credential-set
-    // response is a follow-up. Take the first match in credential-query order.
-    let first = matched.into_iter().next().ok_or_else(|| {
-        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
-    })?;
-
-    let stored = vault::storage::get(vault, &first.credential_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "matched credential `{}` is gone",
-                first.credential_id
-            ))
-        })?;
-
-    let vp_token = match stored.format {
+) -> Result<Value, AppError> {
+    match &stored.format {
         CredentialFormat::SdJwtVc => {
             let compact = vault::present_sd_jwt_vc(
                 vault,
-                &first.credential_id,
+                &stored.id,
                 consent_record_id,
                 holder_signer,
-                &query.nonce,
+                nonce,
                 verifier_aud,
                 iat_unix,
                 now,
             )
             .await?;
-            Value::String(compact)
+            Ok(Value::String(compact))
         }
         CredentialFormat::EddsaJcs2022 => {
-            // W3C Data-Integrity VP: the holder signs an `eddsa-jcs-2022` proof
-            // over the matched VC with the same derived holder key (here as a
-            // raw `Secret`, not the kb-jwt abstraction). The VP is a JSON object,
-            // not a compact string — carry it through as structured JSON.
+            // The DI VP is a JSON object, not a compact string — carry it through
+            // as structured JSON.
             let vp = vault::present_di_vc(
                 vault,
-                &first.credential_id,
+                &stored.id,
                 consent_record_id,
                 holder_secret,
-                &query.nonce,
+                nonce,
                 verifier_aud,
                 now,
             )
             .await?;
-            serde_json::from_str(&vp).unwrap_or(Value::String(vp))
+            Ok(serde_json::from_str(&vp).unwrap_or(Value::String(vp)))
         }
-        other => {
-            return Err(AppError::Validation(format!(
-                "present_for_query presents SD-JWT-VC and W3C Data-Integrity; presenting \
-                 {other:?} via DCQL is a follow-up slice"
-            )));
-        }
-    };
+        other => Err(AppError::Validation(format!(
+            "presenting {other:?} via DCQL is a follow-up slice (SD-JWT-VC and W3C \
+             Data-Integrity are wired)"
+        ))),
+    }
+}
 
+/// Present **every** credential that satisfied the query, building the OID4VP
+/// DCQL `vp_token`: a JSON object keyed by DCQL `credential_query_id`. Each match
+/// is presented under its own ACL-gated holder key and its own freshly-minted,
+/// query-scoped consent record (consent is per-credential, §13) — so a query
+/// spanning several credentials in different contexts is answered correctly.
+///
+/// When a credential query asked for `multiple` candidates and more than one
+/// satisfied it, that id maps to an **array** of presentations; otherwise to the
+/// single presentation value.
+async fn present_matched_set(
+    vault: &KeyspaceHandle,
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    matches: &[HeldMatch],
+    query: &QueryBody,
+    verifier_did: &str,
+    now: DateTime<Utc>,
+) -> Result<PresentBody, AppError> {
+    // Accumulate per credential-query id; collapse to a value (1) or array (>1).
+    let mut grouped: std::collections::BTreeMap<String, Vec<Value>> =
+        std::collections::BTreeMap::new();
+
+    for m in matches {
+        let stored = vault::storage::get(vault, &m.credential_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(format!("matched credential `{}` is gone", m.credential_id))
+            })?;
+        let subject = stored.subject_did.as_deref().ok_or_else(|| {
+            AppError::Validation("matched credential has no subject DID to present".into())
+        })?;
+
+        // ACL-gated holder key for this credential's subject — resolved per match
+        // so credentials in different contexts each present under the right key.
+        let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+
+        // The claims the query asks to disclose — the leaf of each disclosed path.
+        let claims: Vec<String> = m
+            .disclosed_paths
+            .iter()
+            .filter_map(|path| path.last().cloned())
+            .collect();
+
+        let consent = consent::create(
+            vault,
+            &ConsentGrant {
+                holder_did: subject,
+                credential_id: &m.credential_id,
+                verifier_did,
+                purpose: &query.purpose,
+                claims,
+                valid_until: now + chrono::Duration::minutes(5),
+            },
+            &keys.consent_secret,
+        )
+        .await?;
+
+        let presentation = present_single(
+            vault,
+            &stored,
+            &consent.identifier,
+            &keys.signer,
+            &keys.consent_secret,
+            &query.nonce,
+            verifier_did,
+            now.timestamp() as u64,
+            now,
+        )
+        .await?;
+
+        grouped
+            .entry(m.credential_query_id.clone())
+            .or_default()
+            .push(presentation);
+    }
+
+    let vp_token = Value::Object(
+        grouped
+            .into_iter()
+            .map(|(id, mut presentations)| {
+                let value = if presentations.len() == 1 {
+                    presentations.pop().unwrap()
+                } else {
+                    Value::Array(presentations)
+                };
+                (id, value)
+            })
+            .collect(),
+    );
     Ok(PresentBody { vp_token })
 }
 
@@ -668,117 +733,51 @@ impl ConsentPolicy {
     }
 }
 
-/// The outcome of [`present_or_defer`].
+/// One held credential a query asked for — what an out-of-band approver sees and
+/// authorizes, and what the deferral persists for a faithful re-present.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RequestedCredential {
+    /// The DCQL `credential_query_id` this credential satisfied.
+    pub credential_query_id: String,
+    /// The held credential that would satisfy it.
+    pub credential_id: String,
+    /// The claims the query asks to disclose (what the approver authorizes).
+    pub claims: Vec<String>,
+}
+
+/// The outcome of [`present_query`].
 #[derive(Debug)]
 pub enum PresentOutcome {
     /// A consent-gated, selectively-disclosed presentation was produced.
     Presented(PresentBody),
-    /// The query matched a held credential, but the verifier is not trusted and
+    /// The query matched held credential(s), but the verifier is not trusted and
     /// no consent has been granted — disclosure needs an out-of-band approval
-    /// (which mints the consent record, after which the holder re-presents).
+    /// (which mints the consent records, after which the holder re-presents).
     ConsentRequired {
         /// The verifier asking for the presentation.
         verifier_did: String,
-        /// The held credential that would satisfy the query.
-        credential_id: String,
-        /// The claims the query asks to disclose (what the approver authorizes).
-        claims: Vec<String>,
+        /// Every held credential the query would disclose (what the approver
+        /// authorizes — a multi-credential query lists each).
+        requested: Vec<RequestedCredential>,
         /// The verifier's stated purpose (shown to the approver).
         purpose: String,
     },
 }
 
-/// Answer a verifier's `credential-exchange/query` under a [`ConsentPolicy`]:
-/// auto-consent + present for a trusted verifier, otherwise defer to approval.
-///
-/// Matches the query over the vault; for a **trusted** verifier it mints a
-/// query-scoped consent (signed by `holder_consent_key`) and presents via
-/// [`present_for_query`]; for any other verifier it returns
-/// [`PresentOutcome::ConsentRequired`] (the wire layer turns this into a
-/// "consent required" reply / pending approval). `NotFound` when nothing the
-/// holder holds satisfies the query.
-#[allow(clippy::too_many_arguments)]
-pub async fn present_or_defer(
-    vault: &KeyspaceHandle,
-    query: &QueryBody,
-    verifier_did: &str,
-    policy: &ConsentPolicy,
-    holder_signer: &dyn affinidi_sd_jwt::signer::JwtSigner,
-    holder_consent_key: &Secret,
-    now: DateTime<Utc>,
-) -> Result<PresentOutcome, AppError> {
-    let matched = match_vault(vault, &query.dcql_query).await?;
-    let first = matched.into_iter().next().ok_or_else(|| {
-        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
-    })?;
-
-    // The claims the query asks to disclose — the leaf of each disclosed path.
-    let claims: Vec<String> = first
-        .disclosed_paths
-        .iter()
-        .filter_map(|path| path.last().cloned())
-        .collect();
-
-    if !policy.trusted_verifiers.contains(verifier_did) {
-        return Ok(PresentOutcome::ConsentRequired {
-            verifier_did: verifier_did.to_string(),
-            credential_id: first.credential_id,
-            claims,
-            purpose: query.purpose.clone(),
-        });
-    }
-
-    // Trusted verifier → mint a query-scoped consent record, then present.
-    let stored = vault::storage::get(vault, &first.credential_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "matched credential `{}` is gone",
-                first.credential_id
-            ))
-        })?;
-    let subject = stored.subject_did.as_deref().ok_or_else(|| {
-        AppError::Validation("matched credential has no subject DID to bind consent to".into())
-    })?;
-
-    let record = consent::create(
-        vault,
-        &ConsentGrant {
-            holder_did: subject,
-            credential_id: &first.credential_id,
-            verifier_did,
-            purpose: &query.purpose,
-            claims: claims.clone(),
-            valid_until: now + chrono::Duration::minutes(5),
-        },
-        holder_consent_key,
-    )
-    .await?;
-
-    let present = present_for_query(
-        vault,
-        query,
-        holder_signer,
-        holder_consent_key,
-        &record.identifier,
-        verifier_did,
-        now.timestamp() as u64,
-        now,
-    )
-    .await?;
-    Ok(PresentOutcome::Presented(present))
-}
-
 /// The full holder `query → present` path, end to end: match the verifier's
-/// query over the vault, **resolve the matched credential's holder key** (the
-/// ACL-gated [`resolve_holder_keys`] — the VTA's own derived subject key), then
-/// [`present_or_defer`] under the consent `policy`.
+/// query over the vault and, under the consent [`ConsentPolicy`], either present
+/// **every** matched credential or defer.
 ///
-/// This is what the `credential-exchange/query` DIDComm handler drives: it
-/// composes match + key-resolution + consent into a [`PresentOutcome`] (a
-/// `vp_token`, or a "consent required" deferral). `auth` gates the holder-key
-/// access — the autonomous wire flow passes the VTA's own authority; an
-/// operator-initiated path passes the operator's claims.
+/// For a **trusted** verifier it mints a query-scoped consent record per matched
+/// credential and presents each under its own ACL-gated holder key
+/// ([`present_matched_set`]) — answering a multi-credential query in one
+/// `vp_token`. For any other verifier it returns
+/// [`PresentOutcome::ConsentRequired`] listing every credential the query would
+/// disclose (the wire layer persists this for an out-of-band approval). No holder
+/// key is resolved on the defer path. `NotFound` when nothing satisfies the query.
+///
+/// `auth` gates holder-key access — the autonomous wire flow passes the VTA's own
+/// authority; an operator-initiated path passes the operator's claims.
 #[allow(clippy::too_many_arguments)]
 pub async fn present_query(
     vault: &KeyspaceHandle,
@@ -790,40 +789,53 @@ pub async fn present_query(
     policy: &ConsentPolicy,
     now: DateTime<Utc>,
 ) -> Result<PresentOutcome, AppError> {
-    // Match once to learn the subject whose holder key we must resolve.
     let matched = match_vault(vault, &query.dcql_query).await?;
-    let first = matched.into_iter().next().ok_or_else(|| {
-        AppError::NotFound("no held credential satisfies the verifier's query".to_string())
-    })?;
-    let stored = vault::storage::get(vault, &first.credential_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "matched credential `{}` is gone",
-                first.credential_id
-            ))
-        })?;
-    let subject = stored.subject_did.as_deref().ok_or_else(|| {
-        AppError::Validation("matched credential has no subject DID to present".into())
-    })?;
+    if matched.is_empty() {
+        return Err(AppError::NotFound(
+            "no held credential satisfies the verifier's query".to_string(),
+        ));
+    }
 
-    // Derive the holder key for that subject — ACL-gated to its context.
-    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
+    if !policy.trusted_verifiers.contains(verifier_did) {
+        // Defer — list every credential the query would disclose for the approver.
+        return Ok(PresentOutcome::ConsentRequired {
+            verifier_did: verifier_did.to_string(),
+            requested: matched.into_iter().map(requested_from_match).collect(),
+            purpose: query.purpose.clone(),
+        });
+    }
 
-    present_or_defer(
+    let present = present_matched_set(
         vault,
+        keys_ks,
+        seed_store,
+        auth,
+        &matched,
         query,
         verifier_did,
-        policy,
-        &keys.signer,
-        &keys.consent_secret,
         now,
     )
-    .await
+    .await?;
+    Ok(PresentOutcome::Presented(present))
+}
+
+/// Project a [`HeldMatch`] into the approver-facing [`RequestedCredential`] (the
+/// disclosed-claim leaves are what consent authorizes).
+fn requested_from_match(m: HeldMatch) -> RequestedCredential {
+    let claims = m
+        .disclosed_paths
+        .iter()
+        .filter_map(|path| path.last().cloned())
+        .collect();
+    RequestedCredential {
+        credential_query_id: m.credential_query_id,
+        credential_id: m.credential_id,
+        claims,
+    }
 }
 
 /// Deferred-approval store (task 3.5d, the defer half) — when
-/// [`present_or_defer`] returns [`PresentOutcome::ConsentRequired`] for an
+/// [`present_query`] returns [`PresentOutcome::ConsentRequired`] for an
 /// untrusted verifier, the wire layer persists a [`PendingPresentation`] here.
 /// An out-of-band approval ([`approve_pending_presentation`]) mints the
 /// query-scoped consent and re-presents; a denial ([`deny_pending_presentation`])
@@ -866,11 +878,10 @@ pub mod pending {
         /// The verifier that asked (the authcrypt sender). The presentation, once
         /// approved, binds to this audience.
         pub verifier_did: String,
-        /// The held credential that would satisfy the query (informational — the
-        /// approve path re-matches to be robust to vault changes).
-        pub credential_id: String,
-        /// The claims the query asks to disclose — what the approver authorizes.
-        pub claims: Vec<String>,
+        /// Every held credential the query would disclose (informational — the
+        /// approve path re-matches to be robust to vault changes). What the
+        /// approver sees and authorizes.
+        pub requested: Vec<RequestedCredential>,
         /// The verifier's stated purpose, shown to the approver.
         pub purpose: String,
         /// The full query, stored so [`approve_pending_presentation`] re-presents
@@ -916,21 +927,20 @@ pub mod pending {
 
 /// Record a deferred presentation for later out-of-band approval. Called by the
 /// wire layer when [`present_query`] returns [`PresentOutcome::ConsentRequired`].
-/// `id` is the request/thread id the verifier can poll on.
+/// `id` is the request/thread id the verifier can poll on; `requested` is every
+/// credential the query would disclose.
 pub async fn defer_presentation(
     vault: &KeyspaceHandle,
     id: &str,
     verifier_did: &str,
-    credential_id: &str,
-    claims: Vec<String>,
+    requested: Vec<RequestedCredential>,
     query: &QueryBody,
     now: DateTime<Utc>,
 ) -> Result<pending::PendingPresentation, AppError> {
     let record = pending::PendingPresentation {
         id: id.to_string(),
         verifier_did: verifier_did.to_string(),
-        credential_id: credential_id.to_string(),
-        claims,
+        requested,
         purpose: query.purpose.clone(),
         query: query.clone(),
         status: pending::PendingStatus::Pending,
@@ -974,55 +984,22 @@ pub async fn approve_pending_presentation(
         )));
     }
 
-    // Re-match the stored query to find the credential + subject (robust to vault
-    // changes since the deferral — mirrors `present_query`).
+    // Re-match the stored query (robust to vault changes since the deferral) and
+    // present every match, each under its own holder key + freshly-minted consent.
     let matched = match_vault(vault, &record.query.dcql_query).await?;
-    let first = matched.into_iter().next().ok_or_else(|| {
-        AppError::NotFound("no held credential satisfies the deferred query".to_string())
-    })?;
-    let stored = vault::storage::get(vault, &first.credential_id)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(format!(
-                "matched credential `{}` is gone",
-                first.credential_id
-            ))
-        })?;
-    let subject = stored.subject_did.as_deref().ok_or_else(|| {
-        AppError::Validation("matched credential has no subject DID to present".into())
-    })?;
-
-    // ACL-gated holder key for that subject.
-    let keys = resolve_holder_keys(keys_ks, seed_store, auth, subject).await?;
-
-    // Mint the query-scoped consent the approver is authorizing.
-    let claims: Vec<String> = first
-        .disclosed_paths
-        .iter()
-        .filter_map(|path| path.last().cloned())
-        .collect();
-    let consent_record = consent::create(
+    if matched.is_empty() {
+        return Err(AppError::NotFound(
+            "no held credential satisfies the deferred query".to_string(),
+        ));
+    }
+    let present = present_matched_set(
         vault,
-        &ConsentGrant {
-            holder_did: subject,
-            credential_id: &first.credential_id,
-            verifier_did: &record.verifier_did,
-            purpose: &record.query.purpose,
-            claims,
-            valid_until: now + chrono::Duration::minutes(5),
-        },
-        &keys.consent_secret,
-    )
-    .await?;
-
-    let present = present_for_query(
-        vault,
+        keys_ks,
+        seed_store,
+        auth,
+        &matched,
         &record.query,
-        &keys.signer,
-        &keys.consent_secret,
-        &consent_record.identifier,
         &record.verifier_did,
-        now.timestamp() as u64,
         now,
     )
     .await?;
@@ -1568,7 +1545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn present_for_query_builds_a_consent_gated_selective_vp() {
+    async fn present_single_builds_a_consent_gated_selective_vp() {
         use crate::vault::consent::{ConsentGrant, create as create_consent};
 
         let (_dir, _store, vault) = fresh_vault();
@@ -1593,35 +1570,23 @@ mod tests {
         .await
         .expect("create consent");
 
-        let query = QueryBody {
-            dcql_query: DcqlQuery::from_json(&json!({
-                "credentials": [{
-                    "id": "membership",
-                    "format": "dc+sd-jwt",
-                    "meta": { "vct_values": [MEMBERSHIP_VCT] },
-                    "claims": [{ "path": ["givenName"] }]
-                }]
-            }))
-            .unwrap(),
-            nonce: "verifier-nonce-1".into(),
-            purpose: "join the Acme community".into(),
-        };
-
-        let present = present_for_query(
+        let presentation = present_single(
             &vault,
-            &query,
+            &stored,
+            &rec.identifier,
             &kb_signer,
             &consent_key,
-            &rec.identifier,
+            "verifier-nonce-1",
             verifier,
             now.timestamp() as u64,
             now,
         )
         .await
-        .expect("present for query");
+        .expect("present single");
 
-        // vp_token is a compact SD-JWT-VC: discloses exactly givenName + a kb-jwt.
-        let token = present.vp_token.as_str().expect("compact-string vp_token");
+        // An SD-JWT-VC presentation: a compact string disclosing exactly
+        // givenName + a mandatory kb-jwt.
+        let token = presentation.as_str().expect("compact-string presentation");
         let parsed =
             affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher).unwrap();
         assert_eq!(parsed.disclosures.len(), 1);
@@ -1633,39 +1598,6 @@ mod tests {
             parsed.kb_jwt.is_some(),
             "mandatory holder kb-jwt must be present"
         );
-    }
-
-    #[tokio::test]
-    async fn present_for_query_is_not_found_when_nothing_matches() {
-        let (_dir, _store, vault) = fresh_vault();
-        let _stored = mint_and_store(&vault).await;
-        let (_did, kb_signer, consent_key) = subject_holder();
-
-        let query = QueryBody {
-            dcql_query: DcqlQuery::from_json(&json!({
-                "credentials": [{
-                    "id": "x", "format": "dc+sd-jwt",
-                    "meta": { "vct_values": ["https://example.org/Other"] }
-                }]
-            }))
-            .unwrap(),
-            nonce: "n".into(),
-            purpose: "p".into(),
-        };
-
-        let err = present_for_query(
-            &vault,
-            &query,
-            &kb_signer,
-            &consent_key,
-            "consent-x",
-            "did:web:v",
-            0,
-            Utc::now(),
-        )
-        .await
-        .unwrap_err();
-        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
     /// Store a plain W3C-DI VC (`EddsaJcs2022`) bound to `subject_did`, indexed
@@ -1700,15 +1632,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn present_for_query_presents_a_w3c_di_vc_as_a_json_vp() {
+    async fn present_single_presents_a_w3c_di_vc_as_a_json_vp() {
         use crate::vault::consent::{ConsentGrant, create as create_consent};
 
         let (_dir, _store, vault) = fresh_vault();
-        let (subject_did, _kb_signer, holder_secret) = subject_holder();
+        let (subject_did, kb_signer, holder_secret) = subject_holder();
         let verifier = "did:web:acme-verifier.example";
         let now = Utc::now();
 
         store_di_membership(&vault, "di-membership", &subject_did).await;
+        let stored = crate::vault::storage::get(&vault, "di-membership")
+            .await
+            .unwrap()
+            .expect("stored DI VC");
 
         // Plain DI cannot redact, so consent must cover the whole subject.
         let rec = create_consent(
@@ -1726,38 +1662,23 @@ mod tests {
         .await
         .expect("create consent");
 
-        // A `ldp_vc` DCQL query selecting the DI credential by W3C `type_values`.
-        let query = QueryBody {
-            dcql_query: DcqlQuery::from_json(&json!({
-                "credentials": [{
-                    "id": "membership",
-                    "format": "ldp_vc",
-                    "meta": { "type_values": ["MembershipCredential"] },
-                    "claims": [{ "path": ["credentialSubject", "givenName"] }]
-                }]
-            }))
-            .unwrap(),
-            nonce: "verifier-nonce-di".into(),
-            purpose: "join the Acme community".into(),
-        };
-
         // The kb-jwt signer is unused on the DI arm — pass the subject's anyway.
-        let (_d, kb_signer, _k) = subject_holder();
-        let present = present_for_query(
+        let presentation = present_single(
             &vault,
-            &query,
+            &stored,
+            &rec.identifier,
             &kb_signer,
             &holder_secret,
-            &rec.identifier,
+            "verifier-nonce-di",
             verifier,
             now.timestamp() as u64,
             now,
         )
         .await
-        .expect("present DI for query");
+        .expect("present DI single");
 
-        // The DI vp_token is a JSON VP object (not a compact string), holder-bound.
-        let vp = present.vp_token.as_object().expect("JSON-object vp_token");
+        // A DI presentation is a JSON VP object (not a compact string), holder-bound.
+        let vp = presentation.as_object().expect("JSON-object presentation");
         assert_eq!(vp["type"][0], "VerifiablePresentation");
         assert_eq!(vp["holder"], subject_did);
         assert_eq!(vp["nonce"], "verifier-nonce-di");
@@ -1769,7 +1690,7 @@ mod tests {
         assert!(vp.contains_key("proof"), "holder VP proof must be present");
     }
 
-    // ── present_or_defer: consent policy ──
+    // ── present_query: consent policy + multi-credential vp_token ──
 
     fn membership_query() -> QueryBody {
         QueryBody {
@@ -1784,76 +1705,6 @@ mod tests {
             .unwrap(),
             nonce: "verifier-nonce-1".into(),
             purpose: "join the Acme community".into(),
-        }
-    }
-
-    #[tokio::test]
-    async fn present_or_defer_auto_consents_for_a_trusted_verifier() {
-        let (_dir, _store, vault) = fresh_vault();
-        let _stored = mint_and_store(&vault).await;
-        let (_did, kb_signer, consent_key) = subject_holder();
-        let verifier = "did:web:acme-verifier.example";
-        let now = Utc::now();
-
-        let policy = ConsentPolicy::trusting([verifier]);
-        let outcome = present_or_defer(
-            &vault,
-            &membership_query(),
-            verifier,
-            &policy,
-            &kb_signer,
-            &consent_key,
-            now,
-        )
-        .await
-        .expect("present_or_defer");
-
-        match outcome {
-            PresentOutcome::Presented(body) => {
-                let token = body.vp_token.as_str().expect("compact vp_token");
-                let parsed =
-                    affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher)
-                        .unwrap();
-                assert_eq!(parsed.disclosures.len(), 1);
-                assert!(parsed.kb_jwt.is_some());
-            }
-            other => panic!("expected Presented, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn present_or_defer_defers_for_an_untrusted_verifier() {
-        let (_dir, _store, vault) = fresh_vault();
-        let _stored = mint_and_store(&vault).await;
-        let (_did, kb_signer, consent_key) = subject_holder();
-        let now = Utc::now();
-
-        // Empty policy → no verifier is trusted → defer.
-        let policy = ConsentPolicy::default();
-        let outcome = present_or_defer(
-            &vault,
-            &membership_query(),
-            "did:web:stranger.example",
-            &policy,
-            &kb_signer,
-            &consent_key,
-            now,
-        )
-        .await
-        .expect("present_or_defer");
-
-        match outcome {
-            PresentOutcome::ConsentRequired {
-                verifier_did,
-                claims,
-                purpose,
-                ..
-            } => {
-                assert_eq!(verifier_did, "did:web:stranger.example");
-                assert_eq!(claims, vec!["givenName".to_string()]);
-                assert_eq!(purpose, "join the Acme community");
-            }
-            other => panic!("expected ConsentRequired, got {other:?}"),
         }
     }
 
@@ -1964,7 +1815,10 @@ mod tests {
         .expect("present_query");
         match outcome {
             PresentOutcome::Presented(body) => {
-                let token = body.vp_token.as_str().expect("compact vp_token");
+                // OID4VP DCQL vp_token: a map keyed by credential-query id.
+                let token = body.vp_token["membership"]
+                    .as_str()
+                    .expect("compact vp_token under the query id");
                 let parsed =
                     affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher)
                         .unwrap();
@@ -1988,6 +1842,108 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(deferred, PresentOutcome::ConsentRequired { .. }));
+    }
+
+    #[tokio::test]
+    async fn present_query_presents_multiple_credentials_in_one_token() {
+        use crate::acl::Role;
+
+        const INVITATION_VCT: &str = "https://openvtc.org/credentials/InvitationCredential";
+
+        // The fixture stores a MembershipCredential bound to `subject_did`; add a
+        // second SD-JWT-VC of a different type bound to the same holder subject.
+        let (_dir, vault, keys_ks, seed_store, subject_did) = holder_fixture().await;
+        let issuer = SigningKey::from_bytes(&[9u8; 32]);
+        let issuer_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(issuer.verifying_key().as_bytes());
+        let issuer_signer = EddsaSigner {
+            key: issuer,
+            kid: format!("{issuer_did}#key-0"),
+        };
+        let compact = crate::vault::mint::mint_sd_jwt_vc(
+            &crate::vault::mint::MintRequest {
+                vct: INVITATION_VCT,
+                issuer_did: &issuer_did,
+                subject_did: &subject_did,
+                claims: &json!({ "community": "Acme" }),
+                disclosable: &["community"],
+                iat: 1_700_000_000,
+                exp: Some(1_900_000_000),
+            },
+            &issuer_signer,
+        )
+        .unwrap();
+        receive_issued_credential(
+            &vault,
+            &issue_body(Value::String(compact), None),
+            None,
+            None,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(),
+            ..Default::default()
+        };
+
+        // A single query asking for BOTH credentials (the join shape: membership
+        // + the invitation/evidence).
+        let query = QueryBody {
+            dcql_query: DcqlQuery::from_json(&json!({
+                "credentials": [
+                    {
+                        "id": "membership",
+                        "format": "dc+sd-jwt",
+                        "meta": { "vct_values": [MEMBERSHIP_VCT] },
+                        "claims": [{ "path": ["givenName"] }]
+                    },
+                    {
+                        "id": "invitation",
+                        "format": "dc+sd-jwt",
+                        "meta": { "vct_values": [INVITATION_VCT] },
+                        "claims": [{ "path": ["community"] }]
+                    }
+                ]
+            }))
+            .unwrap(),
+            nonce: "verifier-nonce-multi".into(),
+            purpose: "join the Acme community".into(),
+        };
+
+        let outcome = present_query(
+            &vault,
+            &keys_ks,
+            &seed_store,
+            &auth,
+            &query,
+            verifier,
+            &ConsentPolicy::trusting([verifier]),
+            now,
+        )
+        .await
+        .expect("present_query");
+
+        let body = match outcome {
+            PresentOutcome::Presented(b) => b,
+            other => panic!("expected Presented, got {other:?}"),
+        };
+        // The OID4VP DCQL vp_token carries BOTH presentations, keyed by query id.
+        let vp = body.vp_token.as_object().expect("vp_token object");
+        assert_eq!(vp.len(), 2, "both credential queries are presented");
+        for (id, claim) in [("membership", "givenName"), ("invitation", "community")] {
+            let token = vp[id].as_str().expect("compact presentation under id");
+            let parsed =
+                affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher)
+                    .unwrap();
+            assert_eq!(parsed.disclosures.len(), 1);
+            assert_eq!(parsed.disclosures[0].claim_name.as_deref(), Some(claim));
+            assert!(parsed.kb_jwt.is_some(), "holder kb-jwt must be present");
+        }
     }
 
     // ── deferred approval store (task 3.5d, the defer half) ──
@@ -2106,25 +2062,17 @@ mod tests {
         )
         .await
         .expect("present_query");
-        let credential_id = match outcome {
-            PresentOutcome::ConsentRequired {
-                credential_id,
-                claims,
-                ..
-            } => {
-                let rec = defer_presentation(
-                    &vault,
-                    "req-1",
-                    verifier,
-                    &credential_id,
-                    claims,
-                    &query,
-                    now,
-                )
-                .await
-                .expect("defer");
+        let requested = match outcome {
+            PresentOutcome::ConsentRequired { requested, .. } => {
+                assert_eq!(requested.len(), 1);
+                assert_eq!(requested[0].credential_query_id, "membership");
+                assert_eq!(requested[0].claims, vec!["givenName".to_string()]);
+                let rec =
+                    defer_presentation(&vault, "req-1", verifier, requested.clone(), &query, now)
+                        .await
+                        .expect("defer");
                 assert_eq!(rec.status, pending::PendingStatus::Pending);
-                credential_id
+                requested
             }
             other => panic!("expected ConsentRequired, got {other:?}"),
         };
@@ -2133,14 +2081,17 @@ mod tests {
         let list = pending::list(&vault).await.unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].id, "req-1");
-        assert_eq!(list[0].credential_id, credential_id);
+        assert_eq!(list[0].requested, requested);
 
         // 2. Out-of-band approval mints consent + re-presents.
         let present =
             approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", now)
                 .await
                 .expect("approve");
-        let token = present.vp_token.as_str().expect("compact vp_token");
+        // vp_token is the OID4VP DCQL map keyed by credential-query id.
+        let token = present.vp_token["membership"]
+            .as_str()
+            .expect("compact vp_token under the query id");
         let parsed =
             affinidi_sd_jwt::SdJwt::parse(token, &affinidi_sd_jwt::hasher::Sha256Hasher).unwrap();
         assert_eq!(parsed.disclosures.len(), 1);
@@ -2167,17 +2118,14 @@ mod tests {
         let now = Utc::now();
         let query = membership_query();
 
-        defer_presentation(
-            &vault,
-            "req-2",
-            verifier,
-            "urn:cred:1",
-            vec!["givenName".into()],
-            &query,
-            now,
-        )
-        .await
-        .expect("defer");
+        let requested = vec![RequestedCredential {
+            credential_query_id: "membership".into(),
+            credential_id: "urn:cred:1".into(),
+            claims: vec!["givenName".into()],
+        }];
+        defer_presentation(&vault, "req-2", verifier, requested, &query, now)
+            .await
+            .expect("defer");
 
         let denied = deny_pending_presentation(&vault, "req-2")
             .await
@@ -2205,12 +2153,16 @@ mod tests {
         let created = Utc::now() - chrono::Duration::hours(48);
 
         // A deferral recorded 48h ago — past the 24h window.
+        let requested = vec![RequestedCredential {
+            credential_query_id: "membership".into(),
+            credential_id: "urn:cred:1".into(),
+            claims: vec!["givenName".into()],
+        }];
         defer_presentation(
             &vault,
             "req-3",
             "did:web:stranger.example",
-            "urn:cred:1",
-            vec!["givenName".into()],
+            requested,
             &query,
             created,
         )

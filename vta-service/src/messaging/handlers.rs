@@ -1933,22 +1933,19 @@ pub async fn handle_credential_query(
             response(credential_exchange::PRESENT, &present_body)
         }
         PresentOutcome::ConsentRequired {
-            credential_id,
-            claims,
-            purpose,
-            ..
+            requested, purpose, ..
         } => {
             // Persist the deferral so an out-of-band approval can re-present. The
             // thread id is the approval handle the verifier (and the holder's
             // approval UI) refer to.
             let approval_id = message.thid.clone().unwrap_or_else(|| message.id.clone());
+            let requested_count = requested.len();
             app_try!(
                 operations::credential_exchange::defer_presentation(
                     &app_state.vault_ks,
                     &approval_id,
                     &verifier_did,
-                    &credential_id,
-                    claims.clone(),
+                    requested,
                     &body,
                     chrono::Utc::now(),
                 )
@@ -1957,7 +1954,7 @@ pub async fn handle_credential_query(
             info!(
                 verifier = %verifier_did,
                 approval_id = %approval_id,
-                ?claims,
+                requested = requested_count,
                 %purpose,
                 "credential query deferred — holder consent required (pending approval persisted)"
             );
