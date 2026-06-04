@@ -285,21 +285,136 @@ pub struct VerifiedPresentation {
     pub claims: Value,
 }
 
+/// A [`VerificationMethodResolver`] over the VTC's optional [`DIDCacheClient`].
+///
+/// `did:key` verification methods resolve locally (no I/O); `did:webvh` /
+/// `did:web` resolve through the cache (which must then be configured). Returns
+/// Ed25519 keys only — the credential-exchange formats verified here are all
+/// EdDSA. The DID-document JSON navigation mirrors
+/// `recognition::verify::DidResolverKeyResolver`.
+pub(crate) struct DidVmResolver<'a> {
+    resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+}
+
+impl<'a> DidVmResolver<'a> {
+    pub(crate) fn new(
+        resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    ) -> Self {
+        Self { resolver }
+    }
+
+    /// Resolve a verification-method URI (or a bare `did:key`) to its Ed25519
+    /// public-key bytes. `did:key` is local; other methods use the cache.
+    pub(crate) async fn resolve_ed25519(&self, vm: &str) -> Result<Vec<u8>, AppError> {
+        let base_did = vm.split('#').next().unwrap_or(vm);
+        if base_did.starts_with("did:key:") {
+            return affinidi_crypto::did_key::did_key_to_ed25519_pub(base_did)
+                .map(|k| k.to_vec())
+                .map_err(|e| {
+                    AppError::Validation(format!("`{base_did}` is not a resolvable did:key: {e}"))
+                });
+        }
+        let resolver = self.resolver.ok_or_else(|| {
+            AppError::Validation(format!(
+                "resolving `{base_did}` needs a DID resolver, but none is configured — configure \
+                 the DID cache to verify did:webvh / did:web issuers + holders"
+            ))
+        })?;
+        let resolved = resolver
+            .resolve(base_did)
+            .await
+            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
+        let doc: Value = serde_json::to_value(&resolved.doc)
+            .map_err(|e| AppError::Internal(format!("DID document serialise failed: {e}")))?;
+        let vms = doc
+            .get("verificationMethod")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                AppError::Validation(format!("DID `{base_did}` has no verificationMethod array"))
+            })?;
+        let relative = vm
+            .split_once('#')
+            .map(|(_, f)| format!("#{f}"))
+            .unwrap_or_default();
+        let entry = vms
+            .iter()
+            .find(|e| {
+                let id = e.get("id").and_then(Value::as_str).unwrap_or("");
+                id == vm || id == relative
+            })
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "verificationMethod `{vm}` not found in DID `{base_did}`"
+                ))
+            })?;
+        let multibase = entry
+            .get("publicKeyMultibase")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "verificationMethod `{vm}` has no publicKeyMultibase (Multikey-encoded \
+                     Ed25519 only)"
+                ))
+            })?;
+        // A `z`-prefixed Ed25519 Multikey is exactly the `did:key` suffix.
+        affinidi_crypto::did_key::did_key_to_ed25519_pub(&format!("did:key:{multibase}"))
+            .map(|k| k.to_vec())
+            .map_err(|e| {
+                AppError::Validation(format!(
+                    "verificationMethod `{vm}` is not an Ed25519 Multikey: {e}"
+                ))
+            })
+    }
+
+    /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] for the
+    /// SD-JWT issuer-signature path.
+    pub(crate) async fn resolve_verifying_key(&self, vm: &str) -> Result<VerifyingKey, AppError> {
+        let bytes = self.resolve_ed25519(vm).await?;
+        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            AppError::Validation(format!("verificationMethod `{vm}` key is not 32 bytes"))
+        })?;
+        VerifyingKey::from_bytes(&arr).map_err(|e| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` is not a valid Ed25519 key: {e}"
+            ))
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver<'_> {
+    async fn resolve_vm(
+        &self,
+        vm: &str,
+    ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
+    {
+        let bytes = self
+            .resolve_ed25519(vm)
+            .await
+            .map_err(|e| affinidi_data_integrity::DataIntegrityError::Resolver(e.to_string()))?;
+        Ok(affinidi_data_integrity::ResolvedKey::new(
+            affinidi_secrets_resolver::secrets::KeyType::Ed25519,
+            bytes,
+        ))
+    }
+}
+
 /// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
 ///
 /// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
-/// JWS signature (issuer `did:key` resolved from the `iss` claim); the holder
-/// key-binding JWT — bound to `expected_aud` + `expected_nonce`, signed by the
-/// `cnf.jwk` key the issuer committed to (RFC 9901 §8.3); and temporal validity
-/// (`nbf` / `exp`).
+/// JWS signature (issuer key resolved from the JWS `kid`, bound to `iss` — a
+/// `did:key` issuer resolves locally, a `did:webvh` / `did:web` issuer through
+/// `did_resolver`); the holder key-binding JWT — bound to `expected_aud` +
+/// `expected_nonce`, signed by the `cnf.jwk` key the issuer committed to (RFC
+/// 9901 §8.3); and temporal validity (`nbf` / `exp`).
 ///
 /// Deferred to follow-up slices: status-list revocation, issuer-trust (TRQP),
-/// and re-checking DCQL satisfaction. A `did:webvh` / `did:web` issuer needs
-/// resolver-based key resolution (here a non-`did:key` issuer is rejected).
-pub fn verify_presentation(
+/// and re-checking DCQL satisfaction.
+pub async fn verify_presentation(
     vp_token: &Value,
     expected_aud: &str,
     expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentation, AppError> {
     let compact = vp_token.as_str().ok_or_else(|| {
@@ -324,8 +439,25 @@ pub fn verify_presentation(
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("presentation has no `iss`".into()))?
         .to_string();
+    // The signing key is named by the issuer JWS `kid` (fall back to `iss` for a
+    // bare did:key issuer). Bind it to `iss` — a key under some *other* DID must
+    // not sign a credential claiming this issuer.
+    let header = sd
+        .header()
+        .map_err(|e| AppError::Validation(format!("presentation header: {e}")))?;
+    let issuer_vm = header
+        .get("kid")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| issuer_did.clone());
+    if issuer_vm.split('#').next().unwrap_or_default() != issuer_did {
+        return Err(AppError::Validation(format!(
+            "SD-JWT issuer kid `{issuer_vm}` is not under `iss` (`{issuer_did}`)"
+        )));
+    }
+    let resolver = DidVmResolver::new(did_resolver);
     let issuer_verifier = EdDsaJwtVerifier {
-        key: resolve_ed25519_verifying_key(&issuer_did)?,
+        key: resolver.resolve_verifying_key(&issuer_vm).await?,
     };
 
     let cnf_jwk = payload
@@ -400,13 +532,14 @@ pub struct VerifiedPresentationSet {
 ///   presentation, or an **array** of presentations under one query id;
 /// - a bare **string** (a single SD-JWT-VC presentation — the pre-map form).
 ///
-/// **SD-JWT-VC** entries (compact strings) are fully verified. A **W3C
-/// Data-Integrity VP** entry (a JSON object) needs holder-proof verification — a
-/// follow-up slice; it is refused here with a clear error.
-pub fn verify_vp_token(
+/// **SD-JWT-VC** entries (compact strings) and **W3C Data-Integrity VP** entries
+/// (JSON objects) are both verified. A `did:webvh` / `did:web` issuer or holder
+/// is resolved through `did_resolver` (a `did:key` resolves locally).
+pub async fn verify_vp_token(
     vp_token: &Value,
     expected_aud: &str,
     expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentationSet, AppError> {
     // Flatten the vp_token into the individual presentation values to verify.
@@ -437,26 +570,27 @@ pub fn verify_vp_token(
     let mut presentations = Vec::with_capacity(entries.len());
     let mut holder: Option<String> = None;
     for entry in entries {
-        if entry.is_object() {
-            return Err(AppError::Validation(
-                "a W3C Data-Integrity VP entry in the vp_token is not yet verifiable here \
-                 (SD-JWT-VC presentations are wired; DI-VP verification is a follow-up slice)"
-                    .into(),
-            ));
-        }
-        let verified = verify_presentation(entry, expected_aud, expected_nonce, now)?;
-        match &holder {
-            None => holder = Some(verified.holder_did.clone()),
-            Some(h) if h != &verified.holder_did => {
-                return Err(AppError::Validation(format!(
-                    "vp_token presentations disagree on the holder (`{h}` vs \
-                     `{}`) — a single presentation must bind one holder",
-                    verified.holder_did
-                )));
+        // A JSON **object** is a W3C Data-Integrity VP (may carry several VCs); a
+        // **string** is one SD-JWT-VC presentation.
+        let verified: Vec<VerifiedPresentation> = if entry.is_object() {
+            verify_di_vp(entry, expected_aud, expected_nonce, did_resolver, now).await?
+        } else {
+            vec![verify_presentation(entry, expected_aud, expected_nonce, did_resolver, now).await?]
+        };
+        for v in verified {
+            match &holder {
+                None => holder = Some(v.holder_did.clone()),
+                Some(h) if h != &v.holder_did => {
+                    return Err(AppError::Validation(format!(
+                        "vp_token presentations disagree on the holder (`{h}` vs \
+                         `{}`) — a single presentation must bind one holder",
+                        v.holder_did
+                    )));
+                }
+                Some(_) => {}
             }
-            Some(_) => {}
+            presentations.push(v);
         }
-        presentations.push(verified);
     }
 
     let holder = holder.ok_or_else(|| {
@@ -468,18 +602,158 @@ pub fn verify_vp_token(
     })
 }
 
-/// Resolve an Ed25519 `did:key` to its verifying key (issuer-key resolution).
-fn resolve_ed25519_verifying_key(did: &str) -> Result<VerifyingKey, AppError> {
-    if !did.starts_with("did:key:") {
+/// Verify a **W3C Data-Integrity VP** (the JSON object the VTA's `present_di_vc`
+/// produces) and project each contained VC into a [`VerifiedPresentation`].
+///
+/// Checks, in order: the holder `eddsa-jcs-2022` proof over the VP (minus its
+/// proof), with `proofPurpose` `authentication`; the `nonce` + `domain` bind
+/// `expected_nonce` + `expected_aud`; then, for each `verifiableCredential`, the
+/// issuer's `eddsa-jcs-2022` proof (verification method **bound to the VC
+/// `issuer`**) and W3C temporal validity (`validFrom` / `validUntil`). Issuer
+/// and holder keys resolve through `did_resolver` (`did:key` locally).
+async fn verify_di_vp(
+    vp: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    now: DateTime<Utc>,
+) -> Result<Vec<VerifiedPresentation>, AppError> {
+    use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+
+    let resolver = DidVmResolver::new(did_resolver);
+
+    // 1. Holder proof over the VP (minus its proof).
+    let proof_val = vp
+        .get("proof")
+        .ok_or_else(|| AppError::Validation("DI VP has no `proof` (holder binding)".into()))?;
+    let proof: DataIntegrityProof = serde_json::from_value(proof_val.clone()).map_err(|e| {
+        AppError::Validation(format!("DI VP proof is not a Data-Integrity proof: {e}"))
+    })?;
+    if proof.proof_purpose != "authentication" {
         return Err(AppError::Validation(format!(
-            "issuer `{did}` is not a `did:key` — resolver-based resolution is a follow-up slice"
+            "DI VP holder proof purpose is `{}`, expected `authentication`",
+            proof.proof_purpose
         )));
     }
-    let bytes = affinidi_crypto::did_key::did_key_to_ed25519_pub(did).map_err(|e| {
-        AppError::Validation(format!("issuer `{did}` is not a resolvable did:key: {e}"))
-    })?;
-    VerifyingKey::from_bytes(&bytes)
-        .map_err(|e| AppError::Validation(format!("issuer key is invalid: {e}")))
+    let holder_did = proof
+        .verification_method
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    let mut vp_unsigned = vp.clone();
+    if let Some(obj) = vp_unsigned.as_object_mut() {
+        obj.remove("proof");
+    }
+    proof
+        .verify(&vp_unsigned, &resolver, VerifyOptions::new())
+        .await
+        .map_err(|e| AppError::Validation(format!("DI VP holder proof did not verify: {e}")))?;
+
+    // 2. Freshness + audience binding (both are top-level VP fields, signed).
+    if vp.get("nonce").and_then(Value::as_str) != Some(expected_nonce) {
+        return Err(AppError::Validation(
+            "DI VP `nonce` does not match the verifier's challenge".into(),
+        ));
+    }
+    if vp.get("domain").and_then(Value::as_str) != Some(expected_aud) {
+        return Err(AppError::Validation(
+            "DI VP `domain` does not name this verifier".into(),
+        ));
+    }
+
+    // 3. Each contained credential: issuer proof (bound to `issuer`) + temporal.
+    let vcs = vp
+        .get("verifiableCredential")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation("DI VP has no `verifiableCredential` to verify".into())
+        })?;
+
+    let mut out = Vec::with_capacity(vcs.len());
+    for vc in vcs {
+        let issuer_did = vc
+            .get("issuer")
+            .and_then(|i| match i {
+                Value::String(s) => Some(s.clone()),
+                Value::Object(o) => o.get("id").and_then(Value::as_str).map(str::to_string),
+                _ => None,
+            })
+            .ok_or_else(|| AppError::Validation("DI VC has no `issuer`".into()))?;
+
+        let vc_proof_val = vc
+            .get("proof")
+            .ok_or_else(|| AppError::Validation("DI VC has no issuer `proof`".into()))?;
+        let vc_proof: DataIntegrityProof =
+            serde_json::from_value(vc_proof_val.clone()).map_err(|e| {
+                AppError::Validation(format!("DI VC proof is not a Data-Integrity proof: {e}"))
+            })?;
+        // Bind the signing key to the VC issuer.
+        if vc_proof
+            .verification_method
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            != issuer_did
+        {
+            return Err(AppError::Validation(format!(
+                "DI VC proof verificationMethod `{}` is not under the issuer `{issuer_did}`",
+                vc_proof.verification_method
+            )));
+        }
+        let mut vc_unsigned = vc.clone();
+        if let Some(obj) = vc_unsigned.as_object_mut() {
+            obj.remove("proof");
+        }
+        vc_proof
+            .verify(&vc_unsigned, &resolver, VerifyOptions::new())
+            .await
+            .map_err(|e| AppError::Validation(format!("DI VC issuer proof did not verify: {e}")))?;
+
+        check_w3c_temporal(vc, now)?;
+
+        let vct = vc.get("type").and_then(|t| match t {
+            Value::Array(a) => a
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|s| *s != "VerifiableCredential")
+                .map(str::to_string),
+            Value::String(s) => Some(s.clone()),
+            _ => None,
+        });
+        out.push(VerifiedPresentation {
+            issuer_did,
+            holder_did: holder_did.clone(),
+            vct,
+            claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
+        });
+    }
+    Ok(out)
+}
+
+/// Enforce W3C VCDM v2 temporal validity (`validFrom` / `validUntil`, RFC-3339).
+fn check_w3c_temporal(vc: &Value, now: DateTime<Utc>) -> Result<(), AppError> {
+    if let Some(vf) = vc.get("validFrom").and_then(Value::as_str) {
+        let vf = DateTime::parse_from_rfc3339(vf)
+            .map_err(|e| AppError::Validation(format!("DI VC `validFrom` is not RFC-3339: {e}")))?;
+        if now < vf {
+            return Err(AppError::Validation(
+                "DI VC is not yet valid (`validFrom` in the future)".into(),
+            ));
+        }
+    }
+    if let Some(vu) = vc.get("validUntil").and_then(Value::as_str) {
+        let vu = DateTime::parse_from_rfc3339(vu).map_err(|e| {
+            AppError::Validation(format!("DI VC `validUntil` is not RFC-3339: {e}"))
+        })?;
+        if now > vu {
+            return Err(AppError::Validation(
+                "DI VC has expired (`validUntil` in the past)".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Build a verifying key from an RFC 8037 OKP / Ed25519 JWK (the `cnf.jwk`).
@@ -1139,8 +1413,8 @@ mod tests {
         (issuer_did, holder_did, json!(presentation.serialize()))
     }
 
-    #[test]
-    fn verify_vp_token_verifies_a_dcql_map() {
+    #[tokio::test]
+    async fn verify_vp_token_verifies_a_dcql_map() {
         let aud = "did:web:vtc.example";
         let nonce = "verifier-nonce-multi";
         let now = Utc::now();
@@ -1160,14 +1434,16 @@ mod tests {
         );
         let vp_token = json!({ "membership": vp_membership, "invitation": vp_invitation });
 
-        let set = verify_vp_token(&vp_token, aud, nonce, now).expect("verify map");
+        let set = verify_vp_token(&vp_token, aud, nonce, None, now)
+            .await
+            .expect("verify map");
         assert_eq!(set.holder, holder_did);
         assert_eq!(set.presentations.len(), 2);
         assert_eq!(set.presentations[0].claims["givenName"], "Alice");
     }
 
-    #[test]
-    fn verify_vp_token_accepts_a_bare_string() {
+    #[tokio::test]
+    async fn verify_vp_token_accepts_a_bare_string() {
         let aud = "did:web:vtc.example";
         let nonce = "n";
         let now = Utc::now();
@@ -1175,12 +1451,14 @@ mod tests {
         let exp = (now + Duration::hours(1)).timestamp();
         let (_did, vp) = make_presentation(aud, nonce, iat, exp, true);
 
-        let set = verify_vp_token(&vp, aud, nonce, now).expect("verify bare string");
+        let set = verify_vp_token(&vp, aud, nonce, None, now)
+            .await
+            .expect("verify bare string");
         assert_eq!(set.presentations.len(), 1);
     }
 
-    #[test]
-    fn verify_vp_token_rejects_mixed_holders() {
+    #[tokio::test]
+    async fn verify_vp_token_rejects_mixed_holders() {
         let aud = "did:web:vtc.example";
         let nonce = "n";
         let now = Utc::now();
@@ -1192,37 +1470,211 @@ mod tests {
         let (_i2, _h2, vp_b) = make_presentation_holder(6, MEMBERSHIP_VCT, aud, nonce, iat, exp);
         let vp_token = json!({ "a": vp_a, "b": vp_b });
 
-        let err = verify_vp_token(&vp_token, aud, nonce, now).unwrap_err();
+        let err = verify_vp_token(&vp_token, aud, nonce, None, now)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Validation(m) if m.contains("disagree on the holder")),
             "{err:?}"
         );
     }
 
-    #[test]
-    fn verify_vp_token_defers_a_di_vp_object() {
+    /// Build a holder-bound W3C Data-Integrity VP (the shape the VTA's
+    /// `present_di_vc` produces): a single `eddsa-jcs-2022`-signed VC wrapped in a
+    /// VP carrying `nonce` + `domain`, signed by the holder with `proofPurpose`
+    /// `authentication`. Returns `(holder_did, issuer_did, vp_object)`.
+    async fn build_di_vp(
+        holder_seed: u8,
+        issuer_seed: u8,
+        aud: &str,
+        nonce: &str,
+    ) -> (String, String, Value) {
+        use affinidi_data_integrity::{
+            DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
+        };
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let issuer_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&[issuer_seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        let issuer_vm = format!(
+            "{issuer_did}#{}",
+            issuer_did.strip_prefix("did:key:").unwrap()
+        );
+        let issuer_secret = Secret::generate_ed25519(Some(&issuer_vm), Some(&[issuer_seed; 32]));
+
+        let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&[holder_seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        );
+        let holder_vm = format!(
+            "{holder_did}#{}",
+            holder_did.strip_prefix("did:key:").unwrap()
+        );
+        let holder_secret = Secret::generate_ed25519(Some(&holder_vm), Some(&[holder_seed; 32]));
+
+        // Issuer-signed VC.
+        let mut vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": holder_did, "givenName": "Alice" }
+        });
+        let vc_proof = DataIntegrityProof::sign(
+            &vc,
+            &issuer_secret,
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        vc["proof"] = serde_json::to_value(&vc_proof).unwrap();
+
+        // Holder-signed VP carrying nonce + domain.
+        let mut vp = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiablePresentation"],
+            "holder": holder_did,
+            "verifiableCredential": [vc],
+            "nonce": nonce,
+            "domain": aud,
+        });
+        let vp_proof = DataIntegrityProof::sign(
+            &vp,
+            &holder_secret,
+            SignOptions::new()
+                .with_proof_purpose("authentication")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        vp["proof"] = serde_json::to_value(&vp_proof).unwrap();
+
+        (holder_did, issuer_did, vp)
+    }
+
+    #[tokio::test]
+    async fn verify_vp_token_verifies_a_w3c_di_vp() {
+        let aud = "did:web:vtc.example";
+        let nonce = "verifier-nonce-di";
         let now = Utc::now();
-        // A DI VP is a JSON object (not a compact string) — refused for now.
-        let vp_token = json!({ "membership": { "type": ["VerifiablePresentation"], "proof": {} } });
-        let err = verify_vp_token(&vp_token, "did:web:vtc.example", "n", now).unwrap_err();
+        let (holder_did, issuer_did, vp) = build_di_vp(5, 9, aud, nonce).await;
+        let vp_token = json!({ "membership": vp });
+
+        let set = verify_vp_token(&vp_token, aud, nonce, None, now)
+            .await
+            .expect("verify DI VP");
+        assert_eq!(set.holder, holder_did);
+        assert_eq!(set.presentations.len(), 1);
+        assert_eq!(set.presentations[0].issuer_did, issuer_did);
+        assert_eq!(
+            set.presentations[0].vct.as_deref(),
+            Some("MembershipCredential")
+        );
+        assert_eq!(set.presentations[0].claims["givenName"], "Alice");
+    }
+
+    #[tokio::test]
+    async fn verify_vp_token_rejects_a_di_vp_with_a_wrong_nonce() {
+        let aud = "did:web:vtc.example";
+        let now = Utc::now();
+        let (_h, _i, vp) = build_di_vp(5, 9, aud, "right-nonce").await;
+        let vp_token = json!({ "membership": vp });
+
+        // The VP's holder proof is valid, but it binds a different nonce.
+        let err = verify_vp_token(&vp_token, aud, "wrong-nonce", None, now)
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, AppError::Validation(m) if m.contains("Data-Integrity VP")),
+            matches!(&err, AppError::Validation(m) if m.contains("nonce")),
             "{err:?}"
         );
     }
 
-    #[test]
-    fn verify_vp_token_rejects_an_empty_object() {
+    #[tokio::test]
+    async fn verify_vp_token_rejects_a_di_vp_with_a_tampered_claim() {
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
         let now = Utc::now();
-        let err = verify_vp_token(&json!({}), "did:web:vtc.example", "n", now).unwrap_err();
+        let (_h, _i, mut vp) = build_di_vp(5, 9, aud, nonce).await;
+        // Tamper a credential subject claim. The embedded VC is covered by the
+        // holder's VP proof, so the tamper is caught at the holder-proof stage —
+        // defence in depth (no presentation with any altered byte verifies).
+        vp["verifiableCredential"][0]["credentialSubject"]["givenName"] = json!("Mallory");
+        let vp_token = json!({ "membership": vp });
+
+        let err = verify_vp_token(&vp_token, aud, nonce, None, now)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("did not verify")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_vp_token_rejects_a_di_vc_signed_outside_its_issuer() {
+        use affinidi_data_integrity::{
+            DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
+        };
+        use affinidi_secrets_resolver::secrets::Secret;
+
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
+        let now = Utc::now();
+        let (_h, _i, mut vp) = build_di_vp(5, 9, aud, nonce).await;
+        // Re-label the VC `issuer` to a DID that did not sign the VC's proof, then
+        // re-sign the VP so the holder proof stays valid — the issuer-binding
+        // check must then refuse it.
+        vp["verifiableCredential"][0]["issuer"] = json!("did:web:attacker.example");
+        let holder_did = vp["holder"].as_str().unwrap().to_string();
+        let holder_vm = format!(
+            "{holder_did}#{}",
+            holder_did.strip_prefix("did:key:").unwrap()
+        );
+        let holder_secret = Secret::generate_ed25519(Some(&holder_vm), Some(&[5u8; 32]));
+        let mut unsigned = vp.clone();
+        unsigned.as_object_mut().unwrap().remove("proof");
+        let proof = DataIntegrityProof::sign(
+            &unsigned,
+            &holder_secret,
+            SignOptions::new()
+                .with_proof_purpose("authentication")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        vp["proof"] = serde_json::to_value(&proof).unwrap();
+        let vp_token = json!({ "membership": vp });
+
+        let err = verify_vp_token(&vp_token, aud, nonce, None, now)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("not under the issuer")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_vp_token_rejects_an_empty_object() {
+        let now = Utc::now();
+        let err = verify_vp_token(&json!({}), "did:web:vtc.example", "n", None, now)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Validation(m) if m.contains("empty object")),
             "{err:?}"
         );
     }
 
-    #[test]
-    fn verify_vp_token_propagates_a_wrong_nonce() {
+    #[tokio::test]
+    async fn verify_vp_token_propagates_a_wrong_nonce() {
         let aud = "did:web:vtc.example";
         let now = Utc::now();
         let iat = now.timestamp() as u64;
@@ -1231,11 +1683,15 @@ mod tests {
         let vp_token = json!({ "membership": vp });
 
         // A presentation bound to a different nonce than the verifier expects.
-        assert!(verify_vp_token(&vp_token, aud, "wrong", now).is_err());
+        assert!(
+            verify_vp_token(&vp_token, aud, "wrong", None, now)
+                .await
+                .is_err()
+        );
     }
 
-    #[test]
-    fn verifies_a_well_formed_presentation() {
+    #[tokio::test]
+    async fn verifies_a_well_formed_presentation() {
         let aud = "did:web:vtc.example";
         let nonce = "verifier-nonce-1";
         let now = Utc::now();
@@ -1243,53 +1699,67 @@ mod tests {
         let exp = (now + Duration::hours(1)).timestamp();
         let (issuer_did, vp) = make_presentation(aud, nonce, iat, exp, true);
 
-        let verified = verify_presentation(&vp, aud, nonce, now).expect("verify");
+        let verified = verify_presentation(&vp, aud, nonce, None, now)
+            .await
+            .expect("verify");
         assert_eq!(verified.issuer_did, issuer_did);
         assert_eq!(verified.vct.as_deref(), Some(MEMBERSHIP_VCT));
         assert_eq!(verified.claims["givenName"], "Alice");
     }
 
-    #[test]
-    fn rejects_a_wrong_nonce_or_audience() {
+    #[tokio::test]
+    async fn rejects_a_wrong_nonce_or_audience() {
         let now = Utc::now();
         let iat = now.timestamp() as u64;
         let exp = (now + Duration::hours(1)).timestamp();
         let (_did, vp) = make_presentation("did:web:vtc.example", "right-nonce", iat, exp, true);
 
-        assert!(verify_presentation(&vp, "did:web:vtc.example", "wrong-nonce", now).is_err());
-        assert!(verify_presentation(&vp, "did:web:attacker.example", "right-nonce", now).is_err());
+        assert!(
+            verify_presentation(&vp, "did:web:vtc.example", "wrong-nonce", None, now)
+                .await
+                .is_err()
+        );
+        assert!(
+            verify_presentation(&vp, "did:web:attacker.example", "right-nonce", None, now)
+                .await
+                .is_err()
+        );
     }
 
-    #[test]
-    fn rejects_an_expired_presentation() {
+    #[tokio::test]
+    async fn rejects_an_expired_presentation() {
         let now = Utc::now();
         let iat = (now - Duration::hours(3)).timestamp() as u64;
         let exp = (now - Duration::hours(2)).timestamp();
         let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, true);
 
-        let err = verify_presentation(&vp, "did:web:vtc.example", "n", now).unwrap_err();
+        let err = verify_presentation(&vp, "did:web:vtc.example", "n", None, now)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Validation(m) if m.contains("expired")),
             "{err:?}"
         );
     }
 
-    #[test]
-    fn rejects_an_unbound_presentation_without_a_kb_jwt() {
+    #[tokio::test]
+    async fn rejects_an_unbound_presentation_without_a_kb_jwt() {
         let now = Utc::now();
         let iat = now.timestamp() as u64;
         let exp = (now + Duration::hours(1)).timestamp();
         let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, false);
 
-        let err = verify_presentation(&vp, "did:web:vtc.example", "n", now).unwrap_err();
+        let err = verify_presentation(&vp, "did:web:vtc.example", "n", None, now)
+            .await
+            .unwrap_err();
         assert!(
             matches!(&err, AppError::Validation(m) if m.contains("kb-jwt")),
             "{err:?}"
         );
     }
 
-    #[test]
-    fn rejects_a_tampered_issuer_signature() {
+    #[tokio::test]
+    async fn rejects_a_tampered_issuer_signature() {
         let aud = "did:web:vtc.example";
         let nonce = "n";
         let now = Utc::now();
@@ -1306,6 +1776,10 @@ mod tests {
         chars[i] = if chars[i] == 'A' { 'B' } else { 'A' };
         let tampered: String = chars.into_iter().collect();
 
-        assert!(verify_presentation(&json!(tampered), aud, nonce, now).is_err());
+        assert!(
+            verify_presentation(&json!(tampered), aud, nonce, None, now)
+                .await
+                .is_err()
+        );
     }
 }

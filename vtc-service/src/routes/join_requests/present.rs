@@ -46,8 +46,16 @@ pub async fn present_and_decide_join(
     now: DateTime<Utc>,
 ) -> Result<JoinSubmitOutcome, AppError> {
     // 1. Cryptographically verify every presentation in the vp_token. The holder
-    //    is proven (kb-jwt) and consistent across the set.
-    let set = verify_vp_token(vp_token, expected_aud, expected_nonce, now)?;
+    //    is proven (kb-jwt / DI holder proof) and consistent across the set.
+    //    did:webvh / did:web issuers + holders resolve through the DID cache.
+    let set = verify_vp_token(
+        vp_token,
+        expected_aud,
+        expected_nonce,
+        state.did_resolver.as_ref(),
+        now,
+    )
+    .await?;
     let applicant_did = set.holder.clone();
 
     // 2. Project the verified set into the ceremony evidence shape.
