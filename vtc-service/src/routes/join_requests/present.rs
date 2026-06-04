@@ -220,9 +220,12 @@ pub async fn send_query(
 /// message id **is** `thread_id` (the thread root), so the holder's `present`
 /// reply threads back to the single-use challenge the VTC just issued.
 ///
-/// Uses the shared mediator (`config.messaging.mediator_did`) as the forward
-/// target — the common deployment where the VTC and holder share a mediator.
-/// Resolving the holder's own mediator from its DID document is a follow-up.
+/// The forward is addressed to the **holder's own mediator** (resolved from the
+/// holder's DID document) and sent through the **VTC's own mediator** — the
+/// mediator the VTC has a connection to. The VTC's mediator routes the forward
+/// onward to the holder's mediator, which delivers it. When the holder
+/// advertises no mediator, the VTC's own mediator is used as the forward target
+/// (the shared-mediator deployment).
 async fn push_credential_query(
     state: &AppState,
     holder_did: &str,
@@ -248,6 +251,14 @@ async fn push_credential_query(
         (vtc_did, mediator_did)
     };
 
+    // Resolve the holder's own mediator from its DID document; fall back to the
+    // VTC's mediator (shared-mediator deployment) when the holder has none.
+    let target_mediator = resolve_holder_mediator(state, holder_did)
+        .await
+        .unwrap_or_else(|| mediator_did.clone());
+
+    // The VTC sends through its OWN mediator (the profile's connection); the
+    // forward, addressed to the holder's mediator, is routed onward from there.
     let profile = Arc::new(
         ATMProfile::new(atm, None, vtc_did.clone(), Some(mediator_did.clone()))
             .await
@@ -279,7 +290,7 @@ async fn push_credential_query(
         false,
         &jwe,
         Some(thread_id),
-        &mediator_did,
+        &target_mediator,
         holder_did,
         None,
         None,
@@ -289,6 +300,27 @@ async fn push_credential_query(
     .map_err(|e| AppError::Internal(format!("mediator forward failed: {e}")))?;
 
     Ok(())
+}
+
+/// Resolve the holder's own DIDComm mediator from its DID document — the `did:`
+/// `uri` of its `DIDCommMessaging` service. Returns `None` when the holder
+/// advertises no mediator (so the caller routes through its own).
+async fn resolve_holder_mediator(state: &AppState, holder_did: &str) -> Option<String> {
+    let resolver = state.did_resolver.as_ref()?;
+    let resolved = resolver.resolve(holder_did).await.ok()?;
+    for svc in &resolved.doc.service {
+        if svc.type_.iter().any(|t| t == "DIDCommMessaging")
+            && let Some(mediator) = svc
+                .service_endpoint
+                .get_uris()
+                .into_iter()
+                .map(|u| u.trim_matches('"').to_string())
+                .find(|u| u.starts_with("did:"))
+        {
+            return Some(mediator);
+        }
+    }
+    None
 }
 
 /// Project a [`VerifiedPresentationSet`] into the verified ceremony
