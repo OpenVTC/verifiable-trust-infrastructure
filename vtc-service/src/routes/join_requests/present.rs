@@ -21,6 +21,8 @@
 //! [`send_query`]): the VTC issues the challenge and builds the DCQL query (from
 //! a registered Accepts criterion) the holder answers.
 
+use std::sync::Arc;
+
 use affinidi_openid4vp::DcqlQuery;
 use axum::Json;
 use axum::extract::State;
@@ -38,7 +40,9 @@ use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
 use crate::join::JoinTransport;
-use crate::recognition::{HttpStatusListFetcher, StatusListFetcher};
+use crate::recognition::{
+    DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, StatusListFetcher,
+};
 use crate::registry::TrustRegistryClient;
 use crate::schemas::accepts::get_accepts;
 use crate::server::AppState;
@@ -258,13 +262,28 @@ async fn presentation_from_verified_set(
     let registry = state.registry_client.as_deref();
     // A presented credential's revocation is checked against the *issuer's*
     // status list (a foreign URL): same fetcher + SSRF guard the recognition
-    // path uses. Built once for the whole set.
-    let status_fetcher = HttpStatusListFetcher::new(reqwest::Client::new());
+    // path uses. When a DID resolver is configured, the fetcher also verifies
+    // the list credential's own issuer signature (bound to the presented
+    // credential's issuer) — so a MITM on the status-list host can't forge or
+    // hide a revocation. Built once for the whole set.
+    let status_fetcher = match state.did_resolver.clone() {
+        Some(resolver) => {
+            let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
+                Arc::new(DidResolverKeyResolver::new(resolver));
+            HttpStatusListFetcher::with_issuer_verification(reqwest::Client::new(), key_resolver)
+        }
+        None => HttpStatusListFetcher::new(reqwest::Client::new()),
+    };
 
     let mut credentials = Vec::with_capacity(set.presentations.len());
     for p in &set.presentations {
         let trusted = issuer_trusted(registry, own_did.as_deref(), &p.issuer_did).await;
-        let status = resolve_presented_status(p.credential_status.as_ref(), &status_fetcher).await;
+        let status = resolve_presented_status(
+            p.credential_status.as_ref(),
+            Some(&p.issuer_did),
+            &status_fetcher,
+        )
+        .await;
         credentials.push(credential_from_verified(p, trusted, status));
     }
 
@@ -322,6 +341,7 @@ fn credential_from_verified(
 ///   refuse rather than the verifier silently trusting an uncheckable credential.
 async fn resolve_presented_status(
     status_entry: Option<&JsonValue>,
+    expected_issuer: Option<&str>,
     fetcher: &dyn StatusListFetcher,
 ) -> CredentialStatus {
     // No status block → the credential never opted into revocation.
@@ -338,7 +358,7 @@ async fn resolve_presented_status(
         None => return CredentialStatus::Unknown,
     };
 
-    match fetcher.check_status_bit(&url, index).await {
+    match fetcher.check_status_bit(&url, index, expected_issuer).await {
         Ok(false) => CredentialStatus::Valid,
         Ok(true) if suspension => CredentialStatus::Suspended,
         Ok(true) => CredentialStatus::Revoked,
@@ -469,6 +489,7 @@ mod tests {
             &self,
             _url: &str,
             _index: usize,
+            _expected_issuer: Option<&str>,
         ) -> Result<bool, RecognitionError> {
             self.0
                 .map_err(|()| RecognitionError::StatusListFailed("stub".into()))
@@ -506,35 +527,35 @@ mod tests {
 
     #[tokio::test]
     async fn no_status_block_is_valid_without_a_fetch() {
-        let status = resolve_presented_status(None, &StubFetcher(Ok(true))).await;
+        let status = resolve_presented_status(None, None, &StubFetcher(Ok(true))).await;
         assert_eq!(status, CredentialStatus::Valid);
     }
 
     #[tokio::test]
     async fn clear_bit_is_valid() {
         let entry = w3c_status("revocation");
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(false))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(false))).await;
         assert_eq!(status, CredentialStatus::Valid);
     }
 
     #[tokio::test]
     async fn set_revocation_bit_is_revoked() {
         let entry = w3c_status("revocation");
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(true))).await;
         assert_eq!(status, CredentialStatus::Revoked);
     }
 
     #[tokio::test]
     async fn set_suspension_bit_is_suspended() {
         let entry = w3c_status("suspension");
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(true))).await;
         assert_eq!(status, CredentialStatus::Suspended);
     }
 
     #[tokio::test]
     async fn sd_jwt_status_list_shape_resolves() {
         let entry = json!({ "status_list": { "idx": 7, "uri": "https://issuer.example/sl" } });
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(true))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(true))).await;
         assert_eq!(status, CredentialStatus::Revoked);
     }
 
@@ -543,14 +564,14 @@ mod tests {
         // The verifier must not silently trust an uncheckable credential —
         // surface Unknown so the join policy can refuse.
         let entry = w3c_status("revocation");
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Err(()))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Err(()))).await;
         assert_eq!(status, CredentialStatus::Unknown);
     }
 
     #[tokio::test]
     async fn malformed_status_entry_is_unknown() {
         let entry = json!({ "type": "BitstringStatusListEntry" }); // no url/index
-        let status = resolve_presented_status(Some(&entry), &StubFetcher(Ok(false))).await;
+        let status = resolve_presented_status(Some(&entry), None, &StubFetcher(Ok(false))).await;
         assert_eq!(status, CredentialStatus::Unknown);
     }
 
