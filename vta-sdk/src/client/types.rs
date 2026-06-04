@@ -411,8 +411,16 @@ pub struct CreateDidWebvhRequest {
     pub server_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Legacy path selector. Prefer [`path_mode`](Self::path_mode), which
+    /// distinguishes the `.well-known` root, an explicit label, and
+    /// server-side auto-assignment. Retained for wire back-compat.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Explicit path-selection mode for server-managed DIDs. When set it
+    /// overrides [`path`](Self::path); absent falls back to `path`. See
+    /// [`crate::protocols::did_management::create::WebvhPathMode`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_mode: Option<crate::protocols::did_management::create::WebvhPathMode>,
     /// Optional explicit hosting domain on the target server. See
     /// [`crate::protocols::did_management::create::CreateDidWebvhBody::domain`].
     #[serde(skip_serializing_if = "Option::is_none")]

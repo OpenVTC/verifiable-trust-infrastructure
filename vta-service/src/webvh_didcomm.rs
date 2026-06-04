@@ -73,6 +73,32 @@ const TASK_DID_DELETE_RESPONSE: &str =
 const TASK_DID_PROBLEM_REPORT: &str =
     "https://trusttasks.org/spec/did-management/did/problem-report/0.1";
 
+/// Build the `did/check-name/0.1` reservation body.
+///
+/// `path == None` is the auto-assign case: the `path` field is OMITTED
+/// entirely so the host runs its server-generated-mnemonic branch. A
+/// present-but-empty path is rejected by the host with
+/// `e.p.did.path-invalid` ("path must not be empty"), so an absent path
+/// must never be coerced to `""` — that coercion was the regression this
+/// pins. Mirrors the REST `request_uri`, which omits the field for `None`.
+fn build_check_name_body(
+    path: Option<&str>,
+    domain: Option<&str>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut body = serde_json::Map::new();
+    if let Some(p) = path {
+        body.insert("path".to_string(), serde_json::Value::String(p.to_string()));
+    }
+    body.insert("reserve".to_string(), serde_json::Value::Bool(true));
+    if let Some(d) = domain {
+        body.insert(
+            "domain".to_string(),
+            serde_json::Value::String(d.to_string()),
+        );
+    }
+    body
+}
+
 /// DIDComm-based client for communicating with a WebVH server.
 ///
 /// Routes messages through the DIDComm service's listener connection,
@@ -107,24 +133,7 @@ impl<'a> WebvhDIDCommClient<'a> {
         path: Option<&str>,
         domain: Option<&str>,
     ) -> Result<RequestUriResponse, AppError> {
-        let mut body = serde_json::Map::new();
-        // check-name requires a path; the legacy `request_uri` mode
-        // also accepted an absent path (server-generated mnemonic).
-        // We preserve that behaviour by passing empty string when the
-        // caller wants the host to mint one — the remote interprets
-        // an empty path under `reserve: true` as "pick a mnemonic
-        // for me."
-        body.insert(
-            "path".to_string(),
-            serde_json::Value::String(path.unwrap_or("").to_string()),
-        );
-        body.insert("reserve".to_string(), serde_json::Value::Bool(true));
-        if let Some(d) = domain {
-            body.insert(
-                "domain".to_string(),
-                serde_json::Value::String(d.to_string()),
-            );
-        }
+        let body = build_check_name_body(path, domain);
 
         let response = self
             .bridge
@@ -319,5 +328,50 @@ impl<'a> WebvhDIDCommClient<'a> {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_check_name_body;
+    use serde_json::json;
+
+    /// Regression for `e.p.did.path-invalid`: auto-assign (`path == None`)
+    /// must OMIT the `path` field, not send `""`. The host rejects a
+    /// present-but-empty path; only an absent one triggers
+    /// server-side mnemonic generation.
+    #[test]
+    fn auto_assign_omits_path() {
+        let body = build_check_name_body(None, None);
+        assert!(
+            !body.contains_key("path"),
+            "auto-assign must omit `path`; got {body:?}"
+        );
+        assert_eq!(body.get("reserve"), Some(&json!(true)));
+    }
+
+    /// An explicit label travels verbatim under `reserve: true`.
+    #[test]
+    fn explicit_path_is_sent() {
+        let body = build_check_name_body(Some("alice"), None);
+        assert_eq!(body.get("path"), Some(&json!("alice")));
+        assert_eq!(body.get("reserve"), Some(&json!(true)));
+    }
+
+    /// `.well-known` (the root-DID marker) is sent as a normal path —
+    /// the host's `create_did` treats it as the reserved root slot.
+    #[test]
+    fn well_known_is_sent_as_path() {
+        let body = build_check_name_body(Some(".well-known"), None);
+        assert_eq!(body.get("path"), Some(&json!(".well-known")));
+    }
+
+    /// The optional `domain` rides along only when present.
+    #[test]
+    fn domain_included_only_when_present() {
+        let with = build_check_name_body(Some("alice"), Some("acme.example.com"));
+        assert_eq!(with.get("domain"), Some(&json!("acme.example.com")));
+        let without = build_check_name_body(Some("alice"), None);
+        assert!(!without.contains_key("domain"));
     }
 }

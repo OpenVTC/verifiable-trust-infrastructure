@@ -381,6 +381,10 @@ pub async fn cmd_webvh_did_create_with_files(
         server_id,
         url,
         path,
+        // The `--path` value travels in the legacy `path` field, which
+        // resolves to the right mode server-side (absent → auto-assign,
+        // `.well-known` → root, else explicit).
+        path_mode: None,
         domain,
         label,
         portable,

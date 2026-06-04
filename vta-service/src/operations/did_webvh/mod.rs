@@ -55,7 +55,7 @@ use affinidi_tdk::secrets_resolver::secrets::Secret;
 use crate::didcomm_bridge::DIDCommBridge;
 
 use vta_sdk::protocols::did_management::{
-    create::{CreateDidWebvhBody, CreateDidWebvhResultBody},
+    create::{CreateDidWebvhBody, CreateDidWebvhResultBody, WebvhPathMode},
     delete::DeleteDidWebvhResultBody,
 };
 use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
@@ -131,7 +131,11 @@ pub struct CreateDidWebvhParams {
     pub context_id: String,
     pub server_id: Option<String>,
     pub url: Option<String>,
-    pub path: Option<String>,
+    /// How to choose the server-managed DID's `<path>` segment. Drives
+    /// the host's `check-name`/`create_did` call (`WellKnown` →
+    /// `.well-known`, `Explicit` → label, `AutoAssign` → host allocates).
+    /// Ignored in serverless mode (`server_id` is `None`).
+    pub path_mode: WebvhPathMode,
     /// Optional explicit hosting domain on the target server.
     /// Honored only for server-managed DIDs (when `server_id` is set);
     /// ignored in serverless mode. Resolution chain on the remote:
@@ -183,7 +187,9 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             context_id: body.context_id,
             server_id: body.server_id,
             url: body.url,
-            path: body.path,
+            // Explicit `path_mode` wins; otherwise interpret the legacy
+            // `path` field so pre-enum wire callers keep working.
+            path_mode: WebvhPathMode::resolve(body.path_mode, body.path),
             domain: body.domain,
             label: body.label,
             portable: body.portable.unwrap_or(true),
@@ -627,7 +633,7 @@ pub async fn create_did_webvh(
         // supplied override (pnm CLI `--domain`). When omitted, the
         // remote resolves via caller's ACL default → system default.
         let uri_response = transport
-            .request_uri(params.path.as_deref(), params.domain.as_deref())
+            .request_uri(params.path_mode.to_request_path(), params.domain.as_deref())
             .await?;
 
         // Validate the URL

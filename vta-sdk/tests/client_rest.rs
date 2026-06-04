@@ -943,6 +943,7 @@ async fn create_did_webvh_posts() {
         server_id: Some("s1".into()),
         url: None,
         path: None,
+        path_mode: None,
         domain: None,
         label: None,
         portable: false,

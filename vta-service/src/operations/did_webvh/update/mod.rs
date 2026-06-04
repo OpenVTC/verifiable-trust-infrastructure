@@ -664,7 +664,7 @@ mod pre_rotation_e2e_tests {
                 context_id: context_id.into(),
                 server_id: None,
                 url: Some("https://example.com/.well-known/did/did.jsonl".into()),
-                path: None,
+                path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::default(),
                 domain: None,
                 label: Some("e2e".into()),
                 portable: true,

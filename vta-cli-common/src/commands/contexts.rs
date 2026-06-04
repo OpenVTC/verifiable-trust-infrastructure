@@ -522,6 +522,9 @@ pub async fn cmd_context_provision(
             server_id: opts.server_id,
             url: opts.did_url,
             path: None,
+            // No explicit path-mode override; the absent legacy `path`
+            // resolves to auto-assign server-side.
+            path_mode: None,
             // Context-bootstrap path: no per-DID domain override.
             // The server's caller-default → system-default resolves.
             domain: None,

@@ -7,6 +7,7 @@ use serde_json::json;
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::config::AppConfig;
 use crate::keys::seed_store::create_seed_store;
@@ -148,7 +149,8 @@ pub async fn run_create_did_webvh(
         context_id: args.context.clone(),
         server_id: None,
         url: Some(url_str.clone()),
-        path: None,
+        // Serverless (`server_id: None`) ignores `path_mode`.
+        path_mode: WebvhPathMode::default(),
         domain: None,
         label: Some(label.to_string()),
         portable,

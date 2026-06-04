@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
@@ -163,7 +164,9 @@ pub async fn run_create_did(
         context_id: context_id.clone(),
         server_id: Some(server_id),
         url: None,
-        path,
+        // `--path <p>` → explicit; `--path .well-known` → root; absent
+        // → server auto-assigns.
+        path_mode: WebvhPathMode::from(path),
         // CLI-driven flow: no per-DID domain selection here. Wired
         // via `--domain` in pnm-cli's surface.
         domain: None,

@@ -1096,7 +1096,8 @@ async fn create_simple_webvh_did(
         context_id: context_id.to_string(),
         server_id: None,
         url: Some(url_str),
-        path: None,
+        // Serverless (`server_id: None`) ignores `path_mode`.
+        path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::default(),
         domain: None,
         label: Some(label.to_string()),
         portable,

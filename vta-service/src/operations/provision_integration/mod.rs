@@ -417,7 +417,12 @@ pub async fn provision_integration(
                 context_id: context.clone(),
                 server_id: params_server_id,
                 url: params_url,
-                path: webvh_path,
+                // `webvh_path` is `None` when the operator gave no path
+                // (or only `.well-known`/bare URL): server-managed mode
+                // then auto-assigns. An explicit label maps to `Explicit`.
+                path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::from(
+                    webvh_path,
+                ),
                 // Explicit tenant domain when the caller set
                 // `WEBVH_DOMAIN` (multi-tenant hosting server); `None`
                 // lets the remote resolve to its caller-default / system

@@ -1521,6 +1521,38 @@ async fn create_did_webvh_rejects_both_document_and_log() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400: {body}");
 }
 
+/// The new `path_mode` wire field deserializes and threads through
+/// `CreateDidWebvhBody` → `CreateDidWebvhParams` without breaking the
+/// serverless create path. (Serverless ignores the mode — `server_id`
+/// selects `.well-known` self-hosting — but the field must still be
+/// accepted so server-managed callers can set it.) Pins back-compat for
+/// the `WebvhPathMode` addition.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_accepts_path_mode_field() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "test-path-mode").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "test-path-mode",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "path_mode": { "mode": "auto_assign" },
+                "set_primary": false,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create with explicit path_mode: {status} {body}"
+    );
+    assert!(body["did"].as_str().is_some(), "response has did");
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn create_did_webvh_template_mode() {
