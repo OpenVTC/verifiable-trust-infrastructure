@@ -231,6 +231,24 @@ impl VtaClient {
     /// Connect via DIDComm through a mediator.
     ///
     /// `rest_url` is an optional fallback for REST-only operations like `health()`.
+    ///
+    /// # You MUST call [`shutdown`](Self::shutdown) when done
+    ///
+    /// This opens a **persistent, auto-reconnecting** session. [`Drop`] cannot
+    /// close it (shutdown is `async`), so dropping a DIDComm `VtaClient` without
+    /// `shutdown()` **leaks a live session that keeps reconnecting** — and two
+    /// live sessions for the same DID fight on the mediator, so round-trips time
+    /// out. Always:
+    ///
+    /// ```ignore
+    /// let client = VtaClient::connect_didcomm(client_did, key, vta_did, mediator, rest).await?;
+    /// // ...use client...
+    /// client.shutdown().await;   // REQUIRED — not optional cleanup
+    /// ```
+    ///
+    /// Prefer [`with_didcomm`](Self::with_didcomm), which guarantees `shutdown()`
+    /// on scope exit (including the error path). Dropping a leaked client logs a
+    /// `WARN` (and trips a `debug_assert!` in debug builds).
     #[cfg(feature = "session")]
     pub async fn connect_didcomm(
         client_did: &str,
@@ -296,12 +314,64 @@ impl VtaClient {
         }
     }
 
-    /// Gracefully shut down the client (DIDComm only, no-op for REST).
+    /// Gracefully shut down the client.
+    ///
+    /// **Required for every DIDComm client** (no-op for REST). A DIDComm
+    /// `VtaClient` owns a live, auto-reconnecting mediator session that [`Drop`]
+    /// cannot close; failing to call this leaks the session and causes
+    /// duplicate-WebSocket mediator duels + round-trip timeouts. Idempotent and
+    /// safe to call on any clone. Prefer [`with_didcomm`](Self::with_didcomm) so
+    /// you can't forget.
     pub async fn shutdown(&self) {
         #[cfg(feature = "session")]
         if let Transport::DIDComm { session, .. } = &self.transport {
             session.shutdown().await;
         }
+    }
+
+    /// Run `f` with a DIDComm client that is **guaranteed to be shut down** on
+    /// the way out — the scoped, leak-proof alternative to
+    /// [`connect_didcomm`](Self::connect_didcomm) + a manual `shutdown()`.
+    ///
+    /// Connects, hands the client to `f`, then calls `shutdown().await`
+    /// **whether `f` returns `Ok` or `Err`** (the common forgotten-cleanup
+    /// path), and returns `f`'s result. The session can't outlive the scope, so
+    /// there's no duplicate-WebSocket duel between sequential uses.
+    ///
+    /// ```ignore
+    /// let dids = VtaClient::with_didcomm(client_did, key, vta_did, mediator, rest, |client| async move {
+    ///     client.list_webvh_dids().await   // ...use client...
+    /// })
+    /// .await?;   // shutdown() already ran
+    /// ```
+    ///
+    /// (If `f`'s future *panics*, the async `shutdown()` cannot run from the
+    /// unwinding drop, but the leak guard still logs a `WARN`.)
+    #[cfg(feature = "session")]
+    pub async fn with_didcomm<F, Fut, T>(
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+        f: F,
+    ) -> Result<T, VtaError>
+    where
+        F: FnOnce(VtaClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, VtaError>>,
+    {
+        let client = Self::connect_didcomm(
+            client_did,
+            private_key_multibase,
+            vta_did,
+            mediator_did,
+            rest_url,
+        )
+        .await?;
+        // Run the body, then shut down regardless of Ok/Err before returning.
+        let result = f(client.clone()).await;
+        client.shutdown().await;
+        result
     }
 
     // ── RPC helpers ─────────────────────────────────────────────────

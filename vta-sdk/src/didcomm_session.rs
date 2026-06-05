@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use affinidi_tdk::common::TDKSharedState;
@@ -24,12 +25,71 @@ const MEDIATOR_OP_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// Uses WebSocket streaming to receive responses from the mediator.
 /// Designed for CLI tools that send a request and wait for a reply.
+///
+/// # You MUST call [`shutdown`](Self::shutdown)
+///
+/// This session owns a live, **auto-reconnecting** mediator connection.
+/// [`shutdown`](Self::shutdown) is `async`, so [`Drop`] **cannot** close it —
+/// dropping the last clone of a session without having called `shutdown()`
+/// leaks a reconnecting session. Two live sessions for the same DID fight on
+/// the mediator (`Duplicate WebSocket connection: closing old session …`) and
+/// request/response round-trips time out. Dropping a leaked session logs a
+/// `WARN` (and trips a `debug_assert!` in debug builds).
 #[derive(Clone)]
 pub struct DIDCommSession {
     atm: Arc<ATM>,
     profile: Arc<ATMProfile>,
     pub(crate) client_did: String,
     pub(crate) vta_did: String,
+    /// Set by [`shutdown`](Self::shutdown). Shared across clones so calling
+    /// `shutdown()` on any clone (or the owning [`crate::client::VtaClient`])
+    /// marks the whole session closed. The [`LeakGuard`] reads it on the last
+    /// drop.
+    shutdown: Arc<AtomicBool>,
+    /// Fires a warning iff the last owner drops without `shutdown()`. `Arc`, so
+    /// its [`Drop`] runs exactly once — when the truly-last session clone is
+    /// dropped, which is when the live connection actually goes away.
+    _leak_guard: Arc<LeakGuard>,
+}
+
+/// Drop-time leak detector for a [`DIDCommSession`]. Held behind an `Arc` so it
+/// fires once, on the final drop. If `shutdown()` was never called it logs a
+/// loud warning — turning a silent "leaked reconnecting session" into an
+/// immediate signal in the logs.
+struct LeakGuard {
+    shutdown: Arc<AtomicBool>,
+    client_did: String,
+    vta_did: String,
+}
+
+impl LeakGuard {
+    /// `true` iff the session was dropped without `shutdown()` having been
+    /// called — i.e. a leaked, still-reconnecting session.
+    fn leaked(&self) -> bool {
+        !self.shutdown.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for LeakGuard {
+    fn drop(&mut self) {
+        // `!panicking()` avoids a double-panic abort if we're already unwinding.
+        if self.leaked() && !std::thread::panicking() {
+            warn!(
+                client_did = %self.client_did,
+                vta_did = %self.vta_did,
+                "DIDComm session dropped without shutdown() — a live, auto-reconnecting \
+                 session leaked. Two sessions for the same DID fight on the mediator and \
+                 round-trips time out. Call `client.shutdown().await`, or use \
+                 `VtaClient::with_didcomm`."
+            );
+            debug_assert!(
+                false,
+                "DIDComm session for `{}` dropped without shutdown() — call \
+                 shutdown().await or use VtaClient::with_didcomm",
+                self.client_did
+            );
+        }
+    }
 }
 
 impl DIDCommSession {
@@ -144,11 +204,19 @@ impl DIDCommSession {
 
         debug!("DIDComm session connected via mediator {mediator_did} (WebSocket mode)");
 
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let leak_guard = Arc::new(LeakGuard {
+            shutdown: Arc::clone(&shutdown),
+            client_did: client_did.to_string(),
+            vta_did: vta_did.to_string(),
+        });
         Ok(Self {
             atm,
             profile,
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
+            shutdown,
+            _leak_guard: leak_guard,
         })
     }
 
@@ -331,8 +399,54 @@ impl DIDCommSession {
         }
     }
 
-    /// Gracefully shut down the DIDComm session.
+    /// Gracefully shut down the DIDComm session — **required** for every
+    /// session (see the type-level docs). Marks the session closed (so the
+    /// drop-time leak check stays quiet) and tears down the mediator
+    /// connection. Idempotent and safe to call on any clone.
     pub async fn shutdown(&self) {
+        self.shutdown.store(true, Ordering::Release);
         self.atm.graceful_shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn guard(shutdown: &Arc<AtomicBool>) -> LeakGuard {
+        LeakGuard {
+            shutdown: Arc::clone(shutdown),
+            client_did: "did:key:zClient".into(),
+            vta_did: "did:key:zVta".into(),
+        }
+    }
+
+    #[test]
+    fn leak_guard_reports_a_leak_until_shutdown_is_marked() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let g = guard(&shutdown);
+        assert!(g.leaked(), "an un-shut-down session is a leak");
+
+        // Marking shutdown (what `shutdown()` does) clears the leak.
+        shutdown.store(true, Ordering::Release);
+        assert!(!g.leaked(), "after shutdown() the session is not a leak");
+
+        // Drop is a no-op now (shutdown marked) — no panic from the debug_assert.
+        drop(g);
+    }
+
+    #[test]
+    #[should_panic(expected = "dropped without shutdown()")]
+    fn dropping_a_leaked_guard_trips_the_debug_assert() {
+        // Construct a leaked guard and drop it: the debug_assert must fire (this
+        // is the signal that catches a forgotten shutdown() in a developer's
+        // own tests). Only meaningful in debug builds.
+        if cfg!(debug_assertions) {
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let _g = guard(&shutdown); // dropped at end of scope → panics
+        } else {
+            // Release builds compile out debug_assert; satisfy #[should_panic].
+            panic!("dropped without shutdown() (release no-op shim)");
+        }
     }
 }
