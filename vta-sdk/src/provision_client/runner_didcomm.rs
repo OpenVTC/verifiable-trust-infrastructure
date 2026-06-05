@@ -52,14 +52,26 @@ pub async fn provision_via_didcomm(
         .await
         .map_err(|e| ProvisionError::SessionOpen(e.to_string()))?;
 
-    let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
-    let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
-
-    let response =
-        provision_integration_didcomm(&session, vp, Some(ask.context.clone()), None, None, false)
-            .await?;
-
-    response_to_result(&seed, nonce, response)
+    // Run the round-trip, then shut the session down on EVERY path (Ok or Err)
+    // before returning — a dropped, un-shut-down session leaks a reconnecting
+    // mediator connection (see `DIDCommSession`).
+    let result = async {
+        let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
+        let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
+        let response = provision_integration_didcomm(
+            &session,
+            vp,
+            Some(ask.context.clone()),
+            None,
+            None,
+            false,
+        )
+        .await?;
+        response_to_result(&seed, nonce, response)
+    }
+    .await;
+    session.shutdown().await;
+    result
 }
 
 /// Run the DIDComm leg of the auth check.
@@ -173,6 +185,9 @@ pub(crate) async fn run_didcomm_attempt(
                 }
             };
 
+            // Preflight is done; the flight (`run_provision_flight`) opens a
+            // fresh session, so close this one rather than leak it.
+            session.shutdown().await;
             AttemptOutcome::PreflightOk {
                 rest_url,
                 mediator_did,
@@ -184,32 +199,25 @@ pub(crate) async fn run_didcomm_attempt(
             // stop there. The setup DID *is* the long-term admin DID
             // (no rotation) — the session open is the authenticated
             // proof that the operator's `pnm acl create` landed.
-            match DIDCommSession::connect(&setup_did, &setup_privkey_mb, &vta_did, &mediator_did)
-                .await
+            // Bind the session out of the match before any `.await`, so the
+            // `Result`'s non-`Send` error payload isn't held across the
+            // `shutdown().await` below (that would make this future non-`Send`
+            // and break `tokio::spawn` in the runner) — same shape as the
+            // AdminRotated probe arm.
+            let session = match DIDCommSession::connect(
+                &setup_did,
+                &setup_privkey_mb,
+                &vta_did,
+                &mediator_did,
+            )
+            .await
             {
-                Ok(_session) => {
+                Ok(session) => {
                     let _ = tx.send(VtaEvent::CheckDone(
                         DiagCheck::AuthenticateDIDComm,
                         DiagStatus::Ok(format!("DIDComm session as {setup_did}")),
                     ));
-                    let _ = tx.send(VtaEvent::CheckDone(
-                        DiagCheck::ListWebvhServers,
-                        DiagStatus::Skipped(
-                            "AdminOnly — no VTA-minted DID so no webvh host needed".into(),
-                        ),
-                    ));
-                    let _ = tx.send(VtaEvent::CheckDone(
-                        DiagCheck::ProvisionIntegration,
-                        DiagStatus::Skipped(
-                            "AdminOnly — setup did:key is the long-term admin credential; \
-                             no template render, no rollover"
-                                .into(),
-                        ),
-                    ));
-                    AttemptOutcome::Connected(VtaReply::AdminOnly(AdminCredentialReply {
-                        admin_did: setup_did,
-                        admin_private_key_mb: setup_privkey_mb,
-                    }))
+                    session
                 }
                 Err(e) => {
                     let msg = e.to_string();
@@ -225,14 +233,34 @@ pub(crate) async fn run_didcomm_attempt(
                         DiagCheck::ProvisionIntegration,
                         DiagStatus::Skipped("session did not open".into()),
                     ));
-                    AttemptOutcome::PreAuthFailure(format!(
+                    return AttemptOutcome::PreAuthFailure(format!(
                         "Could not open an authenticated DIDComm session to the VTA. \
-                         Confirm the `pnm acl create` command ran successfully for \
-                         this DID and that the VTA's mediator service is reachable. \
-                         ({msg})"
-                    ))
+                             Confirm the `pnm acl create` command ran successfully for \
+                             this DID and that the VTA's mediator service is reachable. \
+                             ({msg})"
+                    ));
                 }
-            }
+            };
+
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ListWebvhServers,
+                DiagStatus::Skipped("AdminOnly — no VTA-minted DID so no webvh host needed".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ProvisionIntegration,
+                DiagStatus::Skipped(
+                    "AdminOnly — setup did:key is the long-term admin credential; \
+                     no template render, no rollover"
+                        .into(),
+                ),
+            ));
+            // The session open *was* the auth proof for AdminOnly — close it
+            // now (no round-trip follows).
+            session.shutdown().await;
+            AttemptOutcome::Connected(VtaReply::AdminOnly(AdminCredentialReply {
+                admin_did: setup_did,
+                admin_private_key_mb: setup_privkey_mb,
+            }))
         }
         VtaIntent::AdminRotated => {
             // AdminRotated: open a DIDComm session, then run the
@@ -244,7 +272,7 @@ pub(crate) async fn run_didcomm_attempt(
             // map to PreAuthFailure (different transport may succeed).
             // Once auth completes, the round-trip itself becomes
             // post-auth.
-            let _ = match DIDCommSession::connect(
+            let probe_session = match DIDCommSession::connect(
                 &setup_did,
                 &setup_privkey_mb,
                 &vta_did,
@@ -281,6 +309,11 @@ pub(crate) async fn run_didcomm_attempt(
                     ));
                 }
             };
+
+            // The probe only proved auth; close it before the round-trip below
+            // opens its own session for the SAME DID (two live sessions for one
+            // DID duel on the mediator), and so it doesn't leak.
+            probe_session.shutdown().await;
 
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::ListWebvhServers,
@@ -349,14 +382,24 @@ pub async fn provision_admin_rotation_via_didcomm(
         .await
         .map_err(|e| ProvisionError::SessionOpen(e.to_string()))?;
 
-    let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
-    let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
-
-    let response =
-        provision_integration_didcomm(&session, vp, Some(ask.context.clone()), None, None, false)
-            .await?;
-
-    crate::provision_client::result::admin_rotation_response_to_reply(&seed, nonce, response)
+    // Shut the session down on every path (Ok or Err) before returning.
+    let result = async {
+        let vp = ask.to_builder().sign_with(&seed, setup_did).await?;
+        let nonce = decode_nonce_b64url(&vp.nonce).map_err(ProvisionError::Armor)?;
+        let response = provision_integration_didcomm(
+            &session,
+            vp,
+            Some(ask.context.clone()),
+            None,
+            None,
+            false,
+        )
+        .await?;
+        crate::provision_client::result::admin_rotation_response_to_reply(&seed, nonce, response)
+    }
+    .await;
+    session.shutdown().await;
+    result
 }
 
 /// FullSetup provision flight — runs after the preflight

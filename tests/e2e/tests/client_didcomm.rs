@@ -858,3 +858,64 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
     mediator.shutdown();
     mediator.join().await.expect("mediator joins");
 }
+
+// ── Provision runner shuts its session down on the error path (#300) ──
+
+/// The `provision_client` DIDComm runner opens its own setup-key
+/// [`DIDCommSession`] internally (not via [`VtaClient`]), so it owns the
+/// `shutdown()` obligation. Before the fix it dropped the session on the
+/// error path, tripping the `LeakGuard` `debug_assert!` (#292/#300) in
+/// debug builds.
+///
+/// Drive one provisioning flight whose VTA denies the request
+/// (`e.p.msg.forbidden`): the round-trip returns `Err`, and the runner
+/// must still have shut the session down — reaching this assertion at
+/// all (no `LeakGuard` panic) is the regression check. The acceptance
+/// criterion in #300 is exactly "a debug-build provisioning run against
+/// the mock VTA does not trip the LeakGuard."
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provision_admin_rotation_didcomm_shuts_session_down_on_error() {
+    use vta_sdk::protocols::provision_integration_management::PROVISION_INTEGRATION;
+    use vta_sdk::provision_client::{ProvisionAsk, provision_admin_rotation_via_didcomm};
+
+    common::init_tracing();
+    // The setup DID the operator would have enrolled via `pnm acl create`.
+    let (setup_did, setup_priv) = did_key_from_seed(0x11);
+
+    let (mediator, responder) = TestVtaResponder::spawn_with_mediator(
+        vec![setup_did.clone()],
+        |msg_type: &str, _body: &Value| {
+            if msg_type == PROVISION_INTEGRATION {
+                // Deny — exercises the runner's error path, which must
+                // still shut the session down before returning.
+                ResponderReply::problem_report("e.p.msg.forbidden", "denied for test")
+            } else {
+                ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            }
+        },
+    )
+    .await
+    .expect("responder + mediator spawn");
+
+    let ask = ProvisionAsk::vta_admin_rotated("test-context");
+    let result = provision_admin_rotation_via_didcomm(
+        &setup_did,
+        &setup_priv,
+        responder.did(),
+        mediator.did(),
+        &ask,
+    )
+    .await;
+
+    // The VTA denied the request, so the round-trip fails — but reaching
+    // this line (no LeakGuard panic from a dropped, un-shut-down session)
+    // is the actual regression assertion for #300.
+    assert!(
+        result.is_err(),
+        "expected the denying VTA to fail the round-trip"
+    );
+
+    responder.shutdown().await;
+    mediator.shutdown();
+    mediator.join().await.expect("mediator joins");
+}
