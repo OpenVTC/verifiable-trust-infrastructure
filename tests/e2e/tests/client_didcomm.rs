@@ -803,3 +803,58 @@ async fn check_auth_via_didcomm_always_true() {
 
     shutdown_all(client, responder, mediator).await;
 }
+
+// ── Session lifecycle: sequential reuse must not duel (#290 / #296) ──
+
+/// Two sequential `connect → use → close` cycles for the **same** client DID
+/// against one mediator must not overlap. If a cycle leaked its session (no
+/// `shutdown()`), the next cycle's session would fight it on the mediator
+/// (`Duplicate WebSocket connection: closing old session …`) and the
+/// round-trip would time out. [`VtaClient::with_didcomm`] guarantees
+/// `shutdown()` on scope exit, so both cycles complete cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
+    common::init_tracing();
+    let (client_did, client_priv) = did_key_from_seed(0x11);
+
+    // One persistent mediator + VTA responder for both cycles.
+    let (mediator, responder) = TestVtaResponder::spawn_with_mediator(
+        vec![client_did.clone()],
+        |msg_type: &str, _body: &Value| {
+            if msg_type == discovery::DISCOVER_CAPABILITIES {
+                ResponderReply::ok(
+                    discovery::DISCOVER_CAPABILITIES_RESULT,
+                    json!({
+                        "version": "0.5.0",
+                        "features": {"webvh": true, "didcomm": true, "tee": false, "rest": true},
+                        "services": {"rest": true, "didcomm": true},
+                        "webvh_servers": [],
+                        "did_creation_modes": ["webvh"]
+                    }),
+                )
+            } else {
+                ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            }
+        },
+    )
+    .await
+    .expect("responder + mediator spawn");
+
+    for cycle in 0..2u8 {
+        let caps = VtaClient::with_didcomm(
+            &client_did,
+            &client_priv,
+            responder.did(),
+            mediator.did(),
+            None,
+            |client| async move { client.capabilities().await },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("cycle {cycle} round-trip failed — leaked-session duel? {e:?}"));
+        assert_eq!(caps.version, "0.5.0", "cycle {cycle}");
+    }
+
+    responder.shutdown().await;
+    mediator.shutdown();
+    mediator.join().await.expect("mediator joins");
+}
