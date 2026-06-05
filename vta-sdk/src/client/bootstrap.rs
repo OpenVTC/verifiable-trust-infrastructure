@@ -1,6 +1,12 @@
 //! Bootstrap / provision-integration methods on [`VtaClient`].
 
-use super::{Transport, VtaClient};
+use super::VtaClient;
+// `Transport` + `VtaError` are only used by `provision_integration`, which is
+// gated on the `provision-integration` feature — gate the imports to match so
+// they aren't reported unused in builds without it (e.g. `client,session`).
+#[cfg(feature = "provision-integration")]
+use super::Transport;
+#[cfg(feature = "provision-integration")]
 use crate::error::VtaError;
 
 impl VtaClient {
