@@ -11,12 +11,14 @@
 //!
 //! The VTA is a credential **holder/verifier**, not an issuer, so issuer
 //! *signing* (`sign_vc_base`) is deliberately **not** exposed from this module
-//! — BBS issuance stays audit-gated. This module covers **receive** (verify the
-//! issuer's base proof, then store) plus issuer-key resolution. The holder
-//! **present** (selective-disclosure derive) lands in a follow-up.
+//! — BBS issuance stays audit-gated. This module covers the holder side:
+//! **receive** ([`receive_bbs`] — verify the issuer base proof, then store),
+//! **present** ([`present_bbs`] — consent-gated selective disclosure), and the
+//! G2 issuer-key resolution ([`resolve_bbs_issuer_key`]) the wire layer uses.
 
 use affinidi_bbs::PublicKey;
 use affinidi_data_integrity::bbs_2023;
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use vti_common::error::AppError;
@@ -52,6 +54,88 @@ pub fn g2_issuer_key_from_did_key(issuer_did: &str) -> Result<PublicKey, AppErro
         AppError::Validation(format!("issuer `{issuer_did}` is not a BBS did:key: {e}"))
     })?;
     g2_public_key(&bytes)
+}
+
+/// Resolve a BBS issuer's 96-byte compressed G2 public key from a credential,
+/// **binding the proof's `verificationMethod` to the credential `issuer`** (so a
+/// key under some other DID can't sign a credential claiming a different issuer).
+///
+/// `did:key` issuers resolve locally; `did:webvh` / `did:web` issuers resolve
+/// through `did_resolver` (the verification method's `publicKeyMultibase`, a
+/// `0xeb` Multikey). The G2 analog of
+/// [`crate::vault::di_verify::resolve_di_issuer_key`] — used by the wire layer
+/// (`store_issued_credential`) to receive a BBS credential delivered over
+/// DIDComm.
+pub async fn resolve_bbs_issuer_key(
+    did_resolver: Option<&DIDCacheClient>,
+    credential: &Value,
+) -> Result<[u8; BLS12381_G2_LEN], AppError> {
+    let issuer_did = crate::vault::di_verify::credential_issuer(credential)
+        .ok_or_else(|| AppError::Validation("bbs-2023 credential has no `issuer`".into()))?;
+    let vm = credential
+        .get("proof")
+        .and_then(|p| p.get("verificationMethod"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
+    if vm.split('#').next().unwrap_or_default() != issuer_did {
+        return Err(AppError::Validation(format!(
+            "bbs-2023 proof verificationMethod `{vm}` is not under the credential issuer \
+             `{issuer_did}`"
+        )));
+    }
+
+    if issuer_did.starts_with("did:key:") {
+        return affinidi_crypto::bls12381::did_key_to_g2_pub(&issuer_did).map_err(|e| {
+            AppError::Validation(format!("issuer `{issuer_did}` is not a BBS did:key: {e}"))
+        });
+    }
+    let resolver = did_resolver.ok_or_else(|| {
+        AppError::Validation(format!(
+            "resolving issuer `{issuer_did}` needs a DID resolver for did:webvh / did:web BBS \
+             issuers"
+        ))
+    })?;
+    let resolved = resolver.resolve(&issuer_did).await.map_err(|e| {
+        AppError::Validation(format!("issuer DID `{issuer_did}` did not resolve: {e}"))
+    })?;
+    let doc: Value = serde_json::to_value(&resolved.doc)
+        .map_err(|e| AppError::Internal(format!("issuer DID document serialise failed: {e}")))?;
+    let vms = doc
+        .get("verificationMethod")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "issuer DID `{issuer_did}` has no verificationMethod array"
+            ))
+        })?;
+    let relative = vm
+        .split_once('#')
+        .map(|(_, f)| format!("#{f}"))
+        .unwrap_or_default();
+    let entry = vms
+        .iter()
+        .find(|e| {
+            let id = e.get("id").and_then(Value::as_str).unwrap_or("");
+            id == vm || id == relative
+        })
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` not found in issuer DID `{issuer_did}`"
+            ))
+        })?;
+    let multibase = entry
+        .get("publicKeyMultibase")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::Validation(format!(
+                "verificationMethod `{vm}` has no publicKeyMultibase (BLS12-381 G2 Multikey)"
+            ))
+        })?;
+    affinidi_crypto::bls12381::did_key_to_g2_pub(&format!("did:key:{multibase}")).map_err(|e| {
+        AppError::Validation(format!(
+            "verificationMethod `{vm}` is not a BLS12-381 G2 Multikey: {e}"
+        ))
+    })
 }
 
 /// Receive a BBS (`bbs-2023`) **base-proof** credential into the vault.

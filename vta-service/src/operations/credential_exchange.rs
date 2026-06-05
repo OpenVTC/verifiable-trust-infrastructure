@@ -118,6 +118,38 @@ async fn store_issued_credential(
             )
             .await
         }
+        // A JSON object with a `bbs-2023` proof → a BBS base-proof VC. Resolve the
+        // issuer's G2 key (bound to the credential `issuer`) and store via the BBS
+        // path. Behind the `bbs` feature; without it a bbs-2023 credential is
+        // refused cleanly.
+        Value::Object(_) if is_bbs_2023_credential(credential) => {
+            #[cfg(feature = "bbs")]
+            {
+                let issuer_pub =
+                    crate::vault::bbs::resolve_bbs_issuer_key(did_resolver, credential).await?;
+                let body = serde_json::to_vec(credential)
+                    .map_err(|e| AppError::Internal(format!("credential -> bytes: {e}")))?;
+                vault::receive(
+                    vault_ks,
+                    &id,
+                    &CredentialFormat::Bbs2023,
+                    &body,
+                    Some(&issuer_pub),
+                    source,
+                    now,
+                )
+                .await
+            }
+            #[cfg(not(feature = "bbs"))]
+            {
+                let _ = did_resolver;
+                Err(AppError::Validation(
+                    "received a bbs-2023 credential but this VTA was built without the `bbs` \
+                     feature"
+                        .to_string(),
+                ))
+            }
+        }
         // A JSON object carrying a `proof` → a W3C Data-Integrity VC. Resolve the
         // issuer's signing key (binding it to the credential `issuer`) and store
         // via the DI path. The vault stays network-free — resolution happens here.
@@ -143,6 +175,17 @@ async fn store_issued_credential(
                 .to_string(),
         )),
     }
+}
+
+/// True iff `credential` is a `bbs-2023` VC — a JSON object whose
+/// `proof.cryptosuite` is `bbs-2023`. Pure JSON inspection, so it routes to the
+/// BBS path (or a clean error) even without the `bbs` feature.
+fn is_bbs_2023_credential(credential: &Value) -> bool {
+    credential
+        .get("proof")
+        .and_then(|p| p.get("cryptosuite"))
+        .and_then(Value::as_str)
+        == Some("bbs-2023")
 }
 
 /// Open a **sealed** issued credential (the invite / unknown-holder case, spec
@@ -1309,6 +1352,45 @@ mod tests {
             .await
             .expect("receive did:key DI VC");
         assert_eq!(cred.format, CredentialFormat::EddsaJcs2022);
+        assert_eq!(cred.issuer_did.as_deref(), Some(issuer_did.as_str()));
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn receives_a_bbs_vc_from_a_did_key_issuer() {
+        use affinidi_bbs as bbs;
+        use affinidi_data_integrity::bbs_2023::sign_vc_base;
+
+        let (_dir, _store, vault) = fresh_vault();
+
+        // A real bbs-2023 base-proof VC from a did:key (G2) issuer — the issuer
+        // DID is the key, so the issuer-binding holds and resolution is local.
+        let sk = bbs::keygen(b"ops-bbs-issuer-key-material-32by", b"").unwrap();
+        let pk = bbs::sk_to_pk(&sk);
+        let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
+        let vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": "did:key:zMember", "givenName": "Alice" }
+        });
+        let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
+        let signed = sign_vc_base(
+            &vc,
+            &mandatory,
+            &format!("{issuer_did}#bbs-key-0"),
+            &sk,
+            &pk,
+        )
+        .unwrap();
+
+        // No resolver needed — the did:key G2 issuer resolves locally.
+        let cred =
+            receive_issued_credential(&vault, &issue_body(signed, None), None, None, Utc::now())
+                .await
+                .expect("receive did:key BBS VC over the issue path");
+        assert_eq!(cred.format, CredentialFormat::Bbs2023);
         assert_eq!(cred.issuer_did.as_deref(), Some(issuer_did.as_str()));
     }
 
