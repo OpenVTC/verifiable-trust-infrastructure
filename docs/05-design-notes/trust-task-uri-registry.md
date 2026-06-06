@@ -560,3 +560,53 @@ here so they're not relitigated per-slice.
 - [ ] **0.2h** — propagate URI consts into `vta-sdk::trust_tasks::specs` (mirrors the `did_hosting_tasks.rs` pattern); add the cross-crate parity harness referenced as T9 in webvh-service.
 - [ ] **0.2i** — add `LOAD-BEARING` comment on the public `/did/{did}/log` route handler explaining the WebVH resolver failover invariant (so a future "tidy-up" PR doesn't quietly remove it).
 - [ ] **0.2j** — pin `BundleDescriptor` schema (Phase 3.7 design item; not blocking lighthouse).
+
+## 0.2 dual-accept migration (2026-06)
+
+The upstream Trust-Tasks framework published **0.2** of a set of specs. The
+only wire change from 0.1 is the minor-version bump in the `type` URI plus a
+fixed set of enum **values** switching kebab-case → camelCase (`vault-read` →
+`vaultRead`, `apple-app-attest` → `appleAppAttest`, …); Rust struct shapes are
+unchanged. The VTA **dual-accepts** both versions during a migration window:
+the `*_0_1` URI constants are `#[deprecated]` (still served; removed in a
+future release) and each gained a `*_0_2` successor.
+
+Specs with no upstream 0.2 stay on 0.1 untouched: `auth/{authenticate,refresh,
+challenge,revoke-session,whoami,sessions/list}`, `device/{disable,wipe}`,
+`vault/delete`, and all `did-management/*`. The VTA's own `*/1.0` URIs (acl,
+contexts, keys, seeds, audit, config, …) are not framework specs and are
+unaffected.
+
+Two mechanisms, split by whether the payload is signed:
+
+- **Edge transform** (`routes/trust_tasks/wire_v0_2.rs`) — for
+  bearer-authenticated specs with no signature over the payload: **device/***
+  and **vault/***. An inbound 0.2 request is down-converted (enum values →
+  kebab at the spec's declared enum field *paths*), retyped to the canonical
+  0.1 URI, dispatched through the existing 0.1 handler unchanged, and the
+  response up-converted (→ camelCase at the response enum paths, retyped to
+  `…/0.2#response`). `kebabize`/`camelize` are deterministic inverses;
+  transforms are **path-targeted** so opaque / free-text values (JWEs, DIDs,
+  labels) are never rewritten even if they coincidentally equal an enum token.
+  This delivers full per-version camelCase **without** modifying the
+  `vti_common` vault types.
+- **Typed handler** — for signed payloads (**`auth/step-up/approve-response`**,
+  where the approver signs the document). The bytes MUST NOT be mutated, so the
+  handler parses its v0_1 typed payload from a *copy* whose only renamed field
+  (`evidence.kind`) is normalised, while proof verification and the echoed
+  response use the original signed 0.2 document.
+- **Declarative** — **passkey-login** start/finish are REST-routed flat JSON
+  whose VTA-facing types carry no renamed enum, so a 0.2 client is structurally
+  identical; the 0.2 URIs are simply declared REST-routed.
+
+**Adding the next 0.2 spec:** add the `*_0_2` const + `ALL_URIS` entry in
+`vta-sdk::trust_tasks` and `#[deprecate]` the 0.1; for an edge-transform spec,
+add a `WireSpecV02` entry (with request/response enum-path tables) +
+`WIRE_V0_2_URIS` entry and a JSON round-trip test; for a signed spec, add a
+typed dispatch arm. The parity harness fails until the new 0.2 URI is tracked.
+
+**Client migration (mobile / companions):** the VTA accepting 0.2 *enables*
+clients to emit 0.2; it does not require them to. `vta-mobile-core` keeps
+emitting 0.1 approve-response (and the VTA keeps emitting 0.1 approve-request)
+so field clients interoperate with not-yet-upgraded peers. Client 0.2 emission
+is a fleet-rollout-gated follow-up.
