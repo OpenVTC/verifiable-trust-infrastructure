@@ -993,12 +993,13 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
-    // NOTE: the auth 0.2 successors (passkey-login start/finish, step-up
-    // approve-response) join ALL_URIS when their dual-accept handling lands
-    // in vta-service — the dispatcher parity harness requires every listed
-    // URI to be served.
+    // NOTE: step-up approve-response 0.2 joins ALL_URIS when its typed
+    // dual-accept handler lands in vta-service — the dispatcher parity harness
+    // requires every listed URI to be served.
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_REGISTER_0_2,

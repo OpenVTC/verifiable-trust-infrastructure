@@ -92,6 +92,14 @@ const REST_ROUTED: &[&str] = &[
     vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1,
     vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    // Passkey-login 0.2: the only 0.1→0.2 delta in the spec is the `purpose`
+    // enum value (`step-up`→`stepUp`), and the VTA's flat-JSON request/response
+    // types (`PasskeyLoginStart/FinishRequest`, `…StartResponse`) don't carry
+    // `purpose` at all — so a 0.2 client sends structurally identical JSON to
+    // the same `/auth/passkey-login/*` handlers. Dual-accept is purely
+    // declarative here; no edge transform needed.
+    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2,
+    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     // Attestation (unauth — TEE proofs are publicly verifiable by design)
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_1_0,
     vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_1_0,
