@@ -153,7 +153,7 @@ async fn connect_with_backoff(
             }
             Err(e) => {
                 attempts += 1;
-                if attempts <= 3 || attempts % 10 == 0 {
+                if attempts <= 3 || attempts.is_multiple_of(10) {
                     eprintln!(
                         "[vsock-log] connect attempt {attempts} failed: {e} (retry in {backoff_ms}ms)"
                     );
