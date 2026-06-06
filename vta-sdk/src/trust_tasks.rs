@@ -1040,15 +1040,20 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_DISCOVERY_CAPABILITIES_1_0,
-    // Vault slice (delete is 0.1-only upstream). The vault 0.2 successors
-    // join ALL_URIS when the vault dual-accept slice lands in vta-service.
+    // Vault slice (0.1 + 0.2 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
+    TASK_VAULT_LIST_0_2,
     TASK_VAULT_GET_0_1,
+    TASK_VAULT_GET_0_2,
     TASK_VAULT_UPSERT_0_1,
+    TASK_VAULT_UPSERT_0_2,
     TASK_VAULT_DELETE_0_1,
     TASK_VAULT_RELEASE_0_1,
+    TASK_VAULT_RELEASE_0_2,
     TASK_VAULT_PROXY_LOGIN_0_1,
+    TASK_VAULT_PROXY_LOGIN_0_2,
     TASK_VAULT_SIGN_TRUST_TASK_0_1,
+    TASK_VAULT_SIGN_TRUST_TASK_0_2,
     // DID-management slice (canonical spec/did-management/*)
     TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
     TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,

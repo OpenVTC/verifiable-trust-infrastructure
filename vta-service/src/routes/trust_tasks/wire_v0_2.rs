@@ -87,6 +87,51 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
         request_paths: &[],
         response_paths: &[],
     },
+    // ── vault slice ─────────────────────────────────────────────────
+    // SecretKind (`oauth-tokens`, `did-self-issued`, …) and the SiteTarget
+    // `kind` discriminator (`web-origin`, `ios-app`, `android-app`) carry the
+    // renamed values. `sealedSecret`/`sealedSessionBlob` envelope tags
+    // (`didcomm-authcrypt`, …) are NOT renamed in 0.2, and the JWE / step-up
+    // proof / signed-envelope payloads are opaque — none are on enum paths, so
+    // they pass through byte-exact.
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/vault/list/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/list/0.2",
+        request_paths: &["secretKind"],
+        response_paths: &["entries.*.secretKind", "entries.*.targets.*.kind"],
+    },
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/vault/get/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/get/0.2",
+        request_paths: &[],
+        response_paths: &["entry.secretKind", "entry.targets.*.kind"],
+    },
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/vault/upsert/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/upsert/0.2",
+        request_paths: &["secretKind", "targets.*.kind"],
+        response_paths: &["entry.secretKind", "entry.targets.*.kind"],
+    },
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/vault/release/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/release/0.2",
+        request_paths: &["target.kind"],
+        response_paths: &["secretKind"],
+    },
+    WireSpecV02 {
+        uri_0_1: "https://trusttasks.org/spec/vault/proxy-login/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/proxy-login/0.2",
+        request_paths: &["target.kind"],
+        response_paths: &[],
+    },
+    WireSpecV02 {
+        // Request/response carry the unsigned/signed Trust-Task envelope verbatim
+        // (signed bytes — must not be mutated); no SecretKind/SiteTarget fields.
+        uri_0_1: "https://trusttasks.org/spec/vault/sign-trust-task/0.1",
+        uri_0_2: "https://trusttasks.org/spec/vault/sign-trust-task/0.2",
+        request_paths: &[],
+        response_paths: &[],
+    },
 ];
 
 /// Every 0.2 URI handled by the edge transform — consumed by the dispatcher's
@@ -97,6 +142,12 @@ pub(super) const WIRE_V0_2_URIS: &[&str] = &[
     "https://trusttasks.org/spec/device/heartbeat/0.2",
     "https://trusttasks.org/spec/device/list/0.2",
     "https://trusttasks.org/spec/device/set-wake/0.2",
+    "https://trusttasks.org/spec/vault/list/0.2",
+    "https://trusttasks.org/spec/vault/get/0.2",
+    "https://trusttasks.org/spec/vault/upsert/0.2",
+    "https://trusttasks.org/spec/vault/release/0.2",
+    "https://trusttasks.org/spec/vault/proxy-login/0.2",
+    "https://trusttasks.org/spec/vault/sign-trust-task/0.2",
 ];
 
 /// Look up the edge-transform spec for an inbound type URI, if it's a
@@ -384,6 +435,63 @@ mod tests {
             "https://trusttasks.org/spec/trust-task-error/0.1"
         );
         assert_eq!(v["payload"]["code"], "permission_denied");
+    }
+
+    #[test]
+    fn vault_upsert_request_downconverts_secretkind_and_target() {
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.2").unwrap();
+        let mut payload = serde_json::json!({
+            "contextId": "personal",
+            "label": "did-self-issued", // free-text label that LOOKS like a token
+            "secretKind": "didSelfIssued",
+            "targets": [
+                { "kind": "webOrigin", "origin": "https://example.com" },
+                { "kind": "iosApp", "bundleId": "com.example.app" },
+                { "kind": "did", "did": "did:web:rp.example" }
+            ]
+        });
+        downconvert_request(&mut payload, spec);
+        assert_eq!(payload["secretKind"], "did-self-issued");
+        assert_eq!(payload["targets"][0]["kind"], "web-origin");
+        assert_eq!(payload["targets"][1]["kind"], "ios-app");
+        assert_eq!(payload["targets"][2]["kind"], "did"); // single word, no-op
+        // SiteTarget variant fields stay camelCase (not on enum paths).
+        assert_eq!(payload["targets"][1]["bundleId"], "com.example.app");
+        // Free-text label is NOT an enum path — untouched.
+        assert_eq!(payload["label"], "did-self-issued");
+    }
+
+    #[tokio::test]
+    async fn vault_list_response_upconverts_nested_enums() {
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/list/0.2").unwrap();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:9",
+            "type": "https://trusttasks.org/spec/vault/list/0.1#response",
+            "payload": {
+                "entries": [
+                    { "id": "v1", "label": "oauth-tokens", "secretKind": "oauth-tokens",
+                      "targets": [ { "kind": "ios-app", "bundleId": "x" } ] }
+                ],
+                "truncated": false
+            }
+        });
+        let resp = Response::builder()
+            .status(200)
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+            .unwrap();
+        let out = upconvert_response(resp, spec).await;
+        let bytes = axum::body::to_bytes(out.into_body(), MAX_RESPONSE_BYTES)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            v["type"],
+            "https://trusttasks.org/spec/vault/list/0.2#response"
+        );
+        assert_eq!(v["payload"]["entries"][0]["secretKind"], "oauthTokens");
+        assert_eq!(v["payload"]["entries"][0]["targets"][0]["kind"], "iosApp");
+        // Free-text label coinciding with a token stays put.
+        assert_eq!(v["payload"]["entries"][0]["label"], "oauth-tokens");
     }
 
     #[test]
