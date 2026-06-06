@@ -9128,9 +9128,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-https"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab965205a434071ff814f009d0e1f9421abd81d022fb1cd1bd0f389f9970413f"
+checksum = "8300322fc155f22289bd800eb2152ef300c99471bd71f2daa975aa6e7798b526"
 dependencies = [
  "axum",
  "chrono",
@@ -9147,9 +9147,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-proof"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30796be1898deae785ac1f29861fa4b902f407968ec2f4703232e0d8bec11a0c"
+checksum = "d150451ef1284688183bc514f41970233719f83a56ee3b9df21b7b6ca3d3b1a0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9164,9 +9164,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.1.6"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7e7dbafd9c86e62361207636907e71ffc74ffb2585ffec958ce8d95933de7a1"
+checksum = "605c6641426e48cd3c1cee374c3f15b7615999e35b79783256795d6542fff16f"
 dependencies = [
  "async-trait",
  "chrono",

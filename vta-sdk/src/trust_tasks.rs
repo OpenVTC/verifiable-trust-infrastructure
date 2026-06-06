@@ -91,21 +91,47 @@ pub const TASK_AUTH_SESSIONS_LIST_0_1: &str = "https://trusttasks.org/spec/auth/
 /// `spec/auth/passkey/login/start/0.1` — begin a WebAuthn assertion
 /// ceremony. Same wire form serves initial login AND AAL step-up via the
 /// payload's `purpose` field.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (the `purpose` \
+    enum uses the camelCase `stepUp` value). The VTA still accepts 0.1 during \
+    the migration window but it will be removed in a future release — prefer \
+    TASK_AUTH_PASSKEY_LOGIN_START_0_2.")]
 pub const TASK_AUTH_PASSKEY_LOGIN_START_0_1: &str =
     "https://trusttasks.org/spec/auth/passkey/login/start/0.1";
+
+/// `spec/auth/passkey/login/start/0.2` — successor to
+/// [`TASK_AUTH_PASSKEY_LOGIN_START_0_1`]; `purpose: stepUp` (camelCase).
+pub const TASK_AUTH_PASSKEY_LOGIN_START_0_2: &str =
+    "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 
 /// `spec/auth/passkey/login/finish/0.1` — submit the WebAuthn assertion.
 /// On success the consumer issues a session (for `purpose: login`) or
 /// elevates an existing session's acr (for `purpose: step-up`).
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form. The VTA still \
+    accepts 0.1 during the migration window but it will be removed in a future \
+    release — prefer TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2.")]
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1: &str =
     "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
+
+/// `spec/auth/passkey/login/finish/0.2` — successor to
+/// [`TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1`].
+pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2: &str =
+    "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 
 /// `spec/auth/step-up/approve-response/0.1` — an approver's signed
 /// ratification of a pending AAL step-up. The relying party verifies the
 /// carried gate (did-signed Data Integrity proof, or a WebAuthn assertion)
 /// and elevates the session's `amr`/`acr`.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (the evidence \
+    enum uses the camelCase `didSigned` value). The VTA still accepts 0.1 \
+    during the migration window but it will be removed in a future release — \
+    prefer TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2.")]
 pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
+
+/// `spec/auth/step-up/approve-response/0.2` — successor to
+/// [`TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1`]; camelCase `didSigned` evidence.
+pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
 
 // ─── Device slice (spec/device/*) ────────────────────────────────────────
 // Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
@@ -114,24 +140,53 @@ pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
 
 /// `device/register/0.1` — a Companion/Service claims its DeviceBinding after
 /// the provision-integration + acl/swap-key bootstrap.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
+    values). The VTA still accepts 0.1 during the migration window but it will \
+    be removed in a future release — prefer TASK_DEVICE_REGISTER_0_2.")]
 pub const TASK_DEVICE_REGISTER_0_1: &str = "https://trusttasks.org/spec/device/register/0.1";
+
+/// `device/register/0.2` — successor to [`TASK_DEVICE_REGISTER_0_1`]; identical
+/// Rust shape, camelCase enum values on the wire.
+pub const TASK_DEVICE_REGISTER_0_2: &str = "https://trusttasks.org/spec/device/register/0.2";
 
 /// `device/heartbeat/0.1` — periodic check-in; refreshes `lastSeenAt` and
 /// delivers queued operations.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
+    values). The VTA still accepts 0.1 during the migration window but it will \
+    be removed in a future release — prefer TASK_DEVICE_HEARTBEAT_0_2.")]
 pub const TASK_DEVICE_HEARTBEAT_0_1: &str = "https://trusttasks.org/spec/device/heartbeat/0.1";
 
+/// `device/heartbeat/0.2` — successor to [`TASK_DEVICE_HEARTBEAT_0_1`].
+pub const TASK_DEVICE_HEARTBEAT_0_2: &str = "https://trusttasks.org/spec/device/heartbeat/0.2";
+
 /// `device/list/0.1` — list the maintainer's registered devices.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (camelCase enum \
+    values). The VTA still accepts 0.1 during the migration window but it will \
+    be removed in a future release — prefer TASK_DEVICE_LIST_0_2.")]
 pub const TASK_DEVICE_LIST_0_1: &str = "https://trusttasks.org/spec/device/list/0.1";
 
+/// `device/list/0.2` — successor to [`TASK_DEVICE_LIST_0_1`]. The `capabilityFilter`
+/// (`Capability`) enum carries camelCase values on the wire.
+pub const TASK_DEVICE_LIST_0_2: &str = "https://trusttasks.org/spec/device/list/0.2";
+
 /// `device/disable/0.1` — disable a device (cannot authenticate; record kept).
+/// No 0.2 spec exists upstream; this stays on 0.1.
 pub const TASK_DEVICE_DISABLE_0_1: &str = "https://trusttasks.org/spec/device/disable/0.1";
 
-/// `device/wipe/0.1` — issue a wipe instruction for a device.
+/// `device/wipe/0.1` — issue a wipe instruction for a device. No 0.2 spec
+/// exists upstream; this stays on 0.1.
 pub const TASK_DEVICE_WIPE_0_1: &str = "https://trusttasks.org/spec/device/wipe/0.1";
 
 /// `device/set-wake/0.1` — the device conveys its opaque push `WakeHandle` to
 /// the VTA, which owns the trigger allowlist and provisions the push gateway.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form. The VTA still \
+    accepts 0.1 during the migration window but it will be removed in a future \
+    release — prefer TASK_DEVICE_SET_WAKE_0_2.")]
 pub const TASK_DEVICE_SET_WAKE_0_1: &str = "https://trusttasks.org/spec/device/set-wake/0.1";
+
+/// `device/set-wake/0.2` — successor to [`TASK_DEVICE_SET_WAKE_0_1`]. No enum
+/// values changed; the bump is the canonical-version alignment.
+pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/set-wake/0.2";
 
 // ─── ACL slice (spec/vta/acl/*) ──────────────────────────────────────────
 
@@ -292,25 +347,53 @@ pub const TASK_DISCOVERY_CAPABILITIES_1_0: &str =
 /// material is never returned by this task. Auth: any caller with the
 /// derived `VaultRead` capability (i.e. role ∈ {Admin, Initiator,
 /// Application, Reader}).
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind and \
+    related enums use camelCase values). The VTA still accepts 0.1 during the \
+    migration window but it will be removed in a future release — prefer \
+    TASK_VAULT_LIST_0_2.")]
 pub const TASK_VAULT_LIST_0_1: &str = "https://trusttasks.org/spec/vault/list/0.1";
+
+/// `spec/vault/list/0.2` — successor to [`TASK_VAULT_LIST_0_1`]; camelCase
+/// enum values (e.g. `secretKind: oauthTokens`).
+pub const TASK_VAULT_LIST_0_2: &str = "https://trusttasks.org/spec/vault/list/0.2";
 
 /// `spec/vault/get/0.1` — fetch the metadata view of a single entry by
 /// id. Same auth as vault/list.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (response enums \
+    use camelCase values). The VTA still accepts 0.1 during the migration \
+    window but it will be removed in a future release — prefer TASK_VAULT_GET_0_2.")]
 pub const TASK_VAULT_GET_0_1: &str = "https://trusttasks.org/spec/vault/get/0.1";
+
+/// `spec/vault/get/0.2` — successor to [`TASK_VAULT_GET_0_1`].
+pub const TASK_VAULT_GET_0_2: &str = "https://trusttasks.org/spec/vault/get/0.2";
 
 /// `spec/vault/upsert/0.1` — create a new vault entry or update an
 /// existing one. Secret material rides inside a pluggable cipher
 /// envelope (see vault/_shared/0.1/sealed-envelope). Auth: VaultWrite.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind / \
+    sealed-envelope / target enums use camelCase values). The VTA still \
+    accepts 0.1 during the migration window but it will be removed in a future \
+    release — prefer TASK_VAULT_UPSERT_0_2.")]
 pub const TASK_VAULT_UPSERT_0_1: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
 
+/// `spec/vault/upsert/0.2` — successor to [`TASK_VAULT_UPSERT_0_1`].
+pub const TASK_VAULT_UPSERT_0_2: &str = "https://trusttasks.org/spec/vault/upsert/0.2";
+
 /// `spec/vault/delete/0.1` — tombstone an entry with a maintainer-defined
-/// grace window. Auth: VaultWrite.
+/// grace window. Auth: VaultWrite. No 0.2 spec exists upstream; stays on 0.1.
 pub const TASK_VAULT_DELETE_0_1: &str = "https://trusttasks.org/spec/vault/delete/0.1";
 
 /// `spec/vault/release/0.1` — release the cleartext secret material of an
 /// entry inside a pluggable cipher envelope sealed to the requesting
 /// consumer. Auth: FillRelease.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (secretKind / \
+    sealed-envelope / step-up-proof enums use camelCase values). The VTA still \
+    accepts 0.1 during the migration window but it will be removed in a future \
+    release — prefer TASK_VAULT_RELEASE_0_2.")]
 pub const TASK_VAULT_RELEASE_0_1: &str = "https://trusttasks.org/spec/vault/release/0.1";
+
+/// `spec/vault/release/0.2` — successor to [`TASK_VAULT_RELEASE_0_1`].
+pub const TASK_VAULT_RELEASE_0_2: &str = "https://trusttasks.org/spec/vault/release/0.2";
 
 /// `spec/vault/proxy-login/0.1` — the VTA performs an authentication at
 /// the third-party site on the holder's behalf using the entry's secret
@@ -318,7 +401,14 @@ pub const TASK_VAULT_RELEASE_0_1: &str = "https://trusttasks.org/spec/vault/rele
 /// localStorage) wrapped in a pluggable cipher envelope sealed to the
 /// requesting consumer. The long-term credential never leaves the VTA.
 /// Auth: ProxyLogin.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (site-target / \
+    step-up-proof enums use camelCase values). The VTA still accepts 0.1 \
+    during the migration window but it will be removed in a future release — \
+    prefer TASK_VAULT_PROXY_LOGIN_0_2.")]
 pub const TASK_VAULT_PROXY_LOGIN_0_1: &str = "https://trusttasks.org/spec/vault/proxy-login/0.1";
+
+/// `spec/vault/proxy-login/0.2` — successor to [`TASK_VAULT_PROXY_LOGIN_0_1`].
+pub const TASK_VAULT_PROXY_LOGIN_0_2: &str = "https://trusttasks.org/spec/vault/proxy-login/0.2";
 
 /// `spec/vault/sign-trust-task/0.1` — the VTA attaches an eddsa-jcs-2022
 /// Data Integrity proof to a Trust Task envelope, signing as the
@@ -328,8 +418,17 @@ pub const TASK_VAULT_PROXY_LOGIN_0_1: &str = "https://trusttasks.org/spec/vault/
 /// consumer needs to issue follow-up tasks during a proxy-login'd
 /// session and the RP expects them signed by the session DID.
 /// Auth: SignTrustTask capability.
+#[deprecated(note = "0.1 is superseded by the 0.2 wire form (step-up-proof \
+    enums use camelCase values). The VTA still accepts 0.1 during the \
+    migration window but it will be removed in a future release — prefer \
+    TASK_VAULT_SIGN_TRUST_TASK_0_2.")]
 pub const TASK_VAULT_SIGN_TRUST_TASK_0_1: &str =
     "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
+
+/// `spec/vault/sign-trust-task/0.2` — successor to
+/// [`TASK_VAULT_SIGN_TRUST_TASK_0_1`].
+pub const TASK_VAULT_SIGN_TRUST_TASK_0_2: &str =
+    "https://trusttasks.org/spec/vault/sign-trust-task/0.2";
 
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
@@ -879,6 +978,12 @@ pub const TASK_ATTESTATION_REPORT_1_0: &str =
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
+///
+/// Lists both the deprecated `*_0_1` URIs (still dual-accepted) and their
+/// `*_0_2` successors — the VTA's live wire surface is the union during the
+/// migration window. `#[allow(deprecated)]` because naming the 0.1 constants
+/// here is intentional, not a migration miss.
+#[allow(deprecated)]
 pub const ALL_URIS: &[&str] = &[
     // Auth slice
     TASK_AUTH_CHALLENGE_0_1,
@@ -888,14 +993,21 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_WHOAMI_0_1,
     TASK_AUTH_SESSIONS_LIST_0_1,
     TASK_AUTH_PASSKEY_LOGIN_START_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_START_0_2,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
+    TASK_DEVICE_REGISTER_0_2,
     TASK_DEVICE_HEARTBEAT_0_1,
+    TASK_DEVICE_HEARTBEAT_0_2,
     TASK_DEVICE_LIST_0_1,
+    TASK_DEVICE_LIST_0_2,
     TASK_DEVICE_DISABLE_0_1,
     TASK_DEVICE_SET_WAKE_0_1,
+    TASK_DEVICE_SET_WAKE_0_2,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,
@@ -927,14 +1039,20 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_DISCOVERY_CAPABILITIES_1_0,
-    // Vault slice (public 0.1 spec)
+    // Vault slice (0.1 + 0.2 dual-accept; delete is 0.1-only upstream)
     TASK_VAULT_LIST_0_1,
+    TASK_VAULT_LIST_0_2,
     TASK_VAULT_GET_0_1,
+    TASK_VAULT_GET_0_2,
     TASK_VAULT_UPSERT_0_1,
+    TASK_VAULT_UPSERT_0_2,
     TASK_VAULT_DELETE_0_1,
     TASK_VAULT_RELEASE_0_1,
+    TASK_VAULT_RELEASE_0_2,
     TASK_VAULT_PROXY_LOGIN_0_1,
+    TASK_VAULT_PROXY_LOGIN_0_2,
     TASK_VAULT_SIGN_TRUST_TASK_0_1,
+    TASK_VAULT_SIGN_TRUST_TASK_0_2,
     // DID-management slice (canonical spec/did-management/*)
     TASK_DID_MANAGEMENT_DID_REGISTER_0_1,
     TASK_DID_MANAGEMENT_DID_PUBLISH_0_1,

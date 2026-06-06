@@ -163,14 +163,15 @@ jsonwebtoken = { version = "10", default-features = false, features = ["use_pem"
 aws-lc-rs = "1.16"
 
 # Trust-Tasks framework — wire-envelope for the trust-task migration
-# initiative (docs/05-design-notes/trust-task-uri-registry.md). Now
-# on crates.io at 0.1.1 (DTGWG PR #36 merged + published 2026-05-24);
-# the `[patch.crates-io]` git pin that lived here through the
-# pre-publish window is gone. Bump to 0.1.x in lockstep with
-# affinidi-webvh-service when upstream publishes new patch releases.
-trust-tasks-rs = { version = "0.1", default-features = false }
-trust-tasks-https = { version = "0.1", default-features = false, features = ["server", "client", "jwt"] }
-trust-tasks-proof = { version = "0.1", default-features = false, features = ["affinidi"] }
+# initiative (docs/05-design-notes/trust-task-uri-registry.md). On
+# crates.io; the `[patch.crates-io]` git pin that lived here through
+# the pre-publish window is gone. 0.2 adds `v0_2` spec modules
+# (camelCase wire enums + `/0.2` TYPE_URIs) alongside the retained
+# `v0_1` modules — the VTA dual-accepts both during the migration.
+# Bump in lockstep with affinidi-webvh-service when upstream publishes.
+trust-tasks-rs = { version = "0.2", default-features = false }
+trust-tasks-https = { version = "0.2", default-features = false, features = ["server", "client", "jwt"] }
+trust-tasks-proof = { version = "0.2", default-features = false, features = ["affinidi"] }
 
 # Axum extras (typed headers for Bearer auth)
 axum-extra = { version = "0.12", features = ["typed-header"] }
