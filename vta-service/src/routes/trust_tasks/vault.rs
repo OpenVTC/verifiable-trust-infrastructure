@@ -40,8 +40,9 @@ use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_re
 use trust_tasks_rs::RejectReason;
 
 /// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness.
-#[allow(dead_code)]
+/// harness. `#[allow(deprecated)]`: the 0.1 URIs remain dual-accepted during
+/// the migration (their 0.2 counterparts are edge-transformed in `wire_v0_2`).
+#[allow(dead_code, deprecated)]
 pub(super) const DISPATCHED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1,
     vta_sdk::trust_tasks::TASK_VAULT_GET_0_1,

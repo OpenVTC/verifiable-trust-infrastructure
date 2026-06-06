@@ -43,7 +43,9 @@ use vti_common::store::KeyspaceHandle;
 use super::helpers::{parse_payload, reject_with, success_response};
 
 /// URIs dispatched by this slice (aggregated by the dispatcher's parity harness).
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
+/// `#[allow(deprecated)]`: approve-response 0.1 stays dual-accepted during the
+/// migration; the 0.2 form gets a typed arm (signed payload — not edge-transformed).
+#[allow(dead_code, deprecated)] // consumed by the dispatcher's test-only parity harness
 pub(super) const DISPATCHED_URIS: &[&str] =
     &[vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1];
 
