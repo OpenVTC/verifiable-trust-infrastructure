@@ -54,12 +54,12 @@ affinidi-tdk = "0.7"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
-affinidi-crypto = "0.1.12"
+affinidi-crypto = "0.2"
 # W3C VC Data Model 2.0 + Data Integrity proofs. Used by the
 # provision-integration flow (VP-framed bootstrap request, VC-issued
 # admin authorization). See CLAUDE.md "Authorization claims" principle.
 affinidi-vc = "0.1"
-affinidi-data-integrity = "0.6.1"
+affinidi-data-integrity = "0.7"
 affinidi-status-list = "0.1.3"
 
 # Credential formats for the credential-centric VTI architecture
@@ -80,7 +80,7 @@ affinidi-status-list = "0.1.3"
 # to avoid a duplicate-version split.
 affinidi-sd-jwt-vc = "0.1.1"
 affinidi-sd-jwt = "0.1.2"
-affinidi-bbs = "0.1.1"
+affinidi-bbs = "0.2"
 affinidi-openid4vp = "0.1.2"
 affinidi-openid4vci = "0.1.2"
 affinidi-secrets-resolver = "0.5"

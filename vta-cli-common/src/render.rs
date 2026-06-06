@@ -1,5 +1,5 @@
 use ratatui::{
-    buffer::Buffer,
+    buffer::{Buffer, CellDiffOption},
     layout::Rect,
     style::{Color, Modifier},
     widgets::Widget,
@@ -312,7 +312,7 @@ pub fn print_widget(widget: impl Widget, height: u16) {
 
         for x in 0..width {
             let cell = &buf[(x, y)];
-            if cell.skip {
+            if cell.diff_option == CellDiffOption::Skip {
                 continue;
             }
 
