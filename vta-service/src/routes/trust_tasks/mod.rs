@@ -362,7 +362,12 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => {
             auth::handle_sessions_list(state, auth, doc).await
         }
-        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1 => {
+        // Dual-accept: both versions route to the same typed handler, which
+        // normalises the `evidence.kind` discriminator on a copy (the signed
+        // document is never mutated). Not edge-transformed in `wire_v0_2`
+        // because the payload carries the approver's signature.
+        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
+        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2 => {
             step_up::handle_approve_response(state, auth, doc).await
         }
         // ─── ACL slice ────────────────────────────────────────────────

@@ -157,6 +157,120 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
     assert_ne!(status2, StatusCode::OK, "replay must not elevate again");
 }
 
+/// Dual-accept: the **0.2** approve-response carries the camelCase
+/// `evidence.kind` (`didSigned`) and a `…/0.2` type URI. The VTA must accept
+/// it, verify the approver's signature over the *0.2* bytes (the document is
+/// never down-converted), elevate the session, and reply with a
+/// `…/0.2#response`.
+#[tokio::test]
+async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
+    let (router, ctx) = build_test_app().await;
+
+    let sk = SigningKey::from_bytes(&[11u8; 32]);
+    let (did, mb) = did_key(&sk);
+    let vm = format!("{did}#{mb}");
+    let session_id = "sess-stepup-0-2".to_string();
+    let challenge = "U3RlcFVwMHgyQ2hhbGxlbmdlVmFsdWVYWQ".to_string();
+
+    let session = Session {
+        session_id: session_id.clone(),
+        did: did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &session).await.unwrap();
+
+    let claims = ctx.jwt_keys.new_claims(
+        did.clone(),
+        session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let token = ctx.jwt_keys.encode(&claims).unwrap();
+
+    let pending = new_pending_step_up(
+        challenge.clone(),
+        session_id.clone(),
+        did.clone(),
+        "aal2",
+        vec!["did-signed".to_string()],
+        300,
+    );
+    store_pending_step_up(&ctx.sessions_ks, &pending)
+        .await
+        .unwrap();
+
+    // 0.2 document: camelCase `evidence.kind` + the /0.2 type URI. The signature
+    // covers THIS (0.2) form — the VTA must not mutate it before verifying.
+    let doc_json = json!({
+        "id": "approve-resp-itest-0-2",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.2",
+        "issuer": did,
+        "recipient": "did:key:z6MkTestVTA",
+        "payload": {
+            "subject": did,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+            "evidence": { "kind": "didSigned" },
+        },
+    });
+    let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+    let mut di = DataIntegrityProof {
+        type_: "DataIntegrityProof".to_string(),
+        cryptosuite: CryptoSuite::EddsaJcs2022,
+        created: Some("2026-05-31T00:00:00Z".to_string()),
+        verification_method: vm,
+        proof_purpose: "assertionMethod".to_string(),
+        proof_value: None,
+        context: None,
+    };
+    let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
+    di.proof_value = Some(multibase::encode(
+        Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(serde_json::from_value::<Proof>(serde_json::to_value(&di).unwrap()).unwrap());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {v}");
+    // The response document echoes the 0.2 type with a #response fragment.
+    assert_eq!(
+        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.2#response",
+        "0.2 request must yield a 0.2 response: {v}"
+    );
+    assert_eq!(v["payload"]["status"], "elevated", "{v}");
+    assert_eq!(v["payload"]["session"]["acr"], "aal2", "{v}");
+
+    let stored = get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.acr, "aal2");
+}
+
 /// The trust-task analogue of the REST step-up `403`: an AAL1 caller invoking
 /// an AAL2-gated trust-task operation (here `acl/create`) is rejected with a
 /// reject that *carries the approve-request* in its `details`. The caller has

@@ -997,9 +997,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
-    // NOTE: step-up approve-response 0.2 joins ALL_URIS when its typed
-    // dual-accept handler lands in vta-service — the dispatcher parity harness
-    // requires every listed URI to be served.
+    TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_REGISTER_0_2,

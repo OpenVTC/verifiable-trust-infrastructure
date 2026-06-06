@@ -234,6 +234,17 @@ pub(super) fn downconvert_request(payload: &mut Value, spec: &WireSpecV02) {
     apply_paths(payload, spec.request_paths, kebabize);
 }
 
+/// Down-convert (camel→kebab) the enum values at `paths` in `payload`.
+///
+/// Exposed for the **typed** slices (e.g. step-up) whose payload is signed:
+/// they can't mutate the document itself (it would void the proof), so they
+/// down-convert a *copy* of the payload purely to parse it with the v0_1
+/// types, while proof verification and the echoed response still use the
+/// original 0.2 document.
+pub(super) fn kebabize_paths(payload: &mut Value, paths: &[&str]) {
+    apply_paths(payload, paths, kebabize);
+}
+
 /// Maximum response body we'll re-read to up-convert. Trust-Task responses are
 /// small; the workspace-wide 1 MB request cap bounds the inputs that produce
 /// them. Generous headroom over that.

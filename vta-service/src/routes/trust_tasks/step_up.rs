@@ -40,14 +40,16 @@ use vti_common::auth::step_up::{
 };
 use vti_common::store::KeyspaceHandle;
 
-use super::helpers::{parse_payload, reject_with, success_response};
+use super::helpers::{reject_with, success_response};
 
 /// URIs dispatched by this slice (aggregated by the dispatcher's parity harness).
 /// `#[allow(deprecated)]`: approve-response 0.1 stays dual-accepted during the
 /// migration; the 0.2 form gets a typed arm (signed payload — not edge-transformed).
 #[allow(dead_code, deprecated)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] =
-    &[vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1];
+pub(super) const DISPATCHED_URIS: &[&str] = &[
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
+];
 
 /// Why a step-up gate failed to verify. Maps to the spec's approve-response
 /// error codes in the handler.
@@ -201,22 +203,42 @@ async fn verify_webauthn_gate(
         .map_err(|_| invalid())
 }
 
-/// Handler for `auth/step-up/approve-response/0.1`.
+/// Handler for `auth/step-up/approve-response/0.1` **and** `/0.2`.
 ///
 /// Consumes the approver's ratification of a pending step-up and, on a verified
 /// gate, elevates the (caller's own) session's `amr`/`acr`. Follows the spec's
 /// relying-party conformance rules; the bearer JWT (`auth`) identifies the
 /// caller, and the approve-response's gate (did-signed proof or webauthn
 /// assertion) is the second factor.
+///
+/// Dual-accept: 0.2 differs from 0.1 only in the `evidence.kind` discriminator
+/// value (`did-signed`→`didSigned`). Because the approver signs the payload,
+/// the document MUST NOT be mutated; instead the typed (v0_1) parse runs over a
+/// down-converted *copy*, while proof verification and the echoed response use
+/// the original `doc` — so a 0.2 request verifies against its 0.2 bytes and
+/// receives a `…/0.2#response`. (`kebabize` is idempotent on already-kebab
+/// values, so the down-convert is a no-op for a genuine 0.1 request — one code
+/// path serves both versions.)
 pub(super) async fn handle_approve_response(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    // 1. Parse the typed payload.
-    let payload: approve_response::Payload = match parse_payload(&doc) {
-        Ok(p) => p,
-        Err(r) => return r,
+    // 1. Parse the typed payload from a version-normalised copy (see above).
+    let payload: approve_response::Payload = {
+        let mut payload_value = doc.payload.clone();
+        super::wire_v0_2::kebabize_paths(&mut payload_value, &["evidence.kind"]);
+        match serde_json::from_value(payload_value) {
+            Ok(p) => p,
+            Err(e) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: format!("payload parse: {e}"),
+                    },
+                );
+            }
+        }
     };
     let subject = payload.subject.to_string();
     let session_id = payload.session_id.to_string();
