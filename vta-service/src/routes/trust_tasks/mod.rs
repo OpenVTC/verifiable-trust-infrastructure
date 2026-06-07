@@ -127,6 +127,10 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // slice module's `DISPATCHED_URIS` lists the same URIs and is
     // aggregated by the parity harness when both features are on; this
     // allowlist covers builds where either feature is off.
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
@@ -513,20 +517,28 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
             did_templates::handle_context_render(state, auth, doc).await
         }
         // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
+        //
+        // Dual-accept canonical 0.1 + pre-spec 1.0 — identical payloads,
+        // so both versions share a handler and `success_response` echoes
+        // the request version into the reply (0.1 -> …/0.1#response).
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1
+        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0 => {
             passkey_vms::handle_enroll_challenge(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1
+        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0 => {
             passkey_vms::handle_enroll_submit(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1
+        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0 => {
             passkey_vms::handle_list(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1
+        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0 => {
             passkey_vms::handle_revoke(state, auth, doc).await
         }
         // ─── Provision-integration (feature-gated: webvh) ────────────
@@ -711,6 +723,42 @@ mod tests {
                  (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
                  (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
                  (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
+            );
+        }
+    }
+
+    /// Passkey-VMs dual-accept (#309): the canonical `…/0.1` URIs and
+    /// the retained pre-spec `…/1.0` URIs are both tracked by the
+    /// dispatcher, so a client on either version routes to the same
+    /// handler. `success_response` echoes the request type, so a 0.1
+    /// request replies `…/0.1#response`.
+    #[test]
+    fn passkey_vms_dual_accepts_0_1_and_1_0() {
+        let dispatched = aggregate_dispatched_uris();
+        let tracked = |u: &&str| dispatched.contains(u) || KNOWN_FEATURE_GATED_URIS.contains(u);
+        for (v0_1, v1_0) in [
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
+            ),
+            (
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
+                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
+            ),
+        ] {
+            assert!(tracked(&v0_1), "canonical 0.1 URI not dispatched: {v0_1}");
+            assert!(tracked(&v1_0), "retained 1.0 URI not dispatched: {v1_0}");
+            assert!(
+                v0_1.ends_with("/0.1") && v1_0.ends_with("/1.0"),
+                "version-label mismatch for {v0_1} / {v1_0}"
             );
         }
     }

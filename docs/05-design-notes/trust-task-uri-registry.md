@@ -610,6 +610,15 @@ Two mechanisms, split by whether the payload is signed:
   same handler; `result_uri_for` picks the matching `#response`. The legacy
   `firstperson.network` provision URI was retired here (the other
   `firstperson.network` management protocols are untouched).
+- **Version-label dual-accept** — **`vta/passkey-vms/*`** shipped at `/1.0`
+  before the registry published it; the canonical version is `/0.1` (#308/#309).
+  The payload/response shapes are byte-identical across the two — only the URI
+  version label differs — so the four dispatch arms accept `…/0.1 | …/1.0` and
+  `success_response` (`doc.respond_with`) echoes the request version into the
+  reply. No edge transform, no typed-handler copy: just both URIs in
+  `ALL_URIS` / the slice `DISPATCHED_URIS` / `KNOWN_FEATURE_GATED_URIS`.
+  Retirement plan: drop the `…/1.0` URIs once the browser plugin cuts over to
+  `…/0.1` (it currently emits `/1.0`).
 
 **Adding the next 0.2 spec:** add the `*_0_2` const + `ALL_URIS` entry in
 `vta-sdk::trust_tasks` and `#[deprecate]` the 0.1; for an edge-transform spec,

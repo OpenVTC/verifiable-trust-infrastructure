@@ -623,33 +623,64 @@ pub const TASK_MANAGEMENT_RELOAD_SERVICES_1_0: &str =
 // URIs are declared unconditionally here so client SDKs can probe;
 // the dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist tracks them
 // for builds where the features are off.
+//
+// Versioning: the canonical registry publishes this family at `0.1`
+// (framework 0.2). The `…/1.0` URIs predate the published spec; they
+// are retained for a deprecation window so the browser plugin (still
+// on `/1.0`) keeps working. Payload/response shapes are byte-identical
+// across the two versions — only the URI version label differs — so
+// the VTA dual-accepts both and replies under whichever version the
+// request used (`success_response` echoes the request type). Prefer
+// the `…_0_1` constants in new code. Retirement plan: drop the `…_1_0`
+// URIs once the plugin has cut over to `…/0.1`.
 
-/// `spec/vta/passkey-vms/enroll-challenge/1.0` — request a fresh
-/// WebAuthn registration challenge for a DID. Payload:
+/// `spec/vta/passkey-vms/enroll-challenge/0.1` — request a fresh
+/// WebAuthn registration challenge for a DID (canonical version).
+/// Payload:
 /// [`crate::protocols::did_management::passkey_vms::EnrollPasskeyChallengeBody`].
 /// Auth: Admin role on the DID's context.
+pub const TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/enroll-challenge/0.1";
+
+/// `spec/vta/passkey-vms/enroll-submit/0.1` — finalise enrolment with
+/// the browser-supplied attestation bundle (canonical version).
+/// Payload:
+/// [`crate::protocols::did_management::passkey_vms::EnrollPasskeySubmitBody`].
+pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.1";
+
+/// `spec/vta/passkey-vms/list/0.1` — list every passkey VM currently
+/// published on a DID (canonical version). Payload:
+/// [`crate::protocols::did_management::passkey_vms::ListPasskeyVmsBody`].
+pub const TASK_PASSKEY_VMS_LIST_0_1: &str = "https://trusttasks.org/spec/vta/passkey-vms/list/0.1";
+
+/// `spec/vta/passkey-vms/revoke/0.1` — remove a passkey VM by fragment
+/// (canonical version). Payload:
+/// [`crate::protocols::did_management::passkey_vms::RevokePasskeyVmBody`].
+pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/revoke/0.1";
+
+/// `spec/vta/passkey-vms/enroll-challenge/1.0` — pre-spec version,
+/// retained during the plugin's migration window. Prefer
+/// [`TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1`].
 pub const TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0: &str =
     "https://trusttasks.org/spec/vta/passkey-vms/enroll-challenge/1.0";
 
-/// `spec/vta/passkey-vms/enroll-submit/1.0` — finalise enrolment with
-/// the browser-supplied attestation bundle. Payload:
-/// [`crate::protocols::did_management::passkey_vms::EnrollPasskeySubmitBody`].
-/// Auth: Admin role on the DID's context. The handler appends the
-/// new VM to the DID document via a WebVH LogEntry and pushes to the
-/// configured mediator.
+/// `spec/vta/passkey-vms/enroll-submit/1.0` — pre-spec version,
+/// retained during the plugin's migration window. The handler appends
+/// the new VM to the DID document via a WebVH LogEntry and pushes to
+/// the configured mediator. Prefer
+/// [`TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1`].
 pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0: &str =
     "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/1.0";
 
-/// `spec/vta/passkey-vms/list/1.0` — list every passkey VM currently
-/// published on a DID. Payload:
-/// [`crate::protocols::did_management::passkey_vms::ListPasskeyVmsBody`].
-/// Auth: Admin role on the DID's context.
+/// `spec/vta/passkey-vms/list/1.0` — pre-spec version, retained during
+/// the plugin's migration window. Prefer [`TASK_PASSKEY_VMS_LIST_0_1`].
 pub const TASK_PASSKEY_VMS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/passkey-vms/list/1.0";
 
-/// `spec/vta/passkey-vms/revoke/1.0` — remove a passkey VM by fragment.
-/// Payload:
-/// [`crate::protocols::did_management::passkey_vms::RevokePasskeyVmBody`].
-/// Auth: Admin role on the DID's context.
+/// `spec/vta/passkey-vms/revoke/1.0` — pre-spec version, retained
+/// during the plugin's migration window. Prefer
+/// [`TASK_PASSKEY_VMS_REVOKE_0_1`].
 pub const TASK_PASSKEY_VMS_REVOKE_1_0: &str =
     "https://trusttasks.org/spec/vta/passkey-vms/revoke/1.0";
 
@@ -1082,7 +1113,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONFIG_UPDATE_1_0,
     // Management slice
     TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
-    // Passkey-VMs slice (feature-gated: webvh + didcomm)
+    // Passkey-VMs slice (feature-gated: webvh + didcomm). Dual-accept
+    // canonical 0.1 + retained pre-spec 1.0.
+    TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+    TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    TASK_PASSKEY_VMS_LIST_0_1,
+    TASK_PASSKEY_VMS_REVOKE_0_1,
     TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
     TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
     TASK_PASSKEY_VMS_LIST_1_0,

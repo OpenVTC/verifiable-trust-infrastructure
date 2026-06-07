@@ -37,6 +37,12 @@ use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, s
 /// `docs/05-design-notes/trust-task-feature-gating.md`.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 pub(super) const DISPATCHED_URIS: &[&str] = &[
+    // Canonical 0.1 + retained pre-spec 1.0 (dual-accept; identical
+    // payloads, reply echoes the request version).
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
