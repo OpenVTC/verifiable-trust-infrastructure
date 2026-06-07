@@ -875,7 +875,7 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
 /// the mock VTA does not trip the LeakGuard."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provision_admin_rotation_didcomm_shuts_session_down_on_error() {
-    use vta_sdk::protocols::provision_integration_management::PROVISION_INTEGRATION;
+    use vta_sdk::protocols::provision_integration_management::CANONICAL_PROVISION_INTEGRATION;
     use vta_sdk::provision_client::{ProvisionAsk, provision_admin_rotation_via_didcomm};
 
     common::init_tracing();
@@ -885,7 +885,7 @@ async fn provision_admin_rotation_didcomm_shuts_session_down_on_error() {
     let (mediator, responder) = TestVtaResponder::spawn_with_mediator(
         vec![setup_did.clone()],
         |msg_type: &str, _body: &Value| {
-            if msg_type == PROVISION_INTEGRATION {
+            if msg_type == CANONICAL_PROVISION_INTEGRATION {
                 // Deny — exercises the runner's error path, which must
                 // still shut the session down before returning.
                 ResponderReply::problem_report("e.p.msg.forbidden", "denied for test")

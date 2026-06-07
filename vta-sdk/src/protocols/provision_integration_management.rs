@@ -16,57 +16,59 @@
 //! [`crate::provision_integration::http::ProvisionIntegrationRequest`]
 //! and [`crate::provision_integration::http::ProvisionIntegrationResponse`].
 //!
-//! Two URI shapes are accepted on the wire, both routed to the same
-//! handler:
+//! Two canonical Trust Task URI versions are accepted on the wire, both
+//! routed to the same handler:
 //!
-//! * The legacy FPN-private URI ([`PROVISION_INTEGRATION`]) — what every
-//!   existing client targets today.
-//! * The canonical Trust Task URI
-//!   ([`CANONICAL_PROVISION_INTEGRATION`]) — landed in
-//!   `dtgwg-trust-tasks-tf` PR #51 as
-//!   `https://trusttasks.org/spec/provision/integration/0.1`. Clients
-//!   migrating to the canonical registry target this URI.
+//! * [`CANONICAL_PROVISION_INTEGRATION`] — `provision/integration/0.1`,
+//!   landed in `dtgwg-trust-tasks-tf` PR #51.
+//! * [`CANONICAL_PROVISION_INTEGRATION_0_2`] —
+//!   `provision/integration/0.2`. Same VP/bundle wire body; the 0.2 delta
+//!   is camelCase enum casing (e.g. the VP's `ask.type`), which the typed
+//!   verifier accommodates by checking the proof over the bytes as
+//!   received — see
+//!   [`crate::provision_integration::BootstrapRequest::verify_value`].
 //!
-//! The handler emits the response under whichever URI the request came
-//! in with — a caller using the canonical URI receives a canonical
-//! response (`#response` fragment), a caller using the FPN URI receives
-//! the legacy `…-result` URI. That keeps both clients working without
-//! either having to know about the other.
+//! The handler emits the response under whichever version the request
+//! came in with — a 0.1 request gets the `0.1#response` URI, a 0.2 request
+//! the `0.2#response` URI — so both clients work without either knowing
+//! about the other.
+//!
+//! The legacy `firstperson.network` provision-integration URI was retired
+//! once consumers (the browser plugin, the Rust CLIs) moved to the
+//! canonical registry. The other `firstperson.network` management
+//! protocols are unaffected.
 
-pub const PROTOCOL_BASE: &str = "https://firstperson.network/protocols/provision-integration/1.0";
-
-/// Inbound VP + provisioning options. Legacy FPN-private URI.
-pub const PROVISION_INTEGRATION: &str =
-    "https://firstperson.network/protocols/provision-integration/1.0/provision-integration";
-
-/// Outbound sealed bundle + summary. Legacy FPN-private URI.
-pub const PROVISION_INTEGRATION_RESULT: &str =
-    "https://firstperson.network/protocols/provision-integration/1.0/provision-integration-result";
-
-/// Inbound VP + provisioning options — canonical Trust Task URI. Same
-/// wire body as [`PROVISION_INTEGRATION`]; accepting both is the spec
-/// migration step #51 of `dtgwg-trust-tasks-tf` set up.
+/// Inbound VP + provisioning options — canonical Trust Task URI, v0.1.
 pub const CANONICAL_PROVISION_INTEGRATION: &str =
     "https://trusttasks.org/spec/provision/integration/0.1";
 
-/// Outbound sealed bundle + summary — canonical Trust Task URI.
+/// Outbound sealed bundle + summary — canonical Trust Task URI, v0.1.
 /// Per SPEC.md §4.4.1 of `dtgwg-trust-tasks-tf`, success responses are
 /// emitted under the request URI with a `#response` fragment.
 pub const CANONICAL_PROVISION_INTEGRATION_RESULT: &str =
     "https://trusttasks.org/spec/provision/integration/0.1#response";
 
+/// Inbound VP + provisioning options — canonical Trust Task URI, v0.2.
+/// Same wire body as v0.1; the 0.2 spec uses camelCase enum casing
+/// (notably the signed VP's `ask.type`). Verification runs over the
+/// as-received bytes so the holder's casing survives.
+pub const CANONICAL_PROVISION_INTEGRATION_0_2: &str =
+    "https://trusttasks.org/spec/provision/integration/0.2";
+
+/// Outbound sealed bundle + summary — canonical Trust Task URI, v0.2.
+pub const CANONICAL_PROVISION_INTEGRATION_0_2_RESULT: &str =
+    "https://trusttasks.org/spec/provision/integration/0.2#response";
+
 /// Match the result URI to whichever request URI the caller used.
 /// Centralised here so the routing decision lives next to the URI
-/// constants — handlers downstream just call this and don't need to
-/// know which URIs are alias-equivalent.
+/// constants — handlers downstream just call this. The 0.2 request URI
+/// maps to the 0.2 `#response`; the 0.1 request URI (the only other shape
+/// the router advertises) maps to the 0.1 `#response`.
 pub fn result_uri_for(request_uri: &str) -> &'static str {
-    if request_uri == CANONICAL_PROVISION_INTEGRATION {
-        CANONICAL_PROVISION_INTEGRATION_RESULT
+    if request_uri == CANONICAL_PROVISION_INTEGRATION_0_2 {
+        CANONICAL_PROVISION_INTEGRATION_0_2_RESULT
     } else {
-        // Default to the legacy URI for any URI that's not the canonical
-        // one. Today the only other accepted shape is the FPN-private
-        // URI; future additions widen this match.
-        PROVISION_INTEGRATION_RESULT
+        CANONICAL_PROVISION_INTEGRATION_RESULT
     }
 }
 
@@ -90,7 +92,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn result_uri_for_canonical_request_emits_canonical_response() {
+    fn result_uri_for_v0_1_request_emits_v0_1_response() {
         assert_eq!(
             result_uri_for(CANONICAL_PROVISION_INTEGRATION),
             CANONICAL_PROVISION_INTEGRATION_RESULT
@@ -98,31 +100,30 @@ mod tests {
     }
 
     #[test]
-    fn result_uri_for_legacy_request_emits_legacy_response() {
+    fn result_uri_for_v0_2_request_emits_v0_2_response() {
         assert_eq!(
-            result_uri_for(PROVISION_INTEGRATION),
-            PROVISION_INTEGRATION_RESULT
+            result_uri_for(CANONICAL_PROVISION_INTEGRATION_0_2),
+            CANONICAL_PROVISION_INTEGRATION_0_2_RESULT
         );
     }
 
-    /// Unknown / future URIs default to the legacy result URI.  The router
-    /// only advertises the two URIs we know about, so this branch is
-    /// unreachable in production — but exercising it pins the fallback so
-    /// a future widening doesn't silently change the default response
-    /// shape for an already-deployed client.
+    /// Unknown / future URIs default to the 0.1 result URI. The router
+    /// only advertises the 0.1 and 0.2 URIs, so this branch is unreachable
+    /// in production — but exercising it pins the fallback so a future
+    /// widening doesn't silently change the default response shape.
     #[test]
-    fn result_uri_for_unknown_request_defaults_to_legacy() {
+    fn result_uri_for_unknown_request_defaults_to_v0_1() {
         assert_eq!(
             result_uri_for("https://example.invalid/something-else"),
-            PROVISION_INTEGRATION_RESULT
+            CANONICAL_PROVISION_INTEGRATION_RESULT
         );
     }
 
-    /// The canonical Trust Task URI MUST be exactly the value declared in
-    /// `dtgwg-trust-tasks-tf` PR #51's `payload.schema.json` `$id`. Pin
-    /// the string so a refactor here can't drift away from the registry.
+    /// The canonical Trust Task URIs MUST be exactly the values declared
+    /// in `dtgwg-trust-tasks-tf`'s `payload.schema.json` `$id`. Pin the
+    /// strings so a refactor here can't drift away from the registry.
     #[test]
-    fn canonical_uri_matches_registry() {
+    fn canonical_uris_match_registry() {
         assert_eq!(
             CANONICAL_PROVISION_INTEGRATION,
             "https://trusttasks.org/spec/provision/integration/0.1"
@@ -130,6 +131,14 @@ mod tests {
         assert_eq!(
             CANONICAL_PROVISION_INTEGRATION_RESULT,
             "https://trusttasks.org/spec/provision/integration/0.1#response"
+        );
+        assert_eq!(
+            CANONICAL_PROVISION_INTEGRATION_0_2,
+            "https://trusttasks.org/spec/provision/integration/0.2"
+        );
+        assert_eq!(
+            CANONICAL_PROVISION_INTEGRATION_0_2_RESULT,
+            "https://trusttasks.org/spec/provision/integration/0.2#response"
         );
     }
 }

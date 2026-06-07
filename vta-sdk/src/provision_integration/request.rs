@@ -89,6 +89,13 @@ pub enum BootstrapAsk {
     /// (plus the integration DID's keys, did.jsonl, VC, trust bundle)
     /// in a [`SealedPayloadV1::TemplateBootstrap`](crate::sealed_transfer::SealedPayloadV1)
     /// bundle.
+    ///
+    /// The `templateBootstrap` alias accepts the
+    /// `provision/integration/0.2` camelCase tag; serialisation keeps the
+    /// 0.1 `TemplateBootstrap` form. The tag is inside the signed VP, so
+    /// verification must run over the wire bytes — see
+    /// [`BootstrapRequest::verify_value`].
+    #[serde(alias = "templateBootstrap")]
     TemplateBootstrap(TemplateBootstrapAsk),
     /// Admin-DID rotation only — no integration DID minted. The VTA
     /// renders `admin_template`, mints a fresh long-term admin DID,
@@ -103,6 +110,10 @@ pub enum BootstrapAsk {
     ///
     /// [`SealedPayloadV1::AdminRotation`]:
     /// crate::sealed_transfer::SealedPayloadV1::AdminRotation
+    ///
+    /// The `adminRotation` alias accepts the `provision/integration/0.2`
+    /// camelCase tag; serialisation keeps the 0.1 `AdminRotation` form.
+    #[serde(alias = "adminRotation")]
     AdminRotation(AdminRotationAsk),
 }
 
@@ -250,25 +261,63 @@ impl BootstrapRequest {
 
     /// Verify the proof + freshness + structure, returning the typestate
     /// form that downstream handlers consume.
+    ///
+    /// Re-serialises `self` and delegates to [`verify_value`]. Use this for
+    /// Rust-internal round-trips where this crate both built and verifies
+    /// the request. **Network handlers MUST call [`verify_value`] with the
+    /// bytes exactly as received** — re-serialising the typed struct
+    /// re-imposes this crate's wire casing and would reject any holder
+    /// (e.g. a 0.2 client) whose signed casing differs.
+    ///
+    /// [`verify_value`]: Self::verify_value
     pub fn verify(self) -> Result<VerifiedBootstrapRequest, ProvisionIntegrationError> {
+        let value = serde_json::to_value(&self)
+            .map_err(|e| ProvisionIntegrationError::Parse(format!("serialize VP: {e}")))?;
+        Self::verify_value(value)
+    }
+
+    /// Verify a bootstrap VP from its JSON **exactly as received on the
+    /// wire**, returning the typestate form downstream handlers consume.
+    ///
+    /// The Data Integrity proof covers the JCS canonicalisation of the VP
+    /// with `proof` removed. Verifying against the bytes as received —
+    /// rather than re-serialising the typed [`BootstrapRequest`] — means a
+    /// holder whose wire casing differs from this crate's serde output
+    /// still verifies. Concretely, a `provision/integration/0.2` client
+    /// signs `ask.type` as camelCase (`templateBootstrap`); re-serialising
+    /// the typed enum would re-impose the 0.1 `TemplateBootstrap` casing
+    /// and break the proof. JCS preserves string *values*, so the signed
+    /// casing survives canonicalisation and the proof checks out — while
+    /// the typed view (built via the `BootstrapAsk` aliases) still drives
+    /// downstream business logic on a normalised enum.
+    pub fn verify_value(
+        value: Value,
+    ) -> Result<VerifiedBootstrapRequest, ProvisionIntegrationError> {
+        // Typed view for structural fields + downstream business logic.
+        // `deny_unknown_fields` still rejects smuggled fields; the
+        // `BootstrapAsk` aliases accept both 0.1 (`TemplateBootstrap`) and
+        // 0.2 (`templateBootstrap`) tag casings.
+        let req: BootstrapRequest = serde_json::from_value(value.clone())
+            .map_err(|e| ProvisionIntegrationError::Parse(format!("parse VP: {e}")))?;
+
         // Structure checks first (cheap, deterministic).
-        if !self.types.iter().any(|t| t == "VerifiablePresentation") {
+        if !req.types.iter().any(|t| t == "VerifiablePresentation") {
             return Err(ProvisionIntegrationError::InvalidClaim(
                 "type array must include 'VerifiablePresentation'".into(),
             ));
         }
-        if !self.types.iter().any(|t| t == "BootstrapRequest") {
+        if !req.types.iter().any(|t| t == "BootstrapRequest") {
             return Err(ProvisionIntegrationError::InvalidClaim(
                 "type array must include 'BootstrapRequest'".into(),
             ));
         }
 
         // Holder DID must be a decodable did:key (Ed25519).
-        let holder_ed_pub = did_key_helpers::did_key_to_ed25519_pub(&self.holder)
+        let holder_ed_pub = did_key_helpers::did_key_to_ed25519_pub(&req.holder)
             .map_err(|e| ProvisionIntegrationError::HolderMismatch(format!("holder: {e}")))?;
 
-        // Parse the proof out.
-        let proof: DataIntegrityProof = serde_json::from_value(self.proof.clone())
+        // Parse the proof out (typed view carries the same proof bytes).
+        let proof: DataIntegrityProof = serde_json::from_value(req.proof.clone())
             .map_err(|e| ProvisionIntegrationError::BadProof(format!("parse proof: {e}")))?;
 
         // Cryptosuite check — only JCS is accepted here. If we add RDFC
@@ -290,17 +339,16 @@ impl BootstrapRequest {
             .ok_or_else(|| {
                 ProvisionIntegrationError::HolderMismatch("verificationMethod missing '#'".into())
             })?;
-        if vm_did != self.holder {
+        if vm_did != req.holder {
             return Err(ProvisionIntegrationError::HolderMismatch(format!(
                 "verificationMethod DID '{}' does not match holder '{}'",
-                vm_did, self.holder
+                vm_did, req.holder
             )));
         }
 
-        // Verify the proof against the document with `proof` stripped —
-        // same shape that was signed.
-        let mut signing_doc = serde_json::to_value(&self)
-            .map_err(|e| ProvisionIntegrationError::Parse(format!("re-serialize VP: {e}")))?;
+        // Verify the proof against the VP as received, with `proof`
+        // stripped — the exact shape the holder signed.
+        let mut signing_doc = value;
         if let Some(obj) = signing_doc.as_object_mut() {
             obj.remove("proof");
         }
@@ -312,7 +360,7 @@ impl BootstrapRequest {
         // Freshness (±5min skew).
         let now = Utc::now();
         let skew = Duration::minutes(5);
-        let vu = self
+        let vu = req
             .valid_until
             .parse::<DateTime<Utc>>()
             .map_err(|e| ProvisionIntegrationError::Parse(format!("validUntil: {e}")))?;
@@ -322,7 +370,7 @@ impl BootstrapRequest {
             )));
         }
 
-        Ok(VerifiedBootstrapRequest { inner: self })
+        Ok(VerifiedBootstrapRequest { inner: req })
     }
 }
 
@@ -1197,6 +1245,78 @@ mod tests {
         // unrelated structural bug.
         let (vp, _) = build_valid_vp().await;
         vp.verify().expect("fixture VP verifies");
+    }
+
+    /// Build a `provision/integration/0.2`-shape VP: identical to a 0.1
+    /// VP except `ask.type` is camelCase (`templateBootstrap`), signed
+    /// over that exact wire form. A 0.2 holder (e.g. the browser plugin)
+    /// signs camelCase; this proves `verify_value` checks the proof
+    /// against the bytes as received rather than this crate's serde
+    /// re-rendering. Returns the signed VP JSON + holder DID.
+    async fn build_valid_camelcase_vp() -> (Value, String) {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+        let (seed, client_did) = sample_client_did(0xD2);
+        let vm_id = did_key_to_vm(&client_did).expect("vm id");
+        let mut signer = Secret::generate_ed25519(Some(&vm_id), Some(&seed));
+        signer.id = vm_id;
+
+        let now = Utc::now();
+        let mut doc = serde_json::json!({
+            "@context": [VC_V2_CONTEXT_URL, BOOTSTRAP_CONTEXT_URL],
+            "type": ["VerifiablePresentation", "BootstrapRequest"],
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "holder": client_did,
+            "nonce": B64URL.encode([0xD2u8; 16]),
+            "validUntil": rfc3339(now + Duration::hours(1)),
+            "label": "v0.2-camelcase-fixture",
+            // 0.2 wire form: camelCase tag, inside the signed VP.
+            "ask": {
+                "type": "templateBootstrap",
+                "template": {
+                    "name": "didcomm-mediator",
+                    "vars": { "URL": "https://mediator.example.com" }
+                }
+            }
+        });
+
+        let sign_options = SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_created(now);
+        let proof = DataIntegrityProof::sign(&doc, &signer, sign_options)
+            .await
+            .expect("sign camelCase VP");
+        doc.as_object_mut()
+            .unwrap()
+            .insert("proof".into(), serde_json::to_value(&proof).unwrap());
+        (doc, client_did)
+    }
+
+    #[tokio::test]
+    async fn verify_value_accepts_v0_2_camelcase_ask() {
+        // A 0.2 holder signs `ask.type` as camelCase. Verifying over the
+        // wire bytes (not the re-serialised typed struct) must accept it,
+        // and the typed view must normalise to the `TemplateBootstrap`
+        // variant for downstream business logic.
+        let (doc, holder) = build_valid_camelcase_vp().await;
+        let verified = BootstrapRequest::verify_value(doc).expect("0.2 camelCase VP verifies");
+        assert_eq!(verified.holder(), holder);
+        assert!(matches!(verified.ask(), BootstrapAsk::TemplateBootstrap(_)));
+    }
+
+    #[tokio::test]
+    async fn verify_value_rejects_tampered_v0_2_ask() {
+        // Mutating the camelCase ask after signing must still fail the
+        // proof — the as-received path is not a casing loophole that
+        // skips integrity.
+        let (mut doc, _) = build_valid_camelcase_vp().await;
+        doc["ask"]["template"]["name"] = Value::String("swapped-template".into());
+        let err = BootstrapRequest::verify_value(doc).unwrap_err();
+        assert!(
+            matches!(err, ProvisionIntegrationError::BadProof(_)),
+            "tampered 0.2 ask must yield BadProof, got {err:?}"
+        );
     }
 
     #[tokio::test]

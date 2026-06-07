@@ -471,19 +471,20 @@ pub fn build_handler(
     // Provision-integration — always available; vta-service depends
     // on vta-sdk with the `provision-integration` feature enabled.
     //
-    // Both the legacy FPN-private URI and the canonical Trust Task URI
-    // route to the same handler; the handler reads the inbound `typ`
-    // and emits the matching response URI (`…-result` for the legacy
-    // shape, `#response` fragment for the canonical shape). Existing
-    // clients on the FPN URI keep working unchanged; new clients can
-    // target the canonical registry without coordinating a URI flip.
+    // Both canonical Trust Task versions (0.1 and 0.2) route to the same
+    // handler; the handler reads the inbound `typ` and emits the matching
+    // `#response` URI (`result_uri_for`). The 0.2 wire form differs only
+    // in camelCase enum casing — including the signed VP's `ask.type`, so
+    // the handler verifies over the bytes as received. The legacy
+    // `firstperson.network` provision URI was retired now that the browser
+    // plugin and Rust CLIs all target the canonical registry.
     router = router
         .route(
-            provision_integration_management::PROVISION_INTEGRATION,
+            provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
             handler_fn(handlers::handle_provision_integration),
         )?
         .route(
-            provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
+            provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2,
             handler_fn(handlers::handle_provision_integration),
         )?;
 

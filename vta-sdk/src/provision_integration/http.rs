@@ -59,11 +59,19 @@ fn is_false(b: &bool) -> bool {
 
 /// Producer assertion mode on the returned sealed bundle. Mirrors the
 /// server's `AssertionMode`.
+///
+/// Serialises kebab-case (`did-signed` / `pinned-only`, the 0.1 wire
+/// form). The camelCase aliases accept the `provision/integration/0.2`
+/// wire form (`didSigned` / `pinnedOnly`) on the way in. This field is
+/// outside the signed VP, so an alias is sufficient — no as-received
+/// verification needed.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AssertionMode {
     #[default]
+    #[serde(alias = "didSigned")]
     DidSigned,
+    #[serde(alias = "pinnedOnly")]
     PinnedOnly,
 }
 

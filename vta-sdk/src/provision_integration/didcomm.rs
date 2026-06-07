@@ -30,7 +30,7 @@
 use crate::didcomm_session::DIDCommSession;
 use crate::error::VtaError;
 use crate::protocols::provision_integration_management::{
-    PROVISION_INTEGRATION, PROVISION_INTEGRATION_RESULT,
+    CANONICAL_PROVISION_INTEGRATION, CANONICAL_PROVISION_INTEGRATION_RESULT,
 };
 
 use super::BootstrapRequest;
@@ -91,9 +91,9 @@ pub async fn provision_integration_didcomm(
 
     session
         .send_and_wait::<ProvisionIntegrationResponse>(
-            PROVISION_INTEGRATION,
+            CANONICAL_PROVISION_INTEGRATION,
             body,
-            PROVISION_INTEGRATION_RESULT,
+            CANONICAL_PROVISION_INTEGRATION_RESULT,
             DEFAULT_TIMEOUT_SECS,
         )
         .await

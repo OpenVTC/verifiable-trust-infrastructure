@@ -1429,10 +1429,28 @@ pub async fn handle_provision_integration(
 ) -> HandlerResult {
     let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
 
+    // Capture the VP exactly as received, before `message.body` is moved
+    // into the typed deserialize. Verification must run over the holder's
+    // signed bytes: a `provision/integration/0.2` client signs camelCase
+    // `ask.type` *inside* the VP, and re-serialising the typed struct
+    // would re-impose 0.1 casing and reject the proof. See
+    // `BootstrapRequest::verify_value`.
+    let request_raw = message.body.get("request").cloned();
+
     let body: vta_sdk::protocols::provision_integration_management::request::ProvisionIntegrationRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
 
-    let verified = match body.request.verify() {
+    let request_raw = match request_raw {
+        Some(v) => v,
+        None => {
+            return Ok(Some(app_err_to_response(AppError::Validation(
+                "provision-integration request missing 'request' field".into(),
+            ))));
+        }
+    };
+
+    let verified = match vta_sdk::provision_integration::BootstrapRequest::verify_value(request_raw)
+    {
         Ok(v) => v,
         Err(e) => {
             return Ok(Some(app_err_to_response(AppError::Validation(format!(

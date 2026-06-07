@@ -422,8 +422,16 @@ DIDComm session. The integration calls
 which packs an authcrypt'd DIDComm message carrying the same VP and
 parses the same sealed-bundle response.
 
-Protocol URI:
-`https://firstperson.network/protocols/provision-integration/1.0/provision-integration`.
+Protocol URI (canonical Trust Task registry), two versions accepted:
+`https://trusttasks.org/spec/provision/integration/0.1` and
+`https://trusttasks.org/spec/provision/integration/0.2`. The VTA
+dual-accepts both and replies under the matching `#response` URI. The
+0.2 wire form differs only in camelCase enum casing (notably the signed
+VP's `ask.type`, e.g. `templateBootstrap`); the handler verifies the VP
+over the bytes as received so the holder's casing survives. The legacy
+`firstperson.network/protocols/provision-integration/1.0/*` URI was
+retired now that the browser plugin and Rust CLIs target the canonical
+registry.
 
 The VTA's DIDComm handler enforces a **dual check**:
 `auth_from_message` verifies the authcrypt sender + ACL entry, AND

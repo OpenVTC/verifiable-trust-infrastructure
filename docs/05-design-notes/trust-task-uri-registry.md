@@ -598,6 +598,18 @@ Two mechanisms, split by whether the payload is signed:
 - **Declarative** — **passkey-login** start/finish are REST-routed flat JSON
   whose VTA-facing types carry no renamed enum, so a 0.2 client is structurally
   identical; the 0.2 URIs are simply declared REST-routed.
+- **As-received VP verify** — **`provision/integration`** is not on the
+  trust-task dispatcher; it has its own DIDComm message-type route
+  (`vta_sdk::protocols::provision_integration_management`) and a REST endpoint.
+  Its payload carries a **signed VP** whose `ask.type` is camelCased in 0.2
+  (`templateBootstrap` / `adminRotation`) *inside* the proof coverage, so the
+  bytes MUST NOT be re-cased. The handler verifies the proof over the VP
+  **exactly as received** (`BootstrapRequest::verify_value`) rather than
+  re-serialising the typed struct, and the `BootstrapAsk` enum carries
+  deserialize aliases for both casings. Both `…/0.1` and `…/0.2` route to the
+  same handler; `result_uri_for` picks the matching `#response`. The legacy
+  `firstperson.network` provision URI was retired here (the other
+  `firstperson.network` management protocols are untouched).
 
 **Adding the next 0.2 spec:** add the `*_0_2` const + `ALL_URIS` entry in
 `vta-sdk::trust_tasks` and `#[deprecate]` the 0.1; for an edge-transform spec,
