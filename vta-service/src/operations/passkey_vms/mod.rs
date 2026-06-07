@@ -182,7 +182,7 @@ pub async fn start_enrollment(
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
     auth.require_admin()
-        .map_err(|e| PasskeyVmError::Internal(format!("admin required: {e}")))?;
+        .map_err(|e| PasskeyVmError::PermissionDenied(format!("admin required: {e}")))?;
     auth.require_context(&record.context_id)
         .map_err(|_| PasskeyVmError::DidNotFound)?;
 
@@ -257,7 +257,7 @@ pub async fn finish_enrollment(
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
     auth.require_admin()
-        .map_err(|e| PasskeyVmError::Internal(format!("admin required: {e}")))?;
+        .map_err(|e| PasskeyVmError::PermissionDenied(format!("admin required: {e}")))?;
     auth.require_context(&record.context_id)
         .map_err(|_| PasskeyVmError::DidNotFound)?;
 
@@ -455,7 +455,7 @@ pub async fn revoke_passkey(
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
     auth.require_admin()
-        .map_err(|e| PasskeyVmError::Internal(format!("admin required: {e}")))?;
+        .map_err(|e| PasskeyVmError::PermissionDenied(format!("admin required: {e}")))?;
     auth.require_context(&record.context_id)
         .map_err(|_| PasskeyVmError::DidNotFound)?;
 
@@ -577,7 +577,9 @@ fn remove_vm_from_document(current: &Value, vm_id: &str) -> Result<Value, Passke
         }
     }
     if !removed {
-        return Err(PasskeyVmError::DidNotFound);
+        // The fragment isn't on the document — distinct from "DID not
+        // found" so revoke can emit `revoke:fragmentNotFound` (#308).
+        return Err(PasskeyVmError::FragmentNotFound);
     }
     for field in ["authentication", "assertionMethod", "keyAgreement"] {
         if let Some(arr) = obj.get_mut(field).and_then(|v| v.as_array_mut()) {
@@ -702,5 +704,25 @@ mod tests {
         let auths = new["authentication"].as_array().unwrap();
         assert_eq!(auths.len(), 1);
         assert_eq!(auths[0], "did:webvh:example.com:abc#key-0");
+    }
+
+    #[test]
+    fn remove_vm_absent_fragment_is_fragment_not_found() {
+        // Revoking a fragment that isn't on the document must surface as
+        // FragmentNotFound (→ `revoke:fragmentNotFound`), not DidNotFound.
+        let doc = serde_json::json!({
+            "verificationMethod": [{
+                "id": "did:webvh:example.com:abc#key-0",
+                "type": "Multikey",
+                "controller": "did:webvh:example.com:abc",
+                "publicKeyMultibase": "zK"
+            }]
+        });
+        let err =
+            remove_vm_from_document(&doc, "did:webvh:example.com:abc#passkey-missing").unwrap_err();
+        assert!(
+            matches!(err, PasskeyVmError::FragmentNotFound),
+            "expected FragmentNotFound, got {err:?}"
+        );
     }
 }

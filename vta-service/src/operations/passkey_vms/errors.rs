@@ -34,6 +34,16 @@ pub enum PasskeyVmError {
     /// associated with the ceremony.
     #[error("DID not found or not VTA-managed")]
     DidNotFound,
+    /// Caller is authenticated but lacks the admin role required to
+    /// mutate this DID's passkey VMs. Distinct from the internal-error
+    /// bucket so it renders as a 403 `permissionDenied`, not a 500.
+    #[error("admin role required")]
+    PermissionDenied(String),
+    /// Revoke target fragment is not present on the DID document. The
+    /// spec distinguishes this from `didNotFound` so a client can tell
+    /// "wrong DID" from "already gone".
+    #[error("passkey verification-method fragment not found")]
+    FragmentNotFound,
     /// Two passkeys with the same WebAuthn credential id can't share
     /// the same DID — fragment collision.
     #[error("passkey already enrolled on this DID")]
@@ -71,6 +81,10 @@ impl From<PasskeyVmError> for AppError {
             }
             PasskeyVmError::Multikey(e) => AppError::Validation(format!("multikey: {e}")),
             PasskeyVmError::DidNotFound => AppError::NotFound("DID not managed by this VTA".into()),
+            PasskeyVmError::PermissionDenied(msg) => AppError::Forbidden(msg),
+            PasskeyVmError::FragmentNotFound => {
+                AppError::NotFound("passkey verification-method fragment not found".into())
+            }
             PasskeyVmError::AlreadyEnrolled => {
                 AppError::Conflict("passkey already enrolled".into())
             }
