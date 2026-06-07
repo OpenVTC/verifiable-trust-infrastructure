@@ -104,9 +104,15 @@ impl DIDCommSession {
 
     /// Connect to a VTA via DIDComm through a mediator.
     ///
-    /// Sets up the ATM and profile for REST-based messaging. Does NOT open a
-    /// WebSocket — all communication goes through the mediator's REST API,
-    /// avoiding connection storms when the CLI is invoked repeatedly.
+    /// Opens a **persistent, auto-reconnecting WebSocket** to the mediator for
+    /// streaming response delivery (`profile_enable_websocket` below) — without
+    /// it the ATM can only REST-poll and may miss responses that arrive after
+    /// the initial send returns. Because the mediator enforces one socket per
+    /// DID, callers MUST reuse a single session per DID and [`shutdown`] it
+    /// rather than connecting per operation; overlapping sessions for the same
+    /// DID duel on the mediator and drop in-flight messages (see #302).
+    ///
+    /// [`shutdown`]: Self::shutdown
     pub async fn connect(
         client_did: &str,
         private_key_multibase: &str,
