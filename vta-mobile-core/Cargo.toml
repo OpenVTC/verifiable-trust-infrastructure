@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.3.0"
+version = "0.3.1"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -57,7 +57,7 @@ affinidi-messaging-didcomm = "0.15"
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
 # the VTA uses rather than reimplementing the affinidi mediator protocol.
-vta-sdk = { path = "../vta-sdk", version = "0.9", features = ["session"] }
+vta-sdk = { path = "../vta-sdk", version = "0.10", features = ["session"] }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
