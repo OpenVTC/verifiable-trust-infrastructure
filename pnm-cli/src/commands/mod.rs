@@ -21,5 +21,6 @@ pub(crate) mod health;
 pub(crate) mod keys;
 pub(crate) mod services;
 pub(crate) mod setup;
+pub(crate) mod step_up;
 pub(crate) mod vta;
 pub(crate) mod webvh;

@@ -122,6 +122,12 @@ pub(crate) enum Commands {
         command: AclCommands,
     },
 
+    /// AAL2 step-up policy management (when/how operations require elevation)
+    StepUp {
+        #[command(subcommand)]
+        command: StepUpCommands,
+    },
+
     /// Generate auth credentials for applications and services
     AuthCredential {
         #[command(subcommand)]
@@ -1574,6 +1580,11 @@ pub(crate) enum AclCommands {
         /// Without this flag the entry is permanent.
         #[arg(long)]
         expires: Option<String>,
+        /// DID of the delegated AAL2 step-up approver for this subject
+        /// (`stepUp.approver`) — the VID that ratifies the subject's step-ups
+        /// when policy `mode: delegated` applies (e.g. the holder's phone).
+        #[arg(long)]
+        step_up_approver: Option<String>,
     },
     /// Update an ACL entry
     Update {
@@ -1588,12 +1599,43 @@ pub(crate) enum AclCommands {
         /// New comma-separated context IDs
         #[arg(long, value_delimiter = ',')]
         contexts: Option<Vec<String>>,
+        /// Set the delegated step-up approver VID (`stepUp.approver`). Pass an
+        /// empty string to clear it; omit to leave it unchanged.
+        #[arg(long)]
+        step_up_approver: Option<String>,
     },
     /// Delete an ACL entry
     Delete {
         /// DID of the entry to delete
         did: String,
     },
+}
+
+/// `pnm step-up …` — manage the VTA's AAL2 step-up posture.
+#[derive(Subcommand)]
+pub(crate) enum StepUpCommands {
+    /// Manage the system-wide step-up policy.
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommands,
+    },
+}
+
+/// `pnm step-up policy …`
+#[derive(Subcommand)]
+pub(crate) enum PolicyCommands {
+    /// Show the current effective step-up policy.
+    Show,
+    /// Set the policy from a JSON file (the `auth/step-up/policy/0.2` payload
+    /// shape: `{ "enabled": bool, "floors": [{ "operation", "mode",
+    /// "allowAal1IfNonEscalating"? }] }`). Use `-` to read from stdin.
+    Set {
+        /// Path to the policy JSON (or `-` for stdin).
+        #[arg(long)]
+        from: String,
+    },
+    /// Disable enforcement — revert to AAL1 everywhere (the shipping default).
+    Disable,
 }
 
 #[derive(Subcommand)]

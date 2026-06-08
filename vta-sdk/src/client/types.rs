@@ -333,6 +333,10 @@ pub struct CreateAclRequest {
     /// if the admin never claims it via `pnm setup` + rotation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
+    /// VID authorized to ratify a **delegated** AAL2 step-up for this subject
+    /// (the subject's `stepUp.approver`). Omit for no delegated approver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_approver: Option<String>,
 }
 
 impl CreateAclRequest {
@@ -343,6 +347,7 @@ impl CreateAclRequest {
             label: None,
             allowed_contexts: Vec::new(),
             expires_at: None,
+            step_up_approver: None,
         }
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
@@ -355,6 +360,11 @@ impl CreateAclRequest {
     }
     pub fn expires_at(mut self, unix_secs: u64) -> Self {
         self.expires_at = Some(unix_secs);
+        self
+    }
+    /// Set the delegated step-up approver VID (`stepUp.approver`).
+    pub fn step_up_approver(mut self, approver: impl Into<String>) -> Self {
+        self.step_up_approver = Some(approver.into());
         self
     }
 }
@@ -384,6 +394,10 @@ pub struct UpdateAclRequest {
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_contexts: Option<Vec<String>>,
+    /// Set the delegated step-up approver VID (`Some` sets — pass an empty
+    /// string to clear; `None` leaves the current value unchanged).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_approver: Option<String>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

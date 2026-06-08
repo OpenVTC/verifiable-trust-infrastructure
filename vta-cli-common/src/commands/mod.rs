@@ -6,5 +6,6 @@ pub mod credentials;
 pub mod did_templates;
 pub mod keys;
 pub mod services;
+pub mod step_up;
 pub mod webvh;
 pub mod webvh_edit;

@@ -1161,6 +1161,11 @@ enum AclCommands {
         /// New context list (comma-separated; omit flag to keep unchanged)
         #[arg(long, value_delimiter = ',')]
         contexts: Option<Vec<String>>,
+        /// Set the delegated step-up approver VID (`stepUp.approver`). Empty
+        /// string clears it; omit to keep unchanged. Break-glass: direct store
+        /// write, no wire auth.
+        #[arg(long)]
+        step_up_approver: Option<String>,
     },
     /// Delete an ACL entry
     Delete {
@@ -1601,7 +1606,18 @@ async fn main() {
                     role,
                     label,
                     contexts,
-                } => acl_cli::run_acl_update(cli.config, did, role, label, contexts).await,
+                    step_up_approver,
+                } => {
+                    acl_cli::run_acl_update(
+                        cli.config,
+                        did,
+                        role,
+                        label,
+                        contexts,
+                        step_up_approver,
+                    )
+                    .await
+                }
                 AclCommands::Delete { did, yes } => {
                     acl_cli::run_acl_delete(cli.config, did, yes).await
                 }

@@ -70,9 +70,12 @@ pub async fn run_acl_update(
     role: Option<String>,
     label: Option<String>,
     contexts: Option<Vec<String>>,
+    step_up_approver: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if role.is_none() && label.is_none() && contexts.is_none() {
-        return Err("nothing to update — specify --role, --label, or --contexts".into());
+    if role.is_none() && label.is_none() && contexts.is_none() && step_up_approver.is_none() {
+        return Err(
+            "nothing to update — specify --role, --label, --contexts, or --step-up-approver".into(),
+        );
     }
 
     let new_role = role.map(|r| Role::parse(&r)).transpose()?;
@@ -93,6 +96,14 @@ pub async fn run_acl_update(
     }
     if let Some(contexts) = contexts {
         entry.allowed_contexts = contexts;
+    }
+    if let Some(approver) = step_up_approver {
+        // Empty string clears the delegated approver; any value sets it.
+        entry.step_up_approver = if approver.is_empty() {
+            None
+        } else {
+            Some(approver)
+        };
     }
 
     store_acl_entry(&acl_ks, &entry).await?;

@@ -541,6 +541,62 @@ impl VtaClient {
         }
     }
 
+    // ── Step-up policy ──────────────────────────────────────────────
+
+    /// `GET /step-up/policy` — read the maintainer's current effective step-up
+    /// policy (the `0.2` shape: `{ enabled, floors }`). REST-only in the SDK;
+    /// over DIDComm send the `auth/step-up/policy/0.2` trust-task instead.
+    pub async fn get_step_up_policy(&self) -> Result<serde_json::Value, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client.get(format!("{base_url}/step-up/policy"));
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
+                "step-up policy read is REST-only in the SDK".into(),
+            )),
+        }
+    }
+
+    /// `PUT /step-up/policy` — set the step-up policy (super-admin). `policy` is
+    /// the `0.2` payload (`{ enabled, floors }`); returns the effective
+    /// (canonicalized) policy. REST-only; over DIDComm send the
+    /// `auth/step-up/policy/0.2` trust-task instead.
+    pub async fn set_step_up_policy(
+        &self,
+        policy: serde_json::Value,
+    ) -> Result<serde_json::Value, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client
+                    .put(format!("{base_url}/step-up/policy"))
+                    .json(&policy);
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
+                "step-up policy set is REST-only in the SDK; send the \
+                 auth/step-up/policy/0.2 trust-task over DIDComm instead"
+                    .into(),
+            )),
+        }
+    }
+
     // ── Discovery ──────────────────────────────────────────────────
 
     /// Discover VTA capabilities: enabled features, services, WebVH servers,
@@ -720,10 +776,13 @@ mod tests {
             label: None,
             allowed_contexts: vec!["vta".into()],
             expires_at: None,
+            step_up_approver: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["did"], "did:key:z6Mk123");
         assert_eq!(json["role"], "admin");
+        // Omitted approver must not appear on the wire.
+        assert!(json.get("step_up_approver").is_none());
         assert!(!json.as_object().unwrap().contains_key("label"));
         assert_eq!(json["allowed_contexts"], serde_json::json!(["vta"]));
     }
@@ -734,6 +793,7 @@ mod tests {
             role: None,
             label: None,
             allowed_contexts: None,
+            step_up_approver: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();

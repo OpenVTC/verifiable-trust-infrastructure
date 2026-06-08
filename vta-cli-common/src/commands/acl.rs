@@ -150,6 +150,7 @@ pub async fn cmd_acl_create(
     label: Option<String>,
     contexts: Vec<String>,
     expires_at: Option<u64>,
+    step_up_approver: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
@@ -158,6 +159,9 @@ pub async fn cmd_acl_create(
     }
     if let Some(secs) = expires_at {
         req = req.expires_at(secs);
+    }
+    if let Some(ref approver) = step_up_approver {
+        req = req.step_up_approver(approver.clone());
     }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
@@ -170,6 +174,9 @@ pub async fn cmd_acl_create(
         println!("  Label:      {label}");
     }
     println!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
+    if let Some(approver) = &step_up_approver {
+        println!("  Step-up approver: {approver}");
+    }
     match entry.expires_at {
         Some(secs) => println!(
             "  Expires at: {} ({})",
@@ -187,6 +194,7 @@ pub async fn cmd_acl_update(
     role: Option<String>,
     label: Option<String>,
     contexts: Option<Vec<String>>,
+    step_up_approver: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref r) = role {
         validate_role(r)?;
@@ -195,6 +203,7 @@ pub async fn cmd_acl_update(
         role,
         label,
         allowed_contexts: contexts,
+        step_up_approver: step_up_approver.clone(),
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -207,6 +216,13 @@ pub async fn cmd_acl_update(
         println!("  Label:    {label}");
     }
     println!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+    if let Some(approver) = &step_up_approver {
+        if approver.is_empty() {
+            println!("  Step-up approver: (cleared)");
+        } else {
+            println!("  Step-up approver: {approver}");
+        }
+    }
     Ok(())
 }
 
