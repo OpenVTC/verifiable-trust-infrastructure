@@ -47,16 +47,33 @@ member ─join-requests/accept {reciprocal VMC, thread}─▶ VTC
 ## The reciprocal artifact
 
 The member's counter-assertion is a **member-issued Verifiable
-Credential** — the *reciprocal VMC* (`MembershipAcknowledgement`) —
-presented in a W3C Verifiable Presentation. The member is both issuer
-and holder; the credential subject is the **community** (`communityDid`)
-and asserts the member accepts membership under the issued `vmcId`.
+Credential** — the *reciprocal VMC* (`MembershipAcknowledgement`). The
+member is the issuer; the credential subject is the **community** (this
+VTC — the DID that issued the VMC) and asserts the member accepts
+membership under the issued `vmcId`. Concrete 1.0 shape:
 
-Using a VC/VP (not a bespoke signed struct) follows the workspace rule
-that holder → VTC authorization assertions are VPs and that the
-community's stored attestation half is a VC. The VTC verifies the VP's
-holder proof binds the member DID, then stores the reciprocal VC id on
-the Member row and emits the audit edge event.
+```jsonc
+{
+  "@context": ["https://www.w3.org/ns/credentials/v2"],
+  "type": ["VerifiableCredential", "MembershipAcknowledgement"],
+  "id": "urn:uuid:…",                  // recorded as the member's reciprocalVcId
+  "issuer": "did:key:z…member",        // MUST equal memberDid
+  "credentialSubject": {
+    "id": "did:webvh:…community",       // MUST equal this VTC's DID (the VMC issuer)
+    "reciprocates": "urn:uuid:…vmc"     // MUST equal the member's current VMC id
+  },
+  "proof": { "type": "DataIntegrityProof", "cryptosuite": "eddsa-jcs-2022",
+             "proofPurpose": "assertionMethod", "verificationMethod": "did:key:z…member#…" }
+}
+```
+
+The `eddsa-jcs-2022` issuer proof IS the counter-signature: for a
+`did:key` member (Phase 1) the VTC verifies it directly against the
+member's `did:key` (no resolver), binding `verificationMethod` to
+`memberDid`. Using a VC (not a bespoke signed struct) follows the
+workspace rule that holder → VTC authorization assertions are VC/VP. The
+VTC records the VC's `id` on the Member row and emits the audit edge
+event.
 
 > **Decided:** the reciprocal artifact is the **VC/VP** form (per the
 > house rule that holder → VTC assertions are VPs), giving a standalone,
@@ -72,11 +89,12 @@ auth, identically to `submit`:
 
 ### DIDComm (preferred)
 
-The reply threads on the join `thread_id`. `memberDid` comes from the
-DIDComm `from` field (the authcrypt sender) — no separate signature in
-the body; the envelope binds the member. Body carries the reciprocal
-VC. The handler replies with an `accept-receipt/1.0` message
-(`threadId` + `status`).
+`memberDid` comes from the DIDComm `from` field (the authcrypt sender) —
+no separate signature in the body; the envelope binds the member. The
+body carries `requestId` (no URL path over DIDComm), `vmcId`, and the
+reciprocal `vc`. The handler replies with an `accept-receipt/1.0`
+message (`requestId` + `status` + `reciprocalVcId`), threaded (`thid`)
+on the accept message id.
 
 ### REST holder binding (fallback)
 

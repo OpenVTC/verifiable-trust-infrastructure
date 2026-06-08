@@ -37,12 +37,21 @@ use vtc_service::server::AppState;
 /// test. Keeping a single-line copy here is cheaper than widening
 /// the module's visibility for one test.
 const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
+/// Mirror of `routes::join_requests::accept::JOIN_ACCEPT_DOMAIN_TAG`.
+const JOIN_ACCEPT_DOMAIN_TAG: &[u8] = b"vtc-join-accept/v1\0";
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const SUBMIT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
 const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0";
 const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
 const REJECT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
+const ACCEPT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0";
+/// The VTC DID the fixture configures — the issuer of every VMC and the
+/// community a reciprocal VC must acknowledge.
+const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
+/// Member seed shared by `applicant_pair` (so a `LocalSigner` over the
+/// same seed signs reciprocal VCs that verify against the member did:key).
+const MEMBER_SEED: [u8; 32] = [0xCD; 32];
 const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/upload/1.0";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/activate/1.0";
 
@@ -1355,4 +1364,229 @@ async fn admin_query_send_requires_admin() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Accept — reciprocal VMC (join-requests/accept/1.0)
+// ---------------------------------------------------------------------------
+
+/// Submit then admin-approve an applicant, returning
+/// `(member sk, member_did, request_id, vmc_id)`.
+async fn admit_member(fix: &Fixture) -> (SigningKey, String, Uuid, String) {
+    let (sk, member_did) = applicant_pair();
+    let vp = json!({});
+    let sig = sign_holder_payload(&sk, &member_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({ "applicantDid": member_did, "vp": vp, "signature": sig })),
+    )
+    .await;
+    let id = Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "approve failed: {body}");
+    let vmc_id = body["vmc"]["id"].as_str().unwrap().to_string();
+    (sk, member_did, id, vmc_id)
+}
+
+/// Build + sign a member-issued reciprocal VC (the counter-signature).
+async fn build_reciprocal_vc(
+    member_did: &str,
+    vmc_id: &str,
+    community_did: &str,
+    id: &str,
+) -> Value {
+    let signer = vtc_service::credentials::LocalSigner::from_ed25519_seed(
+        member_did.to_string(),
+        &MEMBER_SEED,
+    );
+    let mut vc = json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
+        "type": ["VerifiableCredential", "MembershipAcknowledgement"],
+        "id": id,
+        "issuer": member_did,
+        "credentialSubject": { "id": community_did, "reciprocates": vmc_id },
+    });
+    signer.sign_doc(&mut vc).await.expect("sign reciprocal vc");
+    vc
+}
+
+/// Holder-binding signature over the canonical accept body. Mirrors
+/// `routes::join_requests::accept`'s construction.
+fn sign_accept_payload(sk: &SigningKey, member_did: &str, vmc_id: &str, vc: &Value) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Payload<'a> {
+        member_did: &'a str,
+        vmc_id: &'a str,
+        vc: &'a Value,
+    }
+    let payload = serde_json::to_vec(&Payload {
+        member_did,
+        vmc_id,
+        vc,
+    })
+    .unwrap();
+    let mut signing = Vec::with_capacity(JOIN_ACCEPT_DOMAIN_TAG.len() + payload.len());
+    signing.extend_from_slice(JOIN_ACCEPT_DOMAIN_TAG);
+    signing.extend_from_slice(&payload);
+    hex::encode(sk.sign(&signing).to_bytes())
+}
+
+async fn post_accept(
+    fix: &Fixture,
+    id: Uuid,
+    member_did: &str,
+    vmc_id: &str,
+    vc: &Value,
+    signature: &str,
+) -> (StatusCode, Value) {
+    send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/accept"),
+        ACCEPT_TASK,
+        None,
+        Some(json!({
+            "memberDid": member_did,
+            "vmcId": vmc_id,
+            "vc": vc,
+            "signature": signature,
+        })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn accept_records_the_reciprocal_edge() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let recip_id = "urn:uuid:recip-1";
+    let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, recip_id).await;
+    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
+
+    let (status, body) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["status"], "accepted");
+    assert_eq!(body["reciprocalVcId"], recip_id);
+
+    let member = get_member(&fix.members_ks, &member_did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(member.reciprocal_vc_id.as_deref(), Some(recip_id));
+    assert!(member.accepted_at.is_some(), "accepted_at stamped");
+}
+
+#[tokio::test]
+async fn accept_is_idempotent_for_the_same_vc() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
+    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
+
+    let (s1, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    assert_eq!(s1, StatusCode::OK);
+    let (s2, b2) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    assert_eq!(
+        s2,
+        StatusCode::OK,
+        "re-accept of the same VC is a no-op: {b2}"
+    );
+    assert_eq!(b2["reciprocalVcId"], "urn:uuid:recip-1");
+}
+
+#[tokio::test]
+async fn accept_conflicts_on_a_different_vc_after_reciprocation() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let vc1 = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
+    let sig1 = sign_accept_payload(&sk, &member_did, &vmc_id, &vc1);
+    let (s1, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc1, &sig1).await;
+    assert_eq!(s1, StatusCode::OK);
+
+    let vc2 = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-2").await;
+    let sig2 = sign_accept_payload(&sk, &member_did, &vmc_id, &vc2);
+    let (s2, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc2, &sig2).await;
+    assert_eq!(s2, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn accept_rejects_a_wrong_holder_signature() {
+    let fix = build_fixture().await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
+    let other = SigningKey::from_bytes(&[0xEE; 32]);
+    let bad_sig = sign_accept_payload(&other, &member_did, &vmc_id, &vc);
+
+    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &bad_sig).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn accept_conflicts_when_not_yet_approved() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+    let (sk, member_did) = applicant_pair();
+    // No VMC exists yet; build a placeholder vc — the status guard fires first.
+    let vc = build_reciprocal_vc(&member_did, "urn:uuid:none", VTC_DID, "urn:uuid:recip-1").await;
+    let sig = sign_accept_payload(&sk, &member_did, "urn:uuid:none", &vc);
+
+    let (status, _) = post_accept(&fix, id, &member_did, "urn:uuid:none", &vc, &sig).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn accept_conflicts_on_vmc_id_mismatch() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, _vmc_id) = admit_member(&fix).await;
+    let wrong = "urn:uuid:not-the-current-vmc";
+    let vc = build_reciprocal_vc(&member_did, wrong, VTC_DID, "urn:uuid:recip-1").await;
+    let sig = sign_accept_payload(&sk, &member_did, wrong, &vc);
+
+    let (status, _) = post_accept(&fix, id, &member_did, wrong, &vc, &sig).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn accept_rejects_a_reciprocal_vc_for_another_community() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    // Subject acknowledges a different community than this VTC.
+    let vc = build_reciprocal_vc(
+        &member_did,
+        &vmc_id,
+        "did:web:evil.example",
+        "urn:uuid:recip-1",
+    )
+    .await;
+    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
+
+    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn accept_rejects_a_tampered_reciprocal_vc() {
+    let fix = build_fixture().await;
+    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let mut vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
+    // Mutate the signed `id` after signing — the issuer proof no longer covers it.
+    vc["id"] = json!("urn:uuid:swapped");
+    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
+
+    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

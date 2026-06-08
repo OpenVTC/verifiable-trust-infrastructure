@@ -42,6 +42,48 @@ pub struct JoinRequestSubmitReceiptBody {
 }
 
 // ---------------------------------------------------------------------------
+// Accept — reciprocal VMC (join ceremony close, join-requests/accept/1.0)
+// ---------------------------------------------------------------------------
+
+/// DIDComm message `type` for a join-request accept: the admitted
+/// member counter-signs the issued VMC to form the bidirectional DTG
+/// membership edge. `memberDid` comes from the DIDComm `from` field.
+pub const JOIN_REQUEST_ACCEPT_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0";
+
+/// DIDComm `type` for the VTC's accept reply (the reciprocation
+/// receipt). Carried as a `thid` reply to the accept message id.
+pub const JOIN_REQUEST_ACCEPT_RECEIPT_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/accept-receipt/1.0";
+
+/// Body of the accept message. `memberDid` comes from the DIDComm
+/// `from` field (the authcrypt sender) — the envelope binds the member,
+/// so no separate signature is needed. `vc` is the member-issued
+/// reciprocal VC (a DI VC whose issuer is the member); `vmcId` names the
+/// VMC it reciprocates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestAcceptBody {
+    /// The join request being reciprocated. Over REST this is the
+    /// `{id}` path segment; over DIDComm (no path) it travels in the
+    /// body. The member learns it from the submit receipt's `requestId`.
+    pub request_id: Uuid,
+    pub vmc_id: String,
+    pub vc: JsonValue,
+}
+
+/// Body of the accept receipt message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestAcceptReceiptBody {
+    pub request_id: Uuid,
+    /// Status string. `"accepted"` once the reciprocal edge is recorded.
+    pub status: String,
+    /// `id` of the recorded member-issued reciprocal VC.
+    pub reciprocal_vc_id: String,
+}
+
+// ---------------------------------------------------------------------------
 // Self-remove (M1.11.1 DIDComm twin)
 // ---------------------------------------------------------------------------
 

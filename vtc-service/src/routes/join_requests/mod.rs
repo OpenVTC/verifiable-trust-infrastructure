@@ -6,6 +6,7 @@
 //! (Phase 1 simplification — Moderator-tier admission lands in
 //! Phase 2's policy surface).
 
+pub mod accept;
 pub mod decide;
 pub mod present;
 pub mod read;

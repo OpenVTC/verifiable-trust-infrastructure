@@ -97,6 +97,18 @@ pub struct Member {
     /// timestamp persists.
     #[serde(default)]
     pub personhood_asserted_at: Option<DateTime<Utc>>,
+    /// `id` of the member-issued reciprocal VC that closed the
+    /// bidirectional DTG membership edge (`join-requests/accept/1.0`).
+    /// `None` until the member discharges the `reciprocate_vmc`
+    /// obligation; `Some(_)` marks the edge reciprocated. The
+    /// membership (ACL + VMC) is effective at admit regardless — this
+    /// is the member → community half of the edge.
+    #[serde(default)]
+    pub reciprocal_vc_id: Option<String>,
+    /// Timestamp the reciprocation was recorded. Paired with
+    /// [`Self::reciprocal_vc_id`]; `None` until accept.
+    #[serde(default)]
+    pub accepted_at: Option<DateTime<Utc>>,
 }
 
 impl Member {
@@ -121,7 +133,18 @@ impl Member {
             removed_at: None,
             personhood: false,
             personhood_asserted_at: None,
+            reciprocal_vc_id: None,
+            accepted_at: None,
         }
+    }
+
+    /// Record the member-issued reciprocal VC that closes the
+    /// bidirectional membership edge (`join-requests/accept/1.0`),
+    /// stamping the time. Idempotent at the call site — the accept
+    /// flow guards against re-recording a different VC.
+    pub fn record_reciprocation(&mut self, reciprocal_vc_id: impl Into<String>) {
+        self.reciprocal_vc_id = Some(reciprocal_vc_id.into());
+        self.accepted_at = Some(Utc::now());
     }
 
     /// Returns `true` if this Member has been tombstoned or marked
@@ -149,6 +172,10 @@ impl Member {
         // evidence.
         self.personhood = false;
         self.personhood_asserted_at = None;
+        // The reciprocal edge is bound to the wiped VMC — drop it too;
+        // a re-admitted member reciprocates afresh.
+        self.reciprocal_vc_id = None;
+        self.accepted_at = None;
     }
 
     /// Mark the row historical — keep all fields verbatim, just

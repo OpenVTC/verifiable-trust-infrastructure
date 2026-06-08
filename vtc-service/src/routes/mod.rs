@@ -252,6 +252,8 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             .expect("static Trust-Task URL");
     let join_reject = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0")
         .expect("static Trust-Task URL");
+    let join_accept = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0")
+        .expect("static Trust-Task URL");
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
     // filters + soft-gate consumers can target each precisely.
@@ -682,6 +684,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             "/join-requests/{id}/reject",
             post(join_requests::decide::reject),
             join_reject,
+        )
+        // Accept (unauth — the reciprocal VC + holder binding are the
+        // auth, like submit): the member counter-signs the issued VMC to
+        // close the bidirectional edge.
+        .route_with_task(
+            "/join-requests/{id}/accept",
+            post(join_requests::accept::accept),
+            join_accept,
         )
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no

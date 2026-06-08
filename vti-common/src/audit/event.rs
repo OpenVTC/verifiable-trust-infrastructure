@@ -146,6 +146,13 @@ pub enum AuditEvent {
     /// tombstoned with the DID retained, or kept historical.
     MemberRemoved(MemberRemovedData),
 
+    /// A member discharged the `reciprocate_vmc` obligation: they
+    /// counter-signed the issued VMC with a member-issued reciprocal
+    /// VC, completing the bidirectional DTG membership edge
+    /// (`join-requests/accept/1.0`). The audit envelope's
+    /// `target_did` carries the member.
+    MembershipReciprocated(MembershipReciprocatedData),
+
     /// `POST /v1/policies` accepted an upload, compiled the source,
     /// and persisted a new revision. The row is **not yet active** —
     /// activation is a separate event. Spec §7.1; Phase 2 M2.3.
@@ -534,6 +541,25 @@ pub struct PolicyUploadedData {
     pub sha256: String,
     /// Per-purpose monotone counter the upload landed under.
     pub version: u32,
+}
+
+/// Payload for [`AuditEvent::MembershipReciprocated`].
+///
+/// The audit envelope's `target_did` already carries the member; this
+/// adds the join request that admitted them, the VMC they reciprocated,
+/// and the id of the member-issued reciprocal VC, so an investigator can
+/// chain "admitted → reciprocated" without scanning the members keyspace.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipReciprocatedData {
+    /// UUID of the JoinRequest the reciprocation closes.
+    pub request_id: String,
+    /// `id` of the VMC the member reciprocated (the community → member
+    /// half of the edge).
+    pub vmc_id: String,
+    /// `id` of the member-issued reciprocal VC (the member → community
+    /// half).
+    pub reciprocal_vc_id: String,
 }
 
 /// Payload for [`AuditEvent::VmcIssued`] + [`AuditEvent::VecIssued`].

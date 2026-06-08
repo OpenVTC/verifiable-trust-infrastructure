@@ -16,8 +16,9 @@
     },
     "didcommBody": {
       "type": "object",
-      "required": ["vmcId", "vc"],
+      "required": ["requestId", "vmcId", "vc"],
       "properties": {
+        "requestId": { "type": "string", "format": "uuid" },
         "vmcId": { "type": "string" },
         "vc": {}
       }

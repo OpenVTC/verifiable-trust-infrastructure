@@ -19,14 +19,16 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody,
-    JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE,
-    SelfRemoveBody, SelfRemoveReceiptBody,
+    JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, JOIN_REQUEST_ACCEPT_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestAcceptBody, JoinRequestAcceptReceiptBody,
+    JoinRequestSubmitBody, JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE,
+    MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody, SelfRemoveReceiptBody,
 };
 
 use crate::config::AppConfig;
 use crate::join::JoinTransport;
 use crate::members::Disposition;
+use crate::routes::join_requests::accept::accept_inner;
 use crate::routes::join_requests::submit::submit_inner;
 use crate::routes::members::remove::remove_inner;
 use crate::server::AppState;
@@ -98,6 +100,12 @@ pub async fn run_didcomm_service(
             r.route(
                 JOIN_REQUEST_SUBMIT_TYPE,
                 handler_fn(join_request_submit_handler),
+            )
+        })
+        .and_then(|r| {
+            r.route(
+                JOIN_REQUEST_ACCEPT_TYPE,
+                handler_fn(join_request_accept_handler),
             )
         })
         .and_then(|r| {
@@ -231,6 +239,48 @@ async fn join_request_submit_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `join-requests/accept/1.0` over DIDComm — the reciprocal step.
+///
+/// The member DID is the DIDComm `from` field (authcrypt sender), so no
+/// separate holder-binding signature is needed (`signature_hex = None`).
+/// The body carries the `requestId` (no path over DIDComm), the `vmcId`,
+/// and the member-issued reciprocal `vc`. Calls into the same
+/// `accept_inner` the REST endpoint uses; replies with an accept receipt.
+async fn join_request_accept_handler(
+    ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let member_did = ctx.sender_did.clone().ok_or_else(|| {
+        DIDCommServiceError::Internal("join-request accept has no DIDComm sender".into())
+    })?;
+    let body: JoinRequestAcceptBody = serde_json::from_value(message.body.clone())
+        .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-accept body: {e}")))?;
+
+    let outcome = accept_inner(
+        &state,
+        body.request_id,
+        member_did,
+        body.vmc_id,
+        body.vc,
+        None,
+        JoinTransport::DIDComm,
+    )
+    .await
+    .map_err(|e| DIDCommServiceError::Internal(format!("accept failed: {e}")))?;
+
+    let receipt = JoinRequestAcceptReceiptBody {
+        request_id: outcome.request_id,
+        status: "accepted".to_string(),
+        reciprocal_vc_id: outcome.reciprocal_vc_id,
+    };
+    let body = serde_json::to_value(&receipt)
+        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, body).thid(message.id),
     ))
 }
 

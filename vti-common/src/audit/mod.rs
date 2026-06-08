@@ -37,11 +37,12 @@ pub use event::{
     CustomEndorsementIssuedData, CustomEndorsementRevokedData, DidRotatedData,
     EmergencyBootstrapData, EndorsementTypeDeletedData, EndorsementTypeRegisteredData,
     JoinRequestData, JoinRequestRejectedData, MemberAddedData, MemberRemovedData,
-    MemberUpdatedData, MembershipRenewedData, PersonhoodAssertedData, PersonhoodRevokedData,
-    PolicyActivatedData, PolicyUploadedData, REDACTED_MARKER, RegistryRecordPolicyOverrideData,
-    RegistryStatusChangedData, RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData,
-    StatusListFlippedData, VrcPublishedData, VrcRevokedData, WebsiteBundleDeployedData,
-    WebsiteFileDeletedData, WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
+    MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData, PersonhoodAssertedData,
+    PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData, REDACTED_MARKER,
+    RegistryRecordPolicyOverrideData, RegistryStatusChangedData, RegistrySyncOutcomeData,
+    RestartRequestedData, RoleChangedData, StatusListFlippedData, VrcPublishedData, VrcRevokedData,
+    WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
+    WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::AuditWriter;
