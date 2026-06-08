@@ -4,14 +4,23 @@
 **PNM** apps) to another language/runtime — e.g. **Dart/Flutter**, Kotlin
 Multiplatform, React Native, or a fully-native rewrite.
 
-**Status:** descriptive snapshot of `vta-mobile-core` v0.3.0 (the shared engine)
+**Status:** descriptive snapshot of `vta-mobile-core` v0.3.1 (the shared engine)
 and the design decisions behind it, as of 2026-06. The engine is built
 incrementally; "Build-out slices" below maps what exists today. This doc is the
 **contract + standards** a second implementation must honour to be wire- and
 custody-compatible. It is not a line-by-line transliteration guide.
 
+> **Two wire-form notes for this revision.** (1) **Push** has moved to the
+> *gateway / trigger / device* model — a separate push gateway, the `push/*`
+> Trust-Task control plane, and Web Push via VAPID (§4.8). The engine's
+> `push.rs` still builds the older mediator `set-device-info` messages (§3.9);
+> bringing it onto the gateway model is a tracked follow-up (§10), so a **new
+> client should target the gateway model directly**. (2) The Trust-Tasks
+> **framework is at 0.2** — lowerCamelCase field names; 0.1 and 0.2 wire forms
+> coexist and the VTA dual-accepts (§4.2).
+
 > Nothing here is platform-secret. Every wire format is a published standard
-> (Trust Tasks, DIDComm v2, W3C Data Integrity, WebAuthn, Aries push). The value
+> (Trust Tasks, DIDComm v2, W3C Data Integrity, WebAuthn, Web Push/VAPID). The value
 > of this document is that it tells you *exactly which* standards, *which*
 > parameters, and *which* invariants, so you don't have to reverse-engineer them.
 
@@ -245,7 +254,15 @@ approver uses it to pull VTA-pushed step-up requests off its mediator.
 | `receive_next` | `async (timeout_secs) -> Option<String /*unpacked message JSON*/>` | Wait up to `timeout_secs` for the next inbound message (the application Trust Task rides in `body`); `None` on timeout. Poll again to continue. |
 | `shutdown` | `async ()` | Close the live-delivery WebSocket. |
 
-### 3.9 Push registration (`push`)
+### 3.9 Push registration (`push`) — ⚠ superseded mechanism, see §4.8
+
+> **The engine's current push surface predates the gateway model.** It builds
+> the older Aries `set-device-info` / `delete-device-info` DIDComm messages the
+> agent sends to its **mediator**, and returns `Unimplemented` for Web Push. The
+> deployed architecture is now the *gateway / trigger / device* model with the
+> `push/*` Trust-Task control plane (§4.8); a new client should implement
+> **that**, not these calls. Bringing the engine onto the gateway model is a
+> tracked follow-up (§10). Documented here for completeness.
 
 Builds the DIDComm message **core** (`{type, body}`) the agent sends to its
 **mediator** to register/clear its push channel. Native adds envelope headers
@@ -327,6 +344,17 @@ https://trusttasks.org/spec/{namespace}/{op-path}/{major}.{minor}
   separate identifiers; the router does **no** version-family matching.
 - A `#response` document echoes the request: type gets a `#response` suffix,
   issuer/recipient swap, `threadId` = request id.
+
+**Framework version (0.1 vs 0.2).** The Trust-Tasks framework is at **0.2**. The
+wire change that matters to a client: payload field names are **lowerCamelCase**
+(e.g. `sessionId`, `issuedAt`, and enum *values* like `oauthTokens`), and **0.1
+and 0.2 documents coexist** — the VTA *dual-accepts* both (an edge transform
+normalises enum case for bearer-authed ops; signed-payload ops carry typed
+0.1/0.2 handlers). Emit **0.2** for new clients; the type-URI minor version
+(`/0.2`) selects it. Not every op is at 0.2 yet (e.g. parts of the `auth/*` set
+the Authenticator uses are still `0.1`) — check the spec/registry per op rather
+than assuming a uniform version. Tooling: `trust-tasks-rs` **0.2.1**,
+`@openvtc/trust-tasks` **0.2.1**.
 
 The full VTA URI catalogue (~79 ops: auth, keys, seeds, contexts, acl, audit,
 attestation, services, webvh, did-templates, backup, …) is in
@@ -478,23 +506,78 @@ Pinned details:
   `signature`, `credential_id`, optional `userHandle`).
 - Native APIs: **`ASAuthorization`** (iOS) / **Credential Manager** (Android).
   Flutter: `webauthn`/passkey plugins or platform channels to those APIs.
-- Passkeys are also enrollable as DID verification methods
-  (`spec/vta/passkey-vms/*`) — a PNM concern, see the URI registry.
+- Passkeys are also enrollable as DID verification methods via the
+  **`vta/passkey-vms/*`** Trust-Task family (`enroll-challenge`, `enroll-submit`,
+  `list`, `revoke`; published `0.1`) — a PNM concern, see the URI registry. The
+  VTA carries `/0.1` alongside legacy `/1.0` consts during the client-migration
+  window, with a spec-compliant error taxonomy (`permissionDenied`,
+  `fragmentNotFound`, `invalidAttestation` + `details.reason`).
 
-### 4.8 Push wake-up (APNs / FCM)
+### 4.8 Push wake-up — the gateway / trigger / device model
 
-- Binding: `https://trusttasks.org/binding/push/0.1`, adopting **Aries RFC 0699
-  (APNs)** and **RFC 0734 (FCM)** as DIDComm v2 messages.
-- Protocols: `https://didcomm.org/push-notifications-apns/1.0` and
-  `…-fcm/1.0`, verbs `set-device-info` / `delete-device-info`.
-- APNs body: `{ device_token, service: "apns"|"apns_sandbox", topic }`.
-  FCM body: `{ device_token, service: "fcm" }`.
-- **The push itself is contentless** — it only wakes the app. The app then opens
-  its `MediatorSession` and pulls the actual (encrypted) Trust Task via message
-  pickup. Push never carries Trust-Task content. Honour this — it's a privacy
-  and security property, not an optimisation.
-- Web Push (RFC 8030) is **not** done via DIDComm `set-device-info`
-  (`Unimplemented`).
+Binding: `https://trusttasks.org/binding/push/0.1`. A backgrounded app can't
+hold a mediator WebSocket open across OS suspension, so something must wake it.
+The wake is a **contentless doorbell**; the real (encrypted) Trust Task is still
+pulled from the mediator over DIDComm pickup once awake. **Push never carries
+Trust-Task content** — honour this; it's a privacy/security property, not an
+optimisation (the payload transits Apple/Google/a Web Push service and may be
+logged or shown on a lock screen).
+
+**Three roles** (keeping them distinct is the whole design):
+
+| Role | Holds | Does |
+|---|---|---|
+| **Push gateway** | the *app's* platform push credentials (APNs auth key, FCM service account, Web Push VAPID key) + a `handle → token` map | the only party that can deliver a push for this app. Issues an **opaque `WakeHandle`** for a registered token, enforces a VTA-provisioned allowlist, relays the contentless push. Operated by the **app publisher** (the Matrix-Sygnal topology). A separate service: `vti-push-gateway`, reachable over DIDComm (preferred) or HTTPS. |
+| **Trigger** | a `WakeHandle` (opaque handle + gateway address) | decides *when* to wake. Either the device's **mediator** (queue-driven — it alone knows the device is offline with messages waiting) or its **VTA** (policy-driven — e.g. a step-up it's delegating to this device). A device MAY authorize both. |
+| **Device** | its platform push token | registers the token with the gateway, gets a handle, conveys that handle (never the token) to its VTA. |
+
+Why a gateway and not the mediator: APNs/FCM credentials are bound to the
+**app**, not to any server operator — only the app publisher can push to the
+app. A generic shared mediator doesn't hold those keys. So the gateway is a
+necessary third service; the only open question is *who may ask it to wake a
+device*, answered by a per-device, **VTA-owned allowlist**.
+
+**Control plane = the `push/*` Trust-Task family** (addressed to the gateway,
+over DIDComm authcrypt — preferred, the sender is authenticated intrinsically —
+or HTTPS with a did-signed body):
+
+| Trust Task | Parties | Purpose |
+|---|---|---|
+| `push/register` (`0.1`/`0.2`) | device → gateway | register a push token (APNs/FCM/Web Push); returns `{ wakeHandle: { gateway, handle } }`. **Unauthenticated** — the handle is opaque and useless until provisioned. |
+| `push/provision` (`0.1`) | controller VTA → gateway | set the handle's trigger allowlist: `{ handle, policy: { allowedTriggers: [did, …] } }`. |
+| `push/wake` (`0.1`) | trigger → gateway | request a contentless wake: `{ handle, v: 1, mediator, urgency }`. The gateway checks the allowlist, resolves handle → token, pushes. |
+
+The device conveys its handle to the VTA with the **`device/set-wake`**
+(`0.1`/`0.2`) Trust Task — `{ wakeHandle?, pushPlatform?, suggestedTriggers? }`
+→ `{ pushCapable, triggerPolicy? }`, proof-REQUIRED. The VTA owns the allowlist
+and provisions the gateway on the device's behalf; omitting `wakeHandle` clears
+the channel (device becomes non-wakeable).
+
+**Contentless wake payload** (gateway → device) carries *only* `{ v: 1,
+mediator, count?, urgency? }` — never a handle, never task content. Treat every
+field as an untrusted hint; the authoritative message set comes from
+authenticated mediator pickup.
+
+**End-to-end:** device `push/register` → gateway → handle → `device/set-wake`
+→ VTA → `push/provision` → gateway. Later, a trigger (the VTA on a step-up, or
+the mediator on a queued message) → `push/wake` → gateway → contentless push →
+device wakes → opens `MediatorSession` → drains the real `approve-request` →
+returns `approve-response` (§4.6).
+
+**Per-platform delivery:**
+- **APNs / FCM** — the gateway holds the app's Apple/Google credentials and
+  delivers natively (token shapes mirror the `PushRegistration` schema).
+- **Web Push (RFC 8030/8291 + RFC 8292 VAPID)** — self-hostable, no
+  Apple/Google account; the gateway signs with its own VAPID keypair (**ES256 /
+  p256**, not RSA — consistent with the workspace's no-`rsa` policy). This is
+  what the browser-plugin PNM already runs against `vti-push-gateway`. *(Web
+  Push was previously declared out-of-band / unimplemented; under the gateway
+  model it is a first-class platform.)*
+
+> **Engine status:** `vta-mobile-core` v0.3.1 does **not** yet speak the `push/*`
+> family — its `push.rs` still builds the older mediator `set-device-info` path
+> (§3.9). Implement the gateway model above (it's the one the gateway + browser
+> plugin run); the engine catch-up is tracked in §10.
 
 ---
 
@@ -604,8 +687,10 @@ engine was built:
    slice; strongly prefer reusing the Rust core here.
 9. **Mediator session.** Challenge-auth + message-pickup 3.0 over WebSocket; the
    `receive_next` poll loop.
-10. **Push.** `set-device-info`/`delete-device-info` message cores; native APNs/FCM
-    receipt → open mediator session → pull the real (encrypted) Trust Task.
+10. **Push (gateway model, §4.8).** `push/register` to the gateway → handle;
+    `device/set-wake` to convey it to the VTA; native APNs/FCM/Web-Push receipt
+    → open mediator session → pull the real (encrypted) Trust Task. (The engine's
+    legacy `set-device-info` path is superseded — don't port it.)
 
 ---
 
@@ -626,8 +711,12 @@ engine was built:
 - Auth `IS_PROOF_REQUIRED` matrix: challenge=no, authenticate=yes, refresh=no,
   whoami=yes, revoke=yes.
 - Refresh **preserves AAL**; `aal2` access tokens get the shorter TTL.
-- Push wake-ups are **contentless**; Trust-Task content only ever travels
-  encrypted via mediator pickup.
+- Push wake-ups are **contentless** (`{ v, mediator, count?, urgency? }` only);
+  Trust-Task content only ever travels encrypted via mediator pickup. The raw
+  push token never leaves the gateway — triggers and the VTA hold only the
+  opaque `WakeHandle`. Possession of a handle is **not** authority to wake; the
+  VTA-owned allowlist, enforced by the gateway on every `push/wake`, is the
+  control.
 - DIDComm is the **preferred** transport for every inter-component flow; REST is
   the fallback for parties that can't speak it (and `auth/*` supports both).
 - Sealed-transfer (PNM bundles) uses the hard-pinned HPKE suite + info string +
@@ -668,6 +757,14 @@ engine was built:
   largely *not yet* in `vta-mobile-core` — it's specced in the URI registry and
   implemented in the CLIs (`vta-sdk`, `vta-cli-common`). A full PNM port pulls
   from those.
+- **Push: the engine is behind the architecture.** The deployed push model is
+  the gateway / trigger / device design with the `push/*` Trust-Task control
+  plane and Web Push/VAPID (§4.8); `vta-mobile-core` v0.3.1 still builds the
+  older mediator `set-device-info` messages (§3.9) and returns `Unimplemented`
+  for Web Push. Adopting the gateway model in the engine (build `push/register` +
+  `device/set-wake`, support Web Push) is the tracked follow-up. A new client
+  should implement the gateway model directly rather than the engine's current
+  push surface.
 - `resolve_did` is local-methods-only today; `did:web`/`did:webvh` need
   network-mode resolver config.
 - Tier-1 (key-agreement in the enclave) is a future hardening; the FFI is
