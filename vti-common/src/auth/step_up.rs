@@ -27,8 +27,21 @@ pub struct PendingStepUp {
     /// The session being elevated.
     pub session_id: String,
     /// The VID whose session is being elevated; the approve-response's
-    /// `subject` (and proof VM DID / credential subject) MUST equal this.
+    /// `subject` MUST equal this.
     pub subject: String,
+    /// The VID authorized to *sign* the approve-response — the document
+    /// `issuer` / proof VM DID (or credential subject) the relying party will
+    /// accept. Equals [`Self::subject`] for **self** step-up; the delegated
+    /// `AclEntry.stepUp.approver` the request was addressed to for
+    /// **delegated** step-up. The relying party elevates only when the signer
+    /// equals this.
+    ///
+    /// `#[serde(default)]` so an in-flight record written before this field
+    /// existed deserializes with an empty approver; the handler treats an empty
+    /// approver as self (issuer MUST equal subject), preserving the prior
+    /// contract for the ≤TTL window after a deploy.
+    #[serde(default)]
+    pub approver: String,
     /// The acr the relying party requested. The elevated session MUST reach
     /// at least this, else `acr_unsatisfied`.
     pub target_acr: String,
@@ -215,6 +228,7 @@ pub fn new_pending_step_up(
     challenge: impl Into<String>,
     session_id: impl Into<String>,
     subject: impl Into<String>,
+    approver: impl Into<String>,
     target_acr: impl Into<String>,
     acceptable_evidence: Vec<String>,
     ttl_secs: u64,
@@ -224,6 +238,7 @@ pub fn new_pending_step_up(
         challenge: challenge.into(),
         session_id: session_id.into(),
         subject: subject.into(),
+        approver: approver.into(),
         target_acr: target_acr.into(),
         acceptable_evidence,
         created_at,
@@ -253,6 +268,7 @@ mod tests {
             challenge: challenge.to_string(),
             session_id: "sess-1".to_string(),
             subject: "did:key:zHolder".to_string(),
+            approver: "did:key:zHolder".to_string(),
             target_acr: "aal2".to_string(),
             acceptable_evidence: vec!["did-signed".into(), "webauthn".into()],
             created_at: 1000,
@@ -321,12 +337,33 @@ mod tests {
             "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
             "sess-1",
             "did:key:zHolder",
+            "did:key:zApprover",
             "aal2",
             vec!["webauthn".into()],
             300,
         );
         assert_eq!(p.expires_at, p.created_at + 300);
         assert_eq!(p.target_acr, "aal2");
+        assert_eq!(p.approver, "did:key:zApprover");
+    }
+
+    #[test]
+    fn legacy_record_without_approver_defaults_empty() {
+        // A record serialized before `approver` existed must still deserialize
+        // (serde default) with an empty approver — the handler treats that as
+        // self (issuer MUST equal subject), preserving the prior contract.
+        let legacy = r#"{
+            "challenge":"VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
+            "session_id":"sess-1",
+            "subject":"did:key:zHolder",
+            "target_acr":"aal2",
+            "acceptable_evidence":["did-signed"],
+            "created_at":1000,
+            "expires_at":2000
+        }"#;
+        let p: PendingStepUp = serde_json::from_str(legacy).expect("legacy record deserializes");
+        assert_eq!(p.approver, "");
+        assert_eq!(p.subject, "did:key:zHolder");
     }
 
     fn floor(op: &str, mode: StepUpMode) -> StepUpFloor {

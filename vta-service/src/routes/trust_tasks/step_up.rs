@@ -66,16 +66,17 @@ pub(super) enum GateError {
 
 /// Verify the **did-signed** gate on an approve-response document.
 ///
-/// `expected_subject` is the session's subject (the handler has already checked
-/// it equals the payload `subject` and the document `issuer`). Here we bind the
-/// *cryptographic* identity: the proof's `verificationMethod` DID MUST equal it,
-/// and the `eddsa-jcs-2022` signature MUST verify under that `did:key`.
+/// `expected_signer` is the document `issuer` — the approver (the subject in
+/// self step-up, the authorized delegated approver otherwise; the handler
+/// authorizes which one it is before calling). Here we bind the *cryptographic*
+/// identity: the proof's `verificationMethod` DID MUST equal the signer, and the
+/// `eddsa-jcs-2022` signature MUST verify under that `did:key`.
 ///
 /// `did:key` resolution is local (no I/O); the mobile holder key is always a
 /// `did:key`, matching the engine's signing side.
 pub(super) async fn verify_did_signed_gate(
     doc: &TrustTask<Value>,
-    expected_subject: &str,
+    expected_signer: &str,
 ) -> Result<(), GateError> {
     let proof = doc.proof.as_ref().ok_or(GateError::NoGate)?;
 
@@ -86,11 +87,12 @@ pub(super) async fn verify_did_signed_gate(
         .and_then(|v| serde_json::from_value(v).ok())
         .ok_or_else(|| GateError::ProofInvalid("not a Data Integrity proof".to_string()))?;
 
-    // Bind identity: the signing key's DID must be the subject. The resolver
-    // confirms the signature is by this verificationMethod; this check ties
-    // that VM to the subject so a valid proof by a *different* DID can't elevate.
+    // Bind identity: the signing key's DID must be the signer (the document
+    // `issuer`). The resolver confirms the signature is by this
+    // verificationMethod; this check ties that VM to the issuer so a valid proof
+    // by some *other* DID can't stand in for the approver.
     let vm_did = di.verification_method.split('#').next().unwrap_or_default();
-    if vm_did != expected_subject {
+    if vm_did != expected_signer {
         return Err(GateError::SubjectMismatch);
     }
 
@@ -142,7 +144,7 @@ fn gate_err_to_reject(e: GateError) -> RejectReason {
 /// any verification failure.
 async fn verify_webauthn_gate(
     state: &AppState,
-    subject: &str,
+    approver: &str,
     challenge: &str,
     assertion: &approve_response::AssertionResponse,
 ) -> Result<(), RejectReason> {
@@ -177,9 +179,11 @@ async fn verify_webauthn_gate(
 
     let credential_id = dec(&assertion.id).map_err(|_| invalid())?;
 
-    // Resolve credential.id → the subject's passkey VM (spec: resolve the
-    // credential to a subject and verify it equals the session's subject).
-    let vms = enumerate_passkey_vms(&resolver, subject)
+    // Resolve credential.id → the approver's passkey VM (spec: resolve the
+    // credential to the approver, whom the handler has already authorized for
+    // the subject — the subject itself in self mode, the delegated approver
+    // otherwise).
+    let vms = enumerate_passkey_vms(&resolver, approver)
         .await
         .map_err(|e| RejectReason::InternalError {
             reason: format!("passkey VM enumeration: {e}"),
@@ -206,10 +210,18 @@ async fn verify_webauthn_gate(
 /// Handler for `auth/step-up/approve-response/0.1` **and** `/0.2`.
 ///
 /// Consumes the approver's ratification of a pending step-up and, on a verified
-/// gate, elevates the (caller's own) session's `amr`/`acr`. Follows the spec's
+/// gate, elevates the *subject's* session `amr`/`acr`. Follows the spec's
 /// relying-party conformance rules; the bearer JWT (`auth`) identifies the
-/// caller, and the approve-response's gate (did-signed proof or webauthn
-/// assertion) is the second factor.
+/// caller (the approver, who signs and submits the document as itself), and the
+/// approve-response's gate (did-signed proof or webauthn assertion) is the
+/// second factor.
+///
+/// Self **and** delegated: the document `issuer`/signer is the *approver*, which
+/// is the subject in self step-up (`issuer == subject`) or a distinct party in
+/// delegated step-up (`issuer == AclEntry.stepUp.approver`, recorded on the
+/// pending step-up at mint). The gate is verified against the issuer key; the
+/// issuer is authorized against the recorded approver before the subject's
+/// session is elevated.
 ///
 /// Dual-accept: 0.2 differs from 0.1 only in the `evidence.kind` discriminator
 /// value (`did-signed`→`didSigned`). Because the approver signs the payload,
@@ -244,19 +256,23 @@ pub(super) async fn handle_approve_response(
     let session_id = payload.session_id.to_string();
     let challenge = payload.challenge.to_string();
 
-    // 2. Subject binding: the document issuer AND the bearer caller must be the
-    //    subject (same-session step-up — the caller elevates their own session).
-    if doc.issuer.as_deref() != Some(subject.as_str()) {
+    // 2. Signer self-consistency: the approver signs the document and submits it
+    //    as itself, so the bearer caller MUST be the document `issuer`. Whether
+    //    that issuer is the subject (self) or a distinct authorized approver
+    //    (delegated) is decided in step 4b, once the consumed pending step-up
+    //    tells us who the relying party addressed the request to. The proof VM
+    //    is bound to `issuer` in the gate step (4/5).
+    let Some(issuer) = doc.issuer.as_deref().map(str::to_string) else {
         return reject_with(
             &doc,
             step_up_failure("auth/step-up/approve-response:subject_mismatch"),
         );
-    }
-    if auth.did != subject {
+    };
+    if auth.did != issuer {
         return reject_with(
             &doc,
             RejectReason::PermissionDenied {
-                reason: "caller is not the subject of this step-up".to_string(),
+                reason: "the approve-response issuer must be the authenticated caller".to_string(),
             },
         );
     }
@@ -293,10 +309,28 @@ pub(super) async fn handle_approve_response(
         );
     }
 
-    // 4. A `denied` decision is a signed refusal — verify the did-signed gate,
-    //    audit, and elevate nothing.
+    // 4b. Authorize the signer. The relying party elevates only for the approver
+    //     it addressed the request to: the subject itself (self), or the
+    //     delegated approver recorded on the pending step-up at mint. An
+    //     in-flight record written before the `approver` field existed has it
+    //     empty → fall back to self (issuer MUST equal subject). The gate (4/5)
+    //     proves the proof VM == issuer; this ties that issuer to the step-up.
+    let authorized_signer = if pending.approver.is_empty() {
+        subject.as_str()
+    } else {
+        pending.approver.as_str()
+    };
+    if issuer != authorized_signer {
+        return reject_with(
+            &doc,
+            step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+        );
+    }
+
+    // 4. A `denied` decision is a signed refusal — verify the did-signed gate
+    //    (against the approver/issuer key), audit, and elevate nothing.
     if payload.decision == approve_response::PayloadDecision::Denied {
-        if let Err(e) = verify_did_signed_gate(&doc, &subject).await {
+        if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
             return reject_with(&doc, gate_err_to_reject(e));
         }
         audit!(
@@ -314,16 +348,18 @@ pub(super) async fn handle_approve_response(
         );
     }
 
-    // 5. Approved — verify exactly one cryptographic gate.
+    // 5. Approved — verify exactly one cryptographic gate, bound to the
+    //    *signer* (the issuer/approver), which is the subject in self mode and
+    //    the authorized delegated approver otherwise.
     let factor: &str = match payload.evidence.as_ref() {
         None | Some(approve_response::Evidence::DidSigned) => {
-            if let Err(e) = verify_did_signed_gate(&doc, &subject).await {
+            if let Err(e) = verify_did_signed_gate(&doc, &issuer).await {
                 return reject_with(&doc, gate_err_to_reject(e));
             }
             "did"
         }
         Some(approve_response::Evidence::Webauthn(assertion)) => {
-            match verify_webauthn_gate(state, &subject, &challenge, assertion).await {
+            match verify_webauthn_gate(state, &issuer, &challenge, assertion).await {
                 Ok(()) => "passkey",
                 Err(reason) => return reject_with(&doc, reason),
             }
@@ -439,6 +475,11 @@ async fn mint_pending_step_up(
         challenge.clone(),
         session_id,
         subject,
+        // The authorized signer of the eventual approve-response: the subject
+        // itself for `self`, or the delegated approver the request is addressed
+        // to. `handle_approve_response` checks the document `issuer` against
+        // this, so a delegated approver (issuer != subject) can elevate.
+        recipient,
         STEP_UP_TARGET_ACR,
         acceptable.clone(),
         STEP_UP_TTL_SECS,
@@ -973,6 +1014,8 @@ mod tests {
         let pending = get_pending_step_up(&ks, challenge).await.unwrap().unwrap();
         assert_eq!(pending.session_id, "sess-9");
         assert_eq!(pending.subject, "did:key:zHolder");
+        // self-approval recorded the subject as its own authorized approver.
+        assert_eq!(pending.approver, "did:key:zHolder");
         assert_eq!(pending.target_acr, "aal2");
         assert_eq!(
             pending.acceptable_evidence,

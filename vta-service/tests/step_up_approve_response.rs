@@ -74,6 +74,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         challenge.clone(),
         session_id.clone(),
         did.clone(),
+        did.clone(), // self step-up: approver == subject
         "aal2",
         vec!["did-signed".to_string()],
         300,
@@ -202,6 +203,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         challenge.clone(),
         session_id.clone(),
         did.clone(),
+        did.clone(), // self step-up: approver == subject
         "aal2",
         vec!["did-signed".to_string()],
         300,
@@ -369,4 +371,281 @@ async fn trust_task_acl_mutation_requires_step_up() {
         details["approveRequest"]["payload"]["targetAcr"], "aal2",
         "{v}"
     );
+}
+
+/// Delegated step-up: a distinct, authorized approver (`issuer != subject`)
+/// ratifies and the *subject's* session elevates. Mirrors the VTA's
+/// `mode: delegated` flow — the approve-request was addressed to the subject's
+/// `AclEntry.stepUp.approver`, recorded on the pending step-up at mint. The
+/// approver signs with its own key and authenticates as itself.
+#[tokio::test]
+async fn delegated_approve_response_elevates_the_subjects_session() {
+    let (router, ctx) = build_test_app().await;
+
+    // The subject: an AAL1 session being elevated (the requester).
+    let subject = "did:key:z6MkDelegatedSubject".to_string();
+    let session_id = "sess-delegated-1".to_string();
+    let challenge = "RGVsZWdhdGVkU3RlcFVwQ2hhbGxlbmdlWFla".to_string();
+    let subject_session = Session {
+        session_id: session_id.clone(),
+        did: subject.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &subject_session)
+        .await
+        .unwrap();
+
+    // The approver: a *different* principal with its own key, session, token.
+    let approver_sk = SigningKey::from_bytes(&[21u8; 32]);
+    let (approver_did, approver_mb) = did_key(&approver_sk);
+    let approver_vm = format!("{approver_did}#{approver_mb}");
+    let approver_session_id = "sess-approver-1".to_string();
+    let approver_session = Session {
+        session_id: approver_session_id.clone(),
+        did: approver_did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &approver_session)
+        .await
+        .unwrap();
+    let approver_claims = ctx.jwt_keys.new_claims(
+        approver_did.clone(),
+        approver_session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let approver_token = ctx.jwt_keys.encode(&approver_claims).unwrap();
+
+    // Pending step-up: subject == requester, approver == the delegate.
+    let pending = new_pending_step_up(
+        challenge.clone(),
+        session_id.clone(),
+        subject.clone(),
+        approver_did.clone(), // delegated: approver != subject
+        "aal2",
+        vec!["did-signed".to_string()],
+        300,
+    );
+    store_pending_step_up(&ctx.sessions_ks, &pending)
+        .await
+        .unwrap();
+
+    // The approver signs: issuer == approver, payload.subject == the requester.
+    let doc_json = json!({
+        "id": "approve-resp-delegated-1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuer": approver_did,
+        "recipient": "did:key:z6MkTestVTA",
+        "payload": {
+            "subject": subject,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        },
+    });
+    let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+    let mut di = DataIntegrityProof {
+        type_: "DataIntegrityProof".to_string(),
+        cryptosuite: CryptoSuite::EddsaJcs2022,
+        created: Some("2026-05-31T00:00:00Z".to_string()),
+        verification_method: approver_vm,
+        proof_purpose: "assertionMethod".to_string(),
+        proof_value: None,
+        context: None,
+    };
+    let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
+    di.proof_value = Some(multibase::encode(
+        Base::Base58Btc,
+        approver_sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(serde_json::from_value::<Proof>(serde_json::to_value(&di).unwrap()).unwrap());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {approver_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {v}");
+    assert_eq!(v["payload"]["status"], "elevated", "{v}");
+    assert_eq!(v["payload"]["session"]["acr"], "aal2", "{v}");
+    // The elevated session is the SUBJECT's — not the approver's.
+    assert_eq!(v["payload"]["session"]["subject"], subject, "{v}");
+
+    let stored = get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.acr, "aal2");
+    // The approver's own session is untouched by ratifying for someone else.
+    let approver_stored = get_session(&ctx.sessions_ks, &approver_session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(approver_stored.acr, "aal1");
+}
+
+/// An approver the relying party did NOT authorize for the subject is rejected
+/// (`approver_unauthorized`) and elevates nothing — even with a perfectly valid
+/// signature over the document. The pending step-up records approver B; a
+/// different valid signer C tries to ratify the subject's session.
+#[tokio::test]
+async fn unauthorized_approver_cannot_elevate() {
+    let (router, ctx) = build_test_app().await;
+
+    let subject = "did:key:z6MkUnauthSubject".to_string();
+    let session_id = "sess-unauth-1".to_string();
+    let challenge = "VW5hdXRob3JpemVkQXBwcm92ZXJDaGFsbFha".to_string();
+    let subject_session = Session {
+        session_id: session_id.clone(),
+        did: subject.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &subject_session)
+        .await
+        .unwrap();
+
+    // The pending step-up authorizes a specific approver (B).
+    let authorized = "did:key:z6MkAuthorizedApprover".to_string();
+    let pending = new_pending_step_up(
+        challenge.clone(),
+        session_id.clone(),
+        subject.clone(),
+        authorized.clone(),
+        "aal2",
+        vec!["did-signed".to_string()],
+        300,
+    );
+    store_pending_step_up(&ctx.sessions_ks, &pending)
+        .await
+        .unwrap();
+
+    // A DIFFERENT signer (C) — valid key, session, token — attempts to ratify.
+    let rogue_sk = SigningKey::from_bytes(&[33u8; 32]);
+    let (rogue_did, rogue_mb) = did_key(&rogue_sk);
+    let rogue_vm = format!("{rogue_did}#{rogue_mb}");
+    let rogue_session_id = "sess-rogue-1".to_string();
+    let rogue_session = Session {
+        session_id: rogue_session_id.clone(),
+        did: rogue_did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &rogue_session)
+        .await
+        .unwrap();
+    let rogue_claims = ctx.jwt_keys.new_claims(
+        rogue_did.clone(),
+        rogue_session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let rogue_token = ctx.jwt_keys.encode(&rogue_claims).unwrap();
+
+    // C signs its own well-formed approve-response for the subject's session.
+    let doc_json = json!({
+        "id": "approve-resp-rogue-1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuer": rogue_did,
+        "recipient": "did:key:z6MkTestVTA",
+        "payload": {
+            "subject": subject,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+        },
+    });
+    let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+    let mut di = DataIntegrityProof {
+        type_: "DataIntegrityProof".to_string(),
+        cryptosuite: CryptoSuite::EddsaJcs2022,
+        created: Some("2026-05-31T00:00:00Z".to_string()),
+        verification_method: rogue_vm,
+        proof_purpose: "assertionMethod".to_string(),
+        proof_value: None,
+        context: None,
+    };
+    let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
+    di.proof_value = Some(multibase::encode(
+        Base::Base58Btc,
+        rogue_sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(serde_json::from_value::<Proof>(serde_json::to_value(&di).unwrap()).unwrap());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {rogue_token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    // Rejected with the authorization failure; nothing elevated.
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "unauthorized approver must not elevate: {v}"
+    );
+    assert!(
+        serde_json::to_string(&v)
+            .unwrap()
+            .contains("approver_unauthorized"),
+        "expected approver_unauthorized, got: {v}"
+    );
+    let stored = get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.acr, "aal1", "subject session must remain AAL1");
 }
