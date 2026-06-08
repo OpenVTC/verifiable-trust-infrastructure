@@ -741,15 +741,19 @@ pub async fn run(
 /// bootstrap that crashed between PasskeyUser and AdminEntry).
 async fn heal_missing_admin_entries(state: &AppState) -> Result<(), AppError> {
     use chrono::Utc;
-    use vti_common::acl::list_acl_entries;
     use vti_common::auth::passkey::store::get_passkey_user_by_did;
 
     use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
+    // Use the VTC's own ACL type (`VtcRole`), not `vti_common`'s `Role`. The
+    // VTC stores `VtcAclEntry`, whose role set includes `Member` (written by a
+    // join admit); deserializing those rows via `vti_common::acl` fails with
+    // "unknown variant `member`" once any member exists.
+    use crate::acl::{VtcRole, list_acl_entries};
 
     let admins = list_acl_entries(&state.acl_ks).await?;
     let mut healed = 0usize;
     for acl_entry in admins {
-        if acl_entry.role != vti_common::acl::Role::Admin {
+        if acl_entry.role != VtcRole::Admin {
             continue;
         }
         if get_admin_entry(&state.passkey_ks, &acl_entry.did)

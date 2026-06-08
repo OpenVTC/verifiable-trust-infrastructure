@@ -39,8 +39,6 @@ const TRUST_TASK_SHOW =
   "https://trusttasks.org/openvtc/vtc/members/show/1.0";
 const TRUST_TASK_PROMOTE =
   "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
-const TRUST_TASK_ADMIN_REMOVE =
-  "https://trusttasks.org/openvtc/vtc/members/admin-remove/1.0";
 
 interface MemberRow {
   did: string;
@@ -122,8 +120,14 @@ async function adminRemove(args: {
   reason: string;
 }): Promise<void> {
   // DELETE accepts an optional `{reason}` body on the server.
+  // `/members/{did}` collapses GET + PATCH + DELETE under the single
+  // `members/show/1.0` Trust Task at the router (per-method selectors are
+  // deferred infra), so the DELETE must send that task — sending
+  // `members/admin-remove/1.0` trips the exact-match soft-gate
+  // (`TrustTaskMismatch`, 415). The standalone admin-remove Trust Task still
+  // exists on disk for the soft-gate surface.
   await deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
-    trustTask: TRUST_TASK_ADMIN_REMOVE,
+    trustTask: TRUST_TASK_SHOW,
     body: { reason: args.reason || null },
   });
 }
