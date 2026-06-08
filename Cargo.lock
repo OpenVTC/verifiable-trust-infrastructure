@@ -8891,6 +8891,7 @@ dependencies = [
  "tokio",
  "tokio-rustls 0.26.4",
  "tungstenite",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -9742,7 +9743,7 @@ dependencies = [
 
 [[package]]
 name = "vta-mobile-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9756,6 +9757,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",

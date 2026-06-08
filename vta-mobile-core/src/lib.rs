@@ -28,6 +28,11 @@
 
 uniffi::setup_scaffolding!();
 
+// Pulled only to enable tokio-tungstenite's `rustls-tls-webpki-roots` feature
+// graph-wide (see Cargo.toml) so the mediator WebSocket works on iOS, which has
+// no native trust store. Not called directly.
+use tokio_tungstenite as _;
+
 pub mod api;
 mod error;
 mod proof;

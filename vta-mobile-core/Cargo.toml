@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.6.0"
+version = "0.6.1"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -62,6 +62,15 @@ affinidi-messaging-didcomm = "0.15"
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
 # the VTA uses rather than reimplementing the affinidi mediator protocol.
 vta-sdk = { path = "../vta-sdk", version = "0.10", features = ["session"] }
+# iOS has no native trust store that `rustls-native-certs` can read, so the
+# mediator WebSocket (tokio-tungstenite, via affinidi-messaging-sdk) fails with
+# "no native root CA certificates found". Declaring tokio-tungstenite here with
+# `rustls-tls-webpki-roots` turns that feature on graph-wide (features are
+# additive): tokio-tungstenite then treats empty native certs as non-fatal and
+# adds the bundled Mozilla webpki roots — so `wss://` works on iOS. We don't use
+# the crate directly (`use tokio_tungstenite as _` in lib.rs); it's a feature
+# enabler matched to the version affinidi-messaging-sdk already pulls.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
