@@ -42,7 +42,7 @@ use chrono::Utc;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
@@ -251,6 +251,26 @@ pub(crate) async fn realize_join_verdict(
             if let EffectOutcome::Admitted(creds) =
                 execute::apply(state, plan, applicant_did).await?
             {
+                // Deliver the issued VMC + role VEC to the applicant's wallet
+                // over DIDComm — mirrors the approve path. Best-effort: the
+                // credentials are already issued (and returned inline on the
+                // REST path), so a delivery failure (no mediator, unreachable
+                // holder) is logged, not fatal. This closes the gap where a
+                // DIDComm auto-admit issued credentials but never sent them —
+                // the receipt only carries the request id + status.
+                if let Err(e) = crate::credentials::delivery::deliver_membership_credentials(
+                    state,
+                    applicant_did,
+                    &creds,
+                )
+                .await
+                {
+                    warn!(
+                        applicant = %applicant_did,
+                        error = %e,
+                        "membership-credential delivery failed on auto-admit; credentials issued",
+                    );
+                }
                 admit = Some(creds);
             }
             request.status = JoinStatus::Approved;
