@@ -20,6 +20,7 @@ pub mod keys;
 mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod protocol;
+mod step_up;
 pub(crate) mod trust_tasks;
 mod vta;
 
@@ -327,6 +328,11 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
         .route(
             "/contexts/{id}/did-templates/{name}/render",
             post(did_templates::render_context_handler),
+        )
+        // Step-up policy management (read posture; super-admin set).
+        .route(
+            "/step-up/policy",
+            get(step_up::get_step_up_policy).put(step_up::put_step_up_policy),
         )
         // ACL routes (flattened for consistency)
         .route("/acl", get(acl::list_acl).post(acl::create_acl))

@@ -133,6 +133,15 @@ pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1: &str =
 pub const TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
 
+/// `spec/auth/step-up/policy/0.2` — an administrator setting the maintainer's
+/// AAL2 step-up policy (per-operation-class floors + the master `enabled`
+/// switch). The maintainer validates, refuses a self-lockout, applies it
+/// atomically, and returns the effective (canonicalized) policy. Authorized to
+/// a super-admin; ships disabled. There is no 0.1 management wire form (the
+/// policy was config-only before), so only 0.2 is dispatched.
+pub const TASK_AUTH_STEP_UP_POLICY_0_2: &str =
+    "https://trusttasks.org/spec/auth/step-up/policy/0.2";
+
 // ─── Device slice (spec/device/*) ────────────────────────────────────────
 // Canonical Trust Task registry shapes (dtgwg `device/*`). Companion/Service
 // lifecycle on the VTA: register a device, heartbeat, list, disable, wipe, and
@@ -1029,6 +1038,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1,
     TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2,
+    TASK_AUTH_STEP_UP_POLICY_0_2,
     // Device slice
     TASK_DEVICE_REGISTER_0_1,
     TASK_DEVICE_REGISTER_0_2,

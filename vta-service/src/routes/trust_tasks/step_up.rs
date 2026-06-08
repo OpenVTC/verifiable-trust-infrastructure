@@ -842,15 +842,14 @@ pub(super) async fn require_step_up(
 
 /// Stable operation-class identifiers used to resolve step-up floors.
 /// These are the gated VTA operations; they mirror the canonical
-/// `acl/*` / `context/*` / `key/*` slugs the `auth/step-up/policy/0.1`
-/// spec uses for its `Floor.operation`.
+/// `acl/*` / `context/*` / `key/*` slugs the `auth/step-up/policy` spec uses for
+/// its `Floor.operation`. Re-exported from [`vti_common::auth::step_up::op_class`]
+/// so the gate and the policy-management `unknownOperation` check share one
+/// source of truth.
 pub mod op {
-    pub const ACL_GRANT: &str = "acl/grant";
-    pub const ACL_CHANGE_ROLE: &str = "acl/change-role";
-    pub const ACL_REVOKE: &str = "acl/revoke";
-    pub const ACL_SWAP_KEY: &str = "acl/swap-key";
-    pub const CONTEXT_DELETE: &str = "context/delete";
-    pub const KEY_REVOKE: &str = "key/revoke";
+    pub use vti_common::auth::step_up::op_class::{
+        ACL_CHANGE_ROLE, ACL_GRANT, ACL_REVOKE, ACL_SWAP_KEY, CONTEXT_DELETE, KEY_REVOKE,
+    };
 }
 
 /// Compile-time operation-class marker for the [`RequireStepUp`] extractor.

@@ -61,6 +61,7 @@ mod passkey_vms;
 mod provision_integration;
 mod seeds;
 mod step_up;
+mod step_up_policy;
 pub(crate) use step_up::{
     AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, ContextDeleteOp, RequireStepUp,
 };
@@ -210,6 +211,7 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     v.extend(management::DISPATCHED_URIS);
     v.extend(seeds::DISPATCHED_URIS);
     v.extend(step_up::DISPATCHED_URIS);
+    v.extend(step_up_policy::DISPATCHED_URIS);
     v.extend(vault::DISPATCHED_URIS);
     // Feature-gated slices add their `v.extend(slice::DISPATCHED_URIS)`
     // here under `#[cfg(feature = "...")]`. The corresponding URIs
@@ -373,6 +375,9 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
         | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2 => {
             step_up::handle_approve_response(state, auth, doc).await
+        }
+        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => {
+            step_up_policy::handle_set_step_up_policy(state, auth, doc).await
         }
         // ─── ACL slice ────────────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list(state, auth, doc).await,

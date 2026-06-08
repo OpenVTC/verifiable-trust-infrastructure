@@ -54,6 +54,37 @@ pub struct PendingStepUp {
     pub expires_at: u64,
 }
 
+/// Canonical operation-class slugs the VTA gates with a step-up floor.
+///
+/// A policy `floor.operation` MUST be one of these or `*` (the catch-all);
+/// anything else is rejected as `unknownOperation` when a policy is set. Single
+/// source of truth shared by the gate (`routes::trust_tasks::step_up::op`
+/// re-exports these) and the policy-management validation.
+pub mod op_class {
+    pub const ACL_GRANT: &str = "acl/grant";
+    pub const ACL_CHANGE_ROLE: &str = "acl/change-role";
+    pub const ACL_REVOKE: &str = "acl/revoke";
+    pub const ACL_SWAP_KEY: &str = "acl/swap-key";
+    pub const CONTEXT_DELETE: &str = "context/delete";
+    pub const KEY_REVOKE: &str = "key/revoke";
+
+    /// Every recognized operation-class (excludes the `*` catch-all).
+    pub const ALL: &[&str] = &[
+        ACL_GRANT,
+        ACL_CHANGE_ROLE,
+        ACL_REVOKE,
+        ACL_SWAP_KEY,
+        CONTEXT_DELETE,
+        KEY_REVOKE,
+    ];
+
+    /// Whether `operation` is a floor target the maintainer recognizes: a known
+    /// op-class or the `*` catch-all.
+    pub fn is_recognized(operation: &str) -> bool {
+        operation == "*" || ALL.contains(&operation)
+    }
+}
+
 /// Step-up enforcement mode for an operation-class — the assurance the
 /// relying party requires before the operation runs. Mirrors the
 /// `auth/step-up/policy/0.1` `FloorMode`. Strictness (least → most):
