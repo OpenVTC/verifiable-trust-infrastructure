@@ -17,6 +17,7 @@
 //! decision.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use affinidi_messaging_didcomm::Message;
 use affinidi_openid4vci::issuer::create_credential_response;
@@ -130,35 +131,110 @@ pub(crate) async fn push_to_holder(
             .await
             .map_err(|e| AppError::Internal(format!("ATM profile setup failed: {e}")))?,
     );
-    atm.profile_enable_websocket(&profile)
-        .await
-        .map_err(|e| AppError::Internal(format!("mediator websocket failed: {e}")))?;
 
     let msg = Message::build(msg_id.to_string(), msg_type.to_string(), body)
         .from(vtc_did.clone())
         .to(holder_did.to_string())
         .finalize();
 
-    let (jwe, _meta) = atm
-        .pack_encrypted(&msg, holder_did, Some(&vtc_did), None)
-        .await
-        .map_err(|e| AppError::Internal(format!("pack_encrypted failed: {e}")))?;
-
-    atm.forward_and_send_message(
+    // Send with a bounded retry. A transient mediator WebSocket failure (e.g.
+    // "Connection reset by peer" / a disconnected socket) right around the
+    // forward must not permanently drop an already-issued credential — nothing
+    // re-pushes it, so the member would be stuck "Pending" forever. Each attempt
+    // re-enables the websocket (the previous connection may be gone) and re-packs
+    // the message; on the final attempt the error is returned so the caller can
+    // log the best-effort failure.
+    send_with_retry(
+        atm,
         &profile,
-        false,
-        &jwe,
-        Some(msg_id),
-        &target_mediator,
+        &msg,
+        msg_id,
         holder_did,
-        None,
-        None,
-        false,
+        &vtc_did,
+        &target_mediator,
     )
     .await
-    .map_err(|e| AppError::Internal(format!("mediator forward failed: {e}")))?;
+}
 
-    Ok(())
+/// Backoff between credential-delivery send attempts. The schedule is the wait
+/// *before* attempts 2, 3, and 4 — total of four attempts. Kept short and
+/// in-request (this runs on the approve/admit path), so it rides out a transient
+/// mediator WebSocket blip without holding the caller for long.
+const DELIVERY_RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
+
+/// Enable the websocket, pack the message authcrypt to the holder, and forward
+/// it through the VTC's mediator — retrying the whole send on failure with the
+/// [`DELIVERY_RETRY_BACKOFF`] schedule.
+///
+/// Mediator delivery over a websocket is exactly where a transient reset
+/// (`ConnectionReset` / a dropped/`Disconnected` socket) shows up, and any of the
+/// three steps can surface it, so each attempt re-runs all three: re-enabling the
+/// websocket reconnects a socket the previous attempt may have lost, and the pack
+/// is cheap to redo. On success it returns immediately; once the attempts are
+/// exhausted it returns the last error (the caller logs it best-effort).
+async fn send_with_retry(
+    atm: &affinidi_tdk::messaging::ATM,
+    profile: &Arc<ATMProfile>,
+    msg: &Message,
+    msg_id: &str,
+    holder_did: &str,
+    vtc_did: &str,
+    target_mediator: &str,
+) -> Result<(), AppError> {
+    let mut attempt = 0usize;
+    loop {
+        let result: Result<(), AppError> = async {
+            atm.profile_enable_websocket(profile)
+                .await
+                .map_err(|e| AppError::Internal(format!("mediator websocket failed: {e}")))?;
+
+            let (jwe, _meta) = atm
+                .pack_encrypted(msg, holder_did, Some(vtc_did), None)
+                .await
+                .map_err(|e| AppError::Internal(format!("pack_encrypted failed: {e}")))?;
+
+            atm.forward_and_send_message(
+                profile,
+                false,
+                &jwe,
+                Some(msg_id),
+                target_mediator,
+                holder_did,
+                None,
+                None,
+                false,
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("mediator forward failed: {e}")))?;
+
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => match DELIVERY_RETRY_BACKOFF.get(attempt) {
+                Some(delay) => {
+                    tracing::warn!(
+                        holder_did,
+                        msg_id,
+                        attempt = attempt + 1,
+                        error = %e,
+                        "credential delivery send failed; retrying after backoff"
+                    );
+                    tokio::time::sleep(*delay).await;
+                    attempt += 1;
+                }
+                // Backoff schedule exhausted (all attempts used) — surface the
+                // last error for the caller's best-effort log.
+                None => return Err(e),
+            },
+        }
+    }
 }
 
 /// Resolve the holder's own DIDComm mediator from its DID document — the `did:`
