@@ -254,6 +254,11 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
         .expect("static Trust-Task URL");
     let join_accept = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0")
         .expect("static Trust-Task URL");
+    let join_manifest =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0")
+            .expect("static Trust-Task URL");
+    let join_status = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/status/1.0")
+        .expect("static Trust-Task URL");
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
     // filters + soft-gate consumers can target each precisely.
@@ -692,6 +697,21 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             "/join-requests/{id}/accept",
             post(join_requests::accept::accept),
             join_accept,
+        )
+        // Manifest (unauth public discovery): the community's join
+        // evidence requirements. Static `manifest` segment takes
+        // precedence over the `{id}` show route.
+        .route_with_task(
+            "/join-requests/manifest",
+            get(join_requests::manifest::manifest),
+            join_manifest,
+        )
+        // Status (unauth — holder binding in the body): the applicant
+        // polls their own request's lifecycle.
+        .route_with_task(
+            "/join-requests/{id}/status",
+            post(join_requests::status::status),
+            join_status,
         )
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no

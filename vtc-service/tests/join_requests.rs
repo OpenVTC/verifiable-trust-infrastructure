@@ -46,6 +46,10 @@ const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/show/1
 const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
 const REJECT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
 const ACCEPT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0";
+const MANIFEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0";
+const STATUS_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0";
+/// Mirror of `routes::join_requests::status::JOIN_STATUS_DOMAIN_TAG`.
+const JOIN_STATUS_DOMAIN_TAG: &[u8] = b"vtc-join-status/v1\0";
 /// The VTC DID the fixture configures — the issuer of every VMC and the
 /// community a reciprocal VC must acknowledge.
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
@@ -1589,4 +1593,193 @@ async fn accept_rejects_a_tampered_reciprocal_vc() {
 
     let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Manifest — pre-submit discovery (join-requests/manifest/1.0)
+// ---------------------------------------------------------------------------
+
+async fn store_join_criterion(fix: &Fixture) {
+    use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+    let criterion = AcceptsCriterion {
+        id: "join-evidence".into(),
+        query: json!({
+            "credentials": [{
+                "id": "membership",
+                "format": "ldp_vc",
+                "meta": { "type_values": ["MembershipCredential"] }
+            }]
+        }),
+        description: Some("present a MembershipCredential to join".into()),
+        created_at: chrono::Utc::now(),
+        created_by_did: ADMIN_DID.into(),
+    };
+    store_accepts(&fix.state.schemas_ks, &criterion)
+        .await
+        .expect("store accepts criterion");
+}
+
+#[tokio::test]
+async fn manifest_lists_registered_criteria() {
+    let fix = build_fixture().await;
+    store_join_criterion(&fix).await;
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests/manifest",
+        MANIFEST_TASK,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["communityDid"], VTC_DID);
+    let criteria = body["criteria"].as_array().unwrap();
+    assert_eq!(criteria.len(), 1);
+    assert_eq!(criteria[0]["id"], "join-evidence");
+    assert!(criteria[0]["presentationDefinition"]["credentials"].is_array());
+    assert_eq!(
+        criteria[0]["description"],
+        "present a MembershipCredential to join"
+    );
+}
+
+#[tokio::test]
+async fn manifest_is_empty_when_no_criteria_registered() {
+    let fix = build_fixture().await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests/manifest",
+        MANIFEST_TASK,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["communityDid"], VTC_DID);
+    assert_eq!(body["criteria"].as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Status — applicant poll (join-requests/status/1.0)
+// ---------------------------------------------------------------------------
+
+/// Holder-binding signature over the canonical status body. Mirrors
+/// `routes::join_requests::status`'s construction.
+fn sign_status_payload(sk: &SigningKey, applicant_did: &str, request_id: Uuid) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Payload<'a> {
+        applicant_did: &'a str,
+        request_id: String,
+    }
+    let payload = serde_json::to_vec(&Payload {
+        applicant_did,
+        request_id: request_id.to_string(),
+    })
+    .unwrap();
+    let mut signing = Vec::with_capacity(JOIN_STATUS_DOMAIN_TAG.len() + payload.len());
+    signing.extend_from_slice(JOIN_STATUS_DOMAIN_TAG);
+    signing.extend_from_slice(&payload);
+    hex::encode(sk.sign(&signing).to_bytes())
+}
+
+async fn post_status(
+    fix: &Fixture,
+    id: Uuid,
+    applicant_did: &str,
+    signature: &str,
+) -> (StatusCode, Value) {
+    send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/status"),
+        STATUS_TASK,
+        None,
+        Some(json!({ "applicantDid": applicant_did, "signature": signature })),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn status_returns_pending_for_the_applicant() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+    let (sk, applicant_did) = applicant_pair();
+    let sig = sign_status_payload(&sk, &applicant_did, id);
+
+    let (status, body) = post_status(&fix, id, &applicant_did, &sig).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["requestId"], id.to_string());
+    assert_eq!(body["status"], "pending");
+    assert!(body.get("needs").is_none() || body["needs"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn status_rejects_a_wrong_signer() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+    let (_sk, applicant_did) = applicant_pair();
+    let other = SigningKey::from_bytes(&[0xEE; 32]);
+    let bad_sig = sign_status_payload(&other, &applicant_did, id);
+
+    let (status, _) = post_status(&fix, id, &applicant_did, &bad_sig).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn status_404_for_an_unknown_request() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let unknown = Uuid::new_v4();
+    let sig = sign_status_payload(&sk, &applicant_did, unknown);
+
+    let (status, _) = post_status(&fix, unknown, &applicant_did, &sig).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn status_deferred_returns_needs_and_presentation_definition() {
+    let fix = build_fixture().await;
+    // A join policy that defers, asking for more evidence.
+    activate_join_policy(
+        &fix,
+        r#"
+package vtc.join
+import future.keywords.if
+default decision := {"effect": "deny", "with": {"code": "closed"}}
+decision := {"effect": "request_more", "with": {
+    "needs": ["agreed:code-of-conduct"],
+    "presentation_definition": {"id": "pd-coc"}
+}} if { true }
+"#,
+    )
+    .await;
+
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let submit_sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({ "applicantDid": applicant_did, "vp": vp, "signature": submit_sig })),
+    )
+    .await;
+    assert_eq!(
+        body["status"], "deferred",
+        "expected request_more → deferred: {body}"
+    );
+    let id = Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap();
+
+    let sig = sign_status_payload(&sk, &applicant_did, id);
+    let (status, body) = post_status(&fix, id, &applicant_did, &sig).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["status"], "deferred");
+    assert_eq!(body["needs"][0], "agreed:code-of-conduct");
+    assert_eq!(body["presentationDefinition"]["id"], "pd-coc");
 }

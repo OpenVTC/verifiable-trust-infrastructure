@@ -84,6 +84,76 @@ pub struct JoinRequestAcceptReceiptBody {
 }
 
 // ---------------------------------------------------------------------------
+// Manifest — pre-submit discovery (join-requests/manifest/1.0)
+// ---------------------------------------------------------------------------
+
+/// DIDComm message `type` for a join-request manifest request: discover
+/// the community's join evidence requirements. Read; empty request body.
+pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0";
+
+/// DIDComm `type` for the VTC's manifest reply.
+pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/manifest-response/1.0";
+
+/// One community evidence requirement — a named DCQL Presentation
+/// Definition the applicant may present against.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManifestCriterion {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub presentation_definition: JsonValue,
+}
+
+/// Manifest response: the community's join evidence requirements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestManifestResponseBody {
+    pub community_did: String,
+    pub criteria: Vec<ManifestCriterion>,
+}
+
+// ---------------------------------------------------------------------------
+// Status — applicant poll (join-requests/status/1.0)
+// ---------------------------------------------------------------------------
+
+/// DIDComm message `type` for an applicant status poll. `applicantDid`
+/// is the DIDComm `from` field (authcrypt sender).
+pub const JOIN_REQUEST_STATUS_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0";
+
+/// DIDComm `type` for the VTC's status reply.
+pub const JOIN_REQUEST_STATUS_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/join-requests/status-response/1.0";
+
+/// Body of the status message (DIDComm). Over REST the `{id}` is the
+/// path segment; over DIDComm it travels here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestStatusBody {
+    pub request_id: Uuid,
+}
+
+/// Status response: the request's lifecycle, plus (when `deferred`) what
+/// the applicant must present next.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestStatusResponseBody {
+    pub request_id: Uuid,
+    /// `pending` | `deferred` | `approved` | `rejected` | `withdrawn`.
+    pub status: String,
+    /// Outstanding requirements — present only for a `deferred` request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    /// The DCQL the applicant should answer over `present` — present only
+    /// for a `deferred` request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_definition: Option<JsonValue>,
+}
+
+// ---------------------------------------------------------------------------
 // Self-remove (M1.11.1 DIDComm twin)
 // ---------------------------------------------------------------------------
 

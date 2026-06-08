@@ -19,16 +19,21 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, JOIN_REQUEST_ACCEPT_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+    JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, JOIN_REQUEST_ACCEPT_TYPE,
+    JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, JOIN_REQUEST_MANIFEST_TYPE,
+    JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
     JOIN_REQUEST_SUBMIT_TYPE, JoinRequestAcceptBody, JoinRequestAcceptReceiptBody,
-    JoinRequestSubmitBody, JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE,
-    MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody, SelfRemoveReceiptBody,
+    JoinRequestStatusBody, JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
+    MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
+    SelfRemoveReceiptBody,
 };
 
 use crate::config::AppConfig;
 use crate::join::JoinTransport;
 use crate::members::Disposition;
 use crate::routes::join_requests::accept::accept_inner;
+use crate::routes::join_requests::manifest::manifest_inner;
+use crate::routes::join_requests::status::status_inner;
 use crate::routes::join_requests::submit::submit_inner;
 use crate::routes::members::remove::remove_inner;
 use crate::server::AppState;
@@ -106,6 +111,18 @@ pub async fn run_didcomm_service(
             r.route(
                 JOIN_REQUEST_ACCEPT_TYPE,
                 handler_fn(join_request_accept_handler),
+            )
+        })
+        .and_then(|r| {
+            r.route(
+                JOIN_REQUEST_MANIFEST_TYPE,
+                handler_fn(join_request_manifest_handler),
+            )
+        })
+        .and_then(|r| {
+            r.route(
+                JOIN_REQUEST_STATUS_TYPE,
+                handler_fn(join_request_status_handler),
             )
         })
         .and_then(|r| {
@@ -281,6 +298,51 @@ async fn join_request_accept_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery.
+///
+/// A read: the empty request body returns the community's join evidence
+/// requirements. No sender authentication needed (manifest is public).
+async fn join_request_manifest_handler(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let manifest = manifest_inner(&state)
+        .await
+        .map_err(|e| DIDCommServiceError::Internal(format!("manifest failed: {e}")))?;
+    let body = serde_json::to_value(&manifest)
+        .map_err(|e| DIDCommServiceError::Internal(format!("manifest serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `join-requests/status/1.0` over DIDComm — applicant poll.
+///
+/// `applicantDid` is the DIDComm `from` field (authcrypt sender), so no
+/// separate holder-binding signature is needed (`signature_hex = None`).
+/// The body carries the `requestId`.
+async fn join_request_status_handler(
+    ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let applicant_did = ctx.sender_did.clone().ok_or_else(|| {
+        DIDCommServiceError::Internal("join-request status has no DIDComm sender".into())
+    })?;
+    let body: JoinRequestStatusBody = serde_json::from_value(message.body.clone())
+        .map_err(|e| DIDCommServiceError::Internal(format!("malformed status body: {e}")))?;
+
+    let resp = status_inner(&state, body.request_id, applicant_did, None)
+        .await
+        .map_err(|e| DIDCommServiceError::Internal(format!("status failed: {e}")))?;
+    let body = serde_json::to_value(&resp)
+        .map_err(|e| DIDCommServiceError::Internal(format!("status serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(JOIN_REQUEST_STATUS_RESPONSE_TYPE, body).thid(message.id),
     ))
 }
 
