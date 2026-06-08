@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.5.0"
+version = "0.6.0"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR
@@ -48,6 +48,10 @@ multibase = { workspace = true }
 affinidi-crypto = { workspace = true }
 # Async runtime for the FFI async exports + a process-wide resolver cell.
 tokio = { workspace = true }
+# Opt-in log subscriber for `init_logging` — pipes the engine's + the affinidi
+# stack's `tracing` output to stderr (the Xcode console on iOS / logcat-adjacent
+# on Android) so on-device network/DIDComm failures are diagnosable.
+tracing-subscriber = { workspace = true }
 # DID resolution. Default config is local (did:key / did:peer resolve offline);
 # networked methods (did:web / did:webvh) need network-mode config — later.
 affinidi-did-resolver-cache-sdk = { workspace = true }

@@ -4,9 +4,39 @@
 //! re-exported from a sibling module). Slice 1 keeps the surface minimal and
 //! synchronous to prove the build + bindgen pipeline end to end.
 
+use std::sync::Once;
+
 use base64::Engine as _;
 
 use crate::error::FfiError;
+
+static LOG_INIT: Once = Once::new();
+
+/// Install a log subscriber that writes the engine's — and its dependencies'
+/// (`affinidi-messaging-sdk`, `vta-sdk`, the DID resolver, `reqwest`/`rustls`) —
+/// `tracing` output to **stderr**, which the **Xcode console** surfaces on iOS
+/// (and is visible via the device log on Android). Call once at app launch;
+/// idempotent and safe to call again.
+///
+/// `directives` is an `EnvFilter` string, e.g. `"info"` or, to debug a stuck
+/// mediator/DIDComm connection,
+/// `"info,vta_mobile_core=debug,vta_sdk=debug,affinidi_messaging_sdk=debug"`.
+/// Without this, the engine's libraries log to a no-op and on-device failures
+/// (TLS handshakes, mediator round-trips) are invisible — only the FFI error
+/// string survives.
+#[uniffi::export]
+pub fn init_logging(directives: String) {
+    LOG_INIT.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_new(&directives)
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        // `try_init` so a host that already installed a subscriber isn't clobbered.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .try_init();
+    });
+}
 
 /// Engine build/version metadata. A trivial record so the host app can confirm
 /// the FFI bridge is live and log which engine build it loaded.

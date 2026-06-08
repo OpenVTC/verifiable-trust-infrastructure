@@ -69,3 +69,50 @@ impl MediatorSession {
         self.inner.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Live: connect a fresh `did:key` holder to a real mediator and poll once,
+    /// reproducing exactly what the iOS app's `connectMediator` does — on the
+    /// host, to isolate iOS-specific failures from the affinidi-ATM client path.
+    /// Ignored by default (network + a real mediator). Run:
+    /// `cargo test -p vta-mobile-core -- --ignored connects_to_mediator --nocapture`
+    /// Override the mediator with `VTA_TEST_MEDIATOR`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "network: connects to a live mediator as a fresh did:key"]
+    async fn connects_to_mediator_as_fresh_did_key() {
+        use ed25519_dalek::SigningKey;
+        use multibase::Base;
+
+        let seed = [7u8; 32];
+        let sk = SigningKey::from_bytes(&seed);
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(sk.verifying_key().as_bytes());
+        let holder_did = format!("did:key:{}", multibase::encode(Base::Base58Btc, &mc));
+
+        let mediator = std::env::var("VTA_TEST_MEDIATOR").unwrap_or_else(|_| {
+            "did:webvh:QmTS3a3H9Dk4ZMPAZ8jNWGeyPbuKrPbrPZcSbg8CJ6yynD:webvh.storm.ws:mediator"
+                .to_string()
+        });
+
+        eprintln!("connecting holder={holder_did} → mediator={mediator}");
+        let session = MediatorSession::connect(
+            holder_did.clone(),
+            seed.to_vec(),
+            holder_did, // vta_did is unused for the connect itself; a valid did:key
+            mediator,
+        )
+        .await
+        .expect("connect to the mediator as a fresh did:key");
+
+        eprintln!("connected; polling once (5s)…");
+        let got = session
+            .receive_next(5)
+            .await
+            .expect("receive_next should not error");
+        eprintln!("receive_next → {got:?}");
+        session.shutdown().await;
+    }
+}
