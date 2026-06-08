@@ -1359,7 +1359,7 @@ mod tests {
     #[tokio::test]
     async fn receives_a_bbs_vc_from_a_did_key_issuer() {
         use affinidi_bbs as bbs;
-        use affinidi_data_integrity::bbs_2023::sign_vc_base;
+        use affinidi_data_integrity::bbs_2023_transform::sign_base_document;
 
         let (_dir, _store, vault) = fresh_vault();
 
@@ -1369,19 +1369,24 @@ mod tests {
         let pk = bbs::sk_to_pk(&sk);
         let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
         let vc = json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://www.w3.org/ns/credentials/examples/v2"
+            ],
             "type": ["VerifiableCredential", "MembershipCredential"],
             "issuer": issuer_did,
             "validFrom": "2020-01-01T00:00:00Z",
             "credentialSubject": { "id": "did:key:zMember", "givenName": "Alice" }
         });
         let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
-        let signed = sign_vc_base(
+        let signed = sign_base_document(
             &vc,
             &mandatory,
             &format!("{issuer_did}#bbs-key-0"),
+            "2020-01-01T00:00:00Z",
             &sk,
             &pk,
+            b"ops-bbs-test-hmac-key-32-bytes!!",
         )
         .unwrap();
 

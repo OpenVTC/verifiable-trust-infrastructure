@@ -311,6 +311,7 @@ fn credential_from_verified(
         issuer: p.issuer_did.clone(),
         issuer_trusted,
         status,
+        holder_bound: p.holder_bound,
         claims: p.claims.clone(),
         // SD-JWT-VC carries expiry in `exp` (epoch seconds).
         valid_until: p
@@ -474,6 +475,7 @@ mod tests {
             issuer_did: "did:key:zIssuer".into(),
             holder_did: "did:key:zHolder".into(),
             vct: Some("https://openvtc.org/credentials/MembershipCredential".into()),
+            holder_bound: true,
             claims: json!({ "givenName": "Alice", "exp": 1_900_000_000 }),
             credential_status: None,
         }

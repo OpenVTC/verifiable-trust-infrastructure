@@ -128,6 +128,7 @@ cred_trusted(t) if {
                         issuer: "did:webvh:notary.example".into(),
                         issuer_trusted,
                         status: CredentialStatus::Valid,
+                        holder_bound: true,
                         claims: json!({}),
                         valid_until: None,
                     }],

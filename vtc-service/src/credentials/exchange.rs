@@ -283,6 +283,13 @@ pub struct VerifiedPresentation {
     pub vct: Option<String>,
     /// The disclosed claims (issuer-protected claims + the revealed subset).
     pub claims: Value,
+    /// Whether the presenter **cryptographically proved control of the holder
+    /// key** (so the presenter *is* the subject), versus mere possession of the
+    /// credential. True for SD-JWT-VC (`kb-jwt`), DI VP (holder proof), and
+    /// holder-bound **bbs-2023 pseudonym** proofs; **false** for a basic
+    /// (possession-based) bbs-2023 derived proof. A join policy can require this
+    /// (see the `holder_bound` fact) for sensitive communities.
+    pub holder_bound: bool,
     /// The raw `credentialStatus` entry (W3C `BitstringStatusListEntry`) or
     /// SD-JWT-VC IETF `status` object, captured at verify time so the join
     /// verifier can resolve revocation. `None` when the credential opted into no
@@ -580,6 +587,9 @@ pub async fn verify_presentation(
         issuer_did,
         holder_did,
         vct,
+        // SD-JWT-VC carries a mandatory holder `kb-jwt` — the presenter proved
+        // control of the holder key.
+        holder_bound: true,
         claims: result.claims,
         credential_status,
     })
@@ -655,7 +665,7 @@ pub async fn verify_vp_token(
         // **string** is one SD-JWT-VC presentation.
         let verified: Vec<VerifiedPresentation> = if entry.is_object() {
             if is_bbs_2023_presentation(entry) {
-                verify_bbs_dispatch(entry, expected_nonce, did_resolver, now).await?
+                verify_bbs_dispatch(entry, expected_aud, expected_nonce, did_resolver, now).await?
             } else {
                 verify_di_vp(entry, expected_aud, expected_nonce, did_resolver, now).await?
             }
@@ -814,6 +824,9 @@ async fn verify_di_vp(
             issuer_did,
             holder_did: holder_did.clone(),
             vct,
+            // A DI VP carries a holder `DataIntegrityProof` — the presenter proved
+            // control of the holder key.
+            holder_bound: true,
             claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
             credential_status,
         });
@@ -838,6 +851,7 @@ fn is_bbs_2023_presentation(entry: &Value) -> bool {
 /// when the crate was built without the `bbs` feature.
 async fn verify_bbs_dispatch(
     entry: &Value,
+    expected_aud: &str,
     expected_nonce: &str,
     did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
@@ -845,12 +859,12 @@ async fn verify_bbs_dispatch(
     #[cfg(feature = "bbs")]
     {
         Ok(vec![
-            verify_bbs_presentation(entry, expected_nonce, did_resolver, now).await?,
+            verify_bbs_presentation(entry, expected_aud, expected_nonce, did_resolver, now).await?,
         ])
     }
     #[cfg(not(feature = "bbs"))]
     {
-        let _ = (entry, expected_nonce, did_resolver, now);
+        let _ = (entry, expected_aud, expected_nonce, did_resolver, now);
         Err(AppError::Validation(
             "a bbs-2023 presentation was received but this VTC was built without the `bbs` \
              feature"
@@ -859,8 +873,63 @@ async fn verify_bbs_dispatch(
     }
 }
 
+/// Inspect a `bbs-2023` **derived** proofValue: returns its embedded
+/// `presentationHeader` and whether it is a **pseudonym** (holder-bound) proof.
+///
+/// The standards-track `verify_derived_proof` / `verify_pseudonym_derived_proof`
+/// authenticate against the header carried *inside* the proof rather than a
+/// verifier-supplied one, so the verifier must extract it to bind freshness. The
+/// derived proofValue is `multibase-base64url("u" || 0xd95d0{3,9} ||
+/// CBOR([...]))`; `0xd95d03` is a basic derived proof and `0xd95d09` a pseudonym
+/// (holder-bound) one. The presentation header is element index 4 of the CBOR
+/// array in both forms.
+#[cfg(feature = "bbs")]
+fn bbs_inspect_derived_proof(vc: &Value) -> Result<(Vec<u8>, bool), AppError> {
+    let pv = vc
+        .get("proof")
+        .and_then(|p| p.get("proofValue"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::Validation("bbs-2023 presentation has no `proofValue`".into()))?;
+    let (_base, bytes) = multibase::decode(pv).map_err(|e| {
+        AppError::Validation(format!("bbs-2023 `proofValue` is not multibase: {e}"))
+    })?;
+    // 0xd95d03 = basic derived, 0xd95d09 = pseudonym derived. Reject base proofs
+    // (0xd95d02 / 0xd95d08) and anything else — only a *disclosure* proof is a
+    // presentation.
+    if bytes.len() < 3 || bytes[0] != 0xd9 || bytes[1] != 0x5d {
+        return Err(AppError::Validation(
+            "bbs-2023 `proofValue` is not a derived (disclosure) proof".into(),
+        ));
+    }
+    let is_pseudonym = match bytes[2] {
+        0x03 => false,
+        0x09 => true,
+        _ => {
+            return Err(AppError::Validation(
+                "bbs-2023 `proofValue` is not a derived (disclosure) proof".into(),
+            ));
+        }
+    };
+    let value: ciborium::value::Value = ciborium::from_reader(&bytes[3..]).map_err(|e| {
+        AppError::Validation(format!("bbs-2023 `proofValue` CBOR is malformed: {e}"))
+    })?;
+    let header = value
+        .as_array()
+        .and_then(|arr| arr.get(4))
+        .and_then(ciborium::value::Value::as_bytes)
+        .ok_or_else(|| {
+            AppError::Validation("bbs-2023 derived `proofValue` has no presentationHeader".into())
+        })?;
+    Ok((header.clone(), is_pseudonym))
+}
+
 /// Verify a **bbs-2023 derived-proof** presentation and project it into a
 /// [`VerifiedPresentation`].
+///
+/// Requires `affinidi-data-integrity` ≥ 0.7.5 (the vc-di-bbs disclosed-value
+/// soundness fix, affinidi-tdk-rs#381): every claim term in a presented VC must
+/// be defined by its `@context` (JSON-LD safe mode), else verification refuses
+/// it. BBS issuer *signing* remains separately audit-gated (#294).
 ///
 /// The derived proof (the disclosed VC's `proof`) proves the holder possesses a
 /// credential validly issued by the VC `issuer` and discloses only the revealed
@@ -868,22 +937,27 @@ async fn verify_bbs_dispatch(
 /// The issuer's BLS12-381 G2 key resolves from its DID (the proof's
 /// `verificationMethod`, bound to `issuer`).
 ///
-/// **Holder semantics (deliberate):** unlike SD-JWT-VC (kb-jwt) or DI VP
-/// (holder proof), a basic bbs-2023 derived proof carries **no holder-key
-/// binding** — it is unlinkable and possession-based. The applicant
-/// (`holder_did`) is therefore taken to be the **disclosed `credentialSubject.id`**
-/// (which a well-formed presentation discloses as a mandatory claim). The join
-/// policy decides whether possession-based holdership is acceptable; stronger
-/// holder binding (BBS pseudonyms) is a follow-up.
+/// **Holder semantics — two modes, by proof kind:**
+/// - A **basic** derived proof (`0xd95d03`) carries **no holder-key binding** —
+///   it is unlinkable and possession-based. The applicant (`holder_did`) is taken
+///   to be the **disclosed `credentialSubject.id`** (a mandatory-disclosed claim),
+///   and [`VerifiedPresentation::holder_bound`] is `false`.
+/// - A **pseudonym** derived proof (`0xd95d09`) is holder-bound: the holder proves
+///   knowledge of the link secret committed at issuance, bound to a per-verifier
+///   context. We verify it against `expected_aud` as the `verifier_id` (so the
+///   pseudonym is stable per verifier, unlinkable across verifiers), and
+///   `holder_bound` is `true`. The join policy can require this for sensitive
+///   communities (see the `holder_bound` fact).
 #[cfg(feature = "bbs")]
 async fn verify_bbs_presentation(
     vc: &Value,
+    expected_aud: &str,
     expected_nonce: &str,
     did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
     now: DateTime<Utc>,
 ) -> Result<VerifiedPresentation, AppError> {
     use affinidi_bbs::PublicKey;
-    use affinidi_data_integrity::bbs_2023;
+    use affinidi_data_integrity::bbs_2023_transform;
 
     let issuer_did = vc
         .get("issuer")
@@ -909,10 +983,26 @@ async fn verify_bbs_presentation(
     let pk = PublicKey::from_bytes(&g2)
         .map_err(|e| AppError::Validation(format!("bbs-2023 issuer key is invalid: {e}")))?;
 
-    // Verify the derived proof binds the verifier's nonce (presentation header).
-    if !bbs_2023::verify_vc_derived(vc, expected_nonce.as_bytes(), &pk)
-        .map_err(|e| AppError::Validation(format!("bbs-2023 presentation did not verify: {e}")))?
-    {
+    // Freshness / anti-replay: the standards-track verify authenticates the
+    // presentation header *embedded* in the derived proof, not a verifier-supplied
+    // one — so we read that header back out and bind it to the challenge this
+    // verifier issued. Without this check a proof minted for any other challenge
+    // would verify cryptographically. The same inspection tells us whether this is
+    // a holder-bound *pseudonym* proof (`0xd95d09`) or a basic one (`0xd95d03`).
+    let (header, holder_bound) = bbs_inspect_derived_proof(vc)?;
+    if header != expected_nonce.as_bytes() {
+        return Err(AppError::Validation(
+            "bbs-2023 presentation header does not match the expected challenge".into(),
+        ));
+    }
+    let verified = if holder_bound {
+        // Pseudonym proof: verify the per-verifier holder binding against `aud`.
+        bbs_2023_transform::verify_pseudonym_derived_proof(vc, &pk, expected_aud)
+    } else {
+        bbs_2023_transform::verify_derived_proof(vc, &pk)
+    }
+    .map_err(|e| AppError::Validation(format!("bbs-2023 presentation did not verify: {e}")))?;
+    if !verified {
         return Err(AppError::Validation(
             "bbs-2023 presentation proof did not verify".into(),
         ));
@@ -946,6 +1036,9 @@ async fn verify_bbs_presentation(
         issuer_did,
         holder_did,
         vct,
+        // `true` only for a pseudonym (holder-bound) proof; a basic derived proof
+        // is possession-based.
+        holder_bound,
         claims: vc.get("credentialSubject").cloned().unwrap_or(Value::Null),
         credential_status,
     })
@@ -2007,13 +2100,18 @@ mod tests {
     #[cfg(feature = "bbs")]
     fn bbs_derived_presentation(nonce: &str, subject: &str, disclose: &[&str]) -> (Value, String) {
         use affinidi_bbs as bbs;
-        use affinidi_data_integrity::bbs_2023::{derive_vc, sign_vc_base};
+        use affinidi_data_integrity::bbs_2023_transform::{
+            create_derived_proof, sign_base_document,
+        };
 
         let sk = bbs::keygen(b"vtc-bbs-verify-key-material-32by", b"").unwrap();
         let pk = bbs::sk_to_pk(&sk);
         let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
         let vc = json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://www.w3.org/ns/credentials/examples/v2"
+            ],
             "type": ["VerifiableCredential", "MembershipCredential"],
             "issuer": issuer_did,
             "validFrom": "2020-01-01T00:00:00Z",
@@ -2021,15 +2119,17 @@ mod tests {
             "credentialSubject": { "id": subject, "memberLevel": "gold", "secret": "hidden" }
         });
         let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
-        let base = sign_vc_base(
+        let base = sign_base_document(
             &vc,
             &mandatory,
             &format!("{issuer_did}#bbs-key-0"),
+            "2020-01-01T00:00:00Z",
             &sk,
             &pk,
+            b"vtc-bbs-test-hmac-key-32-bytes!!",
         )
         .unwrap();
-        let derived = derive_vc(&base, disclose, nonce.as_bytes(), &pk).unwrap();
+        let derived = create_derived_proof(&base, disclose, nonce.as_bytes(), &pk).unwrap();
         (derived, issuer_did)
     }
 
@@ -2056,6 +2156,119 @@ mod tests {
         assert!(
             p.claims.get("secret").is_none(),
             "an undisclosed claim must not appear"
+        );
+        assert!(
+            !p.holder_bound,
+            "a basic bbs-2023 proof is possession-based, not holder-bound"
+        );
+    }
+
+    /// A bbs-2023 **pseudonym** (holder-bound) presentation bound to `verifier_id`.
+    #[cfg(feature = "bbs")]
+    fn bbs_pseudonym_presentation(
+        nonce: &str,
+        subject: &str,
+        verifier_id: &str,
+        disclose: &[&str],
+    ) -> (Value, String) {
+        use affinidi_bbs as bbs;
+        use affinidi_data_integrity::bbs_2023_transform as tx;
+
+        let sk = bbs::keygen(b"vtc-nym-verify-key-material-32by", b"").unwrap();
+        let pk = bbs::sk_to_pk(&sk);
+        let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
+        let vc = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://www.w3.org/ns/credentials/examples/v2"
+            ],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "validUntil": "2100-01-01T00:00:00Z",
+            "credentialSubject": { "id": subject, "memberLevel": "gold", "secret": "hidden" }
+        });
+        let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
+
+        // Holder commits a link secret; issuer blind-signs the pseudonym base.
+        let prover_nym_bytes = [0x11u8; 32];
+        let prover_nym = bbs::hash::scalar_from_bytes(&prover_nym_bytes).unwrap();
+        let (commitment, secret_prover_blind) =
+            bbs::nym_commit(prover_nym, &[], bbs::Ciphersuite::default()).unwrap();
+        let blind_bytes = bbs::hash::scalar_to_bytes(&secret_prover_blind);
+        let proof_config = json!({
+            "type": "DataIntegrityProof",
+            "cryptosuite": "bbs-2023",
+            "created": "2020-01-01T00:00:00Z",
+            "verificationMethod": format!("{issuer_did}#bbs-key-0"),
+            "proofPurpose": "assertionMethod",
+            "@context": vc["@context"].clone(),
+        });
+        let proof_value = tx::create_pseudonym_base_proof_value(
+            &vc,
+            &proof_config,
+            &mandatory,
+            &sk,
+            &pk,
+            b"vtc-nym-test-hmac-key-32-bytes!!",
+            &commitment,
+            &[0x22u8; 32],
+        )
+        .unwrap();
+        let mut proof = proof_config;
+        let obj = proof.as_object_mut().unwrap();
+        obj.remove("@context");
+        obj.insert("proofValue".into(), json!(proof_value));
+        let mut base = vc.clone();
+        base.as_object_mut().unwrap().insert("proof".into(), proof);
+
+        // Holder derives a per-verifier pseudonym proof bound to `verifier_id`.
+        let derived = tx::create_pseudonym_derived_proof(
+            &base,
+            disclose,
+            nonce.as_bytes(),
+            &pk,
+            &prover_nym_bytes,
+            &blind_bytes,
+            verifier_id,
+        )
+        .unwrap();
+        (derived, issuer_did)
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn verify_vp_token_accepts_a_holder_bound_bbs_pseudonym() {
+        let nonce = "vtc-challenge-xyz";
+        let subject = "did:key:zApplicant";
+        let aud = "did:web:vtc.example";
+        let (derived, _issuer) =
+            bbs_pseudonym_presentation(nonce, subject, aud, &["/credentialSubject/memberLevel"]);
+        let vp_token = json!({ "membership": derived });
+
+        // Verifies and is reported as holder-bound when aud matches the verifier id.
+        let set = verify_vp_token(&vp_token, aud, nonce, None, Utc::now())
+            .await
+            .expect("a holder-bound bbs-2023 pseudonym must verify");
+        assert_eq!(set.holder, subject);
+        assert!(
+            set.presentations[0].holder_bound,
+            "a pseudonym proof must be reported holder-bound"
+        );
+
+        // ... and is REJECTED for a different verifier (per-verifier binding):
+        // `aud` is the pseudonym `verifier_id`, so a different VTC can't accept it.
+        assert!(
+            verify_vp_token(
+                &vp_token,
+                "did:web:other-vtc.example",
+                nonce,
+                None,
+                Utc::now()
+            )
+            .await
+            .is_err(),
+            "a pseudonym proof must not verify for a different verifier id"
         );
     }
 

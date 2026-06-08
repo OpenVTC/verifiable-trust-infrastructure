@@ -408,6 +408,11 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
         issuer,
         issuer_trusted: false,
         status: CredentialStatus::Valid,
+        // This raw-VC path does not verify a *per-credential* holder-key binding
+        // (no `kb-jwt` / holder proof / pseudonym check like the vp_token path) —
+        // so we don't claim one. Fail-safe: a policy requiring holder binding will
+        // (correctly) not be satisfied by these.
+        holder_bound: false,
         claims: obj
             .get("credentialSubject")
             .cloned()

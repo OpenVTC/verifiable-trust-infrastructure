@@ -16,7 +16,7 @@ setup = ["dep:dialoguer", "dep:didwebvh-rs", "dep:url"]
 # BBS+ (`bbs-2023`) verifier support — lets the join verifier accept
 # selectively-disclosed bbs-2023 presentations. Pulls in the BLS12-381 curve
 # (`affinidi-bbs`) + the `bbs-2023` Data-Integrity cryptosuite. Off by default.
-bbs = ["dep:affinidi-bbs", "affinidi-data-integrity/bbs-2023"]
+bbs = ["dep:affinidi-bbs", "dep:ciborium", "affinidi-data-integrity/bbs-2023"]
 # Public community website (§12.1). Filesystem-backed static
 # hosting at `website.root_dir`. Default-on so MVP `cargo run`
 # serves a site; operators who host externally can compile it
@@ -169,6 +169,10 @@ hkdf = { workspace = true }
 x25519-dalek = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 multibase = { workspace = true }
+# CBOR decode for the bbs-2023 derived proofValue (extracting the embedded
+# presentation header + pseudonym tag in the verifier). Optional, pulled in by
+# the `bbs` feature; also a dev-dependency for non-bbs test parsing.
+ciborium = { version = "0.2", optional = true }
 # Rego policy interpreter (Phase 2 M2.1). Hosted in `crate::policy`.
 # Spec §3-J + §7: regorus runs in-process; no external OPA sidecar.
 regorus = { workspace = true }

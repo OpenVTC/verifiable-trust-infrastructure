@@ -188,6 +188,7 @@ mod tests {
                 issuer: "did:webvh:notary.example".into(),
                 issuer_trusted: true,
                 status: CredentialStatus::Valid,
+                holder_bound: true,
                 claims: json!({}),
                 valid_until: None,
             }],

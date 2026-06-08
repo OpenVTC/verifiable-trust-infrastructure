@@ -24,6 +24,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Reserved [`StoredCredential::tags`] key holding the BBS pseudonym holder
+/// link secret (`prover_nym`), base64url-no-pad. See [`StoredCredential::tags`].
+pub const BBS_PROVER_NYM_TAG: &str = "bbs:prover_nym";
+/// Reserved [`StoredCredential::tags`] key holding the BBS pseudonym
+/// `secret_prover_blind`, base64url-no-pad. See [`StoredCredential::tags`].
+pub const BBS_SECRET_PROVER_BLIND_TAG: &str = "bbs:secret_prover_blind";
+
 /// Proof / serialization format of the stored credential body. Stored as a
 /// tag so the (later) receive/present/status code can dispatch to the right
 /// format verifier without this format-agnostic layer needing to understand
@@ -166,6 +173,15 @@ pub struct StoredCredential {
     pub source: Option<String>,
     /// Holder-applied labels. Not indexed in this task (search by tag is a
     /// later DCQL concern); carried so the round-trip is lossless.
+    ///
+    /// Two **reserved** keys carry the BBS pseudonym holder secrets for a
+    /// `bbs-2023` credential issued in **holder-binding** mode (see
+    /// [`crate::vault::bbs`]): [`BBS_PROVER_NYM_TAG`] (the holder's link secret
+    /// `prover_nym`) and [`BBS_SECRET_PROVER_BLIND_TAG`] (`secret_prover_blind`),
+    /// both base64url-no-pad. They are present only for pseudonym credentials and
+    /// are co-encrypted at rest with the rest of the record. Storing them here —
+    /// rather than as format-specific columns — keeps this layer format-agnostic
+    /// (§5: "a new format never requires a storage-schema change").
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub tags: std::collections::BTreeMap<String, String>,
     /// The credential itself — **opaque bytes**, encrypted at rest. This

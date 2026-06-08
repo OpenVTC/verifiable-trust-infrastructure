@@ -631,7 +631,9 @@ mod tests {
     async fn present_bbs_discloses_only_consented_claims() {
         use crate::vault::bbs::{present_bbs, receive_bbs};
         use affinidi_bbs as bbs;
-        use affinidi_data_integrity::bbs_2023::{sign_vc_base, verify_vc_derived};
+        use affinidi_data_integrity::bbs_2023_transform::{
+            sign_base_document, verify_derived_proof,
+        };
 
         let (_dir, _store, vault) = fresh_vault();
         let (holder_did, _kb, consent_key, _vk) = holder(7);
@@ -643,7 +645,10 @@ mod tests {
         let pk = bbs::sk_to_pk(&sk);
         let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
         let vc = json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://www.w3.org/ns/credentials/examples/v2"
+            ],
             "type": ["VerifiableCredential", "MembershipCredential"],
             "issuer": issuer_did,
             "validFrom": "2020-01-01T00:00:00Z",
@@ -655,12 +660,14 @@ mod tests {
             }
         });
         let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
-        let signed = sign_vc_base(
+        let signed = sign_base_document(
             &vc,
             &mandatory,
             &format!("{issuer_did}#bbs-key-0"),
+            "2020-01-01T00:00:00Z",
             &sk,
             &pk,
+            b"present-bbs-test-hmac-key-32byte",
         )
         .unwrap();
         let body = serde_json::to_vec(&signed).unwrap();
@@ -711,10 +718,124 @@ mod tests {
             "mandatory subject id disclosed"
         );
 
-        // The derived proof verifies against the issuer key + the verifier nonce.
+        // The derived proof verifies against the issuer key. (The standards-track
+        // verify authenticates the presentation header embedded in the proof; the
+        // verifier binds that header to its own challenge — covered in the VTC
+        // join verifier tests, not here.)
         assert!(
-            verify_vc_derived(&derived, nonce.as_bytes(), &pk).unwrap(),
+            verify_derived_proof(&derived, &pk).unwrap(),
             "BBS derived presentation must verify"
+        );
+    }
+
+    #[cfg(feature = "bbs")]
+    #[tokio::test]
+    async fn present_bbs_holder_bound_is_per_verifier_pseudonymous() {
+        use crate::vault::bbs::{issue_bbs_pseudonym_for_test, present_bbs, receive_bbs_pseudonym};
+        use affinidi_bbs as bbs;
+        use affinidi_data_integrity::bbs_2023_transform::verify_pseudonym_derived_proof;
+
+        let (_dir, _store, vault) = fresh_vault();
+        let (holder_did, _kb, consent_key, _vk) = holder(9);
+        let verifier = "did:web:acme-verifier.example";
+        let now = Utc::now();
+
+        // Issue a pseudonym (holder-binding) base-proof VC bound to the holder.
+        let sk = bbs::keygen(b"present-nym-issuer-key-material!!", b"").unwrap();
+        let pk = bbs::sk_to_pk(&sk);
+        let issuer_did = affinidi_crypto::bls12381::g2_pub_to_did_key(&pk.to_bytes());
+        let vc = json!({
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://www.w3.org/ns/credentials/examples/v2"
+            ],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "credentialSubject": { "id": holder_did, "givenName": "Alice", "dateOfBirth": "1990-01-01" }
+        });
+        let mandatory = ["/@context", "/type", "/issuer", "/credentialSubject/id"];
+        let vm = format!("{issuer_did}#bbs-key-0");
+        let (base, nym, blind) = issue_bbs_pseudonym_for_test(
+            &vc,
+            &mandatory,
+            &vm,
+            "2020-01-01T00:00:00Z",
+            &sk,
+            &pk,
+            b"present-nym-test-hmac-key-32byte",
+            &[0x11u8; 32],
+            &[0x22u8; 32],
+        );
+        let body = serde_json::to_vec(&base).unwrap();
+        receive_bbs_pseudonym(
+            &vault,
+            "nym-cred",
+            &body,
+            &pk.to_bytes(),
+            &nym,
+            &blind,
+            None,
+            now,
+        )
+        .await
+        .expect("receive pseudonym base proof");
+
+        // Consent to disclose only givenName.
+        let rec = create_consent(
+            &vault,
+            &grant(
+                &holder_did,
+                "nym-cred",
+                verifier,
+                vec!["givenName".into()],
+                now + Duration::hours(1),
+            ),
+            &consent_key,
+        )
+        .await
+        .unwrap();
+
+        let pres = present_bbs(
+            &vault,
+            "nym-cred",
+            &rec.identifier,
+            &pk.to_bytes(),
+            "verifier-nonce-nym",
+            verifier,
+            None,
+            now,
+        )
+        .await
+        .expect("present holder-bound BBS");
+        let derived: Value = serde_json::from_str(&pres).unwrap();
+
+        // It is a *pseudonym* derived proof (`0xd95d09`), not a basic one.
+        let pv = derived["proof"]["proofValue"].as_str().unwrap();
+        let (_b, bytes) = multibase::decode(pv).unwrap();
+        assert_eq!(
+            &bytes[..3],
+            &[0xd9, 0x5d, 0x09],
+            "holder-binding must emit a pseudonym derived proof"
+        );
+
+        // Verifies under the verifier it was bound to ...
+        assert!(
+            verify_pseudonym_derived_proof(&derived, &pk, verifier).unwrap(),
+            "pseudonym proof must verify for its bound verifier"
+        );
+        // ... and NOT under a different verifier id (per-verifier binding).
+        assert!(
+            !verify_pseudonym_derived_proof(&derived, &pk, "did:web:someone-else.example")
+                .unwrap_or(false),
+            "a pseudonym proof must not verify under a different verifier id"
+        );
+
+        // Disclosure is still minimised.
+        assert_eq!(derived["credentialSubject"]["givenName"], "Alice");
+        assert!(
+            derived["credentialSubject"].get("dateOfBirth").is_none(),
+            "an unconsented claim must be redacted"
         );
     }
 

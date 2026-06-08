@@ -258,6 +258,15 @@ pub struct Credential {
     pub issuer_trusted: bool,
     /// Resolved revocation/suspension state from the status list.
     pub status: CredentialStatus,
+    /// Host verdict: did the presenter **cryptographically prove control of
+    /// the holder key** (so the presenter *is* the subject), versus mere
+    /// possession of the credential? True for SD-JWT-VC (`kb-jwt`), DI VP
+    /// (holder proof), and holder-bound **bbs-2023 pseudonym** proofs; false
+    /// for a basic, possession-based bbs-2023 derived proof. A policy can
+    /// `require` this for sensitive communities (low-assurance flows may accept
+    /// possession-based holdership).
+    #[serde(default)]
+    pub holder_bound: bool,
     /// The credential's subject claims, verbatim. Free-form; policies
     /// read specific claim paths.
     #[serde(default)]
@@ -346,6 +355,7 @@ mod tests {
                         issuer: "did:webvh:notary.example".into(),
                         issuer_trusted: true,
                         status: CredentialStatus::Valid,
+                        holder_bound: true,
                         claims: json!({ "kind": "proximity" }),
                         valid_until: None,
                     }],
@@ -368,7 +378,7 @@ mod tests {
                     "verified": true,
                     "holder": "did:key:z6MkHuman",
                     "credentials": [
-                        { "type": "WitnessCredential", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "claims": { "kind": "proximity" } }
+                        { "type": "WitnessCredential", "issuer": "did:webvh:notary.example", "issuer_trusted": true, "status": "valid", "holder_bound": true, "claims": { "kind": "proximity" } }
                     ]
                 },
                 "request": { "agreements": {} }
