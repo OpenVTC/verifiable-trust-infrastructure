@@ -1,0 +1,36 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Status (applicant poll)",
+  "type": "object",
+  "properties": {
+    "restRequest": {
+      "type": "object",
+      "required": ["applicantDid", "signature"],
+      "properties": {
+        "applicantDid": { "type": "string", "pattern": "^did:key:" },
+        "signature": { "type": "string", "pattern": "^[0-9a-fA-F]+$" }
+      }
+    },
+    "didcommBody": {
+      "type": "object",
+      "required": ["requestId"],
+      "properties": {
+        "requestId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["requestId", "status"],
+      "properties": {
+        "requestId": { "type": "string", "format": "uuid" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "deferred", "approved", "rejected", "withdrawn"]
+        },
+        "needs": { "type": "array", "items": { "type": "string" } },
+        "presentationDefinition": {}
+      }
+    }
+  }
+}

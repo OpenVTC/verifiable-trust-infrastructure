@@ -1,0 +1,27 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Manifest (discovery)",
+  "type": "object",
+  "properties": {
+    "response": {
+      "type": "object",
+      "required": ["communityDid", "criteria"],
+      "properties": {
+        "communityDid": { "type": "string" },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "presentationDefinition"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "presentationDefinition": {}
+            }
+          }
+        }
+      }
+    }
+  }
+}

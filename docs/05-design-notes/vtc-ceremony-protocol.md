@@ -170,9 +170,9 @@ today, so this proposal stays honest about the realized surface:
 | `present` | **`credential-exchange/present/1.0`** (reused; VTC = verifier) | `trust-tasks/credential-exchange/present` | `routes/join_requests/present.rs`, `messaging.rs` |
 | *(query side)* | **`credential-exchange/query/1.0`** (reused; VTC issues the DCQL query) | `trust-tasks/credential-exchange/query` | `routes/join_requests/present.rs::{prepare_join_query,send_query}` |
 | `resolve` | the existing admin REST `approve`/`reject` | `trust-tasks/join-requests/{approve,reject}` | `routes/join_requests/decide.rs` |
-| `accept` | `join-requests/accept/1.0` | `trust-tasks/join-requests/accept` *(this branch, Draft)* | **not yet implemented** — discharge `reciprocate_vmc` in `ceremony/execute.rs` + a route/DIDComm handler |
-| `manifest` | — | — | design-future |
-| `status` | join request `show` (`GET /v1/join-requests/{id}`) approximates it | `trust-tasks/join-requests/show` | `routes/join_requests/read.rs` |
+| `accept` | `join-requests/accept/1.0` | `trust-tasks/join-requests/accept` | `routes/join_requests/accept.rs` + `messaging.rs` (REST + DIDComm) — discharges `reciprocate_vmc` |
+| `manifest` | `join-requests/manifest/1.0` | `trust-tasks/join-requests/manifest` *(this branch, Draft)* | **not yet implemented** — `GET /v1/join-requests/manifest` over `schemas::accepts::list_accepts` |
+| `status` | `join-requests/status/1.0` | `trust-tasks/join-requests/status` *(this branch, Draft)* | **not yet implemented** — applicant-facing holder-bound poll; the admin-only `show` (`routes/join_requests/read.rs`) remains the staff view |
 
 **Reconciliation note.** The §7 deliverable list implied
 `join-requests/{present,status}` as join-family verbs. In the build, the

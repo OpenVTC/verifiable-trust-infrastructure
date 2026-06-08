@@ -212,6 +212,20 @@
       "didcomm": "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0"
     },
     {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0",
+      "status": "Draft",
+      "path": "join-requests/manifest/1.0",
+      "rest": "GET /v1/join-requests/manifest",
+      "didcomm": "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0",
+      "status": "Draft",
+      "path": "join-requests/status/1.0",
+      "rest": "POST /v1/join-requests/{id}/status",
+      "didcomm": "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0"
+    },
+    {
       "id": "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",
       "status": "Draft",
       "path": "members/self-remove/1.0",
