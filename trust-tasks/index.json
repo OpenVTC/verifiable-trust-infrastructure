@@ -205,6 +205,13 @@
       "rest": "POST /v1/join-requests/{id}/reject"
     },
     {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0",
+      "status": "Draft",
+      "path": "join-requests/accept/1.0",
+      "rest": "POST /v1/join-requests/{id}/accept",
+      "didcomm": "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0"
+    },
+    {
       "id": "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",
       "status": "Draft",
       "path": "members/self-remove/1.0",

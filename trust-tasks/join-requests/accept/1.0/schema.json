@@ -1,0 +1,35 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Accept (reciprocal VMC)",
+  "type": "object",
+  "properties": {
+    "restRequest": {
+      "type": "object",
+      "required": ["memberDid", "vmcId", "vc", "signature"],
+      "properties": {
+        "memberDid": { "type": "string", "pattern": "^did:key:" },
+        "vmcId": { "type": "string" },
+        "vc": {},
+        "signature": { "type": "string", "pattern": "^[0-9a-fA-F]+$" }
+      }
+    },
+    "didcommBody": {
+      "type": "object",
+      "required": ["vmcId", "vc"],
+      "properties": {
+        "vmcId": { "type": "string" },
+        "vc": {}
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["requestId", "status"],
+      "properties": {
+        "requestId": { "type": "string", "format": "uuid" },
+        "status": { "type": "string", "enum": ["accepted"] },
+        "reciprocalVcId": { "type": "string" }
+      }
+    }
+  }
+}
