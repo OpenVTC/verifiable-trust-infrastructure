@@ -156,3 +156,34 @@ response — one source of truth for the wire shape across all ceremonies.
   lighter read path? (Leaning: same envelope, exempt from threading fields.)
 - **Per-family rate-limit tuning** — join (unauth) needs the tightest bucket; member-triggered ceremonies inherit
   session auth.
+
+---
+
+## 9. Implementation status (2026-06)
+
+How the §2 verb set for the **join** family maps to what is built + specced
+today, so this proposal stays honest about the realized surface:
+
+| Verb (§2) | Realized as | Spec | Code |
+|---|---|---|---|
+| `request` | `join-requests/submit/1.0` | `trust-tasks/join-requests/submit` | `routes/join_requests/submit.rs` (REST + DIDComm) |
+| `present` | **`credential-exchange/present/1.0`** (reused; VTC = verifier) | `trust-tasks/credential-exchange/present` | `routes/join_requests/present.rs`, `messaging.rs` |
+| *(query side)* | **`credential-exchange/query/1.0`** (reused; VTC issues the DCQL query) | `trust-tasks/credential-exchange/query` | `routes/join_requests/present.rs::{prepare_join_query,send_query}` |
+| `resolve` | the existing admin REST `approve`/`reject` | `trust-tasks/join-requests/{approve,reject}` | `routes/join_requests/decide.rs` |
+| `accept` | `join-requests/accept/1.0` | `trust-tasks/join-requests/accept` *(this branch, Draft)* | **not yet implemented** — discharge `reciprocate_vmc` in `ceremony/execute.rs` + a route/DIDComm handler |
+| `manifest` | — | — | design-future |
+| `status` | join request `show` (`GET /v1/join-requests/{id}`) approximates it | `trust-tasks/join-requests/show` | `routes/join_requests/read.rs` |
+
+**Reconciliation note.** The §7 deliverable list implied
+`join-requests/{present,status}` as join-family verbs. In the build, the
+presentation exchange is the **generic `credential-exchange` family**
+(`query` + `present`), which the join verifier reuses — there are no
+`join-requests/present` / `join-requests/query` specs and none should be
+added (they would duplicate `credential-exchange/*`). `submit-receipt` /
+`accept-receipt` reply types are documented inline in their parent verb
+specs rather than as standalone entries.
+
+**Open decision (carried from §8):** whether to keep `present`/`query`
+under `credential-exchange` (current — favours one generic exchange family)
+or mint `join-requests` aliases (favours a self-contained per-ceremony
+surface). Current lean: keep the reuse; cross-reference from the join specs.
