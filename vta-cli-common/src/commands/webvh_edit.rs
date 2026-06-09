@@ -39,7 +39,7 @@ pub enum EditFlowError {
         "the edited document changed the DID identifier (`{prior}` → `{edited}`). \
          The DID id is a permanent commitment from the first LogEntry; mutating it \
          would invalidate every existing reference to the DID. Re-run the editor \
-         with the original `id` restored, or use `pnm webvh create-did` to mint a \
+         with the original `id` restored, or use `pnm did-mgmt dids create` to mint a \
          new DID instead."
     )]
     DidIdChanged { prior: String, edited: String },

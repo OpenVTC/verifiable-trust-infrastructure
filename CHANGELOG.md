@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed: `pnm webvh …` CLI alias (legacy strip)
+
+The hidden `pnm webvh …` command alias (superseded by `pnm did-mgmt {servers,dids} …`)
+is removed — invoking it now errors as an unknown command. The internal
+`WebvhCommands` dispatch type stays; the new `did-mgmt` surface still converts
+into it (`DidMgmtCommands → WebvhCommands → commands::webvh::run`), so the
+command implementations are unchanged. Stale `pnm webvh …` hints in operator
+output / `--help` updated to the `pnm did-mgmt …` forms.
+
 ### Removed: legacy DID-template name aliases `webvh-*` / `did-hosting-*` (legacy strip)
 
 Both prior template-name generations are dropped; only the capability-named

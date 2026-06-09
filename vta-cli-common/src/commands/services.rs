@@ -387,7 +387,7 @@ pub fn print_serverless_hint(serverless: bool, vta_did: &str) {
     }
     println!();
     println!("  This VTA's DID is self-hosted. Fetch the updated log:");
-    println!("    pnm webvh did-log {vta_did} --out did.jsonl");
+    println!("    pnm did-mgmt dids get-log {vta_did} --out did.jsonl");
     println!("  then redeploy did.jsonl to your host. Until you do,");
     println!("  resolvers will keep returning the prior version.");
 }

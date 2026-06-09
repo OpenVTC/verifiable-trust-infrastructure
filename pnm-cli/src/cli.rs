@@ -159,15 +159,6 @@ pub(crate) enum Commands {
         command: DidMgmtCommands,
     },
 
-    /// DEPRECATED — renamed to `pnm did-mgmt <subcommand>`. Still
-    /// dispatched for one release; switch your scripts before the
-    /// alias is removed in the next minor.
-    #[command(hide = true)]
-    Webvh {
-        #[command(subcommand)]
-        command: WebvhCommands,
-    },
-
     /// Audit log management
     Audit {
         #[command(subcommand)]
@@ -711,7 +702,7 @@ pub(crate) enum WebvhCommands {
         /// The serverless WebVH DID to promote.
         #[arg(long)]
         did: String,
-        /// Registered server id (from `pnm webvh add-server`).
+        /// Registered server id (from `pnm did-mgmt servers add`).
         #[arg(long)]
         server: String,
         /// Take over a slot owned by a different DID. Honoured only
@@ -735,7 +726,7 @@ pub(crate) enum WebvhCommands {
     /// create-did` / `register-did` before the first call. The
     /// system default is flagged with `(default)`.
     ListDomains {
-        /// Registered server id (from `pnm webvh add-server`).
+        /// Registered server id (from `pnm did-mgmt servers add`).
         #[arg(long)]
         server: String,
     },

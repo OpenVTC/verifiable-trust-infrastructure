@@ -256,15 +256,6 @@ async fn main() {
             commands::auth_credential::run(&client, command).await
         }
         Commands::DidMgmt { command } => commands::webvh::run(&client, command.into()).await,
-        Commands::Webvh { command } => {
-            eprintln!(
-                "\x1b[1;33mwarning:\x1b[0m `pnm webvh …` has been renamed to \
-                 `pnm did-mgmt {{servers,dids}} …`. The old name is accepted for \
-                 one release and will be removed in the next minor. \
-                 See `pnm did-mgmt --help`."
-            );
-            commands::webvh::run(&client, command).await
-        }
         Commands::Audit { command } => commands::audit::run(&client, command).await,
         Commands::Backup { command } => commands::backup::run(&client, command).await,
         Commands::Keys { command } => commands::keys::run(&client, command).await,
