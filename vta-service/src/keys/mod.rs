@@ -304,7 +304,13 @@ pub async fn derive_entity_keys(
 
 /// Store entity key records using DID verification method IDs as key_ids.
 ///
-/// Signing key → `{did}#key-0`, key-agreement key → `{did}#key-1`.
+/// Signing key → `{did}#key-0`, key-agreement key → `{did}#key-1`. The
+/// `label` field is also stored as the VM id rather than the freeform
+/// description carried in `derived.{signing,ka}_label`: belt-and-braces
+/// for downstream code that historically adopted the label as the kid
+/// (see [`vta_sdk::did_secrets::select_secret_kid`] rule #2). A reader
+/// that confuses label and id can no longer break decryption — both
+/// agree.
 pub async fn save_entity_key_records(
     did: &str,
     derived: &DerivedEntityKeys,
@@ -312,24 +318,26 @@ pub async fn save_entity_key_records(
     context_id: Option<&str>,
     seed_id: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let signing_vm_id = format!("{did}#key-0");
+    let ka_vm_id = format!("{did}#key-1");
     save_key_record(
         keys_ks,
-        &format!("{did}#key-0"),
+        &signing_vm_id,
         &derived.signing_path,
         KeyType::Ed25519,
         &derived.signing_pub,
-        &derived.signing_label,
+        &signing_vm_id,
         context_id,
         seed_id,
     )
     .await?;
     save_key_record(
         keys_ks,
-        &format!("{did}#key-1"),
+        &ka_vm_id,
         &derived.ka_path,
         KeyType::X25519,
         &derived.ka_pub,
-        &derived.ka_label,
+        &ka_vm_id,
         context_id,
         seed_id,
     )

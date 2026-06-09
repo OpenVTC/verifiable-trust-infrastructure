@@ -1251,6 +1251,20 @@ fn prompt_optional_mediator_host() -> Result<Option<String>, Box<dyn std::error:
     Ok(if host.is_empty() { None } else { Some(host) })
 }
 
+/// Best-effort default for the mediator's WebSocket endpoint, derived
+/// from the HTTP endpoint by swapping the scheme. The operator can
+/// override it interactively; this just spares them retyping the host
+/// for the common case where HTTP and WSS share a hostname.
+fn default_ws_url_from_http(http_url: &str) -> String {
+    if let Some(rest) = http_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = http_url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        String::new()
+    }
+}
+
 /// Prompt for an optional comma-separated list of routing-key DIDs
 /// for the `didcomm-mediator` template's `ROUTING_KEYS` variable.
 /// Used when this mediator forwards traffic through an upstream
@@ -1338,6 +1352,18 @@ async fn configure_messaging(
 
             let mediator_url: String = Input::new().with_prompt("Mediator URL").interact_text()?;
 
+            // The didcomm-mediator template advertises a WebSocket
+            // transport in the same `#service` block; required by the
+            // template since the HTTP + WSS dual-transport change.
+            // Default to the HTTP URL with the scheme swapped — operators
+            // can override when WS is hosted elsewhere.
+            let ws_default = default_ws_url_from_http(&mediator_url);
+            let mut ws_prompt = Input::new().with_prompt("Mediator WebSocket URL");
+            if !ws_default.is_empty() {
+                ws_prompt = ws_prompt.default(ws_default);
+            }
+            let mediator_ws_url: String = ws_prompt.interact_text()?;
+
             let mediator_host = prompt_optional_mediator_host()?;
 
             // Optional ROUTING_KEYS escape hatch (mediator chains). The
@@ -1362,6 +1388,7 @@ async fn configure_messaging(
             let mut template_vars: std::collections::HashMap<String, serde_json::Value> =
                 std::collections::HashMap::new();
             template_vars.insert("URL".into(), json!(mediator_url));
+            template_vars.insert("WS_URL".into(), json!(mediator_ws_url));
             if !routing_keys.is_empty() {
                 template_vars.insert("ROUTING_KEYS".into(), json!(routing_keys));
             }

@@ -29,7 +29,7 @@ use vta_sdk::context_provision::ContextProvisionBundle;
 #[cfg(feature = "webvh")]
 use vta_sdk::context_provision::ProvisionedDid;
 use vta_sdk::credentials::CredentialBundle;
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
+use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry, select_secret_kid};
 use vta_sdk::keys::KeyStatus;
 
 /// Dependencies for the offline state-assembly helpers.
@@ -52,9 +52,12 @@ pub struct ExportDeps<'a> {
 /// keys in the local store and loading each secret.
 ///
 /// Mirrors [`vta_sdk::client::VtaClient::fetch_did_secrets_bundle`] —
-/// same traversal (context → active keys → secret per key), same label-
-/// based key-id mapping (if a key's label looks like a DID verification
-/// method id, use it as the `SecretEntry.key_id`).
+/// same traversal (context → active keys → secret per key), same kid
+/// selection via [`vta_sdk::did_secrets::select_secret_kid`]. Secrets
+/// that aren't verification methods of the context DID (admin `did:key`
+/// rolled into the same context, free-text-labelled records) are
+/// excluded; including them would corrupt the operating-secret set the
+/// mediator matches inbound JWE recipients against.
 pub async fn build_did_secrets_bundle(
     deps: &ExportDeps<'_>,
     auth: &AuthClaims,
@@ -103,20 +106,33 @@ pub async fn build_did_secrets_bundle(
                 channel,
             )
             .await?;
-            // Label-as-key-id convention: setup wizard + provisioning
-            // flows set labels to DID verification method ids so the
-            // bundle installs verbatim without consumer-side mapping.
-            let key_id = match key.label.as_deref() {
-                Some(label) if label.contains('#') || label.starts_with("did:") => {
-                    label.to_string()
+            // The kid a mediator matches inbound JWE recipients against MUST be
+            // a verification-method id of *this* context's DID. Resolve it from
+            // the authoritative store key_id (falling back to the label only
+            // when the label is itself a strict VM id); drop anything that
+            // isn't a VM id of `did`. Identical contract to the online
+            // `VtaClient::fetch_did_secrets_bundle` — shared helper.
+            match select_secret_kid(&did, &secret.key_id, key.label.as_deref()) {
+                Some(key_id) => secrets.push(SecretEntry {
+                    key_id,
+                    key_type: secret.key_type,
+                    private_key_multibase: secret.private_key_multibase,
+                }),
+                None => {
+                    debug!(
+                        channel,
+                        %context_id,
+                        %did,
+                        key_id = %secret.key_id,
+                        label = key.label.as_deref().unwrap_or(""),
+                        "excluding secret from did-secrets bundle: not a verification \
+                         method of the context DID (e.g. an admin did:key minted into \
+                         this context, or a free-text-labelled key). Including it would \
+                         corrupt the DIDComm operating-secret set and break the \
+                         mediator's exact-match recipient lookup."
+                    );
                 }
-                _ => secret.key_id,
-            };
-            secrets.push(SecretEntry {
-                key_id,
-                key_type: secret.key_type,
-                private_key_multibase: secret.private_key_multibase,
-            });
+            }
         }
         offset += page.keys.len() as u64;
         if offset >= page.total {
