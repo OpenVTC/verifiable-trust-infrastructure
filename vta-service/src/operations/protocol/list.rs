@@ -76,12 +76,39 @@ pub async fn list_services(
             didcomm_enabled: cfg.services.didcomm,
             webauthn_enabled: cfg.services.webauthn,
             vta_did: cfg.vta_did.clone(),
+            mediator_did: cfg
+                .messaging
+                .as_ref()
+                .map(|m| m.mediator_did.clone())
+                .filter(|did| !did.is_empty()),
+            public_url: cfg.public_url.clone(),
         }
     };
 
     let vta_did = cfg_view
         .vta_did
         .ok_or(ListServicesError::VtaDidNotConfigured)?;
+
+    // For non-webvh DIDs (e.g. did:key), there is no on-chain DID document
+    // to inspect. Report service state from config only.
+    if !vta_did.starts_with("did:webvh:") {
+        let services = vec![
+            ServiceState::Didcomm {
+                enabled: cfg_view.didcomm_enabled && cfg_view.mediator_did.is_some(),
+                mediator_did: cfg_view.mediator_did,
+                routing_keys: Vec::new(),
+            },
+            ServiceState::Rest {
+                enabled: cfg_view.rest_enabled,
+                url: cfg_view.public_url.clone(),
+            },
+            ServiceState::Webauthn {
+                enabled: cfg_view.webauthn_enabled,
+                url: None,
+            },
+        ];
+        return Ok(ServicesListResponse { services });
+    }
 
     let _record = webvh_store::get_did(webvh_ks, &vta_did)
         .await?
@@ -128,6 +155,8 @@ struct ConfigView {
     didcomm_enabled: bool,
     webauthn_enabled: bool,
     vta_did: Option<String>,
+    mediator_did: Option<String>,
+    public_url: Option<String>,
 }
 
 impl From<crate::operations::protocol::document::CurrentDocumentError> for ListServicesError {
@@ -210,6 +239,65 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ListServicesError::VtaDidNotConfigured));
+    }
+
+    /// `list_services` succeeds for did:key VTAs (no webvh record)
+    /// by returning service state from config only.
+    #[tokio::test]
+    async fn returns_config_state_for_did_key_vta() {
+        use crate::test_support::test_app_config;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = test_app_config(dir.path().into());
+        cfg.services.rest = false;
+        cfg.services.didcomm = true;
+        cfg.services.webauthn = false;
+        cfg.vta_did = Some("did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into());
+        cfg.public_url = Some("https://vta.example.com".into());
+        cfg.messaging = Some(crate::config::MessagingConfig {
+            mediator_did: "did:peer:2.MEDIATOR".into(),
+            mediator_url: "ws://mediator:7037".into(),
+            mediator_host: None,
+        });
+        cfg.config_path = dir.path().join("vta.toml");
+        let config = Arc::new(RwLock::new(cfg));
+        let store = Store::open(&VtiStoreConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        let webvh_ks = store.keyspace("webvh").unwrap();
+        let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
+
+        let response = list_services(&config, &webvh_ks, &super_admin)
+            .await
+            .unwrap();
+
+        assert_eq!(response.services.len(), 3);
+        match &response.services[0] {
+            ServiceState::Didcomm {
+                enabled,
+                mediator_did,
+                ..
+            } => {
+                assert!(enabled);
+                assert_eq!(mediator_did.as_deref(), Some("did:peer:2.MEDIATOR"));
+            }
+            other => panic!("expected DIDComm first; got {other:?}"),
+        }
+        match &response.services[1] {
+            ServiceState::Rest { enabled, url } => {
+                assert!(!enabled, "REST is disabled in config");
+                assert_eq!(url.as_deref(), Some("https://vta.example.com"));
+            }
+            other => panic!("expected REST second; got {other:?}"),
+        }
+        match &response.services[2] {
+            ServiceState::Webauthn { enabled, url } => {
+                assert!(!enabled);
+                assert!(url.is_none());
+            }
+            other => panic!("expected WebAuthn third; got {other:?}"),
+        }
     }
 
     /// Drives production `list_services` end-to-end against an
