@@ -1252,17 +1252,25 @@ fn prompt_optional_mediator_host() -> Result<Option<String>, Box<dyn std::error:
 }
 
 /// Best-effort default for the mediator's WebSocket endpoint, derived
-/// from the HTTP endpoint by swapping the scheme. The operator can
-/// override it interactively; this just spares them retyping the host
-/// for the common case where HTTP and WSS share a hostname.
+/// from the HTTP endpoint by swapping the scheme and appending `/ws`.
+/// Mirrors the canonical convention in
+/// `affinidi-messaging-mediator/tools/mediator-setup` (the mediator
+/// serves HTTP DIDComm at `{base}/` and the WebSocket upgrade at
+/// `{base}/ws`). Operators can override interactively when their
+/// reverse proxy routes WS elsewhere.
 fn default_ws_url_from_http(http_url: &str) -> String {
-    if let Some(rest) = http_url.strip_prefix("https://") {
-        format!("wss://{rest}")
+    let (scheme_swapped, scheme_ok) = if let Some(rest) = http_url.strip_prefix("https://") {
+        (format!("wss://{rest}"), true)
     } else if let Some(rest) = http_url.strip_prefix("http://") {
-        format!("ws://{rest}")
+        (format!("ws://{rest}"), true)
     } else {
-        String::new()
+        (String::new(), false)
+    };
+    if !scheme_ok {
+        return String::new();
     }
+    let trimmed = scheme_swapped.trim_end_matches('/');
+    format!("{trimmed}/ws")
 }
 
 /// Prompt for an optional comma-separated list of routing-key DIDs

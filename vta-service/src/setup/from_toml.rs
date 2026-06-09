@@ -513,7 +513,11 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
             // started advertising HTTP + WSS in a single `#service` block.
             let mut effective_vars: HashMap<String, serde_json::Value> = template_vars.clone();
             effective_vars.insert("URL".into(), json!(url));
-            let ws_url = if let Some(rest) = url.strip_prefix("https://") {
+            // Mirror the mediator-setup convention: `{base}/ws` for the
+            // WebSocket upgrade alongside `{base}/` for HTTP DIDComm.
+            // Defined in `affinidi-messaging-mediator/tools/mediator-setup/
+            // src/generators/did_peer.rs::websocket_service_uri`.
+            let scheme_swapped = if let Some(rest) = url.strip_prefix("https://") {
                 format!("wss://{rest}")
             } else if let Some(rest) = url.strip_prefix("http://") {
                 format!("ws://{rest}")
@@ -524,6 +528,7 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
                 )
                 .into());
             };
+            let ws_url = format!("{}/ws", scheme_swapped.trim_end_matches('/'));
             effective_vars.insert("WS_URL".into(), json!(ws_url));
 
             // `url` is the DIDComm endpoint; `webvh_url` is the DID-document
