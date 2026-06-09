@@ -58,7 +58,7 @@ pub async fn challenge_response_light(
     // is async because `did:webvh` VTAs require an HTTP fetch + chain
     // verification; for `did:key:` VTAs the future resolves without I/O.
     let packed = didcomm_light::pack_auth_message(
-        "https://affinidi.com/atm/1.0/authenticate",
+        crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
         serde_json::json!({
             "challenge": challenge.challenge,
             "session_id": challenge.session_id,
@@ -119,7 +119,7 @@ pub async fn refresh_token_light(
     refresh_token: &str,
 ) -> Result<AuthResult, crate::error::VtaError> {
     let packed = didcomm_light::pack_auth_message(
-        "https://affinidi.com/atm/1.0/authenticate/refresh",
+        crate::trust_tasks::TASK_AUTH_REFRESH_0_1,
         serde_json::json!({
             "refresh_token": refresh_token,
         }),

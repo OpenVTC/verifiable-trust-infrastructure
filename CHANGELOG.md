@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Removed: legacy `affinidi.com/atm/1.0` auth aliases (legacy strip)
+
+The VTA's DIDComm auth path no longer accepts the legacy
+`affinidi.com/atm/1.0/authenticate` and `…/authenticate/refresh` message
+types — only the canonical `auth/authenticate/0.1` / `auth/refresh/0.1`
+Trust-Task URIs. In the same change the **vta-sdk** DIDComm auth path
+(`session.rs`, `auth_light.rs`) now *emits* the canonical types, so SDK
+clients move to canonical automatically.
+
+- **Deployment note (breaking):** a client still on the pre-canonical SDK
+  (emitting `atm/1.0`) fails auth against an upgraded VTA with
+  `unexpected message type`. Roll clients onto this SDK with/before the VTA.
+- **Follow-up:** `vtc-service` still dual-accepts `atm/1.0` (incl. its SIOP
+  envelope path); the SDK switch doesn't break it. Its `atm/1.0` removal is a
+  separate change (its SIOP path may have other clients).
+
 ### Removed: pre-spec `vta/passkey-vms/*/1.0` URIs (legacy strip)
 
 The pre-spec `…/1.0` passkey-vms task URIs — kept dual-accepted alongside the

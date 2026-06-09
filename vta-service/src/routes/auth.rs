@@ -161,17 +161,10 @@ pub async fn authenticate(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // Accept both the legacy `affinidi.com/atm/1.0/authenticate`
-    // alias and the canonical
-    // `trusttasks.org/spec/auth/authenticate/0.1` Trust-Task URI.
-    // Closes L4 from the May 2026 security review during the
-    // canonical-task migration window. Drop the legacy alias one
-    // minor release after every client upgrades.
-    if !matches!(
-        msg.typ.as_str(),
-        "https://affinidi.com/atm/1.0/authenticate"
-            | "https://trusttasks.org/spec/auth/authenticate/0.1"
-    ) {
+    // Canonical Trust-Task URI only. The legacy
+    // `affinidi.com/atm/1.0/authenticate` alias was removed once the SDK's
+    // DIDComm auth path switched to emitting `auth/authenticate/0.1`.
+    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ
@@ -358,11 +351,9 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    if !matches!(
-        msg.typ.as_str(),
-        "https://affinidi.com/atm/1.0/authenticate/refresh"
-            | "https://trusttasks.org/spec/auth/refresh/0.1"
-    ) {
+    // Canonical Trust-Task URI only; the legacy
+    // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
+    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/refresh/0.1" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ

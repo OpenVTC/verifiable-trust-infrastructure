@@ -951,7 +951,7 @@ pub async fn challenge_response(
     );
     let msg = Message::build(
         uuid::Uuid::new_v4().to_string(),
-        "https://affinidi.com/atm/1.0/authenticate".to_string(),
+        crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1.to_string(),
         serde_json::json!({
             "challenge": challenge.challenge,
             "session_id": challenge.session_id,
