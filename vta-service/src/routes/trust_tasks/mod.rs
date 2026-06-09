@@ -132,10 +132,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0,
     // WebVH-DID-lifecycle slice — requires `webvh`. The slice
@@ -523,27 +519,22 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         }
         // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
         //
-        // Dual-accept canonical 0.1 + pre-spec 1.0 — identical payloads,
-        // so both versions share a handler and `success_response` echoes
-        // the request version into the reply (0.1 -> …/0.1#response).
+        // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the
+        // browser plugin migrated to 0.1; a 1.0 doc now gets UnsupportedType).
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1
-        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1 => {
             passkey_vms::handle_enroll_challenge(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1
-        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1 => {
             passkey_vms::handle_enroll_submit(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1
-        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1 => {
             passkey_vms::handle_list(state, auth, doc).await
         }
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1
-        | vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0 => {
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1 => {
             passkey_vms::handle_revoke(state, auth, doc).await
         }
         // ─── Provision-integration (feature-gated: webvh) ────────────
@@ -732,39 +723,21 @@ mod tests {
         }
     }
 
-    /// Passkey-VMs dual-accept (#309): the canonical `…/0.1` URIs and
-    /// the retained pre-spec `…/1.0` URIs are both tracked by the
-    /// dispatcher, so a client on either version routes to the same
-    /// handler. `success_response` echoes the request type, so a 0.1
-    /// request replies `…/0.1#response`.
+    /// Passkey-VMs: the canonical `…/0.1` URIs are dispatched. The pre-spec
+    /// `…/1.0` aliases were removed (the browser plugin migrated to 0.1), so a
+    /// 1.0 document now falls through to `UnsupportedType`.
     #[test]
-    fn passkey_vms_dual_accepts_0_1_and_1_0() {
+    fn passkey_vms_0_1_dispatched() {
         let dispatched = aggregate_dispatched_uris();
         let tracked = |u: &&str| dispatched.contains(u) || KNOWN_FEATURE_GATED_URIS.contains(u);
-        for (v0_1, v1_0) in [
-            (
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
-            ),
-            (
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
-            ),
-            (
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
-            ),
-            (
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
-                vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
-            ),
+        for v0_1 in [
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
+            vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
         ] {
             assert!(tracked(&v0_1), "canonical 0.1 URI not dispatched: {v0_1}");
-            assert!(tracked(&v1_0), "retained 1.0 URI not dispatched: {v1_0}");
-            assert!(
-                v0_1.ends_with("/0.1") && v1_0.ends_with("/1.0"),
-                "version-label mismatch for {v0_1} / {v1_0}"
-            );
+            assert!(v0_1.ends_with("/0.1"), "version-label mismatch for {v0_1}");
         }
     }
 

@@ -29,7 +29,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Trust-task payload for `spec/vta/passkey-vms/enroll-challenge/1.0`.
+/// Trust-task payload for `spec/vta/passkey-vms/enroll-challenge/0.1`.
 /// Requests a fresh WebAuthn registration challenge for a DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrollPasskeyChallengeBody {
@@ -42,7 +42,7 @@ pub struct EnrollPasskeyChallengeBody {
     pub label: Option<String>,
 }
 
-/// Trust-task payload for `spec/vta/passkey-vms/list/1.0`.
+/// Trust-task payload for `spec/vta/passkey-vms/list/0.1`.
 /// Lists every passkey VM currently on a DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPasskeyVmsBody {
@@ -50,7 +50,7 @@ pub struct ListPasskeyVmsBody {
     pub did: String,
 }
 
-/// Trust-task payload for `spec/vta/passkey-vms/revoke/1.0`.
+/// Trust-task payload for `spec/vta/passkey-vms/revoke/0.1`.
 /// Removes a passkey VM from a DID document via a WebVH log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevokePasskeyVmBody {
@@ -60,7 +60,7 @@ pub struct RevokePasskeyVmBody {
     pub fragment: String,
 }
 
-/// Trust-task payload for `spec/vta/passkey-vms/revoke/1.0` response —
+/// Trust-task payload for `spec/vta/passkey-vms/revoke/0.1` response —
 /// empty success body. Modelled as a struct so future additive fields
 /// don't bump the wire version.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

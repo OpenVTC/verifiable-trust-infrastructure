@@ -669,30 +669,6 @@ pub const TASK_PASSKEY_VMS_LIST_0_1: &str = "https://trusttasks.org/spec/vta/pas
 pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
     "https://trusttasks.org/spec/vta/passkey-vms/revoke/0.1";
 
-/// `spec/vta/passkey-vms/enroll-challenge/1.0` — pre-spec version,
-/// retained during the plugin's migration window. Prefer
-/// [`TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1`].
-pub const TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0: &str =
-    "https://trusttasks.org/spec/vta/passkey-vms/enroll-challenge/1.0";
-
-/// `spec/vta/passkey-vms/enroll-submit/1.0` — pre-spec version,
-/// retained during the plugin's migration window. The handler appends
-/// the new VM to the DID document via a WebVH LogEntry and pushes to
-/// the configured mediator. Prefer
-/// [`TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1`].
-pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0: &str =
-    "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/1.0";
-
-/// `spec/vta/passkey-vms/list/1.0` — pre-spec version, retained during
-/// the plugin's migration window. Prefer [`TASK_PASSKEY_VMS_LIST_0_1`].
-pub const TASK_PASSKEY_VMS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/passkey-vms/list/1.0";
-
-/// `spec/vta/passkey-vms/revoke/1.0` — pre-spec version, retained
-/// during the plugin's migration window. Prefer
-/// [`TASK_PASSKEY_VMS_REVOKE_0_1`].
-pub const TASK_PASSKEY_VMS_REVOKE_1_0: &str =
-    "https://trusttasks.org/spec/vta/passkey-vms/revoke/1.0";
-
 // ─── Provision-integration (spec/vta/provision-integration/*) ───────────
 //
 // Feature-gated: handler requires `webvh` (DID-doc mutation + log
@@ -1129,10 +1105,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
     TASK_PASSKEY_VMS_LIST_0_1,
     TASK_PASSKEY_VMS_REVOKE_0_1,
-    TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
-    TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
-    TASK_PASSKEY_VMS_LIST_1_0,
-    TASK_PASSKEY_VMS_REVOKE_1_0,
     // Provision-integration (feature-gated: webvh)
     TASK_PROVISION_INTEGRATION_REQUEST_1_0,
     // WebVH-DID-lifecycle slice (feature-gated: webvh)

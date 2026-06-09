@@ -106,19 +106,14 @@ fn passkey_vm_reject(doc: &TrustTask<Value>, err: PasskeyVmError) -> Response {
 /// `docs/05-design-notes/trust-task-feature-gating.md`.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 pub(super) const DISPATCHED_URIS: &[&str] = &[
-    // Canonical 0.1 + retained pre-spec 1.0 (dual-accept; identical
-    // payloads, reply echoes the request version).
+    // Canonical 0.1 only — the pre-spec 1.0 aliases were removed.
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
 ];
 
-/// Handler for `spec/vta/passkey-vms/enroll-challenge/1.0`. Admin only
+/// Handler for `spec/vta/passkey-vms/enroll-challenge/0.1`. Admin only
 /// (enforced by the operation function).
 pub(super) async fn handle_enroll_challenge(
     state: &AppState,
@@ -145,7 +140,7 @@ pub(super) async fn handle_enroll_challenge(
     }
 }
 
-/// Handler for `spec/vta/passkey-vms/enroll-submit/1.0`. Admin only
+/// Handler for `spec/vta/passkey-vms/enroll-submit/0.1`. Admin only
 /// (enforced by the operation function). Appends the new VM to the
 /// DID document via a WebVH LogEntry; pushes the update to the
 /// configured mediator.
@@ -193,7 +188,7 @@ pub(super) async fn handle_enroll_submit(
     }
 }
 
-/// Handler for `spec/vta/passkey-vms/list/1.0`. Admin only (enforced
+/// Handler for `spec/vta/passkey-vms/list/0.1`. Admin only (enforced
 /// by the operation function).
 pub(super) async fn handle_list(
     state: &AppState,
@@ -210,7 +205,7 @@ pub(super) async fn handle_list(
     }
 }
 
-/// Handler for `spec/vta/passkey-vms/revoke/1.0`. Admin only (enforced
+/// Handler for `spec/vta/passkey-vms/revoke/0.1`. Admin only (enforced
 /// by the operation function). Removes the VM via a WebVH LogEntry
 /// and pushes the update to the mediator.
 pub(super) async fn handle_revoke(
@@ -343,7 +338,7 @@ mod tests {
                 "vta/passkey-vms/revoke",
             ),
             (
-                "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/1.0",
+                "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/0.1",
                 "vta/passkey-vms/enroll-submit",
             ),
         ] {

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Removed: pre-spec `vta/passkey-vms/*/1.0` URIs (legacy strip)
+
+The pre-spec `…/1.0` passkey-vms task URIs — kept dual-accepted alongside the
+canonical `…/0.1` during the browser plugin's migration — are removed. The
+plugin has been on `…/0.1` since vta-sdk 0.10, so the alias is no longer
+needed. A `…/1.0` document now falls through to `UnsupportedType`.
+
+- **vta-sdk**: dropped `TASK_PASSKEY_VMS_{ENROLL_CHALLENGE,ENROLL_SUBMIT,LIST,REVOKE}_1_0`
+  constants and their `ALL_URIS` entries. **Breaking** — bump at next release.
+- **vta-service**: the dispatcher matches only the `…/0.1` arms; the parity
+  harness now asserts the 0.1 URIs are dispatched.
+
 ### Built-in DID templates renamed `did-hosting-*` → `did-host-*` (capability-named)
 
 The three did-hosting built-in templates are renamed from service-named to
