@@ -98,11 +98,8 @@ async fn authenticate_siop(
     let Ok(env) = serde_json::from_str::<SiopAuthEnvelope>(body) else {
         return Ok(None);
     };
-    if !matches!(
-        env.typ.as_str(),
-        "https://affinidi.com/atm/1.0/authenticate"
-            | "https://trusttasks.org/spec/auth/authenticate/0.1"
-    ) || env.payload.id_token.is_empty()
+    if env.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1"
+        || env.payload.id_token.is_empty()
     {
         return Ok(None);
     }
@@ -218,12 +215,9 @@ async fn authenticate_and_mint(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // L4: accept both legacy and canonical Trust-Task URIs.
-    if !matches!(
-        msg.typ.as_str(),
-        "https://affinidi.com/atm/1.0/authenticate"
-            | "https://trusttasks.org/spec/auth/authenticate/0.1"
-    ) {
+    // Canonical Trust-Task URI only; the legacy `affinidi.com/atm/1.0`
+    // alias was removed (all VTC clients emit the canonical type).
+    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/authenticate/0.1" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ
@@ -720,11 +714,9 @@ pub async fn refresh(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    if !matches!(
-        msg.typ.as_str(),
-        "https://affinidi.com/atm/1.0/authenticate/refresh"
-            | "https://trusttasks.org/spec/auth/refresh/0.1"
-    ) {
+    // Canonical Trust-Task URI only; the legacy
+    // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
+    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/refresh/0.1" {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Removed: vtc-service legacy `affinidi.com/atm/1.0` auth aliases (legacy strip)
+
+Completes the `atm/1.0` removal across both services (the VTA side landed
+earlier). `vtc-service/routes/auth.rs` now accepts only the canonical
+`auth/authenticate/0.1` / `auth/refresh/0.1` types — on the DIDComm
+authenticate + refresh paths **and** the SIOP `id_token` envelope path. All
+VTC clients already emit canonical: the browser plugin's SIOP login client
+(`siop/login-client.ts`) and vta-sdk / cnm-cli DIDComm auth.
+
 ### Removed: `pnm webvh …` CLI alias (legacy strip)
 
 The hidden `pnm webvh …` command alias (superseded by `pnm did-mgmt {servers,dids} …`)
