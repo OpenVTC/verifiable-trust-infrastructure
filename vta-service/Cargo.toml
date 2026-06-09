@@ -73,8 +73,8 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.9", features = ["encryption", "passkey"] }
-vta-sdk = { path = "../vta-sdk", version = "0.10", features = ["didcomm", "sealed-transfer", "provision-integration"] }
+vti-common = { path = "../vti-common", version = "0.10", features = ["encryption", "passkey"] }
+vta-sdk = { path = "../vta-sdk", version = "0.11", features = ["didcomm", "sealed-transfer", "provision-integration"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -94,7 +94,7 @@ trust-tasks-proof = { workspace = true }
 # generation, bundle opening). Used by `vta bootstrap request` /
 # `vta bootstrap open` so cold-start clients can run the offline flow
 # without depending on `pnm`.
-vta-cli-common = { path = "../vta-cli-common", version = "0.8" }
+vta-cli-common = { path = "../vta-cli-common", version = "0.9" }
 affinidi-crypto = { workspace = true }
 # Low-level `Secret` type for loading the VTA's signing key at
 # provision time. Already transitively present via affinidi-tdk; made

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Version bumps — delegatedAny + step-up + legacy-strip release
+
+Cuts the publish boundary for the accumulated breaking work documented below
+(delegatedAny + per-entry `stepUp.require`; the `atm/1.0`, passkey-vms `/1.0`,
+DID-template name-alias, and `pnm webvh` strips). Each is breaking — removed
+public API or message-type acceptance — so every changed crate takes a **minor**
+bump (each lands at exactly +1 minor over its published baseline):
+
+- `vta-sdk` 0.10.0 → **0.11.0** — dropped the deprecated passkey-vms `/1.0` and
+  `BUILTIN_{WEBVH,DID_HOSTING}_*` consts + `ProvisionAsk::{webvh,did_hosting}_*`
+  builders; DIDComm auth emits canonical `auth/{authenticate,refresh}/0.1`;
+  `acl` request/response types gain `step_up_require`.
+- `vti-common` 0.9.1 → **0.10.0** — `AclEntry.step_up_require` +
+  `delegated_any_approver_covers`; `new_pending_step_up` gained `approver_any`.
+- `vta-cli-common` 0.8.2 → **0.9.0** — `cmd_acl_{create,update}` gained a
+  `step_up_require` parameter.
+- `vta-service` **0.9.0** (publishes over 0.8.1) — delegatedAny + per-entry
+  override enforcement; `atm/1.0` and passkey-vms `/1.0` acceptance dropped.
+- `vtc-service` 0.8.1 → **0.9.0** — `atm/1.0` (DIDComm + SIOP) acceptance dropped.
+- `pnm-cli` / `cnm-cli` 0.8.1 → **0.9.0** — `--step-up-require` flag; the
+  `pnm webvh` alias removed.
+
+Internal `major.minor` pins updated across the workspace; the non-published
+consumers (`vta-mobile-core`, `didcomm-test`, `vta-enclave`) had their pins
+bumped to match. Publish order: `vta-sdk` → `vti-common` → `vta-cli-common`
+→ `vta-service` / `vtc-service` → `pnm-cli` / `cnm-cli`.
+
 ### Removed: vtc-service legacy `affinidi.com/atm/1.0` auth aliases (legacy strip)
 
 Completes the `atm/1.0` removal across both services (the VTA side landed
