@@ -313,6 +313,11 @@ pub struct AclEntryResponse {
     /// defaults to `None` for backward compat.
     #[serde(default)]
     pub expires_at: Option<u64>,
+    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
+    /// floor for this subject. `None` = no override. `#[serde(default)]` for
+    /// pre-existing entries on the wire.
+    #[serde(default)]
+    pub step_up_require: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -337,6 +342,10 @@ pub struct CreateAclRequest {
     /// (the subject's `stepUp.approver`). Omit for no delegated approver.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_approver: Option<String>,
+    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
+    /// floor for this subject. Omit for none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_require: Option<String>,
 }
 
 impl CreateAclRequest {
@@ -348,6 +357,7 @@ impl CreateAclRequest {
             allowed_contexts: Vec::new(),
             expires_at: None,
             step_up_approver: None,
+            step_up_require: None,
         }
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
@@ -365,6 +375,12 @@ impl CreateAclRequest {
     /// Set the delegated step-up approver VID (`stepUp.approver`).
     pub fn step_up_approver(mut self, approver: impl Into<String>) -> Self {
         self.step_up_approver = Some(approver.into());
+        self
+    }
+    /// Set the per-entry step-up override (`stepUp.require`: `"self"` |
+    /// `"delegated"`), which raises the system floor for this subject.
+    pub fn step_up_require(mut self, require: impl Into<String>) -> Self {
+        self.step_up_require = Some(require.into());
         self
     }
 }
@@ -398,6 +414,10 @@ pub struct UpdateAclRequest {
     /// string to clear; `None` leaves the current value unchanged).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_approver: Option<String>,
+    /// Per-entry step-up override (`"self"` | `"delegated"`): `Some` sets — pass
+    /// an empty string to clear; `None` leaves the current value unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_up_require: Option<String>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

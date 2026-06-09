@@ -16,6 +16,10 @@ pub struct UpdateAclBody {
     /// approver isn't expressible here, consistent with `label`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_up_approver: Option<String>,
+    /// Set the per-entry step-up override (`"self"` | `"delegated"`). `Some`
+    /// sets it; `None` leaves it unchanged (consistent with the other fields).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_require: Option<String>,
 }
 
 pub type UpdateAclResultBody = CreateAclResultBody;

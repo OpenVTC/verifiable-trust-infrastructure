@@ -594,6 +594,7 @@ pub async fn provision_integration(
         vec![context.clone()],
         None,
         None,
+        None,
         "provision-integration",
     )
     .await
@@ -861,6 +862,7 @@ async fn provision_admin_rotation(
         Role::Admin,
         request.label().map(str::to_string),
         vec![context.to_string()],
+        None,
         None,
         None,
         "provision-integration",

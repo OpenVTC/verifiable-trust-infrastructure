@@ -17,6 +17,10 @@ pub struct CreateAclBody {
     /// `step_up_approver`. `None` = no delegated approver configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_up_approver: Option<String>,
+    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
+    /// floor for this subject. Stored as `step_up_require`. `None` = no override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_require: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,4 +38,8 @@ pub struct CreateAclResultBody {
     /// subject, if any (echoes the stored `step_up_approver`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_up_approver: Option<String>,
+    /// The per-entry step-up override the maintainer now holds for this subject,
+    /// if any (echoes the stored `step_up_require`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up_require: Option<String>,
 }

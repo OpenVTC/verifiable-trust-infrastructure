@@ -75,6 +75,7 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         session_id.clone(),
         did.clone(),
         did.clone(), // self step-up: approver == subject
+        false,       // approver_any (self/delegated single-approver path)
         "aal2",
         vec!["did-signed".to_string()],
         300,
@@ -204,6 +205,7 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         session_id.clone(),
         did.clone(),
         did.clone(), // self step-up: approver == subject
+        false,       // approver_any (self/delegated single-approver path)
         "aal2",
         vec!["did-signed".to_string()],
         300,
@@ -442,6 +444,7 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
         session_id.clone(),
         subject.clone(),
         approver_did.clone(), // delegated: approver != subject
+        false,                // approver_any (self/delegated single-approver path)
         "aal2",
         vec!["did-signed".to_string()],
         300,
@@ -548,6 +551,7 @@ async fn unauthorized_approver_cannot_elevate() {
         session_id.clone(),
         subject.clone(),
         authorized.clone(),
+        false, // approver_any (self/delegated single-approver path)
         "aal2",
         vec!["did-signed".to_string()],
         300,

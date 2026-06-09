@@ -34,7 +34,7 @@ use crate::operations::passkey_login::{
     VtaVmResolver, enumerate_passkey_vms, verify_passkey_login,
 };
 use crate::server::AppState;
-use vti_common::acl::get_acl_entry;
+use vti_common::acl::{delegated_any_approver_covers, get_acl_entry};
 use vti_common::auth::step_up::{
     ConsumeOutcome, StepUpMode, consume_pending_step_up, new_pending_step_up, store_pending_step_up,
 };
@@ -309,22 +309,53 @@ pub(super) async fn handle_approve_response(
         );
     }
 
-    // 4b. Authorize the signer. The relying party elevates only for the approver
-    //     it addressed the request to: the subject itself (self), or the
-    //     delegated approver recorded on the pending step-up at mint. An
-    //     in-flight record written before the `approver` field existed has it
-    //     empty → fall back to self (issuer MUST equal subject). The gate (4/5)
-    //     proves the proof VM == issuer; this ties that issuer to the step-up.
-    let authorized_signer = if pending.approver.is_empty() {
-        subject.as_str()
+    // 4b. Authorize the signer. The gate (4/5) proves the proof VM == issuer;
+    //     this ties that issuer to the step-up the relying party minted.
+    if pending.approver_any {
+        // delegated-any: no single bound approver. The issuer must meet the
+        // maintainer's criterion — an admin whose contexts cover the subject's
+        // (super-admin covers all). Expired approver entries can't ratify.
+        let now = now_epoch();
+        let issuer_entry = match get_acl_entry(&state.acl_ks, &issuer).await {
+            Ok(Some(e)) if !e.is_expired(now) => e,
+            _ => {
+                return reject_with(
+                    &doc,
+                    step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                );
+            }
+        };
+        let subject_entry = match get_acl_entry(&state.acl_ks, &subject).await {
+            Ok(Some(e)) => e,
+            _ => {
+                return reject_with(
+                    &doc,
+                    step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+                );
+            }
+        };
+        if !delegated_any_approver_covers(&issuer_entry, &subject_entry) {
+            return reject_with(
+                &doc,
+                step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+            );
+        }
     } else {
-        pending.approver.as_str()
-    };
-    if issuer != authorized_signer {
-        return reject_with(
-            &doc,
-            step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
-        );
+        // self / delegated: the relying party elevates only for the approver it
+        // addressed the request to — the subject itself (self) or the delegated
+        // approver recorded at mint. An in-flight record written before the
+        // `approver` field existed has it empty → fall back to self.
+        let authorized_signer = if pending.approver.is_empty() {
+            subject.as_str()
+        } else {
+            pending.approver.as_str()
+        };
+        if issuer != authorized_signer {
+            return reject_with(
+                &doc,
+                step_up_failure("auth/step-up/approve-response:approver_unauthorized"),
+            );
+        }
     }
 
     // 4. A `denied` decision is a signed refusal — verify the did-signed gate
@@ -459,6 +490,7 @@ async fn mint_pending_step_up(
     vta_did: &str,
     subject: &str,
     recipient: &str,
+    approver_any: bool,
     session_id: &str,
     reason: &str,
 ) -> Result<Value, ()> {
@@ -477,9 +509,10 @@ async fn mint_pending_step_up(
         subject,
         // The authorized signer of the eventual approve-response: the subject
         // itself for `self`, or the delegated approver the request is addressed
-        // to. `handle_approve_response` checks the document `issuer` against
-        // this, so a delegated approver (issuer != subject) can elevate.
+        // to. Empty for `delegated-any` (authorization is by criterion, not a
+        // bound approver — `approver_any` selects that path).
         recipient,
+        approver_any,
         STEP_UP_TARGET_ACR,
         acceptable.clone(),
         STEP_UP_TTL_SECS,
@@ -489,13 +522,10 @@ async fn mint_pending_step_up(
         return Err(());
     }
 
-    Ok(json!({
+    let mut doc = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
         "issuer": vta_did,
-        // `recipient` is the approver the request is addressed to: the subject
-        // itself for `self` mode, or the configured delegated approver.
-        "recipient": recipient,
         "payload": {
             "subject": subject,
             "sessionId": session_id,
@@ -505,7 +535,14 @@ async fn mint_pending_step_up(
             "acceptableEvidence": acceptable,
             "ttl": STEP_UP_TTL_SECS,
         },
-    }))
+    });
+    // Address the request to the approver for `self`/`delegated`; `delegated-any`
+    // has no single recipient (any qualifying admin may ratify), so the field is
+    // omitted and the carried request is relayed to an eligible approver.
+    if !approver_any && !recipient.is_empty() {
+        doc["recipient"] = json!(recipient);
+    }
+    Ok(doc)
 }
 
 /// Mint a pending step-up and return the REST `403` that *carries the
@@ -519,23 +556,31 @@ pub(crate) async fn issue_step_up_challenge(
     vta_did: &str,
     subject: &str,
     recipient: &str,
+    approver_any: bool,
     session_id: &str,
     reason: &str,
 ) -> Response {
-    let approve_request =
-        match mint_pending_step_up(sessions_ks, vta_did, subject, recipient, session_id, reason)
-            .await
-        {
-            Ok(ar) => ar,
-            Err(()) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    br#"{"error":"internal_error"}"#.to_vec(),
-                )
-                    .into_response();
-            }
-        };
+    let approve_request = match mint_pending_step_up(
+        sessions_ks,
+        vta_did,
+        subject,
+        recipient,
+        approver_any,
+        session_id,
+        reason,
+    )
+    .await
+    {
+        Ok(ar) => ar,
+        Err(()) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                br#"{"error":"internal_error"}"#.to_vec(),
+            )
+                .into_response();
+        }
+    };
     // Backward-compatible with the prior 403 shape (`error` + `requiredAcr`),
     // plus the carried approve-request a step-up-aware client acts on.
     let body = json!({
@@ -579,8 +624,13 @@ enum StepUpDecision {
     /// non-escalation carve-out applied).
     Allow,
     /// Gated — mint an approve-request addressed to `recipient` (the subject
-    /// itself for `self` mode, or the delegated approver).
+    /// itself for `self` mode, or the delegated approver for `delegated`).
     Require { recipient: String },
+    /// Gated under `delegated-any`: any approver meeting the maintainer's
+    /// criterion (an admin covering the subject's contexts) may ratify. The
+    /// approve-request is addressed to no single party; authorization happens at
+    /// approve-response time against the actual issuer.
+    RequireAny,
     /// Gated, but no usable step-up method exists (a `delegated` floor with no
     /// approver on the caller's entry) — fail closed.
     Deny,
@@ -597,13 +647,30 @@ async fn resolve_step_up(
     caller_did: &str,
     is_non_escalating: bool,
 ) -> StepUpDecision {
-    let (mode, allow_carveout) = {
+    let (floor_mode, allow_carveout) = {
         let cfg = state.config.read().await;
         match cfg.auth.step_up.floor_record(op_class) {
             None => return StepUpDecision::Allow,
             Some(f) => (f.mode, f.allow_aal1_if_non_escalating),
         }
     };
+
+    // Compose the system floor with the caller's per-entry override
+    // (`stepUp.require`), additive-only: the effective mode is the strictest of
+    // the two. The caller's entry is also where a `delegated` approver lives, so
+    // fetch it once.
+    let entry = get_acl_entry(&state.acl_ks, caller_did)
+        .await
+        .ok()
+        .flatten();
+    let override_mode = entry
+        .as_ref()
+        .and_then(|e| e.step_up_require)
+        .unwrap_or(StepUpMode::None);
+    let mode = floor_mode.strictest(override_mode);
+
+    // The non-escalation carve-out is a structural exemption for self-service
+    // rotation/enrolment; it applies to the resolved requirement.
     if !mode.requires_aal2() || (allow_carveout && is_non_escalating) {
         return StepUpDecision::Allow;
     }
@@ -612,20 +679,18 @@ async fn resolve_step_up(
         StepUpMode::SelfApprove => StepUpDecision::Require {
             recipient: caller_did.to_string(),
         },
-        // Delegated (and delegated-any, until a broader approver criterion is
-        // defined) route to the caller's configured approver; absent one, fail
-        // closed rather than let the subject self-approve a delegated gate.
-        StepUpMode::Delegated | StepUpMode::DelegatedAny => {
-            match get_acl_entry(&state.acl_ks, caller_did).await {
-                Ok(Some(entry)) => match entry.step_up_approver {
-                    Some(approver) => StepUpDecision::Require {
-                        recipient: approver,
-                    },
-                    None => StepUpDecision::Deny,
-                },
-                _ => StepUpDecision::Deny,
-            }
-        }
+        // Delegated routes to the caller's single configured approver; absent
+        // one, fail closed rather than let the subject self-approve a delegated
+        // gate.
+        StepUpMode::Delegated => match entry.and_then(|e| e.step_up_approver) {
+            Some(approver) => StepUpDecision::Require {
+                recipient: approver,
+            },
+            None => StepUpDecision::Deny,
+        },
+        // Delegated-any: no single approver — any admin meeting the criterion
+        // may ratify (checked at approve-response time against the issuer).
+        StepUpMode::DelegatedAny => StepUpDecision::RequireAny,
     }
 }
 
@@ -787,9 +852,10 @@ pub(super) async fn require_step_up(
     // Trust-task gated ops (grant, change-role, revoke, context-delete,
     // key-revoke) are all escalating — they never qualify for the
     // non-escalation carve-out.
-    let recipient = match resolve_step_up(state, op_class, &auth.did, false).await {
+    let (recipient, approver_any) = match resolve_step_up(state, op_class, &auth.did, false).await {
         StepUpDecision::Allow => return None,
-        StepUpDecision::Require { recipient } => recipient,
+        StepUpDecision::Require { recipient } => (recipient, false),
+        StepUpDecision::RequireAny => (String::new(), true),
         StepUpDecision::Deny => {
             return Some(reject_with(
                 doc,
@@ -815,6 +881,7 @@ pub(super) async fn require_step_up(
         &vta_did,
         &auth.did,
         &recipient,
+        approver_any,
         &auth.session_id,
         "this operation requires a stepped-up (AAL2) session",
     )
@@ -823,8 +890,11 @@ pub(super) async fn require_step_up(
         Ok(approve_request) => {
             // Delegated mode: proactively push the approve-request to the
             // approver's device over DIDComm. Best-effort — the carried
-            // `approveRequest` below remains the relay fallback.
-            maybe_push_step_up(state, &recipient, &auth.did, &approve_request).await;
+            // `approveRequest` below remains the relay fallback. Skipped for
+            // `delegated-any` (no single approver device to target).
+            if !approver_any {
+                maybe_push_step_up(state, &recipient, &auth.did, &approve_request).await;
+            }
             RejectReason::TaskFailed {
                 reason: "auth:step_up_required".to_string(),
                 details: Some(json!({
@@ -914,10 +984,11 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
         // Resolve the floor for this route's operation-class, honoring the
         // non-escalation carve-out (`O::IS_NON_ESCALATING`) and, for delegated
         // modes, routing to the caller's configured approver.
-        let recipient =
+        let (recipient, approver_any) =
             match resolve_step_up(state, O::OP_CLASS, &claims.did, O::IS_NON_ESCALATING).await {
                 StepUpDecision::Allow => return Ok(RequireStepUp(std::marker::PhantomData)),
-                StepUpDecision::Require { recipient } => recipient,
+                StepUpDecision::Require { recipient } => (recipient, false),
+                StepUpDecision::RequireAny => (String::new(), true),
                 StepUpDecision::Deny => return Err(step_up_denied_response()),
             };
         let vta_did = state
@@ -932,6 +1003,7 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
             &vta_did,
             &claims.did,
             &recipient,
+            approver_any,
             &claims.session_id,
             "this operation requires a stepped-up (AAL2) session",
         )
@@ -985,6 +1057,7 @@ mod tests {
             "did:key:zHolder",
             // self-approval: recipient == subject
             "did:key:zHolder",
+            false,
             "sess-9",
             "rotate keys",
         )

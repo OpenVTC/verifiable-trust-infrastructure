@@ -138,25 +138,42 @@ async fn lockout_check(
     policy: &StepUpPolicy,
     acl_ks: &KeyspaceHandle,
 ) -> Result<(), SetPolicyError> {
-    let needs_delegate = policy
+    let needs_delegated = policy
         .floors
         .iter()
-        .any(|f| matches!(f.mode, StepUpMode::Delegated | StepUpMode::DelegatedAny));
-    if !needs_delegate {
+        .any(|f| matches!(f.mode, StepUpMode::Delegated));
+    let needs_delegated_any = policy
+        .floors
+        .iter()
+        .any(|f| matches!(f.mode, StepUpMode::DelegatedAny));
+    if !needs_delegated && !needs_delegated_any {
         return Ok(());
     }
 
     let entries = list_acl_entries(acl_ks)
         .await
         .map_err(|e| SetPolicyError::Store(e.to_string()))?;
-    let any_approver = entries
-        .iter()
-        .any(|e| e.step_up_approver.as_deref().is_some_and(|a| !a.is_empty()));
-    if !any_approver {
+
+    // `delegated` needs a bound approver routed to via `stepUp.approver`.
+    if needs_delegated
+        && !entries
+            .iter()
+            .any(|e| e.step_up_approver.as_deref().is_some_and(|a| !a.is_empty()))
+    {
         return Err(SetPolicyError::LockoutRefused(
             "enabling a delegated floor would lock out all administrators: no AclEntry \
              carries a stepUp.approver. Register an approver (acl create/update \
              --step-up-approver), then enable."
+                .to_string(),
+        ));
+    }
+
+    // `delegated-any` is satisfiable by any admin meeting the criterion, so it
+    // needs at least one admin entry to exist to ratify.
+    if needs_delegated_any && !entries.iter().any(|e| e.is_admin()) {
+        return Err(SetPolicyError::LockoutRefused(
+            "enabling a delegated-any floor would lock out all administrators: no admin \
+             AclEntry exists to ratify. Register an admin, then enable."
                 .to_string(),
         ));
     }

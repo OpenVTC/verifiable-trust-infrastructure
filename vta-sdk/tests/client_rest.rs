@@ -641,6 +641,7 @@ async fn update_acl_patches() {
         label: None,
         allowed_contexts: Some(vec!["ctx-b".into()]),
         step_up_approver: None,
+        step_up_require: None,
     };
     let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
     assert_eq!(resp.did, "did:key:zAdmin");

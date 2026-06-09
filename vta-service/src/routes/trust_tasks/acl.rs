@@ -100,6 +100,7 @@ pub(super) async fn handle_create(
         req.allowed_contexts,
         req.expires_at,
         req.step_up_approver,
+        req.step_up_require,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -174,6 +175,7 @@ pub(super) async fn handle_update(
             label: req.label,
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,
+            step_up_require: req.step_up_require,
         },
         TRANSPORT_TRUST_TASK,
     )

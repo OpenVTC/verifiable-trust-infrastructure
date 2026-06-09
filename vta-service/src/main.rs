@@ -1166,6 +1166,10 @@ enum AclCommands {
         /// write, no wire auth.
         #[arg(long)]
         step_up_approver: Option<String>,
+        /// Set the per-entry step-up override (`self` | `delegated`;
+        /// `stepUp.require`). Empty string clears it; omit to keep unchanged.
+        #[arg(long)]
+        step_up_require: Option<String>,
     },
     /// Delete an ACL entry
     Delete {
@@ -1607,6 +1611,7 @@ async fn main() {
                     label,
                     contexts,
                     step_up_approver,
+                    step_up_require,
                 } => {
                     acl_cli::run_acl_update(
                         cli.config,
@@ -1615,6 +1620,7 @@ async fn main() {
                         label,
                         contexts,
                         step_up_approver,
+                        step_up_require,
                     )
                     .await
                 }

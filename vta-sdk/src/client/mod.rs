@@ -777,6 +777,7 @@ mod tests {
             allowed_contexts: vec!["vta".into()],
             expires_at: None,
             step_up_approver: None,
+            step_up_require: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["did"], "did:key:z6Mk123");
@@ -794,6 +795,7 @@ mod tests {
             label: None,
             allowed_contexts: None,
             step_up_approver: None,
+            step_up_require: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();

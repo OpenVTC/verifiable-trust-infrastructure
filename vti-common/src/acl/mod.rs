@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::extractor::AuthClaims;
+use crate::auth::step_up::StepUpMode;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
@@ -301,6 +302,17 @@ pub struct AclEntry {
     /// `#[serde(default)]` so pre-existing rows deserialise as `None`.
     #[serde(default)]
     pub step_up_approver: Option<String>,
+    /// Per-entry step-up override raising the system floor for *this* subject —
+    /// the spec's `AclEntry.stepUp.require`. ADDITIVE-ONLY: the effective mode
+    /// is the strictest of (system floor, this override), so an override weaker
+    /// than the floor is ignored (see [`StepUpMode::strictest`]). Restricted to
+    /// `self` / `delegated` (a per-subject override never relaxes to
+    /// `delegated-any`); the ACL op layer rejects other values.
+    ///
+    /// `#[serde(default)]` so pre-existing rows deserialise as `None` (no
+    /// override; the system floor applies unchanged).
+    #[serde(default)]
+    pub step_up_require: Option<StepUpMode>,
 }
 
 impl AclEntry {
@@ -326,6 +338,7 @@ impl AclEntry {
             device: None,
             version: 0,
             step_up_approver: None,
+            step_up_require: None,
         }
     }
 
@@ -376,6 +389,24 @@ impl AclEntry {
     pub fn with_step_up_approver(mut self, approver: Option<String>) -> Self {
         self.step_up_approver = approver;
         self
+    }
+
+    /// Set the per-entry step-up override (`stepUp.require`).
+    pub fn with_step_up_require(mut self, require: Option<StepUpMode>) -> Self {
+        self.step_up_require = require;
+        self
+    }
+
+    /// Whether this entry is an admin (`Role::Admin`).
+    pub fn is_admin(&self) -> bool {
+        matches!(self.role, Role::Admin)
+    }
+
+    /// Whether this entry is a **super-admin**: an admin with no context
+    /// restriction (empty `allowed_contexts` ⇒ unrestricted), mirroring
+    /// [`AuthClaims::is_super_admin`].
+    pub fn is_super_admin(&self) -> bool {
+        self.is_admin() && self.allowed_contexts.is_empty()
     }
 
     /// Set the optimistic-concurrency version (defaults to 0).
@@ -565,6 +596,36 @@ pub fn validate_acl_modification(
     Ok(())
 }
 
+/// Authorization predicate for **`delegated-any`** step-up: may `approver`
+/// ratify an AAL2 step-up for `subject`?
+///
+/// The criterion is **context-scoped admin**:
+/// - a **super-admin** approver (admin, no context restriction) may ratify for
+///   any subject — including cross-context and global subjects;
+/// - a **context-admin** approver may ratify only for a context-scoped subject
+///   **all** of whose contexts it administers (`subject.allowed_contexts ⊆
+///   approver.allowed_contexts`). A context admin can never ratify for a global
+///   (super-admin-equivalent, empty-context) subject — only a super-admin can.
+///
+/// Non-admins never qualify. Expiry is the caller's responsibility (it should
+/// skip an expired approver entry before calling this).
+pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) -> bool {
+    if !approver.is_admin() {
+        return false;
+    }
+    if approver.allowed_contexts.is_empty() {
+        return true; // super-admin: covers all contexts
+    }
+    // Context admin: the subject must itself be context-scoped, and every one of
+    // its contexts must fall within the approver's. A global subject (empty
+    // contexts) requires a super-admin approver, handled by the branch above.
+    !subject.allowed_contexts.is_empty()
+        && subject
+            .allowed_contexts
+            .iter()
+            .all(|c| approver.allowed_contexts.contains(c))
+}
+
 /// Check whether an ACL entry is visible to the caller.
 ///
 /// Super admins see all entries. Context admins only see entries whose
@@ -577,6 +638,87 @@ pub fn is_acl_entry_visible(caller: &AuthClaims, entry: &AclEntry) -> bool {
         .allowed_contexts
         .iter()
         .any(|ctx| caller.has_context_access(ctx))
+}
+
+#[cfg(test)]
+mod delegated_any_tests {
+    use super::*;
+
+    fn admin(contexts: &[&str]) -> AclEntry {
+        AclEntry::new("did:key:zApprover", Role::Admin, "did:key:zCreator")
+            .with_contexts(contexts.iter().map(|s| s.to_string()).collect())
+    }
+    fn subject(role: Role, contexts: &[&str]) -> AclEntry {
+        AclEntry::new("did:key:zSubject", role, "did:key:zCreator")
+            .with_contexts(contexts.iter().map(|s| s.to_string()).collect())
+    }
+
+    #[test]
+    fn super_admin_covers_any_subject() {
+        let sa = admin(&[]); // empty contexts ⇒ super-admin
+        assert!(delegated_any_approver_covers(
+            &sa,
+            &subject(Role::Admin, &["ctx-a"])
+        ));
+        assert!(delegated_any_approver_covers(
+            &sa,
+            &subject(Role::Reader, &[])
+        )); // global subject
+        assert!(delegated_any_approver_covers(
+            &sa,
+            &subject(Role::Application, &["ctx-a", "ctx-b"])
+        ));
+    }
+
+    #[test]
+    fn context_admin_covers_only_within_its_contexts() {
+        let ca = admin(&["ctx-a", "ctx-b"]);
+        // Subject fully within → covered.
+        assert!(delegated_any_approver_covers(
+            &ca,
+            &subject(Role::Reader, &["ctx-a"])
+        ));
+        assert!(delegated_any_approver_covers(
+            &ca,
+            &subject(Role::Reader, &["ctx-a", "ctx-b"])
+        ));
+        // Subject in a context the admin doesn't administer → NOT covered.
+        assert!(!delegated_any_approver_covers(
+            &ca,
+            &subject(Role::Reader, &["ctx-c"])
+        ));
+        assert!(!delegated_any_approver_covers(
+            &ca,
+            &subject(Role::Reader, &["ctx-a", "ctx-c"])
+        ));
+    }
+
+    #[test]
+    fn context_admin_never_covers_a_global_subject() {
+        // A global (empty-context, super-admin-equivalent) subject needs a
+        // super-admin approver; a context admin must never ratify for it.
+        let ca = admin(&["ctx-a"]);
+        assert!(!delegated_any_approver_covers(
+            &ca,
+            &subject(Role::Admin, &[])
+        ));
+    }
+
+    #[test]
+    fn non_admins_never_qualify() {
+        for role in [
+            Role::Initiator,
+            Role::Application,
+            Role::Reader,
+            Role::Monitor,
+        ] {
+            let not_admin = AclEntry::new("did:key:zX", role, "did:key:zC");
+            assert!(!delegated_any_approver_covers(
+                &not_admin,
+                &subject(Role::Reader, &["ctx-a"])
+            ));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -151,6 +151,7 @@ pub async fn cmd_acl_create(
     contexts: Vec<String>,
     expires_at: Option<u64>,
     step_up_approver: Option<String>,
+    step_up_require: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
@@ -162,6 +163,9 @@ pub async fn cmd_acl_create(
     }
     if let Some(ref approver) = step_up_approver {
         req = req.step_up_approver(approver.clone());
+    }
+    if let Some(ref require) = step_up_require {
+        req = req.step_up_require(require.clone());
     }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
@@ -176,6 +180,9 @@ pub async fn cmd_acl_create(
     println!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
     if let Some(approver) = &step_up_approver {
         println!("  Step-up approver: {approver}");
+    }
+    if let Some(require) = &step_up_require {
+        println!("  Step-up require:  {require}");
     }
     match entry.expires_at {
         Some(secs) => println!(
@@ -195,6 +202,7 @@ pub async fn cmd_acl_update(
     label: Option<String>,
     contexts: Option<Vec<String>>,
     step_up_approver: Option<String>,
+    step_up_require: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref r) = role {
         validate_role(r)?;
@@ -204,6 +212,7 @@ pub async fn cmd_acl_update(
         label,
         allowed_contexts: contexts,
         step_up_approver: step_up_approver.clone(),
+        step_up_require: step_up_require.clone(),
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -221,6 +230,13 @@ pub async fn cmd_acl_update(
             println!("  Step-up approver: (cleared)");
         } else {
             println!("  Step-up approver: {approver}");
+        }
+    }
+    if let Some(require) = &step_up_require {
+        if require.is_empty() {
+            println!("  Step-up require:  (cleared)");
+        } else {
+            println!("  Step-up require:  {require}");
         }
     }
     Ok(())

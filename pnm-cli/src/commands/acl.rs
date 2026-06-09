@@ -19,6 +19,7 @@ pub(crate) async fn run(
             contexts,
             expires,
             step_up_approver,
+            step_up_require,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
                 acl::cmd_acl_create(
@@ -29,6 +30,7 @@ pub(crate) async fn run(
                     contexts,
                     expires_at,
                     step_up_approver,
+                    step_up_require,
                 )
                 .await
             }
@@ -40,7 +42,19 @@ pub(crate) async fn run(
             label,
             contexts,
             step_up_approver,
-        } => acl::cmd_acl_update(client, &did, role, label, contexts, step_up_approver).await,
+            step_up_require,
+        } => {
+            acl::cmd_acl_update(
+                client,
+                &did,
+                role,
+                label,
+                contexts,
+                step_up_approver,
+                step_up_require,
+            )
+            .await
+        }
         AclCommands::Delete { did } => acl::cmd_acl_delete(client, &did).await,
     }
 }

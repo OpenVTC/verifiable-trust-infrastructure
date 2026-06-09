@@ -1059,8 +1059,9 @@ async fn main() {
                 .transpose()
             {
                 Ok(expires_at) => {
-                    // cnm does not expose the delegated step-up approver flag.
-                    acl::cmd_acl_create(&client, did, role, label, contexts, expires_at, None).await
+                    // cnm does not expose the per-entry step-up flags.
+                    acl::cmd_acl_create(&client, did, role, label, contexts, expires_at, None, None)
+                        .await
                 }
                 Err(e) => Err(format!("--expires: {e}").into()),
             },
@@ -1069,7 +1070,7 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => acl::cmd_acl_update(&client, &did, role, label, contexts, None).await,
+            } => acl::cmd_acl_update(&client, &did, role, label, contexts, None, None).await,
             AclCommands::Delete { did } => acl::cmd_acl_delete(&client, &did).await,
         },
         Commands::AuthCredential { command } => match command {

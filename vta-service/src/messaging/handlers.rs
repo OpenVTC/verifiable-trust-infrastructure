@@ -544,6 +544,7 @@ pub async fn handle_create_acl(
             body.allowed_contexts,
             body.expires_at,
             body.step_up_approver,
+            body.step_up_require,
             "didcomm",
         )
         .await
@@ -684,6 +685,7 @@ pub async fn handle_update_acl(
                 label: body.label,
                 allowed_contexts: body.allowed_contexts,
                 step_up_approver: body.step_up_approver,
+                step_up_require: body.step_up_require,
             },
             "didcomm",
         )

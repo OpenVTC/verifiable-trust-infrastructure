@@ -42,6 +42,14 @@ pub struct PendingStepUp {
     /// contract for the ≤TTL window after a deploy.
     #[serde(default)]
     pub approver: String,
+    /// `true` for **`delegated-any`** mode: the approve-response is authorized
+    /// not against a single bound [`Self::approver`] but against the relying
+    /// party's approver *criterion* (the issuer must be an admin covering the
+    /// subject's contexts — see `acl::delegated_any_approver_covers`).
+    /// [`Self::approver`] is empty in this mode. `#[serde(default)]` so older
+    /// records deserialize as `false` (the self/delegated single-approver path).
+    #[serde(default)]
+    pub approver_any: bool,
     /// The acr the relying party requested. The elevated session MUST reach
     /// at least this, else `acr_unsatisfied`.
     pub target_acr: String,
@@ -260,6 +268,7 @@ pub fn new_pending_step_up(
     session_id: impl Into<String>,
     subject: impl Into<String>,
     approver: impl Into<String>,
+    approver_any: bool,
     target_acr: impl Into<String>,
     acceptable_evidence: Vec<String>,
     ttl_secs: u64,
@@ -270,6 +279,7 @@ pub fn new_pending_step_up(
         session_id: session_id.into(),
         subject: subject.into(),
         approver: approver.into(),
+        approver_any,
         target_acr: target_acr.into(),
         acceptable_evidence,
         created_at,
@@ -300,6 +310,7 @@ mod tests {
             session_id: "sess-1".to_string(),
             subject: "did:key:zHolder".to_string(),
             approver: "did:key:zHolder".to_string(),
+            approver_any: false,
             target_acr: "aal2".to_string(),
             acceptable_evidence: vec!["did-signed".into(), "webauthn".into()],
             created_at: 1000,
@@ -369,6 +380,7 @@ mod tests {
             "sess-1",
             "did:key:zHolder",
             "did:key:zApprover",
+            false,
             "aal2",
             vec!["webauthn".into()],
             300,
@@ -376,6 +388,7 @@ mod tests {
         assert_eq!(p.expires_at, p.created_at + 300);
         assert_eq!(p.target_acr, "aal2");
         assert_eq!(p.approver, "did:key:zApprover");
+        assert!(!p.approver_any);
     }
 
     #[test]

@@ -71,11 +71,17 @@ pub async fn run_acl_update(
     label: Option<String>,
     contexts: Option<Vec<String>>,
     step_up_approver: Option<String>,
+    step_up_require: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if role.is_none() && label.is_none() && contexts.is_none() && step_up_approver.is_none() {
-        return Err(
-            "nothing to update — specify --role, --label, --contexts, or --step-up-approver".into(),
-        );
+    if role.is_none()
+        && label.is_none()
+        && contexts.is_none()
+        && step_up_approver.is_none()
+        && step_up_require.is_none()
+    {
+        return Err("nothing to update — specify --role, --label, --contexts, \
+             --step-up-approver, or --step-up-require"
+            .into());
     }
 
     let new_role = role.map(|r| Role::parse(&r)).transpose()?;
@@ -103,6 +109,14 @@ pub async fn run_acl_update(
             None
         } else {
             Some(approver)
+        };
+    }
+    if let Some(require) = step_up_require {
+        // Empty string clears the per-entry override; otherwise parse + validate.
+        entry.step_up_require = if require.trim().is_empty() {
+            None
+        } else {
+            crate::operations::acl::parse_step_up_require(Some(&require))?
         };
     }
 

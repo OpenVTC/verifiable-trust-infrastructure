@@ -1585,6 +1585,10 @@ pub(crate) enum AclCommands {
         /// when policy `mode: delegated` applies (e.g. the holder's phone).
         #[arg(long)]
         step_up_approver: Option<String>,
+        /// Per-entry step-up override (`self` | `delegated`) raising the system
+        /// floor for this subject (`stepUp.require`). Omit for none.
+        #[arg(long)]
+        step_up_require: Option<String>,
     },
     /// Update an ACL entry
     Update {
@@ -1603,6 +1607,10 @@ pub(crate) enum AclCommands {
         /// empty string to clear it; omit to leave it unchanged.
         #[arg(long)]
         step_up_approver: Option<String>,
+        /// Set the per-entry step-up override (`self` | `delegated`). Pass an
+        /// empty string to clear it; omit to leave it unchanged.
+        #[arg(long)]
+        step_up_require: Option<String>,
     },
     /// Delete an ACL entry
     Delete {

@@ -16,6 +16,7 @@ use crate::auth::session::now_epoch;
 use crate::contexts::get_context;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
+use vti_common::auth::step_up::StepUpMode;
 
 pub struct UpdateAclParams {
     pub role: Option<Role>,
@@ -23,6 +24,38 @@ pub struct UpdateAclParams {
     pub allowed_contexts: Option<Vec<String>>,
     /// `Some` sets the delegated step-up approver; `None` leaves it unchanged.
     pub step_up_approver: Option<String>,
+    /// `Some` sets the per-entry step-up override (empty string clears); `None`
+    /// leaves it unchanged.
+    pub step_up_require: Option<String>,
+}
+
+/// Parse a wire `stepUp.require` value into a [`StepUpMode`]. Only `self` and
+/// `delegated` are valid per-entry overrides (the spec's enum); an override is
+/// additive and a per-subject relaxation to `delegated-any` is not meaningful.
+/// `None`/empty ⇒ no override.
+pub fn parse_step_up_require(s: Option<&str>) -> Result<Option<StepUpMode>, AppError> {
+    match s.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some("self") => Ok(Some(StepUpMode::SelfApprove)),
+        Some("delegated") => Ok(Some(StepUpMode::Delegated)),
+        Some(other) => Err(AppError::Validation(format!(
+            "invalid stepUp.require '{other}': must be 'self' or 'delegated'"
+        ))),
+    }
+}
+
+/// Render a stored [`StepUpMode`] override as its wire token for echo in
+/// responses (`self` / `delegated`).
+fn step_up_require_to_wire(m: Option<StepUpMode>) -> Option<String> {
+    m.map(|m| {
+        match m {
+            StepUpMode::SelfApprove => "self",
+            StepUpMode::Delegated => "delegated",
+            StepUpMode::DelegatedAny => "delegated-any",
+            StepUpMode::None => "none",
+        }
+        .to_string()
+    })
 }
 
 /// Compute the symmetric difference of two context lists — every
@@ -81,6 +114,7 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
         created_by: e.created_by.clone(),
         expires_at: e.expires_at,
         step_up_approver: e.step_up_approver.clone(),
+        step_up_require: step_up_require_to_wire(e.step_up_require),
     }
 }
 
@@ -96,12 +130,14 @@ pub async fn create_acl(
     allowed_contexts: Vec<String>,
     expires_at: Option<u64>,
     step_up_approver: Option<String>,
+    step_up_require: Option<String>,
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
     validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &allowed_contexts)?;
     require_contexts_exist(contexts_ks, &allowed_contexts).await?;
+    let step_up_require = parse_step_up_require(step_up_require.as_deref())?;
 
     if get_acl_entry(acl_ks, did).await?.is_some() {
         return Err(AppError::Conflict(format!(
@@ -113,7 +149,8 @@ pub async fn create_acl(
         .with_label(label)
         .with_contexts(allowed_contexts)
         .with_expires_at(expires_at)
-        .with_step_up_approver(step_up_approver);
+        .with_step_up_approver(step_up_approver)
+        .with_step_up_require(step_up_require);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -213,6 +250,14 @@ pub async fn update_acl(
     }
     if let Some(approver) = params.step_up_approver {
         entry.step_up_approver = Some(approver);
+    }
+    if let Some(require) = params.step_up_require {
+        // Empty string clears the override; otherwise parse + validate.
+        entry.step_up_require = if require.trim().is_empty() {
+            None
+        } else {
+            parse_step_up_require(Some(&require))?
+        };
     }
     if let Some(allowed_contexts) = params.allowed_contexts {
         // Validate the *symmetric difference* of (old, new), not just
@@ -525,6 +570,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_step_up_require_accepts_self_and_delegated_only() {
+        assert_eq!(parse_step_up_require(None).unwrap(), None);
+        assert_eq!(parse_step_up_require(Some("")).unwrap(), None);
+        assert_eq!(parse_step_up_require(Some("  ")).unwrap(), None);
+        assert_eq!(
+            parse_step_up_require(Some("self")).unwrap(),
+            Some(StepUpMode::SelfApprove)
+        );
+        assert_eq!(
+            parse_step_up_require(Some("delegated")).unwrap(),
+            Some(StepUpMode::Delegated)
+        );
+        // `delegated-any` / `none` / junk are not valid per-entry overrides.
+        assert!(parse_step_up_require(Some("delegated-any")).is_err());
+        assert!(parse_step_up_require(Some("none")).is_err());
+        assert!(parse_step_up_require(Some("nope")).is_err());
+    }
+
+    #[test]
+    fn step_up_require_round_trips_to_wire() {
+        assert_eq!(step_up_require_to_wire(None), None);
+        assert_eq!(
+            step_up_require_to_wire(Some(StepUpMode::SelfApprove)).as_deref(),
+            Some("self")
+        );
+        assert_eq!(
+            step_up_require_to_wire(Some(StepUpMode::Delegated)).as_deref(),
+            Some("delegated")
+        );
+    }
+
+    #[test]
     fn symmetric_difference_handles_typical_cases() {
         let s = symmetric_difference_contexts(&["a".into(), "b".into()], &["a".into(), "c".into()]);
         let mut s = s;
@@ -572,6 +649,7 @@ mod tests {
                 role: None,
                 label: None,
                 step_up_approver: None,
+                step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
             },
             "test",
@@ -606,6 +684,7 @@ mod tests {
                 role: None,
                 label: None,
                 step_up_approver: None,
+                step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
             },
             "test",
@@ -637,6 +716,7 @@ mod tests {
                 role: None,
                 label: None,
                 step_up_approver: None,
+                step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
             },
             "test",
@@ -678,6 +758,7 @@ mod tests {
             vec!["ctx-typo".into()],
             None,
             None,
+            None,
             "test",
         )
         .await
@@ -709,6 +790,7 @@ mod tests {
             Role::Admin,
             None,
             vec!["ctx-real".into()],
+            None,
             None,
             None,
             "test",
@@ -800,6 +882,7 @@ mod tests {
                 role: None,
                 label: None,
                 step_up_approver: None,
+                step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-ghost".into()]),
             },
             "test",

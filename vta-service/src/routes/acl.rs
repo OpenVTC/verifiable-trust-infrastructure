@@ -45,6 +45,10 @@ pub struct CreateAclRequest {
     /// (the approve-request `recipient`). Omit for no delegated approver.
     #[serde(default)]
     pub step_up_approver: Option<String>,
+    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
+    /// floor for this subject. Omit for none.
+    #[serde(default)]
+    pub step_up_require: Option<String>,
 }
 
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
@@ -68,6 +72,7 @@ pub async fn create_acl(
         req.allowed_contexts,
         req.expires_at,
         req.step_up_approver,
+        req.step_up_require,
         "rest",
     )
     .await?;
@@ -92,6 +97,10 @@ pub struct UpdateAclRequest {
     /// Set the delegated step-up approver VID (`Some` sets; `None` leaves).
     #[serde(default)]
     pub step_up_approver: Option<String>,
+    /// Set the per-entry step-up override (`"self"` | `"delegated"`; empty
+    /// string clears; `None` leaves unchanged).
+    #[serde(default)]
+    pub step_up_require: Option<String>,
 }
 
 /// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry.
@@ -115,6 +124,7 @@ pub async fn update_acl(
             label: req.label,
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,
+            step_up_require: req.step_up_require,
         },
         "rest",
     )
