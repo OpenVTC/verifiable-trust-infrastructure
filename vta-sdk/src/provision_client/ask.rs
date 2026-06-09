@@ -33,32 +33,6 @@ pub const BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE: &str = "did-host-http-didcomm"
 pub const BUILTIN_DID_HOST_HTTP_TEMPLATE: &str = "did-host-http";
 pub const BUILTIN_DID_HOST_DIDCOMM_TEMPLATE: &str = "did-host-didcomm";
 
-/// Legacy template-name constants retained for one release after the
-/// rename to the capability-named `did-host-*` templates. The builtin
-/// loader silently resolves the old strings, but the constants carry a
-/// `#[deprecated]` so call-sites surface a compile-time warning. Two
-/// generations are covered: the original `webvh-*` names and the
-/// service-named `did-hosting-*` names. Each now resolves to the current
-/// `did-host-*` canonical string.
-#[deprecated(
-    since = "0.8.0",
-    note = "renamed to BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE"
-)]
-pub const BUILTIN_WEBVH_CONTROL_TEMPLATE: &str = "did-host-http-didcomm";
-#[deprecated(since = "0.8.0", note = "renamed to BUILTIN_DID_HOST_HTTP_TEMPLATE")]
-pub const BUILTIN_WEBVH_DAEMON_TEMPLATE: &str = "did-host-http";
-#[deprecated(since = "0.8.0", note = "renamed to BUILTIN_DID_HOST_DIDCOMM_TEMPLATE")]
-pub const BUILTIN_WEBVH_SERVER_TEMPLATE: &str = "did-host-didcomm";
-#[deprecated(
-    since = "0.9.6",
-    note = "renamed to BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE"
-)]
-pub const BUILTIN_DID_HOSTING_CONTROL_TEMPLATE: &str = "did-host-http-didcomm";
-#[deprecated(since = "0.9.6", note = "renamed to BUILTIN_DID_HOST_HTTP_TEMPLATE")]
-pub const BUILTIN_DID_HOSTING_DAEMON_TEMPLATE: &str = "did-host-http";
-#[deprecated(since = "0.9.6", note = "renamed to BUILTIN_DID_HOST_DIDCOMM_TEMPLATE")]
-pub const BUILTIN_DID_HOSTING_SERVER_TEMPLATE: &str = "did-host-didcomm";
-
 /// Default validity on a wizard-issued VP for the online path — chosen to
 /// comfortably cover the round-trip with the verifier's ±5min skew margin
 /// without leaving a stale request valid long enough to resurface.
@@ -166,50 +140,6 @@ impl ProvisionAsk {
             Value::String(mediator_did.into()),
         );
         Self::for_template(BUILTIN_DID_HOST_DIDCOMM_TEMPLATE, vars, context)
-    }
-
-    /// Deprecated alias for [`Self::did_host_http_didcomm`].
-    #[deprecated(since = "0.9.6", note = "renamed to did_host_http_didcomm")]
-    pub fn did_hosting_control(
-        context: impl Into<String>,
-        host_url: impl Into<String>,
-        mediator_did: impl Into<String>,
-    ) -> Self {
-        Self::did_host_http_didcomm(context, host_url, mediator_did)
-    }
-
-    /// Deprecated alias for [`Self::did_host_http`].
-    #[deprecated(since = "0.9.6", note = "renamed to did_host_http")]
-    pub fn did_hosting_daemon(context: impl Into<String>, host_url: impl Into<String>) -> Self {
-        Self::did_host_http(context, host_url)
-    }
-
-    /// Deprecated alias for [`Self::did_host_didcomm`].
-    #[deprecated(since = "0.9.6", note = "renamed to did_host_didcomm")]
-    pub fn did_hosting_server(context: impl Into<String>, mediator_did: impl Into<String>) -> Self {
-        Self::did_host_didcomm(context, mediator_did)
-    }
-
-    /// Deprecated alias for [`Self::did_host_http_didcomm`].
-    #[deprecated(since = "0.8.0", note = "renamed to did_host_http_didcomm")]
-    pub fn webvh_control(
-        context: impl Into<String>,
-        host_url: impl Into<String>,
-        mediator_did: impl Into<String>,
-    ) -> Self {
-        Self::did_host_http_didcomm(context, host_url, mediator_did)
-    }
-
-    /// Deprecated alias for [`Self::did_host_http`].
-    #[deprecated(since = "0.8.0", note = "renamed to did_host_http")]
-    pub fn webvh_daemon(context: impl Into<String>, host_url: impl Into<String>) -> Self {
-        Self::did_host_http(context, host_url)
-    }
-
-    /// Deprecated alias for [`Self::did_host_didcomm`].
-    #[deprecated(since = "0.8.0", note = "renamed to did_host_didcomm")]
-    pub fn webvh_server(context: impl Into<String>, mediator_did: impl Into<String>) -> Self {
-        Self::did_host_didcomm(context, mediator_did)
     }
 
     /// Curated builder for the built-in `vta-admin` template — mint a
@@ -402,47 +332,6 @@ mod tests {
         assert_eq!(
             ask.integration_template_vars["MEDIATOR_DID"],
             Value::String("did:webvh:m.example.com".into())
-        );
-    }
-
-    /// Deprecated builder aliases (both the `webvh_*` and `did_hosting_*`
-    /// generations) must keep working for one release — they're thin
-    /// wrappers over the new `did_host_*` names. Asserts each wrapper
-    /// produces the same integration_template name as the canonical
-    /// builder.
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_aliases_match_did_host_canonical() {
-        let ctx = "ctx";
-        let host = "https://h.example.com";
-        let med = "did:webvh:m.example.com";
-
-        // First generation: webvh-*
-        assert_eq!(
-            ProvisionAsk::webvh_control(ctx, host, med).integration_template,
-            ProvisionAsk::did_host_http_didcomm(ctx, host, med).integration_template,
-        );
-        assert_eq!(
-            ProvisionAsk::webvh_daemon(ctx, host).integration_template,
-            ProvisionAsk::did_host_http(ctx, host).integration_template,
-        );
-        assert_eq!(
-            ProvisionAsk::webvh_server(ctx, med).integration_template,
-            ProvisionAsk::did_host_didcomm(ctx, med).integration_template,
-        );
-
-        // Second generation: did_hosting_*
-        assert_eq!(
-            ProvisionAsk::did_hosting_control(ctx, host, med).integration_template,
-            ProvisionAsk::did_host_http_didcomm(ctx, host, med).integration_template,
-        );
-        assert_eq!(
-            ProvisionAsk::did_hosting_daemon(ctx, host).integration_template,
-            ProvisionAsk::did_host_http(ctx, host).integration_template,
-        );
-        assert_eq!(
-            ProvisionAsk::did_hosting_server(ctx, med).integration_template,
-            ProvisionAsk::did_host_didcomm(ctx, med).integration_template,
         );
     }
 

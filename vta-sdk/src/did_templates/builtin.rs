@@ -18,22 +18,6 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "vtc-host",
 ];
 
-/// Legacy template-name aliases retained for one release after a rename.
-/// Each entry maps an old name to its canonical replacement; [`load_embedded`]
-/// silently resolves an alias to the renamed template. Two rename
-/// generations are covered: the original `webvh-*` names and the
-/// service-named `did-hosting-*` names both resolve to the current
-/// capability-named `did-host-*` templates. Removed in a later release
-/// — update operator configs to use the canonical names.
-const LEGACY_ALIASES: &[(&str, &str)] = &[
-    ("webvh-control", "did-host-http-didcomm"),
-    ("webvh-daemon", "did-host-http"),
-    ("webvh-server", "did-host-didcomm"),
-    ("did-hosting-control", "did-host-http-didcomm"),
-    ("did-hosting-daemon", "did-host-http"),
-    ("did-hosting-server", "did-host-didcomm"),
-];
-
 const DIDCOMM_MEDIATOR: &str = include_str!("../../templates/didcomm-mediator.json");
 const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
@@ -42,26 +26,12 @@ const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-
 const DID_HOST_HTTP: &str = include_str!("../../templates/did-host-http.json");
 const DID_HOST_DIDCOMM: &str = include_str!("../../templates/did-host-didcomm.json");
 
-/// Resolve a legacy template-name alias to its canonical replacement.
-/// Pure lookup — no I/O, no logging. Returns the input unchanged when
-/// it isn't an alias.
-fn resolve_alias(name: &str) -> &str {
-    for (old, new) in LEGACY_ALIASES {
-        if name == *old {
-            return new;
-        }
-    }
-    name
-}
-
 /// Load a built-in template by name. Returns [`TemplateError::BuiltinNotFound`]
-/// for any name not in [`BUILTIN_NAMES`]. Legacy `webvh-*` and `did-hosting-*`
-/// aliases are silently resolved to their `did-host-*` canonical names for
-/// the deprecation window — the returned `DidTemplate.name` is always the
-/// canonical name.
+/// for any name not in [`BUILTIN_NAMES`]. The legacy `webvh-*` / `did-hosting-*`
+/// aliases were removed — operator configs must use the canonical `did-host-*`
+/// names.
 pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
-    let canonical = resolve_alias(name);
-    let raw = match canonical {
+    let raw = match name {
         "didcomm-mediator" => DIDCOMM_MEDIATOR,
         "push-gateway" => PUSH_GATEWAY,
         "vta-admin" => VTA_ADMIN,
@@ -95,27 +65,25 @@ mod tests {
     }
 
     #[test]
-    fn legacy_aliases_resolve_to_did_host_canonical() {
-        // Operators on either previous template-name generation keep
-        // working for one release. The returned template carries the
-        // canonical name — any caller round-tripping `tpl.name` writes
-        // back the new name.
-        for (old, new) in [
-            // First generation: webvh-*
-            ("webvh-control", "did-host-http-didcomm"),
-            ("webvh-daemon", "did-host-http"),
-            ("webvh-server", "did-host-didcomm"),
-            // Second generation: did-hosting-*
-            ("did-hosting-control", "did-host-http-didcomm"),
-            ("did-hosting-daemon", "did-host-http"),
-            ("did-hosting-server", "did-host-didcomm"),
+    fn legacy_template_aliases_are_removed() {
+        // The previous-generation `webvh-*` / `did-hosting-*` names no longer
+        // resolve — operators must use the canonical `did-host-*` names.
+        for old in [
+            "webvh-control",
+            "webvh-daemon",
+            "webvh-server",
+            "did-hosting-control",
+            "did-hosting-daemon",
+            "did-hosting-server",
         ] {
-            let tpl = load_embedded(old)
-                .unwrap_or_else(|e| panic!("legacy alias '{old}' failed to resolve: {e}"));
-            assert_eq!(
-                tpl.name, new,
-                "legacy alias '{old}' must surface the canonical name '{new}'"
+            assert!(
+                matches!(load_embedded(old), Err(TemplateError::BuiltinNotFound(_))),
+                "removed legacy alias '{old}' must no longer resolve"
             );
+        }
+        // The canonical names still load.
+        for name in ["did-host-http-didcomm", "did-host-http", "did-host-didcomm"] {
+            assert_eq!(load_embedded(name).unwrap().name, name);
         }
     }
 }

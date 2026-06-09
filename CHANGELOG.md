@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Removed: legacy DID-template name aliases `webvh-*` / `did-hosting-*` (legacy strip)
+
+Both prior template-name generations are dropped; only the capability-named
+`did-host-*` built-ins remain. This completes the rename noted earlier in this
+changelog ("both prior generations resolve for one release").
+
+- **vta-sdk**: `load_embedded` no longer resolves the `webvh-*` /
+  `did-hosting-*` aliases (the `LEGACY_ALIASES` table + `resolve_alias` are
+  gone) — an old name now returns `BuiltinNotFound`. The deprecated
+  `BUILTIN_{WEBVH,DID_HOSTING}_*` constants and the `ProvisionAsk::{webvh,did_hosting}_*`
+  builder methods are removed. **Breaking** — minor bump at next release.
+- **Operator action:** update any on-disk template config still referencing
+  `webvh-*` / `did-hosting-*` to the canonical `did-host-http-didcomm` /
+  `did-host-http` / `did-host-didcomm` names.
+
 ### Removed: legacy `affinidi.com/atm/1.0` auth aliases (legacy strip)
 
 The VTA's DIDComm auth path no longer accepts the legacy
