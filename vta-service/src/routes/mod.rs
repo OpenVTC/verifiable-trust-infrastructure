@@ -388,6 +388,10 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
             post(protocol::enable_didcomm_handler),
         )
         .route(
+            "/services/didcomm",
+            get(protocol::get_didcomm_status_handler),
+        )
+        .route(
             "/services/didcomm/disable",
             post(protocol::disable_didcomm_handler),
         )

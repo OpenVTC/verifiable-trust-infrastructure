@@ -14,12 +14,21 @@
 //! see the migration cue in pnm-cli/cnm-cli for the
 //! retired-command UX.
 
+use serde::Deserialize;
 use vta_sdk::client::VtaClient;
+use vta_sdk::error::VtaError;
 use vta_sdk::protocol::services::{
     DisableRestRequest, EnableRestRequest, RollbackDidcommRequest, RollbackRestRequest,
     UpdateRestRequest,
 };
 use vta_sdk::protocol::{DisableDidcommRequest, EnableDidcommRequest, UpdateDidcommRequest};
+
+#[derive(Debug, Deserialize)]
+struct EnableDidcommConflictBody {
+    error: String,
+    #[serde(default)]
+    mediator_did: Option<String>,
+}
 
 // ── services list ──────────────────────────────────────────────────
 
@@ -178,7 +187,22 @@ pub async fn cmd_services_didcomm_enable(
     let mut req = EnableDidcommRequest::new(&mediator_did);
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
-    let resp = client.enable_didcomm(req).await?;
+    let resp = match client.enable_didcomm(req).await {
+        Ok(resp) => resp,
+        Err(VtaError::Conflict(body)) => {
+            if let Ok(conflict) = serde_json::from_str::<EnableDidcommConflictBody>(&body)
+                && conflict.error == "didcomm_already_enabled"
+            {
+                println!("DIDComm already enabled.");
+                if let Some(mediator_did) = conflict.mediator_did {
+                    println!("  Mediator DID:   {mediator_did}");
+                }
+                return Ok(());
+            }
+            return Err(VtaError::Conflict(body).into());
+        }
+        Err(e) => return Err(e.into()),
+    };
     println!("DIDComm enabled.");
     println!("  Mediator DID:   {}", resp.mediator_did);
     if !resp.mediator_endpoint.is_empty() {

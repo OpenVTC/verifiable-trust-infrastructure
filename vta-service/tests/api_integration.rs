@@ -319,6 +319,46 @@ async fn health_details_returns_version_with_auth() {
     assert!(body["version"].is_string());
 }
 
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn didcomm_status_requires_auth() {
+    let (app, _ctx) = TestApp::new().await;
+    let (status, _) = app.request(get("/services/didcomm")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn didcomm_status_returns_disabled_when_not_enabled() {
+    let (app, ctx) = TestApp::new().await;
+    ctx.inner.config.write().await.services.didcomm = false;
+    let token = ctx.auth_token("did:key:z6MkTest", "reader", vec![]).await;
+    let (status, body) = app.request(get_auth("/services/didcomm", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "enabled": false }));
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn didcomm_status_returns_mediator_and_websocket_state_when_enabled() {
+    let (app, ctx) = TestApp::new().await;
+    {
+        let mut config = ctx.inner.config.write().await;
+        config.services.didcomm = true;
+        config.messaging = Some(vti_common::config::MessagingConfig {
+            mediator_url: "wss://mediator.example.com".into(),
+            mediator_did: "did:peer:2.med".into(),
+            mediator_host: None,
+        });
+    }
+    let token = ctx.auth_token("did:key:z6MkTest", "admin", vec![]).await;
+    let (status, body) = app.request(get_auth("/services/didcomm", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["enabled"], true);
+    assert_eq!(body["mediator_did"], "did:peer:2.med");
+    assert_eq!(body["websocket_status"], "disconnected");
+}
+
 // ── Auth: missing/invalid token ────────────────────────────────────
 
 #[tokio::test]
@@ -3116,18 +3156,15 @@ async fn enable_didcomm_non_super_admin_returns_403() {
 async fn enable_didcomm_already_enabled_returns_409_with_suggested_fix() {
     let (app, ctx) = TestApp::new().await;
     let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
-    // Flip services.didcomm = true via PATCH /config equivalent.
-    // The test fixture's config doesn't expose a setter for
-    // services, so we construct a fresh app where DIDComm starts
-    // already-enabled by default.
-    //
-    // Workaround: send the request anyway; the operation reads
-    // config.services.didcomm and refuses. Default is `false` so
-    // this test instead asserts the non-already-enabled refusal
-    // path (vta_did mismatch). We re-target this case to verify a
-    // distinct refusal: the test fixture's vta_did is `did:key:...`
-    // which has no webvh record, so the operation surfaces
-    // VtaDidRecordMissing as 500 with a re-run-setup suggested fix.
+    {
+        let mut config = ctx.inner.config.write().await;
+        config.services.didcomm = true;
+        config.messaging = Some(vti_common::config::MessagingConfig {
+            mediator_url: "wss://mediator.example.com".into(),
+            mediator_did: "did:peer:2.med".into(),
+            mediator_host: None,
+        });
+    }
     let (status, body) = app
         .request(post_auth(
             "/services/didcomm/enable",
@@ -3135,16 +3172,9 @@ async fn enable_didcomm_already_enabled_returns_409_with_suggested_fix() {
             json!({ "mediator_did": "did:key:z6MkBogus" }),
         ))
         .await;
-    // The TestApp's vta_did is `did:key:z6MkTestVTA` (not a webvh
-    // DID), so the precondition check fires before the handshake:
-    // either DidcommAlreadyEnabled (409) if services.didcomm is
-    // ever flipped, or VtaDidRecordMissing (500) given the fresh
-    // fixture. Either way, the route surfaces a typed error body
-    // with a suggested_fix string per CLAUDE.md.
-    assert!(
-        status == StatusCode::CONFLICT || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "expected 409 or 500, got {status}: {body}"
-    );
+    assert_eq!(status, StatusCode::CONFLICT, "unexpected body: {body}");
+    assert_eq!(body["error"], "didcomm_already_enabled");
+    assert_eq!(body["mediator_did"], "did:peer:2.med");
     assert!(
         body.get("suggested_fix").and_then(|v| v.as_str()).is_some(),
         "operator-friendly suggested_fix string is required, body: {body}"

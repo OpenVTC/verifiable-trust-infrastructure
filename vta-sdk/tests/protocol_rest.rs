@@ -58,7 +58,10 @@ async fn enable_didcomm_409_maps_to_conflict() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/services/didcomm/enable"))
-        .respond_with(ResponseTemplate::new(409).set_body_json(json!({"error": "already on"})))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "error": "didcomm_already_enabled",
+            "mediator_did": "did:peer:2.med"
+        })))
         .mount(&server)
         .await;
     let c = client(&server).await;
@@ -67,6 +70,34 @@ async fn enable_didcomm_409_maps_to_conflict() {
         .await
         .unwrap_err();
     assert!(err.is_conflict(), "got {err:?}");
+    match err {
+        VtaError::Conflict(body) => {
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(body["mediator_did"], "did:peer:2.med");
+        }
+        other => panic!("expected conflict, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn didcomm_status_gets_and_decodes_response() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/services/didcomm"))
+        .and(auth())
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "enabled": true,
+            "mediator_did": "did:peer:2.med",
+            "websocket_status": "connected"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let resp = c.didcomm_status().await.unwrap();
+    assert!(resp.enabled);
+    assert_eq!(resp.mediator_did.as_deref(), Some("did:peer:2.med"));
+    assert_eq!(resp.websocket_status.as_deref(), Some("connected"));
 }
 
 // ── disable_didcomm ─────────────────────────────────────────────────

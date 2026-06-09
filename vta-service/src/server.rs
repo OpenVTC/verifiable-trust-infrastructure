@@ -169,6 +169,7 @@ pub struct AppState {
     pub ka_vm_id: Option<String>,
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<DIDCommBridge>,
+    pub didcomm_websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     pub tee: Option<TeeContext>,
@@ -177,6 +178,25 @@ pub struct AppState {
     /// Prometheus metrics handle for rendering `/metrics` endpoint.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DidcommWebsocketStatus {
+    Connected,
+    Connecting,
+    #[default]
+    Disconnected,
+}
+
+impl DidcommWebsocketStatus {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::Connecting => "connecting",
+            Self::Disconnected => "disconnected",
+        }
+    }
 }
 
 impl AuthState for AppState {
@@ -309,6 +329,7 @@ pub async fn build_app_state(
         ka_vm_id: auth.ka_vm_id,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
 
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
@@ -628,6 +649,7 @@ pub async fn run(
             ka_vm_id: auth.ka_vm_id.clone(),
             #[cfg(feature = "didcomm")]
             didcomm_bridge: didcomm_bridge.clone(),
+            didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
             jwt_keys: auth.jwt_keys,
             atm: auth.atm,
             tee: tee_context.clone(),
@@ -722,6 +744,10 @@ pub async fn run(
                         .await
                     {
                         Ok(service) => {
+                            {
+                                let mut status = app_state.didcomm_websocket_status.write().await;
+                                *status = DidcommWebsocketStatus::Connecting;
+                            }
                             // Wait for the mediator connection before accepting traffic.
                             // Race the wait against shutdown so a Ctrl-C while the
                             // mediator is unreachable doesn't park us here for the full
@@ -732,19 +758,31 @@ pub async fn run(
                                     Duration::from_secs(30),
                                 ) => {
                                     if let Err(e) = res {
+                                        let mut status = app_state.didcomm_websocket_status.write().await;
+                                        *status = DidcommWebsocketStatus::Disconnected;
                                         warn!("DIDComm listener not connected after 30s: {e}");
+                                    } else {
+                                        let mut status = app_state.didcomm_websocket_status.write().await;
+                                        *status = DidcommWebsocketStatus::Connected;
                                     }
                                 }
                                 _ = didcomm_shutdown.cancelled() => {
+                                    let mut status = app_state.didcomm_websocket_status.write().await;
+                                    *status = DidcommWebsocketStatus::Disconnected;
                                     info!("shutdown received before mediator connected");
                                 }
                             }
                             didcomm_bridge.set_service(service.clone());
-                            spawn_event_logger(service.clone());
+                            spawn_event_logger(
+                                service.clone(),
+                                Arc::clone(&app_state.didcomm_websocket_status),
+                            );
                             info!("DIDComm service started");
                             Some(service)
                         }
                         Err(e) => {
+                            let mut status = app_state.didcomm_websocket_status.write().await;
+                            *status = DidcommWebsocketStatus::Disconnected;
                             warn!("failed to start DIDComm service: {e}");
                             None
                         }
@@ -1412,7 +1450,10 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
 
 /// Spawn a background task that logs DIDComm listener lifecycle events.
 #[cfg(feature = "didcomm")]
-fn spawn_event_logger(service: DIDCommService) {
+fn spawn_event_logger(
+    service: DIDCommService,
+    websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
+) {
     use affinidi_messaging_didcomm_service::ListenerEvent;
 
     let mut rx = service.subscribe();
@@ -1420,9 +1461,11 @@ fn spawn_event_logger(service: DIDCommService) {
         loop {
             match rx.recv().await {
                 Ok(ListenerEvent::Connected { listener_id }) => {
+                    *websocket_status.write().await = DidcommWebsocketStatus::Connected;
                     info!(listener = %listener_id, "DIDComm listener connected to mediator");
                 }
                 Ok(ListenerEvent::Disconnected { listener_id, error }) => {
+                    *websocket_status.write().await = DidcommWebsocketStatus::Disconnected;
                     warn!(
                         listener = %listener_id,
                         error = error.as_deref().unwrap_or("none"),
@@ -1434,6 +1477,7 @@ fn spawn_event_logger(service: DIDCommService) {
                     attempt,
                     delay,
                 }) => {
+                    *websocket_status.write().await = DidcommWebsocketStatus::Connecting;
                     info!(
                         listener = %listener_id,
                         attempt,

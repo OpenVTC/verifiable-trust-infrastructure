@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::SuperAdminAuth;
+use crate::auth::{AuthClaims, SuperAdminAuth};
 use crate::messaging::handshake::{AlwaysOkProver, HandshakeError, HandshakeStage};
 use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::DisableTransport as DidcommTransport;
@@ -54,6 +54,7 @@ use crate::operations::protocol::update_webauthn::{
     UpdateWebauthnError, UpdateWebauthnParams, update_webauthn,
 };
 use crate::server::AppState;
+use vta_sdk::protocol::DidcommStatusResponse;
 
 /// Default trust-ping round-trip timeout for first-enable when the
 /// caller doesn't specify `handshake_timeout_secs`. Spec default 10s.
@@ -107,6 +108,12 @@ pub async fn enable_didcomm_handler(
     State(state): State<AppState>,
     Json(req): Json<EnableDidcommRequest>,
 ) -> Result<Json<EnableDidcommResponse>, EnableDidcommHttpError> {
+    if state.config.read().await.services.didcomm {
+        return Err(EnableDidcommHttpError::AlreadyEnabled {
+            mediator_did: current_didcomm_mediator_did(&state).await,
+        });
+    }
+
     let bridge = Arc::clone(&state.didcomm_bridge);
     let did_resolver = state
         .did_resolver
@@ -137,7 +144,7 @@ pub async fn enable_didcomm_handler(
 
     let prover = AlwaysOkProver;
 
-    let result = enable_didcomm(
+    let result = match enable_didcomm(
         &state.config,
         &state.keys_ks,
         &state.imported_ks,
@@ -162,7 +169,16 @@ pub async fn enable_didcomm_handler(
         &state.webvh_auth_locks,
         "rest",
     )
-    .await?;
+    .await
+    {
+        Ok(result) => result,
+        Err(EnableDidcommError::DidcommAlreadyEnabled) => {
+            return Err(EnableDidcommHttpError::AlreadyEnabled {
+                mediator_did: current_didcomm_mediator_did(&state).await,
+            });
+        }
+        Err(e) => return Err(EnableDidcommHttpError::Op(e)),
+    };
 
     Ok(Json(EnableDidcommResponse {
         new_version_id: result.new_version_id,
@@ -173,11 +189,62 @@ pub async fn enable_didcomm_handler(
     }))
 }
 
+/// `GET /services/didcomm` — current DIDComm runtime status. Auth: any role.
+pub async fn get_didcomm_status_handler(
+    _auth: AuthClaims,
+    State(state): State<AppState>,
+) -> Json<DidcommStatusResponse> {
+    let (enabled, mediator_did) = {
+        let config = state.config.read().await;
+        (
+            config.services.didcomm,
+            config
+                .messaging
+                .as_ref()
+                .map(|m| m.mediator_did.clone())
+                .filter(|did| !did.is_empty()),
+        )
+    };
+
+    if !enabled {
+        return Json(DidcommStatusResponse {
+            enabled: false,
+            mediator_did: None,
+            websocket_status: None,
+        });
+    }
+
+    let websocket_status = state
+        .didcomm_websocket_status
+        .read()
+        .await
+        .as_str()
+        .to_string();
+
+    Json(DidcommStatusResponse {
+        enabled: true,
+        mediator_did,
+        websocket_status: Some(websocket_status),
+    })
+}
+
+async fn current_didcomm_mediator_did(state: &AppState) -> Option<String> {
+    state
+        .config
+        .read()
+        .await
+        .messaging
+        .as_ref()
+        .map(|m| m.mediator_did.clone())
+        .filter(|did| !did.is_empty())
+}
+
 /// HTTP error wrapper for `EnableDidcommError` that maps each typed
 /// variant to an appropriate status code + suggested-fix body.
 #[derive(Debug)]
 pub enum EnableDidcommHttpError {
     Op(EnableDidcommError),
+    AlreadyEnabled { mediator_did: Option<String> },
     DidResolverUnavailable,
 }
 
@@ -191,6 +258,8 @@ impl From<EnableDidcommError> for EnableDidcommHttpError {
 struct ErrorBody {
     error: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mediator_did: Option<String>,
     /// Operator-facing suggested fix. Per CLAUDE.md, we surface the
     /// corrected command rather than just the HTTP status.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,11 +272,25 @@ struct ErrorBody {
 impl IntoResponse for EnableDidcommHttpError {
     fn into_response(self) -> Response {
         let (status, body) = match self {
+            Self::AlreadyEnabled { mediator_did } => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "didcomm_already_enabled",
+                    message: "DIDComm is already enabled.".into(),
+                    mediator_did,
+                    suggested_fix: Some(
+                        "Use `pnm services didcomm update --mediator-did <did>` to change the active mediator."
+                            .into(),
+                    ),
+                    stage: None,
+                },
+            ),
             Self::Op(EnableDidcommError::DidcommAlreadyEnabled) => (
                 StatusCode::CONFLICT,
                 ErrorBody {
                     error: "didcomm_already_enabled",
                     message: "DIDComm is already enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services didcomm update --mediator-did <did>` to change the active mediator."
                             .into(),
@@ -220,6 +303,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_not_configured",
                     message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Run `vta setup` to configure the VTA's DID first.".into()),
                     stage: None,
                 },
@@ -229,6 +313,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_record_missing",
                     message: format!("VTA DID `{did}` has no webvh record on disk."),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -238,6 +323,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_missing",
                     message: format!("VTA DID `{did}` has no published log."),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -247,6 +333,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_empty",
                     message: "VTA DID log is empty.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -256,6 +343,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "mediator_handshake_failed",
                     message: format!("mediator handshake failed: {cause}"),
+                    mediator_did: None,
                     suggested_fix: Some(match stage {
                         HandshakeStage::Resolve =>
                             "Check the mediator DID is correct and reachable from this VTA.".into(),
@@ -271,6 +359,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "document_patch_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -280,6 +369,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "webvh_update_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -289,6 +379,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "config_persistence_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Check the VTA's config file is writable; the LogEntry was published \
                          but config persistence failed — fix permissions and retry."
@@ -302,6 +393,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "registry_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -311,6 +403,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "forbidden",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some("This operation requires super-admin privileges.".into()),
                     stage: None,
                 },
@@ -320,6 +413,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "storage_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -329,6 +423,7 @@ impl IntoResponse for EnableDidcommHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver is not initialised on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Configure `resolver_url` or run with the local resolver.".into(),
                     ),
@@ -451,6 +546,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "didcomm_not_enabled",
                     message: "DIDComm is not currently enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Enable DIDComm first: `pnm services didcomm enable --mediator-did <did>` \
                          (online) or `vta services didcomm enable --mediator-did <did>` \
@@ -465,6 +561,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "no_protocol_remaining",
                     message: "Cannot disable DIDComm — REST is also disabled. The VTA would have no protocol surface left.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Enable REST first: `pnm services rest enable --url <url>` (online) \
                          or `vta services rest enable --url <url>` (offline, daemon stopped). \
@@ -485,6 +582,7 @@ impl IntoResponse for DisableDidcommHttpError {
                     message: format!(
                         "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
                     ),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Either retry over REST transport (`--transport rest`) for a sub-1h TTL, or pick a TTL within bounds (1h–30d).".into(),
                     ),
@@ -496,6 +594,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_not_configured",
                     message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Run `vta setup` to configure the VTA's DID first.".into()),
                     stage: None,
                 },
@@ -505,6 +604,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_record_missing",
                     message: format!("VTA DID `{did}` has no webvh record on disk."),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -514,6 +614,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_missing",
                     message: format!("VTA DID `{did}` has no published log."),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -523,6 +624,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_empty",
                     message: "VTA DID log is empty.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Re-run `vta setup` — local state appears corrupted.".into()),
                     stage: None,
                 },
@@ -532,6 +634,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "no_active_mediator",
                     message: "DIDComm is enabled but the DID document has no `#vta-didcomm` service entry.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("On-disk state is inconsistent — re-run `vta setup`.".into()),
                     stage: None,
                 },
@@ -541,6 +644,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "document_patch_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -550,6 +654,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "webvh_update_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -559,6 +664,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "config_persistence_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Check the VTA's config file is writable and retry.".into(),
                     ),
@@ -570,6 +676,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "registry_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -579,6 +686,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "forbidden",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some("This operation requires super-admin privileges.".into()),
                     stage: None,
                 },
@@ -588,6 +696,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "storage_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -597,6 +706,7 @@ impl IntoResponse for DisableDidcommHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver is not initialised on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Configure `resolver_url` or run with the local resolver.".into(),
                     ),
@@ -751,6 +861,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                     message:
                         "DIDComm is not currently enabled — there is no active mediator to migrate from."
                             .into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services didcomm enable --mediator-did <did>` first.".into(),
                     ),
@@ -768,6 +879,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                     message: format!(
                         "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
                     ),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Pick a TTL within bounds (1h–30d over DIDComm transport, 0s–30d over REST).".into(),
                     ),
@@ -779,6 +891,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "same_as_active",
                     message: format!("`{did}` is already the active mediator — nothing to migrate."),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -788,6 +901,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "already_draining",
                     message: format!("`{did}` is currently in drain state."),
+                    mediator_did: None,
                     suggested_fix: Some(format!(
                         "Run `pnm services didcomm drain cancel --mediator-did {did}` first, or use `pnm services didcomm rollback` to fail-forward to a state where `{did}` is active."
                     )),
@@ -799,6 +913,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_not_configured",
                     message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `vta setup` to configure the VTA's DID first.".into(),
                     ),
@@ -810,6 +925,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_record_missing",
                     message: format!("VTA DID `{did}` has no webvh record on disk."),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Re-run `vta setup` — local state appears corrupted.".into(),
                     ),
@@ -821,6 +937,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_missing",
                     message: format!("VTA DID `{did}` has no published log."),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Re-run `vta setup` — local state appears corrupted.".into(),
                     ),
@@ -832,6 +949,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "vta_did_log_empty",
                     message: "VTA DID log is empty.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Re-run `vta setup` — local state appears corrupted.".into(),
                     ),
@@ -845,6 +963,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                     message:
                         "DIDComm is enabled but the DID document has no `#vta-didcomm` service entry."
                             .into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "On-disk state is inconsistent — re-run `vta setup`.".into(),
                     ),
@@ -857,6 +976,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                     ErrorBody {
                         error: "mediator_handshake_failed",
                         message: format!("mediator handshake failed: {cause}"),
+                        mediator_did: None,
                         suggested_fix: Some(match stage {
                             HandshakeStage::Resolve => {
                                 "Check the mediator DID is correct and reachable.".into()
@@ -875,6 +995,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "document_patch_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -884,6 +1005,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "webvh_update_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -893,6 +1015,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "config_persistence_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Check the VTA's config file is writable; the LogEntry was published. Fix permissions and retry."
                             .into(),
@@ -905,6 +1028,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "registry_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -914,6 +1038,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "forbidden",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "This operation requires super-admin privileges.".into(),
                     ),
@@ -925,6 +1050,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "storage_failed",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -934,6 +1060,7 @@ impl IntoResponse for UpdateDidcommHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver is not initialised on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Configure `resolver_url` or run with the local resolver.".into(),
                     ),
@@ -1002,6 +1129,7 @@ impl IntoResponse for DrainCancelHttpError {
                 ErrorBody {
                     error: "forbidden",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some("This operation requires super-admin privileges.".into()),
                     stage: None,
                 },
@@ -1028,6 +1156,7 @@ impl IntoResponse for DrainCancelHttpError {
                     ErrorBody {
                         error: code,
                         message: e.to_string(),
+                        mediator_did: None,
                         suggested_fix: fix,
                         stage: None,
                     },
@@ -1099,6 +1228,7 @@ impl IntoResponse for MediatorReportHttpError {
                 ErrorBody {
                     error: "forbidden",
                     message: e,
+                    mediator_did: None,
                     suggested_fix: Some("This operation requires super-admin privileges.".into()),
                     stage: None,
                 },
@@ -1108,6 +1238,7 @@ impl IntoResponse for MediatorReportHttpError {
                 ErrorBody {
                     error: "telemetry_query_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1117,6 +1248,7 @@ impl IntoResponse for MediatorReportHttpError {
                 ErrorBody {
                     error: "bad_timestamp",
                     message: format!("invalid RFC 3339 timestamp: {e}"),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use RFC 3339 / ISO 8601 like `2026-04-29T15:00:00Z`.".into(),
                     ),
@@ -1408,6 +1540,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "service_already_enabled",
                     message: "REST is already enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services rest update --url <url>` to change the URL.".into(),
                     ),
@@ -1419,6 +1552,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "invalid_url",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "URL must be https://, parsable, with no fragment or userinfo.".into(),
                     ),
@@ -1432,6 +1566,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "service_not_present",
                     message: "REST is not currently enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services rest enable --url <url>` first.".into(),
                     ),
@@ -1443,6 +1578,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "invalid_url",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "URL must be https://, parsable, with no fragment or userinfo.".into(),
                     ),
@@ -1456,6 +1592,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "service_not_present",
                     message: "REST is not currently enabled — nothing to disable.".into(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1465,6 +1602,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "last_service_refused",
                     message: "Refusing to disable REST — DIDComm is also off, so the VTA would have no advertised services.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services didcomm enable --mediator-did <did>` first, then retry."
                             .into(),
@@ -1484,6 +1622,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "auth",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Super-admin role required for service-management operations.".into(),
                     ),
@@ -1497,6 +1636,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "vta_did_not_configured",
                     message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Run `vta setup` to configure the VTA's DID first.".into()),
                     stage: None,
                 },
@@ -1508,6 +1648,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "webvh_update_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1519,6 +1660,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "document_patch_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1550,6 +1692,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "storage_error",
                     message: "Internal storage / log-replay failure.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Re-run `vta setup` if local state appears corrupted.".into(),
                     ),
@@ -1562,6 +1705,7 @@ impl IntoResponse for RestServiceHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver not available on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Confirm the resolver is configured and running, then retry.".into(),
                     ),
@@ -1787,6 +1931,7 @@ impl IntoResponse for RollbackRestHttpError {
                 ErrorBody {
                     error: "no_prior_mutation",
                     message: "No prior REST mutation to roll back from.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services rest enable / update / disable` directly instead."
                             .into(),
@@ -1802,6 +1947,7 @@ impl IntoResponse for RollbackRestHttpError {
                         "Rolling back this REST mutation would leave the VTA with no advertised \
                          services. Enable DIDComm first and retry."
                             .into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services didcomm enable --mediator-did <did>`, then retry rollback."
                             .into(),
@@ -1814,6 +1960,7 @@ impl IntoResponse for RollbackRestHttpError {
                 ErrorBody {
                     error: "rollback_failed",
                     message: other.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1823,6 +1970,7 @@ impl IntoResponse for RollbackRestHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver not available on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1852,6 +2000,7 @@ impl IntoResponse for RollbackDidcommHttpError {
                 ErrorBody {
                     error: "no_prior_mutation",
                     message: "No prior DIDComm mutation to roll back from.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services didcomm enable / update / disable` directly instead."
                             .into(),
@@ -1869,6 +2018,7 @@ impl IntoResponse for RollbackDidcommHttpError {
                         "Rolling back this DIDComm mutation would leave the VTA with no advertised \
                          services. Enable REST first and retry."
                             .into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services rest enable --url <url>`, then retry rollback.".into(),
                     ),
@@ -1880,6 +2030,7 @@ impl IntoResponse for RollbackDidcommHttpError {
                 ErrorBody {
                     error: "rollback_failed",
                     message: other.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1889,6 +2040,7 @@ impl IntoResponse for RollbackDidcommHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver not available on this VTA.".into(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1934,6 +2086,7 @@ impl IntoResponse for ListServicesHttpError {
                 ErrorBody {
                     error: "vta_did_not_configured",
                     message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Run `vta setup` to configure the VTA's DID first.".into()),
                     stage: None,
                 },
@@ -1943,6 +2096,7 @@ impl IntoResponse for ListServicesHttpError {
                 ErrorBody {
                     error: "auth",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some("Super-admin role required for service inspection.".into()),
                     stage: None,
                 },
@@ -1952,6 +2106,7 @@ impl IntoResponse for ListServicesHttpError {
                 ErrorBody {
                     error: "list_failed",
                     message: other.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -1992,6 +2147,7 @@ impl IntoResponse for ListDrainHttpError {
                 ErrorBody {
                     error: "auth",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some("Super-admin role required for service inspection.".into()),
                     stage: None,
                 },
@@ -2001,6 +2157,7 @@ impl IntoResponse for ListDrainHttpError {
                 ErrorBody {
                     error: "list_drain_failed",
                     message: other.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2218,6 +2375,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "service_already_enabled",
                     message: "WebAuthn is already enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Use `pnm services webauthn update --url <url>` to change it.".into(),
                     ),
@@ -2230,6 +2388,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "invalid_url",
                     message: msg,
+                    mediator_did: None,
                     suggested_fix: Some("URL must be https://, parsable, with no fragment.".into()),
                     stage: None,
                 },
@@ -2240,6 +2399,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "service_not_present",
                     message: "WebAuthn is not currently enabled.".into(),
+                    mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services webauthn enable --url <url>` first.".into(),
                     ),
@@ -2254,6 +2414,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "last_service_refused",
                     message: "Refusing — at least one transport must remain advertised.".into(),
+                    mediator_did: None,
                     suggested_fix: Some("Enable REST or DIDComm before disabling WebAuthn.".into()),
                     stage: None,
                 },
@@ -2263,6 +2424,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "no_prior_mutation",
                     message: "No prior `services webauthn` mutation to roll back.".into(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2272,6 +2434,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "did_resolver_unavailable",
                     message: "DID resolver not configured.".into(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2281,6 +2444,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "enable_webauthn_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2290,6 +2454,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "update_webauthn_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2299,6 +2464,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "disable_webauthn_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
@@ -2308,6 +2474,7 @@ impl IntoResponse for WebauthnServiceHttpError {
                 ErrorBody {
                     error: "rollback_webauthn_failed",
                     message: e.to_string(),
+                    mediator_did: None,
                     suggested_fix: None,
                     stage: None,
                 },
