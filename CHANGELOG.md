@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### vta-sdk 0.11.0 → 0.11.1 — fix: never trust a key's label as its DIDComm kid
+
+Patch release cutting the publish boundary for the fix in #337. The published
+`0.11.0` `VtaClient::fetch_did_secrets_bundle` adopted a key's human-readable
+`label` as the bundle `key_id` whenever the label merely started with `did:` or
+contained `#`. A decorative label such as `"did:key:z6Mk… key-agreement key"`
+therefore silently overwrote the authoritative store `key_id`
+(`{did}#key-1`). A VTA-managed mediator registers its operating secrets under
+that clobbered kid, so a peer encrypting to the `keyAgreement` verification-method
+id published in the mediator's DID document matches no local secret — every
+inbound unpack (including `/authenticate`) fails with `No local secret matches
+any JWE recipient`, and the mediator boots clean but can never read a message.
+
+`select_secret_kid` now uses the authoritative store `key_id` when it is a
+verification-method id of the context DID, falls back to the `label` only when
+the label is *itself* a strict VM id (correct `{did}#` prefix, no embedded
+whitespace), and otherwise excludes the secret (e.g. an admin `did:key` minted
+into the context, or a free-text-labelled key) rather than corrupting the
+operating-secret set. The `label` is treated as human-readable metadata only.
+
+Patch bump — no public API change. Consumers pin `vta-sdk = "0.11"`, which
+`0.11.1` satisfies, so no dependent pin changes are required.
+
 ### Version bumps — delegatedAny + step-up + legacy-strip release
 
 Cuts the publish boundary for the accumulated breaking work documented below
