@@ -181,9 +181,39 @@ pub(crate) async fn run(
             vta_sdk::session::resolve_mediator_did(vta_did).await
         };
 
+        let mediator_result = match mediator_result {
+            Ok(Some(mediator_did)) => Ok(Some((mediator_did, false))),
+            Ok(None) => {
+                // DID document has no DIDCommMessaging service (e.g. did:key).
+                // Fallback: query VTA's REST status endpoint for mediator info.
+                if let Some(url) = effective_rest_url.as_deref() {
+                    match auth::ensure_authenticated(url, keyring_key).await {
+                        Ok(token) => {
+                            let client = VtaClient::new(url);
+                            client.set_token_async(token).await;
+                            match client.didcomm_status().await {
+                                Ok(status) if status.enabled => {
+                                    Ok(status.mediator_did.map(|did| (did, true)))
+                                }
+                                Ok(_) => Ok(None),
+                                Err(_) => Ok(None),
+                            }
+                        }
+                        Err(_) => Ok(None),
+                    }
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => Err(e),
+        };
+
         match mediator_result {
-            Ok(Some(mediator_did)) => {
+            Ok(Some((mediator_did, via_status_endpoint))) => {
                 println!("  {CYAN}{:<13}{RESET} {mediator_did}", "DID");
+                if via_status_endpoint {
+                    println!("                {DIM}discovered via /services/didcomm{RESET}");
+                }
 
                 // Resolve mediator DID document (uses cached resolver)
                 if let Some(ref resolver) = did_resolver {
