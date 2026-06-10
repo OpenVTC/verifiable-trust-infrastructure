@@ -76,7 +76,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   issuer BBS G2 pubkey resolution that present_single lacks + BBS is
   audit-gated (#294), so full BBS DCQL presentation is a follow-up tied to
   that audit. Guard test `formats_admitted_for_dcql_are_all_presentable`
-  locks the invariant (passes on default + bbs feature) — PR: ____
+  locks the invariant (passes on default + bbs feature) — PR: #349 (in review)
 - `[ ]` **P0.12** (M) Deferred-presentation sweeper + reachable
   approve/deny/list surface — PR: ____
 - `[ ]` **P0.13** (S) Decide + enforce/document cross-transport step-up policy
