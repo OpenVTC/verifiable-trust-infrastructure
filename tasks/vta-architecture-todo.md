@@ -42,7 +42,8 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   too) + a typed `AppError::Conflict` with operator guidance at
   `operations::seeds::rotate_seed` (runtime REST/DIDComm/TT path). Tests:
   refusal+no-mutation (tee), trait flag, existing non-TEE rotation unaffected
-  — PR: ____
+  — PR: #344 (in review). Follow-up: in-place re-encryption so TEE rotation
+  works rather than refuses (needs runtime KMS access on KmsTeeSeedStore).
 - `[ ]` **P0.7** (M) `Zeroizing` seed bytes end-to-end; encrypt retired-seed
   archive; fix "secure deletion" claim — PR: ____
 - `[~]` **P0.8** (S) Atomic + persisted carve-out close — branch
