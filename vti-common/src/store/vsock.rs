@@ -241,7 +241,7 @@ impl VsockKeyspaceHandle {
     ) -> Result<(), AppError> {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
-        let bytes = self.maybe_encrypt(bytes)?;
+        let bytes = self.maybe_encrypt(&key, bytes)?;
         let mut payload = vec![OP_INSERT];
         encode_keyspace(&mut payload, &self.keyspace);
         encode_bytes(&mut payload, &key);
@@ -261,7 +261,7 @@ impl VsockKeyspaceHandle {
         let resp = self.send(&payload).await?;
         match decode_value(&resp)? {
             Some(bytes) => {
-                let bytes = self.maybe_decrypt(&bytes)?;
+                let bytes = self.maybe_decrypt(&key, &bytes)?;
                 Ok(Some(serde_json::from_slice(&bytes)?))
             }
             None => Ok(None),
@@ -283,7 +283,7 @@ impl VsockKeyspaceHandle {
         value: impl Into<Vec<u8>>,
     ) -> Result<(), AppError> {
         let key = key.into();
-        let value = self.maybe_encrypt(value.into())?;
+        let value = self.maybe_encrypt(&key, value.into())?;
         let mut payload = vec![OP_INSERT];
         encode_keyspace(&mut payload, &self.keyspace);
         encode_bytes(&mut payload, &key);
@@ -299,7 +299,7 @@ impl VsockKeyspaceHandle {
         encode_bytes(&mut payload, &key);
         let resp = self.send(&payload).await?;
         match decode_value(&resp)? {
-            Some(bytes) => Ok(Some(self.maybe_decrypt(&bytes)?)),
+            Some(bytes) => Ok(Some(self.maybe_decrypt(&key, &bytes)?)),
             None => Ok(None),
         }
     }
@@ -318,7 +318,7 @@ impl VsockKeyspaceHandle {
         pairs
             .into_iter()
             .map(|(k, v)| {
-                let v = self.maybe_decrypt(&v)?;
+                let v = self.maybe_decrypt(&k, &v)?;
                 Ok((k, v))
             })
             .collect()
@@ -353,9 +353,10 @@ impl VsockKeyspaceHandle {
             return Ok(false);
         }
 
-        // Insert new, delete old
+        // Insert new, delete old. The value lands at `new_key`, so bind
+        // the AAD to `new_key_bytes`.
         let bytes = serde_json::to_vec(value)?;
-        let bytes = self.maybe_encrypt(bytes)?;
+        let bytes = self.maybe_encrypt(&new_key_bytes, bytes)?;
 
         let mut insert_payload = vec![OP_INSERT];
         encode_keyspace(&mut insert_payload, &self.keyspace);
@@ -393,30 +394,39 @@ impl VsockKeyspaceHandle {
         Ok(resp)
     }
 
-    fn maybe_encrypt(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
+    fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
         #[cfg(feature = "encryption")]
         {
             match self.encryption_key.as_ref().map(|arc| &***arc) {
-                Some(key) => super::encryption::encrypt_value(key, &plaintext),
+                Some(key) => {
+                    super::encryption::encrypt_value(key, &self.keyspace, store_key, &plaintext)
+                }
                 None => Ok(plaintext),
             }
         }
         #[cfg(not(feature = "encryption"))]
         {
+            let _ = store_key;
             Ok(plaintext)
         }
     }
 
-    fn maybe_decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
+    fn maybe_decrypt(&self, store_key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
         #[cfg(feature = "encryption")]
         {
             match self.encryption_key.as_ref().map(|arc| &***arc) {
-                Some(key) => super::encryption::maybe_decrypt_bytes(Some(key), ciphertext),
+                Some(key) => super::encryption::maybe_decrypt_bytes(
+                    Some(key),
+                    &self.keyspace,
+                    store_key,
+                    ciphertext,
+                ),
                 None => Ok(ciphertext.to_vec()),
             }
         }
         #[cfg(not(feature = "encryption"))]
         {
+            let _ = store_key;
             Ok(ciphertext.to_vec())
         }
     }

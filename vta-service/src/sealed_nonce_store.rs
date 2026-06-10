@@ -22,8 +22,11 @@ use crate::store::KeyspaceHandle;
 const KEY_PREFIX: &str = "sealed-nonce:";
 
 /// Fjall-backed (or vsock-backed) persistent nonce store. Any
-/// [`KeyspaceHandle`] will do; the TEE-mode service uses an unencrypted
-/// keyspace since the bundle_id itself is not secret.
+/// [`KeyspaceHandle`] will do. The bundle_id lives in the (plaintext)
+/// key; encrypted deployments now also encrypt the row value, binding it
+/// to its `(keyspace, key)` location via AAD so a hostile store operator
+/// cannot relocate or substitute a nonce record (P0.1). Anti-rollback of
+/// the whole keyspace is a separate concern (P0.2).
 pub struct PersistentNonceStore {
     ks: KeyspaceHandle,
     /// Serialises the check-and-record critical section across threads so

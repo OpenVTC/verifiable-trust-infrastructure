@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### vti-common — security: keyspace values bound to their location (AAD); breaking on-disk format
+
+AES-256-GCM keyspace encryption now authenticates every value against its
+`(keyspace, key)` location via associated data (AAD), and prefixes a 4-byte
+format magic (`VAE1`). Previously a value's ciphertext was bound to nothing: an
+attacker who controls the storage medium — in the Nitro model the **untrusted
+parent EC2 instance owns the fjall database** — could cut-and-paste a ciphertext
+from one key to another (e.g. resurrect a revoked admin ACL row, or move a value
+across keyspaces that share the single storage key) without breaking any crypto.
+Binding `(keyspace, key)` into the AAD makes any such relocation fail
+authentication. The `sealed_nonces` and `cache` keyspaces, previously stored in
+plaintext, are now encrypted alongside the rest.
+
+**Breaking — encrypted stores only.** The new format is intentionally **not**
+backward-compatible with the previous AAD-less layout: a legacy read-fallback
+would reintroduce the cut-and-paste hole via downgrade. A stale value yields a
+clear "incompatible store format — re-bootstrap or restore from backup" error
+rather than a confusing decryption failure.
+
+- **Affected:** TEE/Nitro deployments, and any non-TEE VTA configured with an
+  explicit `storage_encryption_key`. These must **re-bootstrap a fresh enclave**
+  or **restore from a backup** taken with this build (backup export/import is
+  format-independent — it re-encrypts on import).
+- **Not affected:** deployments with no encryption key configured (the default
+  local/dev path) never encrypted and are byte-for-byte unchanged.
+
+This is the integrity half of the TEE storage threat model; anti-rollback of a
+whole keyspace (replay/delete of records) is tracked separately.
+
 ### vta-sdk 0.11.0 → 0.11.1 — fix: never trust a key's label as its DIDComm kid
 
 Patch release cutting the publish boundary for the fix in #337. The published

@@ -216,7 +216,7 @@ pub async fn build_app_state(
     let did_templates_ks = apply_encryption(store.keyspace("did_templates")?);
     let audit_ks = apply_encryption(store.keyspace("audit")?);
     let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
-    let cache_ks = store.keyspace("cache")?;
+    let cache_ks = apply_encryption(store.keyspace("cache")?);
     let vault_ks = apply_encryption(store.keyspace("vault")?);
     // Persistent runtime state for service enable/disable. Encrypted because
     // a couple of bool records are cheap and the keyspace may grow.
@@ -224,7 +224,7 @@ pub async fn build_app_state(
     // Sealed-transfer anti-replay store. Bundle_ids are not secret and the
     // row is a one-byte sentinel, so the keyspace is intentionally
     // unencrypted — saves a decrypt hop on every request.
-    let sealed_nonces_ks = store.keyspace("sealed_nonces")?;
+    let sealed_nonces_ks = apply_encryption(store.keyspace("sealed_nonces")?);
     let backup_bundles_ks = apply_encryption(store.keyspace("backup_bundles")?);
     // Stage `.vtabak` blobs under `{data_dir}/backups`. Created lazily
     // by the op layer at first `initiate-*` call (so a VTA that never
@@ -434,10 +434,10 @@ pub async fn run(
         let did_templates_ks = apply_encryption(store.keyspace("did_templates")?);
         let audit_ks = apply_encryption(store.keyspace("audit")?);
         let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
-        let cache_ks = store.keyspace("cache")?;
+        let cache_ks = apply_encryption(store.keyspace("cache")?);
         let vault_ks = apply_encryption(store.keyspace("vault")?);
         let service_state_ks = apply_encryption(store.keyspace("service_state")?);
-        let sealed_nonces_ks = store.keyspace("sealed_nonces")?;
+        let sealed_nonces_ks = apply_encryption(store.keyspace("sealed_nonces")?);
         let backup_bundles_ks = apply_encryption(store.keyspace("backup_bundles")?);
         let backup_blob_dir = config.store.data_dir.join("backups");
         #[cfg(feature = "webvh")]

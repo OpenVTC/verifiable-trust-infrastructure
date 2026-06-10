@@ -349,6 +349,10 @@ pub struct LocalStore {
 #[derive(Clone)]
 pub struct LocalKeyspaceHandle {
     keyspace: fjall::Keyspace,
+    /// Keyspace name, bound into the AES-GCM associated data so a value
+    /// cannot be relocated to another keyspace (which shares the storage
+    /// key) and still authenticate. See [`encryption`].
+    name: String,
     /// The owning database, kept so the handle can fsync the shared
     /// journal ([`LocalKeyspaceHandle::persist`]) — fjall only exposes
     /// persistence at the database level.
@@ -391,6 +395,7 @@ impl LocalStore {
             .clone();
         Ok(LocalKeyspaceHandle {
             keyspace,
+            name: name.to_string(),
             db: self.db.clone(),
             write_lock,
             #[cfg(feature = "encryption")]
@@ -439,7 +444,7 @@ impl LocalKeyspaceHandle {
     ) -> Result<(), AppError> {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
-        let bytes = self.maybe_encrypt(bytes)?;
+        let bytes = self.maybe_encrypt(&key, bytes)?;
         let ks = self.keyspace.clone();
         blocking_with_timeout(move || Ok(ks.insert(key, bytes)?)).await
     }
@@ -452,12 +457,14 @@ impl LocalKeyspaceHandle {
         let ks = self.keyspace.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
-        blocking_with_timeout(move || match ks.get(key)? {
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || match ks.get(&key)? {
             Some(bytes) => {
                 #[cfg(feature = "encryption")]
                 let bytes = {
                     let k = enc_key.as_ref().map(|arc| &***arc);
-                    encryption::maybe_decrypt_bytes(k, &bytes)?
+                    encryption::maybe_decrypt_bytes(k, &name, &key, &bytes)?
                 };
                 #[cfg(not(feature = "encryption"))]
                 let bytes = bytes.to_vec();
@@ -493,6 +500,8 @@ impl LocalKeyspaceHandle {
         let lock = self.write_lock.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
         blocking_with_timeout(move || {
             let _guard = lock_writes(&lock);
             match ks.get(&key)? {
@@ -501,7 +510,7 @@ impl LocalKeyspaceHandle {
                     #[cfg(feature = "encryption")]
                     let bytes = {
                         let k = enc_key.as_ref().map(|arc| &***arc);
-                        encryption::maybe_decrypt_bytes(k, &bytes)?
+                        encryption::maybe_decrypt_bytes(k, &name, &key, &bytes)?
                     };
                     #[cfg(not(feature = "encryption"))]
                     let bytes = bytes.to_vec();
@@ -519,7 +528,7 @@ impl LocalKeyspaceHandle {
         value: impl Into<Vec<u8>>,
     ) -> Result<(), AppError> {
         let key = key.into();
-        let value = self.maybe_encrypt(value.into())?;
+        let value = self.maybe_encrypt(&key, value.into())?;
         let ks = self.keyspace.clone();
         blocking_with_timeout(move || Ok(ks.insert(key, value)?)).await
     }
@@ -529,12 +538,14 @@ impl LocalKeyspaceHandle {
         let ks = self.keyspace.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
-        blocking_with_timeout(move || match ks.get(key)? {
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || match ks.get(&key)? {
             Some(bytes) => {
                 #[cfg(feature = "encryption")]
                 let bytes = {
                     let k = enc_key.as_ref().map(|arc| &***arc);
-                    encryption::maybe_decrypt_bytes(k, &bytes)?
+                    encryption::maybe_decrypt_bytes(k, &name, &key, &bytes)?
                 };
                 #[cfg(not(feature = "encryption"))]
                 let bytes = bytes.to_vec();
@@ -553,6 +564,8 @@ impl LocalKeyspaceHandle {
         let ks = self.keyspace.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
         blocking_with_timeout(move || {
             let mut results = Vec::new();
             for guard in ks.prefix(&prefix) {
@@ -560,7 +573,7 @@ impl LocalKeyspaceHandle {
                 #[cfg(feature = "encryption")]
                 let value = {
                     let k = enc_key.as_ref().map(|arc| &***arc);
-                    encryption::maybe_decrypt_bytes(k, &value)?
+                    encryption::maybe_decrypt_bytes(k, &name, &key, &value)?
                 };
                 #[cfg(not(feature = "encryption"))]
                 let value = value.to_vec();
@@ -599,7 +612,8 @@ impl LocalKeyspaceHandle {
         let old_key = old_key.into();
         let new_key = new_key.into();
         let bytes = serde_json::to_vec(value)?;
-        let bytes = self.maybe_encrypt(bytes)?;
+        // The value lands at `new_key`, so bind the AAD to `new_key`.
+        let bytes = self.maybe_encrypt(&new_key, bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
         blocking_with_timeout(move || {
@@ -641,7 +655,7 @@ impl LocalKeyspaceHandle {
     /// lock (see [`WriteLocks`]), so exactly one of two racing callers
     /// observes `true`.
     async fn insert_bytes_if_absent(&self, key: Vec<u8>, bytes: Vec<u8>) -> Result<bool, AppError> {
-        let bytes = self.maybe_encrypt(bytes)?;
+        let bytes = self.maybe_encrypt(&key, bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();
         blocking_with_timeout(move || {
@@ -655,16 +669,17 @@ impl LocalKeyspaceHandle {
         .await
     }
 
-    fn maybe_encrypt(&self, plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
+    fn maybe_encrypt(&self, store_key: &[u8], plaintext: Vec<u8>) -> Result<Vec<u8>, AppError> {
         #[cfg(feature = "encryption")]
         {
             match self.encryption_key.as_ref().map(|arc| &***arc) {
-                Some(key) => encryption::encrypt_value(key, &plaintext),
+                Some(key) => encryption::encrypt_value(key, &self.name, store_key, &plaintext),
                 None => Ok(plaintext),
             }
         }
         #[cfg(not(feature = "encryption"))]
         {
+            let _ = store_key;
             Ok(plaintext)
         }
     }
@@ -879,6 +894,43 @@ mod tests {
         ks.insert("json:test", &"encrypted value").await.unwrap();
         let got: String = ks.get("json:test").await.unwrap().unwrap();
         assert_eq!(got, "encrypted value");
+    }
+
+    /// End-to-end AAD enforcement through the real handle (P0.1): a
+    /// ciphertext written at one key must not decrypt when an attacker
+    /// who controls the store relocates it to another key — even within
+    /// the same keyspace and storage key. Without AAD this paste
+    /// succeeds and resurrects e.g. a revoked ACL row.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn encrypted_value_cannot_be_pasted_to_another_key() {
+        let (store, _dir) = temp_store();
+        let key = [0x55; 32];
+        let ks = store.keyspace("acl").unwrap().with_encryption(key);
+
+        ks.insert_raw("acl:victim", b"admin-row".to_vec())
+            .await
+            .unwrap();
+
+        // Simulate a hostile store operator copying the raw ciphertext
+        // from one key to another (writing it back via an unencrypted
+        // handle so no re-encryption happens).
+        let raw = store.keyspace("acl").unwrap();
+        let stolen = raw.get_raw("acl:victim").await.unwrap().unwrap();
+        raw.insert_raw("acl:attacker", stolen).await.unwrap();
+
+        // Reading the relocated ciphertext through the encrypted handle
+        // must fail AAD authentication, not silently return the value.
+        let err = ks.get_raw("acl:attacker").await;
+        assert!(
+            err.is_err(),
+            "a ciphertext pasted to a different key must fail AAD authentication"
+        );
+        // The original location still decrypts fine.
+        assert_eq!(
+            ks.get_raw("acl:victim").await.unwrap().unwrap(),
+            b"admin-row"
+        );
     }
 
     #[cfg(feature = "encryption")]

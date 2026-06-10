@@ -12,8 +12,16 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
 
 ## Phase 0 — Security & correctness fixes (parallelizable, land any time)
 
-- `[ ]` **P0.1** (M) AAD binding (`keyspace||key`) for keyspace encryption;
-  encrypt `sealed_nonces` + `cache` — PR: ____
+- `[~]` **P0.1** (M) AAD binding (`keyspace||key`) for keyspace encryption;
+  encrypt `sealed_nonces` + `cache` — branch `fix/p0.1-keyspace-aad`.
+  AES-GCM AAD = len-prefixed keyspace ‖ store-key, 4-byte magic `VAE1`, NO
+  legacy read-fallback (downgrade-safe) → clear error on stale data.
+  Threaded keyspace name + store key through every encrypt/decrypt site in
+  the local + vsock handles; encrypted `cache` + `sealed_nonces` at both
+  AppState construction sites. Breaking on-disk change for encrypted stores
+  only (default/plaintext unaffected) — documented in CHANGELOG. Tests:
+  cross-key/cross-keyspace paste rejected (unit + through the real handle),
+  wrong-key, legacy-format clear error, passthrough unchanged — PR: ____
 - `[ ]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
   JWT fingerprint / ACL — design note first — deps: P0.1 — PR: ____
 - `[~]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
