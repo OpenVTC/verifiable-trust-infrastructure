@@ -21,7 +21,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   AppState construction sites. Breaking on-disk change for encrypted stores
   only (default/plaintext unaffected) — documented in CHANGELOG. Tests:
   cross-key/cross-keyspace paste rejected (unit + through the real handle),
-  wrong-key, legacy-format clear error, passthrough unchanged — PR: ____
+  wrong-key, legacy-format clear error, passthrough unchanged — PR: #346 (in review)
 - `[ ]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
   JWT fingerprint / ACL — design note first — deps: P0.1 — PR: ____
 - `[~]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
