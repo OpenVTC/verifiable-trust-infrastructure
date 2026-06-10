@@ -37,8 +37,16 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
 - `[ ]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) — PR: ____
 - `[ ]` **P0.7** (M) `Zeroizing` seed bytes end-to-end; encrypt retired-seed
   archive; fix "secure deletion" claim — PR: ____
-- `[ ]` **P0.8** (S) Atomic + persisted carve-out close (ACL → sentinel →
-  `persist()` before bundle release) — PR: ____
+- `[~]` **P0.8** (S) Atomic + persisted carve-out close — branch
+  `fix/p0.8-carveout-durability`. Added `KeyspaceHandle::persist()` (local
+  fsync + vsock OP_PERSIST passthrough). `mint_mode_b` now: seal first
+  (fail-fast, no carve-out writes) → ACL → sentinel-via-`insert_raw_if_absent`
+  (atomic claim, defence-in-depth beyond MODE_B_LOCK; compensating ACL
+  delete on lost race) → `persist()` BEFORE returning the bundle (security
+  barrier: no reopen-after-delivery). ACL-before-sentinel journal order so a
+  torn fsync favours a recoverable reopen over a brick. Counter allocator
+  also now fsyncs (path-counter loss = key reuse). Tests: persist-survives-
+  reopen, carve-out-admits-one — PR: ____
 - `[ ]` **P0.9** (M) Boot-time `config::validate()`; `deny_unknown_fields`;
   hard-fail missing identity unless `--allow-degraded`; explicit opt-in for
   plaintext seed store — PR: ____

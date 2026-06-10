@@ -34,6 +34,8 @@ use vta_sdk::sealed_transfer::{
 };
 
 #[cfg(feature = "tee")]
+use crate::acl::delete_acl_entry;
+#[cfg(feature = "tee")]
 use crate::acl::store_acl_entry;
 #[cfg(feature = "tee")]
 use crate::acl::{AclEntry, Role};
@@ -252,26 +254,10 @@ async fn mint_mode_b(
         .attest(user_data.as_slice(), &bundle_id)
         .map_err(|e| AppError::Internal(format!("tee attest failed: {e}")))?;
 
-    // Mint admin credential and insert ACL entry. Sentinel write goes
-    // FIRST so that even if a future refactor breaks the `MODE_B_LOCK`
-    // guard above, a concurrent request fails closed (the sentinel is
-    // visible before any second admin row could be written). The
-    // current `MODE_B_LOCK` ensures the check-and-set is already
-    // serialized; this ordering is defence-in-depth.
     let (did, private_key_multibase) = crate::auth::credentials::generate_did_key();
 
-    state
-        .keys_ks
-        .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
-        .await?;
-
-    let entry = AclEntry::new(did.clone(), Role::Admin, "tee:mode-b")
-        .with_label(Some("TEE first-boot admin".to_string()))
-        .with_created_at(now);
-    store_acl_entry(&state.acl_ks, &entry).await?;
-
     let credential = CredentialBundle {
-        did,
+        did: did.clone(),
         private_key_multibase,
         vta_did,
         vta_url,
@@ -292,6 +278,9 @@ async fn mint_mode_b(
         affinidi_crypto::did_key::ed25519_pub_to_x25519_bytes(client_ed25519_pub)
             .map_err(|e| AppError::Internal(format!("client_did X25519 derivation: {e}")))?;
 
+    // Seal FIRST, before touching any carve-out state. A seal failure
+    // here must leave the carve-out open and retryable — no ACL, no
+    // sentinel written.
     let nonce_store = PersistentNonceStore::new(state.sealed_nonces_ks.clone());
     let payload = SealedPayloadV1::AdminCredential(Box::new(credential));
     let bundle = seal_payload(
@@ -303,6 +292,48 @@ async fn mint_mode_b(
     )
     .await
     .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
+
+    // Now commit the carve-out. Ordering and durability are load-bearing
+    // (P0.8):
+    //
+    //   1. ACL entry is written to the journal BEFORE the sentinel, so a
+    //      torn fsync recovers to {ACL, no sentinel} — a safe, self-
+    //      healing reopen (no bundle was delivered) — rather than
+    //      {sentinel, no ACL}, which would brick the VTA (carve-out
+    //      closed, no admin).
+    //   2. The sentinel is claimed with `insert_raw_if_absent`: even if a
+    //      future refactor breaks the `MODE_B_LOCK` guard above, a
+    //      concurrent request's claim returns `false` and fails closed,
+    //      so exactly one admin is ever minted. (Defence-in-depth — the
+    //      lock already serializes; this no longer relies on it.)
+    //   3. `persist()` fsyncs the ACL + sentinel + replay nonce together
+    //      BEFORE the bundle is returned. This is the security barrier:
+    //      the admin credential never leaves the enclave until the
+    //      carve-out is durably closed, so a power loss after delivery
+    //      cannot reopen it and mint a second admin.
+    let entry = AclEntry::new(did.clone(), Role::Admin, "tee:mode-b")
+        .with_label(Some("TEE first-boot admin".to_string()))
+        .with_created_at(now);
+    store_acl_entry(&state.acl_ks, &entry).await?;
+
+    if !state
+        .keys_ks
+        .insert_raw_if_absent(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
+        .await?
+    {
+        // Lost the carve-out race (only reachable if MODE_B_LOCK were
+        // bypassed). Roll back the ACL we just wrote so it does not
+        // linger as an admin entry for an undeliverable DID, and refuse.
+        let _ = delete_acl_entry(&state.acl_ks, &did).await;
+        return Err(AppError::Forbidden(
+            "TEE first-boot carve-out has already been used".into(),
+        ));
+    }
+
+    // Durability barrier: do not return the bundle until the carve-out
+    // close is on disk.
+    state.keys_ks.persist().await?;
+
     info!("TEE first-boot carve-out consumed — closed for good");
     Ok(bundle)
 }
@@ -406,25 +437,24 @@ mod tests {
         }
     }
 
-    /// Concurrency contract for [`MODE_B_LOCK`].
+    /// Concurrency contract for the carve-out close (P0.8).
     ///
     /// Property under test: when N concurrent `mint_mode_b`-style
-    /// "lock-then-check-then-set" sequences race against the same
-    /// keyspace, exactly one writes the carve-out sentinel; the others
-    /// see the sentinel after acquiring the lock and refuse.
+    /// sequences race against the same keyspace, exactly one claims the
+    /// carve-out sentinel; the others see the atomic claim fail and
+    /// refuse. Each task takes `MODE_B_LOCK` (the primary serializer)
+    /// and then claims the sentinel via `insert_raw_if_absent` (the
+    /// mechanism `mint_mode_b` now uses) — so the claim is correct
+    /// *even if a future refactor drops the lock*, which is the
+    /// defence-in-depth P0.8 strengthened.
     ///
     /// This is the safety invariant CLAUDE.md highlights as load-bearing
-    /// — two concurrent `/bootstrap/request` calls without the lock
-    /// would both pass the `is_some()` check and both mint admin
-    /// credentials. The test deliberately mirrors the exact ordering
-    /// (`lock → get_raw → ... await ... → insert_raw`) including a
-    /// yield point between the check and the set, where an unprotected
-    /// implementation would interleave.
-    ///
-    /// Uses the actual `MODE_B_LOCK` static and the actual sentinel key
-    /// constant so a refactor that relocates either is caught here.
+    /// — two concurrent `/bootstrap/request` calls that both minted an
+    /// admin would be a privilege-escalation hole. Uses the actual
+    /// `MODE_B_LOCK` static and the actual sentinel key constant so a
+    /// refactor that relocates either is caught here.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn mode_b_lock_serializes_carveout_check_and_set() {
+    async fn carveout_claim_admits_exactly_one_concurrent_minter() {
         use crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
@@ -446,27 +476,24 @@ mod tests {
             let ks = keys_ks.clone();
             let successes = std::sync::Arc::clone(&successes);
             handles.push(tokio::spawn(async move {
-                // Same shape as `mint_mode_b`: take MODE_B_LOCK, check
-                // the sentinel, do "work", write the sentinel. The yield
-                // between check and set models the TEE attestation +
-                // mint window an unprotected impl would race in.
+                // Same shape as `mint_mode_b`: take MODE_B_LOCK, do
+                // "work" (the yield models the TEE attestation + seal
+                // window), then claim the sentinel atomically. The
+                // atomic claim is what guarantees exactly-one even
+                // without the lock.
                 let _guard = MODE_B_LOCK.lock().await;
-                if ks
-                    .get_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY)
-                    .await
-                    .expect("get_raw sentinel")
-                    .is_some()
-                {
-                    return; // carve-out already used
-                }
                 tokio::time::sleep(Duration::from_millis(2)).await;
-                ks.insert_raw(
-                    BOOTSTRAP_CARVEOUT_CLOSED_KEY,
-                    format!("admin-{i}").into_bytes(),
-                )
-                .await
-                .expect("insert sentinel");
-                successes.fetch_add(1, Ordering::SeqCst);
+                let claimed = ks
+                    .insert_raw_if_absent(
+                        BOOTSTRAP_CARVEOUT_CLOSED_KEY,
+                        format!("admin-{i}").into_bytes(),
+                    )
+                    .await
+                    .expect("claim sentinel");
+                if claimed {
+                    ks.persist().await.expect("persist carve-out");
+                    successes.fetch_add(1, Ordering::SeqCst);
+                }
             }));
         }
 
@@ -477,8 +504,7 @@ mod tests {
         assert_eq!(
             successes.load(Ordering::SeqCst),
             1,
-            "MODE_B_LOCK must serialize the carve-out check-and-set so \
-             exactly one task writes the sentinel; got {} successes",
+            "exactly one task may claim the carve-out sentinel; got {} successes",
             successes.load(Ordering::SeqCst),
         );
         assert!(

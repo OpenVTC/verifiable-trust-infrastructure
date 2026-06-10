@@ -118,6 +118,22 @@ impl KeyspaceHandle {
         }
     }
 
+    /// Durably flush the store to disk (a write barrier).
+    ///
+    /// Persistence is store-wide, not per-keyspace: the local backend
+    /// fsyncs the shared fjall journal, the vsock backend asks the
+    /// parent proxy to flush. Call after security-critical writes whose
+    /// loss on crash would violate an invariant (carve-out close,
+    /// counter allocation) — once this returns, the writes survive
+    /// power loss.
+    pub async fn persist(&self) -> Result<(), AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.persist().await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.persist().await,
+        }
+    }
+
     pub async fn insert<V: Serialize>(
         &self,
         key: impl Into<Vec<u8>>,
@@ -333,6 +349,10 @@ pub struct LocalStore {
 #[derive(Clone)]
 pub struct LocalKeyspaceHandle {
     keyspace: fjall::Keyspace,
+    /// The owning database, kept so the handle can fsync the shared
+    /// journal ([`LocalKeyspaceHandle::persist`]) — fjall only exposes
+    /// persistence at the database level.
+    db: fjall::Database,
     /// Shared with every other handle for the same keyspace name — see
     /// [`WriteLocks`].
     write_lock: std::sync::Arc<std::sync::Mutex<()>>,
@@ -371,6 +391,7 @@ impl LocalStore {
             .clone();
         Ok(LocalKeyspaceHandle {
             keyspace,
+            db: self.db.clone(),
             write_lock,
             #[cfg(feature = "encryption")]
             encryption_key: None,
@@ -402,6 +423,13 @@ impl LocalKeyspaceHandle {
         {
             false
         }
+    }
+
+    /// Fsync the owning database's journal — see
+    /// [`KeyspaceHandle::persist`].
+    pub async fn persist(&self) -> Result<(), AppError> {
+        let db = self.db.clone();
+        blocking_with_timeout(move || Ok(db.persist(PersistMode::SyncAll)?)).await
     }
 
     pub async fn insert<V: Serialize>(
@@ -653,6 +681,35 @@ mod tests {
         };
         let store = Store::open(&config).expect("failed to open store");
         (store, dir)
+    }
+
+    #[tokio::test]
+    async fn persist_survives_store_reopen() {
+        // persist() is the durability barrier mint_mode_b relies on
+        // before returning the admin bundle. Prove a persisted write
+        // survives dropping and reopening the store from the same dir
+        // (the closest a unit test gets to a power-loss boundary).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_path_buf();
+        {
+            let store = Store::open(&StoreConfig {
+                data_dir: path.clone(),
+            })
+            .expect("open store");
+            let ks = store.keyspace("keys").unwrap();
+            ks.insert_raw("carveout:closed", b"admin-did".to_vec())
+                .await
+                .unwrap();
+            ks.persist().await.unwrap();
+            // store dropped here without an explicit graceful shutdown
+        }
+        let store = Store::open(&StoreConfig { data_dir: path }).expect("reopen store");
+        let ks = store.keyspace("keys").unwrap();
+        assert_eq!(
+            ks.get_raw("carveout:closed").await.unwrap().as_deref(),
+            Some(b"admin-did".as_slice()),
+            "a persisted write must survive a store reopen"
+        );
     }
 
     #[tokio::test]

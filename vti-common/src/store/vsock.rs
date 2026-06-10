@@ -225,6 +225,15 @@ impl VsockKeyspaceHandle {
         }
     }
 
+    /// Ask the parent proxy to flush the store to disk — see
+    /// [`crate::store::KeyspaceHandle::persist`]. Store-wide, not
+    /// per-keyspace.
+    pub async fn persist(&self) -> Result<(), AppError> {
+        let payload = vec![OP_PERSIST];
+        let resp = self.send(&payload).await?;
+        decode_ok(&resp)
+    }
+
     pub async fn insert<V: Serialize>(
         &self,
         key: impl Into<Vec<u8>>,

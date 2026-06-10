@@ -32,6 +32,12 @@ static COUNTER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// `counter_key`, returning the pre-increment value (a missing key
 /// reads as 0). Serialised process-wide: concurrent callers never
 /// observe the same value.
+///
+/// The increment is fsynced before the value is returned: a counter
+/// that survives only in the journal buffer could be re-derived after
+/// a crash, handing out an already-used value — for BIP-32 path
+/// counters that is silent private-key reuse. Allocation is
+/// infrequent; the fsync cost is acceptable.
 pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32, AppError> {
     let _guard = COUNTER_LOCK.lock().await;
     let current: u32 = match ks.get_raw(counter_key).await? {
@@ -45,6 +51,7 @@ pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32,
     };
     ks.insert_raw(counter_key, (current + 1).to_le_bytes().to_vec())
         .await?;
+    ks.persist().await?;
     Ok(current)
 }
 
