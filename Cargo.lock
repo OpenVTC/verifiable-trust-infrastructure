@@ -10006,6 +10006,7 @@ dependencies = [
  "url",
  "uuid",
  "vta-sdk 0.11.1",
+ "vtc-service",
  "vti-common",
  "webauthn-rs",
  "webauthn-rs-proto",

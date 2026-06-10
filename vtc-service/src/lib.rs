@@ -48,3 +48,9 @@ pub mod store;
 pub mod supervisor;
 pub mod webauthn;
 pub mod website;
+
+// `test_support` is gated internally on `any(test, feature = "test-support")`.
+// A `#[cfg(...)]` here would hide the module from the crate's own `cargo
+// test` builds (which don't pass `--features test-support`); the module
+// header handles the gating itself.
+pub mod test_support;

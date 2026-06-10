@@ -12,6 +12,12 @@ repository.workspace = true
 
 [features]
 default = ["setup", "keyring", "website", "admin-ui"]
+# Test-harness surface: the `test_support` module (in-process `TestVtc`
+# builder, `MockVtc` listening server, JWT/session minting). Enabled by
+# the crate's own integration tests via a `[dev-dependencies]` self-dep,
+# and by downstream multi-service harnesses (`vti-harness`). Kept out of
+# production builds — it pulls in `tempfile` and exposes seeding helpers.
+test-support = ["dep:tempfile"]
 setup = ["dep:dialoguer", "dep:didwebvh-rs", "dep:url"]
 # BBS+ (`bbs-2023`) verifier support — lets the join verifier accept
 # selectively-disclosed bbs-2023 presentations. Pulls in the BLS12-381 curve
@@ -200,8 +206,16 @@ async-trait = "0.1"
 # did:key → Ed25519 public-key conversion for the join-request
 # holder-binding signature verifier (M1.8.1).
 affinidi-crypto = { workspace = true }
+# Optional — only compiled under the `test-support` feature, which the
+# `test_support` module (and downstream harnesses) need for tempdir-
+# backed stores. Also a `[dev-dependencies]` entry for the crate's own
+# `cargo test` (no feature flag) — both must stay in sync.
+tempfile = { version = "3", optional = true }
 
 [dev-dependencies]
+# Self-dep with `test-support` enabled so integration tests under
+# `tests/` can import `vtc_service::test_support` (`TestVtc`, `MockVtc`).
+vtc-service = { path = ".", features = ["test-support"] }
 tempfile = "3"
 # Integration tests under `tests/` exercise the route stack via
 # `Router::oneshot` — same pattern as `vta-service/tests/api_integration.rs`.
