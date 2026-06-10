@@ -18,35 +18,19 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
-use vti_common::audit::{AuditKeyStore, AuditWriter};
-use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, store_session};
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::config::AppConfig;
 use vtc_service::credentials::LocalSigner;
-use vtc_service::install::InstallTokenStore;
 use vtc_service::members::{Member, get_member, store_member};
-use vtc_service::routes;
-use vtc_service::server::AppState;
 use vtc_service::status_list;
+use vtc_service::test_support::TestVtc;
 
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const RENEW_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/renew/1.0";
 const MEMBER_DID: &str = "did:key:zRenewMember";
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
 
 struct Fixture {
     router: axum::Router,
@@ -57,63 +41,39 @@ struct Fixture {
     policies_ks: vti_common::store::KeyspaceHandle,
     active_policies_ks: vti_common::store::KeyspaceHandle,
     audit_ks: vti_common::store::KeyspaceHandle,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 async fn build_fixture() -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
+    // The fixture verifies re-issued VMC/VEC against this signer, so the
+    // AppState must issue with this exact instance.
+    let signer = Arc::new(LocalSigner::from_ed25519_seed(VTC_DID.into(), &[0xCC; 32]));
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(PUBLIC_URL)
+        .with_credential_signer(signer.clone())
+        .build()
+        .await;
 
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    vtc_service::policy::default::install_defaults(&policies_ks, &active_policies_ks)
-        .await
-        .expect("install default policies");
+    vtc_service::policy::default::install_defaults(
+        &vtc.state.policies_ks,
+        &vtc.state.active_policies_ks,
+    )
+    .await
+    .expect("install default policies");
 
     for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
         let url = format!("{PUBLIC_URL}/v1/status-lists/{purpose}");
-        status_list::ensure_initial(&status_lists_ks, purpose, url)
+        status_list::ensure_initial(&vtc.state.status_lists_ks, purpose, url)
             .await
             .unwrap();
     }
 
-    let signer = Arc::new(LocalSigner::from_ed25519_seed(VTC_DID.into(), &[0xCC; 32]));
-
-    let key_store = AuditKeyStore::new(audit_key_ks.clone());
-    key_store.ensure_initial(&[0xAB; 32]).await.unwrap();
-    let audit_writer = Some(AuditWriter::new(audit_ks.clone(), key_store));
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").unwrap());
-
     // Seed a Member ACL row + Member metadata row.
     let now = vtc_service::auth::session::now_epoch();
     store_acl_entry(
-        &acl_ks,
+        &vtc.state.acl_ks,
         &VtcAclEntry {
             did: MEMBER_DID.into(),
             role: VtcRole::Member,
@@ -126,13 +86,13 @@ async fn build_fixture() -> Fixture {
     )
     .await
     .unwrap();
-    store_member(&members_ks, &Member::fresh(MEMBER_DID))
+    store_member(&vtc.state.members_ks, &Member::fresh(MEMBER_DID))
         .await
         .unwrap();
 
     let session_id = "test-member-session";
     store_session(
-        &sessions_ks,
+        &vtc.state.sessions_ks,
         &Session {
             session_id: session_id.into(),
             did: MEMBER_DID.into(),
@@ -151,7 +111,7 @@ async fn build_fixture() -> Fixture {
     .await
     .unwrap();
 
-    let member_claims = jwt_keys.new_claims(
+    let member_claims = vtc.jwt_keys.new_claims(
         MEMBER_DID.into(),
         session_id.into(),
         "reader".into(),
@@ -159,59 +119,14 @@ async fn build_fixture() -> Fixture {
         3600,
         true,
     );
-    let member_token = jwt_keys.encode(&member_claims).unwrap();
+    let member_token = vtc.jwt_keys.encode(&member_claims).unwrap();
 
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "{VTC_DID}"
-        public_url = "{PUBLIC_URL}"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks,
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks,
-        members_ks: members_ks.clone(),
-        join_requests_ks,
-        policies_ks,
-        active_policies_ks,
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys),
-        atm: None,
-        webauthn: None,
-        public_url: Some(PUBLIC_URL.into()),
-        install_signer: None,
-        credential_signer: Some(signer.clone()),
-        install_store,
-        audit_writer,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    let router = routes::router().with_state(state.clone());
+    let members_ks = vtc.state.members_ks.clone();
+    let status_lists_ks = vtc.state.status_lists_ks.clone();
+    let policies_ks = vtc.state.policies_ks.clone();
+    let active_policies_ks = vtc.state.active_policies_ks.clone();
+    let audit_ks = vtc.state.audit_ks.clone();
+    let router = vtc.router.clone();
 
     Fixture {
         router,
@@ -219,10 +134,10 @@ async fn build_fixture() -> Fixture {
         signer,
         members_ks,
         status_lists_ks,
-        policies_ks: state.policies_ks,
-        active_policies_ks: state.active_policies_ks,
-        audit_ks: state.audit_ks,
-        _dir: dir,
+        policies_ks,
+        active_policies_ks,
+        audit_ks,
+        _vtc: vtc,
     }
 }
 
