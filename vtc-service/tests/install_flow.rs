@@ -26,21 +26,16 @@ use axum::http::{Request, StatusCode};
 use chrono::{Duration as ChronoDuration, Utc};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::acl::Role;
-use vti_common::audit::{AuditEnvelope, AuditEvent, AuditKeyStore, AuditWriter};
+use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::jwt::JwtKeys;
-use vti_common::auth::passkey::build_webauthn;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
-use vtc_service::config::AppConfig;
 use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
-use vtc_service::routes;
 use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
@@ -58,118 +53,33 @@ const COMMUNITY_PROFILE_TASK: &str =
 const ADMIN_CONFIG_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0";
 const RESTART_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0";
 
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
-
 struct Fixture {
     state: AppState,
     router: axum::Router,
     install_signer: Arc<InstallTokenSigner>,
     install_store: InstallTokenStore,
     jwt_keys: Arc<JwtKeys>,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
-/// Step 1: `vtc setup` shortcut. Stands up an AppState with
-/// everything `run()` would wire (WebAuthn, install signer, audit
-/// writer, JWT keys). No actual VTA contact — provisioning against
-/// a fake VTA is acceptable per the plan's M0.12.1 acceptance.
+/// Step 1: `vtc setup` shortcut. Stands up an AppState with everything
+/// `run()` would wire (WebAuthn via public_url, install signer, audit
+/// writer, JWT keys). No actual VTA contact. The builder leaves
+/// `supervisor: None` so step 9 asserts `/restart` returns 412.
 async fn build_fixture() -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").unwrap());
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let webauthn = Some(Arc::new(build_webauthn(RP_ORIGIN).expect("build webauthn")));
     let install_signer = Arc::new(InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap());
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(RP_ORIGIN)
+        .with_install_signer(install_signer.clone())
+        .build()
+        .await;
 
-    let key_store = AuditKeyStore::new(audit_key_ks.clone());
-    key_store.ensure_initial(&[0xAB; 64]).await.unwrap();
-    let audit_writer = Some(AuditWriter::new(audit_ks.clone(), key_store));
-
-    let state = AppState {
-        sessions_ks,
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks,
-        members_ks: members_ks.clone(),
-        join_requests_ks: join_requests_ks.clone(),
-        policies_ks: policies_ks.clone(),
-        active_policies_ks: active_policies_ks.clone(),
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks: audit_ks.clone(),
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys.clone()),
-        atm: None,
-        webauthn,
-        public_url: Some(RP_ORIGIN.to_string()),
-        install_signer: Some(install_signer.clone()),
-        install_store: install_store.clone(),
-        audit_writer,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        // No supervisor — step 9 asserts `/restart` returns 412.
-        supervisor: None,
-    };
-
-    let router = routes::router().with_state(state.clone());
+    let state = vtc.state.clone();
+    let router = vtc.router.clone();
+    let install_store = vtc.state.install_store.clone();
+    let jwt_keys = vtc.jwt_keys.clone();
 
     Fixture {
         state,
@@ -177,7 +87,7 @@ async fn build_fixture() -> Fixture {
         install_signer,
         install_store,
         jwt_keys,
-        _dir: dir,
+        _vtc: vtc,
     }
 }
 
