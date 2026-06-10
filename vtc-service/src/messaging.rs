@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_messaging_didcomm::Message;
+use affinidi_messaging_didcomm::{Message, UnpackMetadata};
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
     HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RestartPolicy,
@@ -223,13 +223,11 @@ pub async fn run_didcomm_service(
 /// needed (the envelope IS the proof). Calls into the same
 /// `submit_inner` the REST endpoint uses.
 async fn join_request_submit_handler(
-    ctx: HandlerContext,
     message: Message,
+    meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let applicant_did = ctx.sender_did.clone().ok_or_else(|| {
-        DIDCommServiceError::Internal("join-request submit has no DIDComm sender".into())
-    })?;
+    let applicant_did = authenticated_sender_did(&message, &meta)?;
     let body: JoinRequestSubmitBody = serde_json::from_value(message.body.clone())
         .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-request body: {e}")))?;
 
@@ -267,13 +265,11 @@ async fn join_request_submit_handler(
 /// and the member-issued reciprocal `vc`. Calls into the same
 /// `accept_inner` the REST endpoint uses; replies with an accept receipt.
 async fn join_request_accept_handler(
-    ctx: HandlerContext,
     message: Message,
+    meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let member_did = ctx.sender_did.clone().ok_or_else(|| {
-        DIDCommServiceError::Internal("join-request accept has no DIDComm sender".into())
-    })?;
+    let member_did = authenticated_sender_did(&message, &meta)?;
     let body: JoinRequestAcceptBody = serde_json::from_value(message.body.clone())
         .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-accept body: {e}")))?;
 
@@ -326,13 +322,11 @@ async fn join_request_manifest_handler(
 /// separate holder-binding signature is needed (`signature_hex = None`).
 /// The body carries the `requestId`.
 async fn join_request_status_handler(
-    ctx: HandlerContext,
     message: Message,
+    meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let applicant_did = ctx.sender_did.clone().ok_or_else(|| {
-        DIDCommServiceError::Internal("join-request status has no DIDComm sender".into())
-    })?;
+    let applicant_did = authenticated_sender_did(&message, &meta)?;
     let body: JoinRequestStatusBody = serde_json::from_value(message.body.clone())
         .map_err(|e| DIDCommServiceError::Internal(format!("malformed status body: {e}")))?;
 
@@ -352,14 +346,14 @@ async fn join_request_status_handler(
 /// carries the disposition; defaults match REST (Member's
 /// stored `departure_preference`, then PolicyDefault→Tombstone).
 async fn member_self_remove_handler(
-    ctx: HandlerContext,
     message: Message,
+    meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let caller_did = ctx
-        .sender_did
-        .clone()
-        .ok_or_else(|| DIDCommServiceError::Internal("self-remove has no DIDComm sender".into()))?;
+    // The caller's DID is the *authcrypt-authenticated* sender, not the
+    // plaintext `from` — otherwise a spoofed `from` would self-remove the
+    // victim (`remove_inner(&caller, &caller, …)` with actor == subject).
+    let caller_did = authenticated_sender_did(&message, &meta)?;
 
     let body: SelfRemoveBody = serde_json::from_value(message.body.clone())
         .map_err(|e| DIDCommServiceError::Internal(format!("malformed self-remove body: {e}")))?;
@@ -509,6 +503,57 @@ async fn credential_present_handler(
     ))
 }
 
+/// Resolve the **authenticated** sender DID of an inbound DIDComm message.
+///
+/// The listener fills `ctx.sender_did` / `message.from` from the *plaintext*
+/// `from` header, which the sender controls. An attacker can authcrypt a
+/// message with their **own** key (so the unpack succeeds and
+/// `meta.authenticated == true`) while setting `from` to a *victim's* DID —
+/// yielding a message whose `from` (and thus `ctx.sender_did`) is the victim.
+/// Handlers that trust `ctx.sender_did` as the proven sender would then act
+/// *as the victim* (submit a join, self-remove the victim, …). The
+/// `affinidi-messaging-sdk` unpack does not cross-check `from` against the
+/// authcrypt sender key, and `MessagePolicy::require_authenticated` only
+/// asserts *some* key authenticated the envelope — not *which* DID.
+///
+/// The cryptographically-authenticated identity is the DID of
+/// `meta.encrypted_from_kid` (the key that actually encrypted the message).
+/// This binds the two: the message must be authcrypt-authenticated (not
+/// anoncrypt / plaintext) **and** its `from` must equal that DID, else the
+/// sender is spoofed and we refuse.
+fn authenticated_sender_did(
+    message: &Message,
+    meta: &UnpackMetadata,
+) -> Result<String, DIDCommServiceError> {
+    if !meta.authenticated || meta.anonymous_sender {
+        return Err(DIDCommServiceError::Internal(
+            "DIDComm message is not authcrypt-authenticated — sender cannot be trusted".into(),
+        ));
+    }
+    let from = message.from.as_deref().ok_or_else(|| {
+        DIDCommServiceError::Internal(
+            "authenticated DIDComm message carries no `from` — sender cannot be trusted".into(),
+        )
+    })?;
+    let skid = meta.encrypted_from_kid.as_deref().ok_or_else(|| {
+        DIDCommServiceError::Internal(
+            "authenticated DIDComm message exposes no sender key id — sender cannot be trusted"
+                .into(),
+        )
+    })?;
+    // `encrypted_from_kid` is a verificationMethod id (`<did>#<fragment>`);
+    // the authenticated sender is its DID prefix. A DID never contains `#`,
+    // so splitting on the first `#` recovers it.
+    let authenticated_did = skid.split_once('#').map(|(did, _)| did).unwrap_or(skid);
+    if authenticated_did != from {
+        return Err(DIDCommServiceError::Internal(format!(
+            "DIDComm sender spoofed: `from` ({from}) does not match the authcrypt sender key \
+             ({authenticated_did})"
+        )));
+    }
+    Ok(from.to_string())
+}
+
 fn parse_disposition(s: &str) -> Result<Disposition, String> {
     match s.to_ascii_lowercase().as_str() {
         "purge" => Ok(Disposition::Purge),
@@ -518,5 +563,96 @@ fn parse_disposition(s: &str) -> Result<Disposition, String> {
         other => Err(format!(
             "unknown disposition '{other}' (expected purge|tombstone|historical|policydefault)"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn msg(from: Option<&str>) -> Message {
+        let mut b = Message::build("id-1".to_string(), "test/1.0".to_string(), json!({}));
+        if let Some(f) = from {
+            b = b.from(f.to_string());
+        }
+        b.finalize()
+    }
+
+    fn meta(authenticated: bool, anonymous_sender: bool, skid: Option<&str>) -> UnpackMetadata {
+        UnpackMetadata {
+            encrypted: true,
+            authenticated,
+            anonymous_sender,
+            encrypted_from_kid: skid.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    const ALICE: &str = "did:key:z6MkAlice";
+    const ALICE_SKID: &str = "did:key:z6MkAlice#z6MkAlice";
+
+    #[test]
+    fn accepts_authenticated_sender_whose_from_matches_the_authcrypt_key() {
+        let got = authenticated_sender_did(&msg(Some(ALICE)), &meta(true, false, Some(ALICE_SKID)))
+            .unwrap();
+        assert_eq!(got, ALICE);
+    }
+
+    #[test]
+    fn rejects_spoofed_from_authcrypted_with_a_different_key() {
+        // The core impersonation attack: authcrypt with the attacker's key
+        // (so `authenticated == true`) but set `from` to the victim. The
+        // `from` must match the key that actually encrypted the message.
+        let victim = "did:key:z6MkVictim";
+        let attacker_skid = "did:key:z6MkAttacker#z6MkAttacker";
+        let err =
+            authenticated_sender_did(&msg(Some(victim)), &meta(true, false, Some(attacker_skid)))
+                .unwrap_err();
+        assert!(
+            format!("{err}").contains("spoofed"),
+            "expected spoof rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_unauthenticated_anoncrypt() {
+        // anoncrypt — no proven sender at all.
+        let err =
+            authenticated_sender_did(&msg(Some(ALICE)), &meta(false, true, None)).unwrap_err();
+        assert!(
+            format!("{err}").contains("not authcrypt-authenticated"),
+            "expected auth rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_authenticated_but_anonymous_sender() {
+        let err = authenticated_sender_did(&msg(Some(ALICE)), &meta(true, true, Some(ALICE_SKID)))
+            .unwrap_err();
+        assert!(
+            format!("{err}").contains("not authcrypt-authenticated"),
+            "expected auth rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_authenticated_message_with_no_from() {
+        let err =
+            authenticated_sender_did(&msg(None), &meta(true, false, Some(ALICE_SKID))).unwrap_err();
+        assert!(
+            format!("{err}").contains("no `from`"),
+            "expected missing-from rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_authenticated_message_with_no_sender_key_id() {
+        let err =
+            authenticated_sender_did(&msg(Some(ALICE)), &meta(true, false, None)).unwrap_err();
+        assert!(
+            format!("{err}").contains("no sender key id"),
+            "expected missing-skid rejection, got: {err}"
+        );
     }
 }
