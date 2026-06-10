@@ -316,14 +316,27 @@ pub enum MessagingInput {
     ///
     /// `mediator_host` — see `Existing::mediator_host`.
     ///
+    /// `ws_url` — the mediator's WebSocket endpoint, advertised in the
+    /// `didcomm-mediator` template's `#service` block alongside the HTTP
+    /// DIDComm endpoint. Optional: when omitted the wizard derives it
+    /// from `url` (`http`→`ws` / `https`→`wss`, trailing slash trimmed,
+    /// `/ws` appended) — the canonical mediator convention. Set it
+    /// explicitly only when your reverse proxy routes the WS upgrade to a
+    /// different host or path; an explicit value is used verbatim. This
+    /// mirrors the interactive wizard's overridable WS prompt.
+    ///
     /// `template_vars` is an escape hatch for overriding optional
     /// `didcomm-mediator` template variables (`ROUTING_KEYS`, `ACCEPT`,
-    /// `WEBVH_SERVER`). The `URL` and `WS_URL` vars are always set by
-    /// the wizard from `url` and cannot be overridden here.
+    /// `WEBVH_SERVER`). The `URL` var is always set by the wizard from
+    /// `url` and cannot be overridden here; `WS_URL` comes from the
+    /// `ws_url` field above (or its `url`-derived default), so setting
+    /// `WS_URL` in `template_vars` has no effect.
     CreateMediator {
         #[serde(default = "default_mediator_context")]
         context: String,
         url: String,
+        #[serde(default)]
+        ws_url: Option<String>,
         #[serde(default)]
         webvh_url: Option<String>,
         #[serde(default)]
@@ -500,35 +513,35 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
         MessagingInput::CreateMediator {
             context,
             url,
+            ws_url,
             webvh_url,
             mediator_host,
             template_vars,
         } => {
             let _med_ctx =
                 create_seed_context(&contexts_ks, context, "DIDComm Messaging Mediator").await?;
-            // Operator-supplied vars first; then `URL` (and the auto-derived
-            // `WS_URL`) so the wizard's notion of the endpoint always wins
-            // even if an operator typo'd it under template_vars. `WS_URL`
-            // is required by the `didcomm-mediator` template since it
-            // started advertising HTTP + WSS in a single `#service` block.
+            // Operator-supplied vars first; then `URL` and `WS_URL` so the
+            // wizard's notion of the endpoint always wins even if an
+            // operator typo'd it under template_vars. Both are required by
+            // the `didcomm-mediator` template since it started advertising
+            // HTTP + WSS in a single `#service` block.
             let mut effective_vars: HashMap<String, serde_json::Value> = template_vars.clone();
             effective_vars.insert("URL".into(), json!(url));
-            // Mirror the mediator-setup convention: `{base}/ws` for the
-            // WebSocket upgrade alongside `{base}/` for HTTP DIDComm.
-            // Defined in `affinidi-messaging-mediator/tools/mediator-setup/
-            // src/generators/did_peer.rs::websocket_service_uri`.
-            let scheme_swapped = if let Some(rest) = url.strip_prefix("https://") {
-                format!("wss://{rest}")
-            } else if let Some(rest) = url.strip_prefix("http://") {
-                format!("ws://{rest}")
-            } else {
-                return Err(format!(
-                    "messaging.url '{url}' must start with http:// or https:// so the \
-                     wizard can derive WS_URL"
-                )
-                .into());
+            // `WS_URL`: an explicit `ws_url` is used verbatim (for reverse
+            // proxies that route the WS upgrade elsewhere); otherwise derive
+            // it from `url` via the shared helper — same `{base}/ws`
+            // convention the interactive wizard offers as its prompt
+            // default, so the two paths agree. Shape of an explicit value is
+            // already checked in `validate_inputs`.
+            let ws_url = match ws_url {
+                Some(explicit) => explicit.trim().to_string(),
+                None => super::derive_ws_url(url).ok_or_else(|| {
+                    format!(
+                        "messaging.url '{url}' must start with http:// or https:// so the \
+                         wizard can derive WS_URL (or set messaging.ws_url explicitly)"
+                    )
+                })?,
             };
-            let ws_url = format!("{}/ws", scheme_swapped.trim_end_matches('/'));
             effective_vars.insert("WS_URL".into(), json!(ws_url));
 
             // `url` is the DIDComm endpoint; `webvh_url` is the DID-document
@@ -736,7 +749,10 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
         );
     }
     if let MessagingInput::CreateMediator {
-        context, webvh_url, ..
+        context,
+        webvh_url,
+        ws_url,
+        ..
     } = &inputs.messaging
     {
         if context.trim().is_empty() {
@@ -748,6 +764,25 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                  to messaging.url, or provide a hosting URL"
                     .into(),
             );
+        }
+        // An explicit `ws_url` is used verbatim (reverse proxies that
+        // route the WS upgrade elsewhere); validate its shape here so the
+        // failure surfaces at parse time, alongside `webvh_url`, rather
+        // than mid-`apply_inputs`. An absent `ws_url` is derived from
+        // `url` and validated there.
+        if let Some(ws) = ws_url {
+            let trimmed = ws.trim();
+            if trimmed.is_empty() {
+                errors.push(
+                    "messaging.ws_url is set to an empty string; either remove the key to \
+                     derive it from messaging.url, or provide a ws:// or wss:// endpoint"
+                        .into(),
+                );
+            } else if !(trimmed.starts_with("ws://") || trimmed.starts_with("wss://")) {
+                errors.push(format!(
+                    "messaging.ws_url '{trimmed}' must start with ws:// or wss://"
+                ));
+            }
         }
     }
     if let VtaDidInput::CreateWebvh {
@@ -1328,6 +1363,102 @@ mod tests {
             err.to_string().contains("messaging.webvh_url"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn create_mediator_ws_url_optional_defaults_to_none() {
+        // Back-compat: TOML without `ws_url` parses; `apply_inputs`
+        // derives `WS_URL` from `url`.
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [messaging]
+            kind = "create_mediator"
+            url  = "https://mediator.example.com"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        match &inputs.messaging {
+            MessagingInput::CreateMediator { ws_url, .. } => assert!(ws_url.is_none()),
+            other => panic!("expected CreateMediator, got {other:?}"),
+        }
+        validate_inputs(&inputs).expect("absent ws_url should validate");
+    }
+
+    #[test]
+    fn create_mediator_explicit_ws_url_round_trips() {
+        // An operator whose reverse proxy routes WS to a different host
+        // can express it; the value is taken verbatim, not derived.
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [messaging]
+            kind   = "create_mediator"
+            url    = "https://mediator.example.com"
+            ws_url = "wss://ws.example.com/mediator/socket"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        match &inputs.messaging {
+            MessagingInput::CreateMediator { ws_url, .. } => {
+                assert_eq!(
+                    ws_url.as_deref(),
+                    Some("wss://ws.example.com/mediator/socket")
+                );
+            }
+            other => panic!("expected CreateMediator, got {other:?}"),
+        }
+        validate_inputs(&inputs).expect("explicit ws:// ws_url should validate");
+    }
+
+    #[test]
+    fn create_mediator_empty_ws_url_rejected() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [messaging]
+            kind   = "create_mediator"
+            url    = "https://mediator.example.com"
+            ws_url = ""
+        "#;
+        let inputs = parse(raw).expect("parses");
+        let err = validate_inputs(&inputs).expect_err("empty ws_url must be rejected");
+        assert!(err.to_string().contains("messaging.ws_url"), "got: {err}");
+    }
+
+    #[test]
+    fn create_mediator_non_ws_scheme_ws_url_rejected() {
+        // A `ws_url` that isn't a ws(s) URL (e.g. an https typo) must be
+        // rejected — the template advertises it as a WebSocket endpoint.
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [messaging]
+            kind   = "create_mediator"
+            url    = "https://mediator.example.com"
+            ws_url = "https://mediator.example.com/ws"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        let err = validate_inputs(&inputs).expect_err("non-ws scheme must be rejected");
+        assert!(err.to_string().contains("ws:// or wss://"), "got: {err}");
     }
 
     #[test]

@@ -398,4 +398,114 @@ mod tests {
     fn _unused_data_dir(env: &TestEnv) -> &PathBuf {
         &env.data_dir
     }
+
+    /// Happy-path coverage for the kid-selection contract: the offline
+    /// bundle must carry exactly the keys whose ids are verification
+    /// methods of the context DID, and must drop an admin `did:key`
+    /// minted into the same context (a different DID, free-text label).
+    ///
+    /// Locks the wiring of [`select_secret_kid`] into the offline path —
+    /// the per-decision rules are unit-tested in
+    /// `vta_sdk::did_secrets`, but this proves `build_did_secrets_bundle`
+    /// feeds it the authoritative store `key_id` (and the label) so a
+    /// refactor can't silently re-include non-VM secrets and re-brick the
+    /// mediator's exact-match recipient lookup (the storm.ws outage).
+    #[tokio::test]
+    async fn build_did_secrets_excludes_non_vm_admin_did_key() {
+        use crate::operations::keys::{CreateKeyParams, create_key};
+        use vta_sdk::keys::KeyType;
+
+        let env = open_env().await;
+        let auth = super_admin();
+
+        // Seed the external store so derived keys can be minted + read back.
+        env.seed_store
+            .set(&[0xABu8; 32])
+            .await
+            .expect("seed the store");
+
+        // A context with a DID assigned — the bundle is keyed on it and VM
+        // ids are matched against it.
+        let did = "did:webvh:QmScid:mediator.example.com:med";
+        crate::contexts::create_context(&env.contexts_ks, "med-ctx", "Mediator Ctx")
+            .await
+            .expect("create context");
+        let mut rec = crate::contexts::get_context(&env.contexts_ks, "med-ctx")
+            .await
+            .expect("get context")
+            .expect("context exists");
+        rec.did = Some(did.to_string());
+        crate::contexts::store_context(&env.contexts_ks, &rec)
+            .await
+            .expect("store did on context");
+
+        // Two operating keys whose key_ids ARE verification methods of `did`.
+        for (kid, kt) in [
+            (format!("{did}#key-0"), KeyType::Ed25519),
+            (format!("{did}#key-1"), KeyType::X25519),
+        ] {
+            create_key(
+                &env.keys_ks,
+                &env.contexts_ks,
+                &env.seed_store,
+                &env.audit_ks,
+                &auth,
+                CreateKeyParams {
+                    key_type: kt,
+                    derivation_path: None,
+                    key_id: Some(kid),
+                    mnemonic: None,
+                    label: None,
+                    context_id: Some("med-ctx".into()),
+                },
+                "test",
+            )
+            .await
+            .expect("mint operating key");
+        }
+
+        // An admin did:key minted into the same context: its VM id belongs
+        // to a *different* DID and its label is free text. Must be excluded.
+        let admin = "did:key:z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf";
+        create_key(
+            &env.keys_ks,
+            &env.contexts_ks,
+            &env.seed_store,
+            &env.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some(format!(
+                    "{admin}#z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf"
+                )),
+                mnemonic: None,
+                label: Some("admin DID for context med-ctx".into()),
+                context_id: Some("med-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("mint admin did:key");
+
+        let bundle = build_did_secrets_bundle(&deps_of(&env), &auth, "med-ctx", "test")
+            .await
+            .expect("bundle builds");
+
+        assert_eq!(bundle.did, did);
+        let expect_0 = format!("{did}#key-0");
+        let expect_1 = format!("{did}#key-1");
+        let mut kids: Vec<&str> = bundle.secrets.iter().map(|s| s.key_id.as_str()).collect();
+        kids.sort_unstable();
+        assert_eq!(
+            kids,
+            vec![expect_0.as_str(), expect_1.as_str()],
+            "only the two VM-id operating keys belong in the bundle; the admin \
+             did:key minted into the context must be excluded"
+        );
+        assert!(
+            !bundle.secrets.iter().any(|s| s.key_id.contains(admin)),
+            "admin did:key must not appear in the operating-secret bundle"
+        );
+    }
 }

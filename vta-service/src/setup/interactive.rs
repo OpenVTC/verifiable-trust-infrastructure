@@ -1251,28 +1251,6 @@ fn prompt_optional_mediator_host() -> Result<Option<String>, Box<dyn std::error:
     Ok(if host.is_empty() { None } else { Some(host) })
 }
 
-/// Best-effort default for the mediator's WebSocket endpoint, derived
-/// from the HTTP endpoint by swapping the scheme and appending `/ws`.
-/// Mirrors the canonical convention in
-/// `affinidi-messaging-mediator/tools/mediator-setup` (the mediator
-/// serves HTTP DIDComm at `{base}/` and the WebSocket upgrade at
-/// `{base}/ws`). Operators can override interactively when their
-/// reverse proxy routes WS elsewhere.
-fn default_ws_url_from_http(http_url: &str) -> String {
-    let (scheme_swapped, scheme_ok) = if let Some(rest) = http_url.strip_prefix("https://") {
-        (format!("wss://{rest}"), true)
-    } else if let Some(rest) = http_url.strip_prefix("http://") {
-        (format!("ws://{rest}"), true)
-    } else {
-        (String::new(), false)
-    };
-    if !scheme_ok {
-        return String::new();
-    }
-    let trimmed = scheme_swapped.trim_end_matches('/');
-    format!("{trimmed}/ws")
-}
-
 /// Prompt for an optional comma-separated list of routing-key DIDs
 /// for the `didcomm-mediator` template's `ROUTING_KEYS` variable.
 /// Used when this mediator forwards traffic through an upstream
@@ -1365,9 +1343,8 @@ async fn configure_messaging(
             // template since the HTTP + WSS dual-transport change.
             // Default to the HTTP URL with the scheme swapped — operators
             // can override when WS is hosted elsewhere.
-            let ws_default = default_ws_url_from_http(&mediator_url);
             let mut ws_prompt = Input::new().with_prompt("Mediator WebSocket URL");
-            if !ws_default.is_empty() {
+            if let Some(ws_default) = super::derive_ws_url(&mediator_url) {
                 ws_prompt = ws_prompt.default(ws_default);
             }
             let mediator_ws_url: String = ws_prompt.interact_text()?;

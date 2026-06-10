@@ -105,6 +105,36 @@ pub(crate) fn build_vta_additional_services(
     }
 }
 
+/// Derive the mediator's WebSocket endpoint from its HTTP endpoint by
+/// swapping the scheme (`http`→`ws`, `https`→`wss`), trimming any
+/// trailing slash, and appending `/ws`.
+///
+/// Returns `None` when `http_url` is not an `http(s)://` URL — callers
+/// decide whether that's a hard error (the `--from <file>` path, which
+/// has no operator to re-prompt) or merely "no default offered" (the
+/// interactive wizard, which lets the operator type the WS URL anyway).
+///
+/// Mirrors the canonical convention in
+/// `affinidi-messaging-mediator/tools/mediator-setup`
+/// (`generators/did_peer.rs::websocket_service_uri`): the mediator
+/// serves HTTP DIDComm at `{base}/` and the WebSocket upgrade at
+/// `{base}/ws`. The `didcomm-mediator` template advertises both in a
+/// single `#service` block, so a freshly-minted mediator's DID document
+/// 404s on every WS upgrade without the `/ws` suffix.
+///
+/// Single source of truth shared by [`interactive`] and [`from_toml`]
+/// so the two derivations cannot drift (PR #339 introduced two copies).
+pub(crate) fn derive_ws_url(http_url: &str) -> Option<String> {
+    let scheme_swapped = if let Some(rest) = http_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = http_url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        return None;
+    };
+    Some(format!("{}/ws", scheme_swapped.trim_end_matches('/')))
+}
+
 /// Prompt the user for a URL (e.g. `https://example.com/dids/vta`) and
 /// convert it to a [`WebVHURL`]. Re-prompts on invalid input.
 ///
@@ -224,5 +254,36 @@ mod tests {
             webauthn: false,
         };
         assert!(build_vta_additional_services(&services, None).is_none());
+    }
+
+    /// `derive_ws_url` is the single source of truth for the mediator's
+    /// WebSocket endpoint default — both setup paths derive through it.
+    #[test]
+    fn derive_ws_url_swaps_scheme_trims_and_appends_ws() {
+        // https → wss, plain host.
+        assert_eq!(
+            derive_ws_url("https://mediator.example.com").as_deref(),
+            Some("wss://mediator.example.com/ws")
+        );
+        // http → ws.
+        assert_eq!(
+            derive_ws_url("http://localhost:8000").as_deref(),
+            Some("ws://localhost:8000/ws")
+        );
+        // Trailing slash is trimmed before the suffix (no `//ws`).
+        assert_eq!(
+            derive_ws_url("https://mediator.example.com/").as_deref(),
+            Some("wss://mediator.example.com/ws")
+        );
+        // Path is preserved; suffix appended once.
+        assert_eq!(
+            derive_ws_url("https://example.com/mediator/v1/").as_deref(),
+            Some("wss://example.com/mediator/v1/ws")
+        );
+        // Non-http(s) schemes (and bare hosts) yield None — caller decides
+        // whether that's fatal or just "offer no default".
+        assert_eq!(derive_ws_url("wss://already.ws/ws"), None);
+        assert_eq!(derive_ws_url("mediator.example.com"), None);
+        assert_eq!(derive_ws_url(""), None);
     }
 }
