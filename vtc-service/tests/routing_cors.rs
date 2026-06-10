@@ -9,30 +9,15 @@
 //! 2. **CORS layer** wired into `routes::router()` returns the
 //!    expected headers on preflight + actual cross-origin requests.
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use http_body_util::BodyExt;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
-use vti_common::auth::jwt::JwtKeys;
 use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
 use vtc_service::config::{AppConfig, CorsConfig, MountConfig, RoutingConfig};
 use vtc_service::routes;
-use vtc_service::server::AppState;
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
+use vtc_service::test_support::TestVtc;
 
 // ═══════════════════════════════════════════════════════════════════
 // Config validation
@@ -226,84 +211,15 @@ fn accepts_https_and_http_origins() {
 // CORS layer wiring
 // ═══════════════════════════════════════════════════════════════════
 
-async fn build_router_with_cors(cors: CorsConfig) -> (axum::Router, tempfile::TempDir) {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").expect("jwt keys"));
-
-    let mut config = cfg_with(RoutingConfig::default(), cors.clone());
-    config.auth.jwt_signing_key = Some(BASE64.encode(jwt_seed));
-    config.store.data_dir = dir.path().to_path_buf();
-
-    let state = AppState {
-        sessions_ks: sessions_ks.clone(),
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks: install_ks.clone(),
-        members_ks: members_ks.clone(),
-        join_requests_ks: join_requests_ks.clone(),
-        policies_ks: policies_ks.clone(),
-        active_policies_ks: active_policies_ks.clone(),
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys),
-        atm: None,
-        webauthn: None,
-        public_url: None,
-        install_signer: None,
-        install_store: vtc_service::install::InstallTokenStore::new(install_ks),
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
+async fn build_router_with_cors(cors: CorsConfig) -> (axum::Router, TestVtc) {
+    // CORS is applied as an explicit layer below, independent of the
+    // state's own config — so a default `TestVtc` state is sufficient.
+    let vtc = TestVtc::builder().build().await;
     let cors_layer = vtc_service_test_cors_layer(&cors);
-    let router = routes::router().with_state(state).layer(cors_layer);
-    (router, dir)
+    let router = routes::router()
+        .with_state(vtc.state.clone())
+        .layer(cors_layer);
+    (router, vtc)
 }
 
 /// Mirror of `server::build_cors_layer` for use in this integration

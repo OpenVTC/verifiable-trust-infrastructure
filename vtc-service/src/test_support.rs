@@ -318,6 +318,13 @@ impl TestVtc {
         TestVtcBuilder::default()
     }
 
+    /// The on-disk data directory backing the store (for tests that read
+    /// or write files the daemon persists there, e.g. the `did.jsonl`
+    /// publication path).
+    pub fn data_dir(&self) -> &std::path::Path {
+        self._dir.path()
+    }
+
     /// Mint a bearer token for `did` with `role`, creating the backing
     /// `Authenticated` session row so the `AuthClaims` extractor (which
     /// re-checks session state on every request) accepts it.

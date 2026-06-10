@@ -12,21 +12,12 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use tempfile::TempDir;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
-use vtc_service::config::AppConfig;
-use vtc_service::install::InstallTokenStore;
-use vtc_service::routes;
-use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 // A real `did:webvh` is `did:webvh:<scid>:<host>[:<path>]` — the SCID is
 // the FIRST label after the method, the host second (see the did:webvh
@@ -44,93 +35,17 @@ const VTC_LOG_LABEL: &str = "vtc.example.com";
 struct Fixture {
     router: axum::Router,
     data_dir: std::path::PathBuf,
-    _dir: TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 async fn build_fixture(vtc_did: &str) -> Fixture {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "{vtc_did}"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks,
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks,
-        members_ks: members_ks.clone(),
-        join_requests_ks: join_requests_ks.clone(),
-        policies_ks: policies_ks.clone(),
-        active_policies_ks: active_policies_ks.clone(),
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: None,
-        atm: None,
-        webauthn: None,
-        public_url: None,
-        install_signer: None,
-        install_store,
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    let router = routes::router().with_state(state);
-
+    let vtc = TestVtc::builder().vtc_did(vtc_did).build().await;
+    let data_dir = vtc.data_dir().to_path_buf();
     Fixture {
-        router,
-        data_dir: dir.path().to_path_buf(),
-        _dir: dir,
+        router: vtc.router.clone(),
+        data_dir,
+        _vtc: vtc,
     }
 }
 

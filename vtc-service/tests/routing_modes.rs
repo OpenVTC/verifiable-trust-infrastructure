@@ -24,102 +24,21 @@ use tower::ServiceExt;
 use vtc_service::config::{MountConfig, RoutingConfig};
 use vtc_service::routes;
 use vtc_service::routing::host_dispatch::{HostMap, enforce};
+use vtc_service::test_support::TestVtc;
 
-/// Build a router using only the placeholder + health surfaces;
-/// the API sub-router needs full `AppState` but route-priority
-/// tests only need to see whether prefixes dispatch correctly.
-/// We rely on `routes::router_with()` plus a default state where
-/// every keyspace is open against a tempdir.
-async fn build_router(routing: &RoutingConfig) -> (Router, tempfile::TempDir) {
-    use std::sync::Arc;
-    use tokio::sync::RwLock;
-
-    use base64::Engine;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
-    use vtc_service::config::AppConfig;
-    use vtc_service::server::AppState;
-    use vti_common::auth::jwt::JwtKeys;
-    use vti_common::config::StoreConfig;
-    use vti_common::store::Store;
-
-    init_jwt_provider();
-
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let install_ks = store.keyspace("install").unwrap();
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").expect("jwt keys"));
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:key:z6MkTestVTC"
-        [store]
-        data_dir = "{}"
-        [auth]
-        jwt_signing_key = "{}"
-        "#,
-        dir.path().display(),
-        BASE64.encode(jwt_seed),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks: store.keyspace("sessions").unwrap(),
-        acl_ks: store.keyspace("acl").unwrap(),
-        community_ks: store.keyspace("community").unwrap(),
-        config_ks: store.keyspace("config").unwrap(),
-        passkey_ks: store.keyspace("passkey").unwrap(),
-        install_ks: install_ks.clone(),
-        members_ks: store.keyspace("members").unwrap(),
-        join_requests_ks: store.keyspace("join_requests").unwrap(),
-        policies_ks: store.keyspace("policies").unwrap(),
-        active_policies_ks: store.keyspace("active_policies").unwrap(),
-        status_lists_ks: store.keyspace("status_lists").unwrap(),
-        registry_records_ks: store.keyspace("registry_records").unwrap(),
-        sync_queue_ks: store.keyspace("sync_queue").unwrap(),
-        sync_cursor_ks: store.keyspace("sync_cursor").unwrap(),
-        relationships_ks: store.keyspace("relationships").unwrap(),
-        relationships_by_did_ks: store.keyspace("relationships_by_did").unwrap(),
-        endorsement_types_ks: store.keyspace("endorsement_types").unwrap(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: store.keyspace("endorsements").unwrap(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys),
-        atm: None,
-        webauthn: None,
-        public_url: None,
-        install_signer: None,
-        install_store: vtc_service::install::InstallTokenStore::new(install_ks),
-        audit_ks: store.keyspace("audit").unwrap(),
-        audit_key_ks: store.keyspace("audit_key").unwrap(),
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
+/// Build a router using the requested routing config over a default
+/// `TestVtc` state. Route-priority tests only need to see whether
+/// prefixes dispatch correctly.
+async fn build_router(routing: &RoutingConfig) -> (Router, TestVtc) {
+    let vtc = TestVtc::builder()
+        .vtc_did("did:key:z6MkTestVTC")
+        .build()
+        .await;
     #[cfg(feature = "website")]
-    let router = routes::router_with(routing, None).with_state(state);
+    let router = routes::router_with(routing, None).with_state(vtc.state.clone());
     #[cfg(not(feature = "website"))]
-    let router = routes::router_with(routing).with_state(state);
-    (router, dir)
-}
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
+    let router = routes::router_with(routing).with_state(vtc.state.clone());
+    (router, vtc)
 }
 
 async fn request(router: &Router, req: Request<Body>) -> (StatusCode, Vec<u8>) {
