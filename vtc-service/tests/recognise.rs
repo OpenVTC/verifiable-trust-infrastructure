@@ -13,124 +13,28 @@
 //!
 //! Phase 3 M3.10.
 
-use std::sync::Arc;
-
 use axum::Json;
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
-use tokio::sync::RwLock;
-use vti_common::auth::jwt::JwtKeys;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
-use vtc_service::config::AppConfig;
 use vtc_service::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
 use vtc_service::recognition::VerifiedForeignCredential;
-use vtc_service::registry::RegistryHealth;
 use vtc_service::routes::recognise::{RecogniseResponse, mint_recognised_session};
 use vtc_service::server::AppState;
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
+use vtc_service::test_support::TestVtc;
 
 struct Fixture {
     state: AppState,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + backs `state`; must outlive it.
+    _vtc: TestVtc,
 }
 
 async fn build() -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").expect("jwt keys"));
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        [store]
-        data_dir = "{}"
-        [auth]
-        jwt_signing_key = "{}"
-        access_token_expiry = 900
-        "#,
-        dir.path().display(),
-        BASE64.encode(jwt_seed),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks: sessions_ks.clone(),
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks: install_ks.clone(),
-        members_ks,
-        join_requests_ks,
-        policies_ks,
-        active_policies_ks,
-        status_lists_ks,
-        registry_records_ks,
-        sync_queue_ks,
-        sync_cursor_ks,
-        relationships_ks,
-        relationships_by_did_ks,
-        endorsement_types_ks,
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks,
-        registry_client: None,
-        registry_health: RegistryHealth::new(),
-        credential_signer: None,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys),
-        atm: None,
-        webauthn: None,
-        public_url: None,
-        install_signer: None,
-        install_store: vtc_service::install::InstallTokenStore::new(install_ks),
-        audit_ks,
-        audit_key_ks,
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    Fixture { state, _dir: dir }
+    let vtc = TestVtc::builder().build().await;
+    Fixture {
+        state: vtc.state.clone(),
+        _vtc: vtc,
+    }
 }
 
 async fn install_cross_community_policy(state: &AppState, source: &str) {
