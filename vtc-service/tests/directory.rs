@@ -19,34 +19,19 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::Value;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
-use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
-use vti_common::auth::passkey::build_webauthn;
 use vti_common::auth::session::{Session, SessionState, store_session};
-use vti_common::config::StoreConfig;
-use vti_common::store::{KeyspaceHandle, Store};
+use vti_common::store::KeyspaceHandle;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::config::AppConfig;
-use vtc_service::install::InstallTokenStore;
 use vtc_service::members::{Member, store_member};
 use vtc_service::policy::default::install_defaults;
-use vtc_service::routes;
-use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const DIRECTORY_TASK: &str = "https://trusttasks.org/openvtc/vtc/directory/query/1.0";
 const ADMIN_DID: &str = "did:key:zAdmin1";
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
 
 struct Fixture {
     router: axum::Router,
@@ -55,57 +40,26 @@ struct Fixture {
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
     admin_token: String,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 async fn build_fixture() -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_public_url(RP_ORIGIN)
+        .build()
+        .await;
 
     // The directory route reads the active `directory` policy, so the
     // bundled defaults must be installed (server boot does this).
-    install_defaults(&policies_ks, &active_policies_ks)
+    install_defaults(&vtc.state.policies_ks, &vtc.state.active_policies_ks)
         .await
         .expect("install default policies");
 
-    let install_store = InstallTokenStore::new(install_ks.clone());
-    let webauthn = Some(Arc::new(build_webauthn(RP_ORIGIN).expect("build webauthn")));
-
-    let key_store = AuditKeyStore::new(audit_key_ks.clone());
-    key_store.ensure_initial(&[0xAB; 32]).await.unwrap();
-    let audit_writer = Some(AuditWriter::new(audit_ks.clone(), key_store));
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").unwrap());
-
     // Admin viewer: community-admin ACL row + an authenticated session.
     store_acl_entry(
-        &acl_ks,
+        &vtc.state.acl_ks,
         &VtcAclEntry {
             did: ADMIN_DID.into(),
             role: VtcRole::Admin,
@@ -119,58 +73,13 @@ async fn build_fixture() -> Fixture {
     .await
     .unwrap();
 
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        public_url = "{RP_ORIGIN}"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
+    let admin_token = mint_token(&vtc.jwt_keys, &vtc.state.sessions_ks, ADMIN_DID).await;
 
-    let state = AppState {
-        sessions_ks: sessions_ks.clone(),
-        acl_ks: acl_ks.clone(),
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks,
-        members_ks: members_ks.clone(),
-        join_requests_ks,
-        policies_ks,
-        active_policies_ks,
-        status_lists_ks,
-        registry_records_ks,
-        sync_queue_ks,
-        sync_cursor_ks,
-        relationships_ks,
-        relationships_by_did_ks,
-        endorsement_types_ks,
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks,
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys.clone()),
-        atm: None,
-        webauthn,
-        public_url: Some(RP_ORIGIN.to_string()),
-        install_signer: None,
-        install_store,
-        audit_writer,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    let router = routes::router().with_state(state);
-    let admin_token = mint_token(&jwt_keys, &sessions_ks, ADMIN_DID).await;
+    let jwt_keys = vtc.jwt_keys.clone();
+    let sessions_ks = vtc.state.sessions_ks.clone();
+    let acl_ks = vtc.state.acl_ks.clone();
+    let members_ks = vtc.state.members_ks.clone();
+    let router = vtc.router.clone();
 
     Fixture {
         router,
@@ -179,7 +88,7 @@ async fn build_fixture() -> Fixture {
         acl_ks,
         members_ks,
         admin_token,
-        _dir: dir,
+        _vtc: vtc,
     }
 }
 
