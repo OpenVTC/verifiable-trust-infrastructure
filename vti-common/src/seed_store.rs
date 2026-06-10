@@ -30,4 +30,23 @@ pub trait SeedStore: Send + Sync {
     fn delete(&self) -> BoxFuture<'_, Result<(), AppError>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Whether a successful [`set`](SeedStore::set) durably survives a
+    /// process / host restart.
+    ///
+    /// `true` for backends that write the secret to durable storage
+    /// (OS keyring, cloud secret managers, plaintext file). `false`
+    /// for backends whose `set` only updates in-memory state and rely
+    /// on a separate persistence step that does not happen
+    /// automatically — notably the TEE KMS store, where a rotated seed
+    /// lives only in enclave memory and the next boot restores the
+    /// *original* KMS-bootstrapped seed instead.
+    ///
+    /// Seed rotation must refuse when this is `false`: rotating would
+    /// bump `active_seed_id` to a generation whose bytes vanish on
+    /// restart, silently making every key minted after the rotation
+    /// unrecoverable.
+    fn set_persists_across_restart(&self) -> bool {
+        true
+    }
 }

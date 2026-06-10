@@ -34,7 +34,15 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   PR: #342 (stacked on #341)
 - `[ ]` **P0.5** (L) Backup/restore: export counters (no BIP-32 path reuse),
   full `AclEntry` round-trip, import-in-progress sentinel — PR: ____
-- `[ ]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) — PR: ____
+- `[~]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
+  branch `fix/p0.6-tee-seed-rotation`. Chose REJECT (the plan's safe minimum;
+  in-place re-encryption is a follow-up). New `SeedStore::set_persists_across_restart()`
+  (default true; `KmsTeeSeedStore` → false, fixed its misleading set() comment).
+  Guard at the low-level `seeds::rotate_seed` chokepoint (catches offline CLI
+  too) + a typed `AppError::Conflict` with operator guidance at
+  `operations::seeds::rotate_seed` (runtime REST/DIDComm/TT path). Tests:
+  refusal+no-mutation (tee), trait flag, existing non-TEE rotation unaffected
+  — PR: ____
 - `[ ]` **P0.7** (M) `Zeroizing` seed bytes end-to-end; encrypt retired-seed
   archive; fix "secure deletion" claim — PR: ____
 - `[~]` **P0.8** (S) Atomic + persisted carve-out close — branch

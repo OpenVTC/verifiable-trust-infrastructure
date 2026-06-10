@@ -45,11 +45,15 @@ impl SeedStore for KmsTeeSeedStore {
     fn set(&self, seed: &[u8]) -> BoxFuture<'_, Result<(), AppError>> {
         let seed = seed.to_vec();
         Box::pin(async move {
-            // Update in-memory seed. The new ciphertext will be persisted
-            // to the bootstrap keyspace on the next restart via KMS bootstrap.
+            // Updates the in-memory seed ONLY. This is NOT durable: nothing
+            // re-encrypts the new seed into the bootstrap keyspace, so on the
+            // next enclave boot KMS bootstrap restores the *original* seed and
+            // this value is lost. `set_persists_across_restart()` returns
+            // `false` so the rotation path refuses before ever reaching here;
+            // any other caller must treat the write as ephemeral.
             tracing::warn!(
-                "seed updated in memory — restart the enclave to re-encrypt \
-                 and persist the new seed via KMS bootstrap"
+                "KmsTeeSeedStore::set updates the in-memory seed only — it is \
+                 NOT persisted and will be lost on the next enclave boot"
             );
             let mut guard = self
                 .seed
@@ -58,5 +62,29 @@ impl SeedStore for KmsTeeSeedStore {
             *guard = Some(seed);
             Ok(())
         })
+    }
+
+    fn set_persists_across_restart(&self) -> bool {
+        // The seed is held only in enclave memory; rotating it would be
+        // silently undone on the next boot (KMS restores the original
+        // bootstrap seed). Until in-place re-encryption is wired up, the
+        // rotation path must refuse — see `operations::seeds::rotate_seed`.
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_does_not_persist_across_restart() {
+        let store =
+            KmsTeeSeedStore::new(vec![0u8; 32], "arn:aws:kms:test".into(), "us-east-1".into());
+        assert!(
+            !store.set_persists_across_restart(),
+            "the TEE KMS seed store must report that set() is not restart-durable \
+             so the rotation path refuses"
+        );
     }
 }

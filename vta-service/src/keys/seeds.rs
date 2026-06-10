@@ -121,6 +121,21 @@ pub async fn rotate_seed(
     seed_store: &dyn SeedStore,
     mnemonic: Option<&str>,
 ) -> Result<u32, Box<dyn std::error::Error>> {
+    // Authoritative guard: a backend whose `set` does not survive a
+    // restart (the TEE KMS store) would have its rotated seed silently
+    // discarded on the next boot, making every post-rotation key
+    // unrecoverable. Refuse before mutating any state. The runtime
+    // entry point (`operations::seeds::rotate_seed`) checks this too
+    // and returns a typed, operator-friendly error first.
+    if !seed_store.set_persists_across_restart() {
+        return Err(
+            "seed rotation is not supported by the active seed store: a \
+                    rotated seed would not survive a restart, so every key minted \
+                    after rotation would become unrecoverable"
+                .into(),
+        );
+    }
+
     let old_id = get_active_seed_id(keys_ks).await?;
 
     // Load current seed bytes for archival

@@ -68,6 +68,22 @@ pub async fn rotate_seed(
     // Held across read-generation → archive → write-new → re-encrypt.
     let _rotation_guard = ROTATE_LOCK.lock().await;
 
+    // Refuse rotation on a seed store whose `set` does not survive a
+    // restart (the TEE KMS store). Rotating would bump `active_seed_id`
+    // to a generation whose bytes live only in enclave memory; the next
+    // boot would restore the original seed and every key minted after
+    // rotation would be permanently unrecoverable. Typed Conflict so the
+    // CLI can render operator guidance rather than a generic 500.
+    if !seed_store.set_persists_across_restart() {
+        return Err(AppError::Conflict(
+            "seed rotation is unavailable on this VTA: the active seed store does \
+             not persist a rotated seed across a restart, so every key minted after \
+             rotation would become unrecoverable on the next boot. TEE/KMS \
+             deployments re-seed via a fresh enclave bootstrap, not in-place rotation."
+                .into(),
+        ));
+    }
+
     let previous_id = get_active_seed_id(keys_ks)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
@@ -218,6 +234,68 @@ mod tests {
                 _dir: dir,
             }
         }
+    }
+
+    /// P0.6: rotation must refuse on a seed store whose `set` does not
+    /// survive a restart (the TEE KMS store), and must mutate nothing —
+    /// otherwise a TEE operator who runs `keys rotate-seed` silently
+    /// loses every key minted afterwards on the next enclave boot.
+    #[cfg(feature = "tee")]
+    #[tokio::test]
+    async fn rotate_seed_refused_on_non_durable_store_and_leaves_state_intact() {
+        use crate::keys::seed_store::KmsTeeSeedStore;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let keys_ks = store.keyspace("keys").unwrap();
+        let imported_ks = store.keyspace("imported_secrets").unwrap();
+        let audit_ks = store.keyspace("audit").unwrap();
+
+        // Bootstrap generation 0 as the active seed.
+        save_seed_record(
+            &keys_ks,
+            &SeedRecord {
+                id: 0,
+                seed_hex: None,
+                created_at: chrono::Utc::now(),
+                retired_at: None,
+            },
+        )
+        .await
+        .expect("save gen-0 record");
+
+        let seed_store: Arc<dyn SeedStore> = Arc::new(KmsTeeSeedStore::new(
+            vec![0xABu8; 32],
+            "arn:aws:kms:test".into(),
+            "us-east-1".into(),
+        ));
+
+        let err = rotate_seed(
+            &keys_ks,
+            &imported_ks,
+            &seed_store,
+            &audit_ks,
+            "did:key:z6MkTestAdmin",
+            None,
+            "test",
+        )
+        .await
+        .expect_err("TEE rotation must be refused");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        // Nothing mutated: active id unchanged, gen-0 still active (not
+        // archived/retired), no gen-1 record created.
+        assert_eq!(get_active_seed_id(&keys_ks).await.unwrap(), 0);
+        let gen0 = get_seed_record(&keys_ks, 0).await.unwrap().unwrap();
+        assert!(gen0.retired_at.is_none(), "gen-0 must not be retired");
+        assert!(gen0.seed_hex.is_none(), "gen-0 must stay active");
+        assert!(
+            get_seed_record(&keys_ks, 1).await.unwrap().is_none(),
+            "no gen-1 record may be created by a refused rotation"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
