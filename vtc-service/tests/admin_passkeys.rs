@@ -14,27 +14,22 @@ use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 use uuid::Uuid;
 use vti_common::acl::{AclEntry, Role, store_acl_entry};
-use vti_common::audit::{AuditEnvelope, AuditEvent, AuditKeyStore, AuditWriter};
+use vti_common::audit::{AuditEnvelope, AuditEvent};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::{
     build_webauthn,
     store::{PasskeyUser, store_credential_mapping, store_passkey_user},
 };
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 use webauthn_rs::Webauthn;
 use webauthn_rs::prelude::{CreationChallengeResponse, RequestChallengeResponse};
 
 use vtc_service::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
-use vtc_service::config::AppConfig;
-use vtc_service::install::{InstallTokenSigner, InstallTokenStore};
-use vtc_service::routes;
 use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
@@ -42,14 +37,6 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
 const REGISTER_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0";
 const REVOKE_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0";
-
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
 
 struct Fixture {
     state: AppState,
@@ -59,55 +46,29 @@ struct Fixture {
     /// Soft authenticator pre-loaded with the bootstrap passkey,
     /// ready to drive UV and additional-device ceremonies.
     authenticator: SoftEd25519Authenticator,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 /// Build a fixture where:
-/// - WebAuthn + install signer + audit writer are all configured.
+/// - WebAuthn (via public_url) + audit writer are configured.
 /// - One admin is pre-bootstrapped: PasskeyUser, AdminEntry, ACL
 ///   entry, credential mapping all match a single soft-authenticator
 ///   credential whose Ed25519 key we know.
-/// - JWT keys are wired so we can mint admin session tokens for
-///   the bootstrapped DID.
+/// - JWT keys are wired so we can mint admin session tokens for the
+///   bootstrapped DID.
 async fn build_fixture(with_audit: bool) -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
+    let vtc = TestVtc::builder()
+        .with_audit(with_audit)
+        .with_public_url(RP_ORIGIN)
+        .build()
+        .await;
 
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").unwrap());
-
+    // Run a real WebAuthn registration ceremony against the same RP as
+    // the AppState's webauthn so the persisted PasskeyUser has a real
+    // `Passkey` that subsequent UV-assertion flows can exercise. Mirrors
+    // the post-bootstrap state M0.6.2 leaves the system in.
     let webauthn: Webauthn = build_webauthn(RP_ORIGIN).expect("webauthn builder");
-
-    // Run a real WebAuthn registration ceremony so the persisted
-    // PasskeyUser has a real `Passkey` (matching credential bytes)
-    // that subsequent UV-assertion flows can exercise. Mirrors the
-    // post-bootstrap state M0.6.2 leaves the system in.
     let mut authenticator = SoftEd25519Authenticator::new();
     let user_uuid = Uuid::new_v4();
     let (ccr, reg_state) = vtc_service::webauthn::start_passkey_registration(
@@ -129,15 +90,17 @@ async fn build_fixture(with_audit: bool) -> Fixture {
     let bootstrap_cred_id_hex =
         hex::encode(<_ as AsRef<[u8]>>::as_ref(bootstrap_passkey.cred_id()));
 
-    // Persist the post-bootstrap fixture state.
+    // Persist the post-bootstrap fixture state into the daemon keyspaces.
     let pk_user = PasskeyUser {
         user_uuid,
         did: admin_did.clone(),
         display_name: admin_did.clone(),
         credentials: vec![bootstrap_passkey],
     };
-    store_passkey_user(&passkey_ks, &pk_user).await.unwrap();
-    store_credential_mapping(&passkey_ks, &bootstrap_cred_id_hex, user_uuid)
+    store_passkey_user(&vtc.state.passkey_ks, &pk_user)
+        .await
+        .unwrap();
+    store_credential_mapping(&vtc.state.passkey_ks, &bootstrap_cred_id_hex, user_uuid)
         .await
         .unwrap();
     let admin_entry = AdminEntry {
@@ -152,71 +115,18 @@ async fn build_fixture(with_audit: bool) -> Fixture {
         extensions: Value::Null,
         created_at: Utc::now(),
     };
-    store_admin_entry(&passkey_ks, &admin_entry).await.unwrap();
+    store_admin_entry(&vtc.state.passkey_ks, &admin_entry)
+        .await
+        .unwrap();
     let acl_entry = AclEntry::new(admin_did.clone(), Role::Admin, "did:key:vtc-install")
         .with_label(Some("install bootstrap".into()));
-    store_acl_entry(&acl_ks, &acl_entry).await.unwrap();
+    store_acl_entry(&vtc.state.acl_ks, &acl_entry)
+        .await
+        .unwrap();
 
-    let audit_writer = if with_audit {
-        let key_store = AuditKeyStore::new(audit_key_ks.clone());
-        key_store.ensure_initial(&[0xAB; 64]).await.unwrap();
-        Some(AuditWriter::new(audit_ks.clone(), key_store))
-    } else {
-        None
-    };
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks: sessions_ks.clone(),
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks: install_ks.clone(),
-        members_ks: members_ks.clone(),
-        join_requests_ks: join_requests_ks.clone(),
-        policies_ks: policies_ks.clone(),
-        active_policies_ks: active_policies_ks.clone(),
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks: audit_ks.clone(),
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys.clone()),
-        atm: None,
-        webauthn: Some(Arc::new(webauthn)),
-        public_url: Some(RP_ORIGIN.to_string()),
-        install_signer: Some(Arc::new(
-            InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap(),
-        )),
-        install_store,
-        audit_writer,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    let router = routes::router().with_state(state.clone());
+    let state = vtc.state.clone();
+    let router = vtc.router.clone();
+    let jwt_keys = vtc.jwt_keys.clone();
 
     Fixture {
         state,
@@ -224,7 +134,7 @@ async fn build_fixture(with_audit: bool) -> Fixture {
         jwt_keys,
         admin_did,
         authenticator,
-        _dir: dir,
+        _vtc: vtc,
     }
 }
 
