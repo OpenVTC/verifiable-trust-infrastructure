@@ -69,8 +69,14 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   plaintext seed store — PR: ____
 - `[ ]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
   explicit 100 MB layer + governor on `/backup/blob` — PR: ____
-- `[ ]` **P0.11** (S) BBS matchable ⇒ presentable (wire `present_bbs` or
-  unmatch in `dcql_format`) + guard test — PR: ____
+- `[~]` **P0.11** (S) BBS matchable ⇒ presentable — branch
+  `fix/p0.11-bbs-presentable`. Chose UNMATCH: `dcql_format` returns `None`
+  for `Bbs2023` (was `Some("ldp_vc")` → matched-then-failed the whole
+  vp_token in present_single's catch-all). Wiring `present_bbs` needs
+  issuer BBS G2 pubkey resolution that present_single lacks + BBS is
+  audit-gated (#294), so full BBS DCQL presentation is a follow-up tied to
+  that audit. Guard test `formats_admitted_for_dcql_are_all_presentable`
+  locks the invariant (passes on default + bbs feature) — PR: ____
 - `[ ]` **P0.12** (M) Deferred-presentation sweeper + reachable
   approve/deny/list surface — PR: ____
 - `[ ]` **P0.13** (S) Decide + enforce/document cross-transport step-up policy

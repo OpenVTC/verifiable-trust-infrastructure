@@ -1024,11 +1024,24 @@ pub async fn deny_pending_presentation(
 
 /// Map a stored credential format to its DCQL `format` selector, or `None` if
 /// the format is not yet presentable via DCQL.
+///
+/// A format is admitted here **only if [`present_single`] can actually render
+/// it** — the two must agree, or a held credential matches a verifier's query
+/// and then fails in `present_single`'s catch-all, taking the *entire*
+/// `vp_token` down with it (the loop bails on the first error). The
+/// `formats_admitted_for_dcql_are_all_presentable` test enforces the
+/// invariant.
+///
+/// `Bbs2023` is deliberately **not** admitted: `present_bbs` exists but needs
+/// the issuer's BBS G2 public key, which `present_single` has no way to
+/// resolve yet, and BBS itself is audit-gated (#294). Wiring full BBS DCQL
+/// presentation is a follow-up tied to that audit — until then, not matching
+/// is correct (better than matching-then-failing the whole token).
 fn dcql_format(format: &CredentialFormat) -> Option<&'static str> {
     match format {
         CredentialFormat::SdJwtVc => Some("dc+sd-jwt"),
-        CredentialFormat::EddsaJcs2022 | CredentialFormat::Bbs2023 => Some("ldp_vc"),
-        CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
+        CredentialFormat::EddsaJcs2022 => Some("ldp_vc"),
+        CredentialFormat::Bbs2023 | CredentialFormat::Zkp | CredentialFormat::Other(_) => None,
     }
 }
 
@@ -1046,6 +1059,41 @@ fn render_path(path: Vec<ClaimPathSegment>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guard for the matchable ⇒ presentable invariant (P0.11). Every
+    /// format `dcql_format` admits MUST have a real `present_single` arm;
+    /// otherwise a held credential matches a verifier's DCQL query and
+    /// then fails in `present_single`'s catch-all, which bails the whole
+    /// `vp_token`. This test fails if anyone adds a format to
+    /// `dcql_format` without also wiring it into `present_single` (the
+    /// presentable set below mirrors `present_single`'s real arms).
+    #[test]
+    fn formats_admitted_for_dcql_are_all_presentable() {
+        let all = [
+            CredentialFormat::SdJwtVc,
+            CredentialFormat::EddsaJcs2022,
+            CredentialFormat::Bbs2023,
+            CredentialFormat::Zkp,
+            CredentialFormat::Other("vendor-thing".into()),
+        ];
+        // The set `present_single` can actually render today.
+        fn present_single_can_render(f: &CredentialFormat) -> bool {
+            matches!(
+                f,
+                CredentialFormat::SdJwtVc | CredentialFormat::EddsaJcs2022
+            )
+        }
+        for f in &all {
+            if dcql_format(f).is_some() {
+                assert!(
+                    present_single_can_render(f),
+                    "dcql_format admits {f:?} but present_single cannot render it — \
+                     this matches-then-fails the entire vp_token"
+                );
+            }
+        }
+    }
+
     use affinidi_sd_jwt::error::SdJwtError;
     use affinidi_sd_jwt::signer::JwtSigner;
     use base64::Engine;
