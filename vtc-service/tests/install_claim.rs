@@ -14,18 +14,12 @@ use axum::http::{Request, StatusCode};
 use chrono::{Duration as ChronoDuration, Utc};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 use uuid::Uuid;
-use vti_common::auth::passkey::build_webauthn;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 use webauthn_rs::prelude::CreationChallengeResponse;
 
-use vtc_service::config::AppConfig;
 use vtc_service::install::{InstallTokenSigner, InstallTokenStore, mint_install_token};
-use vtc_service::routes;
-use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 use common::webauthn_harness::SoftEd25519Authenticator;
 
@@ -33,66 +27,19 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0";
 const FINISH_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0";
 
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
-
 struct Fixture {
     router: axum::Router,
     install_signer: Arc<InstallTokenSigner>,
     install_store: InstallTokenStore,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 async fn build_fixture(public_url: Option<&str>, with_install_signer: bool) -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let webauthn = public_url.map(|u| Arc::new(build_webauthn(u).expect("build webauthn")));
+    // 64 bytes of test entropy mirror what production loads from the secret
+    // store (32 Ed25519 + 32 X25519); HKDF only cares about length. The
+    // same signer is injected into the AppState so tokens minted here verify.
     let install_signer = if with_install_signer {
-        // 64 bytes of test entropy mirror what production loads from
-        // the secret store (32 Ed25519 + 32 X25519); HKDF only cares
-        // about length.
         Some(Arc::new(
             InstallTokenSigner::from_master_seed(&[0xAB; 64]).unwrap(),
         ))
@@ -100,54 +47,26 @@ async fn build_fixture(public_url: Option<&str>, with_install_signer: bool) -> F
         None
     };
 
-    let state = AppState {
-        sessions_ks,
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks: install_ks.clone(),
-        members_ks: members_ks.clone(),
-        join_requests_ks: join_requests_ks.clone(),
-        policies_ks: policies_ks.clone(),
-        active_policies_ks: active_policies_ks.clone(),
-        status_lists_ks: status_lists_ks.clone(),
-        registry_records_ks: registry_records_ks.clone(),
-        sync_queue_ks: sync_queue_ks.clone(),
-        sync_cursor_ks: sync_cursor_ks.clone(),
-        relationships_ks: relationships_ks.clone(),
-        relationships_by_did_ks: relationships_by_did_ks.clone(),
-        endorsement_types_ks: endorsement_types_ks.clone(),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: endorsements_ks.clone(),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: None,
-        atm: None,
-        webauthn,
-        public_url: public_url.map(|s| s.to_string()),
-        install_signer: install_signer.clone(),
-        install_store: install_store.clone(),
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
+    let mut builder = TestVtc::builder();
+    if let Some(u) = public_url {
+        builder = builder.with_public_url(u);
+    }
+    if let Some(sig) = &install_signer {
+        builder = builder.with_install_signer(sig.clone());
+    }
+    let vtc = builder.build().await;
 
-    let router = routes::router().with_state(state);
+    let install_store = vtc.state.install_store.clone();
 
     Fixture {
-        router,
-        install_signer: install_signer.clone().unwrap_or_else(|| {
+        router: vtc.router.clone(),
+        // When the AppState signer is absent (testing the 503 path), the
+        // fixture still needs *a* signer to mint tokens with — a throwaway.
+        install_signer: install_signer.unwrap_or_else(|| {
             Arc::new(InstallTokenSigner::from_master_seed(&[0xCD; 64]).unwrap())
         }),
         install_store,
-        _dir: dir,
+        _vtc: vtc,
     }
 }
 

@@ -75,6 +75,7 @@ pub struct TestVtcBuilder {
     with_signers: bool,
     with_did_resolver: bool,
     credential_signer: Option<Arc<LocalSigner>>,
+    install_signer: Option<Arc<InstallTokenSigner>>,
     public_url: Option<String>,
     supervisor: Option<SupervisorKind>,
 }
@@ -87,6 +88,7 @@ impl Default for TestVtcBuilder {
             with_signers: false,
             with_did_resolver: false,
             credential_signer: None,
+            install_signer: None,
             public_url: None,
             supervisor: None,
         }
@@ -122,6 +124,15 @@ impl TestVtcBuilder {
     /// credentials against it. Does not affect the install signer.
     pub fn with_credential_signer(mut self, signer: Arc<LocalSigner>) -> Self {
         self.credential_signer = Some(signer);
+        self
+    }
+
+    /// Inject a specific [`InstallTokenSigner`] — overriding the one
+    /// [`with_signers`](Self::with_signers) would derive. Use when a test
+    /// mints install tokens with a signer it holds and the route must
+    /// verify them with the same key.
+    pub fn with_install_signer(mut self, signer: Arc<InstallTokenSigner>) -> Self {
+        self.install_signer = Some(signer);
         self
     }
 
@@ -223,7 +234,7 @@ impl TestVtcBuilder {
             None
         };
 
-        let (mut credential_signer, install_signer) = if self.with_signers {
+        let (mut credential_signer, mut install_signer) = if self.with_signers {
             let signer = Arc::new(LocalSigner::from_ed25519_seed(
                 self.vtc_did.clone(),
                 &SIGNER_SEED,
@@ -236,10 +247,14 @@ impl TestVtcBuilder {
         } else {
             (None, None)
         };
-        // An explicitly-injected signer overrides the derived one (used
-        // by tests that verify issued credentials against a held signer).
+        // Explicitly-injected signers override the derived ones (used by
+        // tests that verify issued credentials / install tokens against a
+        // signer they hold).
         if let Some(sig) = self.credential_signer.clone() {
             credential_signer = Some(sig);
+        }
+        if let Some(sig) = self.install_signer.clone() {
+            install_signer = Some(sig);
         }
 
         let webauthn = match &self.public_url {
