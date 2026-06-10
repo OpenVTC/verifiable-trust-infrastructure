@@ -46,7 +46,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   barrier: no reopen-after-delivery). ACL-before-sentinel journal order so a
   torn fsync favours a recoverable reopen over a brick. Counter allocator
   also now fsyncs (path-counter loss = key reuse). Tests: persist-survives-
-  reopen, carve-out-admits-one — PR: ____
+  reopen, carve-out-admits-one — PR: #343 (in review)
 - `[ ]` **P0.9** (M) Boot-time `config::validate()`; `deny_unknown_fields`;
   hard-fail missing identity unless `--allow-degraded`; explicit opt-in for
   plaintext seed store — PR: ____
