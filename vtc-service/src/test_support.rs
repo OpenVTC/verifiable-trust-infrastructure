@@ -73,6 +73,7 @@ pub struct TestVtcBuilder {
     vtc_did: String,
     with_audit: bool,
     with_signers: bool,
+    with_did_resolver: bool,
     public_url: Option<String>,
     supervisor: Option<SupervisorKind>,
 }
@@ -83,6 +84,7 @@ impl Default for TestVtcBuilder {
             vtc_did: TEST_VTC_DID.to_string(),
             with_audit: false,
             with_signers: false,
+            with_did_resolver: false,
             public_url: None,
             supervisor: None,
         }
@@ -116,6 +118,14 @@ impl TestVtcBuilder {
     /// (passkey/install routes need it).
     pub fn with_public_url(mut self, url: impl Into<String>) -> Self {
         self.public_url = Some(url.into());
+        self
+    }
+
+    /// Attach a local `DIDCacheClient` resolver (the SIOP wallet-login
+    /// and cross-community recognition paths resolve presented DIDs
+    /// through it).
+    pub fn with_did_resolver(mut self, on: bool) -> Self {
+        self.with_did_resolver = on;
         self
     }
 
@@ -224,6 +234,15 @@ impl TestVtcBuilder {
             None => None,
         };
 
+        let did_resolver = if self.with_did_resolver {
+            use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+            DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+                .await
+                .ok()
+        } else {
+            None
+        };
+
         let install_store = InstallTokenStore::new(install_ks.clone());
 
         let state = AppState {
@@ -251,7 +270,7 @@ impl TestVtcBuilder {
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
             config: Arc::new(RwLock::new(config)),
-            did_resolver: None,
+            did_resolver,
             secrets_resolver: None,
             jwt_keys: Some(jwt_keys.clone()),
             atm: None,
