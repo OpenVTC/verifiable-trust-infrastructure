@@ -518,6 +518,8 @@ async fn update_acl_via_didcomm() {
         role: Some("reader".into()),
         label: None,
         allowed_contexts: None,
+        step_up_approver: None,
+        step_up_require: None,
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
 
