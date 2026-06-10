@@ -8,6 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tracing::info;
 
+pub mod counter;
+
 #[cfg(feature = "encryption")]
 pub(crate) mod encryption;
 
@@ -160,6 +162,33 @@ impl KeyspaceHandle {
                     return Ok(false);
                 }
                 h.insert(key, value).await?;
+                Ok(true)
+            }
+        }
+    }
+
+    /// Raw-bytes variant of [`KeyspaceHandle::insert_if_absent`] — same
+    /// semantics and the same vsock TOCTOU caveat, for values that are
+    /// stored via `insert_raw`/`get_raw` rather than as serde JSON.
+    pub async fn insert_raw_if_absent(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<bool, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.insert_raw_if_absent(key, value).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => {
+                tracing::warn!(
+                    "KeyspaceHandle::Vsock::insert_raw_if_absent using non-atomic get+insert \
+                     fallback; vsock proto lacks a native insert-if-absent opcode. \
+                     Single-replica TEE deployments are unaffected in practice."
+                );
+                let key = key.into();
+                if h.get_raw(key.clone()).await?.is_some() {
+                    return Ok(false);
+                }
+                h.insert_raw(key, value).await?;
                 Ok(true)
             }
         }
@@ -567,6 +596,23 @@ impl LocalKeyspaceHandle {
     ) -> Result<bool, AppError> {
         let key = key.into();
         let bytes = serde_json::to_vec(value)?;
+        self.insert_bytes_if_absent(key, bytes).await
+    }
+
+    /// Raw-bytes variant of [`LocalKeyspaceHandle::insert_if_absent`] —
+    /// same lock, same exactly-one-winner guarantee.
+    pub async fn insert_raw_if_absent(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<bool, AppError> {
+        self.insert_bytes_if_absent(key.into(), value.into()).await
+    }
+
+    /// Shared body: check and insert run under the per-keyspace write
+    /// lock (see [`WriteLocks`]), so exactly one of two racing callers
+    /// observes `true`.
+    async fn insert_bytes_if_absent(&self, key: Vec<u8>, bytes: Vec<u8>) -> Result<bool, AppError> {
         let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
         let lock = self.write_lock.clone();

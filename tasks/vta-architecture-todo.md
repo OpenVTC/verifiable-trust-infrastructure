@@ -22,14 +22,16 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   closures (take_raw/swap) were NOT actually atomic — added a shared
   per-keyspace write lock in LocalStore + `insert_if_absent` primitive +
   concurrency regression tests; also validated `rename_key`'s new id
-  (wire-facing bypass) — PR: ____
+  (wire-facing bypass) — PR: #341 (in review)
 - `[~]` **P0.4** (S) Shared locked counter allocator; fix
-  `allocate_context_index` race (same-subtree key derivation) — next up
-  after P0.3. Scoped during P0.3: new `vti-common/src/store/counter.rs`
-  (app-level lock so the vsock backend is covered too, like ALLOC_LOCK);
-  delegate allocate_path + allocate_context_index; `insert_raw_if_absent`
-  for the KEK salt race; ROTATE_LOCK around operations::seeds::rotate_seed
-  (gen N+1 race); insert_if_absent for the create_context record — PR: ____
+  `allocate_context_index` race (same-subtree key derivation) —
+  implemented on branch `fix/p0.4-counter-races` (stacked on P0.3 #341,
+  PR opens after #341 merges). Delivered: `vti-common/src/store/counter.rs`
+  (app-level lock so the vsock backend is covered too); allocate_path +
+  allocate_context_index delegate; `insert_raw_if_absent` closes the KEK
+  salt race; ROTATE_LOCK serialises seed rotation; create_context claims
+  its record atomically at both layers. Concurrency regression tests for
+  all four — PR: ____
 - `[ ]` **P0.5** (L) Backup/restore: export counters (no BIP-32 path reuse),
   full `AclEntry` round-trip, import-in-progress sentinel — PR: ____
 - `[ ]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) — PR: ____

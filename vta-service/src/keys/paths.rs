@@ -1,44 +1,24 @@
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
-use std::sync::LazyLock;
-use tokio::sync::Mutex;
 use tracing::debug;
+use vti_common::store::counter;
 
 /// Construct a full derivation path from a base and index.
 pub fn path_at(base: &str, index: u32) -> String {
     format!("{base}/{index}'")
 }
 
-/// Serializes the read-increment-write of path counters across the
-/// process. The fjall store has no atomic increment primitive, so two
-/// concurrent `allocate_path` callers would otherwise observe the same
-/// counter value and be handed identical BIP-32 derivation paths —
-/// producing two `KeyRecord`s that share a private key. Allocation is
-/// infrequent and the section is short, so a single global lock is
-/// acceptable; per-base sharding would be a refinement only if this
-/// becomes a hot path.
-static ALLOC_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
 /// Allocate the next sequential derivation path from a group's counter.
 ///
-/// Reads the current counter for `base` from the keys keyspace,
-/// constructs `{base}/{N}'`, increments the counter, and returns the path.
+/// Allocation goes through [`vti_common::store::counter::allocate_u32`],
+/// which serialises the read-increment-write process-wide. Two
+/// concurrent callers handed the same counter value would receive
+/// identical BIP-32 derivation paths — two `KeyRecord`s sharing a
+/// private key — so collision-freedom here is load-bearing.
 pub async fn allocate_path(keys_ks: &KeyspaceHandle, base: &str) -> Result<String, AppError> {
-    let _guard = ALLOC_LOCK.lock().await;
     let counter_key = format!("path_counter:{base}");
-    let current: u32 = match keys_ks.get_raw(counter_key.as_str()).await? {
-        Some(bytes) => {
-            let arr: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| AppError::Internal("corrupt path counter".into()))?;
-            u32::from_le_bytes(arr)
-        }
-        None => 0,
-    };
+    let current = counter::allocate_u32(keys_ks, &counter_key).await?;
     let path = path_at(base, current);
-    keys_ks
-        .insert_raw(counter_key, (current + 1).to_le_bytes().to_vec())
-        .await?;
     debug!(base, path = %path, "derivation path allocated");
     Ok(path)
 }

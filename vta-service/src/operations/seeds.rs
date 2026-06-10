@@ -49,6 +49,13 @@ pub async fn list_seeds(
     })
 }
 
+/// Serialises seed rotation process-wide. Two concurrent rotations
+/// would both read active generation N and both write N+1 — corrupting
+/// the generation chain and racing `reencrypt_all` with mismatched
+/// old/new seed pairs.
+static ROTATE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 pub async fn rotate_seed(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
@@ -58,6 +65,9 @@ pub async fn rotate_seed(
     mnemonic: Option<&str>,
     channel: &str,
 ) -> Result<RotateSeedResultBody, AppError> {
+    // Held across read-generation → archive → write-new → re-encrypt.
+    let _rotation_guard = ROTATE_LOCK.lock().await;
+
     let previous_id = get_active_seed_id(keys_ks)
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
@@ -208,6 +218,46 @@ mod tests {
                 _dir: dir,
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotations_produce_distinct_generations() {
+        // Without ROTATE_LOCK both rotations read active generation 0
+        // and both write generation 1, corrupting the chain.
+        let h = TestHarness::new().await;
+
+        let mut handles = Vec::new();
+        for _ in 0..2 {
+            let keys_ks = h.keys_ks.clone();
+            let imported_ks = h.imported_ks.clone();
+            let audit_ks = h.audit_ks.clone();
+            let seed_store = h.seed_store.clone();
+            handles.push(tokio::spawn(async move {
+                rotate_seed(
+                    &keys_ks,
+                    &imported_ks,
+                    &seed_store,
+                    &audit_ks,
+                    "did:key:z6MkTestAdmin",
+                    None,
+                    "test",
+                )
+                .await
+                .expect("rotate")
+            }));
+        }
+        let mut new_ids = Vec::new();
+        for hd in handles {
+            new_ids.push(hd.await.expect("join").new_seed_id);
+        }
+        new_ids.sort_unstable();
+        assert_eq!(
+            new_ids,
+            vec![1, 2],
+            "two concurrent rotations must produce generations 1 and 2"
+        );
+        let active = get_active_seed_id(&h.keys_ks).await.expect("active id");
+        assert_eq!(active, 2);
     }
 
     #[tokio::test]

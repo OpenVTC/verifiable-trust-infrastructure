@@ -137,7 +137,16 @@ pub async fn create_context(
         updated_at: now,
     };
 
-    store_context(contexts_ks, &record).await?;
+    // Atomic claim: the early exists-check above is the friendly fast
+    // path, but two concurrent creates with the same id both pass it.
+    // The loser's counter slot stays as a gap — safe; record overwrite
+    // would not be (it re-points the context's BIP-32 base path).
+    if !crate::contexts::store_new_context(contexts_ks, &record).await? {
+        return Err(AppError::Conflict(format!(
+            "context already exists: {}",
+            record.id
+        )));
+    }
 
     info!(channel, id = %record.id, parent = ?record.parent, index, "context created");
     Ok(to_result_body(&record))

@@ -32,16 +32,30 @@ fn build_aad(key_id: &str, key_type: &str) -> Vec<u8> {
 }
 
 /// Get or create the KEK salt. Returns the 32-byte salt.
+///
+/// The first-ever creation is claimed via `insert_raw_if_absent`: two
+/// concurrent first imports must converge on ONE salt. The loser of
+/// the race reads the winner's salt back — a plain insert here would
+/// overwrite the winner's salt and leave its just-encrypted secret
+/// permanently undecryptable.
 pub async fn get_or_create_salt(keys_ks: &KeyspaceHandle) -> Result<Vec<u8>, AppError> {
     if let Some(existing) = keys_ks.get_raw(KEK_SALT_KEY).await? {
         return Ok(existing);
     }
-    // Generate a new random salt
+    // Generate a new random salt and try to claim the slot.
     use aes_gcm::aead::rand_core::RngCore;
     let mut salt = vec![0u8; 32];
     aes_gcm::aead::OsRng.fill_bytes(&mut salt);
-    keys_ks.insert_raw(KEK_SALT_KEY, salt.clone()).await?;
-    Ok(salt)
+    if keys_ks
+        .insert_raw_if_absent(KEK_SALT_KEY, salt.clone())
+        .await?
+    {
+        return Ok(salt);
+    }
+    keys_ks
+        .get_raw(KEK_SALT_KEY)
+        .await?
+        .ok_or_else(|| AppError::Internal("KEK salt vanished after losing creation race".into()))
 }
 
 /// Store the KEK salt (used during backup restore).
@@ -263,6 +277,36 @@ mod tests {
         };
         let store = Store::open(&config).unwrap();
         (store, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn get_or_create_salt_converges_on_one_salt_under_concurrency() {
+        // Two concurrent first imports must agree on a single KEK salt:
+        // a lost overwrite here makes the winner's just-encrypted secret
+        // permanently undecryptable.
+        let (store, _dir) = temp_store();
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let ks = store.keyspace("keys").unwrap();
+            handles.push(tokio::spawn(async move {
+                get_or_create_salt(&ks).await.expect("salt")
+            }));
+        }
+        let mut salts = Vec::new();
+        for h in handles {
+            salts.push(h.await.expect("join"));
+        }
+        let persisted = get_salt(&store.keyspace("keys").unwrap())
+            .await
+            .unwrap()
+            .expect("salt persisted");
+        for s in &salts {
+            assert_eq!(
+                s, &persisted,
+                "every concurrent caller must observe the persisted salt"
+            );
+        }
     }
 
     #[tokio::test]
