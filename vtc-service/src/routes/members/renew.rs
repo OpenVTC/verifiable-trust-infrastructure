@@ -113,16 +113,19 @@ pub async fn renew(
     // reseed.
     let slot = match member.status_list_index {
         Some(s) => s,
+        // Locked RMW (P0.1) — and `with_locked` re-reads the row inside
+        // the lock, so the allocation can't be lost to (or built on a
+        // stale copy clobbered by) a concurrent writer.
         None => {
-            let mut row = status_list_state.clone();
-            let s = status_list::allocate(&mut row).ok_or_else(|| {
-                AppError::Internal(format!(
-                    "revocation status list exhausted (capacity = {})",
-                    row.capacity
-                ))
-            })?;
-            status_list::store_state(&state.status_lists_ks, &row).await?;
-            s
+            status_list::with_locked(&state.status_lists_ks, StatusPurpose::Revocation, |row| {
+                status_list::allocate(row).ok_or_else(|| {
+                    AppError::Internal(format!(
+                        "revocation status list exhausted (capacity = {})",
+                        row.capacity
+                    ))
+                })
+            })
+            .await?
         }
     };
 

@@ -131,20 +131,22 @@ pub async fn issue(
         )));
     }
 
-    // 5. Allocate status-list slot.
-    let mut sl_state = status_list::get_state(
+    // 5. Allocate status-list slot — locked RMW so a concurrent
+    //    allocate/flip can't clobber this allocation (P0.1).
+    let (slot, list_credential_id) = status_list::with_locked(
         &state.status_lists_ks,
         affinidi_status_list::StatusPurpose::Revocation,
+        |row| {
+            let slot = status_list::allocate(row).ok_or_else(|| {
+                AppError::Internal(
+                    "revocation status list is full — cannot allocate slot for endorsement".into(),
+                )
+            })?;
+            Ok((slot, row.list_credential_id.clone()))
+        },
     )
-    .await?
-    .ok_or_else(|| AppError::Internal("revocation status list not initialised".into()))?;
-    let slot = status_list::allocate(&mut sl_state).ok_or_else(|| {
-        AppError::Internal(
-            "revocation status list is full — cannot allocate slot for endorsement".into(),
-        )
-    })?;
-    status_list::store_state(&state.status_lists_ks, &sl_state).await?;
-    let status_ref = CredentialStatusRef::revocation(sl_state.list_credential_id.clone(), slot);
+    .await?;
+    let status_ref = CredentialStatusRef::revocation(list_credential_id, slot);
 
     // 6. Build + sign the VEC.
     let id = Uuid::new_v4();
@@ -345,20 +347,20 @@ pub async fn revoke(
         return Ok((StatusCode::OK, Json(RevokeResponse { id: id.to_string() })));
     }
 
-    // Flip the status-list bit.
-    let mut sl_state = status_list::get_state(
+    // Flip the status-list bit — locked RMW so a concurrent allocate/flip
+    // can't clobber this revocation (P0.1). (Wrapping the subsequent
+    // `mark_revoked` in the same critical section for crash-atomicity is
+    // the separate P3.9 hygiene item.)
+    let slot_idx = row.status_list_index;
+    status_list::with_locked(
         &state.status_lists_ks,
         affinidi_status_list::StatusPurpose::Revocation,
+        move |sl| {
+            status_list::flip(sl, slot_idx, true)
+                .map_err(|e| AppError::Internal(format!("flip status-list bit {slot_idx}: {e}")))
+        },
     )
-    .await?
-    .ok_or_else(|| AppError::Internal("revocation status list not initialised".into()))?;
-    status_list::flip(&mut sl_state, row.status_list_index, true).map_err(|e| {
-        AppError::Internal(format!(
-            "flip status-list bit {}: {e}",
-            row.status_list_index
-        ))
-    })?;
-    status_list::store_state(&state.status_lists_ks, &sl_state).await?;
+    .await?;
 
     // Mark the row revoked.
     let updated = mark_revoked(&state.endorsements_ks, id)

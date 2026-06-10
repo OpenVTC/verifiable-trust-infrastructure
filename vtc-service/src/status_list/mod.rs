@@ -48,7 +48,8 @@ pub mod storage;
 pub use allocator::{add_initial_decoys, allocate, flip, occupancy};
 pub use credential::{BITSTRING_STATUS_LIST_VC_TYPE, build_status_list_credential};
 pub use storage::{
-    STATUS_LIST_PREFIX, StatusListState, ensure_initial, get_state, list_states, store_state,
+    STATUS_LIST_PREFIX, StatusListState, ensure_initial, get_state, list_states, lock, store_state,
+    with_locked,
 };
 
 pub use affinidi_status_list::{

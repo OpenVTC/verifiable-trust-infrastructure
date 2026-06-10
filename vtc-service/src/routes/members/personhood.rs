@@ -282,8 +282,11 @@ pub async fn assert(
         ));
     }
 
-    // 7. Allocate/reuse status-list slot + mint a fresh VMC.
-    let mut sl_state = status_list::get_state(
+    // 7. Allocate/reuse status-list slot + mint a fresh VMC. The
+    //    `list_credential_id` read here is immutable; the allocation goes
+    //    through `with_locked` (P0.1) which re-reads the row under the
+    //    lock so it can't be lost to a concurrent writer.
+    let sl_state = status_list::get_state(
         &state.status_lists_ks,
         affinidi_status_list::StatusPurpose::Revocation,
     )
@@ -292,11 +295,18 @@ pub async fn assert(
     let slot = match member.status_list_index {
         Some(s) => s,
         None => {
-            let s = status_list::allocate(&mut sl_state).ok_or_else(|| {
-                AppError::Internal("revocation status list is full — cannot allocate slot".into())
-            })?;
-            status_list::store_state(&state.status_lists_ks, &sl_state).await?;
-            s
+            status_list::with_locked(
+                &state.status_lists_ks,
+                affinidi_status_list::StatusPurpose::Revocation,
+                |row| {
+                    status_list::allocate(row).ok_or_else(|| {
+                        AppError::Internal(
+                            "revocation status list is full — cannot allocate slot".into(),
+                        )
+                    })
+                },
+            )
+            .await?
         }
     };
     let status_ref = CredentialStatusRef::revocation(sl_state.list_credential_id.clone(), slot);

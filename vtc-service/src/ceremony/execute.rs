@@ -231,6 +231,13 @@ async fn issue_member_credentials(
         )
     })?;
 
+    // Hold the status-list write lock across the whole allocate → build →
+    // store sequence (P0.1). The raw guard (not `with_locked`) is needed
+    // because the VMC/VEC build sits between the allocate and the store —
+    // see the doc comment above: the row is persisted only after both VCs
+    // build, so a build failure doesn't burn the slot. The guard keeps a
+    // concurrent writer from clobbering this allocation in that window.
+    let _sl_guard = status_list::lock().await;
     let mut row = status_list::get_state(&state.status_lists_ks, StatusPurpose::Revocation)
         .await?
         .ok_or_else(|| {
@@ -464,18 +471,13 @@ async fn depart(
 /// audit — the caller emits the `StatusListFlipped` event from the
 /// returned [`DepartOutcome`].
 async fn flip_revocation(state: &AppState, slot: u32) -> Result<(), AppError> {
-    let mut row = status_list::get_state(&state.status_lists_ks, StatusPurpose::Revocation)
-        .await?
-        .ok_or_else(|| {
-            AppError::Internal(
-                "revocation status list not provisioned — set `public_url` + restart".into(),
-            )
-        })?;
-    status_list::flip(&mut row, slot, true)
-        .map_err(|e| AppError::Internal(format!("flip revocation slot {slot}: {e}")))?;
-    status_list::store_state(&state.status_lists_ks, &row).await?;
-    status_list::maybe_emit_occupancy_warning(&row);
-    Ok(())
+    // Locked RMW: the flip must not be clobbered by a concurrent
+    // allocate/flip on the same row (P0.1).
+    status_list::with_locked(&state.status_lists_ks, StatusPurpose::Revocation, |row| {
+        status_list::flip(row, slot, true)
+            .map_err(|e| AppError::Internal(format!("flip revocation slot {slot}: {e}")))
+    })
+    .await
 }
 
 /// Pull the top-level `id` field off a signed VC. The upstream

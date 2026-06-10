@@ -40,6 +40,12 @@ pub async fn issue_invitation(
     subject_did: &str,
     validity: Duration,
 ) -> Result<Value, AppError> {
+    // Hold the status-list write lock across allocate → build → store
+    // (P0.1). The raw guard (not `with_locked`) is needed because the VIC
+    // build sits between the allocate and the store so a build failure
+    // doesn't burn the slot (see below) — the guard keeps a concurrent
+    // writer from clobbering this allocation in that window.
+    let _sl_guard = status_list::lock().await;
     let mut row = status_list::get_state(status_lists_ks, StatusPurpose::Revocation)
         .await?
         .ok_or_else(|| {

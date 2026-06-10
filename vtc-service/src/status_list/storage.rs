@@ -6,8 +6,11 @@
 //! `assigned` mask that drives the allocator's
 //! never-reuse-a-flipped-slot invariant.
 
+use std::sync::LazyLock;
+
 use affinidi_status_list::{DEFAULT_BITSTRING_SIZE, StatusPurpose};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, MutexGuard};
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -149,6 +152,69 @@ pub async fn ensure_initial(
     super::allocator::add_initial_decoys(&mut state, decoy_count);
     store_state(ks, &state).await?;
     Ok(state)
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency control for the read-modify-write of a status-list row.
+// ---------------------------------------------------------------------------
+
+/// Process-wide lock serializing every status-list row mutation.
+///
+/// A mutation is `get_state` → mutate in memory (`allocate` / `flip`) →
+/// `store_state`, and `store_state` overwrites the whole row. Without a
+/// lock, two concurrent mutations on the same purpose both read the row
+/// before either stores, so the second store clobbers the first —
+/// silently dropping a revocation flip (a credential the operator
+/// believes revoked then resolves *valid*) or aliasing two members onto
+/// one slot (the correlation harm the `assigned` mask exists to prevent).
+///
+/// One process-wide lock (not per-purpose) is the right grain, mirroring
+/// `ceremony::execute::LAST_ADMIN_LOCK`: status-list writes are
+/// infrequent admin operations, and the public serve route reads
+/// `get_state` directly and never takes the lock — so read throughput is
+/// unaffected and cross-purpose contention is negligible.
+static STATUS_LIST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Acquire the status-list write lock. Hold the returned guard across the
+/// entire `get_state` → mutate → `store_state` sequence.
+///
+/// Most callers want [`with_locked`]. Reach for the raw guard only when
+/// async work must sit between the allocate and the store while still
+/// excluding other writers — e.g. the admit path builds the VMC/VEC
+/// between allocating a slot and persisting it, so a build failure
+/// doesn't burn the slot.
+///
+/// Not re-entrant: never call [`with_locked`] (or `lock` again) while
+/// already holding the guard — it would deadlock.
+pub async fn lock() -> MutexGuard<'static, ()> {
+    STATUS_LIST_LOCK.lock().await
+}
+
+/// Run a status-list row mutation atomically under [`lock`]: load the
+/// row, apply the in-memory mutation `f` (`allocate` / `flip`), persist
+/// it, and emit the occupancy warning — with no interleaving writer.
+/// `f`'s return value is propagated to the caller (e.g. the allocated
+/// slot index).
+///
+/// Returns `AppError::Internal` if the row hasn't been initialised
+/// (`ensure_initial` runs at boot for each purpose once `public_url` is
+/// configured).
+pub async fn with_locked<F, T>(
+    ks: &KeyspaceHandle,
+    purpose: StatusPurpose,
+    f: F,
+) -> Result<T, AppError>
+where
+    F: FnOnce(&mut StatusListState) -> Result<T, AppError>,
+{
+    let _guard = lock().await;
+    let mut state = get_state(ks, purpose)
+        .await?
+        .ok_or_else(|| AppError::Internal(format!("status list for {purpose} not initialised")))?;
+    let out = f(&mut state)?;
+    store_state(ks, &state).await?;
+    super::maybe_emit_occupancy_warning(&state);
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -409,5 +475,122 @@ mod tests {
             reloaded.bits[byte] & (1 << bit) != 0,
             "revocation bit was cleared during reallocation drain"
         );
+    }
+
+    /// Small-capacity state persisted to `ks`, ready for the concurrency
+    /// tests (the production 131_072-bit default makes `allocate`'s
+    /// available-slot scan needlessly heavy per call).
+    async fn seed_small_list(ks: &KeyspaceHandle, capacity: usize) -> StatusListState {
+        let mut state = StatusListState::new(
+            StatusPurpose::Revocation,
+            "https://vtc.example.com/v1/status-lists/revocation".into(),
+        );
+        state.capacity = capacity;
+        state.bits = vec![0u8; capacity.div_ceil(8)];
+        state.assigned = vec![false; capacity];
+        store_state(ks, &state).await.unwrap();
+        state
+    }
+
+    /// Regression for the P0.1 status-list race: N concurrent `allocate`
+    /// calls through [`with_locked`] over the same keyspace must each get
+    /// a *distinct* slot and persist *all* N — none clobbered.
+    ///
+    /// Without the lock, the `get_state` → `allocate` → `store_state` RMW
+    /// races: concurrent writers read the same row and the last
+    /// `store_state` overwrites the others, so fewer than N slots persist
+    /// (and `allocate` can hand the same index to two members — the
+    /// correlation harm the `assigned` mask exists to prevent). Removing
+    /// the `lock().await` inside `with_locked` makes this test fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_allocate_under_lock_loses_no_slots() {
+        use crate::status_list::allocator::allocate;
+
+        let (ks, _dir) = temp_ks().await;
+        seed_small_list(&ks, 64).await;
+
+        const N: u32 = 16;
+        let mut handles = Vec::with_capacity(N as usize);
+        for _ in 0..N {
+            let ks = ks.clone();
+            handles.push(tokio::spawn(async move {
+                with_locked(&ks, StatusPurpose::Revocation, |row| {
+                    allocate(row).ok_or_else(|| AppError::Internal("status list full".into()))
+                })
+                .await
+            }));
+        }
+
+        let mut slots = std::collections::HashSet::new();
+        for h in handles {
+            slots.insert(h.await.unwrap().unwrap());
+        }
+        assert_eq!(
+            slots.len(),
+            N as usize,
+            "concurrent allocations collided or were lost (got {} distinct slots)",
+            slots.len()
+        );
+
+        let final_state = get_state(&ks, StatusPurpose::Revocation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            final_state.count_assigned(),
+            N as usize,
+            "persisted assigned-count dropped allocations to a racing writer"
+        );
+    }
+
+    /// Regression for the P0.1 status-list race: a revocation `flip`
+    /// running concurrently with an `allocate` (a join admit / endorsement
+    /// issue) must keep the revocation bit — the allocate's whole-row
+    /// `store_state` must not clobber it. Both [`with_locked`] mutations
+    /// apply; order is irrelevant.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn revoke_under_lock_survives_concurrent_allocate() {
+        use crate::status_list::allocator::{allocate, flip};
+
+        let (ks, _dir) = temp_ks().await;
+        let mut state = seed_small_list(&ks, 64).await;
+        // Pre-allocate the slot we'll revoke, persist it.
+        let victim = allocate(&mut state).expect("pre-allocate victim");
+        store_state(&ks, &state).await.unwrap();
+
+        let ks_revoke = ks.clone();
+        let ks_alloc = ks.clone();
+        let revoke = tokio::spawn(async move {
+            with_locked(&ks_revoke, StatusPurpose::Revocation, move |row| {
+                flip(row, victim, true).map_err(|e| AppError::Internal(e.to_string()))
+            })
+            .await
+        });
+        let alloc = tokio::spawn(async move {
+            with_locked(&ks_alloc, StatusPurpose::Revocation, |row| {
+                allocate(row).ok_or_else(|| AppError::Internal("status list full".into()))
+            })
+            .await
+        });
+        revoke.await.unwrap().unwrap();
+        let new_slot = alloc.await.unwrap().unwrap();
+
+        let final_state = get_state(&ks, StatusPurpose::Revocation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            final_state.is_set(victim as usize),
+            "revocation bit was lost to a racing allocate"
+        );
+        assert!(
+            final_state.assigned[victim as usize],
+            "assigned mark on the revoked slot was lost"
+        );
+        assert!(
+            final_state.assigned[new_slot as usize],
+            "the concurrent allocation was lost"
+        );
+        assert_ne!(new_slot, victim, "allocate handed back the revoked slot");
     }
 }
