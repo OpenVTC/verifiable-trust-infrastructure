@@ -14,8 +14,6 @@
 
 mod common;
 
-use std::sync::Arc;
-
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::Engine;
@@ -23,115 +21,37 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::now_epoch;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
-use vtc_service::config::AppConfig;
-use vtc_service::routes;
-use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 /// The RP (this VTC's) DID — only ever string-compared as the id_token
 /// `aud`, so it need not be resolvable.
 const VTC_DID: &str = "did:webvh:scidvtc:vtc.example.com";
 const AUTH_TYPE: &str = "https://trusttasks.org/spec/auth/authenticate/0.1";
 
-fn init_jwt_provider() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
-    });
-}
-
 struct Fixture {
     router: axum::Router,
-    _dir: tempfile::TempDir,
+    // Owns the temp data dir + serves `router`'s state; must outlive them.
+    _vtc: TestVtc,
 }
 
 async fn build_fixture(holder_did: &str) -> Fixture {
-    init_jwt_provider();
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    macro_rules! ks {
-        ($n:literal) => {
-            store.keyspace($n).unwrap()
-        };
-    }
-    let install_ks = ks!("install");
-    let jwt_seed = [0x42u8; 32];
-    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").expect("jwt keys"));
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "{VTC_DID}"
-        [store]
-        data_dir = "{}"
-        [auth]
-        jwt_signing_key = "{}"
-        "#,
-        dir.path().display(),
-        B64.encode(jwt_seed),
-    ))
-    .expect("parse config");
-
-    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
-        .await
-        .expect("did resolver");
-
-    let state = AppState {
-        sessions_ks: ks!("sessions"),
-        acl_ks: ks!("acl"),
-        community_ks: ks!("community"),
-        config_ks: ks!("config"),
-        passkey_ks: ks!("passkey"),
-        install_ks: install_ks.clone(),
-        members_ks: ks!("members"),
-        join_requests_ks: ks!("join_requests"),
-        policies_ks: ks!("policies"),
-        active_policies_ks: ks!("active_policies"),
-        status_lists_ks: ks!("status_lists"),
-        registry_records_ks: ks!("registry_records"),
-        sync_queue_ks: ks!("sync_queue"),
-        sync_cursor_ks: ks!("sync_cursor"),
-        relationships_ks: ks!("relationships"),
-        relationships_by_did_ks: ks!("relationships_by_did"),
-        endorsement_types_ks: ks!("endorsement_types"),
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks: ks!("endorsements"),
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer: None,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: Some(did_resolver),
-        secrets_resolver: None,
-        jwt_keys: Some(jwt_keys),
-        atm: None,
-        webauthn: None,
-        public_url: None,
-        install_signer: None,
-        install_store: vtc_service::install::InstallTokenStore::new(install_ks),
-        audit_ks: ks!("audit"),
-        audit_key_ks: ks!("audit_key"),
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
+    // The SIOP wallet-login path resolves the presented holder DID through
+    // a live `DIDCacheClient`.
+    let vtc = TestVtc::builder()
+        .vtc_did(VTC_DID)
+        .with_did_resolver(true)
+        .build()
+        .await;
 
     // The holder must be an ACL admin: challenge issuance and the
     // authenticate step both gate on the ACL.
     store_acl_entry(
-        &state.acl_ks,
+        &vtc.state.acl_ks,
         &VtcAclEntry {
             did: holder_did.into(),
             role: VtcRole::Admin,
@@ -145,8 +65,10 @@ async fn build_fixture(holder_did: &str) -> Fixture {
     .await
     .expect("acl insert");
 
-    let router = routes::router().with_state(state);
-    Fixture { router, _dir: dir }
+    Fixture {
+        router: vtc.router.clone(),
+        _vtc: vtc,
+    }
 }
 
 /// A fresh Ed25519 holder identity as a `did:key`, plus its
