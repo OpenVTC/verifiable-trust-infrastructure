@@ -14,20 +14,14 @@
 //! It calls `apply` directly against a built `AppState` rather than
 //! over HTTP — the executor is below the route layer.
 
-use std::sync::Arc;
-
 use affinidi_status_list::StatusPurpose;
-use tokio::sync::RwLock;
-use vti_common::config::StoreConfig;
-use vti_common::store::Store;
 
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::ceremony::EffectPlan;
 use vtc_service::ceremony::execute::{self, EffectOutcome};
-use vtc_service::config::AppConfig;
-use vtc_service::install::InstallTokenStore;
 use vtc_service::members::{Disposition, get_member};
 use vtc_service::server::AppState;
+use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const ACTOR_DID: &str = "did:key:zActor";
@@ -35,102 +29,23 @@ const ACTOR_DID: &str = "did:key:zActor";
 /// Build an `AppState` with a credential signer + provisioned status
 /// lists — the minimum the `Admit` arm needs. JWT / webauthn / audit
 /// are left `None`; the executor doesn't touch them.
-async fn build_state() -> (AppState, tempfile::TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = Store::open(&StoreConfig {
-        data_dir: dir.path().to_path_buf(),
-    })
-    .expect("open store");
-
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let community_ks = store.keyspace("community").unwrap();
-    let config_ks = store.keyspace("config").unwrap();
-    let passkey_ks = store.keyspace("passkey").unwrap();
-    let install_ks = store.keyspace("install").unwrap();
-    let members_ks = store.keyspace("members").unwrap();
-    let join_requests_ks = store.keyspace("join_requests").unwrap();
-    let policies_ks = store.keyspace("policies").unwrap();
-    let active_policies_ks = store.keyspace("active_policies").unwrap();
-    let status_lists_ks = store.keyspace("status_lists").unwrap();
-    let registry_records_ks = store.keyspace("registry_records").unwrap();
-    let sync_queue_ks = store.keyspace("sync_queue").unwrap();
-    let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
-    let relationships_ks = store.keyspace("relationships").unwrap();
-    let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
-    let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
-    let endorsements_ks = store.keyspace("endorsements").unwrap();
-    let audit_ks = store.keyspace("audit").unwrap();
-    let audit_key_ks = store.keyspace("audit_key").unwrap();
+async fn build_state() -> (AppState, TestVtc) {
+    let vtc = TestVtc::builder()
+        .with_signers(true)
+        .with_public_url(RP_ORIGIN)
+        .build()
+        .await;
 
     // The admit path allocates a revocation slot when issuing the VMC.
     for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
         let url = format!("{RP_ORIGIN}/v1/status-lists/{purpose}");
-        vtc_service::status_list::ensure_initial(&status_lists_ks, purpose, url)
+        vtc_service::status_list::ensure_initial(&vtc.state.status_lists_ks, purpose, url)
             .await
             .expect("ensure_initial status list");
     }
 
-    let credential_signer = Some(Arc::new(
-        vtc_service::credentials::LocalSigner::from_ed25519_seed(
-            "did:webvh:vtc.example.com:abc".into(),
-            &[0xCC; 32],
-        ),
-    ));
-
-    let install_store = InstallTokenStore::new(install_ks.clone());
-
-    let config: AppConfig = toml::from_str(&format!(
-        r#"
-        vtc_did = "did:webvh:vtc.example.com:abc"
-        public_url = "{RP_ORIGIN}"
-        [store]
-        data_dir = "{}"
-        "#,
-        dir.path().display(),
-    ))
-    .expect("parse config");
-
-    let state = AppState {
-        sessions_ks,
-        acl_ks,
-        community_ks,
-        config_ks,
-        passkey_ks,
-        install_ks,
-        members_ks,
-        join_requests_ks,
-        policies_ks,
-        active_policies_ks,
-        status_lists_ks,
-        registry_records_ks,
-        sync_queue_ks,
-        sync_cursor_ks,
-        relationships_ks,
-        relationships_by_did_ks,
-        endorsement_types_ks,
-        schemas_ks: store.keyspace("schemas").unwrap(),
-        endorsements_ks,
-        registry_client: None,
-        registry_health: vtc_service::registry::RegistryHealth::new(),
-        credential_signer,
-        audit_ks,
-        audit_key_ks,
-        config: Arc::new(RwLock::new(config)),
-        did_resolver: None,
-        secrets_resolver: None,
-        jwt_keys: None,
-        atm: None,
-        webauthn: None,
-        public_url: Some(RP_ORIGIN.to_string()),
-        install_signer: None,
-        install_store,
-        audit_writer: None,
-        shutdown_tx: tokio::sync::watch::channel(false).0,
-        supervisor: None,
-    };
-
-    (state, dir)
+    let state = vtc.state.clone();
+    (state, vtc)
 }
 
 /// `Admit` at a non-`member` role writes the ACL row at that role,
