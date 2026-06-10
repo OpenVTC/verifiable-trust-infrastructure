@@ -74,6 +74,7 @@ pub struct TestVtcBuilder {
     with_audit: bool,
     with_signers: bool,
     with_did_resolver: bool,
+    credential_signer: Option<Arc<LocalSigner>>,
     public_url: Option<String>,
     supervisor: Option<SupervisorKind>,
 }
@@ -85,6 +86,7 @@ impl Default for TestVtcBuilder {
             with_audit: false,
             with_signers: false,
             with_did_resolver: false,
+            credential_signer: None,
             public_url: None,
             supervisor: None,
         }
@@ -111,6 +113,15 @@ impl TestVtcBuilder {
     /// VTC's signing bundle from a VTA.
     pub fn with_signers(mut self, on: bool) -> Self {
         self.with_signers = on;
+        self
+    }
+
+    /// Inject a specific [`LocalSigner`] as the credential signer —
+    /// overriding the one [`with_signers`](Self::with_signers) would
+    /// derive. Use when a test holds the signer and verifies issued
+    /// credentials against it. Does not affect the install signer.
+    pub fn with_credential_signer(mut self, signer: Arc<LocalSigner>) -> Self {
+        self.credential_signer = Some(signer);
         self
     }
 
@@ -212,7 +223,7 @@ impl TestVtcBuilder {
             None
         };
 
-        let (credential_signer, install_signer) = if self.with_signers {
+        let (mut credential_signer, install_signer) = if self.with_signers {
             let signer = Arc::new(LocalSigner::from_ed25519_seed(
                 self.vtc_did.clone(),
                 &SIGNER_SEED,
@@ -225,6 +236,11 @@ impl TestVtcBuilder {
         } else {
             (None, None)
         };
+        // An explicitly-injected signer overrides the derived one (used
+        // by tests that verify issued credentials against a held signer).
+        if let Some(sig) = self.credential_signer.clone() {
+            credential_signer = Some(sig);
+        }
 
         let webauthn = match &self.public_url {
             Some(url) => match vti_common::auth::passkey::build_webauthn(url) {
