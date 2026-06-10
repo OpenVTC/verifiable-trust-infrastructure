@@ -399,6 +399,18 @@ pub async fn run(
         None
     };
 
+    // Install the Prometheus recorder once per process (persists across
+    // soft restarts, same as the TCP listener above). The global recorder
+    // can only be set once — installing it inside the restart loop panics
+    // the REST thread on the second iteration with FailedToSetGlobalRecorder.
+    // The handle is cloned into each iteration's AppState below.
+    #[cfg(feature = "rest")]
+    let metrics_handle = if rest_enabled {
+        Some(crate::metrics::install())
+    } else {
+        None
+    };
+
     // ── Restart loop ──────────────────────────────────────────────
     // Each iteration starts all service threads, waits for shutdown
     // or restart signal, tears everything down, then either exits
@@ -633,7 +645,7 @@ pub async fn run(
             tee: tee_context.clone(),
             restart_tx: restart_tx.clone(),
             #[cfg(feature = "rest")]
-            metrics_handle: None, // Set in REST thread after install
+            metrics_handle: metrics_handle.clone(), // installed once, before the loop
         };
 
         // Spawn REST thread (conditional)
@@ -1004,7 +1016,7 @@ fn run_storage_thread(
 #[cfg(feature = "rest")]
 fn run_rest_thread(
     std_listener: std::net::TcpListener,
-    mut state: AppState,
+    state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1015,9 +1027,9 @@ fn run_rest_thread(
     rt.block_on(async {
         info!("REST thread started");
 
-        // Install Prometheus metrics recorder (once per process)
-        let metrics_handle = crate::metrics::install();
-        state.metrics_handle = Some(metrics_handle);
+        // The Prometheus recorder is installed once per process (before the
+        // restart loop in `run`); `state.metrics_handle` already carries the
+        // handle. Installing here would panic on every soft restart.
 
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .expect("failed to convert std TcpListener to tokio TcpListener");
