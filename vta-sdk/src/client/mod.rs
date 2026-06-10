@@ -140,11 +140,14 @@ impl VtaClient {
             Ok(resp.json::<T>().await?)
         } else {
             let status = resp.status();
-            let body = resp
-                .json::<ErrorResponse>()
-                .await
-                .map(|e| e.error)
-                .unwrap_or_else(|_| "unknown error".to_string());
+            let text = resp.text().await?;
+            // For 409 Conflict, preserve the full JSON body so callers can
+            // extract structured details (e.g. EnableDidcommConflictBody).
+            // Other error codes only need the `error` field string.
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(VtaError::Conflict(text));
+            }
+            let body = Self::extract_error_message(&text);
             Err(VtaError::from_http(status, body))
         }
     }
@@ -154,13 +157,27 @@ impl VtaClient {
             Ok(())
         } else {
             let status = resp.status();
-            let body = resp
-                .json::<ErrorResponse>()
-                .await
-                .map(|e| e.error)
-                .unwrap_or_else(|_| "unknown error".to_string());
+            let text = resp.text().await?;
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(VtaError::Conflict(text));
+            }
+            let body = Self::extract_error_message(&text);
             Err(VtaError::from_http(status, body))
         }
+    }
+
+    /// Extract the `error` field from a JSON response body, or fall back to
+    /// "unknown error" with the raw text appended for diagnostics.
+    fn extract_error_message(text: &str) -> String {
+        serde_json::from_str::<ErrorResponse>(text)
+            .map(|e| e.error)
+            .unwrap_or_else(|_| {
+                if text.is_empty() {
+                    "unknown error".to_string()
+                } else {
+                    format!("unknown error: {text}")
+                }
+            })
     }
 }
 

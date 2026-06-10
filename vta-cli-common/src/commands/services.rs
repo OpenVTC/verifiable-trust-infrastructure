@@ -14,21 +14,15 @@
 //! see the migration cue in pnm-cli/cnm-cli for the
 //! retired-command UX.
 
-use serde::Deserialize;
 use vta_sdk::client::VtaClient;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocol::services::{
     DisableRestRequest, EnableRestRequest, RollbackDidcommRequest, RollbackRestRequest,
     UpdateRestRequest,
 };
-use vta_sdk::protocol::{DisableDidcommRequest, EnableDidcommRequest, UpdateDidcommRequest};
-
-#[derive(Debug, Deserialize)]
-struct EnableDidcommConflictBody {
-    error: String,
-    #[serde(default)]
-    mediator_did: Option<String>,
-}
+use vta_sdk::protocol::{
+    DisableDidcommRequest, EnableDidcommConflictBody, EnableDidcommRequest, UpdateDidcommRequest,
+};
 
 // ── services list ──────────────────────────────────────────────────
 

@@ -87,6 +87,15 @@ pub struct DidcommStatusResponse {
     pub websocket_status: Option<String>,
 }
 
+/// Body returned by the server on `409 Conflict` from
+/// `POST /services/didcomm/enable` when DIDComm is already active.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnableDidcommConflictBody {
+    pub error: String,
+    #[serde(default)]
+    pub mediator_did: Option<String>,
+}
+
 /// Request body for `POST /services/didcomm/disable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisableDidcommRequest {
@@ -140,46 +149,19 @@ impl VtaClient {
         &self,
         req: EnableDidcommRequest,
     ) -> Result<EnableDidcommResponse, VtaError> {
-        #[derive(Debug, Deserialize)]
-        struct EnableDidcommConflictBody {
-            error: String,
-            #[serde(default)]
-            mediator_did: Option<String>,
-        }
-
         match &self.transport {
             crate::client::Transport::Rest {
                 client,
                 base_url,
                 auth,
             } => {
-                crate::client::VtaClient::ensure_token_valid(client, base_url, auth).await?;
+                Self::ensure_token_valid(client, base_url, auth).await?;
                 let token = auth.lock().await.token.clone();
                 let req = client
                     .post(format!("{base_url}/services/didcomm/enable"))
                     .json(&req);
-                let resp = crate::client::VtaClient::with_auth_token(req, &token)
-                    .send()
-                    .await?;
-
-                if resp.status().is_success() {
-                    return Ok(resp.json::<EnableDidcommResponse>().await?);
-                }
-
-                let status = resp.status();
-                let text = resp.text().await?;
-                if status == reqwest::StatusCode::CONFLICT
-                    && let Ok(body) = serde_json::from_str::<EnableDidcommConflictBody>(&text)
-                    && body.error == "didcomm_already_enabled"
-                    && body.mediator_did.is_some()
-                {
-                    return Err(VtaError::Conflict(text));
-                }
-
-                let body = serde_json::from_str::<crate::client::ErrorResponse>(&text)
-                    .map(|e| e.error)
-                    .unwrap_or(text);
-                Err(VtaError::from_http(status, body))
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
             crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(

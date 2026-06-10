@@ -1527,7 +1527,7 @@ async fn http_418_maps_to_other() {
 }
 
 #[tokio::test]
-async fn malformed_error_body_falls_back_to_unknown() {
+async fn malformed_error_body_falls_back_to_raw_text() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/config"))
@@ -1539,7 +1539,7 @@ async fn malformed_error_body_falls_back_to_unknown() {
     match err {
         VtaError::Server { status, body } => {
             assert_eq!(status, 500);
-            assert_eq!(body, "unknown error");
+            assert_eq!(body, "unknown error: not json");
         }
         other => panic!("expected Server, got {other:?}"),
     }

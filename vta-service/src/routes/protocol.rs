@@ -194,7 +194,7 @@ pub async fn get_didcomm_status_handler(
     _auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Json<DidcommStatusResponse> {
-    let (enabled, mediator_did) = {
+    let (configured, mediator_did) = {
         let config = state.config.read().await;
         (
             config.services.didcomm,
@@ -206,6 +206,13 @@ pub async fn get_didcomm_status_handler(
         )
     };
 
+    // DIDComm is "enabled" only when the feature is compiled in, the config
+    // flag is set, AND a mediator is registered — consistent with GET /services.
+    #[cfg(feature = "didcomm")]
+    let enabled = configured && mediator_did.is_some();
+    #[cfg(not(feature = "didcomm"))]
+    let enabled = false;
+
     if !enabled {
         return Json(DidcommStatusResponse {
             enabled: false,
@@ -214,17 +221,22 @@ pub async fn get_didcomm_status_handler(
         });
     }
 
-    let websocket_status = state
-        .didcomm_websocket_status
-        .read()
-        .await
-        .as_str()
-        .to_string();
+    #[cfg(feature = "didcomm")]
+    let websocket_status = Some(
+        state
+            .didcomm_websocket_status
+            .read()
+            .await
+            .as_str()
+            .to_string(),
+    );
+    #[cfg(not(feature = "didcomm"))]
+    let websocket_status: Option<String> = None;
 
     Json(DidcommStatusResponse {
         enabled: true,
         mediator_did,
-        websocket_status: Some(websocket_status),
+        websocket_status,
     })
 }
 

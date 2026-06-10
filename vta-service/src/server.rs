@@ -169,6 +169,10 @@ pub struct AppState {
     pub ka_vm_id: Option<String>,
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<DIDCommBridge>,
+    /// WebSocket connection status of the DIDComm listener. Only meaningful
+    /// on the axum server path (`run()`); `build_app_state()` (TEE
+    /// front-ends) never wires the event logger that updates this field.
+    #[cfg(feature = "didcomm")]
     pub didcomm_websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
@@ -329,6 +333,7 @@ pub async fn build_app_state(
         ka_vm_id: auth.ka_vm_id,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        #[cfg(feature = "didcomm")]
         didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
 
         jwt_keys: auth.jwt_keys,
@@ -649,6 +654,7 @@ pub async fn run(
             ka_vm_id: auth.ka_vm_id.clone(),
             #[cfg(feature = "didcomm")]
             didcomm_bridge: didcomm_bridge.clone(),
+            #[cfg(feature = "didcomm")]
             didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
             jwt_keys: auth.jwt_keys,
             atm: auth.atm,

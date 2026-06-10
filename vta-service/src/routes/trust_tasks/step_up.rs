@@ -696,6 +696,7 @@ async fn resolve_step_up(
 
 /// Trust Task `type` of a step-up approve-request (also the DIDComm message
 /// `type` used when pushing one to an approver).
+#[cfg(feature = "didcomm")]
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
 
@@ -724,7 +725,7 @@ async fn maybe_push_step_up(
     state: &AppState,
     recipient: &str,
     caller_did: &str,
-    approve_request: &Value,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] approve_request: &Value,
 ) {
     if recipient == caller_did {
         return; // self mode — the caller satisfies its own step-up.
@@ -736,6 +737,7 @@ async fn maybe_push_step_up(
             cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
         )
     };
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(
             approver = %recipient,

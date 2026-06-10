@@ -196,10 +196,16 @@ pub(crate) async fn run(
                                     Ok(status.mediator_did.map(|did| (did, true)))
                                 }
                                 Ok(_) => Ok(None),
-                                Err(_) => Ok(None),
+                                Err(e) => {
+                                    println!("  {DIM}(status check failed: {e}){RESET}");
+                                    Ok(None)
+                                }
                             }
                         }
-                        Err(_) => Ok(None),
+                        Err(e) => {
+                            println!("  {DIM}(auth for status check failed: {e}){RESET}");
+                            Ok(None)
+                        }
                     }
                 } else {
                     Ok(None)

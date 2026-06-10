@@ -580,6 +580,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         ka_vm_id: None,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        #[cfg(feature = "didcomm")]
         didcomm_websocket_status: Arc::new(tokio::sync::RwLock::new(
             crate::server::DidcommWebsocketStatus::Disconnected,
         )),
