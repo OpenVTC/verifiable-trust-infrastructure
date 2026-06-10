@@ -178,6 +178,20 @@ pub async fn verify_foreign_vec(
     }
     let issuer = issuer.to_string();
 
+    // Spec §8.4: the VMC's only job here is the "is a live, non-revoked
+    // member" gate, so it must name the **same subject** as the role VEC.
+    // Without this, an attacker pairs member A's role VEC with member B's
+    // (still-unrevoked) VMC — same issuer — and passes the membership gate
+    // even after the foreign community revoked A. Checked before any
+    // proof/network work so a mismatched pair fails fast.
+    let vec_subject = subject_id(vec, "VEC")?;
+    let vmc_subject = subject_id(vmc, "VMC")?;
+    if vec_subject != vmc_subject {
+        return Err(RecognitionError::Malformed(format!(
+            "VEC subject ({vec_subject}) != VMC subject ({vmc_subject})"
+        )));
+    }
+
     // Step 1: proof verification. Cheap; runs first so a
     // malformed pair short-circuits before any network call.
     verify_proof(vec, &issuer, key_resolver, "VEC").await?;
@@ -340,8 +354,30 @@ fn parse_rfc3339(raw: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|e| format!("parse RFC3339 {raw}: {e}"))
 }
 
+/// Extract `credentialSubject.id` from a credential (the first subject if
+/// multiple). `label` names the credential in error messages.
+fn subject_id(vc: &VerifiableCredential, label: &str) -> Result<String, RecognitionError> {
+    use affinidi_vc::SubjectValue;
+    let subject_map = match &vc.credential_subject {
+        SubjectValue::Single(m) => m.clone(),
+        SubjectValue::Multiple(v) => v.first().cloned().ok_or_else(|| {
+            RecognitionError::Malformed(format!("{label} credentialSubject is empty"))
+        })?,
+    };
+    subject_map
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            RecognitionError::Malformed(format!(
+                "{label} credentialSubject.id missing or not a string"
+            ))
+        })
+}
+
 fn extract_role_claim(vec: &VerifiableCredential) -> Result<(String, String), RecognitionError> {
     use affinidi_vc::SubjectValue;
+    let subject_did = subject_id(vec, "VEC")?;
     let subject_map = match &vec.credential_subject {
         SubjectValue::Single(m) => m.clone(),
         SubjectValue::Multiple(v) => v
@@ -349,13 +385,6 @@ fn extract_role_claim(vec: &VerifiableCredential) -> Result<(String, String), Re
             .cloned()
             .ok_or_else(|| RecognitionError::Malformed("VEC credentialSubject is empty".into()))?,
     };
-    let subject_did = subject_map
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| {
-            RecognitionError::Malformed("VEC credentialSubject.id missing or not a string".into())
-        })?;
     // VEC shape per `build_role_vec`:
     // credentialSubject = { id, endorsement: { type, role, communityDid } }
     // The role lives under `endorsement.role`, not at the top level
@@ -886,6 +915,51 @@ mod tests {
         assert_eq!(verified.subject_did, subject);
         assert_eq!(verified.foreign_role, "moderator");
         assert!(verified.earliest_valid_until > Utc::now());
+    }
+
+    #[tokio::test]
+    async fn vmc_subject_mismatch_is_rejected_before_network_calls() {
+        // The attack: pair member A's role VEC with member B's (still
+        // unrecognised-as-revoked) VMC — same issuer — to pass the
+        // membership gate as A after A was revoked. The subjects must match.
+        let issuer = "did:webvh:peer.example.com:abc";
+        let seed = [0xCDu8; 32];
+        let signer = LocalSigner::from_ed25519_seed(issuer.into(), &seed);
+        let pubkey = signer.public_bytes().to_vec();
+
+        let vec_vc = build_role_vec(
+            &signer,
+            RoleVecParams::new("did:key:zAlice", VtcRole::Moderator)
+                .with_validity(chrono::Duration::seconds(3600))
+                .with_id("urn:vec:test"),
+        )
+        .await
+        .expect("build vec");
+        let vmc_vc = build_vmc(
+            &signer,
+            VmcParams::new("did:key:zBob") // different subject than the VEC
+                .with_validity(chrono::Duration::seconds(3600))
+                .with_id("urn:vmc:test"),
+        )
+        .await
+        .expect("build vmc");
+
+        let resolver = StubKeyResolver::new().with(issuer, pubkey);
+        let fetcher = StubStatusFetcher::new();
+        let mock_reg = MockRegistryClient::new();
+        mock_reg.set_recognised(issuer).await;
+        let reg: Arc<dyn TrustRegistryClient> = Arc::new(mock_reg.clone());
+
+        let err = verify_foreign_vec(&vec_vc, &vmc_vc, &resolver, &fetcher, reg, Utc::now())
+            .await
+            .expect_err("mismatched VEC/VMC subjects must be rejected");
+        assert!(matches!(err, RecognitionError::Malformed(_)), "got {err:?}");
+        assert!(format!("{err}").contains("subject"), "got {err}");
+        assert_eq!(
+            mock_reg.call_counts().await.recognise,
+            0,
+            "subject binding must be checked before any network call"
+        );
     }
 
     #[tokio::test]
