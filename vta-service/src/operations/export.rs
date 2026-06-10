@@ -412,8 +412,10 @@ mod tests {
     /// mediator's exact-match recipient lookup (the storm.ws outage).
     #[tokio::test]
     async fn build_did_secrets_excludes_non_vm_admin_did_key() {
-        use crate::operations::keys::{CreateKeyParams, create_key};
-        use vta_sdk::keys::KeyType;
+        use crate::keys::paths::allocate_path;
+        use crate::keys::{KeyRecord, store_key};
+        use chrono::Utc;
+        use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
 
         let env = open_env().await;
         let auth = super_admin();
@@ -439,54 +441,71 @@ mod tests {
             .await
             .expect("store did on context");
 
-        // Two operating keys whose key_ids ARE verification methods of `did`.
-        for (kid, kt) in [
-            (format!("{did}#key-0"), KeyType::Ed25519),
-            (format!("{did}#key-1"), KeyType::X25519),
-        ] {
-            create_key(
-                &env.keys_ks,
-                &env.contexts_ks,
-                &env.seed_store,
-                &env.audit_ks,
-                &auth,
-                CreateKeyParams {
-                    key_type: kt,
-                    derivation_path: None,
-                    key_id: Some(kid),
-                    mnemonic: None,
-                    label: None,
-                    context_id: Some("med-ctx".into()),
-                },
-                "test",
-            )
-            .await
-            .expect("mint operating key");
+        // Mint a key record the way internal DID provisioning does: an
+        // allocated path + a directly-written KeyRecord. VM-shaped
+        // key_ids are exclusive to this internal path — the public
+        // create_key/import_key ops reject them at validation. The
+        // stored public_key is not consulted by the bundle (secrets are
+        // re-derived from the path), so a placeholder is fine here.
+        async fn mint_internal(
+            env: &TestEnv,
+            base_path: &str,
+            kid: &str,
+            kt: KeyType,
+            label: Option<&str>,
+        ) {
+            let path = allocate_path(&env.keys_ks, base_path)
+                .await
+                .expect("allocate path");
+            let now = Utc::now();
+            let record = KeyRecord {
+                key_id: kid.to_string(),
+                derivation_path: path,
+                key_type: kt,
+                status: KeyStatus::Active,
+                public_key: "zPlaceholderNotUnderTest".into(),
+                label: label.map(String::from),
+                context_id: Some("med-ctx".into()),
+                seed_id: None,
+                origin: KeyOrigin::Derived,
+                created_at: now,
+                updated_at: now,
+            };
+            env.keys_ks
+                .insert(store_key(kid), &record)
+                .await
+                .expect("store key record");
         }
+
+        // Two operating keys whose key_ids ARE verification methods of `did`.
+        mint_internal(
+            &env,
+            &rec.base_path,
+            &format!("{did}#key-0"),
+            KeyType::Ed25519,
+            None,
+        )
+        .await;
+        mint_internal(
+            &env,
+            &rec.base_path,
+            &format!("{did}#key-1"),
+            KeyType::X25519,
+            None,
+        )
+        .await;
 
         // An admin did:key minted into the same context: its VM id belongs
         // to a *different* DID and its label is free text. Must be excluded.
         let admin = "did:key:z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf";
-        create_key(
-            &env.keys_ks,
-            &env.contexts_ks,
-            &env.seed_store,
-            &env.audit_ks,
-            &auth,
-            CreateKeyParams {
-                key_type: KeyType::Ed25519,
-                derivation_path: None,
-                key_id: Some(format!(
-                    "{admin}#z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf"
-                )),
-                mnemonic: None,
-                label: Some("admin DID for context med-ctx".into()),
-                context_id: Some("med-ctx".into()),
-            },
-            "test",
+        mint_internal(
+            &env,
+            &rec.base_path,
+            &format!("{admin}#z6Mkt6eNM38RhFfjSdmXBtT1SRL7sPgPZD1MkXZbwjYBhTLf"),
+            KeyType::Ed25519,
+            Some("admin DID for context med-ctx"),
         )
-        .await
-        .expect("mint admin did:key");
+        .await;
 
         let bundle = build_did_secrets_bundle(&deps_of(&env), &auth, "med-ctx", "test")
             .await

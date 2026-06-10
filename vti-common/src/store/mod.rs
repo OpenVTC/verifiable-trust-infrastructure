@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::config::StoreConfig;
@@ -127,6 +128,43 @@ impl KeyspaceHandle {
         }
     }
 
+    /// Insert `value` at `key` only if `key` is currently absent.
+    /// Returns `true` when the insert happened, `false` when the key
+    /// already existed (the stored value is left untouched).
+    ///
+    /// On the [`KeyspaceHandle::Local`] variant the check and insert
+    /// run inside one blocking closure, so exactly one of two racing
+    /// callers observes `true`. On the [`KeyspaceHandle::Vsock`]
+    /// variant the vsock RPC does not yet carry a native
+    /// insert-if-absent opcode; the fallback is `get_raw` + `insert`,
+    /// which has a TOCTOU window across two vsock round-trips — the
+    /// same documented gap as [`KeyspaceHandle::take_raw`] (TEE
+    /// enclaves are single-replica, so the window is per-connection
+    /// rather than cross-replica).
+    pub async fn insert_if_absent<V: Serialize>(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<bool, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.insert_if_absent(key, value).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => {
+                tracing::warn!(
+                    "KeyspaceHandle::Vsock::insert_if_absent using non-atomic get+insert \
+                     fallback; vsock proto lacks a native insert-if-absent opcode. \
+                     Single-replica TEE deployments are unaffected in practice."
+                );
+                let key = key.into();
+                if h.get_raw(key.clone()).await?.is_some() {
+                    return Ok(false);
+                }
+                h.insert(key, value).await?;
+                Ok(true)
+            }
+        }
+    }
+
     pub async fn get<V: DeserializeOwned + Send + 'static>(
         &self,
         key: impl Into<Vec<u8>>,
@@ -243,16 +281,43 @@ impl KeyspaceHandle {
 // LocalStore — fjall-backed implementation (original code)
 // ===========================================================================
 
+/// Per-keyspace write locks shared by every handle the store hands out.
+///
+/// fjall serialises *individual* operations, not sequences of them: two
+/// check-then-write closures running on separate `spawn_blocking`
+/// threads interleave freely. The multi-op methods that promise
+/// atomicity ([`LocalKeyspaceHandle::take_raw`],
+/// [`LocalKeyspaceHandle::swap`],
+/// [`LocalKeyspaceHandle::insert_if_absent`]) therefore serialise
+/// through this lock. It is keyed by keyspace *name* and owned by the
+/// store, so handles obtained from separate `keyspace(name)` calls
+/// still exclude each other.
+type WriteLocks =
+    std::sync::Arc<std::sync::Mutex<HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>>;
+
 #[derive(Clone)]
 pub struct LocalStore {
     db: fjall::Database,
+    write_locks: WriteLocks,
 }
 
 #[derive(Clone)]
 pub struct LocalKeyspaceHandle {
     keyspace: fjall::Keyspace,
+    /// Shared with every other handle for the same keyspace name — see
+    /// [`WriteLocks`].
+    write_lock: std::sync::Arc<std::sync::Mutex<()>>,
     #[cfg(feature = "encryption")]
     encryption_key: Option<std::sync::Arc<zeroize::Zeroizing<[u8; 32]>>>,
+}
+
+/// Acquire a write lock inside a blocking closure, recovering from
+/// poisoning: the lock only guards check-then-write sequencing, and
+/// every critical section re-reads store state, so a panicked holder
+/// leaves nothing logically inconsistent to inherit.
+fn lock_writes(lock: &std::sync::Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl LocalStore {
@@ -260,13 +325,24 @@ impl LocalStore {
         std::fs::create_dir_all(&config.data_dir).map_err(AppError::Io)?;
         info!(path = %config.data_dir.display(), "opening store");
         let db = fjall::Database::builder(&config.data_dir).open()?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            write_locks: WriteLocks::default(),
+        })
     }
 
     pub fn keyspace(&self, name: &str) -> Result<LocalKeyspaceHandle, AppError> {
         let keyspace = self.db.keyspace(name, KeyspaceCreateOptions::default)?;
+        let write_lock = self
+            .write_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(name.to_string())
+            .or_default()
+            .clone();
         Ok(LocalKeyspaceHandle {
             keyspace,
+            write_lock,
             #[cfg(feature = "encryption")]
             encryption_key: None,
         })
@@ -343,10 +419,12 @@ impl LocalKeyspaceHandle {
 
     /// Atomically `GET` + `DELETE` (the classic Redis `GETDEL`).
     ///
-    /// Single-process fjall serialises writes per keyspace, so the
-    /// `get` and `remove` inside one `blocking_with_timeout` closure
-    /// are atomic with respect to any other `take_raw` racing on the
-    /// same key — exactly one caller observes `Some`.
+    /// The `get` and `remove` run under the per-keyspace write lock
+    /// (see [`WriteLocks`]) so they are atomic with respect to any
+    /// other `take_raw`/`swap`/`insert_if_absent` racing on the same
+    /// keyspace — exactly one caller observes `Some`. (fjall alone
+    /// does NOT provide this: it serialises individual operations,
+    /// not check-then-write sequences across blocking threads.)
     ///
     /// Used by the canonical refresh-token claim
     /// ([`crate::auth::session::take_session_id_by_refresh`]) to
@@ -355,21 +433,25 @@ impl LocalKeyspaceHandle {
     pub async fn take_raw(&self, key: impl Into<Vec<u8>>) -> Result<Option<Vec<u8>>, AppError> {
         let key = key.into();
         let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
         #[cfg(feature = "encryption")]
         let enc_key = self.encryption_key.clone();
-        blocking_with_timeout(move || match ks.get(&key)? {
-            Some(bytes) => {
-                ks.remove(&key)?;
-                #[cfg(feature = "encryption")]
-                let bytes = {
-                    let k = enc_key.as_ref().map(|arc| &***arc);
-                    encryption::maybe_decrypt_bytes(k, &bytes)?
-                };
-                #[cfg(not(feature = "encryption"))]
-                let bytes = bytes.to_vec();
-                Ok(Some(bytes))
+        blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
+            match ks.get(&key)? {
+                Some(bytes) => {
+                    ks.remove(&key)?;
+                    #[cfg(feature = "encryption")]
+                    let bytes = {
+                        let k = enc_key.as_ref().map(|arc| &***arc);
+                        encryption::maybe_decrypt_bytes(k, &bytes)?
+                    };
+                    #[cfg(not(feature = "encryption"))]
+                    let bytes = bytes.to_vec();
+                    Ok(Some(bytes))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
         })
         .await
     }
@@ -462,12 +544,38 @@ impl LocalKeyspaceHandle {
         let bytes = serde_json::to_vec(value)?;
         let bytes = self.maybe_encrypt(bytes)?;
         let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
         blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
             if ks.contains_key(&new_key)? {
                 return Ok(false);
             }
             ks.insert(&new_key, bytes)?;
             ks.remove(&old_key)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Insert only if `key` is absent. The check and insert run under
+    /// the per-keyspace write lock (see [`WriteLocks`]), so exactly one
+    /// of two racing callers observes `true`.
+    pub async fn insert_if_absent<V: Serialize>(
+        &self,
+        key: impl Into<Vec<u8>>,
+        value: &V,
+    ) -> Result<bool, AppError> {
+        let key = key.into();
+        let bytes = serde_json::to_vec(value)?;
+        let bytes = self.maybe_encrypt(bytes)?;
+        let ks = self.keyspace.clone();
+        let lock = self.write_lock.clone();
+        blocking_with_timeout(move || {
+            let _guard = lock_writes(&lock);
+            if ks.contains_key(&key)? {
+                return Ok(false);
+            }
+            ks.insert(&key, bytes)?;
             Ok(true)
         })
         .await
@@ -499,6 +607,80 @@ mod tests {
         };
         let store = Store::open(&config).expect("failed to open store");
         (store, dir)
+    }
+
+    #[tokio::test]
+    async fn insert_if_absent_claims_only_once() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+
+        assert!(
+            ks.insert_if_absent("k", &"first".to_string())
+                .await
+                .unwrap(),
+            "first claim must succeed"
+        );
+        assert!(
+            !ks.insert_if_absent("k", &"second".to_string())
+                .await
+                .unwrap(),
+            "second claim must be refused"
+        );
+        let got: String = ks.get("k").await.unwrap().unwrap();
+        assert_eq!(got, "first", "loser must not overwrite the stored value");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn insert_if_absent_under_concurrency_admits_exactly_one() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..16u32 {
+            let ks = ks.clone();
+            handles.push(tokio::spawn(async move {
+                ks.insert_if_absent("contested", &format!("writer-{i}"))
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut winners = 0;
+        for h in handles {
+            if h.await.unwrap() {
+                winners += 1;
+            }
+        }
+        assert_eq!(winners, 1, "exactly one racing claim may win");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn take_raw_under_concurrency_admits_exactly_one() {
+        // Pins the refresh-token single-use guarantee: N concurrent
+        // take_raw calls on one key — exactly one observes Some.
+        // Handles are obtained via separate keyspace() calls to prove
+        // the write lock is shared per keyspace name, not per handle.
+        let (store, _dir) = temp_store();
+        store
+            .keyspace("test")
+            .unwrap()
+            .insert("token", &"refresh".to_string())
+            .await
+            .unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let ks = store.keyspace("test").unwrap();
+            handles.push(tokio::spawn(
+                async move { ks.take_raw("token").await.unwrap() },
+            ));
+        }
+        let mut claimed = 0;
+        for h in handles {
+            if h.await.unwrap().is_some() {
+                claimed += 1;
+            }
+        }
+        assert_eq!(claimed, 1, "exactly one concurrent take_raw may claim");
     }
 
     #[tokio::test]

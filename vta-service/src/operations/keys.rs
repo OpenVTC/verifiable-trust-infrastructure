@@ -56,6 +56,16 @@ pub async fn create_key(
     params: CreateKeyParams,
     channel: &str,
 ) -> Result<CreateKeyResultBody, AppError> {
+    // Caller-supplied key_ids must stay in the plain-identifier class.
+    // VM-shaped ids (`did:...#key-0`) are minted by internal paths only
+    // — an API caller who could take one would shadow another DID's
+    // verification method in exports and key lookups. The internal
+    // default (key_id = derivation path) is exempt: it is not caller
+    // input and legitimately contains `/` and `'`.
+    if let Some(ref id) = params.key_id {
+        vti_common::identifier::validate_identifier("key_id", id)?;
+    }
+
     // Resolve context: explicit > super-admin (None) > single-context default
     let context_id = if let Some(ref ctx) = params.context_id {
         auth.require_context(ctx)?;
@@ -135,7 +145,15 @@ pub async fn create_key(
         updated_at: now,
     };
 
-    keys_ks.insert(keys::store_key(&key_id), &record).await?;
+    if !keys_ks
+        .insert_if_absent(keys::store_key(&key_id), &record)
+        .await?
+    {
+        return Err(AppError::Conflict(format!(
+            "key {key_id} already exists — choose a different key_id, \
+             or rename the existing key first"
+        )));
+    }
 
     info!(channel, key_id = %key_id, key_type = ?params.key_type, path = %derivation_path, "key created");
     audit!(
@@ -247,28 +265,17 @@ pub async fn import_key(
         .clone()
         .unwrap_or_else(|| format!("imported-{}-{}", key_type_str, now.format("%Y%m%d%H%M%S")));
 
-    // Encrypt and store the secret
-    let active_id = get_active_seed_id(keys_ks)
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
-    let seed = load_seed_bytes(keys_ks, &**seed_store, Some(active_id))
-        .await
-        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    // A caller-supplied label becomes the key_id, so it must pass the
+    // same identifier validation as create_key's key_id (the generated
+    // fallback id is already in the allowed class).
+    if params.label.is_some() {
+        vti_common::identifier::validate_identifier("label (used as key_id)", &key_id)
+            .inspect_err(|_| private_bytes.zeroize())?;
+    }
 
-    imported::store_secret(
-        imported_ks,
-        keys_ks,
-        &seed,
-        &key_id,
-        key_type_str,
-        &private_bytes,
-    )
-    .await?;
-
-    // Zeroize private key material
-    private_bytes.zeroize();
-
-    // Create key record
+    // Claim the key record FIRST: insert_if_absent makes the record the
+    // lock on the key_id, so a duplicate import fails here — before it
+    // could overwrite the winner's secret ciphertext in store_secret.
     let record = KeyRecord {
         key_id: key_id.clone(),
         derivation_path: String::new(),
@@ -282,7 +289,46 @@ pub async fn import_key(
         created_at: now,
         updated_at: now,
     };
-    keys_ks.insert(keys::store_key(&key_id), &record).await?;
+    if !keys_ks
+        .insert_if_absent(keys::store_key(&key_id), &record)
+        .await?
+    {
+        private_bytes.zeroize();
+        return Err(AppError::Conflict(format!(
+            "key {key_id} already exists — choose a different label, \
+             or rename the existing key first"
+        )));
+    }
+
+    // Encrypt and store the secret; if any step fails, compensate by
+    // removing the record we just claimed so no secret-less record is
+    // left behind.
+    let stored: Result<(), AppError> = async {
+        let active_id = get_active_seed_id(keys_ks)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let seed = load_seed_bytes(keys_ks, &**seed_store, Some(active_id))
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        imported::store_secret(
+            imported_ks,
+            keys_ks,
+            &seed,
+            &key_id,
+            key_type_str,
+            &private_bytes,
+        )
+        .await
+    }
+    .await;
+
+    // Zeroize private key material
+    private_bytes.zeroize();
+
+    if let Err(e) = stored {
+        let _ = keys_ks.remove(keys::store_key(&key_id)).await;
+        return Err(e);
+    }
 
     info!(channel, key_id = %key_id, key_type = ?params.key_type, "key imported");
     audit!(
@@ -406,6 +452,10 @@ pub async fn rename_key(
     new_key_id: &str,
     channel: &str,
 ) -> Result<RenameKeyResultBody, AppError> {
+    // Same identifier class as create_key's key_id: rename must not be
+    // a back door into VM-shaped or namespace-colliding names.
+    vti_common::identifier::validate_identifier("new_key_id", new_key_id)?;
+
     let old_store_key = keys::store_key(key_id);
 
     let mut record: KeyRecord = keys_ks
@@ -964,6 +1014,222 @@ mod tests {
                 acr: String::new(),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn create_key_refuses_to_overwrite_existing_record() {
+        // Reproduces the silent-overwrite hole: a second create with the
+        // same key_id (e.g. naming a key after the VTA's own signing key)
+        // must Conflict and leave the original record untouched.
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        let victim = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("victim-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("first create succeeds");
+
+        let err = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/2'/0'/7'".into()),
+                key_id: Some("victim-key".into()),
+                mnemonic: None,
+                label: Some("attacker remap".into()),
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect_err("duplicate key_id must be refused");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        let record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("victim-key"))
+            .await
+            .unwrap()
+            .expect("victim record still present");
+        assert_eq!(record.public_key, victim.public_key);
+        assert_eq!(record.derivation_path, victim.derivation_path);
+        assert_eq!(record.label, None, "attacker's label must not land");
+    }
+
+    #[tokio::test]
+    async fn create_key_rejects_separator_shaped_key_id() {
+        // Caller-supplied key_ids must not be able to take VM-shaped or
+        // namespace-colliding names; those are minted by internal paths
+        // only. Kid shapes (`did:...#key-0`) are the concrete attack.
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        for bad in ["did:web:example.com#key-0", "key:sneaky", "a/b", "x y"] {
+            let err = create_key(
+                &h.keys_ks,
+                &h.contexts_ks,
+                &h.seed_store,
+                &h.audit_ks,
+                &auth,
+                CreateKeyParams {
+                    key_type: KeyType::Ed25519,
+                    derivation_path: None,
+                    key_id: Some(bad.into()),
+                    mnemonic: None,
+                    label: None,
+                    context_id: Some("test-ctx".into()),
+                },
+                "test",
+            )
+            .await
+            .expect_err("separator-shaped key_id must be rejected");
+            assert!(matches!(err, AppError::Validation(_)), "{bad}: {err:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn import_key_refuses_duplicate_key_id() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        let first = import_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            ImportKeyParams {
+                key_type: KeyType::Ed25519,
+                private_key_bytes: vec![0x11u8; 32],
+                label: Some("shared-name".into()),
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("first import succeeds");
+
+        let err = import_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            ImportKeyParams {
+                key_type: KeyType::Ed25519,
+                private_key_bytes: vec![0x22u8; 32],
+                label: Some("shared-name".into()),
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect_err("duplicate import key_id must be refused");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        // The winner's record AND secret must be intact: the loser must
+        // not have overwritten the stored ciphertext before failing.
+        let record: KeyRecord = h
+            .keys_ks
+            .get(keys::store_key("shared-name"))
+            .await
+            .unwrap()
+            .expect("first import's record still present");
+        assert_eq!(record.public_key, first.public_key);
+        let active_id = get_active_seed_id(&h.keys_ks).await.unwrap();
+        let seed = load_seed_bytes(&h.keys_ks, &*h.seed_store, Some(active_id))
+            .await
+            .unwrap();
+        let secret =
+            imported::load_secret(&h.imported_ks, &h.keys_ks, &seed, "shared-name", "ed25519")
+                .await
+                .expect("first import's secret still decryptable");
+        assert_eq!(secret.as_slice(), &[0x11u8; 32]);
+    }
+
+    #[tokio::test]
+    async fn rename_key_rejects_separator_shaped_new_key_id() {
+        // rename is the other wire path that takes a caller-supplied id;
+        // it must not be a bypass around create_key's validation.
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("plain-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create succeeds");
+
+        let err = rename_key(
+            &h.keys_ks,
+            &h.audit_ks,
+            &auth,
+            "plain-key",
+            "did:web:example.com#key-0",
+            "test",
+        )
+        .await
+        .expect_err("VM-shaped rename target must be rejected");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        let still_there: Option<KeyRecord> =
+            h.keys_ks.get(keys::store_key("plain-key")).await.unwrap();
+        assert!(still_there.is_some(), "record must remain at the old id");
+    }
+
+    #[tokio::test]
+    async fn import_key_rejects_separator_shaped_label_as_key_id() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+
+        let err = import_key(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &auth,
+            ImportKeyParams {
+                key_type: KeyType::Ed25519,
+                private_key_bytes: vec![0x11u8; 32],
+                label: Some("evil:label".into()),
+                context_id: Some("test-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .expect_err("label used as key_id must pass identifier validation");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
     }
 
     #[tokio::test]
