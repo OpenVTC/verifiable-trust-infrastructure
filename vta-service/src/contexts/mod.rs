@@ -36,12 +36,29 @@ pub async fn delete_context(ks: &KeyspaceHandle, id: &str) -> Result<(), AppErro
 }
 
 /// List all context records.
+///
+/// A row that fails to deserialize is skipped with a warning rather than
+/// aborting the whole listing — one corrupt context must not break
+/// context management for every other context.
 pub async fn list_contexts(ks: &KeyspaceHandle) -> Result<Vec<ContextRecord>, AppError> {
     let raw = ks.prefix_iter_raw("ctx:").await?;
     let mut records = Vec::with_capacity(raw.len());
-    for (_key, value) in raw {
-        let record: ContextRecord = serde_json::from_slice(&value)?;
-        records.push(record);
+    let mut skipped = 0usize;
+    for (key, value) in raw {
+        match serde_json::from_slice::<ContextRecord>(&value) {
+            Ok(record) => records.push(record),
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(
+                    key = %String::from_utf8_lossy(&key),
+                    error = %e,
+                    "skipping undeserializable context row in list_contexts"
+                );
+            }
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(skipped, "list_contexts skipped corrupt rows");
     }
     Ok(records)
 }

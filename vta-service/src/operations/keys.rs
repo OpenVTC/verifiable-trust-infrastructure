@@ -403,8 +403,22 @@ pub async fn list_keys(
     let raw = keys_ks.prefix_iter_raw("key:").await?;
 
     let mut records: Vec<KeyRecord> = Vec::with_capacity(raw.len());
-    for (_key, value) in raw {
-        let record: KeyRecord = serde_json::from_slice(&value)?;
+    let mut skipped = 0usize;
+    for (key, value) in raw {
+        // Skip (don't abort on) a corrupt row: one undeserializable key
+        // record must not break key listing for every other key.
+        let record: KeyRecord = match serde_json::from_slice(&value) {
+            Ok(r) => r,
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(
+                    key = %String::from_utf8_lossy(&key),
+                    error = %e,
+                    "skipping undeserializable key row in list_keys"
+                );
+                continue;
+            }
+        };
         if let Some(ref status) = params.status
             && record.status != *status
         {
@@ -422,6 +436,9 @@ pub async fn list_keys(
             }
         }
         records.push(record);
+    }
+    if skipped > 0 {
+        tracing::warn!(channel, skipped, "list_keys skipped corrupt rows");
     }
 
     let total = records.len() as u64;

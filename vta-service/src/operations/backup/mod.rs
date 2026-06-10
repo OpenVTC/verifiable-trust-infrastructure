@@ -106,19 +106,32 @@ pub async fn export_backup(
         .await
         .map_err(|e| AppError::Internal(format!("get active seed id: {e}")))?;
 
+    // A backup must be COMPLETE: unlike the steady-state list paths (which
+    // skip a corrupt row so one bad entry can't break management), export
+    // FAILS LOUDLY on any row it cannot deserialize. Silently omitting a
+    // key or ACL row from a backup loses key material or an admin grant —
+    // far worse than refusing to take the backup.
+    fn corrupt_row(kind: &str, key: &[u8], e: impl std::fmt::Display) -> AppError {
+        AppError::Internal(format!(
+            "backup aborted: {kind} row '{}' is corrupt and would be silently \
+             omitted from the backup: {e}",
+            String::from_utf8_lossy(key)
+        ))
+    }
+
     // 2. Collect seed records (retired seeds)
     let seed_records: Vec<SeedRecordBackup> = {
         let raw = keys_ks.prefix_iter_raw("seed:").await?;
-        let mut records = Vec::new();
-        for (_, value) in raw {
-            if let Ok(sr) = serde_json::from_slice::<SeedRecord>(&value) {
-                records.push(SeedRecordBackup {
-                    id: sr.id,
-                    seed_hex: sr.seed_hex,
-                    created_at: sr.created_at,
-                    retired_at: sr.retired_at,
-                });
-            }
+        let mut records = Vec::with_capacity(raw.len());
+        for (key, value) in raw {
+            let sr: SeedRecord =
+                serde_json::from_slice(&value).map_err(|e| corrupt_row("seed", &key, e))?;
+            records.push(SeedRecordBackup {
+                id: sr.id,
+                seed_hex: sr.seed_hex,
+                created_at: sr.created_at,
+                retired_at: sr.retired_at,
+            });
         }
         records
     };
@@ -126,17 +139,21 @@ pub async fn export_backup(
     // 3. Collect key records
     let key_records: Vec<vta_sdk::keys::KeyRecord> = {
         let raw = keys_ks.prefix_iter_raw("key:").await?;
-        raw.into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect()
+        let mut out = Vec::with_capacity(raw.len());
+        for (key, value) in raw {
+            out.push(serde_json::from_slice(&value).map_err(|e| corrupt_row("key", &key, e))?);
+        }
+        out
     };
 
     // 4. Collect context records + counter
     let context_records: Vec<vta_sdk::contexts::ContextRecord> = {
         let raw = contexts_ks.prefix_iter_raw("ctx:").await?;
-        raw.into_iter()
-            .filter_map(|(_, v)| serde_json::from_slice(&v).ok())
-            .collect()
+        let mut out = Vec::with_capacity(raw.len());
+        for (key, value) in raw {
+            out.push(serde_json::from_slice(&value).map_err(|e| corrupt_row("context", &key, e))?);
+        }
+        out
     };
     let context_counter: u32 = contexts_ks
         .get_raw("ctx_counter")
@@ -144,30 +161,32 @@ pub async fn export_backup(
         .and_then(|b| b.try_into().ok().map(u32::from_le_bytes))
         .unwrap_or(0);
 
-    // 5. Collect ACL entries
+    // 5. Collect ACL entries. (Field-level fidelity of AclEntryBackup is a
+    // separate concern — P0.5; here we only ensure a corrupt row aborts the
+    // backup rather than being silently dropped.)
     let acl_entries: Vec<AclEntryBackup> = {
         let raw = acl_ks.prefix_iter_raw("acl:").await?;
-        raw.into_iter()
-            .filter_map(|(_, v)| {
-                serde_json::from_slice::<serde_json::Value>(&v)
-                    .ok()
-                    .map(|val| AclEntryBackup {
-                        did: val["did"].as_str().unwrap_or_default().to_string(),
-                        role: val["role"].as_str().unwrap_or("Viewer").to_string(),
-                        label: val["label"].as_str().map(String::from),
-                        allowed_contexts: val["allowed_contexts"]
-                            .as_array()
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| v.as_str().map(String::from))
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        created_at: val["created_at"].as_u64().unwrap_or(0),
-                        created_by: val["created_by"].as_str().unwrap_or_default().to_string(),
+        let mut out = Vec::with_capacity(raw.len());
+        for (key, v) in raw {
+            let val: serde_json::Value =
+                serde_json::from_slice(&v).map_err(|e| corrupt_row("ACL", &key, e))?;
+            out.push(AclEntryBackup {
+                did: val["did"].as_str().unwrap_or_default().to_string(),
+                role: val["role"].as_str().unwrap_or("Viewer").to_string(),
+                label: val["label"].as_str().map(String::from),
+                allowed_contexts: val["allowed_contexts"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
                     })
-            })
-            .collect()
+                    .unwrap_or_default(),
+                created_at: val["created_at"].as_u64().unwrap_or(0),
+                created_by: val["created_by"].as_str().unwrap_or_default().to_string(),
+            });
+        }
+        out
     };
 
     // 6. Collect seal record
@@ -850,6 +869,44 @@ mod tests {
         assert!(
             remaining.is_none(),
             "server-auth: prefix must be cleared on import; otherwise stale tokens leak across installations"
+        );
+    }
+
+    /// A backup must be complete: a corrupt `key:` row must ABORT the
+    /// export rather than be silently omitted (which would drop key
+    /// material from the backup). This is the deliberate opposite of the
+    /// steady-state list paths, which skip corrupt rows.
+    #[tokio::test]
+    async fn export_aborts_on_corrupt_key_row() {
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store = crate::test_support::TestSeedStore(vec![42u8; 32]);
+        let config = crate::test_support::test_app_config(ts.data_dir.clone());
+        let auth = crate::test_support::super_admin_claims();
+
+        // Plant a garbage row under the `key:` prefix that export scans.
+        ts.keys_ks
+            .insert_raw("key:corrupt", b"{not a key record".to_vec())
+            .await
+            .unwrap();
+
+        let ks = super::super::Keyspaces {
+            keys: &ts.keys_ks,
+            acl: &ts.acl_ks,
+            contexts: &ts.contexts_ks,
+            did_templates: &ts.did_templates_ks,
+            audit: &ts.audit_ks,
+            imported: &ts.imported_ks,
+            #[cfg(feature = "webvh")]
+            webvh: &ts.webvh_ks,
+        };
+
+        let err = export_backup(&ks, &seed_store, &config, &auth, "a-strong-password", false)
+            .await
+            .expect_err("export must abort on a corrupt key row");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("corrupt") && msg.contains("key"),
+            "error must name the corrupt-row cause, got: {msg}"
         );
     }
 

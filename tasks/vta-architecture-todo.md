@@ -75,8 +75,13 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   approve/deny/list surface — PR: ____
 - `[ ]` **P0.13** (S) Decide + enforce/document cross-transport step-up policy
   (DIDComm `swap_acl`; ignored vault `step_up_proof`) — PR: ____
-- `[ ]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
-  export fails loudly — PR: ____
+- `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
+  export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
+  list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row
+  no longer aborts the whole listing); backup export (seed/key/context/ACL
+  collections) now errors loudly on a corrupt row (incomplete backup is
+  worse than none). ACL field-fidelity stays for P0.5. Tests: ACL list
+  skips garbage row, export aborts on corrupt key row — PR: ____
 
 **Checkpoint 0:** `[ ]` all P0 merged or deferred-with-issue; CI green;
 tee-architecture.md updated.

@@ -504,12 +504,32 @@ pub async fn delete_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<(), App
 }
 
 /// List all ACL entries.
+///
+/// A row that fails to deserialize is **skipped with a warning**, not
+/// propagated: one corrupt entry must not take down ACL management or
+/// the auth paths that enumerate entries (a `?` here would abort the
+/// whole listing). Backup export deliberately takes the opposite stance
+/// and fails loudly — an incomplete *backup* is worse than a degraded
+/// *list*.
 pub async fn list_acl_entries(acl: &KeyspaceHandle) -> Result<Vec<AclEntry>, AppError> {
     let raw = acl.prefix_iter_raw("acl:").await?;
     let mut entries = Vec::with_capacity(raw.len());
-    for (_key, value) in raw {
-        let entry: AclEntry = serde_json::from_slice(&value)?;
-        entries.push(entry);
+    let mut skipped = 0usize;
+    for (key, value) in raw {
+        match serde_json::from_slice::<AclEntry>(&value) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                skipped += 1;
+                tracing::warn!(
+                    key = %String::from_utf8_lossy(&key),
+                    error = %e,
+                    "skipping undeserializable ACL row in list_acl_entries"
+                );
+            }
+        }
+    }
+    if skipped > 0 {
+        tracing::warn!(skipped, "list_acl_entries skipped corrupt rows");
     }
     Ok(entries)
 }
@@ -740,6 +760,32 @@ mod tests {
 
     fn sample_entry(did: &str, role: Role) -> AclEntry {
         AclEntry::new(did, role, "did:key:zSetup").with_label(Some(format!("test-{did}")))
+    }
+
+    #[tokio::test]
+    async fn list_acl_entries_skips_corrupt_rows() {
+        // A single undeserializable row must not abort the whole listing —
+        // otherwise one corrupt entry bricks ACL management and the auth
+        // paths that enumerate entries.
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("acl").unwrap();
+
+        store_acl_entry(&ks, &sample_entry("did:key:zAlice", Role::Admin))
+            .await
+            .unwrap();
+        // Inject garbage under the acl: prefix.
+        ks.insert_raw("acl:did:key:zCorrupt", b"{not valid json".to_vec())
+            .await
+            .unwrap();
+        store_acl_entry(&ks, &sample_entry("did:key:zBob", Role::Reader))
+            .await
+            .unwrap();
+
+        let entries = list_acl_entries(&ks).await.expect("listing must not abort");
+        let dids: Vec<&str> = entries.iter().map(|e| e.did.as_str()).collect();
+        assert!(dids.contains(&"did:key:zAlice"));
+        assert!(dids.contains(&"did:key:zBob"));
+        assert_eq!(entries.len(), 2, "the corrupt row is skipped, not surfaced");
     }
 
     fn scoped_entry(did: &str, role: Role, contexts: &[&str]) -> AclEntry {
