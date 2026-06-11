@@ -60,7 +60,11 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
-mod step_up;
+// `pub(crate)` so the DIDComm message handlers can reach `resolve_step_up`
+// to honour step-up floors on that transport too (P0.13). The step-up engine
+// living under `routes/` is a known layering wrinkle that P2.4 relocates to
+// `operations/`.
+pub(crate) mod step_up;
 mod step_up_policy;
 pub(crate) use step_up::{
     AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, ContextDeleteOp, RequireStepUp,

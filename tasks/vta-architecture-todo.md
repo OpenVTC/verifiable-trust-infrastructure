@@ -124,8 +124,22 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   locks the invariant (passes on default + bbs feature) — PR: #349 (in review)
 - `[ ]` **P0.12** (M) Deferred-presentation sweeper + reachable
   approve/deny/list surface — PR: ____
-- `[ ]` **P0.13** (S) Decide + enforce/document cross-transport step-up policy
-  (DIDComm `swap_acl`; ignored vault `step_up_proof`) — PR: ____
+- **P0.13** — DECISION (operator): ENFORCE on both transports (not document).
+- `[~]` **P0.13a** (M) DIDComm `swap_acl` honours step-up floors — branch
+  `fix/p0.13a-didcomm-stepup` (worktree). Refactored `resolve_step_up` to take
+  `config` + `acl_ks` (not `&AppState`) so the DIDComm handler (`VtaState`)
+  can call it; made it + `StepUpDecision` + the `step_up` module `pub(crate)`
+  (the routes→messaging reach is a known wrinkle P2.4 relocates).
+  `handle_swap_acl` now resolves the `acl/swap-key` floor (non-escalating);
+  when a floor genuinely requires AAL2 the DIDComm caller (always AAL1,
+  unelevatable in-band) is rejected with a `forbidden`/StepUpRequired problem
+  report directing to REST. Added `StepUpRequired` → `forbidden` arm to
+  `app_err_to_response`. Test: `resolve_step_up` swap-key floor/carve-out/
+  disabled matrix — PR: ____
+- `[ ]` **P0.13b** (M) Vault step-up enforcement — wire `require_step_up` into
+  the vault TT handlers (release/upsert/sign-trust-task) using new `vault/*`
+  op-classes; remove the dormant `step_up_proof` field. (Operator chose
+  "enforce now".) — PR: ____
 - `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
   export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
   list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row

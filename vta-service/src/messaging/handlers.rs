@@ -59,7 +59,11 @@ fn app_err_to_response(e: AppError) -> DIDCommResponse {
         // privilege-laundering rejection. Emit a workspace-specific
         // `e.p.msg.forbidden` code; SDK clients that don't know it
         // fall back to `DidcommRemote { code, comment }` cleanly.
-        AppError::Forbidden(msg) => ProblemReport {
+        // Step-up-required is a policy refusal (the op needs an AAL2 session
+        // the caller doesn't have). Surface it as `forbidden` rather than
+        // `internal-error` — DIDComm sender-auth can't be elevated to AAL2,
+        // so the comment directs the caller to the REST step-up path.
+        AppError::Forbidden(msg) | AppError::StepUpRequired(msg) => ProblemReport {
             code: vta_sdk::protocols::problem_report_codes::FORBIDDEN.to_string(),
             comment: msg.clone(),
             args: Vec::new(),
@@ -585,6 +589,34 @@ pub async fn handle_swap_acl(
             serde_json::from_value(message.body).map_err(handler_err)?;
         (body.presentation, None)
     };
+
+    // Honour any operator-configured step-up floor for `acl/swap-key` on the
+    // DIDComm transport too (P0.13). Previously only the REST route gated on
+    // step-up, so a `swap-key` floor was silently bypassed over DIDComm.
+    // swap-key is structurally non-escalating (self-service rotation of the
+    // caller's own entry), so a floor with `allow_aal1_if_non_escalating`
+    // still admits it. DIDComm sender-auth is AAL1 and cannot be elevated to
+    // AAL2 in-band, so a floor that genuinely requires step-up is
+    // unsatisfiable here — reject with guidance to use the REST path.
+    if !matches!(
+        crate::routes::trust_tasks::step_up::resolve_step_up(
+            &state.config,
+            &state.acl_ks,
+            crate::routes::trust_tasks::step_up::op::ACL_SWAP_KEY,
+            &auth.did,
+            true, // swap-key is non-escalating
+        )
+        .await,
+        crate::routes::trust_tasks::step_up::StepUpDecision::Allow
+    ) {
+        return Ok(Some(app_err_to_response(AppError::StepUpRequired(
+            "acl/swap-key requires a stepped-up (AAL2) session under this VTA's step-up \
+             policy. DIDComm sender-authentication is AAL1 and cannot be elevated in-band; \
+             perform this self-service rotation over the authenticated REST session, which \
+             can complete step-up."
+                .to_string(),
+        ))));
+    }
 
     let did_resolver = state
         .did_resolver

@@ -619,7 +619,7 @@ fn step_up_denied_response() -> Response {
 /// Step-up enforcement decision resolved from the policy floor for an
 /// operation-class, plus (for `delegated` modes) the caller's configured
 /// approver.
-enum StepUpDecision {
+pub(crate) enum StepUpDecision {
     /// Not gated — proceed at AAL1 (disabled policy, `none` floor, or the
     /// non-escalation carve-out applied).
     Allow,
@@ -641,14 +641,19 @@ enum StepUpDecision {
 /// `is_non_escalating` is the structural carve-out signal (true only for
 /// self-service ops like `acl/swap-key`); it lets a floor with
 /// `allow_aal1_if_non_escalating` admit the op at AAL1.
-async fn resolve_step_up(
-    state: &AppState,
+///
+/// Takes `config` + `acl_ks` directly (rather than `&AppState`) so the DIDComm
+/// message handlers — which hold a `VtaState`, not an `AppState` — can resolve
+/// the same policy. `pub(crate)` for that reason (P0.13).
+pub(crate) async fn resolve_step_up(
+    config: &tokio::sync::RwLock<crate::config::AppConfig>,
+    acl_ks: &KeyspaceHandle,
     op_class: &str,
     caller_did: &str,
     is_non_escalating: bool,
 ) -> StepUpDecision {
     let (floor_mode, allow_carveout) = {
-        let cfg = state.config.read().await;
+        let cfg = config.read().await;
         match cfg.auth.step_up.floor_record(op_class) {
             None => return StepUpDecision::Allow,
             Some(f) => (f.mode, f.allow_aal1_if_non_escalating),
@@ -659,10 +664,7 @@ async fn resolve_step_up(
     // (`stepUp.require`), additive-only: the effective mode is the strictest of
     // the two. The caller's entry is also where a `delegated` approver lives, so
     // fetch it once.
-    let entry = get_acl_entry(&state.acl_ks, caller_did)
-        .await
-        .ok()
-        .flatten();
+    let entry = get_acl_entry(acl_ks, caller_did).await.ok().flatten();
     let override_mode = entry
         .as_ref()
         .and_then(|e| e.step_up_require)
@@ -852,23 +854,24 @@ pub(super) async fn require_step_up(
     // Trust-task gated ops (grant, change-role, revoke, context-delete,
     // key-revoke) are all escalating — they never qualify for the
     // non-escalation carve-out.
-    let (recipient, approver_any) = match resolve_step_up(state, op_class, &auth.did, false).await {
-        StepUpDecision::Allow => return None,
-        StepUpDecision::Require { recipient } => (recipient, false),
-        StepUpDecision::RequireAny => (String::new(), true),
-        StepUpDecision::Deny => {
-            return Some(reject_with(
-                doc,
-                RejectReason::TaskFailed {
-                    reason: "auth:step_up_required".to_string(),
-                    details: Some(json!({
-                        "requiredAcr": STEP_UP_TARGET_ACR,
-                        "reason": "no step-up approver is configured for this subject",
-                    })),
-                },
-            ));
-        }
-    };
+    let (recipient, approver_any) =
+        match resolve_step_up(&state.config, &state.acl_ks, op_class, &auth.did, false).await {
+            StepUpDecision::Allow => return None,
+            StepUpDecision::Require { recipient } => (recipient, false),
+            StepUpDecision::RequireAny => (String::new(), true),
+            StepUpDecision::Deny => {
+                return Some(reject_with(
+                    doc,
+                    RejectReason::TaskFailed {
+                        reason: "auth:step_up_required".to_string(),
+                        details: Some(json!({
+                            "requiredAcr": STEP_UP_TARGET_ACR,
+                            "reason": "no step-up approver is configured for this subject",
+                        })),
+                    },
+                ));
+            }
+        };
     let vta_did = state
         .config
         .read()
@@ -984,13 +987,20 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
         // Resolve the floor for this route's operation-class, honoring the
         // non-escalation carve-out (`O::IS_NON_ESCALATING`) and, for delegated
         // modes, routing to the caller's configured approver.
-        let (recipient, approver_any) =
-            match resolve_step_up(state, O::OP_CLASS, &claims.did, O::IS_NON_ESCALATING).await {
-                StepUpDecision::Allow => return Ok(RequireStepUp(std::marker::PhantomData)),
-                StepUpDecision::Require { recipient } => (recipient, false),
-                StepUpDecision::RequireAny => (String::new(), true),
-                StepUpDecision::Deny => return Err(step_up_denied_response()),
-            };
+        let (recipient, approver_any) = match resolve_step_up(
+            &state.config,
+            &state.acl_ks,
+            O::OP_CLASS,
+            &claims.did,
+            O::IS_NON_ESCALATING,
+        )
+        .await
+        {
+            StepUpDecision::Allow => return Ok(RequireStepUp(std::marker::PhantomData)),
+            StepUpDecision::Require { recipient } => (recipient, false),
+            StepUpDecision::RequireAny => (String::new(), true),
+            StepUpDecision::Deny => return Err(step_up_denied_response()),
+        };
         let vta_did = state
             .config
             .read()
@@ -1020,6 +1030,68 @@ mod tests {
     use http_body_util::BodyExt;
     use multibase::Base;
     use serde_json::json;
+
+    /// The step-up decision the DIDComm `handle_swap_acl` gate now branches on
+    /// (P0.13). swap-key is non-escalating, so a floor only gates it when the
+    /// operator declines the carve-out; a disabled policy never gates.
+    #[tokio::test]
+    async fn resolve_step_up_swap_key_honours_floor_and_carveout() {
+        use vti_common::auth::step_up::{StepUpFloor, StepUpPolicy};
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        let acl_ks = store.keyspace("acl").unwrap();
+        let caller = "did:key:zCaller";
+
+        let mk_config = |allow_carveout: bool, enabled: bool| {
+            let mut c: crate::config::AppConfig = toml::from_str("").unwrap();
+            c.auth.step_up = StepUpPolicy {
+                enabled,
+                floors: vec![StepUpFloor {
+                    operation: op::ACL_SWAP_KEY.to_string(),
+                    mode: StepUpMode::SelfApprove,
+                    allow_aal1_if_non_escalating: allow_carveout,
+                }],
+            };
+            tokio::sync::RwLock::new(c)
+        };
+
+        // Floor requires step-up, no carve-out → swap-key is gated (the new
+        // DIDComm behaviour: this caller, always AAL1, gets rejected).
+        let cfg = mk_config(false, true);
+        assert!(
+            !matches!(
+                resolve_step_up(&cfg, &acl_ks, op::ACL_SWAP_KEY, caller, true).await,
+                StepUpDecision::Allow
+            ),
+            "a swap-key floor without the carve-out must gate even a non-escalating request"
+        );
+
+        // Same floor WITH the carve-out → admitted at AAL1 (DIDComm proceeds).
+        let cfg = mk_config(true, true);
+        assert!(
+            matches!(
+                resolve_step_up(&cfg, &acl_ks, op::ACL_SWAP_KEY, caller, true).await,
+                StepUpDecision::Allow
+            ),
+            "the non-escalation carve-out must admit swap-key at AAL1"
+        );
+
+        // Policy disabled (the shipping default) → never gated.
+        let cfg = mk_config(false, false);
+        assert!(
+            matches!(
+                resolve_step_up(&cfg, &acl_ks, op::ACL_SWAP_KEY, caller, true).await,
+                StepUpDecision::Allow
+            ),
+            "a disabled policy gates nothing"
+        );
+    }
 
     #[test]
     fn approver_mediator_routes_did_key_to_configured_mediator() {
