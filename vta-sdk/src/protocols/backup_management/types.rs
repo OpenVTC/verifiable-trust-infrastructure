@@ -58,10 +58,31 @@ pub struct BackupPayload {
     pub key_records: Vec<KeyRecord>,
     /// All context records.
     pub context_records: Vec<ContextRecord>,
-    /// Context counter (next index).
+    /// Context counter (next index, top-level contexts).
     pub context_counter: u32,
-    /// All ACL entries.
+    /// Per-base BIP-32 path allocation counters (`path_counter:{base}` →
+    /// next index). Restoring these prevents a fresh-store import from
+    /// re-deriving private keys that restored key records already occupy.
+    /// Empty in pre-P0.5 backups; the importer recomputes from key records
+    /// then. (P0.5)
+    #[serde(default)]
+    pub path_counters: Vec<(String, u32)>,
+    /// Per-parent sub-context index counters (`ctx_counter:{parent}` → next
+    /// index). Empty in pre-P0.5 backups (recomputed from context records).
+    #[serde(default)]
+    pub subcontext_counters: Vec<(String, u32)>,
+    /// All ACL entries — lossy, 6-of-13 fields. Retained for
+    /// forward/backward compatibility; the importer prefers
+    /// [`Self::acl_entries_full`] when present.
     pub acl_entries: Vec<AclEntryBackup>,
+    /// Lossless ACL entries: the full stored `AclEntry` JSON verbatim, so
+    /// `expires_at` / step-up floors / `capabilities` / `kind` / `device` /
+    /// `version` survive a round-trip (the lossy `acl_entries` would restore
+    /// expired grants as permanent and strip step-up + capabilities). Empty
+    /// in pre-P0.5 backups; the importer falls back to `acl_entries` then.
+    /// (P0.5)
+    #[serde(default)]
+    pub acl_entries_full: Vec<serde_json::Value>,
     /// Seal record (if VTA is sealed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seal: Option<SealRecordBackup>,
@@ -109,7 +130,10 @@ impl std::fmt::Debug for BackupPayload {
             .field("key_records_len", &self.key_records.len())
             .field("context_records_len", &self.context_records.len())
             .field("context_counter", &self.context_counter)
+            .field("path_counters_len", &self.path_counters.len())
+            .field("subcontext_counters_len", &self.subcontext_counters.len())
             .field("acl_entries_len", &self.acl_entries.len())
+            .field("acl_entries_full_len", &self.acl_entries_full.len())
             .field("seal", &self.seal)
             .field("webvh_servers_len", &self.webvh_servers.len())
             .field("webvh_dids_len", &self.webvh_dids.len())

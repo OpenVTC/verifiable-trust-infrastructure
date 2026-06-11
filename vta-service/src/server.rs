@@ -334,6 +334,32 @@ pub async fn run(
     // service that passes a port-liveness check but can't function (P0.9).
     config.validate()?;
 
+    // Refuse to boot on a store left half-imported by an interrupted backup
+    // restore (P0.5). The sentinel is written + fsynced before apply_import
+    // clears the store and removed only after the import completes; if it is
+    // still present, the rewrite didn't finish and the state is hybrid.
+    {
+        let keys_ks_boot = {
+            let ks = store.keyspace("keys")?;
+            match storage_encryption_key {
+                Some(key) => ks.with_encryption(key),
+                None => ks,
+            }
+        };
+        if keys_ks_boot
+            .get_raw(crate::operations::backup::IMPORT_IN_PROGRESS_KEY)
+            .await?
+            .is_some()
+        {
+            return Err(AppError::Internal(
+                "a previous backup import did not complete — the store is in a \
+                 half-imported, inconsistent state. Re-run the import to restore a \
+                 consistent snapshot before starting the VTA."
+                    .into(),
+            ));
+        }
+    }
+
     // Open the runtime-state keyspace once up front so the boot decisions
     // below can read it (and the migration can seed it from the legacy
     // `[services]` block on first boot post-upgrade). Same encryption policy

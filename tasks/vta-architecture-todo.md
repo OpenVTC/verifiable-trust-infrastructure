@@ -40,8 +40,18 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   seed rotation; create_context claims its record atomically at both
   layers; concurrency regression tests for all four —
   PR: #342 (merged)
-- `[ ]` **P0.5** (L) Backup/restore: export counters (no BIP-32 path reuse),
-  full `AclEntry` round-trip, import-in-progress sentinel — PR: ____
+- `[~]` **P0.5** (L) Backup/restore: export counters, full `AclEntry`
+  round-trip, import-in-progress sentinel — branch `fix/p0.5-backup-fidelity`
+  (worktree). vta-sdk `BackupPayload` gains `path_counters`,
+  `subcontext_counters`, `acl_entries_full` (raw `AclEntry` JSON — vta-sdk
+  can't ref vti-common's `AclEntry`), all `#[serde(default)]` so old backups
+  still load. Export populates them; import restores counters as
+  `max(exported, recompute-from-records)` (recompute covers pre-P0.5 backups
+  → no key reuse either way), restores ACL from the lossless form (fallback
+  to lossy + warn). Crash-safety: `IMPORT_IN_PROGRESS_KEY` written+fsynced
+  before the clear, removed+fsynced after; `server::run` refuses boot on a
+  half-imported store. Tests: counter-no-reuse (exported + recomputed),
+  full-ACL-fields (expiry+step-up survive), sentinel lifecycle — PR: ____
 - `[x]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
   branch `fix/p0.6-tee-seed-rotation`. Chose REJECT (the plan's safe minimum;
   in-place re-encryption is a follow-up). New `SeedStore::set_persists_across_restart()`

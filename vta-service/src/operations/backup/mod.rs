@@ -33,7 +33,7 @@ use crate::keys::imported;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
 use crate::seal::{SealRecord, get_seal};
-use crate::store::KeyspaceHandle;
+use crate::store::{KeyspaceHandle, RawKvPair};
 
 use vta_sdk::protocols::backup_management::types::*;
 
@@ -161,18 +161,40 @@ pub async fn export_backup(
         .and_then(|b| b.try_into().ok().map(u32::from_le_bytes))
         .unwrap_or(0);
 
-    // 5. Collect ACL entries. (Field-level fidelity of AclEntryBackup is a
-    // separate concern — P0.5; here we only ensure a corrupt row aborts the
-    // backup rather than being silently dropped.)
-    let acl_entries: Vec<AclEntryBackup> = {
+    // 4b. Collect the BIP-32 allocation counters so a restore onto a fresh
+    // store cannot re-derive private keys / context subtrees that restored
+    // records already occupy (P0.5). `path_counter:{base}` lives in the keys
+    // keyspace; `ctx_counter:{parent}` (per-parent sub-context counters) live
+    // in the contexts keyspace alongside the top-level `ctx_counter`.
+    let read_u32_counters = |pairs: Vec<RawKvPair>| -> Vec<(String, u32)> {
+        pairs
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let key = String::from_utf8(k).ok()?;
+                let arr: [u8; 4] = v.try_into().ok()?;
+                Some((key, u32::from_le_bytes(arr)))
+            })
+            .collect()
+    };
+    let path_counters = read_u32_counters(keys_ks.prefix_iter_raw("path_counter:").await?);
+    let subcontext_counters = read_u32_counters(contexts_ks.prefix_iter_raw("ctx_counter:").await?);
+
+    // 5. Collect ACL entries. Two forms, both from the same scan:
+    //   - `acl_entries_full`: the stored `AclEntry` JSON verbatim (lossless).
+    //   - `acl_entries`: the legacy 6-field projection (kept for
+    //     forward/backward compatibility; the importer prefers the full form).
+    // A row that can't be parsed aborts the backup rather than being silently
+    // dropped (an incomplete backup loses an admin grant) — see P0.14.
+    let (acl_entries, acl_entries_full): (Vec<AclEntryBackup>, Vec<serde_json::Value>) = {
         let raw = acl_ks.prefix_iter_raw("acl:").await?;
-        let mut out = Vec::with_capacity(raw.len());
+        let mut lossy = Vec::with_capacity(raw.len());
+        let mut full = Vec::with_capacity(raw.len());
         for (key, v) in raw {
             let val: serde_json::Value =
                 serde_json::from_slice(&v).map_err(|e| corrupt_row("ACL", &key, e))?;
-            out.push(AclEntryBackup {
+            lossy.push(AclEntryBackup {
                 did: val["did"].as_str().unwrap_or_default().to_string(),
-                role: val["role"].as_str().unwrap_or("Viewer").to_string(),
+                role: val["role"].as_str().unwrap_or("Reader").to_string(),
                 label: val["label"].as_str().map(String::from),
                 allowed_contexts: val["allowed_contexts"]
                     .as_array()
@@ -185,8 +207,9 @@ pub async fn export_backup(
                 created_at: val["created_at"].as_u64().unwrap_or(0),
                 created_by: val["created_by"].as_str().unwrap_or_default().to_string(),
             });
+            full.push(val);
         }
-        out
+        (lossy, full)
     };
 
     // 6. Collect seal record
@@ -288,7 +311,10 @@ pub async fn export_backup(
         key_records,
         context_records,
         context_counter,
+        path_counters,
+        subcontext_counters,
         acl_entries,
+        acl_entries_full,
         seal,
         webvh_servers,
         webvh_dids,
@@ -361,6 +387,55 @@ fn check_vta_did_compatibility(
     )))
 }
 
+/// Key under which `apply_import` records that a destructive import is in
+/// flight. Written (and persisted) before the keyspaces are cleared and
+/// removed only after every record is back; if a crash interrupts the
+/// import, this survives and boot refuses to start on the resulting hybrid
+/// state (see `crate::server::run`). Lives in the keys keyspace under a
+/// prefix no clear/scan touches.
+pub const IMPORT_IN_PROGRESS_KEY: &str = "backup:import_in_progress";
+
+/// Recompute `path_counter:{base}` values from restored key records, so an
+/// old (pre-P0.5) backup with no exported counters still can't re-derive an
+/// in-use BIP-32 path. For each derived key (`derivation_path` = `{base}/{n}'`)
+/// the counter for `base` must be at least `n + 1`.
+fn recompute_path_counters(
+    key_records: &[vta_sdk::keys::KeyRecord],
+) -> std::collections::HashMap<String, u32> {
+    let mut counters: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for kr in key_records {
+        let path = kr.derivation_path.trim();
+        if path.is_empty() {
+            continue; // imported (non-derived) key — no allocation counter
+        }
+        if let Some((base, last)) = path.rsplit_once('/')
+            && let Ok(index) = last.trim_end_matches('\'').parse::<u32>()
+        {
+            let next = index.saturating_add(1);
+            let slot = counters.entry(base.to_string()).or_insert(0);
+            *slot = (*slot).max(next);
+        }
+    }
+    counters
+}
+
+/// Recompute `ctx_counter:{parent}` values from restored context records. A
+/// sub-context carries its per-parent `index`; the counter for that parent
+/// must be at least `index + 1`.
+fn recompute_subcontext_counters(
+    context_records: &[vta_sdk::contexts::ContextRecord],
+) -> std::collections::HashMap<String, u32> {
+    let mut counters: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for cr in context_records {
+        if let Some(parent) = cr.parent.as_deref() {
+            let next = cr.index.saturating_add(1);
+            let slot = counters.entry(parent.to_string()).or_insert(0);
+            *slot = (*slot).max(next);
+        }
+    }
+    counters
+}
+
 /// Apply an import: clears all keyspaces and writes the backup data.
 ///
 /// When `store` and TEE KMS config are provided, re-encrypts the imported
@@ -399,10 +474,25 @@ pub async fn apply_import(
     let imported_ks = ks.imported;
     #[cfg(feature = "webvh")]
     let webvh_ks = ks.webvh;
-    // 1. Clear all keyspaces
-    clear_keyspace(keys_ks, &["key:", "seed:"]).await?;
+
+    // Crash-safety sentinel (P0.5): record that a destructive import has
+    // begun, and fsync it, BEFORE clearing anything. If a crash interrupts
+    // the rewrite below, the store is left in a hybrid half-imported state;
+    // this marker survives and boot refuses to start on it (server::run)
+    // rather than running on corrupt state. Removed + fsynced only after the
+    // import fully completes.
+    keys_ks
+        .insert_raw(IMPORT_IN_PROGRESS_KEY, b"1".to_vec())
+        .await?;
+    keys_ks.persist().await?;
+
+    // 1. Clear all keyspaces. `path_counter:` (keys) and `ctx_counter:`
+    // (per-parent sub-context counters, contexts) are cleared too so a
+    // re-import over a dirty store can't leave a stale counter that would
+    // re-allocate an in-use BIP-32 index (P0.5).
+    clear_keyspace(keys_ks, &["key:", "seed:", "path_counter:"]).await?;
     clear_keyspace(acl_ks, &["acl:", "vta:"]).await?;
-    clear_keyspace(contexts_ks, &["ctx:"]).await?;
+    clear_keyspace(contexts_ks, &["ctx:", "ctx_counter:"]).await?;
     clear_keyspace(audit_ks, &["log:"]).await?;
     clear_keyspace(imported_ks, &["secret:"]).await?;
     #[cfg(feature = "webvh")]
@@ -456,7 +546,7 @@ pub async fn apply_import(
             .await?;
     }
 
-    // 6. Write context records + counter
+    // 6. Write context records + counters
     for cr in &payload.context_records {
         contexts_ks.insert(format!("ctx:{}", cr.id), cr).await?;
     }
@@ -464,9 +554,64 @@ pub async fn apply_import(
         .insert_raw("ctx_counter", &payload.context_counter.to_le_bytes())
         .await?;
 
-    // 7. Write ACL entries
-    for entry in &payload.acl_entries {
-        acl_ks.insert(format!("acl:{}", entry.did), entry).await?;
+    // 6b. Restore the BIP-32 allocation counters (P0.5). Take the MAX of the
+    // exported value (exact — preserves gaps left by deleted keys) and the
+    // value recomputed from the restored records (the only source for a
+    // pre-P0.5 backup that has no exported counters). Either alone could
+    // under-count and re-derive an in-use key/subtree; the max never does.
+    {
+        let mut path_counters = recompute_path_counters(&payload.key_records);
+        for (k, v) in &payload.path_counters {
+            // Exported keys are the full `path_counter:{base}`; recompute is
+            // keyed by bare `{base}`. Normalise to bare base for the merge.
+            let base = k.strip_prefix("path_counter:").unwrap_or(k).to_string();
+            let slot = path_counters.entry(base).or_insert(0);
+            *slot = (*slot).max(*v);
+        }
+        for (base, next) in path_counters {
+            keys_ks
+                .insert_raw(format!("path_counter:{base}"), next.to_le_bytes().to_vec())
+                .await?;
+        }
+
+        let mut sub_counters = recompute_subcontext_counters(&payload.context_records);
+        for (k, v) in &payload.subcontext_counters {
+            let parent = k.strip_prefix("ctx_counter:").unwrap_or(k).to_string();
+            let slot = sub_counters.entry(parent).or_insert(0);
+            *slot = (*slot).max(*v);
+        }
+        for (parent, next) in sub_counters {
+            contexts_ks
+                .insert_raw(format!("ctx_counter:{parent}"), next.to_le_bytes().to_vec())
+                .await?;
+        }
+    }
+
+    // 7. Write ACL entries. Prefer the lossless full-JSON form
+    // (`acl_entries_full`) so expiry / step-up floors / capabilities / kind /
+    // device / version survive; fall back to the lossy 6-field `acl_entries`
+    // only for a pre-P0.5 backup that carries no full form.
+    if !payload.acl_entries_full.is_empty() {
+        for entry in &payload.acl_entries_full {
+            let did = entry
+                .get("did")
+                .and_then(|d| d.as_str())
+                .ok_or_else(|| AppError::Internal("backup ACL entry has no `did` field".into()))?;
+            let bytes = serde_json::to_vec(entry)?;
+            acl_ks.insert_raw(format!("acl:{did}"), bytes).await?;
+        }
+    } else {
+        if !payload.acl_entries.is_empty() {
+            tracing::warn!(
+                count = payload.acl_entries.len(),
+                "restoring ACL from a pre-P0.5 backup's lossy form — expiry, step-up \
+                 floors, and capability restrictions are not present and default to \
+                 permanent/none. Re-export with this build for a lossless backup."
+            );
+            for entry in &payload.acl_entries {
+                acl_ks.insert(format!("acl:{}", entry.did), entry).await?;
+            }
+        }
     }
 
     // 8. Write seal record
@@ -626,6 +771,12 @@ pub async fn apply_import(
             }
         }
     }
+
+    // Import complete and consistent: clear the crash-safety sentinel and
+    // fsync, so boot no longer sees a half-imported store (P0.5). Done last,
+    // after every record (incl. the TEE KMS re-encryption above) is in place.
+    keys_ks.remove(IMPORT_IN_PROGRESS_KEY).await?;
+    keys_ks.persist().await?;
 
     info!(
         keys = payload.key_records.len(),
@@ -924,6 +1075,8 @@ mod tests {
             key_records: vec![],
             context_records: vec![],
             context_counter: 2,
+            path_counters: vec![],
+            subcontext_counters: vec![],
             acl_entries: vec![AclEntryBackup {
                 did: "did:key:z6MkTest".into(),
                 role: "Admin".into(),
@@ -932,6 +1085,7 @@ mod tests {
                 created_at: 1000,
                 created_by: "did:key:z6MkSetup".into(),
             }],
+            acl_entries_full: vec![],
             seal: None,
             webvh_servers: vec![],
             webvh_dids: vec![],
@@ -951,6 +1105,214 @@ mod tests {
 
     fn test_config() -> crate::config::AppConfig {
         toml::from_str("").unwrap()
+    }
+
+    // ── P0.5 import-fidelity tests ──────────────────────────────────
+
+    fn mk_key_record(key_id: &str, derivation_path: &str) -> vta_sdk::keys::KeyRecord {
+        use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
+        let now = Utc::now();
+        KeyRecord {
+            key_id: key_id.into(),
+            derivation_path: derivation_path.into(),
+            key_type: KeyType::Ed25519,
+            status: KeyStatus::Active,
+            public_key: "zPlaceholder".into(),
+            label: None,
+            context_id: None,
+            seed_id: None,
+            origin: KeyOrigin::Derived,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn import_keyspaces<'a>(ts: &'a crate::test_support::TestStore) -> super::super::Keyspaces<'a> {
+        super::super::Keyspaces {
+            keys: &ts.keys_ks,
+            acl: &ts.acl_ks,
+            contexts: &ts.contexts_ks,
+            did_templates: &ts.did_templates_ks,
+            audit: &ts.audit_ks,
+            imported: &ts.imported_ks,
+            #[cfg(feature = "webvh")]
+            webvh: &ts.webvh_ks,
+        }
+    }
+
+    /// The headline P0.5 fix: a restore must carry the BIP-32 path counter
+    /// forward, or the next key minted after restore re-derives a private
+    /// key a restored record already occupies.
+    #[tokio::test]
+    async fn import_restores_path_counter_preventing_key_reuse() {
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store: std::sync::Arc<dyn SeedStore> =
+            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
+        let config =
+            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
+
+        let base = "m/26'/2'/0'";
+        let mut payload = test_payload();
+        payload.key_records = vec![mk_key_record("k0", &format!("{base}/0'"))];
+        payload.path_counters = vec![(format!("path_counter:{base}"), 1)];
+        payload.acl_entries = vec![]; // exercise only the counter path here
+
+        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
+            .await
+            .expect("import");
+
+        // Allocating under the same base must NOT hand back the in-use index 0.
+        let next = crate::keys::paths::allocate_path(&ts.keys_ks, base)
+            .await
+            .expect("alloc");
+        assert_eq!(
+            next,
+            format!("{base}/1'"),
+            "restore must carry the path counter forward (no key reuse)"
+        );
+    }
+
+    /// Without exported counters (a pre-P0.5 backup), the importer recomputes
+    /// from the restored key records — so the reuse bug is closed for old
+    /// backups too.
+    #[tokio::test]
+    async fn import_recomputes_path_counter_for_legacy_backup() {
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store: std::sync::Arc<dyn SeedStore> =
+            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
+        let config =
+            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
+
+        let base = "m/26'/2'/0'";
+        let mut payload = test_payload();
+        // Two restored keys at indices 0 and 1, NO exported counters (legacy).
+        payload.key_records = vec![
+            mk_key_record("k0", &format!("{base}/0'")),
+            mk_key_record("k1", &format!("{base}/1'")),
+        ];
+        payload.path_counters = vec![];
+        payload.acl_entries = vec![];
+
+        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
+            .await
+            .expect("import");
+
+        let next = crate::keys::paths::allocate_path(&ts.keys_ks, base)
+            .await
+            .expect("alloc");
+        assert_eq!(
+            next,
+            format!("{base}/2'"),
+            "recomputed counter must skip both in-use indices"
+        );
+    }
+
+    /// ACL entries must round-trip ALL fields — expiry, step-up floors,
+    /// capabilities, etc. — not collapse to the lossy 6-field projection
+    /// (which restored expired grants as permanent and stripped step-up).
+    #[tokio::test]
+    async fn import_restores_full_acl_entry_fields() {
+        use vti_common::acl::{AclEntry, Role};
+        use vti_common::auth::step_up::StepUpMode;
+
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store: std::sync::Arc<dyn SeedStore> =
+            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
+        let config =
+            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
+
+        let mut entry = AclEntry::new("did:key:zAcl", Role::Admin, "did:key:zSetup");
+        entry.expires_at = Some(1_900_000_000);
+        entry.step_up_require = Some(StepUpMode::SelfApprove);
+        let full = serde_json::to_value(&entry).unwrap();
+
+        let mut payload = test_payload();
+        payload.acl_entries = vec![]; // ensure the full form is what's used
+        payload.acl_entries_full = vec![full];
+
+        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
+            .await
+            .expect("import");
+
+        let restored: AclEntry = ts
+            .acl_ks
+            .get("acl:did:key:zAcl")
+            .await
+            .unwrap()
+            .expect("acl entry restored");
+        assert_eq!(restored.role, Role::Admin);
+        assert_eq!(
+            restored.expires_at,
+            Some(1_900_000_000),
+            "expiry must survive (a lossy restore would make it permanent)"
+        );
+        assert_eq!(
+            restored.step_up_require,
+            Some(StepUpMode::SelfApprove),
+            "step-up floor must survive (a lossy restore would strip it)"
+        );
+    }
+
+    /// The crash-safety sentinel must be gone after a successful import, and
+    /// must live under a key the clear step doesn't wipe (so an interrupted
+    /// import leaves it for boot to detect).
+    #[tokio::test]
+    async fn successful_import_leaves_no_in_progress_sentinel() {
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store: std::sync::Arc<dyn SeedStore> =
+            std::sync::Arc::new(crate::test_support::TestSeedStore(vec![42u8; 32]));
+        let config =
+            tokio::sync::RwLock::new(crate::test_support::test_app_config(ts.data_dir.clone()));
+
+        let mut payload = test_payload();
+        payload.acl_entries = vec![];
+
+        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
+            .await
+            .expect("import");
+
+        assert!(
+            ts.keys_ks
+                .get_raw(IMPORT_IN_PROGRESS_KEY)
+                .await
+                .unwrap()
+                .is_none(),
+            "a completed import must clear its in-progress sentinel"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_sentinel_survives_keyspace_clear() {
+        // The sentinel is written before the clear; verify the clear
+        // prefixes used by apply_import don't wipe it.
+        let ts = crate::test_support::open_test_store().await;
+        ts.keys_ks
+            .insert_raw(IMPORT_IN_PROGRESS_KEY, b"1".to_vec())
+            .await
+            .unwrap();
+        clear_keyspace(&ts.keys_ks, &["key:", "seed:", "path_counter:"])
+            .await
+            .unwrap();
+        assert!(
+            ts.keys_ks
+                .get_raw(IMPORT_IN_PROGRESS_KEY)
+                .await
+                .unwrap()
+                .is_some(),
+            "the sentinel must survive the import clear so an interrupted import is detectable at boot"
+        );
+    }
+
+    #[test]
+    fn recompute_path_counters_skips_imported_keys_and_takes_max() {
+        let recs = vec![
+            mk_key_record("a", "m/26'/2'/0'/0'"),
+            mk_key_record("b", "m/26'/2'/0'/3'"),
+            mk_key_record("imported", ""), // no derivation path → ignored
+        ];
+        let counters = recompute_path_counters(&recs);
+        assert_eq!(counters.get("m/26'/2'/0'"), Some(&4)); // max index 3 + 1
+        assert_eq!(counters.len(), 1);
     }
 
     #[test]
