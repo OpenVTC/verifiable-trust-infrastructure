@@ -137,7 +137,7 @@ axum-extra = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
 toml = { workspace = true }
-tower-http = { workspace = true, features = ["trace", "limit", "cors"] }
+tower-http = { workspace = true, features = ["trace", "limit", "cors", "timeout"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -232,6 +232,12 @@ vta-service = { path = ".", features = ["test-support"] }
 # binary required. Loopback HTTP is accepted by `WebvhClient::new`'s
 # HTTPS policy, so no insecure-test knob is needed.
 wiremock = "0.6"
+# Drives the focused request-timeout regression test (a standalone
+# router with a short TimeoutLayer + a sleepy handler → 408). The
+# production router uses the same layer at REQUEST_TIMEOUT; testing the
+# wiring with a short duration keeps the test deterministic.
+tower-http = { workspace = true, features = ["timeout"] }
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

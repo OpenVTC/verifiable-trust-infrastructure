@@ -349,9 +349,14 @@ async fn set_file_mode_600(path: &std::path::Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     //! Integration tests for the blob endpoints. Exercise the full
-    //! router (`build_test_app`) so the body-cap layer disable, the
-    //! token header extraction, and the state-machine guards all
-    //! land at the same level the real service runs.
+    //! router (`build_test_app`) so the body-cap layer, the token header
+    //! extraction, and the state-machine guards all land at the same level
+    //! the real service runs.
+    //!
+    //! Every request carries an `x-forwarded-for` header: the blob branch
+    //! is rate-limited (P0.10) and `tower::oneshot` carries no socket peer
+    //! IP, so the governor's key extractor needs an explicit client IP
+    //! (production requests always have a peer address or a proxy XFF).
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -445,6 +450,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::empty())
             .unwrap();
@@ -473,6 +479,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::empty())
             .unwrap();
@@ -483,6 +490,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::empty())
             .unwrap();
@@ -498,6 +506,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -511,6 +520,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, "bogus-token")
             .body(Body::empty())
             .unwrap();
@@ -524,6 +534,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{}", Uuid::new_v4()))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, "any-token")
             .body(Body::empty())
             .unwrap();
@@ -540,6 +551,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::empty())
             .unwrap();
@@ -553,6 +565,7 @@ mod tests {
         let req = Request::builder()
             .uri("/backup/blob/not-a-uuid")
             .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, "x")
             .body(Body::empty())
             .unwrap();
@@ -569,6 +582,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::from(bytes.clone()))
             .unwrap();
@@ -596,6 +610,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::from(b"short".to_vec()))
             .unwrap();
@@ -615,6 +630,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::from(tampered))
             .unwrap();
@@ -632,6 +648,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::from(bytes.clone()))
             .unwrap();
@@ -642,6 +659,7 @@ mod tests {
         let req = Request::builder()
             .uri(format!("/backup/blob/{bundle_id}"))
             .method("POST")
+            .header("x-forwarded-for", "192.0.2.1")
             .header(TOKEN_HEADER, &token)
             .body(Body::from(bytes))
             .unwrap();

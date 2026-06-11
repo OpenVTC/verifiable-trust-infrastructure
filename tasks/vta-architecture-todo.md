@@ -67,8 +67,17 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
 - `[ ]` **P0.9** (M) Boot-time `config::validate()`; `deny_unknown_fields`;
   hard-fail missing identity unless `--allow-degraded`; explicit opt-in for
   plaintext seed store — PR: ____
-- `[ ]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
-  explicit 100 MB layer + governor on `/backup/blob` — PR: ____
+- `[~]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
+  explicit 100 MB layer + governor on `/backup/blob` — branch
+  `fix/p0.10-timeouts-ratelimit`. Global `TimeoutLayer` (120s, →408) as the
+  hang backstop; moved the 4 unauth attestation routes (status, report
+  GET+POST, did-log) onto the rate-limited+body-capped unauth branch
+  (mnemonic stays authed); blob branch now has an explicit
+  `DefaultBodyLimit::max(100MB)` (was `disable()`) + the governor.
+  Factored `apply_unauth_governor()` (DRYs the trust_xff if/else, reused by
+  both branches). Tests: blob+attestation 429 floods, 408 slow-handler,
+  existing /auth/challenge 429 still green. tower-http `timeout` feature
+  added — PR: ____
 - `[~]` **P0.11** (S) BBS matchable ⇒ presentable — branch
   `fix/p0.11-bbs-presentable`. Chose UNMATCH: `dcql_format` returns `None`
   for `Bbs2023` (was `Some("ldp_vc")` → matched-then-failed the whole

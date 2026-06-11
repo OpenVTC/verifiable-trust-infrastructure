@@ -3459,6 +3459,101 @@ async fn unauth_endpoint_rate_limit_returns_429_after_burst() {
     );
 }
 
+/// P0.10: the token-gated backup-blob branch must also be rate-limited.
+/// Without a token the handler rejects the request, but the governor sits
+/// *outside* the handler, so a flood trips 429 before the handler ever
+/// runs — proving the branch carries the limiter (it previously did not).
+#[tokio::test]
+async fn backup_blob_branch_is_rate_limited() {
+    let (app, _ctx) = TestApp::new().await;
+    let mut saw_429 = false;
+    for _ in 0..20 {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/backup/blob/some-bundle-id")
+            .header("x-forwarded-for", "192.0.2.7")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = app.request(req).await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(
+        saw_429,
+        "expected a 429 within 20 GET /backup/blob calls; the backup-blob \
+         branch is missing its GovernorLayer"
+    );
+}
+
+/// P0.10: the unauthenticated TEE attestation endpoints (`status`,
+/// `report`, `did-log`) were on the main router, bypassing the rate
+/// limiter. They now live on the governed `unauth` branch. Flooding
+/// `GET /attestation/status` must trip 429 — the governor runs before the
+/// handler, so this holds even though the test app has no real TEE state
+/// (the handler would otherwise error). Only the super-admin
+/// `/attestation/mnemonic` routes stay off the limiter (JWT-gated).
+#[cfg(feature = "tee")]
+#[tokio::test]
+async fn unauth_attestation_status_is_rate_limited() {
+    let (app, _ctx) = TestApp::new().await;
+    let mut saw_429 = false;
+    for _ in 0..20 {
+        let req = Request::builder()
+            .method("GET")
+            .uri("/attestation/status")
+            .header("x-forwarded-for", "192.0.2.9")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = app.request(req).await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(
+        saw_429,
+        "expected a 429 within 20 GET /attestation/status calls; the unauth \
+         attestation routes are not on the governed branch"
+    );
+}
+
+/// P0.10: a handler that stalls must not hold its connection forever. The
+/// production router wraps every route in a `TimeoutLayer` at
+/// `REQUEST_TIMEOUT`; this drives the same layer (at a short, deterministic
+/// duration) over a deliberately-slow handler and asserts it returns
+/// `408 Request Timeout` rather than hanging.
+#[tokio::test]
+async fn request_timeout_layer_returns_408_for_slow_handler() {
+    use std::time::Duration;
+    use tower::ServiceExt;
+    use tower_http::timeout::TimeoutLayer;
+
+    let app: axum::Router = axum::Router::new()
+        .route(
+            "/slow",
+            axum::routing::get(|| async {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                "should never arrive"
+            }),
+        )
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_millis(50),
+        ));
+
+    let resp = app
+        .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap())
+        .await
+        .expect("layer must produce a response, not hang");
+    assert_eq!(
+        resp.status(),
+        StatusCode::REQUEST_TIMEOUT,
+        "a handler slower than the timeout must yield 408, not block the connection"
+    );
+}
+
 /// `MAX_BODY_SIZE` (1 MB) is enforced via axum's `DefaultBodyLimit::max`
 /// across every authenticated mutation endpoint. A 1.5 MB body must
 /// be rejected with 413 — this is the protection against memory

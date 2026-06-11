@@ -25,6 +25,7 @@ pub(crate) mod trust_tasks;
 mod vta;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -33,6 +34,7 @@ use axum::routing::{delete, get, post, put};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::timeout::TimeoutLayer;
 
 use crate::server::AppState;
 
@@ -70,6 +72,51 @@ pub(super) const BACKUP_BLOB_BODY_SIZE: usize = 100 * 1024 * 1024;
 /// them protects VTA CPU regardless of any reverse proxy upstream.
 const UNAUTH_RPS: u64 = 5;
 const UNAUTH_BURST: u32 = 10;
+
+/// Global per-request timeout. The REST surface runs on a current-thread
+/// runtime, so a handler that stalls on network I/O (a dead mediator, a
+/// slow remote DID host) would otherwise hold its connection — and a
+/// caller's patience — indefinitely. Generous on purpose: longer than any
+/// legitimate single request (local-fast backups, self-limiting mediator
+/// handshakes, a 100 MB blob transfer at modest bandwidth) but bounded, so
+/// "indefinite" becomes "120 s then 408". Not a substitute for the
+/// handshake/op-specific timeouts, which stay; this is the backstop.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Apply the unauthenticated-endpoint rate limiter to `router`.
+///
+/// Split out so the two key extractors — which instantiate
+/// `GovernorConfig` at distinct generic types — are confined here and the
+/// returned `Router<AppState>` is uniform (type-erased by axum). Used for
+/// both the unauth branch and the token-gated backup-blob branch, which is
+/// otherwise an unthrottled large-body write surface.
+///
+/// `trust_xff`: `false` keys on the socket peer (`PeerIpKeyExtractor`,
+/// spoof-safe for direct binding); `true` honours `X-Forwarded-For`
+/// (`SmartIpKeyExtractor`, only safe behind a header-sanitising proxy).
+fn apply_unauth_governor(router: Router<AppState>, trust_xff: bool) -> Router<AppState> {
+    if trust_xff {
+        let cfg = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(UNAUTH_RPS)
+                .burst_size(UNAUTH_BURST)
+                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
+                .finish()
+                .expect("governor config values are static and non-zero"),
+        );
+        router.layer(GovernorLayer::new(cfg))
+    } else {
+        let cfg = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(UNAUTH_RPS)
+                .burst_size(UNAUTH_BURST)
+                .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
+                .finish()
+                .expect("governor config values are static and non-zero"),
+        );
+        router.layer(GovernorLayer::new(cfg))
+    }
+}
 
 /// Health-check route — served without the request/response trace layer.
 /// Minimal response only; detailed info requires authentication.
@@ -187,12 +234,21 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
         // Auth flow entry points
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))
-        .route("/auth/refresh", post(auth::refresh))
-        // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
-        // Layered on this sub-router (not the global one) so authenticated
-        // endpoints keep the regular MAX_BODY_SIZE budget needed for backup
-        // import etc.
-        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
+        .route("/auth/refresh", post(auth::refresh));
+    // Public, unauthenticated TEE attestation endpoints. These take no
+    // auth extractor and run crypto on caller input (report generation),
+    // so they MUST sit on the rate-limited + body-capped unauth branch —
+    // not the main router, where they previously bypassed both. The
+    // super-admin `/attestation/mnemonic` routes stay on the authed
+    // router (JWT is their gate).
+    #[cfg(feature = "tee")]
+    let unauth = unauth
+        .route("/attestation/status", get(attestation::status))
+        .route(
+            "/attestation/report",
+            get(attestation::cached_report).post(attestation::generate_report),
+        )
+        .route("/attestation/did-log", get(attestation::did_log));
     #[cfg(feature = "webvh")]
     let unauth = unauth
         // Public did.jsonl retrieval — matches webvh's world-readable
@@ -200,31 +256,15 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
         // limited via the same governor layer as the other unauth
         // endpoints.
         .route("/did/{did}/log", get(did_webvh::get_did_log_public_handler));
-    // Apply the rate-limit layer in a branch so the two key
-    // extractors' distinct generic types don't pollute the
-    // `unauth` shape. The layered router is type-erased on the
-    // axum side once we hand it off.
-    let unauth = if trust_xff {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(UNAUTH_RPS)
-                .burst_size(UNAUTH_BURST)
-                .key_extractor(tower_governor::key_extractor::SmartIpKeyExtractor)
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth.layer(GovernorLayer::new(cfg))
-    } else {
-        let cfg = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(UNAUTH_RPS)
-                .burst_size(UNAUTH_BURST)
-                .key_extractor(tower_governor::key_extractor::PeerIpKeyExtractor)
-                .finish()
-                .expect("governor config values are static and non-zero"),
-        );
-        unauth.layer(GovernorLayer::new(cfg))
-    };
+    // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
+    // Applied after ALL unauth routes (including the cfg-gated ones) are
+    // registered so every POST on this branch (auth, attestation report)
+    // gets the 64 KB ceiling, not just the base set. Layered here (not
+    // globally) so authenticated endpoints keep MAX_BODY_SIZE for backup
+    // import etc.
+    let unauth = unauth.layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
+    // Rate-limit every unauth endpoint (see `apply_unauth_governor`).
+    let unauth = apply_unauth_governor(unauth, trust_xff);
 
     // Auth portal — same-origin popup target for cross-origin WebAuthn
     // flows. Sits on its own router branch so:
@@ -359,21 +399,16 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
                 .delete(cache::delete_cached),
         );
 
-    // TEE attestation routes (feature-gated)
+    // TEE attestation routes (feature-gated). The unauthenticated ones
+    // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
+    // branch above; only the super-admin-gated mnemonic export stays on
+    // the authed router (JWT is its gate, so it's intentionally off the
+    // rate limiter like every other authed route).
     #[cfg(feature = "tee")]
-    let router = router
-        .route("/attestation/status", get(attestation::status))
-        .route(
-            "/attestation/report",
-            get(attestation::cached_report).post(attestation::generate_report),
-        )
-        // Mnemonic export (super admin only, time-limited)
-        .route(
-            "/attestation/mnemonic",
-            get(attestation::mnemonic_status).post(attestation::mnemonic_export),
-        )
-        // Auto-generated DID log (unauthenticated — public data)
-        .route("/attestation/did-log", get(attestation::did_log));
+    let router = router.route(
+        "/attestation/mnemonic",
+        get(attestation::mnemonic_status).post(attestation::mnemonic_export),
+    );
     // `GET /attestation/admin-credential` retired in Phase 3 —
     // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
@@ -501,20 +536,24 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
     // in `docs/05-design-notes/backup-descriptor-pattern.md`
     // §"Auth model".
     //
-    // Body limit is disabled at the router level so the global
-    // `MAX_BODY_SIZE` (1 MB) doesn't constrain backups, which
-    // legitimately need 10s of MB. The handler enforces a
-    // `BACKUP_BLOB_BODY_SIZE` (100 MB) ceiling itself via
-    // `axum::body::to_bytes` so we still reject pathological
-    // uploads; doing it inside the handler keeps the limit
-    // visible in one place (not split between two layers with
-    // ambiguous override semantics).
+    // Body limit: an explicit `BACKUP_BLOB_BODY_SIZE` (100 MB) layer —
+    // NOT `disable()`. The global `MAX_BODY_SIZE` (1 MB) is too small for
+    // backups (10s of MB), but `disable()` meant any future handler added
+    // to this branch silently inherited an *unlimited* body. The layer is
+    // a branch backstop at the same value the handler already enforces via
+    // `axum::body::to_bytes` (both at `BACKUP_BLOB_BODY_SIZE`, so they
+    // agree — no ambiguous override).
+    //
+    // Rate-limited like the unauth branch: the token gate is real, but
+    // without throttling an attacker replaying/guessing bundle_ids gets
+    // free 100 MB disk-write attempts and free SHA-256 over 100 MB bodies.
     let backup_blob_router = Router::new()
         .route(
             "/backup/blob/{bundle_id}",
             get(backup_blob::get_blob).post(backup_blob::post_blob),
         )
-        .layer(DefaultBodyLimit::disable());
+        .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
+    let backup_blob_router = apply_unauth_governor(backup_blob_router, trust_xff);
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details and capabilities
@@ -522,12 +561,23 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
         .route("/health/details", get(health::health_details))
         .route("/capabilities", get(capabilities::capabilities));
 
-    // Apply global request body size limit to protect enclave memory
-    let router = router.layer(DefaultBodyLimit::max(MAX_BODY_SIZE));
+    // Apply global request body size limit to protect enclave memory,
+    // plus the global request timeout backstop (no handler may hold a
+    // connection indefinitely). The blob branch's own 100 MB body limit,
+    // applied inner to this 1 MB global one, still wins for that branch
+    // (the inner layer sets the limit extension last).
+    let router =
+        router
+            .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                REQUEST_TIMEOUT,
+            ));
 
     // Apply CORS conditionally — empty origin list = no layer at all
     // (preserves the legacy no-cross-origin behaviour for production
-    // deployments that don't need browser-side fetch).
+    // deployments that don't need browser-side fetch). CORS stays
+    // outermost so preflight handling and headers wrap the timeout.
     match build_cors_layer(allowed_origins) {
         Some(cors) => router.layer(cors),
         None => router,
