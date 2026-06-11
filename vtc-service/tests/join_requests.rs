@@ -1692,3 +1692,93 @@ decision := {"effect": "request_more", "with": {
     assert_eq!(body["needs"][0], "agreed:code-of-conduct");
     assert_eq!(body["presentationDefinition"]["id"], "pd-coc");
 }
+
+// ---------------------------------------------------------------------------
+// P0.5 — the unauthenticated join-request POSTs (submit / accept / status)
+// must sit on the governed branch (5 rps + burst 10 per source IP), like the
+// recognise route — they run attacker-driven crypto + Rego eval and were
+// previously on the ungoverned 1 MiB main chain. The governor is the
+// outermost layer, so a flood trips 429 before the handler runs; the admin
+// GET list stays on the JWT-gated `api` chain (no governor).
+// ---------------------------------------------------------------------------
+
+/// Fire rapid requests at `uri` and report whether any returned 429 — proof
+/// the endpoint sits behind the unauth governor. The governor (burst 10) trips
+/// well within 40 sequential in-memory requests.
+async fn floods_to_429(router: &axum::Router, method: &str, uri: &str, task: &str) -> bool {
+    for _ in 0..40 {
+        let (status, _) = send(router, method, uri, task, None, Some(json!({}))).await;
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return true;
+        }
+    }
+    false
+}
+
+#[tokio::test]
+async fn submit_post_is_rate_limited() {
+    let fix = build_fixture().await;
+    assert!(
+        floods_to_429(&fix.router, "POST", "/v1/join-requests", SUBMIT_TASK).await,
+        "POST /v1/join-requests must be on the governed branch (no 429 in 40 requests)"
+    );
+}
+
+#[tokio::test]
+async fn accept_post_is_rate_limited() {
+    let fix = build_fixture().await;
+    assert!(
+        floods_to_429(
+            &fix.router,
+            "POST",
+            "/v1/join-requests/00000000-0000-0000-0000-000000000000/accept",
+            ACCEPT_TASK,
+        )
+        .await,
+        "POST /v1/join-requests/{{id}}/accept must be on the governed branch"
+    );
+}
+
+#[tokio::test]
+async fn status_post_is_rate_limited() {
+    let fix = build_fixture().await;
+    assert!(
+        floods_to_429(
+            &fix.router,
+            "POST",
+            "/v1/join-requests/00000000-0000-0000-0000-000000000000/status",
+            STATUS_TASK,
+        )
+        .await,
+        "POST /v1/join-requests/{{id}}/status must be on the governed branch"
+    );
+}
+
+/// The admin GET list stays on the `api` chain (JWT-gated, no governor): 40
+/// rapid unauthenticated GETs stay `401` and never trip `429`. This is the
+/// other half of the split — the POST moved, the GET did not.
+#[tokio::test]
+async fn admin_list_get_is_not_rate_limited() {
+    let fix = build_fixture().await;
+    for _ in 0..40 {
+        let (status, _) = send(
+            &fix.router,
+            "GET",
+            "/v1/join-requests",
+            SUBMIT_TASK,
+            None,
+            None,
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "the admin GET list must stay off the governor (got 429)"
+        );
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated GET list should be 401, got {status}"
+        );
+    }
+}

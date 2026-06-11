@@ -243,6 +243,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
     // collapses to `join-requests/submit/1.0` until TrustTaskRouter
     // gains per-method selectors (same workaround community/profile,
     // admin/config, members/{did} use).
+    // The unauthenticated `/join-requests` POST submit, `/accept`, and
+    // `/status` move to `build_unauth_routes` (P0.5) so the governor + 64 KiB
+    // cap apply; their Trust Tasks are declared there. The admin GET list keeps
+    // the `/join-requests` mount here under the *same* `join-requests/submit/1.0`
+    // task it has always required (axum merges this GET with the governed POST;
+    // the task descriptor collapse to `submit/1.0` for the list is unchanged —
+    // a per-method `list/1.0` split is future work, tracked separately).
     let join_submit = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0")
         .expect("static Trust-Task URL");
     let join_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/show/1.0")
@@ -252,13 +259,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             .expect("static Trust-Task URL");
     let join_reject = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0")
         .expect("static Trust-Task URL");
-    let join_accept = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0")
-        .expect("static Trust-Task URL");
     let join_manifest =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0")
             .expect("static Trust-Task URL");
-    let join_status = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/status/1.0")
-        .expect("static Trust-Task URL");
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
     // filters + soft-gate consumers can target each precisely.
@@ -665,14 +668,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             post(members::promote::promote_finish),
             members_promote,
         )
-        // Join requests (Phase 1 M1.7–M1.10).
+        // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
+        // accept / status live on the governed branch (`build_unauth_routes`,
+        // P0.5); the admin GET list keeps this `/join-requests` mount (axum
+        // merges this GET with the governed-branch POST submit).
         .route_with_task(
             "/join-requests",
-            // Submit (unauth) + admin list share the mount; the
-            // submit Trust Task `join-requests/submit/1.0` covers
-            // both methods here. Per-method selectors land
-            // alongside the same router work admin/config awaits.
-            post(join_requests::submit::submit).get(join_requests::read::list_join_requests),
+            get(join_requests::read::list_join_requests),
             join_submit,
         )
         .route_with_task(
@@ -690,14 +692,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             post(join_requests::decide::reject),
             join_reject,
         )
-        // Accept (unauth — the reciprocal VC + holder binding are the
-        // auth, like submit): the member counter-signs the issued VMC to
-        // close the bidirectional edge.
-        .route_with_task(
-            "/join-requests/{id}/accept",
-            post(join_requests::accept::accept),
-            join_accept,
-        )
         // Manifest (unauth public discovery): the community's join
         // evidence requirements. Static `manifest` segment takes
         // precedence over the `{id}` show route.
@@ -705,13 +699,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> Router<AppState
             "/join-requests/manifest",
             get(join_requests::manifest::manifest),
             join_manifest,
-        )
-        // Status (unauth — holder binding in the body): the applicant
-        // polls their own request's lifecycle.
-        .route_with_task(
-            "/join-requests/{id}/status",
-            post(join_requests::status::status),
-            join_status,
         )
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
@@ -904,6 +891,18 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
     let auth_recognise_challenge =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0")
             .expect("static Trust-Task URL");
+    // P0.5 — the unauthenticated join-request POSTs (submit / accept / status)
+    // do the same attacker-driven crypto as recognise (Ed25519 holder-binding
+    // verify, reciprocal-VC counter-sign verify, Rego eval) but were left on
+    // the 1 MiB / no-limiter main chain. Move them here so the governor + 64
+    // KiB cap apply. The admin GET list + show + approve / reject and the
+    // public GET manifest stay on the `api` chain.
+    let join_submit = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0")
+        .expect("static Trust-Task URL");
+    let join_accept = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0")
+        .expect("static Trust-Task URL");
+    let join_status = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/status/1.0")
+        .expect("static Trust-Task URL");
 
     // L2: rate-limiter key extractor honours `trust_xff`. The
     // governor is applied in the routing chain below via a
@@ -978,6 +977,25 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
             "/auth/recognise",
             post(recognise::recognise),
             auth_recognise,
+        )
+        // Join-request POSTs (P0.5). Submit shares the `/join-requests` mount
+        // with the admin GET list on the `api` chain — axum merges the GET +
+        // POST method routers; the unauth POST lands here (governed), the admin
+        // GET stays there (JWT-gated).
+        .route_with_task(
+            "/join-requests",
+            post(join_requests::submit::submit),
+            join_submit,
+        )
+        .route_with_task(
+            "/join-requests/{id}/accept",
+            post(join_requests::accept::accept),
+            join_accept,
+        )
+        .route_with_task(
+            "/join-requests/{id}/status",
+            post(join_requests::status::status),
+            join_status,
         )
         .into_router()
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
