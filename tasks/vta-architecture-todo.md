@@ -51,7 +51,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   to lossy + warn). Crash-safety: `IMPORT_IN_PROGRESS_KEY` written+fsynced
   before the clear, removed+fsynced after; `server::run` refuses boot on a
   half-imported store. Tests: counter-no-reuse (exported + recomputed),
-  full-ACL-fields (expiry+step-up survive), sentinel lifecycle — PR: ____
+  full-ACL-fields (expiry+step-up survive), sentinel lifecycle — PR: #358 (in review)
 - `[x]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
   branch `fix/p0.6-tee-seed-rotation`. Chose REJECT (the plan's safe minimum;
   in-place re-encryption is a follow-up). New `SeedStore::set_persists_across_restart()`
