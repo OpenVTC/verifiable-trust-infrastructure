@@ -913,6 +913,52 @@ pub mod pending {
         }
         Ok(out)
     }
+
+    /// Delete a pending-presentation record by id. Idempotent — removing an
+    /// absent id is a no-op.
+    pub async fn remove(vault: &KeyspaceHandle, id: &str) -> Result<(), AppError> {
+        vault.remove(key(id)).await
+    }
+
+    /// Reclaim pending-presentation records that can no longer be acted on, so
+    /// the namespace doesn't grow unbounded at DIDComm message rate (P0.12).
+    /// A record is reclaimed when it is **terminal** (`Approved`/`Denied`) or
+    /// **stale** (`expires_at <= now` — its verifier nonce is no longer fresh,
+    /// so approval would refuse anyway). Undecodable rows are garbage that can
+    /// never be acted on, so they're reclaimed too (logged). Returns the count
+    /// removed.
+    ///
+    /// Tolerant by design (mirrors the steady-state list paths): one bad or
+    /// stuck row never aborts the whole pass — a delete that errors is left for
+    /// the next pass rather than failing the sweep.
+    pub async fn sweep(vault: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {
+        let raw = vault.prefix_iter_raw(PREFIX.as_bytes().to_vec()).await?;
+        let mut removed = 0usize;
+        for (k, v) in raw {
+            let reclaim = match serde_json::from_slice::<PendingPresentation>(&v) {
+                Ok(rec) => rec.status != PendingStatus::Pending || rec.expires_at <= now,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "pending-present sweeper: reclaiming an undecodable record"
+                    );
+                    true
+                }
+            };
+            if reclaim {
+                match vault.remove(k).await {
+                    Ok(()) => removed += 1,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "pending-present sweeper: delete failed; retry next pass"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(removed)
+    }
 }
 
 /// Record a deferred presentation for later out-of-band approval. Called by the
@@ -2349,6 +2395,54 @@ mod tests {
                 .await
                 .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn sweep_reclaims_terminal_and_stale_records_keeps_live() {
+        let (_dir, vault, _keys_ks, _seed_store, _subject) = holder_fixture().await;
+        let query = membership_query();
+        let verifier = "did:web:stranger.example";
+        let requested = || {
+            vec![RequestedCredential {
+                credential_query_id: "membership".into(),
+                credential_id: "urn:cred:1".into(),
+                claims: vec!["givenName".into()],
+            }]
+        };
+        let now = Utc::now();
+
+        // (1) Live pending (future expiry) — must survive the sweep.
+        defer_presentation(&vault, "live", verifier, requested(), &query, now)
+            .await
+            .expect("defer live");
+        // (2) Terminal (denied) — must be reclaimed.
+        defer_presentation(&vault, "terminal", verifier, requested(), &query, now)
+            .await
+            .expect("defer terminal");
+        deny_pending_presentation(&vault, "terminal")
+            .await
+            .expect("deny");
+        // (3) Stale pending (recorded 48h ago → past the 24h window) — reclaimed.
+        defer_presentation(
+            &vault,
+            "stale",
+            verifier,
+            requested(),
+            &query,
+            now - chrono::Duration::hours(48),
+        )
+        .await
+        .expect("defer stale");
+
+        let removed = pending::sweep(&vault, now).await.expect("sweep");
+        assert_eq!(removed, 2, "terminal + stale records reclaimed");
+
+        let remaining = pending::list(&vault).await.expect("list");
+        assert_eq!(remaining.len(), 1, "only the live pending record survives");
+        assert_eq!(remaining[0].id, "live");
+
+        // Idempotent: a second sweep with nothing terminal/stale removes nothing.
+        assert_eq!(pending::sweep(&vault, now).await.expect("sweep2"), 0);
     }
 
     #[tokio::test]

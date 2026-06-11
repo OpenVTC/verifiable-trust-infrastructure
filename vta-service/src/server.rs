@@ -567,6 +567,7 @@ pub async fn run(
         let storage_sessions_ks = sessions_ks.clone();
         let storage_audit_ks = audit_ks.clone();
         let storage_acl_ks = acl_ks.clone();
+        let storage_vault_ks = vault_ks.clone();
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
         let storage_backup_blob_dir = backup_blob_dir.clone();
         let storage_audit_config = config.audit.clone();
@@ -868,6 +869,7 @@ pub async fn run(
                     storage_sessions_ks,
                     storage_audit_ks,
                     storage_acl_ks,
+                    storage_vault_ks,
                     storage_backup_bundles_ks,
                     storage_backup_blob_dir,
                     storage_audit_config,
@@ -964,6 +966,7 @@ fn run_storage_thread(
     sessions_ks: KeyspaceHandle,
     audit_ks: KeyspaceHandle,
     acl_ks: KeyspaceHandle,
+    vault_ks: KeyspaceHandle,
     backup_bundles_ks_storage: KeyspaceHandle,
     backup_blob_dir_storage: std::path::PathBuf,
     audit_config: crate::config::AuditConfig,
@@ -1019,6 +1022,23 @@ fn run_storage_thread(
                         .await
                         {
                             warn!("backup bundle sweeper error: {e}");
+                        }
+                        // Reclaim deferred-presentation records that are
+                        // terminal or stale (P0.12). Without this the
+                        // `pending-present:` namespace grows unbounded at
+                        // DIDComm message rate — every untrusted-verifier
+                        // query writes one.
+                        match crate::operations::credential_exchange::pending::sweep(
+                            &vault_ks,
+                            chrono::Utc::now(),
+                        )
+                        .await
+                        {
+                            Ok(n) if n > 0 => {
+                                info!(reclaimed = n, "pending-present sweeper")
+                            }
+                            Ok(_) => {}
+                            Err(e) => warn!("pending-present sweeper error: {e}"),
                         }
                     }
                     _ = shutdown_rx.changed() => {

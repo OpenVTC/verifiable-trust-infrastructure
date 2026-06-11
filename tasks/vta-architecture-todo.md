@@ -40,7 +40,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   seed rotation; create_context claims its record atomically at both
   layers; concurrency regression tests for all four —
   PR: #342 (merged)
-- `[~]` **P0.5** (L) Backup/restore: export counters, full `AclEntry`
+- `[x]` **P0.5** (L) Backup/restore: export counters, full `AclEntry`
   round-trip, import-in-progress sentinel — branch `fix/p0.5-backup-fidelity`
   (worktree). vta-sdk `BackupPayload` gains `path_counters`,
   `subcontext_counters`, `acl_entries_full` (raw `AclEntry` JSON — vta-sdk
@@ -51,7 +51,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   to lossy + warn). Crash-safety: `IMPORT_IN_PROGRESS_KEY` written+fsynced
   before the clear, removed+fsynced after; `server::run` refuses boot on a
   half-imported store. Tests: counter-no-reuse (exported + recomputed),
-  full-ACL-fields (expiry+step-up survive), sentinel lifecycle — PR: #358 (in review)
+  full-ACL-fields (expiry+step-up survive), sentinel lifecycle — PR: #358 (merged)
 - `[x]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
   branch `fix/p0.6-tee-seed-rotation`. Chose REJECT (the plan's safe minimum;
   in-place re-encryption is a follow-up). New `SeedStore::set_persists_across_restart()`
@@ -62,7 +62,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   refusal+no-mutation (tee), trait flag, existing non-TEE rotation unaffected
   — PR: #344 (merged). Follow-up: in-place re-encryption so TEE rotation
   works rather than refuses (needs runtime KMS access on KmsTeeSeedStore).
-- `[~]` **P0.7a** (S) `Zeroizing` seed bytes + honest "secure deletion" —
+- `[x]` **P0.7a** (S) `Zeroizing` seed bytes + honest "secure deletion" —
   branch `fix/p0.7-seed-zeroize` (isolated worktree). `load_seed_bytes`
   returns `Zeroizing<Vec<u8>>` (the 40-caller key-derivation path — all use
   `&seed`, so transparent via Deref); the low-level `rotate_seed`'s old/new
@@ -70,7 +70,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   derivation.rs) wrapped too. `delete_secret` dropped its ineffective
   zero-overwrite (LSM keeps old SSTables; value is ciphertext anyway) with an
   honest comment. Trait-level `SeedStore::get` Zeroizing deferred (crosses
-  vtc + 8 backends) — PR: #353 (in review)
+  vtc + 8 backends) — PR: #353 (merged)
 - `[ ]` **P0.7b** (L) Encrypt the retired-seed archive independently of the
   keyspace-encryption flag. Split from P0.7: needs a rotation-re-encryption
   (or successor-chain) design + a migration for existing plaintext archives —
@@ -87,7 +87,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   torn fsync favours a recoverable reopen over a brick. Counter allocator
   also now fsyncs (path-counter loss = key reuse). Tests: persist-survives-
   reopen, carve-out-admits-one — PR: #343 (merged)
-- `[~]` **P0.9a** (S) Boot-time `config::validate()` + plaintext-seed opt-in —
+- `[x]` **P0.9a** (S) Boot-time `config::validate()` + plaintext-seed opt-in —
   branch `fix/p0.9-config-validation` (worktree). `AppConfig::validate()` runs
   at `server::run` boot: hard-errors on unambiguously-broken values
   (retention_days=0, present-but-empty public_url/resolver_url), warns (never
@@ -96,14 +96,14 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   silent plaintext fallback unless `secrets.allow_plaintext = true` (footgun:
   one wrong TOML key → master seed on disk in clear). Tests: validate rules
   (the opt-in path is cfg-unreachable in the test harness — dev-dep forces
-  keyring on — documented) — PR: #356 (in review)
+  keyring on — documented) — PR: #356 (merged)
 - `[ ]` **P0.9b** Split from P0.9 (config-compat risk; needs care):
   `deny_unknown_fields`/unknown-key WARNING pass on `AppConfig` (could reject
   existing configs with legacy/extra keys — softer warning preferred);
   hard-fail at boot on missing identity (`vta_did`/JWT keys) unless a new
   `--allow-degraded` CLI flag (needs cold-start / TEE-autogen / import-did
   flow analysis so it doesn't break a legitimate not-yet-configured boot) — PR: ____
-- `[~]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
+- `[x]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
   explicit 100 MB layer + governor on `/backup/blob` — branch
   `fix/p0.10-timeouts-ratelimit`. Global `TimeoutLayer` (120s, →408) as the
   hang backstop; moved the 4 unauth attestation routes (status, report
@@ -113,19 +113,31 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   Factored `apply_unauth_governor()` (DRYs the trust_xff if/else, reused by
   both branches). Tests: blob+attestation 429 floods, 408 slow-handler,
   existing /auth/challenge 429 still green. tower-http `timeout` feature
-  added — PR: #352 (in review)
-- `[~]` **P0.11** (S) BBS matchable ⇒ presentable — branch
+  added — PR: #352 (merged)
+- `[x]` **P0.11** (S) BBS matchable ⇒ presentable — branch
   `fix/p0.11-bbs-presentable`. Chose UNMATCH: `dcql_format` returns `None`
   for `Bbs2023` (was `Some("ldp_vc")` → matched-then-failed the whole
   vp_token in present_single's catch-all). Wiring `present_bbs` needs
   issuer BBS G2 pubkey resolution that present_single lacks + BBS is
   audit-gated (#294), so full BBS DCQL presentation is a follow-up tied to
   that audit. Guard test `formats_admitted_for_dcql_are_all_presentable`
-  locks the invariant (passes on default + bbs feature) — PR: #349 (in review)
-- `[ ]` **P0.12** (M) Deferred-presentation sweeper + reachable
-  approve/deny/list surface — PR: ____
+  locks the invariant (passes on default + bbs feature) — PR: #349 (merged)
+- `[~]` **P0.12a** (S) Deferred-presentation sweeper — branch
+  `fix/p0.12a-pending-present-sweeper` (worktree). Added `pending::sweep`
+  (reclaims terminal `Approved`/`Denied` + stale `expires_at<=now` records;
+  also reclaims undecodable garbage rows; tolerant — one bad/stuck row never
+  aborts the pass) + `pending::remove`. Wired into the existing storage-thread
+  sweep loop (threaded `vault_ks` through `run_storage_thread`), runs each
+  `session_cleanup_interval` alongside the acl/audit/backup sweepers. Fixes the
+  unbounded `pending-present:` growth (one record per untrusted-verifier query).
+  Test: sweep reclaims terminal+stale, keeps live, idempotent — PR: ____
+- `[ ]` **P0.12b** (M) Reachable approve/deny/list wire surface — expose the
+  zero-caller `approve_pending_presentation`/`deny_pending_presentation`/
+  `pending::list` over a TT slice (defer→list→approve→re-present end-to-end),
+  delete-on-terminal in approve/deny. Plan sequenced this AFTER the sweeper
+  (P0.12a). — PR: ____
 - **P0.13** — DECISION (operator): ENFORCE on both transports (not document).
-- `[~]` **P0.13a** (M) DIDComm `swap_acl` honours step-up floors — branch
+- `[x]` **P0.13a** (M) DIDComm `swap_acl` honours step-up floors — branch
   `fix/p0.13a-didcomm-stepup` (worktree). Refactored `resolve_step_up` to take
   `config` + `acl_ks` (not `&AppState`) so the DIDComm handler (`VtaState`)
   can call it; made it + `StepUpDecision` + the `step_up` module `pub(crate)`
@@ -136,7 +148,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   report directing to REST. Added `StepUpRequired` → `forbidden` arm to
   `app_err_to_response`. Test: `resolve_step_up` swap-key floor/carve-out/
   disabled matrix — PR: ____
-- `[~]` **P0.13b** (M) Vault step-up enforcement — branch
+- `[x]` **P0.13b** (M) Vault step-up enforcement — branch
   `fix/p0.13b-vault-stepup` (worktree). Added `vault/release`,
   `vault/proxy-login`, `vault/sign-trust-task` op-classes (vti-common
   op_class + ALL + step_up `op` re-export). The three vault TT handlers
@@ -146,14 +158,14 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   the session-ACR gate, policy-driven — inert under the shipping default).
   Note: the actual op was proxy-login, not upsert (upsert has no step_up_proof
   / discloses nothing). Tests: op-class recognition; resolve gates a
-  configured vault floor only — PR: #362 (in review)
-- `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
+  configured vault floor only — PR: #362 (merged)
+- `[x]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
   export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
   list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row
   no longer aborts the whole listing); backup export (seed/key/context/ACL
   collections) now errors loudly on a corrupt row (incomplete backup is
   worse than none). ACL field-fidelity stays for P0.5. Tests: ACL list
-  skips garbage row, export aborts on corrupt key row — PR: #347 (in review)
+  skips garbage row, export aborts on corrupt key row — PR: #347 (merged)
 
 **Checkpoint 0:** `[ ]` all P0 merged or deferred-with-issue; CI green;
 tee-architecture.md updated.
