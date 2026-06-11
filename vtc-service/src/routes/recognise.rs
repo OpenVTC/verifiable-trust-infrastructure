@@ -2,11 +2,34 @@
 //!
 //! Phase 3 M3.10. Spec §8.4.
 //!
-//! The route accepts a foreign community's (`VEC`, `VMC`) pair,
-//! runs the M3.9 verifier, evaluates `cross_community_roles.rego`
-//! to map the foreign role onto a local role, and mints a session
-//! JWT with TTL clamped to
+//! The caller presents a foreign community's (`VEC`, `VMC`) pair **inside a
+//! holder-signed W3C Verifiable Presentation**, the route runs the M3.9
+//! verifier, evaluates `cross_community_roles.rego` to map the foreign role
+//! onto a local role, and mints a session JWT with TTL clamped to
 //! `min(jwt_default, vec.validUntil - now, vmc.validUntil - now)`.
+//!
+//! ## Holder proof-of-possession (P0.2 part 2)
+//!
+//! A VEC + VMC are bearer artifacts: anyone who captures the pair (a relayed
+//! join, an audit log, a compromised member device) holds everything the old
+//! `{vec, vmc}` body needed. Minting a session straight off them made the pair
+//! a **replayable impersonation token** for the subject — no proof the caller
+//! controls the subject's key, no replay nonce, no audience binding.
+//!
+//! The flow is now two-step and proof-of-possession bound:
+//! 1. `POST /v1/auth/recognise/challenge` issues a single-use, TTL'd `nonce`
+//!    bound to this VTC's DID (see [`crate::recognition::challenge`]).
+//! 2. `POST /v1/auth/recognise` carries a **VP** whose holder
+//!    `eddsa-jcs-2022` proof (`proofPurpose: authentication`) commits to that
+//!    `nonce` (freshness/replay) + this VTC's DID as `domain` (audience), and
+//!    embeds the VEC + VMC. The handler consumes the challenge, verifies the
+//!    holder proof (proves possession of the subject key) plus each embedded
+//!    credential's issuer proof, and refuses unless the **VP holder is the
+//!    credential subject**. Only then does it run the recognition gate + mint.
+//!
+//! A captured VEC + VMC is now inert: the attacker can't produce the holder
+//! signature over a fresh challenge, and a replayed VP finds its single-use
+//! nonce already consumed.
 //!
 //! ## No refresh path
 //!
@@ -31,6 +54,7 @@ use uuid::Uuid;
 use vti_common::audit::{AuditEvent, CrossCommunitySessionMintedData};
 
 use crate::auth::session::{Session, SessionState, now_epoch, store_session};
+use crate::credentials::exchange::verify_vp_token;
 use crate::error::AppError;
 use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
@@ -38,18 +62,32 @@ use crate::policy::{
 };
 use crate::recognition::{
     DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, RecognitionError,
-    VerifiedForeignCredential, verify_foreign_vec,
+    VerifiedForeignCredential, challenge, verify_foreign_vec,
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
 
-/// Request body for `POST /v1/auth/recognise`. The caller
-/// supplies the foreign VEC + VMC verbatim — the route
-/// resolves the issuer's key + status list itself.
+/// Request body for `POST /v1/auth/recognise`. The caller supplies a
+/// holder-signed W3C Verifiable Presentation that embeds the foreign VEC and
+/// VMC in `verifiableCredential` and binds the challenge `nonce` (top-level)
+/// plus this VTC's DID as the `domain`. The route verifies the holder proof,
+/// the embedded issuer proofs, the status list, and the registry recognition
+/// itself.
 #[derive(Debug, Deserialize)]
 pub struct RecogniseRequest {
-    pub vec: VerifiableCredential,
-    pub vmc: VerifiableCredential,
+    /// A W3C Data-Integrity VP, holder-signed with
+    /// `proofPurpose: authentication`.
+    pub presentation: JsonValue,
+}
+
+/// Response body for `POST /v1/auth/recognise/challenge`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecogniseChallengeResponse {
+    /// Single-use nonce the holder must bind into the VP's top-level `nonce`.
+    pub nonce: String,
+    /// Unix-epoch seconds at which the challenge expires.
+    pub expires_at: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,31 +112,110 @@ pub struct RecogniseData {
     pub mapped_role: String,
 }
 
+/// `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the
+/// holder binds into their recognise VP. Bound to this VTC's DID as the
+/// audience, so the resulting VP can't be replayed against a different VTC.
+pub async fn recognise_challenge(
+    State(state): State<AppState>,
+) -> Result<Json<RecogniseChallengeResponse>, AppError> {
+    let vtc_did = vtc_did(&state).await?;
+    let now = Utc::now();
+    let nonce = challenge::issue(
+        &state.join_requests_ks,
+        &vtc_did,
+        challenge::DEFAULT_CHALLENGE_TTL,
+        now,
+    )
+    .await?;
+    let expires_at = (now + challenge::DEFAULT_CHALLENGE_TTL).timestamp() as u64;
+    Ok(Json(RecogniseChallengeResponse { nonce, expires_at }))
+}
+
 pub async fn recognise(
     State(state): State<AppState>,
     Json(req): Json<RecogniseRequest>,
 ) -> Result<Json<RecogniseResponse>, AppError> {
-    // Pre-flight: the route depends on three pieces of optional
-    // state. Refuse cleanly when any is missing rather than
-    // 500ing inside the handler.
-    let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
-        AppError::Validation("trust-registry client not configured on this VTC".into())
-    })?;
+    // Pre-flight: the route depends on optional state. Refuse cleanly when a
+    // piece is missing rather than 500ing mid-handler. The `resolver` is
+    // needed immediately (VP holder + issuer proof verification); the
+    // `registry_client` is acquired later, just before the recognition gate
+    // that needs it, so the cheap caller-input + holder-binding checks
+    // fail-fast first. `jwt_keys` is re-checked inside
+    // `mint_recognised_session`, checked here only to surface a config issue
+    // before any real verification runs.
     let resolver = state
         .did_resolver
         .as_ref()
         .cloned()
         .ok_or_else(|| AppError::Internal("DID resolver not configured".into()))?;
-    // JWT-keys availability is re-checked inside
-    // `mint_recognised_session` — but bail early when the
-    // verifier hasn't been wired either, so the response is
-    // shaped by config issues rather than running a real
-    // verification first.
     state
         .jwt_keys
         .as_ref()
         .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
 
+    let now = Utc::now();
+
+    // 1. Consume the challenge the holder bound into the VP. The nonce is read
+    //    from the *unverified* VP purely to look it up; the holder signature
+    //    over that same nonce is verified in step 2. Single-use + TTL: a
+    //    replayed VP finds its nonce already consumed; a stale nonce is gone.
+    let nonce = req
+        .presentation
+        .get("nonce")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            AppError::Validation("presentation carries no top-level `nonce` to consume".into())
+        })?
+        .to_string();
+    let consumed = challenge::consume(&state.join_requests_ks, &nonce, now).await?;
+
+    // 2. Verify the holder proof (proof-of-possession of the subject key) and
+    //    bind freshness (`nonce`) + audience (`domain == consumed.aud`, this
+    //    VTC's DID). `verify_vp_token` also verifies each embedded credential's
+    //    issuer `eddsa-jcs-2022` proof + temporal validity. `did:key` holders
+    //    and issuers resolve locally.
+    //
+    //    `verify_vp_token` reads a DCQL `vp_token` (a map keyed by query id) or
+    //    a bare SD-JWT-VC string; recognise carries a single W3C DI VP, so wrap
+    //    it in a one-entry map before handing it over.
+    let vp_token = serde_json::json!({ "recognise": req.presentation });
+    let verified_vp = verify_vp_token(
+        &vp_token,
+        &consumed.aud,
+        &nonce,
+        state.did_resolver.as_ref(),
+        now,
+    )
+    .await?;
+    let holder_did = verified_vp.holder;
+
+    // 3. Pull the raw VEC + VMC back out of the (now holder-bound) VP so the
+    //    recognition gate can run its status-list / registry / role checks.
+    let (vec, vmc) = extract_vec_vmc(&req.presentation)?;
+
+    // 4. Holder-binding (the headline of P0.2 part 2). The proven VP holder
+    //    MUST be the credential subject — otherwise a captured VEC + VMC,
+    //    re-wrapped in a VP signed by the *attacker's own* holder key, would
+    //    still verify in step 2 and mint a session to the victim subject.
+    //    Cheap (no network) and fail-fast, so it gates before the recognition
+    //    HTTP calls. `verify_foreign_vec` independently binds
+    //    `vmc.subject == vec.subject` (part 1), making this transitive to the
+    //    returned `verified.subject_did`.
+    let vec_subject = vc_subject_id(&vec)
+        .ok_or_else(|| AppError::Validation("foreign VEC has no credentialSubject.id".into()))?;
+    if holder_did != vec_subject {
+        let err = RecognitionError::Malformed(format!(
+            "VP holder `{holder_did}` is not the credential subject `{vec_subject}`"
+        ));
+        emit_denied_audit(&state, &holder_did, None, "holder-binding", None, &err).await;
+        return Err(AppError::Forbidden(
+            "presentation holder is not the foreign credential subject".into(),
+        ));
+    }
+
+    let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
+        AppError::Validation("trust-registry client not configured on this VTC".into())
+    })?;
     let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
         Arc::new(DidResolverKeyResolver::new(resolver));
     // Verify the foreign status list's own issuer signature (bound to the
@@ -109,36 +226,102 @@ pub async fn recognise(
         key_resolver.clone(),
     );
 
-    let actor_did_for_audit = req.vec.credential_subject_id_for_audit();
-
-    // Run the M3.9 verifier. Failures are mapped to `denied`
-    // audit envelopes + a 403 response.
+    // 5. Run the M3.9 recognition gate. Failures are mapped to `denied` audit
+    //    envelopes (actor = the cryptographically-proven VP holder) + a 403.
     let verified = match verify_foreign_vec(
-        &req.vec,
-        &req.vmc,
+        &vec,
+        &vmc,
         key_resolver.as_ref(),
         &status_fetcher,
         Arc::clone(&registry),
-        Utc::now(),
+        now,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            emit_denied_audit(
-                &state,
-                &actor_did_for_audit,
-                None,
-                e.reason_code(),
-                None,
-                &e,
-            )
-            .await;
+            emit_denied_audit(&state, &holder_did, None, e.reason_code(), None, &e).await;
             return Err(map_recognition_error(e));
         }
     };
 
     mint_recognised_session(&state, verified).await
+}
+
+/// This VTC's own DID — the audience a recognise challenge is bound to and the
+/// `domain` the holder's VP must name.
+async fn vtc_did(state: &AppState) -> Result<String, AppError> {
+    state
+        .config
+        .read()
+        .await
+        .vtc_did
+        .clone()
+        .ok_or_else(|| AppError::Validation("VTC DID not configured".into()))
+}
+
+/// Pull the foreign VEC + VMC out of a VP's `verifiableCredential`, classifying
+/// by `type`. Both must be present exactly once. Accepts either a single object
+/// or an array (the W3C VP shape).
+fn extract_vec_vmc(
+    presentation: &JsonValue,
+) -> Result<(VerifiableCredential, VerifiableCredential), AppError> {
+    let raw = presentation
+        .get("verifiableCredential")
+        .ok_or_else(|| AppError::Validation("presentation has no `verifiableCredential`".into()))?;
+    let entries: Vec<&JsonValue> = match raw {
+        JsonValue::Array(items) => items.iter().collect(),
+        other => vec![other],
+    };
+
+    let mut vec_cred: Option<VerifiableCredential> = None;
+    let mut vmc_cred: Option<VerifiableCredential> = None;
+    for entry in entries {
+        let cred: VerifiableCredential = serde_json::from_value(entry.clone()).map_err(|e| {
+            AppError::Validation(format!("embedded credential is not a valid VC: {e}"))
+        })?;
+        // Route the credential to its slot by type. Other credential types are
+        // ignored — the recognition gate only acts on the VEC + VMC pair.
+        let (slot, label) = if cred
+            .types
+            .iter()
+            .any(|t| t == "VerifiableEndorsementCredential")
+        {
+            (&mut vec_cred, "VerifiableEndorsementCredential")
+        } else if cred
+            .types
+            .iter()
+            .any(|t| t == "VerifiableMembershipCredential")
+        {
+            (&mut vmc_cred, "VerifiableMembershipCredential")
+        } else {
+            continue;
+        };
+        if slot.replace(cred).is_some() {
+            return Err(AppError::Validation(format!(
+                "presentation carries more than one {label}"
+            )));
+        }
+    }
+
+    let vec = vec_cred.ok_or_else(|| {
+        AppError::Validation("presentation has no VerifiableEndorsementCredential".into())
+    })?;
+    let vmc = vmc_cred.ok_or_else(|| {
+        AppError::Validation("presentation has no VerifiableMembershipCredential".into())
+    })?;
+    Ok((vec, vmc))
+}
+
+/// Read a credential's `credentialSubject.id`. `None` if absent or
+/// id-less (a VEC the recognition gate would reject anyway).
+fn vc_subject_id(vc: &VerifiableCredential) -> Option<String> {
+    use affinidi_vc::SubjectValue;
+    let subj = match &vc.credential_subject {
+        SubjectValue::Single(m) => Some(m),
+        SubjectValue::Multiple(v) => v.first(),
+    }?;
+    subj.get("id").and_then(|v| v.as_str()).map(str::to_string)
 }
 
 /// Post-verification half of the recognise flow — exposed at
@@ -388,25 +571,5 @@ async fn emit_denied_audit(
         .await
     {
         warn!(error = %e, "failed to emit CrossCommunitySessionMinted (denied) envelope");
-    }
-}
-
-// Helper trait — extracts the subject DID from the VEC even
-// when verification hasn't run yet, so audit envelopes for the
-// `denied` arm can still name an actor when possible.
-trait CredentialSubjectIdAccessor {
-    fn credential_subject_id_for_audit(&self) -> String;
-}
-
-impl CredentialSubjectIdAccessor for VerifiableCredential {
-    fn credential_subject_id_for_audit(&self) -> String {
-        use affinidi_vc::SubjectValue;
-        let subj_map = match &self.credential_subject {
-            SubjectValue::Single(m) => Some(m.clone()),
-            SubjectValue::Multiple(v) => v.first().cloned(),
-        };
-        subj_map
-            .and_then(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
-            .unwrap_or_else(|| "<unknown-subject>".into())
     }
 }

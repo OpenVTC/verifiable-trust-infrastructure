@@ -272,3 +272,261 @@ async fn missing_active_policy_surfaces_as_internal_error() {
     // caller-fixable input.
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+/// Route-level coverage for the P0.2-part-2 holder-binding rewrite: the
+/// `/v1/auth/recognise` route now demands a holder-signed VP (challenge nonce +
+/// audience bound) embedding the VEC + VMC, and refuses unless the VP holder is
+/// the credential subject. These drive the real HTTP stack via `oneshot` and a
+/// holder-signed `eddsa-jcs-2022` VP, exercising everything up to (but not
+/// through) the registry-gated `verify_foreign_vec` — `TestVtc` wires no
+/// registry client, so a VP that clears the holder-binding gate fails next at
+/// the registry pre-flight, which is exactly how we assert the gate let it pass.
+mod holder_binding {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use ed25519_dalek::SigningKey;
+    use http_body_util::BodyExt;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    use vtc_service::test_support::TestVtc;
+
+    const VTC_DID: &str = "did:key:z6MkTestVTC";
+    const RECOGNISE_TASK: &str = "https://trusttasks.org/openvtc/vtc/auth/recognise/1.0";
+    const CHALLENGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0";
+
+    async fn test_vtc() -> TestVtc {
+        // `with_did_resolver` so the route's VP holder/issuer `did:key`
+        // resolution is wired; `vtc_did` sets the audience the holder binds.
+        TestVtc::builder()
+            .vtc_did(VTC_DID)
+            .with_did_resolver(true)
+            .build()
+            .await
+    }
+
+    fn did_for(seed: u8) -> String {
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(
+            &SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+    }
+
+    fn secret_for(seed: u8) -> affinidi_secrets_resolver::secrets::Secret {
+        let did = did_for(seed);
+        let vm = format!("{did}#{}", did.strip_prefix("did:key:").unwrap());
+        affinidi_secrets_resolver::secrets::Secret::generate_ed25519(Some(&vm), Some(&[seed; 32]))
+    }
+
+    async fn sign_vc(issuer_seed: u8, vc_type: &str, subject_did: &str) -> Value {
+        use affinidi_data_integrity::{
+            DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
+        };
+        let issuer_did = did_for(issuer_seed);
+        let mut vc = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", vc_type],
+            "issuer": issuer_did,
+            "validFrom": "2020-01-01T00:00:00Z",
+            "validUntil": "2999-01-01T00:00:00Z",
+            "credentialSubject": {
+                "id": subject_did,
+                "endorsement": { "role": "moderator", "communityDid": issuer_did },
+            },
+        });
+        let proof = DataIntegrityProof::sign(
+            &vc,
+            &secret_for(issuer_seed),
+            SignOptions::new()
+                .with_proof_purpose("assertionMethod")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        vc["proof"] = serde_json::to_value(&proof).unwrap();
+        vc
+    }
+
+    /// Build a holder-signed DI VP embedding a foreign VEC + VMC (both issued by
+    /// `issuer_seed`, subject `subject_seed`), holder-signed by `holder_seed`
+    /// with `proofPurpose: authentication` over `nonce` + `domain = VTC_DID`.
+    /// Returns the VP object. When `holder_seed == subject_seed` the holder is
+    /// the credential subject (the legitimate case).
+    async fn build_vp(issuer_seed: u8, holder_seed: u8, subject_seed: u8, nonce: &str) -> Value {
+        use affinidi_data_integrity::{
+            DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite,
+        };
+        let subject_did = did_for(subject_seed);
+        let holder_did = did_for(holder_seed);
+        let vec = sign_vc(issuer_seed, "VerifiableEndorsementCredential", &subject_did).await;
+        let vmc = sign_vc(issuer_seed, "VerifiableMembershipCredential", &subject_did).await;
+        let mut vp = json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiablePresentation"],
+            "holder": holder_did,
+            "verifiableCredential": [vec, vmc],
+            "nonce": nonce,
+            "domain": VTC_DID,
+        });
+        let proof = DataIntegrityProof::sign(
+            &vp,
+            &secret_for(holder_seed),
+            SignOptions::new()
+                .with_proof_purpose("authentication")
+                .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+        )
+        .await
+        .unwrap();
+        vp["proof"] = serde_json::to_value(&proof).unwrap();
+        vp
+    }
+
+    async fn post_recognise(router: &axum::Router, vp: &Value) -> (StatusCode, String) {
+        let body = json!({ "presentation": vp });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/recognise")
+            .header("Trust-Task", RECOGNISE_TASK)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.expect("request");
+        let status = resp.status();
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Fetch a fresh challenge nonce through the real `/challenge` endpoint.
+    async fn fetch_nonce(router: &axum::Router) -> String {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/recognise/challenge")
+            .header("Trust-Task", CHALLENGE_TASK)
+            .body(Body::empty())
+            .unwrap();
+        let resp = router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("challenge request");
+        assert_eq!(resp.status(), StatusCode::OK, "challenge endpoint must 200");
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        v["nonce"].as_str().expect("nonce in response").to_string()
+    }
+
+    #[tokio::test]
+    async fn challenge_endpoint_issues_a_nonce() {
+        let vtc = test_vtc().await;
+        let nonce = fetch_nonce(&vtc.router).await;
+        assert!(!nonce.is_empty(), "challenge must return a non-empty nonce");
+    }
+
+    #[tokio::test]
+    async fn presentation_without_a_nonce_is_rejected() {
+        let vtc = test_vtc().await;
+        // Build a VP then strip its nonce — the handler can't even look up a
+        // challenge, so it refuses before any verification.
+        let mut vp = build_vp(9, 5, 5, "irrelevant").await;
+        vp.as_object_mut().unwrap().remove("nonce");
+        let (status, body) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("nonce"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn presentation_with_an_unissued_nonce_is_rejected() {
+        let vtc = test_vtc().await;
+        // A VP carrying a nonce we never issued: the challenge consume finds
+        // nothing. This is the captured-credential replay an attacker would try
+        // without first fetching a live challenge.
+        let vp = build_vp(9, 5, 5, "never-issued-by-this-vtc").await;
+        let (status, body) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("unknown or already consumed"),
+            "expected challenge-miss, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn holder_that_is_not_the_subject_is_rejected() {
+        // The headline. Attacker (holder seed 7) captured a victim's (subject
+        // seed 5) VEC + VMC and re-wraps them in a VP signed with the
+        // attacker's own holder key over a freshly-fetched challenge. The
+        // holder proof verifies — but the holder is not the credential subject,
+        // so the route must refuse before minting.
+        let vtc = test_vtc().await;
+        let nonce = fetch_nonce(&vtc.router).await;
+        let vp = build_vp(9, 7, 5, &nonce).await;
+        let (status, body) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(
+            body.contains("holder") && body.contains("subject"),
+            "expected holder-binding refusal, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_holder_clears_the_binding_gate() {
+        // The legitimate case: holder == subject (seed 5). The holder-binding
+        // gate must let it through — it then fails at the registry pre-flight
+        // (TestVtc wires no registry client), proving the request got *past*
+        // the binding gate rather than being wrongly 403'd.
+        let vtc = test_vtc().await;
+        let nonce = fetch_nonce(&vtc.router).await;
+        let vp = build_vp(9, 5, 5, &nonce).await;
+        let (status, body) = post_recognise(&vtc.router, &vp).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a matching holder must not be refused by the binding gate: {body}"
+        );
+        assert!(
+            body.contains("trust-registry client not configured"),
+            "expected to reach the registry gate, got {status}: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consumed_challenge_cannot_be_replayed() {
+        // Single-use: present the same (attacker) VP twice on one nonce. The
+        // first consumes the challenge (and is refused at the holder-binding
+        // gate); the replay finds the nonce already consumed.
+        let vtc = test_vtc().await;
+        let nonce = fetch_nonce(&vtc.router).await;
+        let vp = build_vp(9, 7, 5, &nonce).await;
+
+        let (first, _) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(
+            first,
+            StatusCode::FORBIDDEN,
+            "first present: holder-binding"
+        );
+
+        let (second, body) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(second, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("unknown or already consumed"),
+            "replay must hit the single-use challenge guard: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tampered_holder_proof_is_rejected() {
+        // Mutate a credential claim after the VP was signed: the embedded VC is
+        // covered by the holder's VP proof, so the holder-proof verification
+        // fails — no presentation with any altered byte survives.
+        let vtc = test_vtc().await;
+        let nonce = fetch_nonce(&vtc.router).await;
+        let mut vp = build_vp(9, 5, 5, &nonce).await;
+        vp["verifiableCredential"][0]["credentialSubject"]["endorsement"]["role"] = json!("admin");
+        let (status, body) = post_recognise(&vtc.router, &vp).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.contains("verify"),
+            "expected proof-failure, got: {body}"
+        );
+    }
+}

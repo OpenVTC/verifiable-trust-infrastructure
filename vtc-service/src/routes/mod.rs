@@ -898,6 +898,12 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
     // source IP.
     let auth_recognise = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/1.0")
         .expect("static Trust-Task URL");
+    // Step 1 of the recognise flow — issues the single-use challenge nonce the
+    // holder binds into the VP presented to `/auth/recognise`. Same unauth
+    // chain (governor + body cap) as the other challenge endpoints.
+    let auth_recognise_challenge =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0")
+            .expect("static Trust-Task URL");
 
     // L2: rate-limiter key extractor honours `trust_xff`. The
     // governor is applied in the routing chain below via a
@@ -962,6 +968,11 @@ fn build_unauth_routes(trust_xff: bool) -> Router<AppState> {
             "/install/claim/finish",
             post(install::claim_finish),
             install_claim_finish,
+        )
+        .route_with_task(
+            "/auth/recognise/challenge",
+            post(recognise::recognise_challenge),
+            auth_recognise_challenge,
         )
         .route_with_task(
             "/auth/recognise",

@@ -49,6 +49,7 @@
 //! (min of three TTLs) and refresh paths are rare relative to
 //! "regular member" sessions.
 
+pub mod challenge;
 pub mod verify;
 
 pub use verify::{
