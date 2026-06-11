@@ -60,7 +60,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   derivation.rs) wrapped too. `delete_secret` dropped its ineffective
   zero-overwrite (LSM keeps old SSTables; value is ciphertext anyway) with an
   honest comment. Trait-level `SeedStore::get` Zeroizing deferred (crosses
-  vtc + 8 backends) — PR: ____
+  vtc + 8 backends) — PR: #353 (in review)
 - `[ ]` **P0.7b** (L) Encrypt the retired-seed archive independently of the
   keyspace-encryption flag. Split from P0.7: needs a rotation-re-encryption
   (or successor-chain) design + a migration for existing plaintext archives —
