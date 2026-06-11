@@ -10,6 +10,8 @@ use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver, s
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
+use hkdf::Hkdf;
+use sha2::Sha256;
 
 use crate::auth::AuthState;
 use crate::auth::jwt::JwtKeys;
@@ -202,7 +204,8 @@ pub async fn run(
     let config_ks = store.keyspace("config")?;
     let passkey_ks = store.keyspace("passkey")?;
     let install_ks = store.keyspace("install")?;
-    let install_store = InstallTokenStore::new(install_ks.clone());
+    // `install_store` is built later (after `init_auth` yields the storage
+    // key) so it wraps the encrypted `install` handle — see P0.7 below.
     let members_ks = store.keyspace("members")?;
     let join_requests_ks = store.keyspace("join_requests")?;
     let policies_ks = store.keyspace("policies")?;
@@ -320,6 +323,7 @@ pub async fn run(
         install_signer,
         audit_writer,
         credential_signer,
+        storage_key,
     ) = init_auth(
         &config,
         &*secret_store,
@@ -327,6 +331,35 @@ pub async fn run(
         audit_key_ks.clone(),
     )
     .await;
+
+    // P0.7: `install` (ephemeral install-token signing key) and `passkey`
+    // (WebAuthn state) also hold secrets in the clear. `init_auth` already
+    // migrated + wrapped `audit_key`; do the same for these two here, where
+    // the derived storage key is in scope. Migration is idempotent and
+    // crash-safe; a failure aborts boot rather than serving a store with a
+    // half-encrypted secret keyspace. `install_store` is (re)built on the
+    // wrapped handle so issued tokens are encrypted on disk.
+    let (install_ks, passkey_ks, audit_key_ks) = match storage_key {
+        Some(key) => {
+            let n_install = install_ks.migrate_to_encrypted(key).await?;
+            let n_passkey = passkey_ks.migrate_to_encrypted(key).await?;
+            if n_install > 0 || n_passkey > 0 {
+                info!(
+                    "encrypted {n_install} legacy install + {n_passkey} legacy passkey row(s) at rest"
+                );
+            }
+            // `audit_key`'s on-disk rows were already migrated inside
+            // `init_auth`; wrap the `AppState`-bound handle too so the
+            // field is consistent with what the `AuditKeyStore` uses.
+            (
+                install_ks.with_encryption(key),
+                passkey_ks.with_encryption(key),
+                audit_key_ks.with_encryption(key),
+            )
+        }
+        None => (install_ks, passkey_ks, audit_key_ks),
+    };
+    let install_store = InstallTokenStore::new(install_ks.clone());
 
     // Build WebAuthn relying party handle from `public_url`. Optional —
     // a serverless / pre-setup deployment has no public URL yet and
@@ -1056,12 +1089,18 @@ async fn init_auth(
     Option<Arc<InstallTokenSigner>>,
     Option<AuditWriter>,
     Option<Arc<crate::credentials::LocalSigner>>,
+    // P0.7: at-rest storage-encryption key (HKDF of the bundle Ed25519
+    // seed). `None` only when no key material is configured yet (pre-setup)
+    // or derivation fails — the caller then leaves keyspaces unencrypted.
+    // The `audit_key` keyspace is already migrated + wrapped with this key
+    // before return; the caller re-wraps `install` + `passkey`.
+    Option<[u8; 32]>,
 ) {
     let vtc_did = match &config.vtc_did {
         Some(did) => did.clone(),
         None => {
             warn!("vtc_did not configured — auth endpoints will not work (run setup first)");
-            return (None, None, None, None, None, None, None);
+            return (None, None, None, None, None, None, None, None);
         }
     };
 
@@ -1074,11 +1113,11 @@ async fn init_auth(
         Ok(Some(s)) => s,
         Ok(None) => {
             warn!("no key material found — auth endpoints will not work (run setup first)");
-            return (None, None, None, None, None, None, None);
+            return (None, None, None, None, None, None, None, None);
         }
         Err(e) => {
             warn!("failed to load key material: {e} — auth endpoints will not work");
-            return (None, None, None, None, None, None, None);
+            return (None, None, None, None, None, None, None, None);
         }
     };
 
@@ -1086,9 +1125,18 @@ async fn init_auth(
         Ok(pair) => pair,
         Err(msg) => {
             warn!("{msg}");
-            return (None, None, None, None, None, None, None);
+            return (None, None, None, None, None, None, None, None);
         }
     };
+
+    // P0.7: derive the at-rest storage-encryption key from the same 32-byte
+    // Ed25519 seed (HKDF-SHA256, info `vtc-storage-key/v1`). Domain-separated
+    // from the install-token (`vtc-install-jwt-key/v2`) and audit
+    // (`vtc-audit-key/v2`) derivations by its info string, so the same IKM
+    // yields three independent keys. `None` only on the (practically
+    // impossible) HKDF-expand failure, in which case keyspaces stay
+    // plaintext rather than the daemon refusing to boot.
+    let storage_key: Option<[u8; 32]> = derive_storage_key(&*ed25519_bytes);
 
     // M2.9 credential signer — wraps the same 32-byte Ed25519
     // seed in a [`LocalSigner`] handle so VMC / VEC / status-list
@@ -1111,6 +1159,31 @@ async fn init_auth(
             warn!("failed to derive install token signer: {e} — install routes disabled");
             None
         }
+    };
+
+    // P0.7: the `audit_key` keyspace holds the HMAC audit key in the clear.
+    // Migrate any pre-encryption plaintext row in place, then wrap the
+    // handle so the key is encrypted at rest going forward. A migration
+    // failure leaves the keyspace bare (still readable) and is logged — we
+    // only build the encrypted handle once the legacy rows are converted,
+    // so an encrypted read can never hit a stale plaintext row.
+    let audit_key_ks = match storage_key {
+        Some(key) => match audit_key_ks.migrate_to_encrypted(key).await {
+            Ok(n) => {
+                if n > 0 {
+                    info!("encrypted {n} legacy audit_key row(s) at rest");
+                }
+                audit_key_ks.with_encryption(key)
+            }
+            Err(e) => {
+                warn!(
+                    "audit_key encryption-at-rest migration failed: {e} — \
+                     keyspace left unencrypted"
+                );
+                audit_key_ks
+            }
+        },
+        None => audit_key_ks,
     };
 
     // Derive the HMAC audit key from the same 32 bytes. The
@@ -1140,6 +1213,7 @@ async fn init_auth(
                 install_signer,
                 audit_writer,
                 credential_signer,
+                storage_key,
             );
         }
     };
@@ -1173,6 +1247,7 @@ async fn init_auth(
                     install_signer,
                     audit_writer,
                     credential_signer,
+                    storage_key,
                 );
             }
         },
@@ -1188,6 +1263,7 @@ async fn init_auth(
                 install_signer,
                 audit_writer,
                 credential_signer,
+                storage_key,
             );
         }
     };
@@ -1242,7 +1318,27 @@ async fn init_auth(
         install_signer,
         audit_writer,
         credential_signer,
+        storage_key,
     )
+}
+
+/// Derive the at-rest storage-encryption key (P0.7).
+///
+/// `HKDF-SHA256(IKM = bundle Ed25519 seed, info = b"vtc-storage-key/v1")`.
+/// The info string domain-separates this key from the install-token signer
+/// (`vtc-install-jwt-key/v2`) and audit HMAC key (`vtc-audit-key/v2`) that
+/// share the same IKM. Returns `None` only if HKDF expand fails (it cannot
+/// for a 32-byte output), in which case the caller leaves keyspaces
+/// unencrypted rather than refusing to boot.
+fn derive_storage_key(ed25519_seed: &[u8]) -> Option<[u8; 32]> {
+    let mut key = [0u8; 32];
+    match Hkdf::<Sha256>::new(None, ed25519_seed).expand(b"vtc-storage-key/v1", &mut key) {
+        Ok(()) => Some(key),
+        Err(e) => {
+            warn!("failed to derive storage-encryption key: {e} — keyspaces left unencrypted");
+            None
+        }
+    }
 }
 
 /// Decode a base64url-no-pad JWT signing key and construct `JwtKeys`.

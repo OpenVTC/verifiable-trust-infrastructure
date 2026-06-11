@@ -600,4 +600,122 @@ mod tests {
             _ => panic!("expected Issued"),
         }
     }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// P0.7 accept criterion: the on-disk bytes for an issued install
+    /// token do not contain the (base64) ephemeral signing key — i.e. the
+    /// `install` keyspace is encrypted at rest. We prove it by writing the
+    /// *same* token to a bare and an encrypted store and showing the
+    /// plaintext fragment present in the former is absent in the latter.
+    #[tokio::test]
+    async fn issued_token_is_encrypted_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = Store::open(&cfg).unwrap();
+        let exp = Utc::now() + Duration::seconds(600);
+        let admin = "did:key:zTestAdmin".to_string();
+
+        // Bare write — confirms the secret is plaintext-visible without
+        // encryption (the pre-P0.7 state we're fixing).
+        let plain_jti = Uuid::new_v4();
+        let plain_ks = store.keyspace("install-plain").unwrap();
+        InstallTokenStore::new(plain_ks.clone())
+            .record_issued(
+                &plain_jti,
+                [0xAB; 32],
+                [0xCD; 32],
+                exp,
+                None,
+                Some(admin.clone()),
+            )
+            .await
+            .unwrap();
+        let plaintext = plain_ks
+            .get_raw(token_key(&plain_jti))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            contains(&plaintext, admin.as_bytes()),
+            "sanity: admin DID is plaintext-visible in an unencrypted store"
+        );
+
+        // Encrypted write — the same secret must not be on disk in clear.
+        let key = [0x77; 32];
+        let enc_jti = Uuid::new_v4();
+        let enc_store =
+            InstallTokenStore::new(store.keyspace("install").unwrap().with_encryption(key));
+        enc_store
+            .record_issued(
+                &enc_jti,
+                [0xAB; 32],
+                [0xCD; 32],
+                exp,
+                None,
+                Some(admin.clone()),
+            )
+            .await
+            .unwrap();
+
+        let on_disk = store
+            .keyspace("install")
+            .unwrap()
+            .get_raw(token_key(&enc_jti))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(on_disk.starts_with(b"VAE1"), "value must be encrypted");
+        assert!(
+            !contains(&on_disk, admin.as_bytes()),
+            "admin DID must not appear in ciphertext"
+        );
+        assert!(
+            !contains(&on_disk, &plaintext),
+            "the plaintext token blob must not appear verbatim on disk"
+        );
+
+        // And the encrypted store reads the token back intact.
+        assert!(enc_store.get_token(&enc_jti).await.unwrap().is_some());
+    }
+
+    /// P0.7: a boot over a pre-encryption store still reads existing rows.
+    /// A token written in plaintext is migrated in place and an encrypted
+    /// store then reads it back.
+    #[tokio::test]
+    async fn legacy_plaintext_token_survives_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = Store::open(&cfg).unwrap();
+        let exp = Utc::now() + Duration::seconds(600);
+
+        // Legacy plaintext write.
+        let jti = Uuid::new_v4();
+        InstallTokenStore::new(store.keyspace("install").unwrap())
+            .record_issued(&jti, [0xAB; 32], [0xCD; 32], exp, None, None)
+            .await
+            .unwrap();
+
+        // Boot-time migration (mirrors what `server::run` does).
+        let key = [0x99; 32];
+        let migrated = store
+            .keyspace("install")
+            .unwrap()
+            .migrate_to_encrypted(key)
+            .await
+            .unwrap();
+        assert_eq!(migrated, 1);
+
+        // The encrypted store reads the pre-existing token.
+        let enc_store =
+            InstallTokenStore::new(store.keyspace("install").unwrap().with_encryption(key));
+        let outcome = enc_store.start_claim(&jti).await.unwrap();
+        assert_eq!(*outcome.ephemeral_signing_key, [0xCD; 32]);
+    }
 }

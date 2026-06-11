@@ -118,6 +118,52 @@ impl KeyspaceHandle {
         }
     }
 
+    /// Re-encrypt every legacy plaintext row in this keyspace under `key`,
+    /// in place, so a store first written before encryption-at-rest was
+    /// enabled can be read by an encrypted handle.
+    ///
+    /// Must be called on a **bare** handle (no encryption configured): it
+    /// reads raw bytes *without* decrypting, then writes each plaintext
+    /// row back through an encrypted handle. Returns the number of rows
+    /// newly encrypted.
+    ///
+    /// **Idempotent and crash-safe.** Rows already in the v1 encrypted
+    /// format ([`encryption::is_v1_encrypted`]) are skipped, so an
+    /// interrupted run leaves a mix of encrypted + plaintext rows that a
+    /// re-run completes. The format magic (`VAE1`) is what distinguishes
+    /// the two; no value this is used for (serde-JSON state, raw key
+    /// bytes) begins with those four bytes, so detection is unambiguous.
+    ///
+    /// This deliberately does **not** add a lenient read-fallback to the
+    /// decrypt path — that would reintroduce the cut-and-paste downgrade
+    /// hole [`encryption`] documents. The store stays strictly
+    /// fail-closed; migration is a one-shot forward conversion.
+    #[cfg(feature = "encryption")]
+    pub async fn migrate_to_encrypted(&self, key: [u8; 32]) -> Result<usize, AppError> {
+        if self.is_encrypted() {
+            return Err(AppError::Internal(
+                "migrate_to_encrypted must be called on a bare (unencrypted) keyspace handle"
+                    .into(),
+            ));
+        }
+        // Bare read: returns raw on-disk bytes with no decryption, so
+        // both legacy plaintext rows and any already-encrypted rows from
+        // a prior partial run come back verbatim.
+        let rows = self.prefix_iter_raw(Vec::<u8>::new()).await?;
+        let encrypted = self.clone().with_encryption(key);
+        let mut migrated = 0usize;
+        for (k, v) in rows {
+            if encryption::is_v1_encrypted(&v) {
+                continue;
+            }
+            // insert_raw on the encrypted handle re-encrypts the value
+            // bound to its (keyspace, key) AAD location.
+            encrypted.insert_raw(k, v).await?;
+            migrated += 1;
+        }
+        Ok(migrated)
+    }
+
     /// Durably flush the store to disk (a write barrier).
     ///
     /// Persistence is store-wide, not per-keyspace: the local backend
@@ -958,5 +1004,101 @@ mod tests {
         // But reading with the correct encryption key should work
         let decrypted = ks_enc.get_raw("test").await.unwrap().unwrap();
         assert_eq!(decrypted, b"plaintext secret");
+    }
+
+    /// P0.7: a keyspace first written in plaintext (pre-encryption-at-rest)
+    /// can be migrated in place so an encrypted handle reads it, and the
+    /// migrated rows are genuinely ciphertext on disk.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn migrate_to_encrypted_converts_legacy_plaintext() {
+        let (store, _dir) = temp_store();
+        let key = [0x33; 32];
+
+        // Seed legacy plaintext rows via a bare handle.
+        let bare = store.keyspace("install").unwrap();
+        bare.insert_raw("token:a", b"ephemeral-key-bytes".to_vec())
+            .await
+            .unwrap();
+        bare.insert("token:b", &"json-state".to_string())
+            .await
+            .unwrap();
+
+        // Migrate.
+        let migrated = bare.migrate_to_encrypted(key).await.unwrap();
+        assert_eq!(migrated, 2, "both legacy rows must be encrypted");
+
+        // On disk (bare read) the rows are now ciphertext, not the
+        // original plaintext.
+        let on_disk = bare.get_raw("token:a").await.unwrap().unwrap();
+        assert_ne!(on_disk, b"ephemeral-key-bytes");
+        assert!(
+            on_disk.starts_with(b"VAE1"),
+            "migrated row must carry the v1 encryption magic"
+        );
+
+        // An encrypted handle reads the original values back.
+        let enc = store.keyspace("install").unwrap().with_encryption(key);
+        assert_eq!(
+            enc.get_raw("token:a").await.unwrap().unwrap(),
+            b"ephemeral-key-bytes"
+        );
+        let b: String = enc.get("token:b").await.unwrap().unwrap();
+        assert_eq!(b, "json-state");
+    }
+
+    /// Re-running the migration is a no-op: already-encrypted rows are
+    /// detected by their format magic and skipped, so an interrupted run
+    /// is completed (not double-encrypted) by a re-run.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn migrate_to_encrypted_is_idempotent_and_crash_safe() {
+        let (store, _dir) = temp_store();
+        let key = [0x44; 32];
+
+        let bare = store.keyspace("passkey").unwrap();
+        bare.insert_raw("row:1", b"plaintext-one".to_vec())
+            .await
+            .unwrap();
+
+        // First pass encrypts the one legacy row.
+        assert_eq!(bare.migrate_to_encrypted(key).await.unwrap(), 1);
+
+        // A new legacy row lands (simulating a crash mid-migration that
+        // left one row plaintext) alongside the already-encrypted one.
+        bare.insert_raw("row:2", b"plaintext-two".to_vec())
+            .await
+            .unwrap();
+
+        // Second pass skips the encrypted row and only converts the new
+        // one — never double-encrypting.
+        assert_eq!(bare.migrate_to_encrypted(key).await.unwrap(), 1);
+
+        // Third pass is a pure no-op.
+        assert_eq!(bare.migrate_to_encrypted(key).await.unwrap(), 0);
+
+        let enc = store.keyspace("passkey").unwrap().with_encryption(key);
+        assert_eq!(
+            enc.get_raw("row:1").await.unwrap().unwrap(),
+            b"plaintext-one"
+        );
+        assert_eq!(
+            enc.get_raw("row:2").await.unwrap().unwrap(),
+            b"plaintext-two"
+        );
+    }
+
+    /// Calling the migration on an already-encrypted handle is a usage
+    /// error — it would try to decrypt legacy plaintext and fail. Guard
+    /// against it explicitly rather than corrupting data.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn migrate_to_encrypted_rejects_encrypted_handle() {
+        let (store, _dir) = temp_store();
+        let enc = store
+            .keyspace("install")
+            .unwrap()
+            .with_encryption([0x55; 32]);
+        assert!(enc.migrate_to_encrypted([0x55; 32]).await.is_err());
     }
 }

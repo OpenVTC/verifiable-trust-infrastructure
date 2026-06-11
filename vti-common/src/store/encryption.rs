@@ -85,6 +85,16 @@ pub fn encrypt_value(
     Ok(output)
 }
 
+/// True if `data` is in the v1 AAD-authenticated on-disk format (i.e. it
+/// carries the [`MAGIC`] prefix). Used by the boot migration
+/// ([`super::KeyspaceHandle::migrate_to_encrypted`]) to tell an
+/// already-encrypted row apart from a legacy plaintext one without
+/// attempting (and failing) a decrypt. This is a *format* check only — it
+/// does not authenticate the value.
+pub(crate) fn is_v1_encrypted(data: &[u8]) -> bool {
+    data.len() >= MAGIC.len() && &data[..MAGIC.len()] == MAGIC
+}
+
 /// Decrypt an AAD-authenticated value, verifying it against its
 /// `(keyspace, key)` location. Input: `MAGIC ‖ nonce ‖ ct+tag`.
 fn decrypt_value(

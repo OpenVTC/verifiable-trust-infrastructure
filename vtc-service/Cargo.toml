@@ -73,6 +73,10 @@ vti-common = { path = "../vti-common", version = "0.10", features = [
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.
   "setup",
+  # `encryption` enables `KeyspaceHandle::with_encryption` /
+  # `migrate_to_encrypted` for at-rest encryption of the secret-bearing
+  # keyspaces (install, audit_key, passkey) — P0.7.
+  "encryption",
 ] }
 vta-sdk = { path = "../vta-sdk", version = "0.11", features = [
   "didcomm",
