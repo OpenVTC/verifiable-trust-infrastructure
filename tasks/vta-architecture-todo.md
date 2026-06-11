@@ -146,7 +146,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   the session-ACR gate, policy-driven — inert under the shipping default).
   Note: the actual op was proxy-login, not upsert (upsert has no step_up_proof
   / discloses nothing). Tests: op-class recognition; resolve gates a
-  configured vault floor only — PR: ____
+  configured vault floor only — PR: #362 (in review)
 - `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
   export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
   list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row
