@@ -86,7 +86,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   silent plaintext fallback unless `secrets.allow_plaintext = true` (footgun:
   one wrong TOML key → master seed on disk in clear). Tests: validate rules
   (the opt-in path is cfg-unreachable in the test harness — dev-dep forces
-  keyring on — documented) — PR: ____
+  keyring on — documented) — PR: #356 (in review)
 - `[ ]` **P0.9b** Split from P0.9 (config-compat risk; needs care):
   `deny_unknown_fields`/unknown-key WARNING pass on `AppConfig` (could reject
   existing configs with legacy/extra keys — softer warning preferred);
