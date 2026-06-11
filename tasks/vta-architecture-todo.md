@@ -130,7 +130,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   sweep loop (threaded `vault_ks` through `run_storage_thread`), runs each
   `session_cleanup_interval` alongside the acl/audit/backup sweepers. Fixes the
   unbounded `pending-present:` growth (one record per untrusted-verifier query).
-  Test: sweep reclaims terminal+stale, keeps live, idempotent — PR: ____
+  Test: sweep reclaims terminal+stale, keeps live, idempotent — PR: #363 (in review)
 - `[ ]` **P0.12b** (M) Reachable approve/deny/list wire surface — expose the
   zero-caller `approve_pending_presentation`/`deny_pending_presentation`/
   `pending::list` over a TT slice (defer→list→approve→re-present end-to-end),
