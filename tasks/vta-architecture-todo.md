@@ -77,7 +77,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   Factored `apply_unauth_governor()` (DRYs the trust_xff if/else, reused by
   both branches). Tests: blob+attestation 429 floods, 408 slow-handler,
   existing /auth/challenge 429 still green. tower-http `timeout` feature
-  added — PR: ____
+  added — PR: #352 (in review)
 - `[~]` **P0.11** (S) BBS matchable ⇒ presentable — branch
   `fix/p0.11-bbs-presentable`. Chose UNMATCH: `dcql_format` returns `None`
   for `Bbs2023` (was `Some("ldp_vc")` → matched-then-failed the whole
