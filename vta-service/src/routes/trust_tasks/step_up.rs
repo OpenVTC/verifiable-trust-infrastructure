@@ -922,6 +922,7 @@ pub(super) async fn require_step_up(
 pub mod op {
     pub use vti_common::auth::step_up::op_class::{
         ACL_CHANGE_ROLE, ACL_GRANT, ACL_REVOKE, ACL_SWAP_KEY, CONTEXT_DELETE, KEY_REVOKE,
+        VAULT_PROXY_LOGIN, VAULT_RELEASE, VAULT_SIGN_TRUST_TASK,
     };
 }
 
@@ -1090,6 +1091,52 @@ mod tests {
                 StepUpDecision::Allow
             ),
             "a disabled policy gates nothing"
+        );
+    }
+
+    /// P0.13b: a `vault/release` floor gates the op (vault ops are escalating —
+    /// `require_step_up` passes `is_non_escalating = false`, so no carve-out),
+    /// while an unconfigured vault op is untouched.
+    #[tokio::test]
+    async fn resolve_step_up_gates_configured_vault_op_only() {
+        use vti_common::auth::step_up::{StepUpFloor, StepUpPolicy};
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        let acl_ks = store.keyspace("acl").unwrap();
+        let caller = "did:key:zCaller";
+
+        let mut c: crate::config::AppConfig = toml::from_str("").unwrap();
+        c.auth.step_up = StepUpPolicy {
+            enabled: true,
+            floors: vec![StepUpFloor {
+                operation: op::VAULT_RELEASE.to_string(),
+                mode: StepUpMode::SelfApprove,
+                allow_aal1_if_non_escalating: false,
+            }],
+        };
+        let cfg = tokio::sync::RwLock::new(c);
+
+        // The configured op is gated (the new vault enforcement).
+        assert!(
+            !matches!(
+                resolve_step_up(&cfg, &acl_ks, op::VAULT_RELEASE, caller, false).await,
+                StepUpDecision::Allow
+            ),
+            "a vault/release floor must gate the op"
+        );
+        // A different vault op with no floor is not gated.
+        assert!(
+            matches!(
+                resolve_step_up(&cfg, &acl_ks, op::VAULT_PROXY_LOGIN, caller, false).await,
+                StepUpDecision::Allow
+            ),
+            "an op with no configured floor must not be gated"
         );
     }
 

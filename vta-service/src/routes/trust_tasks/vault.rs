@@ -244,9 +244,10 @@ struct VaultReleaseBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    step_up_proof: Option<Value>,
+    // (`step_up_proof` removed in P0.13: step-up is now enforced via the
+    // session ACR gate `require_step_up(op::VAULT_RELEASE)`, not a dormant
+    // body field. An incoming `stepUpProof` is harmlessly ignored — these
+    // bodies don't `deny_unknown_fields`.)
     #[serde(default)]
     ttl_seconds_hint: Option<u32>,
 }
@@ -312,13 +313,10 @@ struct VaultProxyLoginBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    /// Step-up proof token (vta-approval JWS) — accepted for forward
-    /// compatibility; the M2B.2b SIOP driver doesn't require step-up
-    /// (the wallet already authenticated this caller). Sensitive sites
-    /// gain step-up enforcement via M3 policy + step-up wiring.
-    #[serde(default)]
-    #[allow(dead_code)]
-    step_up_proof: Option<Value>,
+    // (`step_up_proof` removed in P0.13: step-up is now the
+    // `require_step_up(op::VAULT_PROXY_LOGIN)` session-ACR gate above, which
+    // an operator opts into via a `vault/proxy-login` policy floor — replacing
+    // the dormant "forward-compatibility" body field this comment described.)
     /// Caller-supplied nonce — embedded verbatim as the SIOP id_token's
     /// `nonce` claim for the `did-self-issued` driver. Drivers without
     /// a nonce concept (Password POST, OAuth refresh — M2B.5+) ignore.
@@ -1069,6 +1067,16 @@ pub(super) async fn handle_release(
         return r;
     }
 
+    // Step-up gate (P0.13): honour an operator-configured `vault/release`
+    // floor before disclosing a stored secret. Placed after the role + scope
+    // checks so a caller lacking permission gets that error first, not a
+    // step-up prompt. Inert under the shipping default (step-up disabled).
+    if let Some(reject) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::VAULT_RELEASE, &doc).await
+    {
+        return reject;
+    }
+
     // ATM is required for outbound authcrypt. Pre-flight check before
     // we build the message so the error is clearly "infrastructure not
     // configured" rather than a packing failure mid-flow.
@@ -1256,6 +1264,15 @@ pub(super) async fn handle_proxy_login(
 
     if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
         return r;
+    }
+
+    // Step-up gate (P0.13): honour a `vault/proxy-login` floor before
+    // minting a session credential for the site. Inert by default.
+    if let Some(reject) =
+        super::step_up::require_step_up(state, auth, super::step_up::op::VAULT_PROXY_LOGIN, &doc)
+            .await
+    {
+        return reject;
     }
 
     // ATM + vta_did are needed for the shared authcrypt tail
@@ -1511,9 +1528,8 @@ struct VaultSignTrustTaskBody {
     #[serde(default)]
     #[allow(dead_code)]
     consumer_context: Option<Value>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    step_up_proof: Option<Value>,
+    // (`step_up_proof` removed in P0.13: enforced via the
+    // `require_step_up(op::VAULT_SIGN_TRUST_TASK)` session-ACR gate above.)
 }
 
 /// Response body for `vault/sign-trust-task/0.1`. Same `unsigned_envelope`
@@ -1574,6 +1590,19 @@ pub(super) async fn handle_sign_trust_task(
 
     if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
         return r;
+    }
+
+    // Step-up gate (P0.13): honour a `vault/sign-trust-task` floor before
+    // signing as the entry's principal DID. Inert by default.
+    if let Some(reject) = super::step_up::require_step_up(
+        state,
+        auth,
+        super::step_up::op::VAULT_SIGN_TRUST_TASK,
+        &doc,
+    )
+    .await
+    {
+        return reject;
     }
 
     // Only signable kinds (DID-anchored secrets) carry a principal

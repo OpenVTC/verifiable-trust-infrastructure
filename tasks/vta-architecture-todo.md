@@ -136,10 +136,17 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   report directing to REST. Added `StepUpRequired` → `forbidden` arm to
   `app_err_to_response`. Test: `resolve_step_up` swap-key floor/carve-out/
   disabled matrix — PR: ____
-- `[ ]` **P0.13b** (M) Vault step-up enforcement — wire `require_step_up` into
-  the vault TT handlers (release/upsert/sign-trust-task) using new `vault/*`
-  op-classes; remove the dormant `step_up_proof` field. (Operator chose
-  "enforce now".) — PR: ____
+- `[~]` **P0.13b** (M) Vault step-up enforcement — branch
+  `fix/p0.13b-vault-stepup` (worktree). Added `vault/release`,
+  `vault/proxy-login`, `vault/sign-trust-task` op-classes (vti-common
+  op_class + ALL + step_up `op` re-export). The three vault TT handlers
+  (release/proxy-login/sign-trust-task) now call
+  `require_step_up(state, auth, op::VAULT_*)` after the role + context-scope
+  checks; the dormant `step_up_proof` body fields are removed (enforcement is
+  the session-ACR gate, policy-driven — inert under the shipping default).
+  Note: the actual op was proxy-login, not upsert (upsert has no step_up_proof
+  / discloses nothing). Tests: op-class recognition; resolve gates a
+  configured vault floor only — PR: ____
 - `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
   export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
   list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row

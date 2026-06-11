@@ -75,6 +75,14 @@ pub mod op_class {
     pub const ACL_SWAP_KEY: &str = "acl/swap-key";
     pub const CONTEXT_DELETE: &str = "context/delete";
     pub const KEY_REVOKE: &str = "key/revoke";
+    /// Disclose a stored vault secret to the caller (`vault/release/0.1`).
+    pub const VAULT_RELEASE: &str = "vault/release";
+    /// Mint a proxy-login session credential for a vault site
+    /// (`vault/proxy-login/0.1`).
+    pub const VAULT_PROXY_LOGIN: &str = "vault/proxy-login";
+    /// Sign a Trust Task envelope as a vault entry's principal DID
+    /// (`vault/sign-trust-task/0.1`).
+    pub const VAULT_SIGN_TRUST_TASK: &str = "vault/sign-trust-task";
 
     /// Every recognized operation-class (excludes the `*` catch-all).
     pub const ALL: &[&str] = &[
@@ -84,6 +92,9 @@ pub mod op_class {
         ACL_SWAP_KEY,
         CONTEXT_DELETE,
         KEY_REVOKE,
+        VAULT_RELEASE,
+        VAULT_PROXY_LOGIN,
+        VAULT_SIGN_TRUST_TASK,
     ];
 
     /// Whether `operation` is a floor target the maintainer recognizes: a known
@@ -292,6 +303,24 @@ mod tests {
     use super::*;
     use crate::config::StoreConfig;
     use crate::store::Store;
+
+    #[test]
+    fn vault_op_classes_are_recognized_floor_targets() {
+        // P0.13: vault ops must be settable as policy floors so step-up can be
+        // enforced on them; an unrecognized op-class is rejected at policy-set
+        // time as `unknownOperation`.
+        for op in [
+            op_class::VAULT_RELEASE,
+            op_class::VAULT_PROXY_LOGIN,
+            op_class::VAULT_SIGN_TRUST_TASK,
+        ] {
+            assert!(
+                op_class::is_recognized(op),
+                "{op} must be a valid floor target"
+            );
+            assert!(op_class::ALL.contains(&op), "{op} must be in ALL");
+        }
+    }
 
     async fn ks() -> KeyspaceHandle {
         let dir = tempfile::tempdir().expect("tempdir");
