@@ -65,6 +65,26 @@ nature (DIDComm isn't running yet at first-enable).
 | Show in-flight drain entries | `pnm services didcomm drain list` |
 | Per-mediator traffic + sender attribution | `pnm services report [--since <rfc3339>] [--until <rfc3339>] [--format json|table]` |
 
+#### DIDComm status endpoint (`GET /services/didcomm`)
+
+`pnm services list` reports the advertised service array from the VTA's
+DID document. For DID methods with no resolvable service block (e.g.
+`did:key`), the mediator can't be discovered that way, so the VTA also
+exposes `GET /services/didcomm`, returning `{ enabled, mediator_did,
+websocket_status }` straight from runtime config. `pnm health` falls back
+to it to discover the mediator DID for those methods. Like every operation
+here, it is **super-admin** gated — parity with `pnm services list`, which
+exposes the same `mediator_did`.
+
+> **Caveat — `websocket_status` is server-path-only.** The live mediator
+> connection state (`connected` / `connecting` / `disconnected`) is tracked
+> only on the axum server path (`run()`). TEE / Nitro-Enclave front-ends
+> build their `AppState` via `build_app_state()`, which never wires the
+> listener event logger, so `websocket_status` there always reports
+> `disconnected` even when the mediator connection is healthy. Treat the
+> field as authoritative only on non-TEE deployments; use `enabled` +
+> `mediator_did` for configuration discovery on all deployments.
+
 ### Mutate REST
 
 | Task | Command |
