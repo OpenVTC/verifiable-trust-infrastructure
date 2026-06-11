@@ -329,10 +329,22 @@ async fn didcomm_status_requires_auth() {
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
+async fn didcomm_status_forbids_non_super_admin() {
+    // Parity with `GET /services` (list_services): both are super-admin-gated
+    // since they expose the same `mediator_did`. A reader-role caller is rejected.
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkTest", "reader", vec![]).await;
+    let (status, _) = app.request(get_auth("/services/didcomm", &token)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
 async fn didcomm_status_returns_disabled_when_not_enabled() {
     let (app, ctx) = TestApp::new().await;
     ctx.inner.config.write().await.services.didcomm = false;
-    let token = ctx.auth_token("did:key:z6MkTest", "reader", vec![]).await;
+    // admin + empty contexts == super-admin
+    let token = ctx.auth_token("did:key:z6MkTest", "admin", vec![]).await;
     let (status, body) = app.request(get_auth("/services/didcomm", &token)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, json!({ "enabled": false }));

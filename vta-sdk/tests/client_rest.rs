@@ -1545,6 +1545,31 @@ async fn malformed_error_body_falls_back_to_raw_text() {
     }
 }
 
+#[tokio::test]
+async fn oversized_error_body_is_truncated() {
+    // A large non-JSON body (e.g. a proxy error page) must not bloat the
+    // error string. The fallback truncates the raw text and marks it with `…`.
+    let server = MockServer::start().await;
+    let huge = "x".repeat(10_000);
+    Mock::given(method("GET"))
+        .and(path("/config"))
+        .respond_with(ResponseTemplate::new(500).set_body_string(huge))
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let err = c.get_config().await.unwrap_err();
+    match err {
+        VtaError::Server { status, body } => {
+            assert_eq!(status, 500);
+            // "unknown error: " (15) + 256 chars + "…" — far smaller than 10k.
+            assert!(body.len() < 600, "body not truncated: {} bytes", body.len());
+            assert!(body.starts_with("unknown error: x"));
+            assert!(body.ends_with('…'), "expected truncation marker");
+        }
+        other => panic!("expected Server, got {other:?}"),
+    }
+}
+
 // ── Connection/transport ────────────────────────────────────────────
 
 #[tokio::test]

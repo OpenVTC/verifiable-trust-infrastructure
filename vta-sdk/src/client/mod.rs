@@ -167,15 +167,25 @@ impl VtaClient {
     }
 
     /// Extract the `error` field from a JSON response body, or fall back to
-    /// "unknown error" with the raw text appended for diagnostics.
+    /// "unknown error" with the raw text appended for diagnostics. The raw text
+    /// is truncated so a large non-JSON body (e.g. a 1 MB proxy error page)
+    /// can't bloat the error string that propagates into CLI output and logs.
     fn extract_error_message(text: &str) -> String {
+        /// Max characters of raw body to surface in the fallback message.
+        const MAX_RAW_LEN: usize = 256;
         serde_json::from_str::<ErrorResponse>(text)
             .map(|e| e.error)
             .unwrap_or_else(|_| {
                 if text.is_empty() {
                     "unknown error".to_string()
                 } else {
-                    format!("unknown error: {text}")
+                    let truncated: String = text.chars().take(MAX_RAW_LEN).collect();
+                    let ellipsis = if truncated.len() < text.len() {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    format!("unknown error: {truncated}{ellipsis}")
                 }
             })
     }

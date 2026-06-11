@@ -15,7 +15,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{AuthClaims, SuperAdminAuth};
+use crate::auth::SuperAdminAuth;
 use crate::messaging::handshake::{AlwaysOkProver, HandshakeError, HandshakeStage};
 use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::DisableTransport as DidcommTransport;
@@ -189,9 +189,12 @@ pub async fn enable_didcomm_handler(
     }))
 }
 
-/// `GET /services/didcomm` — current DIDComm runtime status. Auth: any role.
+/// `GET /services/didcomm` — current DIDComm runtime status. Auth: super-admin,
+/// for parity with `GET /services` (`list_services`), which exposes the same
+/// `mediator_did`. Gating both the same way avoids a reader-role caller learning
+/// the mediator DID here that it cannot obtain from the sibling list endpoint.
 pub async fn get_didcomm_status_handler(
-    _auth: AuthClaims,
+    _auth: SuperAdminAuth,
     State(state): State<AppState>,
 ) -> Json<DidcommStatusResponse> {
     let (configured, mediator_did) = {
