@@ -1195,6 +1195,31 @@ pub async fn make_offer(
     Ok((credential_offer(issuer_id, config_ids, code.clone()), code))
 }
 
+/// GC every pending-issuance row whose `expires_at` has passed. [`redeem`]
+/// rejects an expired offer, but an offer the holder never redeems would
+/// otherwise sit in the keyspace forever (each carrying a minted credential).
+/// Returns the count purged. Called by the daemon's retention sweeper.
+pub async fn sweep_expired_pending(
+    ks: &KeyspaceHandle,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let now_ts = now.timestamp();
+    let mut purged = 0usize;
+    for (k, raw) in ks
+        .prefix_iter_raw(PENDING_PREFIX.as_bytes().to_vec())
+        .await?
+    {
+        // Unparseable rows are left alone — best-effort GC, not validation.
+        if let Ok(rec) = serde_json::from_slice::<PendingIssuance>(&raw)
+            && now_ts >= rec.expires_at
+        {
+            ks.remove(k).await?;
+            purged += 1;
+        }
+    }
+    Ok(purged)
+}
+
 /// Redeem a credential request against a persisted pending offer.
 ///
 /// Looks the pending issuance up by the request's proof `nonce` (the
@@ -1502,6 +1527,47 @@ mod tests {
         // Single-use: the offer is consumed.
         let again = redeem(&ks, &req, now).await.unwrap_err();
         assert!(matches!(again, AppError::NotFound(_)), "{again:?}");
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_pending_removes_only_expired() {
+        let (_d, _s, ks) = fresh_ks();
+        let holder = Holder::new(40);
+        let now = Utc::now();
+        // Expired offer: made an hour ago with the 30-min TTL.
+        make_offer(
+            &ks,
+            ISSUER,
+            vec!["MembershipCredential".into()],
+            a_credential(),
+            &holder.did,
+            DEFAULT_OFFER_TTL,
+            now - Duration::hours(1),
+        )
+        .await
+        .expect("expired offer");
+        // Fresh offer: made now → survives.
+        make_offer(
+            &ks,
+            ISSUER,
+            vec!["MembershipCredential".into()],
+            a_credential(),
+            &holder.did,
+            DEFAULT_OFFER_TTL,
+            now,
+        )
+        .await
+        .expect("fresh offer");
+
+        let purged = sweep_expired_pending(&ks, now).await.unwrap();
+        assert_eq!(purged, 1, "only the expired offer should be purged");
+
+        let remaining = ks
+            .prefix_iter_raw(b"credx-pending:".to_vec())
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(remaining, 1, "the fresh offer survives");
     }
 
     #[tokio::test]

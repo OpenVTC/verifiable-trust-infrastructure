@@ -6,12 +6,12 @@
 //! - `sync_cursor` (singleton, key `cursor`) — audit-log
 //!   tail position.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use uuid::Uuid;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
-use super::model::{RegistryRecord, SyncJob};
+use super::model::{RegistryRecord, SyncJob, SyncJobState};
 
 /// Prefix every registry-record row sits under.
 pub const REGISTRY_RECORDS_PREFIX: &[u8] = b"registry_records:";
@@ -116,6 +116,31 @@ pub async fn list_sync_jobs(ks: &KeyspaceHandle) -> Result<Vec<SyncJob>, AppErro
         }
     }
     Ok(out)
+}
+
+/// Reap `Failed` sync jobs older than `retention_days`. A job flips to `Failed`
+/// only after exhausting its retry budget (`DEFAULT_MAX_ATTEMPTS`) and has
+/// surfaced in `/health/diagnostics` for operator intervention; past the
+/// retention window it is terminal clutter holding a plaintext `member_did`.
+/// Age is measured from `last_attempted_at` (when it gave up), falling back to
+/// `created_at`. Active / in-flight / retrying jobs are never touched. Returns
+/// the count purged.
+pub async fn sweep_failed_sync_jobs(
+    ks: &KeyspaceHandle,
+    retention_days: u32,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let cutoff = now - ChronoDuration::days(retention_days as i64);
+    let mut purged = 0usize;
+    for job in list_sync_jobs(ks).await? {
+        if job.state == SyncJobState::Failed
+            && job.last_attempted_at.unwrap_or(job.created_at) < cutoff
+        {
+            delete_sync_job(ks, job.id).await?;
+            purged += 1;
+        }
+    }
+    Ok(purged)
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +269,51 @@ mod tests {
         for j in all {
             assert_eq!(j.state, SyncJobState::Pending);
         }
+    }
+
+    #[tokio::test]
+    async fn sweep_failed_sync_jobs_reaps_only_old_failed() {
+        let (_r, queue, _c, _dir) = temp_keyspaces().await;
+        let now = Utc::now();
+
+        // Old Failed (40 days since last attempt) → reaped.
+        let mut old_failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zOld");
+        old_failed.state = SyncJobState::Failed;
+        old_failed.last_attempted_at = Some(now - ChronoDuration::days(40));
+        // Recent Failed (3 days) → within the 30-day window, survives.
+        let mut recent_failed = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zRecent");
+        recent_failed.state = SyncJobState::Failed;
+        recent_failed.last_attempted_at = Some(now - ChronoDuration::days(3));
+        // Old Pending → never reaped (only Failed jobs age out).
+        let mut old_pending = SyncJob::fresh(SyncJobKind::PublishMember, "did:key:zPending");
+        old_pending.created_at = now - ChronoDuration::days(99);
+        old_pending.last_attempted_at = Some(now - ChronoDuration::days(99));
+
+        for j in [&old_failed, &recent_failed, &old_pending] {
+            store_sync_job(&queue, j).await.unwrap();
+        }
+
+        let purged = sweep_failed_sync_jobs(&queue, 30, now).await.unwrap();
+        assert_eq!(purged, 1);
+
+        let remaining: Vec<String> = list_sync_jobs(&queue)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|j| j.member_did)
+            .collect();
+        assert!(
+            !remaining.contains(&"did:key:zOld".to_string()),
+            "old Failed reaped"
+        );
+        assert!(
+            remaining.contains(&"did:key:zRecent".to_string()),
+            "recent Failed survives"
+        );
+        assert!(
+            remaining.contains(&"did:key:zPending".to_string()),
+            "Pending never reaped"
+        );
     }
 
     #[tokio::test]

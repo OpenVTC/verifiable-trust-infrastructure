@@ -568,6 +568,18 @@ pub async fn run(
         });
     }
 
+    // P0.6: spawn the retention sweeper. It was defined but never spawned, so
+    // terminal join requests (PII in the submitted VP), expired
+    // present-challenge / credx-pending rows, and `Failed` registry sync jobs
+    // accumulated forever. Unconditional — unlike the registry syncer, it has
+    // no external dependency. Runs on its own task until shutdown.
+    crate::join::retention::RetentionSweeper::spawn(
+        state.join_requests_ks.clone(),
+        state.sync_queue_ks.clone(),
+        boot_cfg.join_requests.clone(),
+        shutdown_rx.clone(),
+    );
+
     // M0.10: consume + audit any pending emergency-bootstrap marker
     // left behind by `vtc admin emergency-bootstrap`. The marker is
     // **one-shot**: `take_pending_emergency` deletes it as part of

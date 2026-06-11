@@ -141,8 +141,10 @@ pub const MAX_BACKOFF_SECONDS: i64 = 3600;
 /// `member_did` is stored in plaintext because the registry
 /// HTTP / DIDComm call needs the unhashed DID. The hashed
 /// form lives only on the audit envelope's actor field (per
-/// §11.1). Rows are deleted on `Complete` and age out via
-/// the retention sweeper on `Failed`.
+/// §11.1). Rows are deleted on `Complete`; `Failed` rows age
+/// out after the retention window via the daemon's retention
+/// sweeper ([`super::storage::sweep_failed_sync_jobs`], spawned
+/// from `server::run`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncJob {

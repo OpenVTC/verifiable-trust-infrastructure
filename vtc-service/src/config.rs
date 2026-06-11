@@ -40,6 +40,12 @@ pub struct AppConfig {
     /// flips a previously-asserted member's flag to `false`.
     #[serde(default)]
     pub renewal: RenewalConfig,
+    /// Retention sweeper settings (§5.5). Controls the window after which
+    /// terminal join requests (and expired credential-exchange / Failed
+    /// sync-job rows) are purged, plus the sweep cadence. Defaults to a
+    /// 30-day window swept hourly.
+    #[serde(default)]
+    pub join_requests: crate::join::retention::JoinRequestsConfig,
     /// Public community website settings (Phase 5 M5.4). When
     /// `root_dir` is unset the website handler 503s — the
     /// feature is opt-in by operator configuration, even though

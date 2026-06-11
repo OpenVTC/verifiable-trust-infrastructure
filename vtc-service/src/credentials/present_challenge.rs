@@ -94,6 +94,26 @@ pub async fn consume(
     })
 }
 
+/// GC every present-challenge row whose `expires_at` has passed. The
+/// happy-path [`consume`] already removes a row single-use, but a challenge
+/// that is *never* answered (a `query` sent to a holder who walks away) would
+/// otherwise linger in the keyspace past its TTL forever. Returns the count
+/// purged. Called by the daemon's retention sweeper.
+pub async fn sweep_expired(ks: &KeyspaceHandle, now: DateTime<Utc>) -> Result<usize, AppError> {
+    let mut purged = 0usize;
+    for (k, raw) in ks.prefix_iter_raw(PREFIX.as_bytes().to_vec()).await? {
+        // A row we can't parse is left alone — don't delete data we don't
+        // understand; this is best-effort GC, not validation.
+        if let Ok(rec) = serde_json::from_slice::<PresentChallenge>(&raw)
+            && now >= rec.expires_at
+        {
+            ks.remove(k).await?;
+            purged += 1;
+        }
+    }
+    Ok(purged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +204,33 @@ mod tests {
             matches!(&err, AppError::Validation(m) if m.contains("unknown")),
             "{err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn sweep_expired_removes_only_expired() {
+        let (_dir, ks) = fresh_ks();
+        let now = Utc::now();
+        // Stale: issued 10 min ago with the 5-min TTL → expired.
+        issue(
+            &ks,
+            "stale",
+            "did:web:v",
+            DEFAULT_CHALLENGE_TTL,
+            now - Duration::minutes(10),
+        )
+        .await
+        .unwrap();
+        // Fresh: issued now → survives.
+        issue(&ks, "fresh", "did:web:v", DEFAULT_CHALLENGE_TTL, now)
+            .await
+            .unwrap();
+
+        let purged = sweep_expired(&ks, now).await.unwrap();
+        assert_eq!(purged, 1, "only the expired challenge should be purged");
+
+        // The fresh row is still consumable; the stale one is gone.
+        assert!(consume(&ks, "fresh", now).await.is_ok());
+        let err = consume(&ks, "stale", now).await.unwrap_err();
+        assert!(matches!(&err, AppError::Validation(m) if m.contains("unknown")));
     }
 }
