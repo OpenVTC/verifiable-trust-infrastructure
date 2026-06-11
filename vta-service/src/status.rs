@@ -317,7 +317,8 @@ async fn send_trust_ping(
     mediator_did: &str,
 ) -> Result<u128, Box<dyn std::error::Error>> {
     let seed_store = create_seed_store(config)?;
-    let seed = seed_store.get().await?.ok_or("no master seed available")?;
+    // Master seed in plaintext — wipe on drop (P0.7).
+    let seed = zeroize::Zeroizing::new(seed_store.get().await?.ok_or("no master seed available")?);
 
     let root = ExtendedSigningKey::from_seed(&seed)?;
 

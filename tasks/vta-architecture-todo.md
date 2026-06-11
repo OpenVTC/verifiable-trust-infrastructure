@@ -52,8 +52,21 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   refusal+no-mutation (tee), trait flag, existing non-TEE rotation unaffected
   — PR: #344 (merged). Follow-up: in-place re-encryption so TEE rotation
   works rather than refuses (needs runtime KMS access on KmsTeeSeedStore).
-- `[ ]` **P0.7** (M) `Zeroizing` seed bytes end-to-end; encrypt retired-seed
-  archive; fix "secure deletion" claim — PR: ____
+- `[~]` **P0.7a** (S) `Zeroizing` seed bytes + honest "secure deletion" —
+  branch `fix/p0.7-seed-zeroize` (isolated worktree). `load_seed_bytes`
+  returns `Zeroizing<Vec<u8>>` (the 40-caller key-derivation path — all use
+  `&seed`, so transparent via Deref); the low-level `rotate_seed`'s old/new
+  master seeds and the two direct `seed_store.get()` callers (status.rs,
+  derivation.rs) wrapped too. `delete_secret` dropped its ineffective
+  zero-overwrite (LSM keeps old SSTables; value is ciphertext anyway) with an
+  honest comment. Trait-level `SeedStore::get` Zeroizing deferred (crosses
+  vtc + 8 backends) — PR: ____
+- `[ ]` **P0.7b** (L) Encrypt the retired-seed archive independently of the
+  keyspace-encryption flag. Split from P0.7: needs a rotation-re-encryption
+  (or successor-chain) design + a migration for existing plaintext archives —
+  the KEK derives from the *rotating* master seed, so it's not a casual reuse
+  of the imported-secrets pattern. Plaintext master seeds on disk only when:
+  non-TEE + no `storage_encryption_key` + has rotated — PR: ____
 - `[x]` **P0.8** (S) Atomic + persisted carve-out close — branch
   `fix/p0.8-carveout-durability`. Added `KeyspaceHandle::persist()` (local
   fsync + vsock OP_PERSIST passthrough). `mint_mode_b` now: seal first

@@ -159,14 +159,19 @@ pub async fn load_secret(
     Ok(std::mem::take(&mut plaintext))
 }
 
-/// Securely delete an imported secret (overwrite then remove).
+/// Delete an imported secret.
+///
+/// Note on erasure: the store is an LSM tree (fjall), so a `remove` writes a
+/// tombstone and the original value's bytes persist in immutable SSTables /
+/// the journal until compaction — an in-place "overwrite with zeros" before
+/// removing does NOT erase them (it just appends another version) and was
+/// removed as ineffective theater (P0.7). This is acceptable because the
+/// stored value is *ciphertext* (AES-256-GCM under the seed-derived KEK), not
+/// plaintext: a forensic read of un-compacted SSTables yields encrypted bytes,
+/// not the secret. True at-rest erasure of the keyspace is the storage layer's
+/// job (compaction / encrypted volume), not this function's.
 pub async fn delete_secret(imported_ks: &KeyspaceHandle, key_id: &str) -> Result<(), AppError> {
     let store_key = format!("{SECRET_PREFIX}{key_id}");
-    // Overwrite with zeros before deletion
-    if let Some(blob) = imported_ks.get_raw(store_key.clone()).await? {
-        let zeros = vec![0u8; blob.len()];
-        imported_ks.insert_raw(store_key.clone(), zeros).await?;
-    }
     imported_ks.remove(store_key).await?;
     Ok(())
 }
@@ -346,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_secure_delete() {
+    async fn test_delete_secret_removes_value() {
         let (store, _dir) = temp_store();
         let imported_ks = store.keyspace("imported_secrets").unwrap();
         let keys_ks = store.keyspace("keys").unwrap();

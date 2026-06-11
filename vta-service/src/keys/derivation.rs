@@ -121,6 +121,8 @@ pub async fn load_or_generate_seed(
 
     if let Some(existing) = seed_store.get().await? {
         debug!("master seed loaded from store");
+        // Master seed in plaintext — wipe on drop (P0.7).
+        let existing = zeroize::Zeroizing::new(existing);
         return ExtendedSigningKey::from_seed(&existing).map_err(|e| {
             key_derivation_error(format!(
                 "Couldn't create bip32 root signing key! Reason: {e}"
@@ -128,11 +130,11 @@ pub async fn load_or_generate_seed(
         });
     }
 
-    let mut seed = [0u8; 32];
-    rand::rng().fill_bytes(&mut seed);
-    seed_store.set(&seed).await?;
+    let mut seed = zeroize::Zeroizing::new([0u8; 32]);
+    rand::rng().fill_bytes(&mut *seed);
+    seed_store.set(&*seed).await?;
     info!("new random master seed generated and stored");
-    ExtendedSigningKey::from_seed(&seed).map_err(|e| {
+    ExtendedSigningKey::from_seed(&*seed).map_err(|e| {
         key_derivation_error(format!(
             "Couldn't create bip32 root signing key! Reason: {e}"
         ))

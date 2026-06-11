@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
+use zeroize::Zeroizing;
 
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
@@ -88,25 +89,32 @@ pub async fn list_seed_records(
 /// - If the seed record exists with `seed_hex: Some(hex)` → retired, decode hex.
 /// - If the seed record exists with `seed_hex: None` → active, load from external store.
 /// - If no seed record exists → pre-rotation state, load from external store.
+///
+/// Returns the BIP-32 master seed wrapped in [`Zeroizing`] so the bytes are
+/// wiped from memory when the caller drops them (P0.7). The seed is the root
+/// of every derived key; the codebase already zeroizes *derived* secrets, and
+/// this closes the gap for the root itself. Callers use it via `&seed`
+/// (deref-coerces to `&[u8]`), so no call site needs to change.
 pub async fn load_seed_bytes(
     keys_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     seed_id: Option<u32>,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+) -> Result<Zeroizing<Vec<u8>>, Box<dyn std::error::Error>> {
     let effective_id = seed_id.unwrap_or(0);
 
     if let Some(record) = get_seed_record(keys_ks, effective_id).await?
         && let Some(ref hex_str) = record.seed_hex
     {
         // Retired seed — archived in fjall
-        return Ok(hex::decode(hex_str)?);
+        return Ok(Zeroizing::new(hex::decode(hex_str)?));
     }
     // Active seed or pre-rotation: load from external store
-    seed_store
+    let bytes = seed_store
         .get()
         .await
         .map_err(|e| format!("{e}"))?
-        .ok_or_else(|| "no seed found in external store".into())
+        .ok_or("no seed found in external store")?;
+    Ok(Zeroizing::new(bytes))
 }
 
 /// Rotate to a new seed generation.
@@ -138,12 +146,15 @@ pub async fn rotate_seed(
 
     let old_id = get_active_seed_id(keys_ks).await?;
 
-    // Load current seed bytes for archival
-    let old_seed = seed_store
-        .get()
-        .await
-        .map_err(|e| format!("{e}"))?
-        .ok_or("no active seed found — cannot rotate")?;
+    // Load current seed bytes for archival. Zeroized on drop — this is the
+    // outgoing master seed in plaintext (P0.7).
+    let old_seed = Zeroizing::new(
+        seed_store
+            .get()
+            .await
+            .map_err(|e| format!("{e}"))?
+            .ok_or("no active seed found — cannot rotate")?,
+    );
 
     // Archive the old seed into fjall
     let mut old_record = get_seed_record(keys_ks, old_id)
@@ -154,20 +165,20 @@ pub async fn rotate_seed(
             created_at: Utc::now(),
             retired_at: None,
         });
-    old_record.seed_hex = Some(hex::encode(&old_seed));
+    old_record.seed_hex = Some(hex::encode(old_seed.as_slice()));
     old_record.retired_at = Some(Utc::now());
     save_seed_record(keys_ks, &old_record).await?;
     info!(seed_id = old_id, "archived retired seed");
 
-    // Generate or derive the new seed
-    let new_seed: Vec<u8> = if let Some(phrase) = mnemonic {
+    // Generate or derive the new seed (zeroized on drop, P0.7).
+    let new_seed: Zeroizing<Vec<u8>> = if let Some(phrase) = mnemonic {
         let m =
             bip39::Mnemonic::parse(phrase).map_err(|e| format!("invalid BIP-39 mnemonic: {e}"))?;
-        m.to_seed("").to_vec()
+        Zeroizing::new(m.to_seed("").to_vec())
     } else {
-        let mut buf = [0u8; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut buf);
-        buf.to_vec()
+        let mut buf = Zeroizing::new([0u8; 32]);
+        rand::Rng::fill_bytes(&mut rand::rng(), &mut *buf);
+        Zeroizing::new(buf.to_vec())
     };
 
     // Store new seed in external backend
