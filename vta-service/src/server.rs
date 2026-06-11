@@ -330,6 +330,10 @@ pub async fn run(
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
 ) -> Result<(), AppError> {
+    // Fail fast on a broken config rather than booting a half-started
+    // service that passes a port-liveness check but can't function (P0.9).
+    config.validate()?;
+
     // Open the runtime-state keyspace once up front so the boot decisions
     // below can read it (and the migration can seed it from the legacy
     // `[services]` block on first boot post-upgrade). Same encryption policy

@@ -120,6 +120,15 @@ pub struct SecretsConfig {
     /// (vault-secrets feature).
     #[serde(default)]
     pub vault_skip_verify: bool,
+    /// Opt in to the **plaintext file** seed-store fallback. Off by
+    /// default: when no secure backend (keyring / cloud / Vault /
+    /// config-seed) is compiled-in *and* configured, `create_seed_store`
+    /// errors rather than silently writing the BIP-32 master seed to a
+    /// file in clear. Set `true` only for dev/test where that is
+    /// acceptable. (P0.9 — closes the "one wrong TOML key → master seed
+    /// on disk in cleartext" footgun.)
+    #[serde(default)]
+    pub allow_plaintext: bool,
 }
 
 fn default_keyring_service() -> String {
@@ -175,6 +184,7 @@ impl Default for SecretsConfig {
             vault_approle_secret_id: None,
             vault_approle_mount: default_vault_approle_mount(),
             vault_skip_verify: false,
+            allow_plaintext: false,
         }
     }
 }
@@ -750,10 +760,130 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Validate the loaded runtime config, called at daemon boot
+    /// (`server::run`). Catches misconfigurations that would otherwise
+    /// produce a half-started or misbehaving service — the setup wizard
+    /// validates its *inputs*, but a hand-edited `config.toml` never went
+    /// through that gate.
+    ///
+    /// Conservative by design: it hard-errors only on values that are
+    /// unambiguously broken (a present-but-empty URL, a zero retention
+    /// window the sweeper can't honour) and *warns* — never blocks — on
+    /// cross-field advisories that a working deployment might legitimately
+    /// have, so it can't reject a config that boots fine today.
+    pub fn validate(&self) -> Result<(), AppError> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // A present-but-empty URL is always a mistake (the operator set the
+        // key and left it blank); an *absent* key is fine (the default /
+        // serverless path).
+        if self
+            .public_url
+            .as_deref()
+            .is_some_and(|u| u.trim().is_empty())
+        {
+            errors.push(
+                "public_url is set to an empty string — remove the key for a \
+                 serverless VTA, or give it a value (e.g. https://vta.example.com)"
+                    .into(),
+            );
+        }
+        if self
+            .resolver_url
+            .as_deref()
+            .is_some_and(|u| u.trim().is_empty())
+        {
+            errors.push(
+                "resolver_url is set to an empty string — remove the key to resolve \
+                 DIDs locally, or give it a ws:// or wss:// URL"
+                    .into(),
+            );
+        }
+        // retention_days = 0 would silently disable audit retention; the
+        // sweeper assumes a positive window. (Mirrors the setup-time rule.)
+        if self.audit.retention_days == 0 {
+            errors.push("audit.retention_days must be > 0 (default is 28)".into());
+        }
+
+        if !errors.is_empty() {
+            return Err(AppError::Config(format!(
+                "invalid configuration in {}:\n  - {}",
+                self.config_path.display(),
+                errors.join("\n  - ")
+            )));
+        }
+
+        // Advisory (non-blocking): a REST-advertising VTA with no public_url
+        // publishes a DID document with no reachable REST endpoint. We don't
+        // hard-fail — a dev VTA legitimately runs REST without publishing —
+        // but the operator should see it.
+        if self.services.rest && self.public_url.is_none() {
+            tracing::warn!(
+                "services.rest = true but public_url is unset — the VTA DID document \
+                 will advertise no reachable REST endpoint"
+            );
+        }
+
+        Ok(())
+    }
+
     pub fn save(&self) -> Result<(), AppError> {
         let contents = toml::to_string_pretty(self)
             .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
         std::fs::write(&self.config_path, contents).map_err(AppError::Io)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod validate_tests {
+    use super::*;
+
+    /// Parse a (possibly empty) TOML snippet into an `AppConfig`. An empty
+    /// document is valid — every field defaults (Options to None, server /
+    /// store / audit to their default fns).
+    fn cfg(toml_str: &str) -> AppConfig {
+        toml::from_str::<AppConfig>(toml_str).expect("parse test config")
+    }
+
+    #[test]
+    fn default_config_validates() {
+        cfg("")
+            .validate()
+            .expect("a fully-defaulted config must validate");
+    }
+
+    #[test]
+    fn zero_retention_days_is_rejected() {
+        let err = cfg("[audit]\nretention_days = 0\n")
+            .validate()
+            .expect_err("retention_days = 0 must be rejected");
+        assert!(format!("{err:?}").contains("retention_days"), "{err:?}");
+    }
+
+    #[test]
+    fn present_but_empty_public_url_is_rejected() {
+        let err = cfg("public_url = \"\"\n")
+            .validate()
+            .expect_err("empty public_url must be rejected");
+        assert!(format!("{err:?}").contains("public_url"), "{err:?}");
+    }
+
+    #[test]
+    fn present_but_empty_resolver_url_is_rejected() {
+        let err = cfg("resolver_url = \"   \"\n")
+            .validate()
+            .expect_err("whitespace-only resolver_url must be rejected");
+        assert!(format!("{err:?}").contains("resolver_url"), "{err:?}");
+    }
+
+    #[test]
+    fn rest_without_public_url_only_warns_does_not_fail() {
+        // services.rest defaults to true and public_url is absent — this is
+        // an advisory (a dev VTA legitimately runs REST without publishing),
+        // so validate must NOT hard-fail.
+        cfg("")
+            .validate()
+            .expect("rest-without-public_url is advisory, not an error");
     }
 }

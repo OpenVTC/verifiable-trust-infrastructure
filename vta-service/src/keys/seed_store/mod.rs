@@ -121,10 +121,33 @@ pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppEr
     // only when `keyring` is the selected feature.
     #[allow(unreachable_code)]
     {
+        // No secure backend was compiled-in AND configured. Writing the
+        // BIP-32 master seed to a plaintext file is a real footgun (one
+        // wrong/missing TOML key would silently do it), so require an
+        // explicit opt-in rather than falling through silently (P0.9).
+        if !config.secrets.allow_plaintext {
+            return Err(AppError::Config(
+                "no secure seed-store backend is available (keyring/cloud/Vault/config-seed \
+                 not compiled-in or not configured), and the plaintext file fallback is \
+                 disabled. Configure a secure backend, or set `secrets.allow_plaintext = true` \
+                 to explicitly accept storing the master seed in a cleartext file (dev/test only)."
+                    .into(),
+            ));
+        }
         tracing::warn!(
-            "no secure seed store backend available — falling back to plaintext file storage"
+            "secrets.allow_plaintext = true — storing the BIP-32 master seed in a PLAINTEXT \
+             file. This is NOT secure; use a keyring or cloud/Vault backend in production."
         );
         let store = PlaintextSeedStore::new(&config.store.data_dir);
         Ok(Box::new(store))
     }
 }
+
+// NOTE: the plaintext-fallback opt-in above (`secrets.allow_plaintext`) is
+// not unit-tested. The fallthrough is only reachable when NO secure backend
+// is compiled-in, but the test harness can never produce that build: the
+// dev-dependency self-reference (`vta-service = { features = ["test-support"]
+// }`, no `default-features = false`) re-enables the default `keyring` feature
+// for every test target, so `create_seed_store` always takes the keyring
+// branch in tests. The opt-in guard is a simple `if !allow_plaintext { Err }`
+// on the otherwise-silent production fallthrough.

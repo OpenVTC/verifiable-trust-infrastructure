@@ -77,9 +77,22 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   torn fsync favours a recoverable reopen over a brick. Counter allocator
   also now fsyncs (path-counter loss = key reuse). Tests: persist-survives-
   reopen, carve-out-admits-one — PR: #343 (merged)
-- `[ ]` **P0.9** (M) Boot-time `config::validate()`; `deny_unknown_fields`;
-  hard-fail missing identity unless `--allow-degraded`; explicit opt-in for
-  plaintext seed store — PR: ____
+- `[~]` **P0.9a** (S) Boot-time `config::validate()` + plaintext-seed opt-in —
+  branch `fix/p0.9-config-validation` (worktree). `AppConfig::validate()` runs
+  at `server::run` boot: hard-errors on unambiguously-broken values
+  (retention_days=0, present-but-empty public_url/resolver_url), warns (never
+  blocks) on cross-field advisories (rest without public_url) so it can't
+  reject a config that boots fine today. `create_seed_store` now errors on the
+  silent plaintext fallback unless `secrets.allow_plaintext = true` (footgun:
+  one wrong TOML key → master seed on disk in clear). Tests: validate rules
+  (the opt-in path is cfg-unreachable in the test harness — dev-dep forces
+  keyring on — documented) — PR: ____
+- `[ ]` **P0.9b** Split from P0.9 (config-compat risk; needs care):
+  `deny_unknown_fields`/unknown-key WARNING pass on `AppConfig` (could reject
+  existing configs with legacy/extra keys — softer warning preferred);
+  hard-fail at boot on missing identity (`vta_did`/JWT keys) unless a new
+  `--allow-degraded` CLI flag (needs cold-start / TEE-autogen / import-did
+  flow analysis so it doesn't break a legitimate not-yet-configured boot) — PR: ____
 - `[~]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
   explicit 100 MB layer + governor on `/backup/blob` — branch
   `fix/p0.10-timeouts-ratelimit`. Global `TimeoutLayer` (120s, →408) as the
