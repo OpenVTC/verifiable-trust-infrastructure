@@ -360,6 +360,7 @@ pub async fn run_connect(
             name: slug.clone(),
             vta_did: Some(credential.vta_did.clone()),
             url: None,
+            mediator_did: None,
         },
     );
     if pnm_config.default_vta.is_none() {

@@ -606,38 +606,45 @@ impl SessionStore {
 
     /// Connect to a VTA using the preferred transport (DIDComm or REST).
     ///
-    /// 1. Loads session from store (client DID, private key, VTA DID).
-    /// 2. If `url_override` is provided, uses REST directly.
-    /// 3. Otherwise resolves the VTA DID to discover DIDComm or REST endpoints.
-    /// 4. For DIDComm: encryption provides auth (no JWT needed).
-    /// 5. For REST: performs challenge-response to obtain a JWT.
+    /// Transport selection priority:
+    /// 1. If `mediator_did_hint` is provided → DIDComm (pinned, no discovery).
+    /// 2. If VTA DID doc has DIDCommMessaging service → DIDComm (resolved).
+    /// 3. If `url_override` is provided → try REST discovery of mediator,
+    ///    fall back to REST-only if DIDComm unavailable.
+    /// 4. REST-only (from DID doc or url_override).
     pub async fn connect(
         &self,
         key: &str,
         url_override: Option<&str>,
+        mediator_did_hint: Option<&str>,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
         let session = self.load_session(key).ok_or(
             "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
         )?;
 
-        // URL override: always use REST
-        if let Some(url) = url_override {
-            debug!(url, "using REST transport (URL override)");
-            let token = self.ensure_authenticated(url, key).await?;
-            let client = crate::client::VtaClient::new(url);
-            client.set_token(token);
+        let session_vta_did = require_vta_did(&session)?.to_string();
+
+        // Priority 1: Explicit mediator DID from config → DIDComm directly
+        if let Some(mediator_did) = mediator_did_hint {
+            debug!(mediator_did, "connecting via DIDComm (config mediator_did)");
+            let client = crate::client::VtaClient::connect_didcomm(
+                &session.client_did,
+                &session.private_key,
+                &session_vta_did,
+                mediator_did,
+                url_override.map(|s| s.to_string()),
+            )
+            .await?;
             return Ok(client);
         }
 
-        let session_vta_did = require_vta_did(&session)?.to_string();
-
-        // Resolve VTA DID for transport selection
-        match resolve_vta_endpoint(&session_vta_did).await? {
-            VtaEndpoint::DIDComm {
+        // Priority 2: Resolve VTA DID for transport selection
+        match resolve_vta_endpoint(&session_vta_did).await {
+            Ok(VtaEndpoint::DIDComm {
                 vta_did,
                 mediator_did,
                 rest_url,
-            } => {
+            }) => {
                 debug!("connecting via DIDComm");
                 let client = crate::client::VtaClient::connect_didcomm(
                     &session.client_did,
@@ -647,16 +654,44 @@ impl SessionStore {
                     rest_url,
                 )
                 .await?;
-                Ok(client)
+                return Ok(client);
             }
-            VtaEndpoint::Rest { url } => {
-                debug!(url = %url, "connecting via REST");
+            Ok(VtaEndpoint::Rest { url }) => {
+                debug!(url = %url, "connecting via REST (from DID doc)");
                 let token = self.ensure_authenticated(&url, key).await?;
                 let client = crate::client::VtaClient::new(&url);
                 client.set_token(token);
-                Ok(client)
+                return Ok(client);
+            }
+            Err(e) => {
+                debug!(error = %e, "DID resolution failed, trying URL-based fallback");
             }
         }
+
+        // Priority 3: URL override — try /services/didcomm discovery, fall back to REST
+        if let Some(url) = url_override {
+            if let Some(mediator_did) = discover_mediator_from_rest(url).await {
+                debug!(mediator_did = %mediator_did, "connecting via DIDComm (REST discovery)");
+                let client = crate::client::VtaClient::connect_didcomm(
+                    &session.client_did,
+                    &session.private_key,
+                    &session_vta_did,
+                    &mediator_did,
+                    Some(url.to_string()),
+                )
+                .await?;
+                return Ok(client);
+            }
+
+            // Priority 4: REST-only fallback
+            debug!(url, "connecting via REST (URL override)");
+            let token = self.ensure_authenticated(url, key).await?;
+            let client = crate::client::VtaClient::new(url);
+            client.set_token(token);
+            return Ok(client);
+        }
+
+        Err(format!("Could not determine transport for VTA DID: {session_vta_did}").into())
     }
 }
 
@@ -1083,6 +1118,57 @@ pub async fn resolve_vta_endpoint(
         debug!(url = %url, "falling back to URL from DID string");
         Ok(VtaEndpoint::Rest { url })
     }
+}
+
+/// Attempt to discover a mediator DID by calling `GET {url}/services/didcomm`.
+///
+/// This is a best-effort fallback for DIDs without service endpoints (e.g. did:key).
+/// Returns `None` if the endpoint is unreachable, returns disabled, or fails.
+async fn discover_mediator_from_rest(url: &str) -> Option<String> {
+    let endpoint = format!("{}/services/didcomm", url.trim_end_matches('/'));
+    debug!(endpoint = %endpoint, "attempting DIDComm discovery via REST");
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let resp = client.get(&endpoint).send().await.ok()?;
+
+    // The endpoint exists even with REST "disabled" but may require auth.
+    // For unauthenticated discovery, we only get the enabled status from
+    // the health-like response. If 401, we know the endpoint exists and
+    // DIDComm is likely configured — try the /health endpoint instead.
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        // Try /health which is unauthenticated and may contain didcomm info
+        let health_url = format!("{}/health", url.trim_end_matches('/'));
+        let health_resp = client.get(&health_url).send().await.ok()?;
+        let body: serde_json::Value = health_resp.json().await.ok()?;
+        return body
+            .get("mediator_did")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+    }
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let body: serde_json::Value = resp.json().await.ok()?;
+
+    // Check if DIDComm is enabled
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !enabled {
+        debug!("DIDComm not enabled on VTA (REST discovery)");
+        return None;
+    }
+
+    body.get("mediator_did")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Resolve a VTA DID to discover its service URL.

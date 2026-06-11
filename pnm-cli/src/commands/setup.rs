@@ -29,6 +29,7 @@ pub(crate) async fn run(
                 slug,
                 vta_did: Some(vta_did),
                 vta_url,
+                mediator_did,
             }),
             None,
         ) => {
@@ -37,6 +38,7 @@ pub(crate) async fn run(
                 &slug,
                 &vta_did,
                 vta_url.as_deref(),
+                mediator_did.as_deref(),
             )
             .await
         }

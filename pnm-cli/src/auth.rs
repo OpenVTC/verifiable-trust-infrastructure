@@ -194,13 +194,19 @@ pub async fn show_token(keyring_key: &str) -> Result<(), Box<dyn std::error::Err
 
 /// Connect to the VTA using the preferred transport (DIDComm or REST).
 ///
-/// If `url_override` is provided, always uses REST.
-/// Otherwise resolves the VTA DID and prefers DIDComm when available.
+/// Transport selection priority:
+/// 1. `mediator_did_hint` from config → DIDComm (pinned).
+/// 2. VTA DID doc DIDCommMessaging service → DIDComm (resolved).
+/// 3. `url_override` + REST discovery → DIDComm if available.
+/// 4. `url_override` → REST-only fallback.
 pub async fn connect(
     url_override: Option<&str>,
+    mediator_did_hint: Option<&str>,
     keyring_key: &str,
 ) -> Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>> {
-    store().connect(keyring_key, url_override).await
+    store()
+        .connect(keyring_key, url_override, mediator_did_hint)
+        .await
 }
 
 #[cfg(test)]

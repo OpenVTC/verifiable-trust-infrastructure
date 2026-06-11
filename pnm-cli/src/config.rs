@@ -35,6 +35,11 @@ pub struct VtaConfig {
     /// from the DID document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Explicit mediator DID for DIDComm transport. When set, PNM uses
+    /// DIDComm without needing to discover the mediator from the DID doc
+    /// or REST endpoint. Useful for did:key VTAs or airgapped setups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
 }
 
 /// Returns `~/.config/pnm/`, creating it if it doesn't exist.
@@ -76,6 +81,7 @@ pub fn load_config() -> Result<PnmConfig, Box<dyn std::error::Error>> {
                 name: "Default VTA".to_string(),
                 vta_did: None,
                 url: None,
+                mediator_did: None,
             },
         );
         config.default_vta = Some("default".to_string());
@@ -178,6 +184,7 @@ mod tests {
                 name: "Personal VTA".into(),
                 vta_did: Some("did:web:vta.example.com".into()),
                 url: None,
+                mediator_did: None,
             },
         );
         config.vtas.insert(
@@ -186,6 +193,7 @@ mod tests {
                 name: "Work VTA".into(),
                 vta_did: Some("did:webvh:abc:work.example.com:vta".into()),
                 url: None,
+                mediator_did: None,
             },
         );
 
@@ -255,6 +263,7 @@ vta_did = "did:web:vta.example.com"
                 name: "Personal".into(),
                 vta_did: None,
                 url: None,
+                mediator_did: None,
             },
         );
         let (slug, vta) = resolve_vta(Some("personal"), &config).unwrap();
@@ -274,6 +283,7 @@ vta_did = "did:web:vta.example.com"
                 name: "Work".into(),
                 vta_did: None,
                 url: None,
+                mediator_did: None,
             },
         );
         let (slug, _) = resolve_vta(None, &config).unwrap();

@@ -317,6 +317,7 @@ pub async fn continue_non_tee_setup_non_interactive(
     slug: &str,
     vta_did: &str,
     vta_url: Option<&str>,
+    mediator_did: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let keyring_key = vta_keyring_key(slug);
     let (name, existing_did) = require_pending(config, slug, &keyring_key)?;
@@ -341,6 +342,15 @@ pub async fn continue_non_tee_setup_non_interactive(
     };
 
     finalize_session(config, slug, &name, vta_did, &existing_did, vta_url, true)?;
+
+    // Persist mediator_did if provided
+    if let Some(med_did) = mediator_did {
+        if let Some(vta_cfg) = config.vtas.get_mut(slug) {
+            vta_cfg.mediator_did = Some(med_did.to_string());
+        }
+        save_config(config)?;
+    }
+
     Ok(())
 }
 
@@ -366,6 +376,7 @@ fn persist_pending(
             name: name.to_string(),
             vta_did: None,
             url: None,
+            mediator_did: None,
         },
     );
     if config.default_vta.is_none() || config.vtas.len() == 1 {
@@ -393,6 +404,7 @@ fn finalize_session(
             name: name.to_string(),
             vta_did: Some(vta_did.to_string()),
             url: vta_url.map(|u| u.trim_end_matches('/').to_string()),
+            mediator_did: None,
         },
     );
     if config.default_vta.is_none() || config.vtas.len() == 1 {
@@ -575,6 +587,7 @@ async fn setup_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Err
             name: name.clone(),
             vta_did: Some(vta_did.clone()),
             url: None,
+            mediator_did: None,
         },
     );
     if config.default_vta.is_none() || config.vtas.len() == 1 {
@@ -614,6 +627,7 @@ mod tests {
                 name: slug.to_string(),
                 vta_did: vta_did.map(str::to_string),
                 url: None,
+                mediator_did: None,
             },
         );
         config.vtas = vtas;

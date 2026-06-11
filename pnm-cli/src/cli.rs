@@ -214,6 +214,11 @@ pub(crate) enum SetupCommands {
         /// VTA REST URL (required for did:key DIDs that cannot advertise a service endpoint).
         #[arg(long)]
         vta_url: Option<String>,
+
+        /// Mediator DID for DIDComm transport. When set, PNM uses DIDComm
+        /// without needing to discover the mediator from the DID doc or REST.
+        #[arg(long)]
+        mediator_did: Option<String>,
     },
 }
 

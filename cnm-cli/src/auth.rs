@@ -120,5 +120,5 @@ pub async fn connect(
     url_override: Option<&str>,
     keyring_key: &str,
 ) -> Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>> {
-    store().connect(keyring_key, url_override).await
+    store().connect(keyring_key, url_override, None).await
 }
