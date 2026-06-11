@@ -270,9 +270,9 @@ async fn presentation_from_verified_set(
         Some(resolver) => {
             let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
                 Arc::new(DidResolverKeyResolver::new(resolver));
-            HttpStatusListFetcher::with_issuer_verification(reqwest::Client::new(), key_resolver)
+            HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }
-        None => HttpStatusListFetcher::new(reqwest::Client::new()),
+        None => HttpStatusListFetcher::new(),
     };
 
     let mut credentials = Vec::with_capacity(set.presentations.len());

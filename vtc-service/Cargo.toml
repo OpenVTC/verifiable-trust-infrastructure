@@ -227,6 +227,10 @@ tower = { version = "0.5", features = ["util"] }
 # parses (it uses `serde_cbor_2` internally — `ciborium` is canonical
 # enough for both to agree).
 ciborium = "0.2"
+# Local HTTP server for the foreign-fetch hardening tests (P0.4): drives the
+# shared client's redirect-none / timeout / body-cap behaviour against a real
+# socket. Same version the rest of the workspace pins.
+wiremock = "0.6"
 
 [lints]
 workspace = true

@@ -221,10 +221,7 @@ pub async fn recognise(
     // Verify the foreign status list's own issuer signature (bound to the
     // VEC/VMC issuer) before trusting it — the same key resolver the proof check
     // uses.
-    let status_fetcher = HttpStatusListFetcher::with_issuer_verification(
-        reqwest::Client::new(),
-        key_resolver.clone(),
-    );
+    let status_fetcher = HttpStatusListFetcher::with_issuer_verification(key_resolver.clone());
 
     // 5. Run the M3.9 recognition gate. Failures are mapped to `denied` audit
     //    envelopes (actor = the cryptographically-proven VP holder) + a 403.

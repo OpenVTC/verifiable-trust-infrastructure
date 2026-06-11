@@ -10010,6 +10010,7 @@ dependencies = [
  "vti-common",
  "webauthn-rs",
  "webauthn-rs-proto",
+ "wiremock",
  "x25519-dalek",
  "zeroize",
 ]

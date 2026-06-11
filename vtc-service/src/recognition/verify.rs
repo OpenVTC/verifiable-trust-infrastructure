@@ -25,7 +25,8 @@
 //! testable without a live DID resolver or status-list host,
 //! and isolates the M3.9 logic from upstream API churn.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use affinidi_vc::VerifiableCredential;
@@ -482,25 +483,99 @@ pub struct HttpStatusListFetcher {
 
 impl HttpStatusListFetcher {
     /// A non-verifying fetcher (fetch + decode only). The list credential's own
-    /// issuer signature is not checked.
-    pub fn new(client: reqwest::Client) -> Self {
+    /// issuer signature is not checked. Uses the shared hardened client
+    /// ([`foreign_fetch_client`]).
+    pub fn new() -> Self {
         Self {
-            client,
+            client: foreign_fetch_client(),
             key_resolver: None,
         }
     }
 
     /// A fetcher that verifies each fetched list credential's `eddsa-jcs-2022`
-    /// issuer signature via `key_resolver` before trusting it.
-    pub fn with_issuer_verification(
-        client: reqwest::Client,
-        key_resolver: Arc<dyn ForeignIssuerKeyResolver>,
-    ) -> Self {
+    /// issuer signature via `key_resolver` before trusting it. Uses the shared
+    /// hardened client ([`foreign_fetch_client`]).
+    pub fn with_issuer_verification(key_resolver: Arc<dyn ForeignIssuerKeyResolver>) -> Self {
         Self {
-            client,
+            client: foreign_fetch_client(),
             key_resolver: Some(key_resolver),
         }
     }
+}
+
+impl Default for HttpStatusListFetcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Total deadline for a single foreign status-list fetch. A hostile host on the
+/// unauthenticated recognise path must not be able to stall the lone REST
+/// thread indefinitely.
+const FOREIGN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Hard cap on a fetched status-list body. The spec-minimum list is ~16 KiB
+/// compressed; 2 MiB is generous headroom while refusing the multi-GB body a
+/// hostile host could otherwise stream to OOM the daemon.
+const MAX_STATUS_LIST_BODY: usize = 2 * 1024 * 1024;
+
+/// One shared, hardened HTTP client for every outbound foreign status-list
+/// fetch on the unauthenticated recognise / present paths. `reqwest::Client`
+/// is internally ref-counted, so cloning the shared instance reuses its
+/// connection pool.
+///
+/// Hardening (P0.4 / CWE-918):
+/// - **`redirect(none)`** — [`guard_status_list_url`] runs once, on the
+///   *original* URL. Following redirects would let a public URL `302` to an
+///   internal target (`127.0.0.1`, `169.254.169.254`) past the guard. With no
+///   follow, a redirecting host yields a non-2xx response, which
+///   [`HttpStatusListFetcher::check_status_bit`] maps to `StatusListFailed` —
+///   the daemon never fetches the redirect target.
+/// - **`timeout` / `connect_timeout`** — bounded so a hung host can't pin a
+///   request open.
+///
+/// Response-body size is capped per-fetch by [`read_body_capped`] (reqwest has
+/// no built-in response-size limit).
+static FOREIGN_FETCH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(FOREIGN_FETCH_TIMEOUT)
+        .connect_timeout(FOREIGN_FETCH_TIMEOUT)
+        .build()
+        .expect("hardened foreign-fetch client builds from static config")
+});
+
+/// A clone of the shared hardened foreign-fetch client (see
+/// [`FOREIGN_FETCH_CLIENT`]). The only client used on the attacker-controlled
+/// status-list fetch path — no bare `reqwest::Client::new()`.
+pub(crate) fn foreign_fetch_client() -> reqwest::Client {
+    FOREIGN_FETCH_CLIENT.clone()
+}
+
+/// Read a response body into memory, refusing anything larger than `max` bytes.
+/// reqwest has no built-in response-size cap and the recognise path is
+/// unauthenticated, so a hostile host could otherwise stream a multi-GB body
+/// and OOM the daemon. Reads chunk-by-chunk and aborts the moment the cap is
+/// crossed — the oversized body is never fully buffered.
+async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max: usize,
+    url: &str,
+) -> Result<Vec<u8>, RecognitionError> {
+    let mut buf = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| RecognitionError::StatusListFailed(format!("read {url}: {e}")))?
+    {
+        if buf.len() + chunk.len() > max {
+            return Err(RecognitionError::StatusListFailed(format!(
+                "status list {url} body exceeds the {max}-byte cap"
+            )));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
 }
 
 /// Verify a fetched `BitstringStatusListCredential`'s own `eddsa-jcs-2022` issuer
@@ -666,13 +741,15 @@ impl StatusListFetcher for HttpStatusListFetcher {
             .map_err(|e| RecognitionError::StatusListFailed(format!("fetch {url}: {e}")))?;
         let status = resp.status();
         if !status.is_success() {
+            // With `redirect(none)`, a 3xx lands here too: the redirect target
+            // (potentially an internal host the guard rejected) is never
+            // fetched — the SSRF-via-redirect bypass is closed.
             return Err(RecognitionError::StatusListFailed(format!(
                 "fetch {url} returned {status}"
             )));
         }
-        let body: JsonValue = resp
-            .json()
-            .await
+        let bytes = read_body_capped(resp, MAX_STATUS_LIST_BODY, url).await?;
+        let body: JsonValue = serde_json::from_slice(&bytes)
             .map_err(|e| RecognitionError::StatusListFailed(format!("parse {url}: {e}")))?;
 
         // Verify the list credential's own issuer signature (when this fetcher
@@ -1251,5 +1328,119 @@ mod tests {
             matches!(err, RecognitionError::StatusListFailed(_)),
             "{err:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // P0.4: foreign-fetch client hardening (SSRF via redirect, timeout, body
+    // cap). These drive the shared hardened client against a real local socket
+    // (`wiremock`). The client itself carries no scheme/host allowlist — that
+    // is `guard_status_list_url`, exercised separately — so it can target the
+    // loopback test server here.
+    // -----------------------------------------------------------------------
+
+    /// A status-list URL that passes the guard but `302`s to an internal host
+    /// must NOT be followed: the redirect target is never fetched. With
+    /// `redirect(none)`, the client returns the `302` itself, which
+    /// `check_status_bit` maps to `StatusListFailed`.
+    #[tokio::test]
+    async fn foreign_fetch_client_does_not_follow_redirects() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/list"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", "http://169.254.169.254/latest/meta-data/"),
+            )
+            .mount(&server)
+            .await;
+
+        let url = format!("{}/list", server.uri());
+        let resp = foreign_fetch_client().get(&url).send().await.expect("send");
+        assert_eq!(
+            resp.status().as_u16(),
+            302,
+            "the redirect must NOT be followed (no fetch of the internal target)"
+        );
+    }
+
+    /// A body larger than the cap is rejected before it is fully buffered.
+    #[tokio::test]
+    async fn read_body_capped_rejects_oversized_body() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'x'; 8192]))
+            .mount(&server)
+            .await;
+
+        let resp = foreign_fetch_client()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let err = read_body_capped(resp, 1024, "https://list.example")
+            .await
+            .expect_err("an oversized body must be refused");
+        assert!(
+            matches!(&err, RecognitionError::StatusListFailed(m) if m.contains("cap")),
+            "{err:?}"
+        );
+    }
+
+    /// A body within the cap reads back intact.
+    #[tokio::test]
+    async fn read_body_capped_allows_body_within_cap() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello".to_vec()))
+            .mount(&server)
+            .await;
+
+        let resp = foreign_fetch_client()
+            .get(server.uri())
+            .send()
+            .await
+            .expect("send");
+        let bytes = read_body_capped(resp, 1024, "https://list.example")
+            .await
+            .expect("a small body must read back");
+        assert_eq!(bytes, b"hello");
+    }
+
+    /// A host that stalls past the deadline trips the client timeout rather
+    /// than pinning the request open. Uses a dedicated short-timeout client
+    /// built the same way as the shared one (200 ms vs the production 10 s) so
+    /// the test stays fast and deterministic.
+    #[tokio::test]
+    async fn foreign_fetch_client_times_out_on_a_slow_host() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+            .mount(&server)
+            .await;
+
+        let err = client
+            .get(server.uri())
+            .send()
+            .await
+            .expect_err("a stalled host must trip the timeout");
+        assert!(err.is_timeout(), "expected a timeout error, got: {err}");
     }
 }
