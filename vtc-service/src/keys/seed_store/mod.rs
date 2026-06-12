@@ -40,6 +40,12 @@ pub use vti_common::seed_store::SeedStore as SecretStore;
 /// 6. Plaintext file (always available — NOT secure)
 #[allow(unused_variables)]
 pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, AppError> {
+    // For every cloud/config backend, a set selector field on a binary that
+    // wasn't compiled with the matching feature is a hard error — never a
+    // silent fall-through to the keyring/plaintext default. Pre-P0.8 the arm
+    // was simply `#[cfg]`'d away, so a production config pointing at AWS on a
+    // keyring-only binary booted with an empty store and a mere `warn!`
+    // (every auth/issue/install call then 503s). Fail closed instead.
     #[cfg(feature = "aws-secrets")]
     if config.secrets.aws_secret_name.is_some() {
         let store = AwsSecretStore::new(
@@ -47,6 +53,14 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
             config.secrets.aws_region.clone(),
         );
         return Ok(Box::new(store));
+    }
+    #[cfg(not(feature = "aws-secrets"))]
+    if config.secrets.aws_secret_name.is_some() {
+        return Err(AppError::Config(
+            "secrets.aws_secret_name is set but this binary was built without the \
+             'aws-secrets' feature"
+                .into(),
+        ));
     }
 
     #[cfg(feature = "gcp-secrets")]
@@ -58,6 +72,14 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         })?;
         let store = GcpSecretStore::new(project, config.secrets.gcp_secret_name.clone().unwrap());
         return Ok(Box::new(store));
+    }
+    #[cfg(not(feature = "gcp-secrets"))]
+    if config.secrets.gcp_secret_name.is_some() {
+        return Err(AppError::Config(
+            "secrets.gcp_secret_name is set but this binary was built without the \
+             'gcp-secrets' feature"
+                .into(),
+        ));
     }
 
     #[cfg(feature = "azure-secrets")]
@@ -71,11 +93,27 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         let store = AzureSecretStore::new(vault_url, secret_name);
         return Ok(Box::new(store));
     }
+    #[cfg(not(feature = "azure-secrets"))]
+    if config.secrets.azure_vault_url.is_some() {
+        return Err(AppError::Config(
+            "secrets.azure_vault_url is set but this binary was built without the \
+             'azure-secrets' feature"
+                .into(),
+        ));
+    }
 
     #[cfg(feature = "config-secret")]
     if config.secrets.secret.is_some() {
         let store = ConfigSecretStore::new(config.secrets.secret.clone().unwrap());
         return Ok(Box::new(store));
+    }
+    #[cfg(not(feature = "config-secret"))]
+    if config.secrets.secret.is_some() {
+        return Err(AppError::Config(
+            "secrets.secret is set but this binary was built without the \
+             'config-secret' feature"
+                .into(),
+        ));
     }
 
     #[cfg(feature = "keyring")]
@@ -91,5 +129,71 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         );
         let store = PlaintextSecretStore::new(&config.store.data_dir);
         Ok(Box::new(store))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_config() -> AppConfig {
+        // Every `AppConfig` field is optional or has a serde default, so an
+        // empty document yields an all-default config we can poke at.
+        toml::from_str("").expect("empty config parses")
+    }
+
+    // The default test build compiles only `keyring` (see Cargo.toml
+    // `default`), so the cloud/config backends are all "not compiled" here —
+    // exactly the set-but-uncompiled case P0.8 must fail closed on.
+
+    // `Box<dyn SecretStore>` is not `Debug`, so `expect_err` won't compile;
+    // pattern-match the result instead.
+    fn assert_config_err_mentions(config: &AppConfig, needle: &str) {
+        match create_secret_store(config) {
+            Err(AppError::Config(msg)) => {
+                assert!(
+                    msg.contains(needle),
+                    "error should mention {needle:?}: {msg}"
+                )
+            }
+            Err(other) => panic!("expected Config error, got {other:?}"),
+            Ok(_) => panic!("expected a Config error, got a store (did the feature leak on?)"),
+        }
+    }
+
+    #[test]
+    fn aws_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.aws_secret_name = Some("prod/vtc-secret".into());
+        assert_config_err_mentions(&config, "aws-secrets");
+    }
+
+    #[test]
+    fn gcp_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.gcp_secret_name = Some("vtc-secret".into());
+        assert_config_err_mentions(&config, "gcp-secrets");
+    }
+
+    #[test]
+    fn azure_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.azure_vault_url = Some("https://v.vault.azure.net".into());
+        assert_config_err_mentions(&config, "azure-secrets");
+    }
+
+    #[test]
+    fn config_secret_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.secret = Some("ab".repeat(32));
+        assert_config_err_mentions(&config, "config-secret");
+    }
+
+    #[test]
+    fn no_backend_set_falls_through_to_the_default() {
+        // No selector field set → the compiled default (keyring) is chosen,
+        // not an error. Guards must only fire when a backend is *requested*.
+        let config = base_config();
+        assert!(create_secret_store(&config).is_ok());
     }
 }

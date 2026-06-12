@@ -423,7 +423,14 @@ pub struct ServerConfig {
     pub trust_xff: bool,
 }
 
+// `deny_unknown_fields` so a typo'd backend selector (`aws_secretname`,
+// `gcp_secrets_name`, …) is a loud parse error rather than a silently-dropped
+// key that lets the factory fall through to the keyring/plaintext default
+// (P0.8). Safe here — `SecretsConfig` carries no serde aliases; the
+// alias-bearing fields live on the parent `AppConfig`, which is intentionally
+// left lenient until the alias audit in the plan.
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     /// Hex-encoded VTC key material (config-secret feature)
     pub secret: Option<String>,
@@ -854,6 +861,38 @@ mod tests {
         // doesn't collide with a VTA running on the same host.
         let empty: AppConfig = toml::from_str("").unwrap();
         assert_eq!(empty.secrets.keyring_service, "vtc");
+    }
+
+    #[test]
+    fn secrets_unknown_key_is_a_named_parse_error() {
+        // P0.8: a typo'd backend selector must be a loud parse error, not a
+        // silently-dropped key that lets the factory fall through to the
+        // default backend with an empty store.
+        let toml_src = r#"
+            [secrets]
+            aws_secretname = "prod/vtc"
+        "#;
+        let err = toml::from_str::<AppConfig>(toml_src)
+            .expect_err("unknown [secrets] key must not parse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("aws_secretname"),
+            "error must name the offending key: {msg}"
+        );
+    }
+
+    #[test]
+    fn secrets_known_keys_still_parse() {
+        // deny_unknown_fields must not reject the legitimate fields.
+        let toml_src = r#"
+            [secrets]
+            keyring_service = "vtc-test"
+            aws_secret_name = "prod/vtc"
+            aws_region = "us-east-1"
+        "#;
+        let config: AppConfig = toml::from_str(toml_src).expect("known keys parse");
+        assert_eq!(config.secrets.keyring_service, "vtc-test");
+        assert_eq!(config.secrets.aws_secret_name.as_deref(), Some("prod/vtc"));
     }
 
     #[test]
