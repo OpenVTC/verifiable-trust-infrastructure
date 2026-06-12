@@ -123,6 +123,61 @@ async fn admit_duplicate_acl_is_conflict() {
     );
 }
 
+/// P0.15: two concurrent admits for the same DID must resolve to exactly
+/// one membership — one wins (Admitted), the other loses (Conflict). Before
+/// the serializing lock, both could pass the bare `get_acl_entry().is_some()`
+/// guard and proceed, minting two VMCs and burning two status-list slots.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_admits_for_one_did_yield_one_membership() {
+    let (state, _dir) = build_state().await;
+    let subject = "did:key:zRacer";
+
+    let make_plan = || EffectPlan::Admit {
+        subject: subject.into(),
+        role: "member".into(),
+        obligations: vec![],
+    };
+
+    let (s1, s2) = (state.clone(), state.clone());
+    let h1 = tokio::spawn(async move { execute::apply(&s1, make_plan(), ACTOR_DID).await });
+    // Re-declare the plan builder for the second task (closure isn't `Copy`).
+    let make_plan2 = || EffectPlan::Admit {
+        subject: subject.into(),
+        role: "member".into(),
+        obligations: vec![],
+    };
+    let h2 = tokio::spawn(async move { execute::apply(&s2, make_plan2(), ACTOR_DID).await });
+
+    let r1 = h1.await.expect("task 1 panicked");
+    let r2 = h2.await.expect("task 2 panicked");
+
+    let wins = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
+    let conflicts = [&r1, &r2]
+        .iter()
+        .filter(|r| matches!(r, Err(vti_common::error::AppError::Conflict(_))))
+        .count();
+    assert_eq!(
+        wins, 1,
+        "exactly one admit must win; got r1={r1:?} r2={r2:?}"
+    );
+    assert_eq!(
+        conflicts, 1,
+        "the loser must get Conflict; got r1={r1:?} r2={r2:?}"
+    );
+
+    // The winner's slot is the one recorded on the single member row — proving
+    // exactly one slot was burned (not two).
+    let winner = [r1, r2].into_iter().find_map(Result::ok).expect("a winner");
+    let EffectOutcome::Admitted(creds) = winner else {
+        panic!("winner must be Admitted");
+    };
+    let member = get_member(&state.members_ks, subject)
+        .await
+        .unwrap()
+        .expect("one member row");
+    assert_eq!(member.status_list_index, Some(creds.status_list_index));
+}
+
 /// A `NoStateChange` plan (deny / refer / request_more) writes nothing.
 #[tokio::test]
 async fn no_state_change_is_a_noop() {
