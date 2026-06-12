@@ -97,12 +97,36 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   one wrong TOML key → master seed on disk in clear). Tests: validate rules
   (the opt-in path is cfg-unreachable in the test harness — dev-dep forces
   keyring on — documented) — PR: #356 (merged)
-- `[ ]` **P0.9b** Split from P0.9 (config-compat risk; needs care):
-  `deny_unknown_fields`/unknown-key WARNING pass on `AppConfig` (could reject
-  existing configs with legacy/extra keys — softer warning preferred);
-  hard-fail at boot on missing identity (`vta_did`/JWT keys) unless a new
-  `--allow-degraded` CLI flag (needs cold-start / TEE-autogen / import-did
-  flow analysis so it doesn't break a legitimate not-yet-configured boot) — PR: ____
+- `[x]` **P0.9b** (M) Unknown-key WARNING pass + missing-identity hard-fail —
+  branch `fix/p0.9b-config-identity` (worktree). Two config-compat-sensitive
+  halves of P0.9, deliberately *soft* where rejection would risk existing
+  deployments:
+  - **Unknown-key warning** (not `deny_unknown_fields`): `AppConfig::load`
+    deserializes through `serde_ignored` and records every unmapped dotted
+    path into a `#[serde(skip)] unknown_keys` field; `validate()` emits one
+    `warn!` per key (named, with a typo/renamed/wrong-section hint). Warning
+    lives in `validate()` (not `load()`) because `load()` runs before the
+    tracing subscriber is installed. We *warn, never reject* — a legacy/extra
+    key must not block a config that boots fine today. Aliases
+    (`community_name`) and known nested keys are not flagged.
+  - **Missing-identity hard-fail**: `server::run` gains an `allow_degraded`
+    param; after `init_auth`, `jwt_keys.is_none()` (covers absent `vta_did`,
+    absent JWT signing key, *or* unloadable key material) now refuses to boot
+    with a fix-suggesting message (`missing_identity_message` names the
+    specific gap + points at the escape hatch) rather than serving a VTA that
+    401s every authed request but passes a liveness probe. New top-level
+    `vta --allow-degraded` flag preserves the old degraded boot. **TEE/enclave
+    passes `allow_degraded = true`** — its identity is established earlier in
+    enclave boot by KMS autogen + admin-bootstrap, and a degraded first boot
+    is an existing documented state there; the hard-fail guards the local
+    `vta` daemon, which owns the CLI opt-out. import-did / cold-start flows run
+    `vta setup` first (identity present), so they're unaffected.
+  Tests: load collects nested+top-level typos and still validates; aliases not
+  flagged; `missing_identity_message` arm-by-arm (vta_did / jwt key / key
+  material). Smoke-tested end-to-end: no-identity boot exits non-zero with the
+  message; `--allow-degraded` binds the listener. New dep `serde_ignored`. fmt
+  + clippy (default & tee) clean; lib suite 709 green; no-default / rest-only
+  combos compile — PR: ____
 - `[x]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
   explicit 100 MB layer + governor on `/backup/blob` — branch
   `fix/p0.10-timeouts-ratelimit`. Global `TimeoutLayer` (120s, →408) as the

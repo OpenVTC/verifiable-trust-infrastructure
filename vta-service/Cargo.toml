@@ -140,6 +140,7 @@ toml = { workspace = true }
 tower-http = { workspace = true, features = ["trace", "limit", "cors", "timeout"] }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_ignored = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 # Used by the password-POST proxy-login driver to form-encode credentials

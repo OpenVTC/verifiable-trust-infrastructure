@@ -672,6 +672,7 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
         tee: Default::default(),
         resolver_url: inputs.resolver_url.clone(),
         config_path: inputs.config_path.clone(),
+        unknown_keys: Vec::new(),
     };
     config.save()?;
 
@@ -1022,6 +1023,7 @@ fn scratch_config_for_seed_store(
         tee: Default::default(),
         resolver_url: None,
         config_path,
+        unknown_keys: Vec::new(),
     }
 }
 

@@ -126,6 +126,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         #[cfg(feature = "tee")]
         tee: Default::default(),
         config_path: PathBuf::new(),
+        unknown_keys: Vec::new(),
     }
 }
 

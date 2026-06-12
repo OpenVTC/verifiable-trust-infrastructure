@@ -7755,6 +7755,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_ignored"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115dffd5f3853e06e746965a20dcbae6ee747ae30b543d91b0e089668bb07798"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "serde_jcs"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9902,6 +9912,7 @@ dependencies = [
  "rand 0.10.1",
  "reqwest 0.13.4",
  "serde",
+ "serde_ignored",
  "serde_json",
  "sha2 0.11.0",
  "subtle",

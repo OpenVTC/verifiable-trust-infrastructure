@@ -718,6 +718,7 @@ pub async fn run_setup_wizard(
             tee: Default::default(),
             resolver_url: None,
             config_path: config_path.clone(),
+            unknown_keys: Vec::new(),
         })
         .map_err(|e| format!("{e}"))?;
         seed_store.set(&seed).await.map_err(|e| format!("{e}"))?;
@@ -764,6 +765,7 @@ pub async fn run_setup_wizard(
         tee: Default::default(),
         resolver_url: None,
         config_path: config_path.clone(),
+        unknown_keys: Vec::new(),
     };
     let wizard_seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&wizard_config).map_err(|e| format!("{e}"))?);
@@ -862,6 +864,7 @@ pub async fn run_setup_wizard(
         tee: Default::default(),
         resolver_url,
         config_path: config_path.clone(),
+        unknown_keys: Vec::new(),
     };
     config.save()?;
 

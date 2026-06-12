@@ -104,6 +104,9 @@ tokio = { version = "1", features = [
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
+# Surfaces unknown/typo'd keys during deserialization without rejecting them
+# (config.rs unknown-key warning pass).
+serde_ignored = "0.1"
 
 # Error handling
 thiserror = "2"

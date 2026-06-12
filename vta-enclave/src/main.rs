@@ -241,12 +241,20 @@ async fn main() {
     };
 
     // ── Start the server ──
+    // `allow_degraded = true`: in a TEE the signing identity is established
+    // earlier in this boot by KMS autogen (`maybe_generate_vta_did`) +
+    // admin-bootstrap, and a degraded first boot is an existing, documented
+    // state (see the TEE-required warning in `server::run`). The
+    // missing-identity hard-fail (P0.9b) is a guard for the local `vta`
+    // daemon, which exposes the `--allow-degraded` opt-out on its CLI; the
+    // enclave has no such CLI surface.
     if let Err(e) = vta_service::server::run(
         config,
         store,
         seed_store,
         storage_encryption_key,
         tee_context,
+        true,
     )
     .await
     {

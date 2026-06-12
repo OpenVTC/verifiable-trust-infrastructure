@@ -41,6 +41,14 @@ struct Cli {
     #[arg(short, long, global = true)]
     config: Option<PathBuf>,
 
+    /// Boot the daemon even when the VTA has no usable signing identity
+    /// (missing `vta_did` or JWT signing key). Without this flag the daemon
+    /// refuses to start rather than come up in a state where every
+    /// authenticated endpoint returns 401 (P0.9b). Use only to inspect or
+    /// finish provisioning a half-set-up instance. Ignored by subcommands.
+    #[arg(long)]
+    allow_degraded: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1848,8 +1856,12 @@ async fn main() {
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
             if let Err(e) = server::run(
-                config, store, seed_store, None, // no storage encryption (non-TEE mode)
+                config,
+                store,
+                seed_store,
+                None, // no storage encryption (non-TEE mode)
                 None, // no TEE context (use vta-enclave for TEE mode)
+                cli.allow_degraded,
             )
             .await
             {

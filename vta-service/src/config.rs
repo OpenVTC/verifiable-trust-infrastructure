@@ -53,6 +53,16 @@ pub struct AppConfig {
     pub tee: TeeConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
+    /// Dotted paths of keys present in the parsed `config.toml` that no
+    /// field of `AppConfig` claims — typos, removed/renamed settings, or
+    /// keys meant for a different section. Collected by `load()` (via
+    /// `serde_ignored`) and surfaced as advisory warnings in `validate()`.
+    /// `#[serde(skip)]` so it never round-trips through the file itself.
+    /// We *warn* rather than reject (no `deny_unknown_fields`): an existing
+    /// deployment may legitimately carry a legacy/extra key, and a config
+    /// that boots fine today must keep booting (P0.9b).
+    #[serde(skip)]
+    pub unknown_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -461,10 +471,20 @@ impl AppConfig {
         }
 
         let contents = std::fs::read_to_string(&path).map_err(AppError::Io)?;
-        let mut config = toml::from_str::<AppConfig>(&contents)
+
+        // Deserialize through `serde_ignored` so we can *record* every key the
+        // schema doesn't recognise (typo'd / legacy / mis-sectioned) instead of
+        // silently dropping it. We don't reject — `validate()` warns. (P0.9b)
+        let de = toml::Deserializer::parse(&contents)
             .map_err(|e| AppError::Config(format!("failed to parse {}: {e}", path.display())))?;
+        let mut unknown_keys: Vec<String> = Vec::new();
+        let mut config: AppConfig = serde_ignored::deserialize(de, |key_path| {
+            unknown_keys.push(key_path.to_string());
+        })
+        .map_err(|e| AppError::Config(format!("failed to parse {}: {e}", path.display())))?;
 
         config.config_path = path.clone();
+        config.unknown_keys = unknown_keys;
 
         // =====================================================================
         // SECURITY: When KMS bootstrap is configured (TEE mode), the config
@@ -772,6 +792,20 @@ impl AppConfig {
     /// cross-field advisories that a working deployment might legitimately
     /// have, so it can't reject a config that boots fine today.
     pub fn validate(&self) -> Result<(), AppError> {
+        // Advisory (non-blocking): keys the schema doesn't recognise. Emitted
+        // here rather than in `load()` because `load()` runs before the tracing
+        // subscriber is installed, so a warn there would be dropped. A typo'd
+        // key means the operator's intended setting silently took its default —
+        // worth flagging, but never a reason to refuse a config that otherwise
+        // boots (P0.9b — softer than `deny_unknown_fields`).
+        for key in &self.unknown_keys {
+            tracing::warn!(
+                "unknown configuration key `{key}` in {} — ignored. Check for a typo, \
+                 a removed/renamed setting, or a key placed in the wrong [section].",
+                self.config_path.display()
+            );
+        }
+
         let mut errors: Vec<String> = Vec::new();
 
         // A present-but-empty URL is always a mistake (the operator set the
@@ -885,5 +919,61 @@ mod validate_tests {
         cfg("")
             .validate()
             .expect("rest-without-public_url is advisory, not an error");
+    }
+
+    /// Write `contents` to a `config.toml` in a fresh tempdir and run it
+    /// through the real `AppConfig::load` path (the only path that populates
+    /// `unknown_keys` — `toml::from_str` doesn't). Returns the loaded config;
+    /// the `TempDir` is returned too so the file outlives the call.
+    fn load(contents: &str) -> (AppConfig, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, contents).expect("write config");
+        let config = AppConfig::load(Some(path)).expect("load config");
+        (config, dir)
+    }
+
+    #[test]
+    fn unknown_keys_are_collected_not_rejected() {
+        // A typo'd top-level key and a typo inside a nested table. `load`
+        // must succeed (no rejection) and record both as dotted paths.
+        let (config, _dir) = load(
+            "vta_naem = \"oops\"\n\
+             [secrets]\nkyring_service = \"vta-2\"\n",
+        );
+        assert!(
+            config.unknown_keys.iter().any(|k| k == "vta_naem"),
+            "top-level typo should be flagged: {:?}",
+            config.unknown_keys
+        );
+        assert!(
+            config
+                .unknown_keys
+                .iter()
+                .any(|k| k == "secrets.kyring_service"),
+            "nested typo should be flagged with a dotted path: {:?}",
+            config.unknown_keys
+        );
+        // Advisory only — a config with unknown keys still validates.
+        config
+            .validate()
+            .expect("unknown keys are advisory, not a hard error");
+    }
+
+    #[test]
+    fn known_keys_and_aliases_are_not_flagged() {
+        // `community_name` is a serde alias for `vta_name`; a real nested
+        // key must not be reported. Nothing should land in `unknown_keys`.
+        let (config, _dir) = load(
+            "community_name = \"acme\"\n\
+             [server]\nport = 9000\n",
+        );
+        assert!(
+            config.unknown_keys.is_empty(),
+            "known keys + aliases must not be flagged: {:?}",
+            config.unknown_keys
+        );
+        assert_eq!(config.vta_name.as_deref(), Some("acme"));
+        assert_eq!(config.server.port, 9000);
     }
 }

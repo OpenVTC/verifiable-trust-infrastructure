@@ -146,7 +146,7 @@ proceed with a clear error if the feature isn't compiled in.
 
 | `kind` | Fields | Use when |
 |---|---|---|
-| `"skip"` | — | No VTA DID. REST works; DIDComm/VC issuance doesn't. |
+| `"skip"` | — | No VTA DID — the VTA has no signing identity. **The daemon refuses to boot in this state** (see note below). |
 | `"existing"` | `did` | You already have a VTA DID. |
 | `"create_webvh"` | `url`, `portable` (default `true`), `pre_rotation_count` (default `1`) | Mint a new did:webvh in "simple mode". |
 
@@ -154,6 +154,16 @@ proceed with a clear error if the feature isn't compiled in.
 `<data_dir>/did-logs/<label>-did.jsonl` for re-publishing or audit.
 Operators who need advanced DID options (template-from-file, pre-signed
 log import, user-specified key IDs) should use interactive setup.
+
+> **Booting without an identity.** A VTA whose `vta_did` (or JWT signing
+> key) is unset has no usable signing identity: every authenticated
+> endpoint answers `401` even though the port is open. To stop that from
+> looking healthy to a liveness probe, `vta` **refuses to start** in this
+> state and exits non-zero with a message naming the missing piece. If you
+> deliberately want to boot a not-yet-provisioned instance — e.g. to
+> inspect it or finish provisioning out-of-band — pass `vta --allow-degraded`,
+> which restores the old serve-anyway behaviour. TEE/enclave deployments are
+> unaffected: their identity is auto-generated during enclave boot.
 
 ## Mnemonic policy
 

@@ -355,6 +355,7 @@ pub async fn run(
     seed_store: Arc<dyn SeedStore>,
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
+    allow_degraded: bool,
 ) -> Result<(), AppError> {
     // Fail fast on a broken config rather than booting a half-started
     // service that passes a port-liveness check but can't function (P0.9).
@@ -508,6 +509,21 @@ pub async fn run(
 
         // Initialize auth infrastructure
         let auth = init_auth(&config, &*seed_store, &keys_ks).await;
+
+        // Fail-closed on missing identity (P0.9b). `init_auth` yields
+        // `jwt_keys: Some` only when the VTA has a complete, usable signing
+        // identity: a configured `vta_did`, its key records + seed present, and
+        // a decodable JWT signing key. With any of those missing the VTA still
+        // *boots* but every authenticated endpoint returns 401 — a service that
+        // looks "up" to a liveness probe while being inert. Refuse to start
+        // unless the operator explicitly opted into a degraded boot (e.g. to
+        // inspect or finish provisioning a half-set-up instance). TEE
+        // front-ends pass `allow_degraded = true`: their identity is
+        // established by KMS autogen / admin-bootstrap earlier in enclave boot,
+        // and a degraded first boot there is an existing, documented state.
+        if auth.jwt_keys.is_none() && !allow_degraded {
+            return Err(AppError::Config(missing_identity_message(&config)));
+        }
 
         // Pluggable telemetry sink + multi-mediator listener registry.
         // The registry holds active/drain state and the per-mediator
@@ -1204,6 +1220,36 @@ impl AuthInit {
     }
 }
 
+/// Build the operator-facing boot-refusal message for the missing-identity
+/// gate (P0.9b). Names the specific gap so the fix is obvious, and always
+/// points at the `--allow-degraded` escape hatch (mirrors CLAUDE.md's
+/// "operator errors should suggest the fix").
+fn missing_identity_message(config: &AppConfig) -> String {
+    let cause = if config.vta_did.is_none() {
+        "vta_did is not configured — this VTA has no identity. Run `vta setup` \
+         to provision one"
+            .to_string()
+    } else if config.auth.jwt_signing_key.is_none() {
+        "auth.jwt_signing_key is not configured — the VTA can't issue access \
+         tokens. Run `vta setup`, or restore the key to config.toml"
+            .to_string()
+    } else {
+        format!(
+            "vta_did is set ({}) but its signing identity could not be loaded — \
+             the VTA key records may be missing from the store or the seed \
+             backend may be unreachable. Check the store data_dir and the \
+             secrets backend",
+            config.vta_did.as_deref().unwrap_or_default()
+        )
+    };
+    format!(
+        "refusing to start: {cause}. A VTA without a usable signing identity \
+         boots but answers every authenticated request with 401. To start \
+         anyway (e.g. to inspect or finish provisioning a half-set-up \
+         instance), pass `--allow-degraded`."
+    )
+}
+
 async fn init_auth(
     config: &AppConfig,
     seed_store: &dyn SeedStore,
@@ -1701,5 +1747,42 @@ mod tests {
             matches!(result, Err(AppError::NotFound(_))),
             "expected NotFound for did:webvh missing #key-1, got {result:?}"
         );
+    }
+
+    /// Build an `AppConfig` from a TOML snippet for the message tests.
+    fn cfg(toml_str: &str) -> AppConfig {
+        toml::from_str::<AppConfig>(toml_str).expect("parse test config")
+    }
+
+    /// P0.9b: the missing-identity refusal names the *specific* gap and always
+    /// points at the `--allow-degraded` escape hatch.
+    #[test]
+    fn missing_identity_message_names_absent_vta_did() {
+        let msg = missing_identity_message(&cfg(""));
+        assert!(msg.contains("vta_did is not configured"), "{msg}");
+        assert!(msg.contains("vta setup"), "{msg}");
+        assert!(msg.contains("--allow-degraded"), "{msg}");
+    }
+
+    #[test]
+    fn missing_identity_message_names_absent_jwt_key() {
+        // vta_did present, JWT signing key absent → the message must point at
+        // the JWT key, not the DID.
+        let msg = missing_identity_message(&cfg("vta_did = \"did:key:z6MkTest\"\n"));
+        assert!(msg.contains("auth.jwt_signing_key"), "{msg}");
+        assert!(!msg.contains("vta_did is not configured"), "{msg}");
+        assert!(msg.contains("--allow-degraded"), "{msg}");
+    }
+
+    #[test]
+    fn missing_identity_message_falls_back_to_key_material() {
+        // Both identity fields present but key material unloadable (the real
+        // gate reaches this arm when `init_auth` can't derive/find the keys).
+        let msg = missing_identity_message(&cfg(
+            "vta_did = \"did:key:z6MkTest\"\n[auth]\njwt_signing_key = \"AAAA\"\n",
+        ));
+        assert!(msg.contains("could not be loaded"), "{msg}");
+        assert!(msg.contains("did:key:z6MkTest"), "{msg}");
+        assert!(msg.contains("--allow-degraded"), "{msg}");
     }
 }
