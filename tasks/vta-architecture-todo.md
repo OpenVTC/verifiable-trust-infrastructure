@@ -22,8 +22,23 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   only (default/plaintext unaffected) — documented in CHANGELOG. Tests:
   cross-key/cross-keyspace paste rejected (unit + through the real handle),
   wrong-key, legacy-format clear error, passthrough unchanged — PR: #346 (merged)
-- `[ ]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
-  JWT fingerprint / ACL — design note first — deps: P0.1 — PR: ____
+- `[~]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
+  JWT fingerprint / ACL — deps: P0.1. **Design note MERGED** (PR #365,
+  `docs/05-design-notes/tee-anti-rollback-anchor.md`). **§9 open questions
+  RESOLVED in review** (branch `docs/p0.2-resolve-open-questions`): (1) substrate
+  = **DynamoDB** conditional `UpdateItem` CAS (Secrets Manager rejected — no
+  conditional write; S3 `If-Match` viable alt); (2) **ship P0.2a+b first**,
+  withhold the parent-compromise threat claim until P0.2c; (3) coverage =
+  **the four singletons** (sealed-nonce replay noted as a later candidate);
+  (4) break-glass = **single `allow_unanchored`** flag (safe because TEE config
+  is EIF-baked/measured); (5) Option C cross-account = **future P0.2e**. Same PR
+  adds the operator setup runbook (DynamoDB table + KMS PCR-gated writer key +
+  IAM writer-principal/instance-role-deny + config) and the threat-model rollback
+  rows to `docs/02-vta/tee-architecture.md`. TEE-only feature. **Next: P0.2a**
+  (local MAC'd manifest + boot-verify, no external dependency). Phases:
+  P0.2a (manifest) → P0.2b (counter) → P0.2c (attestation-gated writer) →
+  P0.2d (threat-model claim) ; P0.2e (Option C) deferred — design PR: #365
+  (merged); §9-resolution + setup-docs PR: ____ ; impl PR: ____
 - `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
   validation (closes `#key-0` overwrite) — branch `fix/p0.3-key-overwrite`.
   Scope grew during root-cause analysis: the store's multi-op "atomic"

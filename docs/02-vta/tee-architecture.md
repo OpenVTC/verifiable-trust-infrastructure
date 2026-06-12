@@ -478,7 +478,9 @@ is skipped, and the existing SeedStore/config-based key loading is used.
 | Network MITM on vsock | KMS re-encrypts to enclave's ephemeral RSA key (even if TLS broken, attacker can't read response); DIDComm messages E2E encrypted |
 | Disk theft / EBS snapshot | All fjall data AES-256-GCM encrypted; key derived from seed via HKDF; seed exists only in TEE memory |
 | Cold boot attack | Nitro Enclaves use dedicated memory that's hardware-isolated; not accessible to parent; no DMA path |
-| Attacker replays ciphertext files | Ciphertext is useless without KMS decryption; KMS requires attestation with correct PCR0 + PCR8 |
+| Attacker replays a **stale-but-valid** ciphertext snapshot (rollback) | Confidentiality alone does **not** stop this — KMS faithfully decrypts any ciphertext that was ever validly produced under the key, including a stale one. Mitigated by the **anti-rollback anchor** (P0.2, see below): a MAC'd integrity manifest pins the protected singletons, and an external attestation-gated monotonic counter pins "the latest version." A replayed snapshot has `version < authoritative` ⇒ boot **fails closed**. |
+| Parent rolls back carve-out / ACL to a **consistent** past snapshot (e.g. reopen the single-use Mode-B carve-out, resurrect a revoked admin, force BIP-32 counter reuse) | Detected at boot via the version pin (anti-rollback anchor, P0.2); fail closed. AAD (P0.1) stops *relocation* but not *rollback*; the anchor is what enforces freshness. |
+| Parent denies egress to the anchor | DoS only — the parent can already DoS by not starting the enclave. Enclave fails closed (refuses boot / security-relevant ops). Documented break-glass `tee.kms.allow_unanchored` for incident recovery, off by default. |
 | Mnemonic exfiltration | Never displayed on console. Export requires: super admin auth + time-limited window + env var at boot. One-time use, entropy zeroed after export. |
 | Signing key theft | Key stored in CI/CD or HSM, never on EC2. If stolen: revoke, generate new key, rebuild + re-sign, update PCR8 in KMS policy. |
 | KMS key deletion | Recover from BIP-39 mnemonic backup with `vta tee recover` — create new KMS key and re-encrypt seed |
@@ -515,6 +517,187 @@ nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
 # Set up KMS policy with PCR0 + PCR8:
 ./deploy/nitro/setup-kms-policy.sh --pcr0 <hash> --pcr8 <hash> --role <arn>
 ```
+
+## Anti-rollback anchor (P0.2)
+
+> **Status:** design-approved (see
+> `docs/05-design-notes/tee-anti-rollback-anchor.md`), implementation in
+> progress (P0.2a–c). Provision the infrastructure below when deploying the
+> counter slice (P0.2b/c). The local manifest slice (P0.2a) needs **no**
+> external infrastructure. The whole feature is **TEE-only** — non-TEE VTAs are
+> unaffected and need none of this.
+
+### Why it exists
+
+KMS attestation gives **confidentiality**, and P0.1 AAD gives **location
+integrity**, but neither gives **freshness**: KMS will decrypt any
+stale-but-valid ciphertext, and the enclave keeps no durable state of its own,
+so the parent can present any internally-consistent **past snapshot** of the
+fjall DB and the enclave cannot tell it from the present. That enables rollback
+attacks — reopen the single-use carve-out, resurrect a revoked admin, roll back
+key counters to force BIP-32 reuse.
+
+Detecting rollback requires a reference that is **monotonic** and **outside the
+parent's control**. Nitro has no on-box monotonic counter (no TPM NV, no SGX
+MC, no NSM sealed state), so the anchor must be **external**. The enclave
+terminates its own TLS, so it can reach an AWS-managed linearizable store the
+parent proxies but cannot read or forge. The design is a local **MAC'd
+integrity manifest** (pins the protected singletons) plus an **external
+monotonic counter** (pins "the latest version"); a boot whose local manifest
+version is behind the counter fails closed.
+
+### Infrastructure to provision
+
+Three pieces, all in the operator's own AWS account (same trust root as the
+seed KMS key):
+
+1. a **DynamoDB single-item counter table** (the external version anchor);
+2. a **KMS key** that gates the counter-writer credential behind PCR
+   attestation (so a root-on-parent attacker, who holds the instance-role
+   credentials, still cannot bump or roll back the counter — P0.2c);
+3. **IAM** that makes a dedicated `vta-anchor-writer` principal the *only*
+   writer and **explicitly denies the instance role** write access.
+
+#### 1. DynamoDB counter table
+
+```bash
+# Single item per VTA DID. PAY_PER_REQUEST — writes happen only on
+# security-tightening ops (carve-out close, ACL revoke, counter allocation),
+# so throughput is negligible.
+aws dynamodb create-table \
+  --table-name vta-rollback-anchor \
+  --attribute-definitions AttributeName=vta_did,AttributeType=S \
+  --key-schema AttributeName=vta_did,KeyType=HASH \
+  --billing-mode PAY_PER_REQUEST \
+  --region us-east-1
+```
+
+The enclave maintains one item per VTA DID with attributes `version` (N),
+`manifest_digest`, and `updated_at`. Bumps use a conditional write
+(`UpdateItem … ConditionExpression: version = :expected`) so concurrent
+replicas and torn writes fail safely (compare-and-set linearization point).
+
+> **Point-in-time recovery is a rollback vector.** PITR restore (or a manual
+> table restore) can reset `version` to an old value — that is exactly the
+> rollback the anchor prevents. Restrict `dynamodb:RestoreTableToPointInTime`
+> and `dynamodb:UpdateContinuousBackups` to a break-glass admin role (MFA,
+> separate account), the same posture as `kms:PutKeyPolicy`.
+
+#### 2. KMS key gating the writer credential (P0.2c)
+
+The `vta-anchor-writer` credential is **KMS-sealed under a PCR-conditioned
+key**, mirroring the seed key (Component 3). Only the genuine enclave image can
+`Decrypt` it; the parent cannot, because it cannot produce a valid attestation
+for the right PCRs. Create a key whose policy releases `Decrypt` *only* under
+attestation:
+
+```json
+{
+    "Sid": "AllowEnclaveToUnsealAnchorWriterCredential",
+    "Effect": "Allow",
+    "Principal": { "AWS": "arn:aws:iam::ACCOUNT_ID:role/vta-enclave-role" },
+    "Action": "kms:Decrypt",
+    "Resource": "*",
+    "Condition": {
+        "StringEqualsIgnoreCase": {
+            "kms:RecipientAttestation:PCR0": "<enclave-image-hash>",
+            "kms:RecipientAttestation:PCR8": "<signing-cert-hash>"
+        }
+    }
+}
+```
+
+Seal the writer credential under this key once at provisioning time (it is the
+`vta-anchor-writer` access key, or an STS session for that role — P0.2c
+finalizes the exact delivery) and hand the ciphertext to the enclave the same
+way the seed ciphertext is delivered. The parent stores the ciphertext but
+cannot open it.
+
+#### 3. IAM — writer principal + instance-role deny
+
+The fence has two halves. First, a dedicated writer principal is the only one
+allowed to mutate the counter:
+
+```json
+// Policy on the vta-anchor-writer principal (whose credential is KMS-sealed above)
+{
+    "Effect": "Allow",
+    "Action": "dynamodb:UpdateItem",
+    "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/vta-rollback-anchor"
+}
+```
+
+Second — the load-bearing part — the **EC2 instance role explicitly denies**
+counter writes, so a root-on-parent attacker holding those credentials cannot
+bump or roll the counter back. Reads may stay on the instance role (the boot
+check only needs to *read* the authoritative version):
+
+```json
+// Statements on the vta-enclave-role (parent instance role)
+[
+  {
+    "Sid": "AnchorReadOnly",
+    "Effect": "Allow",
+    "Action": "dynamodb:GetItem",
+    "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/vta-rollback-anchor"
+  },
+  {
+    "Sid": "DenyAnchorWritesFromParent",
+    "Effect": "Deny",
+    "Action": [
+      "dynamodb:UpdateItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem"
+    ],
+    "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/vta-rollback-anchor"
+  }
+]
+```
+
+The deny is what upgrades the counter from "resists storage/backup rollback"
+(P0.2b, instance-role writes) to "resists root-on-parent" (P0.2c). Without it,
+the very credentials a compromised parent holds could roll the counter back.
+
+### Config surface
+
+Additions to `[tee.kms]`, all `Option`/defaulted so existing TEE and non-TEE
+configs are unaffected:
+
+```toml
+[tee.kms.anchor]
+table_name        = "vta-rollback-anchor"        # DynamoDB single-item table
+writer_key_arn    = "arn:aws:kms:us-east-1:123456789012:key/anchor-writer-key"
+allow_anchor_init = false   # one-shot first-boot baseline (establish version 0); see below
+
+[tee.kms]
+allow_unanchored  = false   # BREAK-GLASS: boot without the anchor (incident recovery only)
+```
+
+### First boot, recovery, and break-glass
+
+- **First boot / migration.** An existing TEE deployment has no manifest and no
+  counter. Set `allow_anchor_init = true` for one boot to establish version 0
+  (the enclave does a conditional `PutItem` if-not-exists and writes the MAC'd
+  manifest), then set it back to `false`. With the flag `false` and no
+  manifest/counter present, the enclave **refuses** rather than silently
+  baseline — a silent baseline is exactly the rollback the feature prevents.
+- **Fail-closed is by design.** If the parent denies anchor egress the enclave
+  cannot verify freshness and refuses to boot. That is a DoS, not an integrity
+  breach (the parent can already DoS by not launching the enclave).
+- **Break-glass.** `allow_unanchored = true` lets the enclave boot without the
+  anchor, loudly warned, for incident recovery only. This is safe to expose as
+  a config flag because TEE config is **baked into the measured EIF** and the
+  KMS-lock gate blocks env overrides when KMS is active — the parent cannot flip
+  it at runtime, since doing so needs an EIF rebuild that changes PCR0, after
+  which KMS refuses to decrypt anyway.
+
+### Coverage
+
+The manifest pins four singletons (see design note §5.1): the **carve-out
+sentinel**, the **ACL keyspace root** (canonical hash over all `acl:{did}`
+rows), the **JWT fingerprint**, and the **path/context counters**. The
+KMS-protected bootstrap ciphertexts are *not* covered — their delete-and-reinit
+is already gated by `allow_kms_reinit` plus the JWT-fingerprint check.
 
 ## Implementation Phases
 

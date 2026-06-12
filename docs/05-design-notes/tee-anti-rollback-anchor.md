@@ -408,20 +408,49 @@ before P0.2b/c exist.
 - **Non-TEE / plaintext deployments**: unaffected — the anchor is TEE-only and
   all config is opt-in/defaulted.
 
-## 9. Open questions for review
+## 9. Open questions for review — RESOLVED (2026-06-12)
 
-1. **Substrate**: DynamoDB conditional `UpdateItem` (recommended) vs. S3
-   conditional `PutObject`? DynamoDB is the cleaner bare-counter; S3 is simpler
-   IAM if we'd rather store the whole manifest object externally.
-2. **Phase-1 stopping point**: is P0.2a+P0.2b (resists storage/backup rollback,
-   *not* root-on-parent) an acceptable first landing, with P0.2c (root-on-parent
-   resistance) as a fast-follow — or must P0.2c land in the same release because
-   root-on-parent is the headline threat?
-3. **Coverage set** (§5.1): confirm the four singletons; do we want the
-   bootstrap ciphertexts and/or sealed-nonce replay state in the hash too, or
-   leave those to KMS/`allow_kms_reinit`?
-4. **Break-glass posture**: is a single `allow_unanchored` boot flag acceptable,
-   or do we want a stronger ceremony (e.g. attested operator approval) for the
-   recovery path?
-5. **Cross-account anchor (Option C)**: in scope as an eventual P0.2e, or
-   explicitly out forever (Option B deemed sufficient)?
+All five resolved in review; the design below is final and P0.2a is unblocked.
+
+1. **Substrate** → **DynamoDB** (single-item table, `UpdateItem` +
+   `ConditionExpression` CAS). The anchor's correctness rests on an *atomic
+   compare-and-set* on the version (the §5.4 linearization point), and DynamoDB
+   provides it in one call under the same AWS-account / IAM / KMS trust root
+   (one extra table, no new trust dependency). S3 `If-Match` was viable but a
+   less-proven fit for a bare counter. **AWS Secrets Manager was considered and
+   rejected**: it has no conditional `PutSecretValue`, so a counter would have
+   to abuse the rotation version-stage machinery (multi-call, adds torn-write
+   windows, low write TPS, per-secret cost) for no trust-model gain over
+   DynamoDB.
+2. **Phase-1 stopping point** → **ship P0.2a + P0.2b first**, with P0.2c
+   (root-on-parent fencing) as a committed fast-follow. Constraint: the
+   threat-model update (P0.2d) and any "parent-compromise resistant" claim
+   **must not** land until P0.2c does — a+b alone resist storage/backup/accidental
+   rollback but **not** a root-on-parent attacker, and the docs must not
+   overclaim in the interim. P0.2a (local manifest, no external dependency)
+   ships real value on its own.
+3. **Coverage set** → **the four singletons** as listed in §5.1 (carve-out
+   sentinel, ACL root, JWT fingerprint, path/context counters). Bootstrap
+   ciphertexts stay excluded (KMS + `allow_kms_reinit` + JWT fingerprint already
+   cover them). **Sealed-nonce replay state** (`sealed_nonces`) is a *noted
+   candidate for a later phase* if provision-integration bundle replay is judged
+   high-severity — it is a growing set (not a singleton), so it would need the
+   same canonical-hash treatment as the ACL root and adds manifest churn per
+   seal; out of phase 1.
+4. **Break-glass posture** → **single `allow_unanchored` boot flag** (default
+   false, loudly warned), mirroring `allow_unattested_fallback` /
+   `allow_kms_reinit` / `allow_fingerprint_init`. Acceptable because TEE config
+   is **baked into the measured EIF** and the KMS-lock gate blocks env overrides
+   when KMS is active, so the parent cannot flip it at runtime — doing so needs
+   an EIF rebuild that changes PCRs, after which KMS refuses to decrypt. A
+   signed-recovery-token ceremony is a possible future hardening, not a
+   phase-1 requirement.
+5. **Cross-account anchor (Option C)** → **future P0.2e**, documented as the
+   max-assurance / multi-tenant upgrade, out of Phase-0 scope (not ruled out).
+   Option B meets the stated threat under the existing AWS-account trust root.
+
+**Scope reminder:** this entire feature is **TEE-only**. The
+trusted-enclave / untrusted-parent split is what makes rollback a distinct
+threat; a non-TEE VTA's process and storage share one trust boundary, so an
+attacker with disk access already holds the seed and there is no more-trusted
+component to deceive (see §8).
