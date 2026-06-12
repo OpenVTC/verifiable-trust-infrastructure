@@ -143,9 +143,11 @@ pub struct StartClaimOutcome {
     pub ephemeral_signing_key: Zeroizing<[u8; 32]>,
     pub cnonce: [u8; 32],
     /// Stored Argon2id PHC hash of the out-of-band claim code.
-    /// `None` for legacy / no-secret rows; the route handler
-    /// MUST verify the operator-supplied code against this when
-    /// present, before issuing the WebAuthn challenge.
+    /// `None` for legacy / no-secret rows. Informational only: the
+    /// route handler verifies the operator-supplied code via
+    /// [`InstallTokenStore::peek_secret_hash`] **before** calling
+    /// `start_claim`, so a wrong code can't stamp the ceremony lock
+    /// (P0.21). Retained here for diagnostics and store-level tests.
     pub claim_secret_hash: Option<String>,
 }
 
@@ -367,6 +369,26 @@ impl InstallTokenStore {
         self.ks.get(token_key(jti)).await
     }
 
+    /// Peek the stored Argon2id claim-secret hash for an `Issued`
+    /// token **without** taking the ceremony lock or stamping
+    /// `claimed_at`.
+    ///
+    /// Returns `Some(hash)` only for an `Issued` row that carries a
+    /// hash; `None` for a missing / consumed / no-secret row. The
+    /// `claim/start` route verifies the operator-supplied code
+    /// against this **before** calling [`Self::start_claim`], so a
+    /// wrong code can never stamp the 300 s ceremony lock and grief
+    /// the legitimate operator (P0.21). The authoritative not-found /
+    /// consumed / expired / concurrency checks stay in `start_claim`.
+    pub async fn peek_secret_hash(&self, jti: &Uuid) -> Result<Option<String>, AppError> {
+        match self.get_token(jti).await? {
+            Some(InstallTokenState::Issued {
+                claim_secret_hash, ..
+            }) => Ok(claim_secret_hash),
+            _ => Ok(None),
+        }
+    }
+
     /// Delete a token's state row. Used by the invite revoke
     /// surface after a [`Self::get_token`] check has confirmed
     /// the row is not `Consumed`. Returns `true` if a row was
@@ -550,6 +572,60 @@ mod tests {
         let jti = issue(&store, 600).await;
         let outcome = store.start_claim(&jti).await.unwrap();
         assert!(outcome.claim_secret_hash.is_none());
+    }
+
+    // ---- P0.21: peek the claim-secret hash without locking ----
+
+    #[tokio::test]
+    async fn peek_secret_hash_does_not_set_claim_lock() {
+        // The whole point of P0.21: reading the stored hash to verify the
+        // operator's code must NOT stamp `claimed_at`, so a wrong code
+        // followed immediately by the correct one isn't locked out.
+        let (store, _dir) = temp_store();
+        let hash = "$argon2id$stub".to_string();
+        let jti = issue_with_hash(&store, 600, Some(hash.clone())).await;
+
+        assert_eq!(
+            store.peek_secret_hash(&jti).await.unwrap().as_deref(),
+            Some(hash.as_str())
+        );
+
+        // The ceremony lock must still be unset after a peek.
+        match store.get_token(&jti).await.unwrap().unwrap() {
+            InstallTokenState::Issued { claimed_at, .. } => {
+                assert!(claimed_at.is_none(), "peek must not set the ceremony lock");
+            }
+            _ => panic!("expected Issued"),
+        }
+
+        // And a subsequent real start still succeeds (lock was never taken),
+        // even after an arbitrary number of prior peeks.
+        let _ = store.peek_secret_hash(&jti).await.unwrap();
+        store.start_claim(&jti).await.expect("start after peek");
+    }
+
+    #[tokio::test]
+    async fn peek_secret_hash_none_for_no_secret_consumed_and_missing() {
+        let (store, _dir) = temp_store();
+
+        // Issued without a secret → None (nothing to verify).
+        let no_secret = issue(&store, 600).await;
+        assert!(store.peek_secret_hash(&no_secret).await.unwrap().is_none());
+
+        // Missing row → None (start_claim is authoritative for not-found).
+        assert!(
+            store
+                .peek_secret_hash(&Uuid::new_v4())
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Consumed row → None (no secret check on a spent token).
+        let consumed = issue_with_hash(&store, 600, Some("$argon2id$stub".into())).await;
+        store.start_claim(&consumed).await.unwrap();
+        store.finish_claim(&consumed).await.unwrap();
+        assert!(store.peek_secret_hash(&consumed).await.unwrap().is_none());
     }
 
     #[tokio::test]

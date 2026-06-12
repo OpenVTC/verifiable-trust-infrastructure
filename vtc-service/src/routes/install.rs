@@ -116,30 +116,36 @@ pub async fn claim_start(
     let claims = parse_install_token(signer, &req.install_token)?;
     let jti = parse_jti(&claims.jti)?;
 
-    // Take the ceremony lock. `start_claim` validates `Issued`, not
-    // expired; on success the `claimed_at` window is set to "now"
-    // so a second concurrent start sees the lock.
-    let outcome = store.start_claim(&jti).await?;
-
-    // Per-invite claim secret: if the persisted row carries an
-    // Argon2id hash, the operator must supply the matching plaintext
-    // here. Discriminated 401 codes let the browser surface the right
-    // hint (missing code vs wrong code). Tokens without a hash skip
-    // this check — covers legacy rows and tests.
-    if let Some(stored_hash) = outcome.claim_secret_hash.as_deref() {
+    // Per-invite claim secret, verified BEFORE the ceremony lock (P0.21).
+    // `start_claim` stamps `claimed_at`, a 300 s concurrency lock; if we
+    // verified the secret *after* it, anyone holding only the install URL
+    // could grief the legitimate operator by POSTing a wrong code every 5
+    // minutes — each attempt would re-arm the lock, then get rejected. So
+    // we peek the stored hash (no mutation) and verify first; only a
+    // correct (or absent) secret reaches `start_claim`. Discriminated 401
+    // codes let the browser surface the right hint (missing vs wrong code).
+    // Rows without a hash skip this — covers legacy rows and tests. The
+    // authoritative not-found / consumed / expired / concurrency checks
+    // stay in `start_claim` below.
+    if let Some(stored_hash) = store.peek_secret_hash(&jti).await? {
         let Some(supplied) = req.claim_secret.as_deref() else {
             return Err(AppError::ServiceError {
                 status: StatusCode::UNAUTHORIZED,
                 message: "claim_secret_required".into(),
             });
         };
-        if !claim_secret::verify(supplied, stored_hash)? {
+        if !claim_secret::verify(supplied, &stored_hash)? {
             return Err(AppError::ServiceError {
                 status: StatusCode::UNAUTHORIZED,
                 message: "claim_secret_invalid".into(),
             });
         }
     }
+
+    // Take the ceremony lock. `start_claim` validates `Issued`, not
+    // expired; on success the `claimed_at` window is set to "now"
+    // so a second concurrent start sees the lock.
+    store.start_claim(&jti).await?;
 
     let user_uuid = jti;
     // Show the operator their admin DID in the authenticator's UI —
