@@ -421,6 +421,7 @@ mod tests {
             &crate::keys::seeds::SeedRecord {
                 id: 0,
                 seed_hex: None,
+                seed_enc: None,
                 created_at: Utc::now(),
                 retired_at: None,
             },
@@ -623,6 +624,7 @@ mod pre_rotation_e2e_tests {
             &crate::keys::seeds::SeedRecord {
                 id: 0,
                 seed_hex: None,
+                seed_enc: None,
                 created_at: Utc::now(),
                 retired_at: None,
             },

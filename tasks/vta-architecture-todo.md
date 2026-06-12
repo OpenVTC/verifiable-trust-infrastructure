@@ -71,12 +71,36 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   zero-overwrite (LSM keeps old SSTables; value is ciphertext anyway) with an
   honest comment. Trait-level `SeedStore::get` Zeroizing deferred (crosses
   vtc + 8 backends) — PR: #353 (merged)
-- `[ ]` **P0.7b** (L) Encrypt the retired-seed archive independently of the
-  keyspace-encryption flag. Split from P0.7: needs a rotation-re-encryption
-  (or successor-chain) design + a migration for existing plaintext archives —
-  the KEK derives from the *rotating* master seed, so it's not a casual reuse
-  of the imported-secrets pattern. Plaintext master seeds on disk only when:
-  non-TEE + no `storage_encryption_key` + has rotated — PR: ____
+- `[x]` **P0.7b** (L) Encrypt the retired-seed archive independently of the
+  keyspace-encryption flag — branch `fix/p0.7b-encrypt-retired-seeds`
+  (worktree). Retired master seeds were archived as **plaintext hex**
+  (`SeedRecord.seed_hex`), protected only when keyspace encryption happened to
+  be on — so in the target config (non-TEE + no `storage_encryption_key` +
+  has-rotated) every retired generation sat in clear in fjall. Now archives are
+  **always ciphertext** (`seed_enc` = AES-256-GCM, nonce‖ct, AAD-bound to the
+  gen id), keyed by a KEK derived from the *current active* master seed
+  (reuses `imported::get_or_create_salt`; distinct HKDF info
+  `vta-retired-seed-archive`). **No plaintext ever hits disk** — the key
+  crash-safety insight: encrypting under the active seed isn't self-contained
+  across the seed-swap, so instead of a plaintext fallback the *load* path
+  carries the robustness: `load_seed_bytes` decrypts under the current external
+  seed, and on AEAD failure either falls back to the external store (only when
+  the requested gen IS the active one — the rotation torn-write window) or
+  refuses with a reconcile hint (retired gen — never returns wrong key
+  material). `rotate_seed` writes the retired record under the *new* KEK before
+  flipping the store, then re-encrypts older generations after. A boot-time
+  idempotent `reconcile_archive` pass both **migrates** legacy plaintext and
+  **repairs** any archive left under a predecessor by an interrupted rotation
+  (fixpoint recovery over decryptable seeds). No `SeedStore` trait change; TEE
+  unaffected (rotation refused there, so no retired seeds exist). Backup carries
+  `seed_enc` through verbatim (salt + active seed restored alongside → stays
+  decryptable). Tests: archive crypto round-trip + AAD/seed/salt binding;
+  multi-gen rotate→recover-all; legacy-plaintext migration (idempotent);
+  torn-rotation predecessor repair; active-gen load fallback; stale-retired load
+  error; backup seed_enc round-trip; updated rotation test. fmt + clippy
+  (default & tee) clean; lib 715 + all integration suites green; no-default /
+  rest-only compile; no version bump (additive `seed_enc` field, serde-default)
+  — PR: ____
 - `[x]` **P0.8** (S) Atomic + persisted carve-out close — branch
   `fix/p0.8-carveout-durability`. Added `KeyspaceHandle::persist()` (local
   fsync + vsock OP_PERSIST passthrough). `mint_mode_b` now: seal first

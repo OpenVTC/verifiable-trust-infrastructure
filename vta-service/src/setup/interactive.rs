@@ -728,6 +728,7 @@ pub async fn run_setup_wizard(
     let initial_seed_record = SeedRecord {
         id: 0,
         seed_hex: None,
+        seed_enc: None,
         created_at: Utc::now(),
         retired_at: None,
     };

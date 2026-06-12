@@ -267,6 +267,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         &SeedRecord {
             id: 0,
             seed_hex: None,
+            seed_enc: None,
             created_at: now,
             retired_at: None,
         },

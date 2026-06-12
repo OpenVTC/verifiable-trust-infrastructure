@@ -219,6 +219,7 @@ mod tests {
                 &SeedRecord {
                     id: 0,
                     seed_hex: None,
+                    seed_enc: None,
                     created_at: now,
                     retired_at: None,
                 },
@@ -348,6 +349,15 @@ mod tests {
             .expect("get active seed id");
         assert_eq!(initial_id, 0);
 
+        // Capture the generation-0 seed before rotation so we can assert it is
+        // recoverable from the (now encrypted) archive afterwards.
+        let gen0_seed = h
+            .seed_store
+            .get()
+            .await
+            .expect("seed get")
+            .expect("gen-0 seed present");
+
         // Rotate the seed
         let result = rotate_seed(
             &h.keys_ks,
@@ -364,28 +374,33 @@ mod tests {
         assert_eq!(result.previous_seed_id, 0);
         assert_eq!(result.new_seed_id, 1);
 
-        // The old seed (generation 0) should now be retired (archived with seed_hex)
+        // The old seed (generation 0) is now retired and archived as CIPHERTEXT
+        // (P0.7b) — never plaintext hex.
         let old_record = get_seed_record(&h.keys_ks, 0)
             .await
             .expect("get seed record")
             .expect("old seed record should exist");
         assert!(
-            old_record.seed_hex.is_some(),
-            "retired seed should have archived hex"
+            old_record.seed_enc.is_some(),
+            "retired seed should have an encrypted archive"
+        );
+        assert!(
+            old_record.seed_hex.is_none(),
+            "retired seed must NOT be archived as plaintext hex (P0.7b)"
         );
         assert!(
             old_record.retired_at.is_some(),
             "retired seed should have retired_at timestamp"
         );
 
-        // The new seed (generation 1) should be active (no seed_hex)
+        // The new seed (generation 1) is active — no archive of either kind.
         let new_record = get_seed_record(&h.keys_ks, 1)
             .await
             .expect("get seed record")
             .expect("new seed record should exist");
         assert!(
-            new_record.seed_hex.is_none(),
-            "active seed should not have archived hex"
+            new_record.seed_hex.is_none() && new_record.seed_enc.is_none(),
+            "active seed should not carry an archive"
         );
         assert!(
             new_record.retired_at.is_none(),
@@ -397,5 +412,25 @@ mod tests {
             .await
             .expect("get active seed id");
         assert_eq!(new_active_id, 1);
+
+        // The retired generation-0 seed must still be recoverable (the whole
+        // point of archiving) — and it must come back as the ORIGINAL bytes,
+        // decrypted from the archive, not the new active seed.
+        let recovered = load_seed_bytes(&h.keys_ks, &*h.seed_store, Some(0))
+            .await
+            .expect("load retired gen-0 seed");
+        assert_eq!(
+            recovered.as_slice(),
+            gen0_seed.as_slice(),
+            "decrypted archive must yield the original generation-0 seed"
+        );
+        let active_seed = load_seed_bytes(&h.keys_ks, &*h.seed_store, Some(1))
+            .await
+            .expect("load active gen-1 seed");
+        assert_ne!(
+            recovered.as_slice(),
+            active_seed.as_slice(),
+            "retired and active seeds must differ"
+        );
     }
 }

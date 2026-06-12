@@ -129,6 +129,7 @@ pub async fn export_backup(
             records.push(SeedRecordBackup {
                 id: sr.id,
                 seed_hex: sr.seed_hex,
+                seed_enc: sr.seed_enc,
                 created_at: sr.created_at,
                 retired_at: sr.retired_at,
             });
@@ -531,6 +532,7 @@ pub async fn apply_import(
         let record = SeedRecord {
             id: sr.id,
             seed_hex: sr.seed_hex.clone(),
+            seed_enc: sr.seed_enc.clone(),
             created_at: sr.created_at,
             retired_at: sr.retired_at,
         };
@@ -1067,7 +1069,11 @@ mod tests {
             active_seed_id: 1,
             seed_records: vec![SeedRecordBackup {
                 id: 0,
-                seed_hex: Some(hex::encode([1u8; 32])),
+                seed_hex: None,
+                // An encrypted retired-seed archive (P0.7b) must round-trip
+                // through backup verbatim so it stays decryptable on restore
+                // (the active seed + KEK salt are restored alongside it).
+                seed_enc: Some(vec![0xDEu8, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03]),
                 created_at: Utc::now(),
                 retired_at: Some(Utc::now()),
             }],
@@ -1335,6 +1341,13 @@ mod tests {
         assert_eq!(decrypted.active_seed_id, payload.active_seed_id);
         assert_eq!(decrypted.seed_records.len(), 1);
         assert_eq!(decrypted.seed_records[0].id, 0);
+        // The encrypted retired-seed archive survives the backup round-trip
+        // byte-for-byte (P0.7b); no plaintext seed_hex is introduced.
+        assert_eq!(decrypted.seed_records[0].seed_hex, None);
+        assert_eq!(
+            decrypted.seed_records[0].seed_enc,
+            payload.seed_records[0].seed_enc
+        );
         assert_eq!(decrypted.jwt_signing_key, payload.jwt_signing_key);
         assert_eq!(decrypted.context_counter, 2);
         assert_eq!(decrypted.acl_entries.len(), 1);

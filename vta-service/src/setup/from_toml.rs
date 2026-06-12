@@ -481,6 +481,7 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
     let initial_seed_record = SeedRecord {
         id: 0,
         seed_hex: None,
+        seed_enc: None,
         created_at: Utc::now(),
         retired_at: None,
     };

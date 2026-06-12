@@ -167,7 +167,16 @@ impl std::fmt::Debug for ImportedSecretBackup {
 #[derive(Serialize, Deserialize)]
 pub struct SeedRecordBackup {
     pub id: u32,
+    /// Legacy plaintext archive. Present only on records that predate the
+    /// encrypted-archive migration (P0.7b); `None` once reconciled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed_hex: Option<String>,
+    /// Encrypted retired-seed archive (`nonce ‖ ciphertext`). Round-trips the
+    /// ciphertext verbatim — restore re-installs the same active seed + KEK
+    /// salt, so it stays decryptable (P0.7b). `#[serde(default)]` so backups
+    /// written before this field deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_enc: Option<Vec<u8>>,
     pub created_at: DateTime<Utc>,
     pub retired_at: Option<DateTime<Utc>>,
 }
@@ -177,6 +186,7 @@ impl std::fmt::Debug for SeedRecordBackup {
         f.debug_struct("SeedRecordBackup")
             .field("id", &self.id)
             .field("seed_hex", &self.seed_hex.as_ref().map(|_| "<redacted>"))
+            .field("seed_enc", &self.seed_enc.as_ref().map(|_| "<redacted>"))
             .field("created_at", &self.created_at)
             .field("retired_at", &self.retired_at)
             .finish()

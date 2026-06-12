@@ -430,6 +430,27 @@ pub async fn run(
         let _ = &boot_service_state_ks;
     }
 
+    // Reconcile the retired-seed archive (P0.7b): migrate any legacy plaintext
+    // archive to ciphertext under the active seed, and repair any archive left
+    // under a predecessor's KEK by an interrupted rotation. Idempotent and a
+    // no-op for a never-rotated VTA (the overwhelmingly common case). Runs once
+    // per process, before the restart loop. Failure is non-fatal — log and
+    // continue (a stale/legacy archive is still readable via the load path).
+    {
+        let keys_ks_boot = {
+            let ks = store.keyspace("keys")?;
+            match storage_encryption_key {
+                Some(key) => ks.with_encryption(key),
+                None => ks,
+            }
+        };
+        match crate::keys::seeds::reconcile_archive(&keys_ks_boot, &*seed_store).await {
+            Ok(0) => {}
+            Ok(n) => info!(rewritten = n, "seed archive reconciled at boot"),
+            Err(e) => warn!(error = %e, "seed archive reconcile failed — continuing"),
+        }
+    }
+
     // Determine which services will actually start (feature flag AND
     // persisted runtime state, the latter set by `pnm services {kind}
     // {enable,disable}`).
