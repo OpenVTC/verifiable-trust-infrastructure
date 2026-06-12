@@ -11,12 +11,13 @@
 //!   default → accept-any).
 //! - JWT audience `"VTC"` (set by the `JwtKeys` instance held
 //!   on `AppState`).
-//! - Role type is `VtcRole` (re-exported as `crate::acl::Role`).
-//!
-//! Role enum and ACL helper signatures are otherwise identical
-//! to VTA's — both consume `vti_common::acl::check_acl_full`,
-//! which the canonical handler invokes uniformly through
-//! [`AuthBackend::check_acl`].
+//! - The session/JWT layer is keyed to the VTA `vti_common::acl::Role`
+//!   taxonomy (`crate::acl::Role`), but VTC stores `VtcAclEntry` rows
+//!   whose `role` is a [`VtcRole`]. [`AuthBackend::check_acl`] therefore
+//!   decodes the row with the VTC decoder and maps `VtcRole → Role`
+//!   itself — it must **not** route through `vti_common::acl::check_acl*`,
+//!   which deserializes into the VTA `Role` and hard-errors on any
+//!   VTC-only role string (see [`VtcAuthBackend::check_acl`], P0.16).
 
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use vti_common::auth::backend::{AuthBackend, AuthError, RoleResolution};
 use vti_common::auth::handlers::KeyspaceSessionStore;
 use vti_common::auth::jwt::JwtKeys;
 
-use crate::acl::Role;
+use crate::acl::{Role, resolve_auth_role};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -106,8 +107,13 @@ impl AuthBackend for VtcAuthBackend {
     }
 
     async fn check_acl(&self, did: &str) -> Result<RoleResolution<Self::Role>, Self::Error> {
-        let (role, allowed_contexts) =
-            vti_common::acl::check_acl_full(&self.state.acl_ks, did).await?;
+        // VTC-aware resolver: decodes the `acl:<did>` row as a `VtcAclEntry`
+        // and maps `VtcRole → Role`. Must NOT route through
+        // `vti_common::acl::check_acl_full`, which decodes into the VTA
+        // `Role` taxonomy and hard-errors (`AppError::Serialization` → HTTP
+        // 500 leaking serde text to the unauthenticated `/auth/challenge`
+        // caller) on any VTC-only role string. P0.16.
+        let (role, allowed_contexts) = resolve_auth_role(&self.state.acl_ks, did).await?;
         Ok(RoleResolution::with_contexts(role, allowed_contexts))
     }
 

@@ -10,7 +10,7 @@ use vta_sdk::protocols::auth::{
     epoch_to_rfc3339,
 };
 
-use crate::acl::{Role, check_acl_full};
+use crate::acl::{Role, resolve_auth_role};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, list_sessions, now_epoch,
     store_refresh_index, store_session,
@@ -511,7 +511,9 @@ pub async fn passkey_login_finish(
 
     // Check ACL — the DID must still be authorised; revocation
     // since enrolment is a real path (operator demoted, etc.).
-    let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &user.did).await?;
+    // Uses the VTC-aware resolver so a demoted-to-VtcRole row yields a
+    // clean 403, not a 500 in the VTA-taxonomy deserializer (P0.16).
+    let (role, allowed_contexts) = resolve_auth_role(&state.acl_ks, &user.did).await?;
 
     // Mint access + refresh tokens (mirrors `authenticate_and_mint`
     // for parity with the DIDComm login path).
