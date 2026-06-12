@@ -74,6 +74,9 @@ pub async fn update_config(
     }; // write lock released here
 
     std::fs::write(&path, contents).map_err(AppError::Io)?;
+    // Re-harden after every rewrite: config.toml holds the JWT signing key
+    // (and, under the config-secret backend, the key bundle).
+    crate::secure_file::restrict_file_to_owner(&path).map_err(AppError::Io)?;
 
     info!(caller = %_auth.0.did, "config updated");
     Ok(Json(response))

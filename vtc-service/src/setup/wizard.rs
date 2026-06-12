@@ -1333,6 +1333,14 @@ fn write_config_toml(path: &std::path::Path, config: &AppConfig) -> Result<(), A
             format!("write config {}: {e}", path.display()),
         ))
     })?;
+    // config.toml carries `auth.jwt_signing_key` and, under the config-secret
+    // backend, the hex `VtcKeyBundle` — owner-only, never world-readable.
+    crate::secure_file::restrict_file_to_owner(path).map_err(|e| {
+        AppError::Io(std::io::Error::new(
+            e.kind(),
+            format!("harden config perms {}: {e}", path.display()),
+        ))
+    })?;
     Ok(())
 }
 
@@ -1553,5 +1561,40 @@ mod tests {
         assert!(msg.contains("--name \"VTC\""));
         assert!(msg.contains("--admin-did did:key:zAbc"));
         assert!(msg.contains("--admin-expires 1h"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_config_toml_produces_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = std::env::temp_dir().join(format!("vtc-cfg-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cfg_path = tmp.join("config.toml");
+
+        let config = build_app_config(
+            cfg_path.clone(),
+            "did:webvh:scid:vtc.example.com".into(),
+            "did:webvh:scid:vta.example.com".into(),
+            "https://vtc.example.com".into(),
+            tmp.join("data"),
+            secrets_choice_to_config(SecretsBackendChoice::Keyring {
+                service: "vtc".into(),
+            }),
+            None,
+        )
+        .unwrap();
+
+        write_config_toml(&cfg_path, &config).unwrap();
+
+        // The serialized config carries `auth.jwt_signing_key` — must not be
+        // world-readable.
+        let mode = std::fs::metadata(&cfg_path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config.toml must be 0600, got {mode:o}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -40,6 +40,7 @@ pub mod relationships;
 pub mod routes;
 pub mod routing;
 pub mod schemas;
+pub mod secure_file;
 pub mod server;
 pub mod setup;
 pub mod status;

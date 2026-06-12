@@ -66,7 +66,38 @@ impl super::SecretStore for PlaintextSecretStore {
             std::fs::write(&self.path, hex_val).map_err(|e| {
                 AppError::SecretStore(format!("failed to write plaintext secret file: {e}"))
             })?;
+            // The file holds raw key material — owner-only, matching the
+            // workspace 0600 discipline for secret-bearing files.
+            crate::secure_file::restrict_file_to_owner(&self.path).map_err(|e| {
+                AppError::SecretStore(format!(
+                    "failed to harden plaintext secret file permissions: {e}"
+                ))
+            })?;
             Ok(())
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::keys::seed_store::SecretStore;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[tokio::test]
+    async fn set_produces_mode_0600() {
+        let tmp = std::env::temp_dir().join(format!("vtc-plaintext-{}", rand::random::<u32>()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let store = PlaintextSecretStore::new(&tmp);
+
+        store.set(b"super-secret-key-material").await.unwrap();
+
+        let mode = std::fs::metadata(&store.path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "secret.plaintext must be 0600, got {mode:o}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
