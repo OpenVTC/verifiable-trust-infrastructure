@@ -266,20 +266,21 @@ async fn send_trust_ping(
         .await?
         .ok_or("no key material available")?;
 
-    if key_material.len() != 64 {
-        return Err(format!("key material is {} bytes, expected 64", key_material.len()).into());
-    }
-
-    let ed25519_bytes: &[u8; 32] = key_material[..32].try_into().unwrap();
-    let x25519_bytes: &[u8; 32] = key_material[32..].try_into().unwrap();
+    // Accept both on-disk shapes: the JSON `VtcKeyBundle` every real
+    // deployment writes since the VTA-driven-keys rework, and the legacy
+    // 64-raw-byte fixture shape. The old `len() == 64` guard here rejected
+    // the bundle shape, so the trust-ping failed on every production VTC
+    // with a baffling byte-count error (P0.19).
+    let (ed25519_bytes, x25519_bytes) =
+        crate::setup::bundle::decode_secret_store_value(vtc_did, &key_material)?;
 
     let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
 
-    let mut signing_secret = Secret::generate_ed25519(None, Some(ed25519_bytes));
+    let mut signing_secret = Secret::generate_ed25519(None, Some(&ed25519_bytes));
     signing_secret.id = format!("{vtc_did}#key-0");
     tdk.secrets_resolver().insert(signing_secret).await;
 
-    let mut ka_secret = Secret::generate_x25519(None, Some(x25519_bytes))?;
+    let mut ka_secret = Secret::generate_x25519(None, Some(&x25519_bytes))?;
     ka_secret.id = format!("{vtc_did}#key-1");
     tdk.secrets_resolver().insert(ka_secret).await;
 

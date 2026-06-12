@@ -247,6 +247,54 @@ pub fn bundle_from_inline_secret(secret: &str) -> Result<VtcKeyBundle, AppError>
     VtcKeyBundle::from_secret_store_bytes(&bytes)
 }
 
+/// Decode whatever the secret store handed back into the VTC's
+/// `(ed25519, x25519)` private-scalar pair.
+///
+/// Accepts both on-disk shapes, so every consumer (auth bootstrap in
+/// `server.rs`, the `vtc status` trust-ping) reads keys the same way:
+///
+/// - **JSON `VtcKeyBundle`** — what `vtc setup` has written since the
+///   VTA-driven-keys rework, i.e. every real deployment. The bundle's
+///   `integration_did` is checked against `vtc_did` so a mismatched bundle
+///   can't silently sign for the wrong DID.
+/// - **Legacy 64 raw bytes** (`ed‖x`) — used by the integration-test
+///   fixtures; split directly.
+///
+/// Returning the pair in [`Zeroizing`] buffers keeps the live scalars off
+/// the heap-without-wipe path. The error is a display `String` because both
+/// call sites only surface it (a warning log / a `Box<dyn Error>` bubble),
+/// never match on it.
+pub fn decode_secret_store_value(
+    vtc_did: &str,
+    stored: &[u8],
+) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), String> {
+    if stored.len() == 64 {
+        // Legacy raw-bytes shape — used by every integration-test
+        // fixture today. Promote into a bundle-shaped pair via a
+        // direct copy.
+        let mut ed = Zeroizing::new([0u8; 32]);
+        let mut x = Zeroizing::new([0u8; 32]);
+        ed.copy_from_slice(&stored[..32]);
+        x.copy_from_slice(&stored[32..]);
+        return Ok((ed, x));
+    }
+    let bundle = VtcKeyBundle::from_secret_store_bytes(stored)
+        .map_err(|e| format!("secret store payload not a VtcKeyBundle: {e}"))?;
+    if bundle.integration_did != vtc_did {
+        return Err(format!(
+            "VtcKeyBundle DID '{}' does not match config.vtc_did '{}' — refusing to init auth",
+            bundle.integration_did, vtc_did
+        ));
+    }
+    let ed = bundle
+        .ed25519_private_bytes()
+        .map_err(|e| format!("bundle Ed25519 decode: {e}"))?;
+    let x = bundle
+        .x25519_private_bytes()
+        .map_err(|e| format!("bundle X25519 decode: {e}"))?;
+    Ok((ed, x))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -314,5 +362,43 @@ mod tests {
         b.ed25519_private_multibase = encode_private_multibase(&raw, X25519_PRIV_CODEC);
         let err = b.ed25519_private_bytes().unwrap_err();
         assert!(format!("{err}").contains("wrong multicodec prefix"));
+    }
+
+    /// P0.19: the JSON `VtcKeyBundle` shape every real deployment writes
+    /// decodes into the right scalar pair. This is the shape the `vtc
+    /// status` trust-ping used to reject with a "not 64 bytes" error.
+    #[test]
+    fn decode_secret_store_value_accepts_json_bundle() {
+        let b = fixture(); // did:webvh:vtc.example.com:abc, ed=0x11.., x=0x22..
+        let bytes = b.to_secret_store_bytes().unwrap();
+        let (ed, x) =
+            decode_secret_store_value("did:webvh:vtc.example.com:abc", &bytes).expect("decodes");
+        assert_eq!(&*ed, &[0x11; 32]);
+        assert_eq!(&*x, &[0x22; 32]);
+    }
+
+    /// The legacy 64-raw-byte shape (test/CI fixtures) still splits
+    /// cleanly — the DID is irrelevant for this path.
+    #[test]
+    fn decode_secret_store_value_accepts_legacy_64_bytes() {
+        let mut raw = Vec::with_capacity(64);
+        raw.extend_from_slice(&[0xAA; 32]);
+        raw.extend_from_slice(&[0xBB; 32]);
+        let (ed, x) = decode_secret_store_value("did:any", &raw).expect("64-byte split");
+        assert_eq!(&*ed, &[0xAA; 32]);
+        assert_eq!(&*x, &[0xBB; 32]);
+    }
+
+    /// A bundle whose DID doesn't match the configured `vtc_did` is
+    /// refused — it must not silently sign for the wrong identity.
+    #[test]
+    fn decode_secret_store_value_rejects_did_mismatch() {
+        let b = fixture();
+        let bytes = b.to_secret_store_bytes().unwrap();
+        let err = decode_secret_store_value("did:webvh:someone.else", &bytes).unwrap_err();
+        assert!(
+            err.contains("does not match"),
+            "expected DID-mismatch error, got: {err}"
+        );
     }
 }

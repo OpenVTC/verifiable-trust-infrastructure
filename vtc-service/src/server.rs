@@ -22,7 +22,6 @@ use crate::install::{InstallTokenSigner, InstallTokenStore};
 use crate::keys::seed_store::SecretStore;
 use crate::messaging;
 use crate::routes;
-use crate::setup::VtcKeyBundle;
 use crate::store::{KeyspaceHandle, Store};
 use crate::supervisor::{SupervisorKind, detect_supervisor};
 use tokio::sync::{RwLock, watch};
@@ -32,7 +31,6 @@ use tracing::{debug, error, info, warn};
 use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::passkey::{PasskeyState, build_webauthn};
 use webauthn_rs::Webauthn;
-use zeroize::Zeroizing;
 
 /// Default enrolment-invite TTL surfaced by `PasskeyState::enrollment_ttl`.
 /// Admin-invite enrolment lands in M0.6; until then this constant is the
@@ -1121,13 +1119,14 @@ async fn init_auth(
         }
     };
 
-    let (ed25519_bytes, x25519_bytes) = match decode_secret_store_value(&vtc_did, &stored) {
-        Ok(pair) => pair,
-        Err(msg) => {
-            warn!("{msg}");
-            return (None, None, None, None, None, None, None, None);
-        }
-    };
+    let (ed25519_bytes, x25519_bytes) =
+        match crate::setup::bundle::decode_secret_store_value(&vtc_did, &stored) {
+            Ok(pair) => pair,
+            Err(msg) => {
+                warn!("{msg}");
+                return (None, None, None, None, None, None, None, None);
+            }
+        };
 
     // P0.7: derive the at-rest storage-encryption key from the same 32-byte
     // Ed25519 seed (HKDF-SHA256, info `vtc-storage-key/v1`). Domain-separated
@@ -1421,50 +1420,4 @@ async fn shutdown_signal() {
         () = ctrl_c => info!("received SIGINT"),
         () = terminate => info!("received SIGTERM"),
     }
-}
-
-/// Pull the Ed25519 + X25519 private bytes out of whatever the
-/// secret store handed us.
-///
-/// Accepts two on-disk shapes:
-/// - **New** — a serialized [`VtcKeyBundle`] (JSON). Production
-///   shape after `vtc setup`. Decoded via
-///   [`VtcKeyBundle::from_secret_store_bytes`].
-/// - **Legacy** — 64 raw bytes `[Ed25519:32 || X25519:32]`. Used
-///   by integration-test fixtures and the not-yet-replaced
-///   bootstrap CLI path. Synthesizes an in-memory bundle so
-///   downstream code stays identical.
-///
-/// Returns `(ed25519_priv, x25519_priv)` on success; `Err(msg)`
-/// otherwise. Both halves come back inside `Zeroizing` so a
-/// best-effort scrub fires on drop.
-fn decode_secret_store_value(
-    vtc_did: &str,
-    stored: &[u8],
-) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), String> {
-    if stored.len() == 64 {
-        // Legacy raw-bytes shape — used by every integration-test
-        // fixture today. Promote into a bundle-shaped pair via a
-        // direct copy.
-        let mut ed = Zeroizing::new([0u8; 32]);
-        let mut x = Zeroizing::new([0u8; 32]);
-        ed.copy_from_slice(&stored[..32]);
-        x.copy_from_slice(&stored[32..]);
-        return Ok((ed, x));
-    }
-    let bundle = VtcKeyBundle::from_secret_store_bytes(stored)
-        .map_err(|e| format!("secret store payload not a VtcKeyBundle: {e}"))?;
-    if bundle.integration_did != vtc_did {
-        return Err(format!(
-            "VtcKeyBundle DID '{}' does not match config.vtc_did '{}' — refusing to init auth",
-            bundle.integration_did, vtc_did
-        ));
-    }
-    let ed = bundle
-        .ed25519_private_bytes()
-        .map_err(|e| format!("bundle Ed25519 decode: {e}"))?;
-    let x = bundle
-        .x25519_private_bytes()
-        .map_err(|e| format!("bundle X25519 decode: {e}"))?;
-    Ok((ed, x))
 }
