@@ -1278,6 +1278,25 @@ pub(crate) fn classify_kms_error_typed<E: std::error::Error>(
 mod tests {
     use super::*;
 
+    /// Drift guard (P0.2a): the integrity manifest in `vti-common` reads the
+    /// carve-out sentinel and JWT-fingerprint rows by hard-coded key string
+    /// (it can't import these `vta-service` constants). If either key string
+    /// is ever changed here, the manifest would silently stop covering it —
+    /// this test fails the moment they diverge.
+    #[test]
+    fn integrity_manifest_key_strings_match() {
+        assert_eq!(
+            BOOTSTRAP_JWT_FINGERPRINT_KEY,
+            vti_common::integrity::JWT_FINGERPRINT_KEY,
+            "JWT fingerprint key drifted from vti_common::integrity"
+        );
+        assert_eq!(
+            crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY,
+            vti_common::integrity::CARVEOUT_KEY,
+            "carve-out sentinel key drifted from vti_common::integrity"
+        );
+    }
+
     /// Build a synthetic CMS EnvelopedData that mimics what KMS returns
     /// with CiphertextForRecipient. This allows us to test the full
     /// decrypt_cms_envelope round-trip without needing real KMS or NSM.

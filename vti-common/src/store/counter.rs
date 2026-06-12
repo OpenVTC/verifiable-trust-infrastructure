@@ -52,6 +52,10 @@ pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32,
     ks.insert_raw(counter_key, (current + 1).to_le_bytes().to_vec())
         .await?;
     ks.persist().await?;
+    // Re-seal the TEE integrity manifest so the counter bump is reflected in the
+    // sealed snapshot — a rolled-back counter forces BIP-32 key reuse (P0.2a).
+    // No-op unless running in a TEE.
+    crate::integrity::reseal_if_active().await?;
     Ok(current)
 }
 

@@ -409,6 +409,21 @@ pub struct TeeKmsConfig {
     /// and intend to reset the VTA to a fresh first-boot state.
     #[serde(default)]
     pub allow_kms_reinit: bool,
+    /// Allow establishing the TEE integrity-manifest baseline when none is
+    /// stored (P0.2a anti-rollback anchor).
+    ///
+    /// **Default: false.** The integrity manifest is the MAC'd snapshot of the
+    /// rollback-protected singletons (carve-out sentinel, ACL root, JWT
+    /// fingerprint, key counters). A missing manifest on a configured VTA is
+    /// indistinguishable from a parent-deleted one, so the enclave refuses to
+    /// boot rather than silently baseline whatever (possibly rolled-back) state
+    /// the parent presents.
+    ///
+    /// Operators on first boot, or migrating from a pre-manifest VTA: set
+    /// `true`, boot once to establish the baseline, then set back to `false`.
+    /// Mirrors [`Self::allow_fingerprint_init`].
+    #[serde(default)]
+    pub allow_anchor_init: bool,
 }
 
 // KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries

@@ -334,6 +334,12 @@ async fn mint_mode_b(
     // close is on disk.
     state.keys_ks.persist().await?;
 
+    // Re-seal the TEE integrity manifest now that the carve-out is closed, so a
+    // subsequent boot detects any parent attempt to reopen it (P0.2a). The
+    // carve-out sentinel write above is a direct `insert_raw_if_absent`, not an
+    // ACL/counter chokepoint, so it needs its own reseal. No-op outside a TEE.
+    vti_common::integrity::reseal_if_active().await?;
+
     info!("TEE first-boot carve-out consumed — closed for good");
     Ok(bundle)
 }

@@ -780,6 +780,13 @@ pub async fn apply_import(
     keys_ks.remove(IMPORT_IN_PROGRESS_KEY).await?;
     keys_ks.persist().await?;
 
+    // Restore rewrote the covered singletons (ACL, counters, …) via raw inserts
+    // that bypass the integrity chokepoints, so re-seal the TEE manifest to the
+    // freshly-restored state — otherwise the next boot would fail closed against
+    // the pre-restore manifest. The restore is super-admin-authorized, so the
+    // restored state is the new legitimate baseline (P0.2a). No-op outside a TEE.
+    vti_common::integrity::reseal_if_active().await?;
+
     info!(
         keys = payload.key_records.len(),
         acls = payload.acl_entries.len(),

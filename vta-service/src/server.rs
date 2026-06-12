@@ -451,6 +451,32 @@ pub async fn run(
         }
     }
 
+    // TEE anti-rollback anchor — Layer 0 (P0.2a). Verify the MAC'd integrity
+    // manifest against the live store and install the runtime sealer, so a
+    // covered singleton deleted or replayed to an inconsistent snapshot while
+    // the enclave was down is caught here and the VTA fails closed. Gated on a
+    // KMS storage key (i.e. a real TEE); a `None` key is the non-TEE path and
+    // has no untrusted-parent threat. Unlike the reconcile above this is
+    // security-critical, so a failure aborts the boot.
+    #[cfg(feature = "tee")]
+    if let Some(storage_key) = storage_encryption_key
+        && let Some(kms) = config.tee.kms.as_ref()
+    {
+        let enc = |name: &str| -> Result<KeyspaceHandle, AppError> {
+            Ok(store.keyspace(name)?.with_encryption(storage_key))
+        };
+        let outcome = vti_common::integrity::boot_verify_and_install(
+            vti_common::integrity::derive_mac_key(&storage_key),
+            enc("keys")?,
+            store.keyspace("bootstrap")?, // unencrypted, KMS-protected
+            enc("acl")?,
+            enc("contexts")?,
+            kms.allow_anchor_init,
+        )
+        .await?;
+        info!(?outcome, "TEE integrity manifest checked");
+    }
+
     // Determine which services will actually start (feature flag AND
     // persisted runtime state, the latter set by `pnm services {kind}
     // {enable,disable}`).

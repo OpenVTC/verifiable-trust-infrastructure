@@ -261,6 +261,7 @@ mod tests {
             &SeedRecord {
                 id: 0,
                 seed_hex: None,
+                seed_enc: None,
                 created_at: chrono::Utc::now(),
                 retired_at: None,
             },

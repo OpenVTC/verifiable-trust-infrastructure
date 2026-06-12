@@ -34,11 +34,35 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   is EIF-baked/measured); (5) Option C cross-account = **future P0.2e**. Same PR
   adds the operator setup runbook (DynamoDB table + KMS PCR-gated writer key +
   IAM writer-principal/instance-role-deny + config) and the threat-model rollback
-  rows to `docs/02-vta/tee-architecture.md`. TEE-only feature. **Next: P0.2a**
-  (local MAC'd manifest + boot-verify, no external dependency). Phases:
+  rows to `docs/02-vta/tee-architecture.md`. TEE-only feature. Phases:
   P0.2a (manifest) → P0.2b (counter) → P0.2c (attestation-gated writer) →
   P0.2d (threat-model claim) ; P0.2e (Option C) deferred — design PR: #365
-  (merged); §9-resolution + setup-docs PR: ____ ; impl PR: ____
+  (merged); §9-resolution + setup-docs PR: #377 (merged).
+  - `[x]` **P0.2a** (M) Local MAC'd integrity manifest + boot-verify (Layer 0) —
+    branch `fix/p0.2a-integrity-manifest` (worktree). New
+    `vti_common::integrity`: a 121-byte MAC'd manifest pinning the four covered
+    singletons (carve-out sentinel, ACL root, JWT-fingerprint, path/context
+    counters) under `HMAC-SHA256(HKDF(storage_key), …)`, stored in the
+    `bootstrap` keyspace. Boot (`server::run`, gated on a KMS storage key →
+    TEE-only) verifies the MAC + recomputes-and-compares the live state, failing
+    **closed** on a deleted row / inconsistent snapshot / forged manifest;
+    first-boot/missing baseline gated behind new
+    `tee.kms.allow_anchor_init` (mirrors `allow_fingerprint_init`). Kept in
+    step at runtime by re-sealing at **chokepoints** rather than ~29 call sites:
+    `store_acl_entry`/`delete_acl_entry`/`update_acl_entry_versioned` +
+    `counter::allocate_u32` (all in vti-common) cover every ACL + counter
+    mutation; `mint_mode_b` (carve-out close) and `apply_import` (backup
+    restore) reseal explicitly. A process-global `OnceLock` sealer (set only at
+    TEE boot) makes `reseal_if_active` a true no-op outside a TEE — zero
+    behaviour change for the local VTA. Reads decrypt via encrypted handles, so
+    the manifest hashes *plaintext* content (nonce-independent). Drift-guard test
+    pins the duplicated key strings to the vta-service constants. Does NOT catch
+    a fully-consistent rollback — that's the external counter (P0.2b). Tests:
+    manifest byte/MAC round-trip + tamper, baseline-refused-without-flag,
+    baseline→verify, deletion/forgery detected, e2e (install → chokepoint reseal
+    → reverify → out-of-band tamper → fail-closed → recover). fmt + clippy
+    (default & tee) clean; vti-common 234 + e2e, vta-service 714 (default) / 745
+    (tee) green; vta-enclave checks; no version bump (additive) — PR: ____
 - `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
   validation (closes `#key-0` overwrite) — branch `fix/p0.3-key-overwrite`.
   Scope grew during root-cause analysis: the store's multi-op "atomic"

@@ -6,6 +6,7 @@ pub mod context_path;
 pub mod error;
 pub mod idempotency;
 pub mod identifier;
+pub mod integrity;
 pub mod pagination;
 pub mod seed_store;
 #[cfg(feature = "setup")]

@@ -461,7 +461,10 @@ pub async fn get_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<Option<Acl
 /// paths (admin import, initial seed, sweeper) where there's no
 /// concurrent-edit risk.
 pub async fn store_acl_entry(acl: &KeyspaceHandle, entry: &AclEntry) -> Result<(), AppError> {
-    acl.insert(acl_key(&entry.did), entry).await
+    acl.insert(acl_key(&entry.did), entry).await?;
+    // Re-seal the TEE integrity manifest so this ACL change is reflected in the
+    // sealed snapshot (P0.2a). No-op unless running in a TEE.
+    crate::integrity::reseal_if_active().await
 }
 
 /// Optimistic-concurrency-checked write.
@@ -495,12 +498,16 @@ pub async fn update_acl_entry_versioned(
     }
     new_entry.version = expected_version + 1;
     acl.insert(key, &new_entry).await?;
+    crate::integrity::reseal_if_active().await?; // P0.2a
     Ok(new_entry.version)
 }
 
 /// Delete an ACL entry by DID.
 pub async fn delete_acl_entry(acl: &KeyspaceHandle, did: &str) -> Result<(), AppError> {
-    acl.remove(acl_key(did)).await
+    acl.remove(acl_key(did)).await?;
+    // Re-seal so the deletion is reflected in the manifest (P0.2a). No-op
+    // outside a TEE.
+    crate::integrity::reseal_if_active().await
 }
 
 /// List all ACL entries.
