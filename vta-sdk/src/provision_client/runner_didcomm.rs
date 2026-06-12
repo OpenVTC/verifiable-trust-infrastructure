@@ -536,15 +536,15 @@ pub async fn run_provision_flight(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provision_client::runner::webvh_path_from_url;
     use serde_json::json;
 
-    /// Regression for `e.p.did.path-invalid` (server-managed, single
-    /// auto-selected server): the path folded into `URL` must reach the
-    /// VTA as `WEBVH_PATH`. Mirrors the derive→inject chain that
-    /// `run_provision`'s `PreflightDone` handler runs before the flight.
+    /// Server-managed, no explicit path (what `run_provision`'s
+    /// `PreflightDone` handler now does — it passes `None` and never
+    /// derives a path from `URL`): `WEBVH_SERVER` is set but `WEBVH_PATH`
+    /// stays unset, so the hosting server auto-assigns a random path. The
+    /// service `URL` must not leak into the DID name.
     #[test]
-    fn server_managed_url_path_is_injected_as_webvh_path() {
+    fn server_managed_no_path_leaves_webvh_path_unset() {
         let mut ask = ProvisionAsk::for_template(
             "did-host-http-didcomm",
             [(
@@ -556,21 +556,38 @@ mod tests {
             "ctx",
         );
 
-        // What the PreflightDone handler does: derive path from URL when a
-        // server was auto-selected, then inject it for the flight.
-        let server_id = Some("srv-1".to_string());
-        let derived = server_id
-            .as_ref()
-            .and_then(|_| ask.integration_template_vars.get("URL"))
-            .and_then(|v| v.as_str())
-            .and_then(webvh_path_from_url);
-        assert_eq!(derived.as_deref(), Some("dids/daemon"));
+        inject_webvh_vars(&mut ask, Some("srv-1"), None);
 
-        inject_webvh_vars(&mut ask, server_id.as_deref(), derived.as_deref());
+        assert!(
+            !ask.integration_template_vars.contains_key("WEBVH_PATH"),
+            "URL path must not be folded into WEBVH_PATH"
+        );
+        assert_eq!(
+            ask.integration_template_vars.get("WEBVH_SERVER"),
+            Some(&json!("srv-1"))
+        );
+    }
+
+    /// An explicit operator-chosen path is forwarded verbatim as
+    /// `WEBVH_PATH` (server-managed `Custom`).
+    #[test]
+    fn server_managed_explicit_path_is_injected() {
+        let mut ask = ProvisionAsk::for_template(
+            "did-host-http-didcomm",
+            [(
+                "URL".to_string(),
+                json!("https://host.example.com/dids/daemon"),
+            )]
+            .into_iter()
+            .collect(),
+            "ctx",
+        );
+
+        inject_webvh_vars(&mut ask, Some("srv-1"), Some("acme"));
 
         assert_eq!(
             ask.integration_template_vars.get("WEBVH_PATH"),
-            Some(&json!("dids/daemon"))
+            Some(&json!("acme"))
         );
         assert_eq!(
             ask.integration_template_vars.get("WEBVH_SERVER"),

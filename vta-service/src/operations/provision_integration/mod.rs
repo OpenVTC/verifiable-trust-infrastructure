@@ -295,23 +295,20 @@ pub async fn provision_integration(
 
     let webvh_server_id = webvh::resolve_webvh_server(&template_vars, &state.webvh_ks).await?;
 
-    // Optional `WEBVH_PATH` template var: when the webvh server should
-    // allocate a specific path (rather than letting the server pick),
-    // the operator sets it in `mediator_template_vars`. Removed from the
-    // map so the template renderer doesn't also see it — it is transport
-    // metadata, not document content.
-    let mut webvh_path = webvh::take_webvh_path(&mut template_vars)?;
-
-    // Defense-in-depth: in server-managed mode (`WEBVH_SERVER` set) the
-    // hosting server reads `WEBVH_PATH` and ignores `URL`. A consumer that
-    // folded the DID path into `URL` but didn't set `WEBVH_PATH` would hand
-    // the server an empty path → `e.p.did.path-invalid`. When that happens,
-    // derive the path from the `URL` var so the integration still lands.
-    // Only applies when a server is selected and no explicit path was given;
-    // serverless mode reads the path from `URL` directly and is untouched.
-    if webvh_server_id.is_some() && webvh_path.is_none() {
-        webvh_path = webvh::webvh_path_from_url_var(&template_vars);
-    }
+    // Optional `WEBVH_PATH` template var: the *only* input to the DID's
+    // path. The service `URL` never influences the DID name — that
+    // derivation leaked the REST route (`…/mediator/v1`) into the
+    // identifier and, being deterministic, collided on every re-run.
+    // Removed from the map so the template renderer doesn't also see it —
+    // it is transport metadata, not document content.
+    //
+    // The value maps onto the total `WebvhPathMode` below: absent / empty
+    // → `AutoAssign` (the hosting server mints a random path),
+    // `.well-known` → `WellKnown` (root), any other label → `Explicit`.
+    // The mapping is mode-independent: serverless mode never reads
+    // `WEBVH_PATH` at all (the DID location comes straight from `URL`), so
+    // this only governs server-managed publication.
+    let webvh_path = webvh::take_webvh_path(&mut template_vars)?;
 
     // Optional `WEBVH_DOMAIN` template var: when the webvh hosting server
     // is multi-tenant, this pins which tenant domain the DID is allocated
@@ -383,6 +380,13 @@ pub async fn provision_integration(
         // - WEBVH_SERVER unset → serverless mode; we need a `url`. This is
         //   the only path where an absent URL is a hard error; surface it
         //   with guidance naming the `WEBVH_SERVER` alternative.
+
+        // Resolve the path request into the explicit, total path mode, and
+        // reject an explicit root request on a shared server before any
+        // state is written (see `reject_root_on_shared_server`).
+        let path_mode = vta_sdk::protocols::did_management::create::WebvhPathMode::from(webvh_path);
+        webvh::reject_root_on_shared_server(&path_mode, webvh_server_id.is_some())?;
+
         let (params_server_id, params_url) = match &webvh_server_id {
             Some(id) => (Some(id.clone()), None),
             None => {
@@ -417,12 +421,10 @@ pub async fn provision_integration(
                 context_id: context.clone(),
                 server_id: params_server_id,
                 url: params_url,
-                // `webvh_path` is `None` when the operator gave no path
-                // (or only `.well-known`/bare URL): server-managed mode
-                // then auto-assigns. An explicit label maps to `Explicit`.
-                path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::from(
-                    webvh_path,
-                ),
+                // Absent `WEBVH_PATH` → `AutoAssign` (server mints a
+                // random path); `.well-known` → `WellKnown` (root, already
+                // rejected above on shared servers); a label → `Explicit`.
+                path_mode,
                 // Explicit tenant domain when the caller set
                 // `WEBVH_DOMAIN` (multi-tenant hosting server); `None`
                 // lets the remote resolve to its caller-default / system

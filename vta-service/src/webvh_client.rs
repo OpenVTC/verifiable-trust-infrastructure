@@ -391,6 +391,10 @@ impl WebvhClient {
             return Err(match status {
                 reqwest::StatusCode::UNAUTHORIZED => AppError::Unauthorized(msg),
                 reqwest::StatusCode::FORBIDDEN => AppError::Forbidden(msg),
+                // A taken path (e.g. `POST /api/dids` on an already-reserved
+                // slot) is a clean conflict, not a malformed request — keep
+                // it a 409 to the caller rather than collapsing to a 400.
+                reqwest::StatusCode::CONFLICT => AppError::Conflict(msg),
                 s if s.is_client_error() => AppError::Validation(msg),
                 _ => AppError::Internal(msg),
             });

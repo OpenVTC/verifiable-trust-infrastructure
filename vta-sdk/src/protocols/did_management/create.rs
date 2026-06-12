@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// `AutoAssign` is the default because that is the long-standing
 /// "no path given → the server assigns one" contract: the setup wizard's
-/// "leave blank → server-assigned" prompt, and the SDK's
-/// `webvh_path_from_url` deriving *no path* from empty / `.well-known` /
-/// bare-origin URLs. An absent path has never meant the `.well-known`
-/// root on a hosting server — that is the serverless case.
+/// "leave blank → server-assigned" prompt maps a blank path here. An
+/// absent path has never meant the `.well-known` root on a hosting
+/// server — that is the serverless case (selected by the absence of a
+/// `server_id`, where the DID location comes from the `URL` itself).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "path", rename_all = "snake_case")]
 pub enum WebvhPathMode {
@@ -77,7 +77,6 @@ impl From<String> for WebvhPathMode {
         match path.trim() {
             // Empty / whitespace-only is auto-assign, not an explicit
             // empty path — an explicit "" would be rejected by the host.
-            // Mirrors `webvh_path_from_url`'s empty → no-path derivation.
             "" => WebvhPathMode::AutoAssign,
             ".well-known" => WebvhPathMode::WellKnown,
             trimmed => WebvhPathMode::Explicit(trimmed.to_string()),

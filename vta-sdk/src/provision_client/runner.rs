@@ -324,29 +324,13 @@ pub async fn run_connection_test(
 /// are 2+ (interactive consumers should drive `run_connection_test` +
 /// `run_provision_flight` directly to surface a picker).
 ///
-/// The consumer's DID path is conventionally folded into the template `URL`
-/// var (`https://host.example.com/webvh`). In serverless mode the VTA reads
-/// the path straight from `URL`; in server-managed mode it reads `WEBVH_PATH`
-/// and ignores `URL`. So when this auto-selects a server, it must lift the path
-/// out of `URL` into `WEBVH_PATH` — otherwise the path is silently dropped and
-/// the hosting server rejects the empty path
-/// (`e.p.did.path-invalid`). [`webvh_path_from_url`] does that derivation.
-///
-/// Empty path / bare origin / `.well-known` → `None` (no `WEBVH_PATH`, let the
-/// server assign); `/webvh` → `webvh`; `/dids/daemon` → `dids/daemon`.
-pub(crate) fn webvh_path_from_url(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let path = after_scheme.split_once('/').map_or("", |(_, p)| p);
-    // Drop any query / fragment, then strip surrounding slashes.
-    let path = path.split(['?', '#']).next().unwrap_or("");
-    let trimmed = path.trim_matches('/');
-    if trimmed.is_empty() || trimmed == ".well-known" {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
+/// The DID path is governed solely by `WEBVH_PATH`; the service `URL` (the
+/// integration's DIDComm endpoint) never influences the DID name. When this
+/// auto-selects a server it does **not** derive a path from `URL` — absent
+/// `WEBVH_PATH` means the hosting server auto-assigns a random path. A
+/// consumer that wants an explicit path sets `WEBVH_PATH` in the ask's
+/// `integration_template_vars` directly (preserved by `inject_webvh_vars`),
+/// or drives the lower-level `run_provision_flight`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_provision(
     intent: VtaIntent,
@@ -417,18 +401,14 @@ pub async fn run_provision(
                         return Err(ProvisionError::WorkflowFailed(msg));
                     }
                 };
-                // Server-managed mode ignores `URL` and reads the path from
-                // `WEBVH_PATH`. When we auto-selected a server, lift the path
-                // out of the ask's `URL` var so the consumer's "path folded
-                // into URL" contract still works (else it's silently dropped →
-                // hosting server rejects the empty path). No-op for serverless
-                // (webvh_server_id == None), which uses `URL` directly.
-                let webvh_path = webvh_server_id.as_ref().and_then(|_| {
-                    ask.integration_template_vars
-                        .get("URL")
-                        .and_then(|v| v.as_str())
-                        .and_then(webvh_path_from_url)
-                });
+                // The DID path is governed solely by `WEBVH_PATH`; the
+                // service `URL` must never leak into the DID name, so we no
+                // longer derive a path from it. Absent `WEBVH_PATH` → the
+                // hosting server auto-assigns. An explicit path already in
+                // the ask's `integration_template_vars` is preserved by
+                // `inject_webvh_vars` (it only inserts when `Some`), so
+                // passing `None` here doesn't clobber it.
+                let webvh_path: Option<String> = None;
                 let mediator_did_clone = mediator_did.clone();
                 let rest_url_clone = rest_url.clone();
                 let _ = events.send(VtaEvent::PreflightDone {
@@ -558,44 +538,5 @@ mod tests {
     fn select_returns_neither_when_no_transport_advertised() {
         let r = resolved(None, None);
         assert_eq!(select_initial_transport(&r), InitialChoice::Neither);
-    }
-
-    #[test]
-    fn webvh_path_from_url_bare_origin_is_none() {
-        assert_eq!(webvh_path_from_url("https://host.example.com"), None);
-        assert_eq!(webvh_path_from_url("https://host.example.com/"), None);
-    }
-
-    #[test]
-    fn webvh_path_from_url_well_known_is_none() {
-        // `.well-known` is the webvh log marker, not a DID path.
-        assert_eq!(
-            webvh_path_from_url("https://host.example.com/.well-known"),
-            None
-        );
-    }
-
-    #[test]
-    fn webvh_path_from_url_single_segment() {
-        assert_eq!(
-            webvh_path_from_url("https://host.example.com/webvh"),
-            Some("webvh".to_string())
-        );
-    }
-
-    #[test]
-    fn webvh_path_from_url_multi_segment() {
-        assert_eq!(
-            webvh_path_from_url("https://host.example.com/dids/daemon"),
-            Some("dids/daemon".to_string())
-        );
-    }
-
-    #[test]
-    fn webvh_path_from_url_strips_query_and_fragment() {
-        assert_eq!(
-            webvh_path_from_url("https://host.example.com/dids/daemon?ts=1#x"),
-            Some("dids/daemon".to_string())
-        );
     }
 }

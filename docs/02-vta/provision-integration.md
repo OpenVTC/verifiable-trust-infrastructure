@@ -459,6 +459,22 @@ optionally `--var WEBVH_PATH=<path>`) to have the VTA publish the
 new integration's log directly to that server instead of
 self-hosting.
 
+`WEBVH_PATH` is the **only** input to the DID's path — the integration's
+service `URL` (its DIDComm endpoint) never influences the DID name. The
+value resolves as:
+
+- **omitted** → the hosting server auto-assigns a random path. This is
+  the default; re-running provisioning mints a fresh name each time
+  rather than colliding on a deterministic one.
+- **a label** (e.g. `--var WEBVH_PATH=acme`) → `did:webvh:<scid>:<host>:acme`.
+- **`.well-known`** (the root DID, served at `/.well-known/did.jsonl`) →
+  rejected on a shared hosting server, because a domain's root slot can
+  belong to only one tenant. Root DIDs are available only in **serverless**
+  mode (omit `WEBVH_SERVER` and self-host at the bare `URL`).
+
+An already-taken explicit path returns a clean `409 Conflict` ("path
+already taken"), not a server error.
+
 On a multi-tenant hosting server, add `--var WEBVH_DOMAIN=<name>` to
 pin which tenant domain the DID is allocated under (the
 `did:webvh:<scid>:<host>` host slot). Omit it to let the server run

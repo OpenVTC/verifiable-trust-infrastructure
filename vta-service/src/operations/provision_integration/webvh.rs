@@ -92,31 +92,34 @@ pub(super) fn take_webvh_path(
     Ok(Some(trimmed.to_string()))
 }
 
-/// Defense-in-depth fallback: derive a `WEBVH_PATH` from the `URL`
-/// template var when the operator folded the DID path into the URL but
-/// did not set `WEBVH_PATH` explicitly.
+/// Reject an explicit root (`.well-known`) DID request on a shared
+/// (server-managed) hosting server.
 ///
-/// Server-managed mode reads `WEBVH_PATH` and ignores `URL`, so a
-/// consumer that only set `URL` (`https://host.example.com/dids/daemon`)
-/// would otherwise hand the hosting server an empty path and get
-/// `e.p.did.path-invalid`. This reads `URL` (without removing it) and
-/// returns the path component for the caller to use as a fallback.
-///
-/// Read-only and conservative: bare origins, empty paths and
-/// `.well-known` (the webvh log marker, never a DID path) → `None`,
-/// letting the server run its own allocation. Mirrors the SDK-side
-/// `runner::webvh_path_from_url` so both layers agree on the derivation.
-pub(super) fn webvh_path_from_url_var(template_vars: &BTreeMap<String, Value>) -> Option<String> {
-    let url = template_vars.get("URL").and_then(|v| v.as_str())?;
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let path = after_scheme.split_once('/').map_or("", |(_, p)| p);
-    let path = path.split(['?', '#']).next().unwrap_or("");
-    let trimmed = path.trim_matches('/');
-    if trimmed.is_empty() || trimmed == ".well-known" {
-        None
-    } else {
-        Some(trimmed.to_string())
+/// A domain's `/.well-known/did.jsonl` slot can belong to only one
+/// tenant, so on a shared hosting server an explicit root request must
+/// fail loud — before any state is written — rather than collide on the
+/// remote. Serverless mode owns the whole domain and serves root from the
+/// bare `URL`, so it passes here (and never consults the path mode
+/// anyway). The check is unconditional: it rejects root on a shared
+/// server even when the slot happens to be free, because the rule is a
+/// policy, not a runtime occupancy test — hence `Validation` (400), not
+/// `Conflict` (409).
+pub(super) fn reject_root_on_shared_server(
+    path_mode: &vta_sdk::protocols::did_management::create::WebvhPathMode,
+    server_managed: bool,
+) -> Result<(), AppError> {
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+    if server_managed && matches!(path_mode, WebvhPathMode::WellKnown) {
+        return Err(AppError::Validation(
+            "WEBVH_PATH '.well-known' (root DID) is not available on a shared webvh \
+             hosting server — a domain's root slot can belong to only one tenant. Omit \
+             WEBVH_PATH for a server-assigned path, or set an explicit label. Root DIDs \
+             are only available in serverless mode (omit WEBVH_SERVER and self-host at \
+             the URL)."
+                .into(),
+        ));
     }
+    Ok(())
 }
 
 /// Remove and return the optional `WEBVH_DOMAIN` template var.
@@ -215,45 +218,41 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn webvh_path_from_url_var_absent_is_none() {
-        let v = vars(&[]);
-        assert_eq!(webvh_path_from_url_var(&v), None);
-    }
+    mod reject_root {
+        use super::super::reject_root_on_shared_server;
+        use crate::error::AppError;
+        use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
-    #[test]
-    fn webvh_path_from_url_var_bare_origin_is_none() {
-        let v = vars(&[("URL", json!("https://host.example.com"))]);
-        assert_eq!(webvh_path_from_url_var(&v), None);
-        let v = vars(&[("URL", json!("https://host.example.com/"))]);
-        assert_eq!(webvh_path_from_url_var(&v), None);
-    }
+        #[test]
+        fn root_on_shared_server_is_rejected() {
+            let err = reject_root_on_shared_server(&WebvhPathMode::WellKnown, true)
+                .expect_err("root on a shared server must be rejected");
+            assert!(
+                matches!(err, AppError::Validation(_)),
+                "must be a 400 validation error, got: {err:?}"
+            );
+            assert!(
+                err.to_string().contains(".well-known"),
+                "error should name the offending value: {err}"
+            );
+        }
 
-    #[test]
-    fn webvh_path_from_url_var_well_known_is_none() {
-        // `.well-known` is the webvh log marker, never a DID path.
-        let v = vars(&[("URL", json!("https://host.example.com/.well-known"))]);
-        assert_eq!(webvh_path_from_url_var(&v), None);
-    }
+        #[test]
+        fn root_in_serverless_mode_is_allowed() {
+            // `server_managed = false` — serverless owns the whole domain.
+            assert!(reject_root_on_shared_server(&WebvhPathMode::WellKnown, false).is_ok());
+        }
 
-    #[test]
-    fn webvh_path_from_url_var_single_segment() {
-        let v = vars(&[("URL", json!("https://host.example.com/webvh"))]);
-        assert_eq!(webvh_path_from_url_var(&v), Some("webvh".to_string()));
-    }
+        #[test]
+        fn explicit_path_on_shared_server_is_allowed() {
+            assert!(
+                reject_root_on_shared_server(&WebvhPathMode::Explicit("acme".into()), true).is_ok()
+            );
+        }
 
-    #[test]
-    fn webvh_path_from_url_var_multi_segment() {
-        let v = vars(&[("URL", json!("https://host.example.com/dids/daemon"))]);
-        assert_eq!(webvh_path_from_url_var(&v), Some("dids/daemon".to_string()));
-    }
-
-    #[test]
-    fn webvh_path_from_url_var_strips_query_and_fragment() {
-        let v = vars(&[(
-            "URL",
-            json!("https://host.example.com/dids/daemon?x=1#frag"),
-        )]);
-        assert_eq!(webvh_path_from_url_var(&v), Some("dids/daemon".to_string()));
+        #[test]
+        fn auto_assign_on_shared_server_is_allowed() {
+            assert!(reject_root_on_shared_server(&WebvhPathMode::AutoAssign, true).is_ok());
+        }
     }
 }

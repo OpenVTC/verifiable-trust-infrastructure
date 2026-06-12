@@ -118,9 +118,23 @@ fn parse_check_name_response(body: serde_json::Value) -> Result<RequestUriRespon
             .get("available")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        // `available == false` ⇒ the path is already taken: a clean,
+        // client-facing conflict (409), not a server fault. (Before the
+        // path-resolution fix, a deterministic URL-derived name collided
+        // here on every re-run and surfaced — wrongly — as a 500.)
+        // `available == true` but un-reserved is a genuine remote anomaly —
+        // we asked for `reserve=true`, the slot was free, yet nothing was
+        // granted — so that stays a 500.
+        if !available {
+            return Err(AppError::Conflict(
+                "webvh path already taken on the hosting server — choose a different \
+                 WEBVH_PATH, or omit it for a server-assigned path"
+                    .to_string(),
+            ));
+        }
         return Err(AppError::Internal(format!(
-            "remote refused reservation (available={available}); \
-             check-name with reserve=true expected to succeed"
+            "remote refused reservation despite the path being available \
+             (available={available}); check-name with reserve=true expected to succeed"
         )));
     }
     // Prefer the spec `record`; fall back to the flat legacy body.
@@ -426,16 +440,39 @@ mod tests {
         assert_eq!(resp.did_url, "https://did.example.com/alice/did.jsonl");
     }
 
-    /// A response with `reserved: false` is the host declining the
-    /// reservation (an explicit taken path); surface the `available` flag
-    /// in the error rather than silently fabricating a mnemonic.
+    /// `reserved: false` + `available: false` means the path is already
+    /// taken — a clean client-facing conflict (409), not a server fault.
+    /// (This is the case that, with a deterministic URL-derived name, used
+    /// to surface — wrongly — as a 500 on every re-run.)
     #[test]
-    fn not_reserved_is_an_error_carrying_availability() {
+    fn not_reserved_and_unavailable_is_a_conflict() {
         let body = json!({ "available": false, "reserved": false });
         let err = parse_check_name_response(body).expect_err("must error");
         assert!(
-            err.to_string().contains("available=false"),
-            "error should surface availability: {err}"
+            matches!(err, crate::error::AppError::Conflict(_)),
+            "taken path must be a 409 conflict, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("taken"),
+            "conflict should explain the path is taken: {err}"
+        );
+    }
+
+    /// `reserved: false` but `available: true` is a genuine remote anomaly
+    /// — we asked for `reserve=true`, the slot was free, yet nothing was
+    /// granted. That stays a 500 so it isn't mistaken for a normal
+    /// already-taken conflict.
+    #[test]
+    fn not_reserved_but_available_is_an_internal_anomaly() {
+        let body = json!({ "available": true, "reserved": false });
+        let err = parse_check_name_response(body).expect_err("must error");
+        assert!(
+            matches!(err, crate::error::AppError::Internal(_)),
+            "free-but-ungranted slot must be a 500 anomaly, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("available=true"),
+            "anomaly should surface availability: {err}"
         );
     }
 
