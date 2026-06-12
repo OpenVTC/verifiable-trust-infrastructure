@@ -110,10 +110,17 @@ batched purges that haven't yet flushed).
 
 ## Cross-community recognition
 
-A peer community's member presents their VMC to our VTC and asks
-for a session. Our VTC verifies the foreign credential, checks the
-peer registry, runs our `cross_community_roles.rego` to map their
-role to ours, and (on success) mints a session.
+A peer community's member asks our VTC for a session by **presenting**
+their `(VEC, VMC)` pair inside a holder-signed Verifiable Presentation.
+A VEC + VMC are bearer artifacts: anyone who captures the pair (a relayed
+join, an audit log, a compromised member device) would otherwise hold a
+replayable impersonation token for that subject. So recognition is a
+**two-step, proof-of-possession-bound** flow (P0.2, PRs #351 + #354) —
+the caller first fetches a single-use challenge, then presents the
+credentials inside a VP whose holder proof commits to that challenge.
+Our VTC verifies the holder + issuer proofs, checks the peer registry,
+runs `cross_community_roles.rego` to map their role to ours, and (on
+success) mints a session.
 
 ```mermaid
 sequenceDiagram
@@ -122,36 +129,59 @@ sequenceDiagram
     participant FOREIGN as Their VTC
     participant TR as Trust Registry
 
-    M->>US: POST /v1/auth/recognise<br/>(foreign VMC envelope)
-    US->>US: Verify VMC signature<br/>against foreign issuer's resolved DID
-    US->>FOREIGN: GET /v1/status-lists/revocation
-    FOREIGN-->>US: Status list
-    US->>US: Check bit at credentialStatus.statusListIndex
-    alt slot revoked
-        US-->>M: 403 ForeignCredentialRevoked
-    else slot clear
-        US->>TR: GET /registry/v2/membership/<foreign-issuer>
-        TR-->>US: Active / not-active
-        alt foreign issuer not in registry
-            US-->>M: 403 IssuerNotRecognised
-        else recognised
-            US->>US: Evaluate cross_community_roles.rego
-            US->>US: Mint session<br/>TTL = min(JWT-default, VMC.validUntil)
-            US-->>M: { access_token, refresh_token }
+    M->>US: POST /v1/auth/recognise/challenge
+    US-->>M: { nonce, expires_at }<br/>(single-use, TTL'd, bound to our DID)
+    M->>US: POST /v1/auth/recognise<br/>(VP: holder proof over nonce + our DID;<br/>embeds VEC + VMC)
+    US->>US: Consume nonce (single-use)
+    US->>US: Verify holder proof + each embedded issuer proof
+    US->>US: Require VP holder == VEC subject == VMC subject
+    alt holder proof / subject mismatch
+        US-->>M: 401 / 403
+    else proofs valid
+        US->>FOREIGN: GET /v1/status-lists/revocation
+        FOREIGN-->>US: Status list
+        US->>US: Check bit at credentialStatus.statusListIndex
+        alt slot revoked
+            US-->>M: 403 ForeignCredentialRevoked
+        else slot clear
+            US->>TR: GET /registry/v2/membership/<foreign-issuer>
+            TR-->>US: Active / not-active
+            alt foreign issuer not in registry
+                US-->>M: 403 IssuerNotRecognised
+            else recognised
+                US->>US: Evaluate cross_community_roles.rego
+                US->>US: Mint session<br/>TTL = min(JWT-default, VEC.validUntil, VMC.validUntil)
+                US-->>M: { access_token, refresh_token }
+            end
         end
     end
 ```
 
 **Session-mint hardening invariants** (every one is load-bearing):
 
-- Foreign VMC must pass **live** status-list revocation check.
+- **Holder proof-of-possession.** The VP's `eddsa-jcs-2022` holder proof
+  (`proofPurpose: authentication`) must verify and commit to the
+  single-use challenge `nonce` (freshness/replay) plus this VTC's DID as
+  `domain` (audience). A captured VEC + VMC is inert without the
+  subject's private key, and a replayed VP finds its nonce already
+  consumed.
+- **Subject binding.** The verified VP holder DID must equal the VEC
+  `credentialSubject.id`, and the VMC subject must equal the VEC subject.
+  The VMC only attests "live, non-revoked member"; without the
+  `vmc.subject == vec.subject` check, member A's role VEC paired with any
+  *other* current member B's VMC (same issuer) would pass the gate.
+- Foreign VEC + VMC must pass a **live** status-list revocation check.
 - Foreign issuer must be in the trust-registry recognition graph
   **at mint time**.
 - Minted session TTL = `min(JWT-audience-default,
   foreign-VEC.validUntil, foreign-VMC.validUntil)`.
-- **No caching** — every mint re-runs policy + status-list + registry
-  checks. A peer community removed mid-session doesn't retain
-  access on refresh.
+- **No caching, no refresh** — every mint re-runs holder/issuer proof +
+  policy + status-list + registry checks. Cross-community sessions
+  (`xc-`-prefixed) never refresh; a peer community removed mid-session
+  loses access when the clamped TTL elapses.
+- **Untrusted denied-path audit actor.** On a rejected recognise the
+  audit envelope's actor is the cryptographically-proven VP holder (the
+  signer), never an unverified DID lifted from the credential body.
 
 ## Configuration
 

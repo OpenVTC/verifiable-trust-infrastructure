@@ -599,6 +599,23 @@ claim maps to a local ACL role. Default deny-all.
 
 **Session-mint hardening.**
 
+- **Holder proof-of-possession (P0.2, PR #354).** Recognition is a
+  two-step flow: `POST /v1/auth/recognise/challenge` issues a single-use,
+  TTL'd `nonce` bound to this VTC's DID, then `POST /v1/auth/recognise`
+  carries the `(VEC, VMC)` pair **inside a holder-signed VP** whose
+  `eddsa-jcs-2022` proof (`proofPurpose: authentication`) commits to that
+  nonce (freshness/replay) and our DID as `domain` (audience). The mint
+  verifies the holder proof plus each embedded issuer proof and refuses
+  unless the **verified VP holder == VEC subject**. A bare `{vec, vmc}`
+  body is no longer accepted — a captured pair is inert without the
+  subject's key, and a replayed VP finds its nonce consumed.
+- **Subject binding (P0.2, PR #351).** The VMC subject must equal the VEC
+  subject. The VMC's only job is the "live, non-revoked member" gate;
+  without this check, member A's role VEC + any other current member B's
+  VMC (same issuer) would pass.
+- **Denied-path audit actor (P0.2).** A rejected recognise records the
+  cryptographically-proven VP holder as actor, never an unverified DID
+  read from the credential body.
 - The foreign VEC must pass StatusList revocation check at
   session-mint time (the issuer's status list URL is resolved live).
 - The foreign issuer must be present in the trust-registry's
@@ -832,11 +849,19 @@ Trust Task ID.
 - Challenge-response with JWT audience `"VTC"` — cross-audience
   tokens rejected.
 - Sessions issued from REST (Bearer) or DIDComm (authcrypt sender).
+- **DIDComm sender is the authenticated key, not the plaintext `from`
+  (P0.3, PR #350).** The router requires authcrypt (`require_authenticated`,
+  no anonymous sender) and every handler derives the sender DID from
+  `meta.encrypted_from_kid` (the key that actually encrypted the message),
+  rejecting any message whose plaintext `from` ≠ the authcrypt key DID.
+  This closes the "self-remove as the victim" and impersonation classes
+  on join-submit / accept / self-remove / status.
 - **Step-up reauth** required for: passkey enrolment / revocation,
   admin promotion, emergency operations. Implemented as a fresh
   WebAuthn user-verification ceremony embedded in the request.
-- Cross-community sessions (§8.4): TTL clamped to inputs, recognition
-  re-evaluated on every refresh.
+- Cross-community sessions (§8.4): TTL clamped to inputs; recognition is
+  re-evaluated on every **mint** — these sessions do **not** refresh
+  (see §8.4).
 
 ## 10. Member lifecycle
 
@@ -1151,6 +1176,18 @@ Bilateral counter-signing is v2.
 Public website lives on filesystem at `website.root_dir`, not in
 fjall (§3-K).
 
+**Encryption at rest (P0.7, PR #364).** The keyspaces holding secret or
+forgery-sensitive material — `install` (the install-token ephemeral
+Ed25519 private key), `audit_key` (the HMAC actor-hash key), and
+`passkey` (WebAuthn state) — are opened with `with_encryption`. The
+storage key is HKDF-derived from the bundle Ed25519 seed (info
+`vtc-storage-key/v1`) in `init_auth`. Back-compat for pre-encryption
+deployments is a one-shot, idempotent, crash-safe
+`KeyspaceHandle::migrate_to_encrypted` pass at boot — **not** a
+try-decrypt-else-plaintext read fallback, which would reintroduce the
+cut-and-paste downgrade hole in the VTA-shared encryption module. The
+signing bundle itself lives in the seed-store backend, not a keyspace.
+
 ## 14. Operational
 
 ### 14.1 Backup / restore
@@ -1297,6 +1334,23 @@ the route handler then enforces the operator-configured
 `website.max_bundle_size_mb` (default 50) and
 `max_file_size_mb` (default 10) at runtime. All other routes
 inherit 1 MB.
+
+### 14.5 Phase 0 security hardening (status)
+
+The Phase 0 review (`tasks/vtc-architecture-plan.md`) tracked a set of
+security/correctness fixes landed independently of the phase sequence.
+The three with cross-cutting wire/storage implications are recorded at
+their canonical sections; this index keeps them findable:
+
+| Item | What it hardened | Section | PRs |
+|---|---|---|---|
+| **P0.2** | Cross-community `recognise`: holder proof-of-possession + challenge nonce + audience binding, `vmc.subject == vec.subject`, untrusted denied-path audit actor | §8.4 | #351, #354 |
+| **P0.3** | DIDComm handlers authenticate the sender via `encrypted_from_kid` (authcrypt key), reject plaintext-`from` impersonation + anoncrypt | §9.7 | #350 |
+| **P0.7** | Encryption at rest for `install` / `audit_key` / `passkey`; HKDF storage key, migrate-not-fallback back-compat | §13 | #364 |
+
+Note: the workspace VTA backlog has its own, unrelated **P0.2**
+(enclave anti-rollback anchor) — the IDs collide across the two service
+backlogs; the entries above are the VTC plan's.
 
 ## 15. CLI
 
