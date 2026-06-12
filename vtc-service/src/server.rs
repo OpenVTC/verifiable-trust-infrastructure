@@ -328,7 +328,7 @@ pub async fn run(
         audit_ks.clone(),
         audit_key_ks.clone(),
     )
-    .await;
+    .await?;
 
     // P0.7: `install` (ephemeral install-token signing key) and `passkey`
     // (WebAuthn state) also hold secrets in the clear. `init_auth` already
@@ -1079,26 +1079,37 @@ async fn init_auth(
     secret_store: &dyn SecretStore,
     audit_ks: KeyspaceHandle,
     audit_key_ks: KeyspaceHandle,
-) -> (
-    Option<DIDCacheClient>,
-    Option<Arc<ThreadedSecretsResolver>>,
-    Option<Arc<JwtKeys>>,
-    Option<ATM>,
-    Option<Arc<InstallTokenSigner>>,
-    Option<AuditWriter>,
-    Option<Arc<crate::credentials::LocalSigner>>,
-    // P0.7: at-rest storage-encryption key (HKDF of the bundle Ed25519
-    // seed). `None` only when no key material is configured yet (pre-setup)
-    // or derivation fails — the caller then leaves keyspaces unencrypted.
-    // The `audit_key` keyspace is already migrated + wrapped with this key
-    // before return; the caller re-wraps `install` + `passkey`.
-    Option<[u8; 32]>,
-) {
+) -> Result<
+    (
+        Option<DIDCacheClient>,
+        Option<Arc<ThreadedSecretsResolver>>,
+        Option<Arc<JwtKeys>>,
+        Option<ATM>,
+        Option<Arc<InstallTokenSigner>>,
+        Option<AuditWriter>,
+        Option<Arc<crate::credentials::LocalSigner>>,
+        // P0.7: at-rest storage-encryption key (HKDF of the bundle Ed25519
+        // seed). `None` only when no key material is configured yet (pre-setup)
+        // or derivation fails — the caller then leaves keyspaces unencrypted.
+        // The `audit_key` keyspace is already migrated + wrapped with this key
+        // before return; the caller re-wraps `install` + `passkey`.
+        Option<[u8; 32]>,
+    ),
+    AppError,
+> {
+    // P0.9: a daemon with no `vtc_did` is legitimately pre-setup — it boots
+    // degraded (auth/issue/install routes 503) so the operator can run
+    // `vtc setup`. But once `vtc_did` IS configured, an empty / erroring /
+    // mismatched secret store is a *broken* identity (lost keyring entry,
+    // wrong backend, wrong service name). Those used to return all-`None`
+    // too, so the daemon served a healthy listener while every auth call
+    // 503'd and the only signal was a log line. Fail the boot hard instead so
+    // monitoring sees a non-zero exit, not a zombie.
     let vtc_did = match &config.vtc_did {
         Some(did) => did.clone(),
         None => {
             warn!("vtc_did not configured — auth endpoints will not work (run setup first)");
-            return (None, None, None, None, None, None, None, None);
+            return Ok((None, None, None, None, None, None, None, None));
         }
     };
 
@@ -1110,12 +1121,19 @@ async fn init_auth(
     let stored = match secret_store.get().await {
         Ok(Some(s)) => s,
         Ok(None) => {
-            warn!("no key material found — auth endpoints will not work (run setup first)");
-            return (None, None, None, None, None, None, None, None);
+            return Err(AppError::Config(format!(
+                "vtc_did is configured ({vtc_did}) but the secret store is empty — key \
+                 material is missing (lost keyring entry, wrong secrets backend, or a \
+                 different keyring_service?). Run `vtc setup` or restore the secret; \
+                 refusing to boot into an auth-dead state"
+            )));
         }
         Err(e) => {
-            warn!("failed to load key material: {e} — auth endpoints will not work");
-            return (None, None, None, None, None, None, None, None);
+            return Err(AppError::Config(format!(
+                "vtc_did is configured ({vtc_did}) but the secret store failed to load: {e} \
+                 — check the backend's availability and permissions; refusing to boot into \
+                 an auth-dead state"
+            )));
         }
     };
 
@@ -1123,8 +1141,11 @@ async fn init_auth(
         match crate::setup::bundle::decode_secret_store_value(&vtc_did, &stored) {
             Ok(pair) => pair,
             Err(msg) => {
-                warn!("{msg}");
-                return (None, None, None, None, None, None, None, None);
+                return Err(AppError::Config(format!(
+                    "vtc_did is configured ({vtc_did}) but the stored key material does not \
+                     match it: {msg}. This usually means the secret store holds a different \
+                     identity's bundle; refusing to boot into an auth-dead state"
+                )));
             }
         };
 
@@ -1204,7 +1225,7 @@ async fn init_auth(
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create DID resolver: {e} — auth endpoints will not work");
-            return (
+            return Ok((
                 None,
                 None,
                 None,
@@ -1213,7 +1234,7 @@ async fn init_auth(
                 audit_writer,
                 credential_signer,
                 storage_key,
-            );
+            ));
         }
     };
 
@@ -1238,7 +1259,7 @@ async fn init_auth(
             Ok(k) => k,
             Err(e) => {
                 warn!("failed to load JWT signing key: {e} — auth endpoints will not work");
-                return (
+                return Ok((
                     Some(did_resolver),
                     Some(Arc::new(secrets_resolver)),
                     None,
@@ -1247,14 +1268,14 @@ async fn init_auth(
                     audit_writer,
                     credential_signer,
                     storage_key,
-                );
+                ));
             }
         },
         None => {
             warn!(
                 "auth.jwt_signing_key not configured — auth endpoints will not work (run setup first)"
             );
-            return (
+            return Ok((
                 Some(did_resolver),
                 Some(Arc::new(secrets_resolver)),
                 None,
@@ -1263,7 +1284,7 @@ async fn init_auth(
                 audit_writer,
                 credential_signer,
                 storage_key,
-            );
+            ));
         }
     };
 
@@ -1309,7 +1330,7 @@ async fn init_auth(
 
     info!("auth initialized for DID {vtc_did}");
 
-    (
+    Ok((
         Some(did_resolver),
         Some(secrets_resolver),
         Some(Arc::new(jwt_keys)),
@@ -1318,7 +1339,7 @@ async fn init_auth(
         audit_writer,
         credential_signer,
         storage_key,
-    )
+    ))
 }
 
 /// Derive the at-rest storage-encryption key (P0.7).
@@ -1419,5 +1440,93 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => info!("received SIGINT"),
         () = terminate => info!("received SIGTERM"),
+    }
+}
+
+#[cfg(test)]
+mod p0_9_init_auth_tests {
+    //! P0.9: a configured-but-broken identity must fail the boot hard, while
+    //! a daemon with no `vtc_did` still boots degraded for first-run setup.
+    use super::*;
+    use crate::keys::seed_store::PlaintextSecretStore;
+    use std::future::Future;
+    use std::pin::Pin;
+    use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
+
+    fn temp_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        (store, dir)
+    }
+
+    fn config_with_did(did: Option<&str>) -> AppConfig {
+        let mut c: AppConfig = toml::from_str("").unwrap();
+        c.vtc_did = did.map(str::to_string);
+        c
+    }
+
+    /// SecretStore whose `get` always errors — models a broken backend
+    /// (keyring locked, cloud perms revoked).
+    struct ErroringStore;
+    impl SecretStore for ErroringStore {
+        fn get(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, AppError>> + Send + '_>> {
+            Box::pin(async { Err(AppError::SecretStore("backend unreachable".into())) })
+        }
+        fn set(
+            &self,
+            _secret: &[u8],
+        ) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    // The Ok tuple isn't `Debug`, so `expect_err` won't compile — match instead.
+    async fn assert_hard_fails(config: &AppConfig, secret: &dyn SecretStore, store: &Store) {
+        let audit = store.keyspace("audit").unwrap();
+        let audit_key = store.keyspace("audit_key").unwrap();
+        match init_auth(config, secret, audit, audit_key).await {
+            Err(AppError::Config(_)) => {}
+            Err(other) => panic!("expected Config error, got {other:?}"),
+            Ok(_) => panic!("expected a hard boot failure, but init_auth booted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn boots_degraded_when_vtc_did_unset() {
+        let (store, _d) = temp_store();
+        let audit = store.keyspace("audit").unwrap();
+        let audit_key = store.keyspace("audit_key").unwrap();
+        // Secret store is never consulted when there's no vtc_did.
+        let result = init_auth(&config_with_did(None), &ErroringStore, audit, audit_key).await;
+        let tuple = result.expect("no vtc_did must boot degraded, not error");
+        assert!(
+            tuple.0.is_none() && tuple.2.is_none(),
+            "degraded boot yields no resolver / jwt keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn hard_fails_when_vtc_did_set_but_store_empty() {
+        let (store, dir) = temp_store();
+        // Empty plaintext store → get() yields Ok(None).
+        let secret = PlaintextSecretStore::new(dir.path());
+        assert_hard_fails(&config_with_did(Some("did:key:zVtc")), &secret, &store).await;
+    }
+
+    #[tokio::test]
+    async fn hard_fails_when_store_errors() {
+        let (store, _d) = temp_store();
+        assert_hard_fails(
+            &config_with_did(Some("did:key:zVtc")),
+            &ErroringStore,
+            &store,
+        )
+        .await;
     }
 }
