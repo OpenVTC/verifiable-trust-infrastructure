@@ -415,6 +415,7 @@ pub struct TestAppContext {
     pub sessions_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
     pub keys_ks: KeyspaceHandle,
+    pub vault_ks: KeyspaceHandle,
     pub backup_bundles_ks: KeyspaceHandle,
     pub backup_blob_dir: std::path::PathBuf,
     pub config: Arc<RwLock<AppConfig>>,
@@ -478,6 +479,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
     let audit_ks = store.keyspace("audit").unwrap();
     let cache_ks = store.keyspace("cache").unwrap();
     let vault_ks = store.keyspace("vault").unwrap();
+    let vault_ks_ctx = vault_ks.clone();
     let service_state_ks = store.keyspace("service_state").unwrap();
     let imported_ks = store.keyspace("imported_secrets").unwrap();
     let sealed_nonces_ks = store.keyspace("sealed_nonces").unwrap();
@@ -603,6 +605,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         sessions_ks,
         acl_ks,
         keys_ks,
+        vault_ks: vault_ks_ctx,
         backup_bundles_ks,
         backup_blob_dir,
         config,

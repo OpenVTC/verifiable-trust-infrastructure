@@ -49,6 +49,7 @@ mod auth;
 mod backup;
 mod config;
 mod contexts;
+mod credential_exchange;
 mod device;
 mod did_templates;
 mod discovery;
@@ -204,6 +205,7 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     v.extend(backup::DISPATCHED_URIS);
     v.extend(config::DISPATCHED_URIS);
     v.extend(contexts::DISPATCHED_URIS);
+    v.extend(credential_exchange::DISPATCHED_URIS);
     v.extend(device::DISPATCHED_URIS);
     v.extend(did_templates::DISPATCHED_URIS);
     v.extend(discovery::DISPATCHED_URIS);
@@ -445,6 +447,23 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         // ─── Discovery ───────────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => {
             discovery::handle_capabilities(state, auth, doc).await
+        }
+        // ─── Credential-exchange: deferred-presentation approval ─────
+        //
+        // The holder operator's out-of-band surface over deferred
+        // presentations (the `credential-exchange/*` family keeps its
+        // URIs in `vta_sdk::protocols::credential_exchange`, not the
+        // central `trust_tasks` registry — so these are matched on that
+        // module's consts and sit outside the `ALL_URIS` parity harness,
+        // like the existing `query`/`present` message types).
+        vta_sdk::protocols::credential_exchange::PENDING_LIST => {
+            credential_exchange::handle_pending_list(state, auth, doc).await
+        }
+        vta_sdk::protocols::credential_exchange::PENDING_APPROVE => {
+            credential_exchange::handle_pending_approve(state, auth, doc).await
+        }
+        vta_sdk::protocols::credential_exchange::PENDING_DENY => {
+            credential_exchange::handle_pending_deny(state, auth, doc).await
         }
         // ─── Vault slice (public 0.1 spec) ──────────────────────────
         vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1 => vault::handle_list(state, auth, doc).await,

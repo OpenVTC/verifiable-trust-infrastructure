@@ -27,6 +27,7 @@
 
 use affinidi_openid4vci::{CredentialOffer, CredentialRequest, CredentialResponse};
 use affinidi_openid4vp::DcqlQuery;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -42,6 +43,24 @@ pub const ISSUE: &str = "https://trusttasks.org/spec/credential-exchange/issue/1
 pub const QUERY: &str = "https://trusttasks.org/spec/credential-exchange/query/1.0";
 /// holder → verifier: a presentation.
 pub const PRESENT: &str = "https://trusttasks.org/spec/credential-exchange/present/1.0";
+
+// ── Deferred-presentation approval surface (holder operator → own VTA) ──
+//
+// When a verifier the holder hasn't pre-trusted sends a `query/1.0`, the VTA
+// **defers** it: it persists a pending record and tells the verifier "consent
+// required" (see `vta-service`'s `handle_credential_query`). These three tasks
+// are the holder operator's out-of-band surface over that backlog — list the
+// deferrals, then approve (re-present, producing the `vp_token`) or deny. All
+// three are **super-admin only**: the credentials presented are the VTA's own.
+
+/// holder operator → own VTA: list deferred presentations awaiting a decision.
+pub const PENDING_LIST: &str = "https://trusttasks.org/spec/credential-exchange/pending-list/1.0";
+/// holder operator → own VTA: approve a deferral and re-present (returns the
+/// `vp_token` in a [`PresentBody`]).
+pub const PENDING_APPROVE: &str =
+    "https://trusttasks.org/spec/credential-exchange/pending-approve/1.0";
+/// holder operator → own VTA: deny a deferral (no presentation is made).
+pub const PENDING_DENY: &str = "https://trusttasks.org/spec/credential-exchange/pending-deny/1.0";
 
 /// `offer/1.0` — issuer → holder. An OID4VCI credential offer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +106,71 @@ pub struct QueryBody {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresentBody {
     pub vp_token: Value,
+}
+
+/// `pending-list/1.0` request — empty. The caller's super-admin authentication
+/// scopes the result to this VTA's own deferred presentations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PendingListBody {}
+
+/// One deferred presentation awaiting the holder's decision — the
+/// approver-facing view. The internal record additionally stores the full DCQL
+/// query for a byte-faithful re-present; that is **not** exposed here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingPresentationSummary {
+    /// Approval handle (the verifier's DIDComm thread id).
+    pub id: String,
+    /// The verifier that asked. The approved presentation binds to this audience.
+    pub verifier_did: String,
+    /// Every held credential the query would disclose — what the approver authorizes.
+    pub requested: Vec<RequestedCredentialSummary>,
+    /// The verifier's stated purpose (purpose binding), shown to the approver.
+    pub purpose: String,
+    /// When the deferral was recorded.
+    pub created_at: DateTime<Utc>,
+    /// After this the deferral is stale and approval refuses (the verifier's
+    /// nonce is no longer fresh).
+    pub expires_at: DateTime<Utc>,
+}
+
+/// One held credential a deferred query asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestedCredentialSummary {
+    /// The DCQL `credential_query_id` this credential satisfied.
+    pub credential_query_id: String,
+    /// The held credential that would satisfy it.
+    pub credential_id: String,
+    /// The claims the query asks to disclose.
+    pub claims: Vec<String>,
+}
+
+/// `pending-list/1.0` response — the actionable deferrals (`Pending`, not yet
+/// expired). Terminal and stale records are omitted (they can't be acted on).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PendingListResponse {
+    pub pending: Vec<PendingPresentationSummary>,
+}
+
+/// `pending-approve/1.0` request — the deferral id to approve and re-present.
+/// The response is a [`PresentBody`] carrying the freshly-minted `vp_token`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingApproveBody {
+    pub id: String,
+}
+
+/// `pending-deny/1.0` request — the deferral id to refuse.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDenyBody {
+    pub id: String,
+}
+
+/// `pending-deny/1.0` response — the refused id and its terminal status
+/// (`"denied"`). The record is removed (delete-on-terminal), so a follow-up
+/// list won't show it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingDenyResponse {
+    pub id: String,
+    pub status: String,
 }
 
 #[cfg(test)]
@@ -144,7 +228,16 @@ mod tests {
 
     #[test]
     fn uris_are_versioned_and_distinct() {
-        let all = [OFFER, REQUEST, ISSUE, QUERY, PRESENT];
+        let all = [
+            OFFER,
+            REQUEST,
+            ISSUE,
+            QUERY,
+            PRESENT,
+            PENDING_LIST,
+            PENDING_APPROVE,
+            PENDING_DENY,
+        ];
         for u in all {
             assert!(u.starts_with("https://trusttasks.org/spec/credential-exchange/"));
             assert!(u.ends_with("/1.0"));

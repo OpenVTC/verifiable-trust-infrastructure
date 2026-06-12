@@ -990,10 +990,11 @@ pub async fn defer_presentation(
 
 /// Approve a deferred presentation: mint the query-scoped consent the holder is
 /// authorizing and **re-present**. ACL-gated via `auth` (the same holder-key
-/// gate as [`present_query`]). Marks the record `Approved` and returns the
-/// `vp_token`.
+/// gate as [`present_query`]). On success the record is **deleted**
+/// (delete-on-terminal, P0.12b) — the `vp_token` has been produced and there is
+/// nothing left to act on, so no `Approved` tombstone is left for the sweeper.
 ///
-/// Refuses a record that isn't `Pending` (already approved / denied) or whose
+/// Refuses a record that is absent (already approved/denied → deleted) or whose
 /// deferral window has lapsed (`expires_at` past — the verifier's nonce is stale).
 #[allow(clippy::too_many_arguments)]
 pub async fn approve_pending_presentation(
@@ -1005,10 +1006,12 @@ pub async fn approve_pending_presentation(
     status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentBody, AppError> {
-    let mut record = pending::get(vault, id)
+    let record = pending::get(vault, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("no pending presentation `{id}`")))?;
 
+    // With delete-on-terminal a non-`Pending` record cannot persist, but guard
+    // anyway: a legacy `Approved`/`Denied` row predating P0.12b is not actionable.
     if record.status != pending::PendingStatus::Pending {
         return Err(AppError::Validation(format!(
             "pending presentation `{id}` is {:?}, not awaiting approval",
@@ -1043,13 +1046,15 @@ pub async fn approve_pending_presentation(
     )
     .await?;
 
-    record.status = pending::PendingStatus::Approved;
-    pending::put(vault, &record).await?;
+    // Delete-on-terminal (P0.12b): the presentation is delivered, so drop the
+    // record now rather than leaving an `Approved` tombstone for the sweeper.
+    pending::remove(vault, id).await?;
     Ok(present)
 }
 
-/// Deny a deferred presentation — the holder refuses disclosure. Records the
-/// refusal (no presentation is made) and returns the updated record.
+/// Deny a deferred presentation — the holder refuses disclosure. No presentation
+/// is made; the record is **deleted** (delete-on-terminal, P0.12b) and the
+/// removed record (status `Denied`) is returned for the caller's response.
 pub async fn deny_pending_presentation(
     vault: &KeyspaceHandle,
     id: &str,
@@ -1063,8 +1068,10 @@ pub async fn deny_pending_presentation(
             record.status
         )));
     }
+    // Delete-on-terminal: nothing is left to act on after a denial, so remove
+    // the record rather than leaving a `Denied` tombstone for the sweeper.
+    pending::remove(vault, id).await?;
     record.status = pending::PendingStatus::Denied;
-    pending::put(vault, &record).await?;
     Ok(record)
 }
 
@@ -2287,7 +2294,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn defer_then_approve_presents_and_marks_approved() {
+    async fn defer_then_approve_presents_and_deletes_on_terminal() {
         use crate::acl::Role;
 
         let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
@@ -2349,20 +2356,21 @@ mod tests {
         assert_eq!(parsed.disclosures.len(), 1);
         assert!(parsed.kb_jwt.is_some(), "holder kb-jwt must be present");
 
-        // The record is now Approved, and a second approval refuses.
-        assert_eq!(
-            pending::get(&vault, "req-1").await.unwrap().unwrap().status,
-            pending::PendingStatus::Approved
+        // Delete-on-terminal: the record is gone, and a second approval finds
+        // nothing to approve.
+        assert!(
+            pending::get(&vault, "req-1").await.unwrap().is_none(),
+            "approved record is deleted, not left as an Approved tombstone"
         );
         let twice =
             approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-1", None, now)
                 .await
                 .unwrap_err();
-        assert!(matches!(twice, AppError::Validation(_)), "{twice:?}");
+        assert!(matches!(twice, AppError::NotFound(_)), "{twice:?}");
     }
 
     #[tokio::test]
-    async fn deny_marks_denied_and_blocks_approval() {
+    async fn deny_deletes_on_terminal_and_blocks_approval() {
         use crate::acl::Role;
 
         let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
@@ -2379,12 +2387,17 @@ mod tests {
             .await
             .expect("defer");
 
+        // The returned record reflects the terminal status, but the row is gone.
         let denied = deny_pending_presentation(&vault, "req-2")
             .await
             .expect("deny");
         assert_eq!(denied.status, pending::PendingStatus::Denied);
+        assert!(
+            pending::get(&vault, "req-2").await.unwrap().is_none(),
+            "denied record is deleted, not left as a Denied tombstone"
+        );
 
-        // A denied record cannot then be approved.
+        // A denied (now-deleted) record cannot then be approved.
         let auth = AuthClaims {
             role: Role::Admin,
             allowed_contexts: Vec::new(),
@@ -2394,7 +2407,7 @@ mod tests {
             approve_pending_presentation(&vault, &keys_ks, &seed_store, &auth, "req-2", None, now)
                 .await
                 .unwrap_err();
-        assert!(matches!(err, AppError::Validation(_)), "{err:?}");
+        assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
     }
 
     #[tokio::test]
@@ -2415,13 +2428,25 @@ mod tests {
         defer_presentation(&vault, "live", verifier, requested(), &query, now)
             .await
             .expect("defer live");
-        // (2) Terminal (denied) — must be reclaimed.
-        defer_presentation(&vault, "terminal", verifier, requested(), &query, now)
-            .await
-            .expect("defer terminal");
-        deny_pending_presentation(&vault, "terminal")
-            .await
-            .expect("deny");
+        // (2) Terminal (denied) — must be reclaimed. Approve/deny now
+        //     delete-on-terminal (P0.12b), so a terminal row only survives as a
+        //     legacy/stuck record; seed one directly to exercise the sweeper's
+        //     terminal-reclaim backstop.
+        pending::put(
+            &vault,
+            &pending::PendingPresentation {
+                id: "terminal".into(),
+                verifier_did: verifier.into(),
+                requested: requested(),
+                purpose: query.purpose.clone(),
+                query: query.clone(),
+                status: pending::PendingStatus::Denied,
+                created_at: now,
+                expires_at: now + chrono::Duration::hours(24),
+            },
+        )
+        .await
+        .expect("seed terminal");
         // (3) Stale pending (recorded 48h ago → past the 24h window) — reclaimed.
         defer_presentation(
             &vault,
