@@ -44,6 +44,7 @@ tee = [
   "webvh",
   "dep:libc",
   "dep:aws-sdk-kms",
+  "dep:aws-sdk-dynamodb",
   "dep:aws-config",
   "dep:aws-lc-rs",
   "dep:didwebvh-rs",
@@ -209,6 +210,9 @@ aes-gcm = { workspace = true }
 argon2 = "0.5"
 hmac = "0.13"
 aws-sdk-kms = { version = "1", optional = true }
+# Single-item monotonic counter for the P0.2b anti-rollback anchor (CAS via
+# conditional UpdateItem). Same release train as aws-sdk-kms / aws-config.
+aws-sdk-dynamodb = { version = "1", optional = true }
 # RSA-OAEP for KMS CiphertextForRecipient unwrap. aws-lc-rs is AWS's own
 # BoringSSL-based crypto lib; constant-time operations, already transitive
 # via aws-sdk-* so no new build-time cost. Replaces the RustCrypto `rsa`

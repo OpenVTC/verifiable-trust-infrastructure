@@ -424,6 +424,36 @@ pub struct TeeKmsConfig {
     /// Mirrors [`Self::allow_fingerprint_init`].
     #[serde(default)]
     pub allow_anchor_init: bool,
+    /// External anti-rollback counter (P0.2b). When set, the integrity manifest
+    /// version is pinned to a DynamoDB single-item counter the parent can't roll
+    /// back, upgrading detection from "deletion / inconsistent tamper" (P0.2a)
+    /// to "consistent storage rollback". Absent → manifest-only (P0.2a).
+    #[serde(default)]
+    pub anchor: Option<TeeAnchorConfig>,
+    /// Break-glass: boot even when the external anchor counter can't be reached
+    /// or disagrees with the local manifest (P0.2b).
+    ///
+    /// **Default: false.** If the parent denies egress to the counter the
+    /// enclave fails closed (a DoS, not an integrity breach). Setting this true
+    /// lets it boot manifest-only when the counter is unreachable, or re-anchor
+    /// the counter to the MAC-trusted local manifest when they diverge — for
+    /// incident recovery only. Safe to expose as config because TEE config is
+    /// baked into the measured EIF, so the parent can't flip it at runtime.
+    #[serde(default)]
+    pub allow_unanchored: bool,
+}
+
+/// External anti-rollback anchor configuration (P0.2b — DynamoDB counter).
+#[cfg(feature = "tee")]
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TeeAnchorConfig {
+    /// DynamoDB table holding the single-item monotonic version counter (one
+    /// item per VTA DID). The region is reused from [`TeeKmsConfig::region`].
+    pub table_name: String,
+    // NOTE: `writer_key_arn` (the KMS-attestation-gated writer credential that
+    // resists root-on-parent) lands in P0.2c. In P0.2b the counter is written
+    // with the instance-role credentials, so it resists storage/backup rollback
+    // but NOT a root-on-parent attacker who shares those credentials.
 }
 
 // KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries

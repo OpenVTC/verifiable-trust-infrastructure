@@ -451,13 +451,12 @@ pub async fn run(
         }
     }
 
-    // TEE anti-rollback anchor — Layer 0 (P0.2a). Verify the MAC'd integrity
-    // manifest against the live store and install the runtime sealer, so a
-    // covered singleton deleted or replayed to an inconsistent snapshot while
-    // the enclave was down is caught here and the VTA fails closed. Gated on a
-    // KMS storage key (i.e. a real TEE); a `None` key is the non-TEE path and
-    // has no untrusted-parent threat. Unlike the reconcile above this is
-    // security-critical, so a failure aborts the boot.
+    // TEE anti-rollback anchor (P0.2). Verify the MAC'd integrity manifest
+    // (Layer 0, P0.2a) plus the external monotonic counter (P0.2b) against the
+    // live store, install the runtime sealer, and fail closed on a covered
+    // singleton deleted / replayed / rolled back. Gated on a KMS storage key
+    // (i.e. a real TEE); a `None` key is the non-TEE path with no
+    // untrusted-parent threat. Security-critical, so a failure aborts the boot.
     #[cfg(feature = "tee")]
     if let Some(storage_key) = storage_encryption_key
         && let Some(kms) = config.tee.kms.as_ref()
@@ -465,16 +464,40 @@ pub async fn run(
         let enc = |name: &str| -> Result<KeyspaceHandle, AppError> {
             Ok(store.keyspace(name)?.with_encryption(storage_key))
         };
+        // Build the external counter when configured. It is keyed by the VTA
+        // DID; without an identity there is nothing to key on, so fall back to
+        // manifest-only (P0.2a) with a warning.
+        let anchor: Option<Arc<dyn vti_common::integrity::AnchorCounter>> =
+            match (kms.anchor.as_ref(), config.vta_did.as_ref()) {
+                (Some(anchor_cfg), Some(vta_did)) => Some(Arc::new(
+                    crate::tee::anchor::DynamoAnchorCounter::new(
+                        &kms.region,
+                        anchor_cfg.table_name.clone(),
+                        vta_did.clone(),
+                    )
+                    .await,
+                )),
+                (Some(_), None) => {
+                    warn!(
+                        "tee.kms.anchor is configured but vta_did is unset — booting \
+                         manifest-only (P0.2a); the external rollback counter is disabled"
+                    );
+                    None
+                }
+                (None, _) => None,
+            };
         let outcome = vti_common::integrity::boot_verify_and_install(
             vti_common::integrity::derive_mac_key(&storage_key),
             enc("keys")?,
             store.keyspace("bootstrap")?, // unencrypted, KMS-protected
             enc("acl")?,
             enc("contexts")?,
+            anchor,
             kms.allow_anchor_init,
+            kms.allow_unanchored,
         )
         .await?;
-        info!(?outcome, "TEE integrity manifest checked");
+        info!(?outcome, "TEE anti-rollback anchor checked");
     }
 
     // Determine which services will actually start (feature flag AND

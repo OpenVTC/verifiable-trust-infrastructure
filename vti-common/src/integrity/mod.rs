@@ -31,7 +31,9 @@
 //! | ACL keyspace root | `acl` ▸ `acl:*` | replay → resurrect a revoked admin |
 //! | Path/context counters | `keys` ▸ `path_counter:*`, `contexts` ▸ `ctx_counter*` | rollback → BIP-32 key reuse |
 
-use std::sync::OnceLock;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
 
 use hkdf::Hkdf;
 use hmac::digest::KeyInit;
@@ -44,6 +46,31 @@ use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
 type HmacSha256 = Hmac<Sha256>;
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The external monotonic anchor (P0.2b). An AWS-managed linearizable store
+/// (DynamoDB) holding one version counter per VTA DID, which the parent can
+/// proxy but not forge. The concrete implementation lives in the service crate
+/// (it needs the AWS SDK, which must not leak into this foundation crate); this
+/// trait is what the integrity layer depends on, and what the unit tests mock.
+///
+/// All three methods are single-item operations keyed by the VTA DID. `set`
+/// MUST be an atomic compare-and-set (DynamoDB `ConditionExpression
+/// version = :expected`) — that conditional is the §5.4 linearization point.
+pub trait AnchorCounter: Send + Sync {
+    /// Read the authoritative version, or `None` if the counter has never been
+    /// initialized (first boot / migration from a manifest-only P0.2a VTA).
+    fn read(&self) -> BoxFuture<'_, Result<Option<u64>, AppError>>;
+
+    /// Create the counter at `version` if it does not yet exist
+    /// (`attribute_not_exists` guard). Errors if it already exists.
+    fn init(&self, version: u64, digest: [u8; 32]) -> BoxFuture<'_, Result<(), AppError>>;
+
+    /// Atomic compare-and-set: move the counter from `expected` to `new`,
+    /// failing (`AppError::Conflict`) if the stored value is not `expected`.
+    fn set(&self, expected: u64, new: u64, digest: [u8; 32])
+    -> BoxFuture<'_, Result<(), AppError>>;
+}
 
 /// Carve-out sentinel key (lives in the `keys` keyspace). Must match
 /// `vta_service::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY`; a
@@ -198,6 +225,10 @@ struct ManifestSealer {
     acl_ks: KeyspaceHandle,
     /// `ctx_counter*`
     contexts_ks: KeyspaceHandle,
+    /// External monotonic counter (P0.2b). `None` = manifest-only mode: either
+    /// no anchor is configured, or boot fell back to unanchored after the
+    /// counter was unreachable (`allow_unanchored`).
+    anchor: Option<Arc<dyn AnchorCounter>>,
 }
 
 impl ManifestSealer {
@@ -256,11 +287,36 @@ impl ManifestSealer {
         Ok(())
     }
 
-    /// Boot check core (no global side effect, so it is unit-testable). See
-    /// [`boot_verify_and_install`] for semantics.
-    async fn verify_or_baseline(&self, allow_anchor_init: bool) -> Result<BootOutcome, AppError> {
+    /// Recompute the covered state, advance the version, and persist —
+    /// external-first (§5.4). No global side effect, so it is unit-testable.
+    async fn reseal(&self) -> Result<(), AppError> {
+        let cur_version = self.load_manifest().await?.map(|m| m.version);
+        let next_version = cur_version.map(|v| v + 1).unwrap_or(0);
+        let state = self.compute_state().await?;
+        let manifest = Manifest::sealed(&self.mac_key, next_version, state);
+
+        // Advance the counter before committing the local manifest, so a crash
+        // leaves manifest_version < counter (fail-closed safe direction).
+        if let Some(anchor) = &self.anchor {
+            match cur_version {
+                Some(expected) => anchor.set(expected, next_version, manifest.mac).await?,
+                None => anchor.init(next_version, manifest.mac).await?,
+            }
+        }
+        self.write_manifest(&manifest).await
+    }
+
+    /// Boot check core (no global side effect, so it is unit-testable). Returns
+    /// the outcome and whether the installed sealer should drop the anchor
+    /// (unanchored fallback). See [`boot_verify_and_install`] for semantics.
+    async fn verify_or_baseline(
+        &self,
+        allow_anchor_init: bool,
+        allow_unanchored: bool,
+    ) -> Result<(BootOutcome, bool), AppError> {
+        // ── Layer 0: the local MAC'd manifest (P0.2a) ───────────────────────
         let current = self.compute_state().await?;
-        match self.load_manifest().await? {
+        let (manifest, baselined) = match self.load_manifest().await? {
             None => {
                 if !allow_anchor_init {
                     return Err(AppError::Internal(
@@ -272,13 +328,13 @@ impl ManifestSealer {
                             .into(),
                     ));
                 }
-                self.write_manifest(&Manifest::sealed(&self.mac_key, 0, current))
-                    .await?;
+                let m = Manifest::sealed(&self.mac_key, 0, current);
+                self.write_manifest(&m).await?;
                 warn!(
                     "TEE integrity manifest established (version 0) under allow_anchor_init — \
                      set tee.kms.allow_anchor_init = false now that the baseline exists"
                 );
-                Ok(BootOutcome::Baselined)
+                (m, true)
             }
             Some(stored) => {
                 if !stored.mac_valid(&self.mac_key) {
@@ -297,7 +353,81 @@ impl ManifestSealer {
                         describe_mismatch(&stored.state, &current),
                     )));
                 }
-                Ok(BootOutcome::Verified)
+                (stored, false)
+            }
+        };
+
+        // ── Layer 1: the external monotonic counter (P0.2b) ─────────────────
+        let Some(anchor) = &self.anchor else {
+            // No external counter configured → manifest-only (P0.2a behaviour).
+            return Ok((BootOutcome::manifest(baselined), false));
+        };
+        let m_version = manifest.version;
+        let digest = manifest.mac;
+
+        match anchor.read().await {
+            // Parent denies egress / transient AWS failure: we cannot verify
+            // freshness. Fail closed unless the operator opted into a
+            // (loudly-warned) unanchored boot — which then runs manifest-only.
+            Err(e) => {
+                if !allow_unanchored {
+                    return Err(AppError::Internal(format!(
+                        "external anchor counter is unreachable ({e}) — cannot verify rollback \
+                         freshness, refusing to start (P0.2b). This is a denial-of-service, not \
+                         an integrity breach; set tee.kms.allow_unanchored = true to boot \
+                         manifest-only for incident recovery."
+                    )));
+                }
+                warn!(
+                    error = %e,
+                    "external anchor counter unreachable — booting UNANCHORED (manifest-only, \
+                     P0.2a level) under allow_unanchored. Rollback protection is degraded until \
+                     the counter is reachable again."
+                );
+                Ok((BootOutcome::Unanchored, true))
+            }
+            // Counter absent: first boot, or migration from a manifest-only
+            // P0.2a VTA. Establish it under the same one-shot init flag.
+            Ok(None) => {
+                if !allow_anchor_init {
+                    return Err(AppError::Internal(
+                        "external anchor counter does not exist and allow_anchor_init is false — \
+                         refusing to start. Set tee.kms.allow_anchor_init = true for ONE boot to \
+                         initialize it (first boot, or migration from a manifest-only VTA)."
+                            .into(),
+                    ));
+                }
+                anchor.init(m_version, digest).await?;
+                warn!(version = m_version, "external anchor counter initialized");
+                Ok((BootOutcome::manifest(baselined), false))
+            }
+            Ok(Some(n_ext)) if n_ext == m_version => Ok((BootOutcome::manifest(baselined), false)),
+            // Version mismatch — a rollback (of the local store or the counter)
+            // or a torn commit. Fail closed; allow_unanchored re-anchors the
+            // counter to the MAC-trusted local manifest for recovery.
+            Ok(Some(n_ext)) => {
+                if !allow_unanchored {
+                    let cause = if m_version < n_ext {
+                        "the local store was rolled back to an older epoch"
+                    } else {
+                        "the external counter was rolled back, or a tightening op was torn \
+                         mid-commit"
+                    };
+                    return Err(AppError::Internal(format!(
+                        "external anchor version mismatch: manifest=v{m_version}, counter=v{n_ext} \
+                         — {cause}. Refusing to start (P0.2b). Restore a consistent backup whose \
+                         manifest matches the counter, or set tee.kms.allow_unanchored = true to \
+                         re-anchor the counter to the local manifest."
+                    )));
+                }
+                anchor.set(n_ext, m_version, digest).await?;
+                warn!(
+                    from = n_ext,
+                    to = m_version,
+                    "external anchor counter RE-ANCHORED to the local manifest under \
+                     allow_unanchored — set it back to false now that they agree"
+                );
+                Ok((BootOutcome::ReAnchored, false))
             }
         }
     }
@@ -310,34 +440,47 @@ static RESEAL_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Re-seal the manifest after a covered-singleton mutation. **No-op unless a
 /// sealer is installed** (i.e. always, outside a TEE). Recomputes the covered
-/// state from the live store, bumps the version, re-MACs, and persists.
+/// state, bumps the version, and persists — **external-first** (§5.4): the
+/// counter is advanced via CAS *before* the local manifest is written, so a
+/// crash leaves `manifest_version < counter` (the fail-closed safe direction),
+/// never a silently-rolled-back-but-self-consistent local state.
 ///
-/// Called from the covered mutation chokepoints. The cost (a few prefix scans +
-/// one HMAC) is paid only in TEE and only on tightening ops, which are
-/// infrequent.
+/// Called from the covered mutation chokepoints. With an external anchor this
+/// does a synchronous DynamoDB CAS per covered mutation; a CAS conflict or an
+/// unreachable counter fails the mutation (fail closed), which is the intended
+/// coupling.
 pub async fn reseal_if_active() -> Result<(), AppError> {
     let Some(sealer) = SEALER.get() else {
         return Ok(());
     };
     let _guard = RESEAL_LOCK.lock().await;
-    let next_version = sealer
-        .load_manifest()
-        .await?
-        .map(|m| m.version + 1)
-        .unwrap_or(0);
-    let state = sealer.compute_state().await?;
-    let manifest = Manifest::sealed(&sealer.mac_key, next_version, state);
-    sealer.write_manifest(&manifest).await
+    sealer.reseal().await
 }
 
 /// Outcome of the boot check, for logging.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BootOutcome {
-    /// A valid manifest matched the live store.
+    /// A valid manifest matched the live store (and the counter, if any).
     Verified,
     /// No manifest existed; a baseline was established (first boot /
     /// `allow_anchor_init`).
     Baselined,
+    /// The external counter was re-anchored to the local manifest under
+    /// `allow_unanchored` (recovery from a divergence).
+    ReAnchored,
+    /// The external counter was unreachable; booted manifest-only under
+    /// `allow_unanchored` (degraded — no rollback freshness this session).
+    Unanchored,
+}
+
+impl BootOutcome {
+    fn manifest(baselined: bool) -> Self {
+        if baselined {
+            Self::Baselined
+        } else {
+            Self::Verified
+        }
+    }
 }
 
 /// Verify the integrity manifest against the live store and install the sealer
@@ -352,22 +495,33 @@ pub enum BootOutcome {
 ///   (a covered row deleted, or an inconsistent snapshot) **fails closed**.
 ///
 /// On success the sealer is installed so subsequent covered mutations reseal.
+#[allow(clippy::too_many_arguments)]
 pub async fn boot_verify_and_install(
     mac_key: [u8; 32],
     keys_ks: KeyspaceHandle,
     bootstrap_ks: KeyspaceHandle,
     acl_ks: KeyspaceHandle,
     contexts_ks: KeyspaceHandle,
+    anchor: Option<Arc<dyn AnchorCounter>>,
     allow_anchor_init: bool,
+    allow_unanchored: bool,
 ) -> Result<BootOutcome, AppError> {
-    let sealer = ManifestSealer {
+    let mut sealer = ManifestSealer {
         mac_key,
         keys_ks,
         bootstrap_ks,
         acl_ks,
         contexts_ks,
+        anchor,
     };
-    let outcome = sealer.verify_or_baseline(allow_anchor_init).await?;
+    let (outcome, drop_anchor) = sealer
+        .verify_or_baseline(allow_anchor_init, allow_unanchored)
+        .await?;
+    // Unanchored fallback: install without the anchor so this session's reseals
+    // stay manifest-only (they can't reach the counter anyway).
+    if drop_anchor {
+        sealer.anchor = None;
+    }
     // Install for runtime reseals (only fails if called twice — boot calls once).
     let _ = SEALER.set(sealer);
     Ok(outcome)
@@ -429,13 +583,111 @@ mod tests {
     }
 
     fn sealer(ks: &Ks, mac_key: [u8; 32]) -> ManifestSealer {
+        sealer_with(ks, mac_key, None)
+    }
+
+    fn sealer_with(
+        ks: &Ks,
+        mac_key: [u8; 32],
+        anchor: Option<Arc<dyn AnchorCounter>>,
+    ) -> ManifestSealer {
         ManifestSealer {
             mac_key,
             keys_ks: ks.keys.clone(),
             bootstrap_ks: ks.bootstrap.clone(),
             acl_ks: ks.acl.clone(),
             contexts_ks: ks.contexts.clone(),
+            anchor,
         }
+    }
+
+    /// In-memory `AnchorCounter` with real compare-and-set semantics; can also
+    /// simulate an unreachable counter (parent egress denied). All logic runs
+    /// synchronously under a std Mutex, returning a ready future.
+    struct MockCounter {
+        version: std::sync::Mutex<Option<u64>>,
+        unreachable: bool,
+    }
+    impl MockCounter {
+        fn empty() -> Arc<Self> {
+            Arc::new(Self {
+                version: std::sync::Mutex::new(None),
+                unreachable: false,
+            })
+        }
+        fn at(v: u64) -> Arc<Self> {
+            Arc::new(Self {
+                version: std::sync::Mutex::new(Some(v)),
+                unreachable: false,
+            })
+        }
+        fn unreachable() -> Arc<Self> {
+            Arc::new(Self {
+                version: std::sync::Mutex::new(None),
+                unreachable: true,
+            })
+        }
+        fn current(&self) -> Option<u64> {
+            *self.version.lock().unwrap()
+        }
+    }
+    impl AnchorCounter for MockCounter {
+        fn read(&self) -> BoxFuture<'_, Result<Option<u64>, AppError>> {
+            let r = if self.unreachable {
+                Err(AppError::Internal("egress denied".into()))
+            } else {
+                Ok(*self.version.lock().unwrap())
+            };
+            Box::pin(async move { r })
+        }
+        fn init(&self, version: u64, _digest: [u8; 32]) -> BoxFuture<'_, Result<(), AppError>> {
+            let r = if self.unreachable {
+                Err(AppError::Internal("egress denied".into()))
+            } else {
+                let mut g = self.version.lock().unwrap();
+                if g.is_some() {
+                    Err(AppError::Conflict("counter already exists".into()))
+                } else {
+                    *g = Some(version);
+                    Ok(())
+                }
+            };
+            Box::pin(async move { r })
+        }
+        fn set(
+            &self,
+            expected: u64,
+            new: u64,
+            _digest: [u8; 32],
+        ) -> BoxFuture<'_, Result<(), AppError>> {
+            let r = if self.unreachable {
+                Err(AppError::Internal("egress denied".into()))
+            } else {
+                let mut g = self.version.lock().unwrap();
+                if *g == Some(expected) {
+                    *g = Some(new);
+                    Ok(())
+                } else {
+                    Err(AppError::Conflict(format!(
+                        "CAS failed: expected {expected}, found {:?}",
+                        *g
+                    )))
+                }
+            };
+            Box::pin(async move { r })
+        }
+    }
+
+    /// Run the boot check and return just the outcome (dropping the
+    /// drop-anchor bool the installer uses).
+    async fn vob(
+        s: &ManifestSealer,
+        allow_init: bool,
+        allow_unanchored: bool,
+    ) -> Result<BootOutcome, AppError> {
+        s.verify_or_baseline(allow_init, allow_unanchored)
+            .await
+            .map(|(o, _)| o)
     }
 
     #[test]
@@ -482,8 +734,7 @@ mod tests {
     #[tokio::test]
     async fn baseline_refused_without_allow_anchor_init() {
         let ks = open();
-        let err = sealer(&ks, [2u8; 32])
-            .verify_or_baseline(false)
+        let err = vob(&sealer(&ks, [2u8; 32]), false, false)
             .await
             .expect_err("missing manifest + flag false must fail closed");
         assert!(format!("{err:?}").contains("allow_anchor_init"), "{err:?}");
@@ -507,15 +758,9 @@ mod tests {
         let s = sealer(&ks, mac_key);
 
         // First boot establishes the baseline.
-        assert_eq!(
-            s.verify_or_baseline(true).await.unwrap(),
-            BootOutcome::Baselined
-        );
+        assert_eq!(vob(&s, true, false).await.unwrap(), BootOutcome::Baselined);
         // A second boot against the unchanged store verifies cleanly.
-        assert_eq!(
-            s.verify_or_baseline(false).await.unwrap(),
-            BootOutcome::Verified
-        );
+        assert_eq!(vob(&s, false, false).await.unwrap(), BootOutcome::Verified);
     }
 
     #[tokio::test]
@@ -529,13 +774,12 @@ mod tests {
             .insert_raw(CARVEOUT_KEY, b"closed".to_vec())
             .await
             .unwrap();
-        s.verify_or_baseline(true).await.unwrap();
+        vob(&s, true, false).await.unwrap();
 
         // Parent deletes the sentinel (reopen the carve-out) while down.
         ks.keys.remove(CARVEOUT_KEY).await.unwrap();
 
-        let err = s
-            .verify_or_baseline(false)
+        let err = vob(&s, false, false)
             .await
             .expect_err("deletion must be detected");
         assert!(format!("{err:?}").contains("carve-out"), "{err:?}");
@@ -547,7 +791,7 @@ mod tests {
         let ks = open();
         let mac_key = [8u8; 32];
         let s = sealer(&ks, mac_key);
-        s.verify_or_baseline(true).await.unwrap();
+        vob(&s, true, false).await.unwrap();
 
         // Parent overwrites the manifest with a self-consistent one under a
         // DIFFERENT key (it can't forge our MAC key).
@@ -566,8 +810,7 @@ mod tests {
             .await
             .unwrap();
 
-        let err = s
-            .verify_or_baseline(false)
+        let err = vob(&s, false, false)
             .await
             .expect_err("forged manifest must fail the MAC");
         assert!(
@@ -583,7 +826,7 @@ mod tests {
         let ks = open();
         let mac_key = [10u8; 32];
         let s = sealer(&ks, mac_key);
-        s.verify_or_baseline(true).await.unwrap();
+        vob(&s, true, false).await.unwrap();
 
         // Legitimate ACL write + reseal (simulating the chokepoint).
         ks.acl
@@ -602,7 +845,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            s.verify_or_baseline(false).await.unwrap(),
+            vob(&s, false, false).await.unwrap(),
             BootOutcome::Verified,
             "post-reseal state must verify"
         );
@@ -612,5 +855,109 @@ mod tests {
     async fn reseal_if_active_is_noop_without_installed_sealer() {
         // No sealer installed (non-TEE) → reseal is a cheap no-op, never errors.
         reseal_if_active().await.expect("no-op when not installed");
+    }
+
+    // ── External anchor (P0.2b) ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn first_boot_initializes_counter_and_reseal_advances_it() {
+        let ks = open();
+        let counter = MockCounter::empty();
+        let s = sealer_with(&ks, [1u8; 32], Some(counter.clone()));
+
+        // First boot baselines the manifest (v0) and initializes the counter.
+        assert_eq!(vob(&s, true, false).await.unwrap(), BootOutcome::Baselined);
+        assert_eq!(counter.current(), Some(0));
+
+        // A covered mutation + reseal advances BOTH (external-first CAS).
+        ks.acl
+            .insert_raw("acl:did:key:zA", b"{}".to_vec())
+            .await
+            .unwrap();
+        s.reseal().await.unwrap();
+        assert_eq!(
+            counter.current(),
+            Some(1),
+            "reseal must CAS-bump the counter"
+        );
+
+        // And the next boot verifies (manifest v1 == counter v1).
+        assert_eq!(vob(&s, false, false).await.unwrap(), BootOutcome::Verified);
+    }
+
+    #[tokio::test]
+    async fn local_rollback_behind_counter_is_detected() {
+        // Manifest is rolled back (v0) while the counter stayed ahead (v1) —
+        // exactly the storage-rollback the external anchor exists to catch.
+        let ks = open();
+        let mac_key = [2u8; 32];
+        // Baseline manifest at v0.
+        sealer(&ks, mac_key).reseal().await.unwrap(); // writes manifest v0 (no anchor)
+        let counter = MockCounter::at(1); // counter ahead
+        let s = sealer_with(&ks, mac_key, Some(counter));
+
+        let err = vob(&s, false, false)
+            .await
+            .expect_err("manifest v0 < counter v1 must fail closed");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("mismatch"), "{msg}");
+        assert!(msg.contains("rolled back"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn counter_rollback_ahead_of_manifest_is_detected() {
+        // Manifest is ahead (v2) of the counter (v0) — a rolled-back counter or
+        // a torn commit. Fail closed.
+        let ks = open();
+        let mac_key = [3u8; 32];
+        let plain = sealer(&ks, mac_key);
+        plain.reseal().await.unwrap(); // v0
+        plain.reseal().await.unwrap(); // v1
+        plain.reseal().await.unwrap(); // v2
+        let counter = MockCounter::at(0);
+        let s = sealer_with(&ks, mac_key, Some(counter));
+
+        let err = vob(&s, false, false)
+            .await
+            .expect_err("manifest v2 > counter v0 must fail closed");
+        assert!(format!("{err:?}").contains("mismatch"), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn allow_unanchored_reanchors_counter_to_manifest() {
+        let ks = open();
+        let mac_key = [4u8; 32];
+        let plain = sealer(&ks, mac_key);
+        plain.reseal().await.unwrap(); // manifest v0
+        plain.reseal().await.unwrap(); // manifest v1
+        let counter = MockCounter::at(5); // diverged ahead
+        let s = sealer_with(&ks, mac_key, Some(counter.clone()));
+
+        // Without the flag → fail closed.
+        assert!(vob(&s, false, false).await.is_err());
+        // With allow_unanchored → re-anchor the counter to the local manifest.
+        assert_eq!(vob(&s, false, true).await.unwrap(), BootOutcome::ReAnchored);
+        assert_eq!(
+            counter.current(),
+            Some(1),
+            "counter re-anchored to manifest v1"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreachable_counter_fails_closed_unless_allowed() {
+        let ks = open();
+        let mac_key = [7u8; 32];
+        sealer(&ks, mac_key).reseal().await.unwrap(); // manifest v0
+        let counter = MockCounter::unreachable();
+        let s = sealer_with(&ks, mac_key, Some(counter));
+
+        // Egress denied + no flag → fail closed.
+        let err = vob(&s, false, false)
+            .await
+            .expect_err("unreachable counter must fail closed");
+        assert!(format!("{err:?}").contains("unreachable"), "{err:?}");
+        // With allow_unanchored → boot manifest-only (degraded).
+        assert_eq!(vob(&s, false, true).await.unwrap(), BootOutcome::Unanchored);
     }
 }

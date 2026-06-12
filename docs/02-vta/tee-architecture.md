@@ -520,11 +520,15 @@ nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
 
 ## Anti-rollback anchor (P0.2)
 
-> **Status:** design-approved (see
-> `docs/05-design-notes/tee-anti-rollback-anchor.md`), implementation in
-> progress (P0.2a–c). Provision the infrastructure below when deploying the
-> counter slice (P0.2b/c). The local manifest slice (P0.2a) needs **no**
-> external infrastructure. The whole feature is **TEE-only** — non-TEE VTAs are
+> **Status:** P0.2a (local MAC'd manifest) and P0.2b (external DynamoDB
+> counter) are **implemented**; P0.2c (the KMS-attestation-gated writer that
+> resists root-on-parent) is still to come. Provision the DynamoDB table +
+> instance-role IAM below to enable the counter (P0.2b); the **PCR-gated writer
+> key + the `vta-anchor-writer` deny** are only needed once P0.2c lands. Until
+> then the counter is written with the **instance role**, so it resists
+> storage/backup rollback but **not** a root-on-parent attacker (who shares
+> those credentials). The local manifest slice (P0.2a) needs **no** external
+> infrastructure. The whole feature is **TEE-only** — non-TEE VTAs are
 > unaffected and need none of this.
 
 ### Why it exists
@@ -664,13 +668,19 @@ Additions to `[tee.kms]`, all `Option`/defaulted so existing TEE and non-TEE
 configs are unaffected:
 
 ```toml
+[tee.kms]
+# One-shot baselines (mirror allow_fingerprint_init): establish the manifest
+# AND initialize the external counter on first boot / migration, then set false.
+allow_anchor_init = false
+# BREAK-GLASS: boot manifest-only when the counter is unreachable, or re-anchor
+# the counter to the local manifest when they diverge (incident recovery only).
+allow_unanchored  = false
+
+# Present this block to enable the external counter (P0.2b); omit it for
+# manifest-only (P0.2a). Region is reused from [tee.kms].region.
 [tee.kms.anchor]
 table_name        = "vta-rollback-anchor"        # DynamoDB single-item table
-writer_key_arn    = "arn:aws:kms:us-east-1:123456789012:key/anchor-writer-key"
-allow_anchor_init = false   # one-shot first-boot baseline (establish version 0); see below
-
-[tee.kms]
-allow_unanchored  = false   # BREAK-GLASS: boot without the anchor (incident recovery only)
+# writer_key_arn  = "arn:aws:kms:…:key/anchor-writer-key"   # P0.2c (not yet read)
 ```
 
 ### First boot, recovery, and break-glass

@@ -62,7 +62,31 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
     baseline→verify, deletion/forgery detected, e2e (install → chokepoint reseal
     → reverify → out-of-band tamper → fail-closed → recover). fmt + clippy
     (default & tee) clean; vti-common 234 + e2e, vta-service 714 (default) / 745
-    (tee) green; vta-enclave checks; no version bump (additive) — PR: ____
+    (tee) green; vta-enclave checks; no version bump (additive) — PR: #380 (merged)
+  - `[x]` **P0.2b** (M) External DynamoDB counter + CAS commit protocol —
+    branch `fix/p0.2b-external-counter` (worktree). Pins the manifest version to
+    an AWS-managed linearizable counter the parent can proxy but not forge,
+    upgrading detection from deletion/inconsistency (P0.2a) to **consistent
+    storage rollback**. New `vti_common::integrity::AnchorCounter` trait
+    (read/init/CAS-set) keeps the AWS SDK out of the foundation crate; concrete
+    `DynamoAnchorCounter` (vta-service, conditional `UpdateItem` CAS) injected at
+    boot. Boot version-compare (M<ext → local rolled back; M>ext → counter
+    rolled back / torn; M==ext → proceed) on top of the P0.2a MAC+recompute.
+    Reseal is **external-first** (§5.4): CAS-bump the counter *before* the local
+    manifest write, so a crash leaves M<ext (fail-closed safe direction). Bumps
+    on **every** covered mutation (operator decision) — each one is a synchronous
+    DynamoDB round-trip that fails closed if unreachable. `allow_unanchored`
+    break-glass: boot manifest-only when the counter is unreachable, or
+    re-anchor it to the MAC-trusted local manifest on divergence; `allow_anchor_init`
+    also initializes the counter (first boot / migration from a manifest-only
+    P0.2a VTA). Config: `[tee.kms.anchor] table_name`, `[tee.kms] allow_unanchored`.
+    Operator runbook + status updated (`docs/02-vta/tee-architecture.md`).
+    **Scope: instance-role creds → resists storage/backup rollback, NOT
+    root-on-parent (P0.2c).** Tests: anchor protocol via in-memory CAS mock
+    (init+bump, M<ext / M>ext detection, allow_unanchored re-anchor, unreachable
+    fail-closed-vs-unanchored) + anchored e2e (chokepoints CAS-bump the counter).
+    New dep `aws-sdk-dynamodb` (tee feature). fmt + clippy (default & tee) clean;
+    vti-common 239 + e2e, vta-service 745 (tee) green; vta-enclave checks — PR: ____
 - `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
   validation (closes `#key-0` overwrite) — branch `fix/p0.3-key-overwrite`.
   Scope grew during root-cause analysis: the store's multi-op "atomic"
