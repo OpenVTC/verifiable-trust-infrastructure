@@ -43,7 +43,22 @@ use crate::policy::engine::{self, CompiledPolicy};
 pub fn evaluate(verified: &VerifiedFacts, policy: &CompiledPolicy) -> Result<Verdict, AppError> {
     let input = verified.to_input()?;
     let query = verified.purpose().decision_query();
-    let results = engine::evaluate(policy, &query, input)?;
+    let results = match engine::evaluate(policy, &query, input) {
+        Ok(results) => results,
+        // Resource-bound abort (time budget or input-size cap, P0.18). The
+        // join decision runs on the unauthenticated submit route, so a
+        // pathological policy / adversarial input must fail **closed** —
+        // deny — not surface a 500 or hang the handler.
+        Err(e @ AppError::ResourceExhausted(_)) => {
+            tracing::warn!(
+                purpose = verified.purpose().as_str(),
+                error = %e,
+                "ceremony policy evaluation hit a resource bound — failing closed (deny)",
+            );
+            return Ok(Verdict::default_deny());
+        }
+        Err(e) => return Err(e),
+    };
 
     match decision_value(&results) {
         Some(decision) => Verdict::from_decision(decision),
@@ -205,5 +220,36 @@ default decision := {"effect": "allow", "with": {"fields": ["did"]}}
         let policy = compile(DIRECTORY, Uuid::new_v4()).unwrap();
         let verdict = evaluate(&join_facts(true), &policy).expect("evaluate");
         assert_eq!(verdict, Verdict::default_deny());
+    }
+
+    /// Fail-closed (P0.18): a join policy whose `decision` rule does
+    /// pathological work trips the evaluator's resource budget. On the
+    /// unauthenticated submit path this must degrade to a **deny**, not a
+    /// 500 or a hang.
+    #[test]
+    fn resource_bound_abort_fails_closed_to_deny() {
+        // The expensive comprehension runs whenever `decision` is
+        // evaluated, so the timer trips before any allow can be returned.
+        const RUNAWAY_JOIN: &str = r#"
+package vtc.join
+
+import rego.v1
+
+xs := numbers.range(1, 10000)
+
+default decision := {"effect": "deny", "with": {"code": "default"}}
+
+decision := {"effect": "allow", "with": {"role": "member"}} if {
+    count([1 | some i in xs; some j in xs; i == j]) >= 0
+}
+"#;
+        let policy = compile(RUNAWAY_JOIN, Uuid::new_v4()).unwrap();
+        let verdict = evaluate(&join_facts(true), &policy)
+            .expect("resource-bound abort must not surface as an error");
+        assert_eq!(
+            verdict,
+            Verdict::default_deny(),
+            "a policy that exhausts its budget must fail closed (deny)"
+        );
     }
 }

@@ -98,6 +98,16 @@ pub enum AppError {
     #[error("invalid pagination cursor")]
     InvalidCursor,
 
+    /// A bounded computation aborted because it hit a resource ceiling
+    /// (time/instruction budget or an input-size cap) before completing.
+    /// Used by the Rego policy evaluator to refuse pathological policies
+    /// or adversarial inputs on the unauthenticated join path rather than
+    /// burning CPU unbounded. Rendered as **503 Service Unavailable** — the
+    /// evaluation did not complete, and the message is generic so an
+    /// attacker can't probe the exact limits.
+    #[error("resource limit exceeded: {0}")]
+    ResourceExhausted(String),
+
     /// Catch-all for service-specific errors (e.g., KeyDerivation, BadGateway, TeeAttestation).
     /// Services create helper functions to construct these with appropriate status codes.
     #[error("{message}")]
@@ -184,6 +194,7 @@ impl IntoResponse for AppError {
             AppError::TrustTaskMalformed(_) => StatusCode::BAD_REQUEST,
             AppError::IdempotencyKeyConflict => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::InvalidCursor => StatusCode::BAD_REQUEST,
+            AppError::ResourceExhausted(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::ServiceError { status, .. } => *status,
             AppError::Vsock { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         };
