@@ -9,7 +9,7 @@ use crate::acl::{
     VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
     store_acl_entry, validate_acl_modification, validate_vtc_role_assignment,
 };
-use crate::auth::{AdminAuth, ManageAuth, session::now_epoch};
+use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -177,6 +177,22 @@ pub async fn update_acl(
         )));
     }
 
+    // Visibility (overlapping contexts) is enough to *see* an admin entry but
+    // not to downgrade it: a context-admin of `ctx-a` must not be able to
+    // demote a peer admin scoped to `[ctx-a, ctx-b]`, and can never touch a
+    // super-admin. Only a super-admin, or an admin covering *every* context
+    // the target holds, may modify an existing Admin entry.
+    if entry.role == VtcRole::Admin && !caller_covers_admin_target(&auth.0, &entry) {
+        return Err(AppError::Forbidden(
+            "cannot modify an admin entry scoped outside your contexts".into(),
+        ));
+    }
+
+    // Snapshot the pre-change authorization so we can detect a privilege
+    // reduction after the patch is applied.
+    let prev_role = entry.role.clone();
+    let prev_contexts = entry.allowed_contexts.clone();
+
     if let Some(role) = req.role {
         validate_vtc_role_assignment(&auth.0, &role)?;
         entry.role = role;
@@ -192,6 +208,22 @@ pub async fn update_acl(
 
     store_acl_entry(&acl, &entry).await?;
 
+    // The `AuthClaims` extractor reads role/contexts straight from the
+    // still-valid JWT (only `/auth/refresh` re-checks the ACL), so a demoted
+    // admin would otherwise keep admin authority for the full access-token TTL.
+    // Revoke the subject's live sessions on any privilege reduction so the
+    // stale bearer is rejected on its next request.
+    if is_privilege_reduction(
+        &prev_role,
+        &prev_contexts,
+        &entry.role,
+        &entry.allowed_contexts,
+    ) {
+        let sessions = state.sessions_ks.clone();
+        let revoked = super::auth::revoke_sessions_for_did(&sessions, &did).await?;
+        info!(did = %did, revoked, "subject sessions revoked after ACL privilege reduction");
+    }
+
     info!(did = %did, "ACL entry updated");
     Ok(Json(AclEntryResponse::from(entry)))
 }
@@ -199,7 +231,11 @@ pub async fn update_acl(
 // ---------- DELETE /acl/{did} ----------
 
 pub async fn delete_acl(
-    auth: ManageAuth,
+    // Deletion is strictly more destructive than the `PATCH` edit, yet the
+    // previous `ManageAuth` gate let an Initiator delete entries while `PATCH`
+    // required Admin. Gate both on Admin so an Initiator can't delete admin
+    // entries it happens to see.
+    auth: AdminAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<StatusCode, AppError> {
@@ -222,6 +258,16 @@ pub async fn delete_acl(
         )));
     }
 
+    // Same target-role guard as `update_acl`: overlapping contexts make an
+    // admin entry *visible* but not *deletable* by a context-admin scoped
+    // outside its full context set, and a super-admin can only be deleted by
+    // another super-admin.
+    if entry.role == VtcRole::Admin && !caller_covers_admin_target(&auth.0, &entry) {
+        return Err(AppError::Forbidden(
+            "cannot delete an admin entry scoped outside your contexts".into(),
+        ));
+    }
+
     delete_acl_entry(&acl, &did).await?;
 
     info!(caller = %auth.0.did, did = %did, "ACL entry deleted");
@@ -236,7 +282,7 @@ pub async fn delete_acl(
 /// degrades to `Role::Reader` (lowest privilege; only the contexts
 /// match), which is fine because these helpers ignore the role
 /// field entirely.
-fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
+pub(crate) fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
     let role = match e.role {
         VtcRole::Admin => vti_common::acl::Role::Admin,
         _ => vti_common::acl::Role::Reader,
@@ -246,6 +292,51 @@ fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
         .with_contexts(e.allowed_contexts.clone())
         .with_created_at(e.created_at)
         .with_expires_at(e.expires_at)
+}
+
+/// May `caller` delete or downgrade `target`, which is an **Admin** entry?
+///
+/// Mirrors [`vti_common::acl::delegated_any_approver_covers`]: a super-admin
+/// covers any target; a context-admin covers only a context-scoped target
+/// **all** of whose contexts fall within the caller's authority. A target with
+/// no `allowed_contexts` is itself a super-admin and can only be acted on by a
+/// super-admin (the empty-context branch below is `false` for a non-super
+/// caller, so it is refused).
+fn caller_covers_admin_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool {
+    if caller.is_super_admin() {
+        return true;
+    }
+    !target.allowed_contexts.is_empty()
+        && target
+            .allowed_contexts
+            .iter()
+            .all(|ctx| caller.has_context_access(ctx))
+}
+
+/// Did an ACL update reduce the subject's authorization?
+///
+/// A reduction is either losing the `Admin` role, or narrowing the context
+/// scope — going from unrestricted (empty `allowed_contexts`, i.e. super-admin)
+/// to restricted, or dropping any previously-held context. Widening scope or a
+/// lateral role change is not a reduction. Used to decide whether the subject's
+/// live sessions must be revoked so the still-valid JWT can't outlive the
+/// downgrade.
+fn is_privilege_reduction(
+    prev_role: &VtcRole,
+    prev_contexts: &[String],
+    new_role: &VtcRole,
+    new_contexts: &[String],
+) -> bool {
+    let lost_admin = *prev_role == VtcRole::Admin && *new_role != VtcRole::Admin;
+    let narrowed = if prev_contexts.is_empty() {
+        // Previously unrestricted (super-admin scope); any restriction narrows.
+        !new_contexts.is_empty()
+    } else {
+        // Previously restricted; dropping any held context narrows. (A move to
+        // empty/unrestricted is a *widening*, handled by the `false` here.)
+        !new_contexts.is_empty() && prev_contexts.iter().any(|c| !new_contexts.contains(c))
+    };
+    lost_admin || narrowed
 }
 
 #[cfg(test)]
@@ -258,6 +349,119 @@ mod tests {
     //! compatibility with the CLI clients that consume these types.
     use super::*;
     use serde_json::json;
+
+    // ── P0.20: admin-target covering guard ─────────────────────────
+
+    fn claims(super_admin: bool, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            role: vti_common::acl::Role::Admin,
+            allowed_contexts: if super_admin {
+                vec![]
+            } else {
+                contexts.iter().map(|c| c.to_string()).collect()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn admin_entry(contexts: &[&str]) -> VtcAclEntry {
+        VtcAclEntry {
+            did: "did:key:zTarget".into(),
+            role: VtcRole::Admin,
+            label: None,
+            allowed_contexts: contexts.iter().map(|c| c.to_string()).collect(),
+            created_at: 0,
+            created_by: "did:key:zCreator".into(),
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn super_admin_covers_any_admin_target() {
+        let sa = claims(true, &[]);
+        assert!(caller_covers_admin_target(
+            &sa,
+            &admin_entry(&["ctx-a", "ctx-b"])
+        ));
+        assert!(caller_covers_admin_target(&sa, &admin_entry(&[]))); // super-admin target
+    }
+
+    #[test]
+    fn context_admin_covers_only_targets_fully_within_its_scope() {
+        let ca = claims(false, &["ctx-a"]);
+        // Target scoped exactly to ctx-a → covered.
+        assert!(caller_covers_admin_target(&ca, &admin_entry(&["ctx-a"])));
+        // Accept-criterion: ctx-a admin can't act on an admin scoped to
+        // [ctx-a, ctx-b] — ctx-b is outside its authority.
+        assert!(!caller_covers_admin_target(
+            &ca,
+            &admin_entry(&["ctx-a", "ctx-b"])
+        ));
+        // A context-admin can never act on a super-admin (empty-context) target.
+        assert!(!caller_covers_admin_target(&ca, &admin_entry(&[])));
+    }
+
+    // ── P0.20: privilege-reduction detection ───────────────────────
+
+    #[test]
+    fn losing_admin_role_is_a_reduction() {
+        assert!(is_privilege_reduction(
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+            &VtcRole::Member,
+            &["ctx-a".into()],
+        ));
+    }
+
+    #[test]
+    fn narrowing_contexts_is_a_reduction() {
+        // Drop a held context.
+        assert!(is_privilege_reduction(
+            &VtcRole::Admin,
+            &["ctx-a".into(), "ctx-b".into()],
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+        ));
+        // Unrestricted → restricted.
+        assert!(is_privilege_reduction(
+            &VtcRole::Admin,
+            &[],
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+        ));
+        // Swap a context (lose ctx-a, gain ctx-b).
+        assert!(is_privilege_reduction(
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+            &VtcRole::Admin,
+            &["ctx-b".into()],
+        ));
+    }
+
+    #[test]
+    fn widening_or_lateral_change_is_not_a_reduction() {
+        // Add a context.
+        assert!(!is_privilege_reduction(
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+            &VtcRole::Admin,
+            &["ctx-a".into(), "ctx-b".into()],
+        ));
+        // Restricted → unrestricted (promotion to super-admin scope).
+        assert!(!is_privilege_reduction(
+            &VtcRole::Admin,
+            &["ctx-a".into()],
+            &VtcRole::Admin,
+            &[],
+        ));
+        // No change (e.g. a label-only edit).
+        assert!(!is_privilege_reduction(
+            &VtcRole::Member,
+            &["ctx-a".into()],
+            &VtcRole::Member,
+            &["ctx-a".into()],
+        ));
+    }
 
     // ── CreateAclRequest ────────────────────────────────────────────
 

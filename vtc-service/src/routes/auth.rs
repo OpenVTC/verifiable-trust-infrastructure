@@ -10,15 +10,17 @@ use vta_sdk::protocols::auth::{
     epoch_to_rfc3339,
 };
 
-use crate::acl::{Role, resolve_auth_role};
+use crate::acl::{Role, get_acl_entry, is_acl_entry_visible, list_acl_entries, resolve_auth_role};
 use crate::auth::session::{
     Session, SessionState, delete_session, get_session, list_sessions, now_epoch,
     store_refresh_index, store_session,
 };
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
+use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
+use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
 
@@ -841,13 +843,33 @@ pub async fn sign_out(
 }
 
 pub async fn session_list(
-    _auth: ManageAuth,
+    auth: ManageAuth,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SessionSummary>>, AppError> {
     let sessions = state.sessions_ks.clone();
     let all = list_sessions(&sessions).await?;
-    let summaries: Vec<SessionSummary> = all.into_iter().map(SessionSummary::from).collect();
-    info!(caller = %_auth.0.did, count = summaries.len(), "sessions listed");
+
+    // A super-admin sees the whole roster; a context-admin must only see
+    // sessions whose subject DID is an ACL entry visible to them (overlapping
+    // contexts). Build the visible-DID set once from the ACL rather than doing
+    // a per-session lookup. A session whose subject has no ACL entry (e.g. the
+    // entry was deleted out from under it) is visible only to a super-admin.
+    let summaries: Vec<SessionSummary> = if auth.0.is_super_admin() {
+        all.into_iter().map(SessionSummary::from).collect()
+    } else {
+        let acl = state.acl_ks.clone();
+        let visible: std::collections::HashSet<String> = list_acl_entries(&acl)
+            .await?
+            .into_iter()
+            .filter(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)))
+            .map(|e| e.did)
+            .collect();
+        all.into_iter()
+            .filter(|s| visible.contains(&s.did))
+            .map(SessionSummary::from)
+            .collect()
+    };
+    info!(caller = %auth.0.did, count = summaries.len(), "sessions listed");
     Ok(Json(summaries))
 }
 
@@ -888,21 +910,51 @@ pub struct RevokeByDidResponse {
 }
 
 pub async fn revoke_sessions_by_did(
-    _auth: AdminAuth,
+    auth: AdminAuth,
     State(state): State<AppState>,
     Query(query): Query<RevokeByDidQuery>,
 ) -> Result<Json<RevokeByDidResponse>, AppError> {
-    let sessions = state.sessions_ks.clone();
-    let all = list_sessions(&sessions).await?;
-    let mut revoked = 0u64;
-
-    for session in all {
-        if session.did == query.did {
-            delete_session(&sessions, &session.session_id).await?;
-            revoked += 1;
+    // Context-scope: a context-admin may only revoke sessions for a DID whose
+    // ACL entry is visible to them (overlapping contexts). Without this any
+    // context-admin could revoke a super-admin's or any member's sessions
+    // community-wide. Super-admins are unrestricted (and may mop up orphan
+    // sessions for a DID with no ACL row).
+    if !auth.0.is_super_admin() {
+        let acl = state.acl_ks.clone();
+        let visible = get_acl_entry(&acl, &query.did)
+            .await?
+            .as_ref()
+            .is_some_and(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)));
+        if !visible {
+            return Err(AppError::Forbidden(
+                "cannot revoke sessions for a DID outside your contexts".into(),
+            ));
         }
     }
 
-    info!(caller = %_auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
+    let sessions = state.sessions_ks.clone();
+    let revoked = revoke_sessions_for_did(&sessions, &query.did).await?;
+
+    info!(caller = %auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
     Ok(Json(RevokeByDidResponse { revoked }))
+}
+
+/// Delete every session whose subject is `did`; returns the count revoked.
+///
+/// Shared by [`revoke_sessions_by_did`] and the ACL-downgrade path in
+/// [`crate::routes::acl::update_acl`], which revokes a demoted admin's live
+/// sessions so the still-valid JWT can't outlive the downgrade.
+pub(crate) async fn revoke_sessions_for_did(
+    sessions: &KeyspaceHandle,
+    did: &str,
+) -> Result<u64, AppError> {
+    let all = list_sessions(sessions).await?;
+    let mut revoked = 0u64;
+    for session in all {
+        if session.did == did {
+            delete_session(sessions, &session.session_id).await?;
+            revoked += 1;
+        }
+    }
+    Ok(revoked)
 }
