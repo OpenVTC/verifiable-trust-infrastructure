@@ -180,7 +180,15 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
                 eprintln!("{RED}\u{2717}{RESET} Not found: {msg}");
             }
             VtaError::Conflict(msg) => {
-                eprintln!("{RED}\u{2717}{RESET} Conflict: {msg}");
+                // The SDK preserves the full 409 JSON body so programmatic
+                // callers can extract structured fields (e.g. `mediator_did`).
+                // For humans, surface the `message` (or `error`) field rather
+                // than dumping the raw JSON; fall back to the raw text for
+                // non-JSON bodies.
+                eprintln!(
+                    "{RED}\u{2717}{RESET} Conflict: {}",
+                    extract_human_message(msg)
+                );
             }
             VtaError::Gone(msg) => {
                 let bin = bin_name();
@@ -294,6 +302,25 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
         eprintln!("  {DIM}caused by: {s}{RESET}");
         source = s.source();
     }
+}
+
+/// Pull a human-readable line out of a (possibly JSON) error body.
+///
+/// The SDK hands `VtaError::Conflict` the *raw* 409 response body so that
+/// programmatic callers can deserialize structured fields. For terminal
+/// output we don't want to dump JSON at the operator, so prefer the body's
+/// `message` field, then its `error` field, and only fall back to the raw
+/// text when the body isn't the expected JSON shape.
+fn extract_human_message(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("message")
+                .or_else(|| v.get("error"))
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string())
 }
 
 // ── Ratatui rendering helpers ───────────────────────────────────────
@@ -419,4 +446,34 @@ pub fn print_section(title: &str) {
         "\n{DIM}──{RESET} {BOLD}{title}{RESET} {DIM}{}{RESET}",
         "─".repeat(pad)
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_human_message;
+
+    #[test]
+    fn prefers_message_field() {
+        let body = r#"{"error":"didcomm_already_enabled","message":"DIDComm is already enabled.","mediator_did":"did:peer:2.med"}"#;
+        assert_eq!(extract_human_message(body), "DIDComm is already enabled.");
+    }
+
+    #[test]
+    fn falls_back_to_error_field_when_no_message() {
+        let body = r#"{"error":"duplicate_key"}"#;
+        assert_eq!(extract_human_message(body), "duplicate_key");
+    }
+
+    #[test]
+    fn falls_back_to_raw_text_for_non_json() {
+        let body = "plain conflict text";
+        assert_eq!(extract_human_message(body), "plain conflict text");
+    }
+
+    #[test]
+    fn falls_back_to_raw_text_when_fields_missing() {
+        // Valid JSON but neither `message` nor `error` present → raw text.
+        let body = r#"{"detail":"something"}"#;
+        assert_eq!(extract_human_message(body), body);
+    }
 }

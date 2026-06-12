@@ -170,7 +170,8 @@ impl VtaClient {
         }
     }
 
-    /// Read the current DIDComm runtime status. Auth: any authenticated role.
+    /// Read the current DIDComm runtime status. Auth: super-admin (parity with
+    /// `GET /services` / `list_services`, which exposes the same `mediator_did`).
     pub async fn didcomm_status(&self) -> Result<DidcommStatusResponse, VtaError> {
         match &self.transport {
             crate::client::Transport::Rest {

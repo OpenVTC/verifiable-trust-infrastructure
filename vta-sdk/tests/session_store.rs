@@ -635,11 +635,12 @@ async fn resolve_vta_endpoint_unparseable_did_errors() {
 }
 
 #[tokio::test]
-async fn connect_url_override_skips_resolution() {
-    // SessionStore::connect with a URL override goes straight to the
-    // REST path — never calls resolve_vta_endpoint. Verifies that even
-    // a session bound to an unresolvable did:key VTA still connects
-    // when the operator passes `--url`.
+async fn connect_url_override_falls_back_to_rest() {
+    // A session bound to an unresolvable did:key VTA still connects over
+    // REST when the operator passes `--url`. Resolution (priority 2) yields
+    // nothing usable for a did:key, and the authenticated DIDComm-status
+    // discovery (priority 3) finds no live mediator (the status endpoint
+    // isn't mounted → errors → None), so connect falls back to REST-only.
     let server = MockServer::start().await;
     mount_challenge(&server).await;
     mount_authenticate(&server, now_secs() + 3600).await;
