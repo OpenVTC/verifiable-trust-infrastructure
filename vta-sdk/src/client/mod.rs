@@ -98,6 +98,8 @@ pub use types::*;
 // ── Per-domain impl blocks ─────────────────────────────────────────
 
 mod acl;
+#[cfg(feature = "session")]
+mod auto_connect;
 mod backup;
 mod backup_descriptors;
 mod bootstrap;
@@ -110,6 +112,11 @@ mod webvh;
 
 #[cfg(feature = "client")]
 mod audit;
+
+#[cfg(feature = "session")]
+pub use crate::session::TokenResult;
+#[cfg(feature = "session")]
+pub use auto_connect::{AutoConnect, ConnectedVta};
 
 /// Percent-encode characters that are unsafe inside a URL path segment.
 ///

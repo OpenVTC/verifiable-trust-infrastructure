@@ -31,6 +31,10 @@ pub use crate::client::{
     UpdateAclRequest, UpdateConfigRequest, UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
 };
 
+// Transport-agnostic connect (feature-gated)
+#[cfg(feature = "session")]
+pub use crate::client::{AutoConnect, ConnectedVta, TokenResult};
+
 // DID key utilities
 pub use crate::did_key::{decode_private_key_multibase, ed25519_multibase_pubkey};
 

@@ -679,3 +679,71 @@ async fn connect_errors_when_no_session() {
         err.to_string().contains("auth login") || err.to_string().contains("Not authenticated")
     );
 }
+
+// ── VtaClient::connect_auto ─────────────────────────────────────────
+//
+// The DIDComm arm needs a live mediator round-trip, so only the REST
+// arm and the transport-selection guards are exercised here. The
+// `rest_fallback = (!vta_url.is_empty()).then(...)` derivation on the
+// DIDComm arm is unit-trivial and shared with `connect_didcomm`.
+
+#[tokio::test]
+async fn connect_auto_rest_authenticates_and_returns_token() {
+    let server = MockServer::start().await;
+    mount_challenge(&server).await;
+    let future = now_secs() + 3600;
+    mount_authenticate(&server, future).await;
+    // An authenticated call must carry the token established at connect.
+    Mock::given(method("GET"))
+        .and(path("/config"))
+        .and(wiremock::matchers::header(
+            "authorization",
+            "Bearer access-jwt",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "vta_did": null, "vta_name": null, "public_url": null
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (did, pk) = did_key_from_seed(0x10);
+    let (vta_did, _) = did_key_from_seed(0x20);
+
+    let connected = vta_sdk::client::VtaClient::connect_auto(vta_sdk::client::AutoConnect {
+        vta_url: &server.uri(),
+        vta_did: &vta_did,
+        credential_did: &did,
+        private_key_multibase: &pk,
+        mediator_did: None,
+    })
+    .await
+    .expect("REST connect_auto");
+
+    // REST path surfaces the issued token so callers can cache it.
+    let token = connected.rest_token.expect("rest path returns a token");
+    assert_eq!(token.access_token, "access-jwt");
+    // ...and the same token is attached to the client.
+    connected.client.get_config().await.unwrap();
+}
+
+#[tokio::test]
+async fn connect_auto_rest_requires_non_empty_url() {
+    let (did, pk) = did_key_from_seed(0x10);
+    let (vta_did, _) = did_key_from_seed(0x20);
+
+    let result = vta_sdk::client::VtaClient::connect_auto(vta_sdk::client::AutoConnect {
+        vta_url: "",
+        vta_did: &vta_did,
+        credential_did: &did,
+        private_key_multibase: &pk,
+        mediator_did: None,
+    })
+    .await;
+
+    match result {
+        Err(vta_sdk::error::VtaError::Validation(_)) => {}
+        Ok(_) => panic!("empty url on the REST path must error"),
+        Err(other) => panic!("expected Validation error, got {other:?}"),
+    }
+}

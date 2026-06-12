@@ -379,7 +379,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.11.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vta-sdk 0.11.1",
 ]
 
 [[package]]
@@ -2340,7 +2340,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
 ]
 
 [[package]]
@@ -3120,7 +3120,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
 ]
 
 [[package]]
@@ -6502,7 +6502,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
 ]
 
 [[package]]
@@ -9722,7 +9722,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
  "x25519-dalek",
 ]
 
@@ -9761,12 +9761,42 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
 ]
 
 [[package]]
 name = "vta-sdk"
 version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a9942f0711f78e450428696b510985affbf6e2c3ccee51b115955aea8435f7"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
+ "affinidi-openid4vp",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "getrandom 0.4.2",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "vta-sdk"
+version = "0.11.2"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9811,36 +9841,6 @@ dependencies = [
  "wiremock",
  "x25519-dalek",
  "zeroize",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46a9942f0711f78e450428696b510985affbf6e2c3ccee51b115955aea8435f7"
-dependencies = [
- "affinidi-crypto",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "getrandom 0.4.2",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
 ]
 
 [[package]]
@@ -9923,7 +9923,7 @@ dependencies = [
  "uuid",
  "vaultrs",
  "vta-cli-common",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
  "vta-service",
  "vti-common",
  "vti-webauthn",
@@ -10005,7 +10005,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
  "vtc-service",
  "vti-common",
  "webauthn-rs",
@@ -10050,7 +10050,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10077,7 +10077,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.11.1",
+ "vta-sdk 0.11.2",
  "vta-service",
  "vti-common",
 ]
