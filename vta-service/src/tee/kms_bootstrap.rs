@@ -448,6 +448,21 @@ fn unwrap_cms_response(
 
 /// Decrypt a KMS data key ciphertext (the `CiphertextBlob` from `GenerateDataKey`).
 ///
+/// Attested KMS `Decrypt` of an arbitrary ciphertext sealed under the bootstrap
+/// KMS key, for callers outside the seed/data-key path (P0.2c: the anchor
+/// writer credential). Same attestation semantics as the data-key decrypt — on
+/// real Nitro hardware the PCR-gated `Recipient` path is mandatory unless
+/// `allow_unattested_fallback` is set — but flattens the typed error class the
+/// bootstrap state machine needs into a plain [`AppError`].
+pub(crate) async fn attested_decrypt(
+    config: &TeeKmsConfig,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, AppError> {
+    kms_decrypt_data_key(config, ciphertext)
+        .await
+        .map_err(|(_, e)| e)
+}
+
 /// On real Nitro hardware (`/dev/nsm` available), uses attestation-based
 /// KMS Decrypt with the `Recipient` parameter. If attestation fails, the
 /// call is **terminal** unless `allow_unattested_fallback` is explicitly

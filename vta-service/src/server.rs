@@ -469,14 +469,47 @@ pub async fn run(
         // manifest-only (P0.2a) with a warning.
         let anchor: Option<Arc<dyn vti_common::integrity::AnchorCounter>> =
             match (kms.anchor.as_ref(), config.vta_did.as_ref()) {
-                (Some(anchor_cfg), Some(vta_did)) => Some(Arc::new(
-                    crate::tee::anchor::DynamoAnchorCounter::new(
-                        &kms.region,
-                        anchor_cfg.table_name.clone(),
-                        vta_did.clone(),
-                    )
-                    .await,
-                )),
+                (Some(anchor_cfg), Some(vta_did)) => {
+                    // P0.2c: if a sealed writer credential is configured, unseal
+                    // it through the attestation-gated KMS Decrypt so the counter
+                    // is written with the `vta-anchor-writer` principal (which the
+                    // instance role is IAM-denied) rather than the instance role
+                    // a root-on-parent attacker shares. A configured-but-
+                    // unsealable credential is fatal — falling back to the
+                    // instance role would silently downgrade to P0.2b.
+                    let writer = match anchor_cfg.writer_credential_ciphertext.as_ref() {
+                        Some(b64) => {
+                            let ct = base64::engine::general_purpose::STANDARD
+                                .decode(b64)
+                                .map_err(|e| {
+                                    AppError::Config(format!(
+                                        "tee.kms.anchor.writer_credential_ciphertext is not \
+                                         valid base64: {e}"
+                                    ))
+                                })?;
+                            let pt = crate::tee::kms_bootstrap::attested_decrypt(kms, &ct).await?;
+                            let creds: crate::tee::anchor::WriterCredentials =
+                                serde_json::from_slice(&pt).map_err(|e| {
+                                    AppError::Config(format!(
+                                        "anchor writer credential did not decrypt to \
+                                         {{access_key_id, secret_access_key}}: {e}"
+                                    ))
+                                })?;
+                            info!("anchor writer credential unsealed (attestation-gated, P0.2c)");
+                            Some(creds)
+                        }
+                        None => None,
+                    };
+                    Some(Arc::new(
+                        crate::tee::anchor::DynamoAnchorCounter::new(
+                            &kms.region,
+                            anchor_cfg.table_name.clone(),
+                            vta_did.clone(),
+                            writer,
+                        )
+                        .await,
+                    ))
+                }
                 (Some(_), None) => {
                     warn!(
                         "tee.kms.anchor is configured but vta_did is unset — booting \

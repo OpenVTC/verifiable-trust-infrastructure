@@ -17,7 +17,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 use aws_sdk_dynamodb::Client;
+use aws_sdk_dynamodb::config::Credentials;
 use aws_sdk_dynamodb::types::AttributeValue;
+use serde::Deserialize;
+use zeroize::ZeroizeOnDrop;
 
 use vti_common::error::AppError;
 use vti_common::integrity::AnchorCounter;
@@ -29,6 +32,15 @@ const UPDATED_AT_ATTR: &str = "updated_at";
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// The `vta-anchor-writer` IAM credentials, unsealed at boot from the
+/// attestation-gated KMS ciphertext (P0.2c). Zeroized on drop; once the client
+/// is built the AWS SDK holds its own copy.
+#[derive(Deserialize, ZeroizeOnDrop)]
+pub struct WriterCredentials {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+}
+
 /// External anchor counter backed by a single DynamoDB item keyed by VTA DID.
 pub struct DynamoAnchorCounter {
     client: Client,
@@ -37,14 +49,33 @@ pub struct DynamoAnchorCounter {
 }
 
 impl DynamoAnchorCounter {
-    /// Build a client for `region` and bind it to `table` + `vta_did` (the
-    /// partition key). Uses the default credential chain — in a Nitro enclave
-    /// that resolves to the instance role via the parent's IMDS proxy.
-    pub async fn new(region: &str, table: String, vta_did: String) -> Self {
-        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()))
-            .load()
-            .await;
+    /// Build a client for `region` bound to `table` + `vta_did` (the partition
+    /// key).
+    ///
+    /// With `writer` (P0.2c) the client uses the attestation-gated
+    /// `vta-anchor-writer` static credentials — the only principal allowed to
+    /// write the counter (the instance role is IAM-denied), so a root-on-parent
+    /// attacker can't move it. Without `writer` (P0.2b) it uses the default
+    /// credential chain (the instance role via the parent's IMDS proxy), which
+    /// resists storage rollback but not root-on-parent.
+    pub async fn new(
+        region: &str,
+        table: String,
+        vta_did: String,
+        writer: Option<WriterCredentials>,
+    ) -> Self {
+        let mut builder = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .region(aws_config::Region::new(region.to_string()));
+        if let Some(w) = writer {
+            builder = builder.credentials_provider(Credentials::new(
+                w.access_key_id.clone(),
+                w.secret_access_key.clone(),
+                None,
+                None,
+                "vta-anchor-writer",
+            ));
+        }
+        let sdk_config = builder.load().await;
         Self {
             client: Client::new(&sdk_config),
             table,
@@ -160,4 +191,29 @@ impl AnchorCounter for DynamoAnchorCounter {
 /// RFC-3339 UTC timestamp for the `updated_at` bookkeeping attribute.
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sealed writer credential is the JSON the operator encrypts under the
+    /// PCR-gated KMS key; it must deserialize to the two AWS fields (P0.2c).
+    #[test]
+    fn writer_credentials_parse_from_sealed_json() {
+        let json = br#"{"access_key_id":"AKIAEXAMPLE","secret_access_key":"s3cr3t"}"#;
+        let w: WriterCredentials = serde_json::from_slice(json).expect("parse writer creds");
+        assert_eq!(w.access_key_id, "AKIAEXAMPLE");
+        assert_eq!(w.secret_access_key, "s3cr3t");
+    }
+
+    /// Extra fields (e.g. a future `session_token`) are tolerated; a missing
+    /// required field is a hard parse error surfaced as a config problem.
+    #[test]
+    fn writer_credentials_tolerate_extra_but_require_both() {
+        let extra = br#"{"access_key_id":"A","secret_access_key":"B","note":"x"}"#;
+        assert!(serde_json::from_slice::<WriterCredentials>(extra).is_ok());
+        let missing = br#"{"access_key_id":"A"}"#;
+        assert!(serde_json::from_slice::<WriterCredentials>(missing).is_err());
+    }
 }

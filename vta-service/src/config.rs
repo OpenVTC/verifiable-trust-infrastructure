@@ -443,17 +443,25 @@ pub struct TeeKmsConfig {
     pub allow_unanchored: bool,
 }
 
-/// External anti-rollback anchor configuration (P0.2b — DynamoDB counter).
+/// External anti-rollback anchor configuration (P0.2b counter + P0.2c writer).
 #[cfg(feature = "tee")]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TeeAnchorConfig {
     /// DynamoDB table holding the single-item monotonic version counter (one
     /// item per VTA DID). The region is reused from [`TeeKmsConfig::region`].
     pub table_name: String,
-    // NOTE: `writer_key_arn` (the KMS-attestation-gated writer credential that
-    // resists root-on-parent) lands in P0.2c. In P0.2b the counter is written
-    // with the instance-role credentials, so it resists storage/backup rollback
-    // but NOT a root-on-parent attacker who shares those credentials.
+    /// KMS-attestation-gated writer credential (P0.2c — root-on-parent
+    /// resistance). Base64 of the `vta-anchor-writer` IAM credentials
+    /// (`{"access_key_id","secret_access_key"}`) sealed under the PCR-gated KMS
+    /// key ([`TeeKmsConfig::key_arn`]): only the genuine enclave image can
+    /// `kms:Decrypt` it, so a root-on-parent attacker — who holds the
+    /// *instance-role* credentials but cannot produce a valid attestation —
+    /// cannot obtain the only principal allowed to write the counter (the
+    /// instance role is explicitly denied on the table; see the operator
+    /// runbook). Unset → P0.2b: the counter is written with the instance role
+    /// (resists storage/backup rollback, **not** root-on-parent).
+    #[serde(default)]
+    pub writer_credential_ciphertext: Option<String>,
 }
 
 // KMS ciphertexts (seed, JWT key, fingerprint) are stored as K/V entries

@@ -480,6 +480,7 @@ is skipped, and the existing SeedStore/config-based key loading is used.
 | Cold boot attack | Nitro Enclaves use dedicated memory that's hardware-isolated; not accessible to parent; no DMA path |
 | Attacker replays a **stale-but-valid** ciphertext snapshot (rollback) | Confidentiality alone does **not** stop this — KMS faithfully decrypts any ciphertext that was ever validly produced under the key, including a stale one. Mitigated by the **anti-rollback anchor** (P0.2, see below): a MAC'd integrity manifest pins the protected singletons, and an external attestation-gated monotonic counter pins "the latest version." A replayed snapshot has `version < authoritative` ⇒ boot **fails closed**. |
 | Parent rolls back carve-out / ACL to a **consistent** past snapshot (e.g. reopen the single-use Mode-B carve-out, resurrect a revoked admin, force BIP-32 counter reuse) | Detected at boot via the version pin (anti-rollback anchor, P0.2); fail closed. AAD (P0.1) stops *relocation* but not *rollback*; the anchor is what enforces freshness. |
+| **Root-on-parent** rolls back the external counter too (it shares the enclave's instance-role credentials) | The counter table denies `UpdateItem` to the instance role; the only permitted writer (`vta-anchor-writer`) is reachable solely via a credential KMS-sealed under the PCR0/PCR8 attestation conditions, which a compromised parent cannot decrypt or forge (P0.2c). So a root-on-parent attacker can roll the *local* store back but **not** the counter ⇒ boot fails closed. Holds within the operator's AWS-account trust root (IAM/KMS/DynamoDB control-plane intact) — the same root the seed already relies on; cross-account isolation is the deferred Option C (P0.2e). Without the sealed writer credential configured the deployment is P0.2b (instance-role writes) and this row does **not** hold. |
 | Parent denies egress to the anchor | DoS only — the parent can already DoS by not starting the enclave. Enclave fails closed (refuses boot / security-relevant ops). Documented break-glass `tee.kms.allow_unanchored` for incident recovery, off by default. |
 | Mnemonic exfiltration | Never displayed on console. Export requires: super admin auth + time-limited window + env var at boot. One-time use, entropy zeroed after export. |
 | Signing key theft | Key stored in CI/CD or HSM, never on EC2. If stolen: revoke, generate new key, rebuild + re-sign, update PCR8 in KMS policy. |
@@ -520,15 +521,15 @@ nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif \
 
 ## Anti-rollback anchor (P0.2)
 
-> **Status:** P0.2a (local MAC'd manifest) and P0.2b (external DynamoDB
-> counter) are **implemented**; P0.2c (the KMS-attestation-gated writer that
-> resists root-on-parent) is still to come. Provision the DynamoDB table +
-> instance-role IAM below to enable the counter (P0.2b); the **PCR-gated writer
-> key + the `vta-anchor-writer` deny** are only needed once P0.2c lands. Until
-> then the counter is written with the **instance role**, so it resists
-> storage/backup rollback but **not** a root-on-parent attacker (who shares
-> those credentials). The local manifest slice (P0.2a) needs **no** external
-> infrastructure. The whole feature is **TEE-only** — non-TEE VTAs are
+> **Status:** P0.2a (local MAC'd manifest), P0.2b (external DynamoDB counter),
+> and P0.2c (the KMS-attestation-gated `vta-anchor-writer` + instance-role deny
+> that resists root-on-parent) are all **implemented**. Provision the DynamoDB
+> table, seal the writer credential, and apply the `vta-anchor-writer` policy +
+> instance-role deny below for full protection. Omitting the writer credential
+> falls back to instance-role writes (P0.2b — resists storage/backup rollback
+> but not root-on-parent); omitting the whole `[tee.kms.anchor]` block is
+> manifest-only (P0.2a). Option C (a cross-account anchor service) remains
+> deferred (P0.2e). The whole feature is **TEE-only** — non-TEE VTAs are
 > unaffected and need none of this.
 
 ### Why it exists
@@ -587,35 +588,43 @@ replicas and torn writes fail safely (compare-and-set linearization point).
 > and `dynamodb:UpdateContinuousBackups` to a break-glass admin role (MFA,
 > separate account), the same posture as `kms:PutKeyPolicy`.
 
-#### 2. KMS key gating the writer credential (P0.2c)
+#### 2. Seal the writer credential under the PCR-gated KMS key (P0.2c)
 
-The `vta-anchor-writer` credential is **KMS-sealed under a PCR-conditioned
-key**, mirroring the seed key (Component 3). Only the genuine enclave image can
-`Decrypt` it; the parent cannot, because it cannot produce a valid attestation
-for the right PCRs. Create a key whose policy releases `Decrypt` *only* under
-attestation:
+The `vta-anchor-writer` credential is **KMS-sealed under the enclave's existing
+seed KMS key** (`tee.kms.key_arn`, Component 3) — that key's policy already
+releases `kms:Decrypt` *only* under the PCR0/PCR8 attestation conditions, so
+only the genuine enclave image can open the ciphertext; the parent cannot,
+because it can't produce a valid attestation. (A separate key with the same
+conditions works too, but reusing the seed key keeps one PCR policy to manage.)
 
-```json
-{
-    "Sid": "AllowEnclaveToUnsealAnchorWriterCredential",
-    "Effect": "Allow",
-    "Principal": { "AWS": "arn:aws:iam::ACCOUNT_ID:role/vta-enclave-role" },
-    "Action": "kms:Decrypt",
-    "Resource": "*",
-    "Condition": {
-        "StringEqualsIgnoreCase": {
-            "kms:RecipientAttestation:PCR0": "<enclave-image-hash>",
-            "kms:RecipientAttestation:PCR8": "<signing-cert-hash>"
-        }
-    }
-}
+Create the IAM user, then seal its access key as JSON under the seed key and
+paste the base64 ciphertext into config:
+
+```bash
+# 1. Create the writer principal and an access key.
+aws iam create-user --user-name vta-anchor-writer
+aws iam create-access-key --user-name vta-anchor-writer   # capture AccessKeyId + SecretAccessKey
+
+# 2. Seal {access_key_id, secret_access_key} under the seed KMS key.
+printf '{"access_key_id":"AKIA…","secret_access_key":"…"}' \
+  | aws kms encrypt --key-id "$SEED_KEY_ARN" --plaintext fileb:///dev/stdin \
+        --query CiphertextBlob --output text   # → base64 ciphertext
 ```
 
-Seal the writer credential under this key once at provisioning time (it is the
-`vta-anchor-writer` access key, or an STS session for that role — P0.2c
-finalizes the exact delivery) and hand the ciphertext to the enclave the same
-way the seed ciphertext is delivered. The parent stores the ciphertext but
-cannot open it.
+```toml
+# 3. Paste the ciphertext into the EIF-baked config.
+[tee.kms.anchor]
+table_name                  = "vta-rollback-anchor"
+writer_credential_ciphertext = "AQIDAH…"   # base64 KMS ciphertext from step 2
+```
+
+At boot the enclave `kms:Decrypt`s this (attestation-gated, same path as the
+seed) and uses the resulting static credentials for the counter's reads and
+writes. The parent stores the ciphertext but can't open it, and the plaintext
+key never leaves the enclave. **A configured-but-unsealable credential is fatal
+at boot** — falling back to the instance role would silently downgrade to
+P0.2b. Rotate by issuing a new access key, re-sealing, and updating config (the
+old key can then be deleted from IAM).
 
 #### 3. IAM — writer principal + instance-role deny
 
@@ -623,18 +632,23 @@ The fence has two halves. First, a dedicated writer principal is the only one
 allowed to mutate the counter:
 
 ```json
-// Policy on the vta-anchor-writer principal (whose credential is KMS-sealed above)
+// Policy on the vta-anchor-writer principal (whose credential is KMS-sealed above).
+// The enclave uses these credentials for the counter's read, init, and bump.
 {
     "Effect": "Allow",
-    "Action": "dynamodb:UpdateItem",
+    "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem"
+    ],
     "Resource": "arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/vta-rollback-anchor"
 }
 ```
 
 Second — the load-bearing part — the **EC2 instance role explicitly denies**
 counter writes, so a root-on-parent attacker holding those credentials cannot
-bump or roll the counter back. Reads may stay on the instance role (the boot
-check only needs to *read* the authoritative version):
+bump or roll the counter back. The instance-role read allow below is optional
+(the enclave reads with the writer credential too), but harmless to keep:
 
 ```json
 // Statements on the vta-enclave-role (parent instance role)
@@ -679,8 +693,11 @@ allow_unanchored  = false
 # Present this block to enable the external counter (P0.2b); omit it for
 # manifest-only (P0.2a). Region is reused from [tee.kms].region.
 [tee.kms.anchor]
-table_name        = "vta-rollback-anchor"        # DynamoDB single-item table
-# writer_key_arn  = "arn:aws:kms:…:key/anchor-writer-key"   # P0.2c (not yet read)
+table_name                   = "vta-rollback-anchor"   # DynamoDB single-item table
+# P0.2c: base64 KMS ciphertext of the vta-anchor-writer access key (see above).
+# Present → counter written with the attestation-gated writer (resists
+# root-on-parent). Absent → written with the instance role (P0.2b).
+writer_credential_ciphertext = "AQIDAH…"
 ```
 
 ### First boot, recovery, and break-glass

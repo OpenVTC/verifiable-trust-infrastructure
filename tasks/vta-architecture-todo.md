@@ -22,7 +22,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   only (default/plaintext unaffected) — documented in CHANGELOG. Tests:
   cross-key/cross-keyspace paste rejected (unit + through the real handle),
   wrong-key, legacy-format clear error, passthrough unchanged — PR: #346 (merged)
-- `[~]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
+- `[x]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
   JWT fingerprint / ACL — deps: P0.1. **Design note MERGED** (PR #365,
   `docs/05-design-notes/tee-anti-rollback-anchor.md`). **§9 open questions
   RESOLVED in review** (branch `docs/p0.2-resolve-open-questions`): (1) substrate
@@ -86,7 +86,29 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
     (init+bump, M<ext / M>ext detection, allow_unanchored re-anchor, unreachable
     fail-closed-vs-unanchored) + anchored e2e (chokepoints CAS-bump the counter).
     New dep `aws-sdk-dynamodb` (tee feature). fmt + clippy (default & tee) clean;
-    vti-common 239 + e2e, vta-service 745 (tee) green; vta-enclave checks — PR: ____
+    vti-common 239 + e2e, vta-service 745 (tee) green; vta-enclave checks — PR: #383 (merged)
+  - `[x]` **P0.2c+d** (M) Attestation-gated writer + threat-model claim —
+    branch `fix/p0.2c-attested-writer` (worktree). Closes the root-on-parent gap:
+    the counter is now written by the `vta-anchor-writer` principal, reachable
+    only via an AWS credential **KMS-sealed under the PCR-gated seed key** — a
+    compromised parent holds the instance role (IAM-denied on the table) but
+    can't produce the attestation to `kms:Decrypt` the writer credential. New
+    `TeeAnchorConfig.writer_credential_ciphertext` (base64 KMS ciphertext of
+    `{access_key_id, secret_access_key}`); `server::run` unseals it at boot via
+    a new `kms_bootstrap::attested_decrypt` wrapper (reuses the seed's
+    NSM-attested Decrypt path, mandatory PCR enforcement on real hardware) and
+    builds the DynamoDB client with those static creds (`WriterCredentials`,
+    zeroized on drop). **Configured-but-unsealable is fatal** — no silent
+    downgrade to instance-role writes. Absent → P0.2b. P0.2d: threat-model table
+    updated to claim root-on-parent rollback resistance (within the AWS-account
+    trust root; cross-account = deferred P0.2e). Operator runbook updated
+    (seal-the-writer-credential procedure, writer principal needs Get/Put/Update,
+    config). Tests: `WriterCredentials` JSON parse (tolerate-extra/require-both);
+    the KMS+DynamoDB paths need real AWS/NSM (inspection-tested like the rest of
+    the TEE KMS code). fmt + clippy (default & tee) clean; vta-service 747 (tee)
+    green; vta-enclave checks; no version bump (additive) — PR: ____
+  - `[ ]` **P0.2e** (XL, deferred) Option C cross-account anchor service —
+    out of Phase-0 scope; documented as the max-assurance / multi-tenant upgrade.
 - `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
   validation (closes `#key-0` overwrite) — branch `fix/p0.3-key-overwrite`.
   Scope grew during root-cause analysis: the store's multi-op "atomic"
