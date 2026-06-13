@@ -49,6 +49,7 @@ use crate::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
 use crate::messaging::handshake::AlwaysOkProver;
 use crate::messaging::registry::MediatorListenerRegistry;
 use crate::operations::protocol::OpContext;
+use crate::operations::protocol::ServiceOpDeps;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -95,6 +96,30 @@ struct OfflineDeps {
     /// possible here because the fjall store requires exclusive
     /// access. A throwaway map suffices.
     webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
+}
+
+impl OfflineDeps {
+    /// Borrow the REST/WebAuthn service-op dependency bundle. The offline CLI
+    /// owns its `did_resolver` (always present, unlike `AppState`'s `Option`),
+    /// so this is infallible — the same shape `ServiceOpDeps::from_app_state`
+    /// produces for the online path.
+    fn service_op_deps(&self) -> ServiceOpDeps<'_> {
+        ServiceOpDeps {
+            config: &self.config,
+            keys_ks: &self.keys_ks,
+            imported_ks: &self.imported_ks,
+            contexts_ks: &self.contexts_ks,
+            webvh_ks: &self.webvh_ks,
+            audit_ks: &self.audit_ks,
+            snapshot_ks: &self.snapshot_ks,
+            service_state_ks: &self.service_state_ks,
+            seed_store: &self.seed_store,
+            did_resolver: &self.did_resolver,
+            didcomm_bridge: &self.didcomm_bridge,
+            telemetry: &self.telemetry,
+            webvh_auth_locks: &self.webvh_auth_locks,
+        }
+    }
 }
 
 /// Open the local VTA state for offline service-management.
@@ -256,23 +281,12 @@ pub async fn run_services_list(config_path: Option<PathBuf>) -> CliResult {
 
 pub async fn run_services_rest_enable(config_path: Option<PathBuf>, url: String) -> CliResult {
     let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
     let result = enable_rest(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.telemetry,
+        &deps,
         &d.auth,
         EnableRestParams { url },
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -286,23 +300,12 @@ pub async fn run_services_rest_enable(config_path: Option<PathBuf>, url: String)
 
 pub async fn run_services_rest_update(config_path: Option<PathBuf>, url: String) -> CliResult {
     let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
     let result = update_rest(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.telemetry,
+        &deps,
         &d.auth,
         UpdateRestParams { url },
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -317,23 +320,12 @@ pub async fn run_services_rest_update(config_path: Option<PathBuf>, url: String)
 
 pub async fn run_services_rest_disable(config_path: Option<PathBuf>) -> CliResult {
     let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
     let result = disable_rest(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.telemetry,
+        &deps,
         &d.auth,
         DisableRestParams,
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -347,26 +339,10 @@ pub async fn run_services_rest_disable(config_path: Option<PathBuf>) -> CliResul
 
 pub async fn run_services_rest_rollback(config_path: Option<PathBuf>) -> CliResult {
     let d = build_offline_deps(config_path).await?;
-    let result = rollback_rest(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.telemetry,
-        &d.auth,
-        RollbackRestParams,
-        &d.webvh_auth_locks,
-        "vta-cli-offline",
-    )
-    .await
-    .map_err(report_op_error)?;
+    let deps = d.service_op_deps();
+    let result = rollback_rest(&deps, &d.auth, RollbackRestParams, "vta-cli-offline")
+        .await
+        .map_err(report_op_error)?;
     if matches!(
         result.kind,
         crate::operations::protocol::rollback_rest::RollbackKind::NoOp

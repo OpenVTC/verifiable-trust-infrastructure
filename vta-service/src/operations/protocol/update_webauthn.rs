@@ -7,26 +7,16 @@
 //! when WebAuthn is not currently advertised. Snapshots the prior URL so
 //! rollback can restore it.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
-use tokio::sync::RwLock;
-
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
-use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::service_lifecycle::{
-    ServiceLifecycleDeps, ServiceMutationError, UpdateMutationError, WebauthnService, run_update,
+    ServiceMutationError, UpdateMutationError, WebauthnService, run_update,
 };
-use crate::store::KeyspaceHandle;
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 #[derive(Debug, Clone)]
 pub struct UpdateWebauthnParams {
@@ -104,43 +94,15 @@ impl UpdateMutationError for UpdateWebauthnError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update_webauthn(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    // Threaded for signature parity; see `enable_webauthn`.
-    _service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     params: UpdateWebauthnParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateWebauthnResult, UpdateWebauthnError> {
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
     let ok =
-        run_update::<WebauthnService, UpdateWebauthnError>(&deps, auth, &params.url, ctx, channel)
+        run_update::<WebauthnService, UpdateWebauthnError>(deps, auth, &params.url, ctx, channel)
             .await?;
 
     Ok(UpdateWebauthnResult {

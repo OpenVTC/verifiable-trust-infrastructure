@@ -16,7 +16,6 @@
 
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -24,23 +23,19 @@ use tracing::{info, warn};
 
 use vta_sdk::error::VtaError;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
+use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::passkey_vm_cleanup::{self, CleanupSummary};
 use crate::operations::protocol::service_lifecycle::{
-    DisableMutationError, ServiceLifecycle, ServiceLifecycleDeps, WebauthnService,
-    check_disable_preconditions, publish_patch,
+    DisableMutationError, ServiceLifecycle, WebauthnService, check_disable_preconditions,
+    publish_patch,
 };
-use crate::operations::protocol::{PROTOCOL_LOCK, snapshot};
-use crate::store::KeyspaceHandle;
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps, snapshot};
 
 #[derive(Debug, Clone, Default)]
 pub struct DisableWebauthnParams {}
@@ -120,24 +115,11 @@ impl DisableMutationError for DisableWebauthnError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn disable_webauthn(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    _service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     _params: DisableWebauthnParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<DisableWebauthnResult, DisableWebauthnError> {
     auth.require_super_admin()
@@ -145,30 +127,17 @@ pub async fn disable_webauthn(
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
-
     // Brick-prevention (§3.2) + preconditions, capturing the prior URL.
-    let (state, prior_url) =
-        check_disable_preconditions::<WebauthnService, DisableWebauthnError>(config, webvh_ks)
-            .await?;
+    let (state, prior_url) = check_disable_preconditions::<WebauthnService, DisableWebauthnError>(
+        deps.config,
+        deps.webvh_ks,
+    )
+    .await?;
 
     // Snapshot BEFORE the mutation (spec §3.5a): re-enables WebAuthn at the
     // prior URL on rollback.
     snapshot::write(
-        snapshot_ks,
+        deps.snapshot_ks,
         WebauthnService::snapshot_enabled(prior_url.clone()),
     )
     .await
@@ -179,17 +148,17 @@ pub async fn disable_webauthn(
     // "remove this surface AND its dependent state"; partial success beats
     // abort-and-leave-the-service-on).
     let cleanup = passkey_vm_cleanup::strip_all_passkey_vms(
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
+        deps.config,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         auth,
-        webvh_auth_locks,
+        deps.webvh_auth_locks,
         channel,
     )
     .await?;
@@ -204,7 +173,7 @@ pub async fn disable_webauthn(
 
     let patched = WebauthnService::without_service(state.current_doc);
     let update_result = publish_patch::<DisableWebauthnError>(
-        &deps,
+        deps,
         auth,
         &state.scid,
         &state.vta_did,
@@ -213,7 +182,7 @@ pub async fn disable_webauthn(
     )
     .await?;
 
-    persist_webauthn_disabled(config).await?;
+    persist_webauthn_disabled(deps.config).await?;
 
     let mut event = TelemetryEvent::new(TelemetryKind::ServicesWebauthnDisable)
         .with_field("channel", JsonValue::from(channel))
@@ -230,7 +199,7 @@ pub async fn disable_webauthn(
     if let Some(tag) = ctx.telemetry_triggered_by() {
         event = event.with_field("triggered_by", JsonValue::from(tag));
     }
-    let _ = telemetry.record(event).await;
+    let _ = deps.telemetry.record(event).await;
 
     info!(
         channel,

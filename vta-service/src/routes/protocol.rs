@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::SuperAdminAuth;
 use crate::messaging::handshake::{AlwaysOkProver, HandshakeError, HandshakeStage};
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::DisableTransport as DidcommTransport;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommError, DisableDidcommParams, DisableTransport, disable_didcomm,
@@ -53,6 +52,7 @@ use crate::operations::protocol::update_rest::{UpdateRestError, UpdateRestParams
 use crate::operations::protocol::update_webauthn::{
     UpdateWebauthnError, UpdateWebauthnParams, update_webauthn,
 };
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::server::AppState;
 use vta_sdk::protocol::DidcommStatusResponse;
 
@@ -1400,23 +1400,12 @@ pub async fn enable_rest_handler(
         .ok_or(RestServiceHttpError::DidResolverUnavailable)?
         .clone();
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = enable_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth.0,
         EnableRestParams { url: req.url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -1444,23 +1433,12 @@ pub async fn update_rest_handler(
         .ok_or(RestServiceHttpError::DidResolverUnavailable)?
         .clone();
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = update_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth.0,
         UpdateRestParams { url: req.url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -1488,26 +1466,8 @@ pub async fn disable_rest_handler(
         .ok_or(RestServiceHttpError::DidResolverUnavailable)?
         .clone();
 
-    let result = disable_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
-        &auth.0,
-        DisableRestParams,
-        OpContext::Direct,
-        &state.webvh_auth_locks,
-        "rest",
-    )
-    .await?;
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = disable_rest(&deps, &auth.0, DisableRestParams, OpContext::Direct, "rest").await?;
 
     Ok(Json(vta_sdk::protocol::services::ServiceMutationResponse {
         log_entry_version_id: result.new_version_id,
@@ -1758,25 +1718,8 @@ pub async fn rollback_rest_handler(
         .ok_or(RollbackRestHttpError::DidResolverUnavailable)?
         .clone();
 
-    let result = rollback_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
-        &auth.0,
-        RollbackRestParams,
-        &state.webvh_auth_locks,
-        "rest",
-    )
-    .await?;
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = rollback_rest(&deps, &auth.0, RollbackRestParams, "rest").await?;
 
     Ok(Json(RollbackResponse {
         log_entry_version_id: result.new_version_id.unwrap_or_default(),
@@ -2196,23 +2139,12 @@ pub async fn enable_webauthn_handler(
         .as_ref()
         .ok_or(WebauthnServiceHttpError::DidResolverUnavailable)?
         .clone();
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = enable_webauthn(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth.0,
         EnableWebauthnParams { url: req.url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -2236,23 +2168,12 @@ pub async fn update_webauthn_handler(
         .as_ref()
         .ok_or(WebauthnServiceHttpError::DidResolverUnavailable)?
         .clone();
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = update_webauthn(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth.0,
         UpdateWebauthnParams { url: req.url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -2278,23 +2199,12 @@ pub async fn disable_webauthn_handler(
         .as_ref()
         .ok_or(WebauthnServiceHttpError::DidResolverUnavailable)?
         .clone();
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = disable_webauthn(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth.0,
         DisableWebauthnParams::default(),
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -2318,25 +2228,8 @@ pub async fn rollback_webauthn_handler(
         .as_ref()
         .ok_or(WebauthnServiceHttpError::DidResolverUnavailable)?
         .clone();
-    let result = rollback_webauthn(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &state.didcomm_bridge,
-        &state.telemetry,
-        &auth.0,
-        RollbackWebauthnParams,
-        &state.webvh_auth_locks,
-        "rest",
-    )
-    .await?;
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = rollback_webauthn(&deps, &auth.0, RollbackWebauthnParams, "rest").await?;
     let kind_str = match result.kind {
         WebauthnRollbackKind::Disabled => "disabled",
         WebauthnRollbackKind::Enabled => "enabled",

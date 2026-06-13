@@ -28,18 +28,15 @@
 
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde_json::Value as JsonValue;
 use tracing::info;
 
-use vti_common::seed_store::SeedStore;
 use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
 
 use vta_sdk::protocol::services::validate_service_url;
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::invariant::{
@@ -132,30 +129,18 @@ pub(crate) struct ServiceMutationOk {
     pub prior_url: Option<String>,
 }
 
-/// Keyspaces + shared infra threaded into both engines. Bundling them keeps the
-/// engine signatures (and the wrapper call sites) from sprawling past the
-/// `too_many_arguments` line; the fields mirror the historical positional args.
-pub(crate) struct ServiceLifecycleDeps<'a> {
-    pub config: &'a Arc<RwLock<AppConfig>>,
-    pub keys_ks: &'a KeyspaceHandle,
-    pub imported_ks: &'a KeyspaceHandle,
-    pub contexts_ks: &'a KeyspaceHandle,
-    pub webvh_ks: &'a KeyspaceHandle,
-    pub audit_ks: &'a KeyspaceHandle,
-    pub snapshot_ks: &'a KeyspaceHandle,
-    pub seed_store: &'a dyn SeedStore,
-    pub did_resolver: &'a DIDCacheClient,
-    pub didcomm_bridge: &'a Arc<DIDCommBridge>,
-    pub telemetry: &'a SharedTelemetrySink,
-    pub webvh_auth_locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
-}
+/// The shared dependency bundle both engines read is
+/// [`super::ServiceOpDeps`] — the same struct the public ops receive at their
+/// boundary (P2.5). The engine reads only the subset it needs (every field
+/// except `service_state_ks`, which is the REST persist step's concern).
+pub(crate) use super::ServiceOpDeps;
 
 /// Publish a patched document via `update_did_webvh` — the common publish step
 /// shared by enable / update / disable. Bound only on `From<UpdateDidWebvhError>`
 /// (the single error it propagates) so disable errors — which carry no
 /// `validation` constructor — can use it too.
 pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
-    deps: &ServiceLifecycleDeps<'_>,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     scid: &str,
     vta_did: &str,
@@ -295,7 +280,7 @@ where
 /// flag, WebAuthn writes the config file. Passing it as a closure keeps
 /// [`ServiceLifecycle`] all-sync (and the engine future `Send`).
 pub(crate) async fn run_enable<S, E>(
-    deps: &ServiceLifecycleDeps<'_>,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     url: &str,
     ctx: OpContext,
@@ -360,7 +345,7 @@ where
 /// enabled; only the advertised URL changes. The prior URL is captured for the
 /// rollback snapshot and surfaced in `prior_url`.
 pub(crate) async fn run_update<S, E>(
-    deps: &ServiceLifecycleDeps<'_>,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     url: &str,
     ctx: OpContext,

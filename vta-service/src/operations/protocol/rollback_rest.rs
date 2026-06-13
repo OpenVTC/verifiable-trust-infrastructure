@@ -35,20 +35,14 @@
 
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
-
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_rest::{
     DisableRestError, DisableRestParams, disable_rest,
 };
@@ -58,6 +52,7 @@ use crate::operations::protocol::snapshot::{
     self, RestSnapshot, ServiceConfigSnapshot, ServiceKind,
 };
 use crate::operations::protocol::update_rest::{UpdateRestError, UpdateRestParams, update_rest};
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone, Default)]
@@ -157,23 +152,10 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn rollback_rest(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     _params: RollbackRestParams,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<RollbackRestResult, RollbackRestError> {
     auth.require_super_admin()
@@ -182,7 +164,7 @@ pub async fn rollback_rest(
     // 1. Read the snapshot. None → NoPriorMutation. Note: we do
     //    NOT take PROTOCOL_LOCK here because the dispatched
     //    forward op takes it; holding it twice would deadlock.
-    let snap = snapshot::read(snapshot_ks, ServiceKind::Rest)
+    let snap = snapshot::read(deps.snapshot_ks, ServiceKind::Rest)
         .await
         .map_err(|e| RollbackRestError::Storage(format!("snapshot read: {e}")))?
         .ok_or(RollbackRestError::NoPriorMutation)?;
@@ -204,7 +186,7 @@ pub async fn rollback_rest(
     //    what the snapshot will be compared against), and config
     //    is asserted to match by the existing precondition checks
     //    in the forward ops.
-    let current_url = read_current_rest_url(config, webvh_ks).await?;
+    let current_url = read_current_rest_url(deps.config, deps.webvh_ks).await?;
 
     // 3. Dispatch table (see module doc).
     info!(
@@ -216,26 +198,8 @@ pub async fn rollback_rest(
     match (rest_snap, current_url.as_deref()) {
         // Snapshot says off, currently on → disable.
         (RestSnapshot::Disabled, Some(_)) => {
-            let result = disable_rest(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
-                auth,
-                DisableRestParams,
-                OpContext::Rollback,
-                webvh_auth_locks,
-                channel,
-            )
-            .await?;
+            let result =
+                disable_rest(deps, auth, DisableRestParams, OpContext::Rollback, channel).await?;
             Ok(RollbackRestResult {
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Disabled,
@@ -247,22 +211,10 @@ pub async fn rollback_rest(
         // Snapshot says on with URL X, currently off → enable.
         (RestSnapshot::Enabled { url }, None) => {
             let result = enable_rest(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
+                deps,
                 auth,
                 EnableRestParams { url: url.clone() },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;
@@ -278,22 +230,10 @@ pub async fn rollback_rest(
         // X != Y → update.
         (RestSnapshot::Enabled { url }, Some(current)) if url != current => {
             let result = update_rest(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
+                deps,
                 auth,
                 UpdateRestParams { url: url.clone() },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;

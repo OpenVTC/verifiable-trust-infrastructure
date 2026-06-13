@@ -29,7 +29,6 @@ use vta_sdk::protocols::protocol_management;
 use super::router::VtaState;
 use crate::messaging::auth::auth_from_message;
 use crate::messaging::handshake::AlwaysOkProver;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -43,6 +42,7 @@ use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommParams, update_didcomm,
 };
 use crate::operations::protocol::update_rest::{UpdateRestParams, update_rest};
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
 
@@ -532,26 +532,16 @@ pub async fn handle_enable_rest(
 
     let url = body_str_field(&message, "url")?;
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = enable_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth,
         EnableRestParams { url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;
@@ -580,26 +570,16 @@ pub async fn handle_update_rest(
 
     let url = body_str_field(&message, "url")?;
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = update_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth,
         UpdateRestParams { url },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;
@@ -627,26 +607,16 @@ pub async fn handle_disable_rest(
 ) -> HandlerResult {
     let auth = protocol_auth!(state, message);
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = disable_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.telemetry,
+        &deps,
         &auth,
         DisableRestParams,
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;
@@ -675,28 +645,12 @@ pub async fn handle_rollback_rest(
 ) -> HandlerResult {
     let auth = protocol_auth!(state, message);
 
-    let result = rollback_rest(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.telemetry,
-        &auth,
-        RollbackRestParams,
-        &state.webvh_auth_locks,
-        "didcomm",
-    )
-    .await;
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
+    let result = rollback_rest(&deps, &auth, RollbackRestParams, "didcomm").await;
 
     match result {
         Ok(r) => response(

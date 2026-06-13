@@ -132,6 +132,93 @@ impl OpContext {
     }
 }
 
+/// Ambient dependencies shared by every REST/WebAuthn service-management
+/// operation (`enable` / `update` / `disable` / `rollback`).
+///
+/// Before P2.5 each of these eight ops took the same ~14 positional arguments
+/// (config + keyspaces + seed-store + resolver + bridge + telemetry +
+/// auth-locks), tripping `clippy::too_many_arguments`. Bundling them into one
+/// borrowed struct — built once at the transport boundary via
+/// [`ServiceOpDeps::from_app_state`] / [`ServiceOpDeps::from_vta_state`] (or
+/// directly by the offline CLI) and threaded through unchanged — drops every op
+/// to ≤5 args and lets the rollback dispatcher hand its forward op the deps
+/// verbatim instead of re-listing every keyspace.
+///
+/// All fields are borrows: the struct is cheap to build per request and never
+/// outlives the state it borrows from. The internal lifecycle engine
+/// ([`service_lifecycle`]) reads the subset it needs; `service_state_ks` is
+/// consumed only by the REST enable/disable runtime-state persist step (the
+/// engine itself never touches it).
+pub struct ServiceOpDeps<'a> {
+    pub config: &'a std::sync::Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
+    pub keys_ks: &'a crate::store::KeyspaceHandle,
+    pub imported_ks: &'a crate::store::KeyspaceHandle,
+    pub contexts_ks: &'a crate::store::KeyspaceHandle,
+    pub webvh_ks: &'a crate::store::KeyspaceHandle,
+    pub audit_ks: &'a crate::store::KeyspaceHandle,
+    pub snapshot_ks: &'a crate::store::KeyspaceHandle,
+    pub service_state_ks: &'a crate::store::KeyspaceHandle,
+    pub seed_store: &'a dyn vti_common::seed_store::SeedStore,
+    pub did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    pub didcomm_bridge: &'a std::sync::Arc<crate::didcomm_bridge::DIDCommBridge>,
+    pub telemetry: &'a vti_common::telemetry::SharedTelemetrySink,
+    pub webvh_auth_locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
+}
+
+impl<'a> ServiceOpDeps<'a> {
+    /// Borrow the service-op dependencies from an [`AppState`](crate::server::AppState)
+    /// (REST transport).
+    ///
+    /// `did_resolver` is threaded separately because `AppState` holds it as an
+    /// `Option` — the caller unwraps it (surfacing the typed
+    /// `DidResolverUnavailable` reject) before building the deps.
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_app_state(
+        s: &'a crate::server::AppState,
+        did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    ) -> Self {
+        Self {
+            config: &s.config,
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            audit_ks: &s.audit_ks,
+            snapshot_ks: &s.snapshot_ks,
+            service_state_ks: &s.service_state_ks,
+            seed_store: &*s.seed_store,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+            telemetry: &s.telemetry,
+            webvh_auth_locks: &s.webvh_auth_locks,
+        }
+    }
+
+    /// Borrow the service-op dependencies from a
+    /// [`VtaState`](crate::messaging::router::VtaState) (DIDComm transport).
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_vta_state(
+        s: &'a crate::messaging::router::VtaState,
+        did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    ) -> Self {
+        Self {
+            config: &s.config,
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            audit_ks: &s.audit_ks,
+            snapshot_ks: &s.snapshot_ks,
+            service_state_ks: &s.service_state_ks,
+            seed_store: &*s.seed_store,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+            telemetry: &s.telemetry,
+            webvh_auth_locks: &s.webvh_auth_locks,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::PROTOCOL_LOCK;

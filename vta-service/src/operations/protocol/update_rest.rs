@@ -8,26 +8,16 @@
 //! update; only the URL changes. Brick-prevention is not consulted (update
 //! can't change the on/off state).
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
-use tokio::sync::RwLock;
-
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
-use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::service_lifecycle::{
-    RestService, ServiceLifecycleDeps, ServiceMutationError, UpdateMutationError, run_update,
+    RestService, ServiceMutationError, UpdateMutationError, run_update,
 };
-use crate::store::KeyspaceHandle;
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 #[derive(Debug, Clone)]
 pub struct UpdateRestParams {
@@ -115,42 +105,15 @@ impl UpdateMutationError for UpdateRestError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update_rest(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    _service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     params: UpdateRestParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateRestResult, UpdateRestError> {
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
     let ok =
-        run_update::<RestService, UpdateRestError>(&deps, auth, &params.url, ctx, channel).await?;
+        run_update::<RestService, UpdateRestError>(deps, auth, &params.url, ctx, channel).await?;
 
     Ok(UpdateRestResult {
         new_version_id: ok.new_version_id,
@@ -164,12 +127,17 @@ pub async fn update_rest(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
     use super::*;
+    use crate::config::AppConfig;
     use crate::operations::protocol::service_lifecycle::check_update_preconditions;
     use crate::operations::protocol::snapshot::{
         self, RestSnapshot, ServiceConfigSnapshot, ServiceKind,
     };
-    use crate::store::Store;
+    use crate::store::{KeyspaceHandle, Store};
     use vta_sdk::protocol::services::validate_service_url;
     use vti_common::config::StoreConfig as VtiStoreConfig;
 

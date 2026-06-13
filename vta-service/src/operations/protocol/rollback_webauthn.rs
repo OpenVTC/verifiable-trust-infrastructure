@@ -11,20 +11,14 @@
 
 use std::sync::Arc;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
-
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_webauthn::{
     DisableWebauthnError, DisableWebauthnParams, disable_webauthn,
 };
@@ -38,6 +32,7 @@ use crate::operations::protocol::snapshot::{
 use crate::operations::protocol::update_webauthn::{
     UpdateWebauthnError, UpdateWebauthnParams, update_webauthn,
 };
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone, Default)]
@@ -113,29 +108,16 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn rollback_webauthn(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     _params: RollbackWebauthnParams,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<RollbackWebauthnResult, RollbackWebauthnError> {
     auth.require_super_admin()
         .map_err(|e| RollbackWebauthnError::Auth(e.to_string()))?;
 
-    let snap = snapshot::read(snapshot_ks, ServiceKind::Webauthn)
+    let snap = snapshot::read(deps.snapshot_ks, ServiceKind::Webauthn)
         .await
         .map_err(|e| RollbackWebauthnError::Storage(format!("snapshot read: {e}")))?
         .ok_or(RollbackWebauthnError::NoPriorMutation)?;
@@ -148,7 +130,7 @@ pub async fn rollback_webauthn(
         }
     };
 
-    let current_url = read_current_webauthn_url(config, webvh_ks).await?;
+    let current_url = read_current_webauthn_url(deps.config, deps.webvh_ks).await?;
 
     info!(
         channel,
@@ -160,22 +142,10 @@ pub async fn rollback_webauthn(
     match (webauthn_snap, current_url.as_deref()) {
         (WebauthnSnapshot::Disabled, Some(_)) => {
             let result = disable_webauthn(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
+                deps,
                 auth,
                 DisableWebauthnParams::default(),
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;
@@ -188,22 +158,10 @@ pub async fn rollback_webauthn(
         }
         (WebauthnSnapshot::Enabled { url }, None) => {
             let result = enable_webauthn(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
+                deps,
                 auth,
                 EnableWebauthnParams { url: url.clone() },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;
@@ -216,22 +174,10 @@ pub async fn rollback_webauthn(
         }
         (WebauthnSnapshot::Enabled { url }, Some(current)) if url != current => {
             let result = update_webauthn(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                telemetry,
+                deps,
                 auth,
                 UpdateWebauthnParams { url: url.clone() },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;

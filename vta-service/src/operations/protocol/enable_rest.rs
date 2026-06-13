@@ -10,26 +10,16 @@
 //! service, never remove one, so the §3.2 invariant is preserved by
 //! construction.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
-use tokio::sync::RwLock;
-
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
-use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::service_lifecycle::{
-    EnableMutationError, RestService, ServiceLifecycleDeps, ServiceMutationError, run_enable,
+    EnableMutationError, RestService, ServiceMutationError, run_enable,
 };
-use crate::store::KeyspaceHandle;
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 #[derive(Debug, Clone)]
 pub struct EnableRestParams {
@@ -122,54 +112,30 @@ impl EnableMutationError for EnableRestError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn enable_rest(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     params: EnableRestParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<EnableRestResult, EnableRestError> {
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
     // REST persists "enabled" as runtime state (fjall) + the in-memory flag.
     // If this fails after publish, the LogEntry advertises REST but config
     // disagrees — same risk window as before; operator retries.
     let ok = run_enable::<RestService, EnableRestError>(
-        &deps,
+        deps,
         auth,
         &params.url,
         ctx,
         channel,
         || async {
-            crate::operations::protocol::runtime_state::set_rest_enabled(service_state_ks, true)
-                .await
-                .map_err(|e| format!("runtime state: {e}"))?;
-            config.write().await.services.rest = true;
+            crate::operations::protocol::runtime_state::set_rest_enabled(
+                deps.service_state_ks,
+                true,
+            )
+            .await
+            .map_err(|e| format!("runtime state: {e}"))?;
+            deps.config.write().await.services.rest = true;
             Ok(())
         },
     )
@@ -185,10 +151,15 @@ pub async fn enable_rest(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
     use super::*;
+    use crate::config::AppConfig;
     use crate::operations::protocol::service_lifecycle::check_enable_preconditions;
     use crate::operations::protocol::snapshot::{self, ServiceKind};
-    use crate::store::Store;
+    use crate::store::{KeyspaceHandle, Store};
     use vta_sdk::protocol::services::validate_service_url;
     use vti_common::config::StoreConfig as VtiStoreConfig;
 

@@ -16,32 +16,23 @@
 //! process-level binding), so the local CLI can still reach the VTA; only the
 //! *advertisement* is removed.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
-use tokio::sync::RwLock;
 use tracing::info;
 
 use vta_sdk::error::VtaError;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
+use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
 
 use crate::auth::AuthClaims;
-use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::service_lifecycle::{
-    DisableMutationError, RestService, ServiceLifecycle, ServiceLifecycleDeps,
-    check_disable_preconditions, publish_patch,
+    DisableMutationError, RestService, ServiceLifecycle, check_disable_preconditions, publish_patch,
 };
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::operations::protocol::{PROTOCOL_LOCK, snapshot};
-use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone, Default)]
 pub struct DisableRestParams;
@@ -128,24 +119,11 @@ impl DisableMutationError for DisableRestError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn disable_rest(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     _params: DisableRestParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<DisableRestResult, DisableRestError> {
     auth.require_super_admin()
@@ -153,28 +131,14 @@ pub async fn disable_rest(
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
-
     // Brick-prevention (§3.2) + preconditions, capturing the prior URL.
     let (state, prior_url) =
-        check_disable_preconditions::<RestService, DisableRestError>(config, webvh_ks).await?;
+        check_disable_preconditions::<RestService, DisableRestError>(deps.config, deps.webvh_ks)
+            .await?;
 
     // Snapshot BEFORE the mutation (spec §3.5a): pre-state is the prior URL.
     snapshot::write(
-        snapshot_ks,
+        deps.snapshot_ks,
         RestService::snapshot_enabled(prior_url.clone()),
     )
     .await
@@ -182,7 +146,7 @@ pub async fn disable_rest(
 
     let patched = RestService::without_service(state.current_doc);
     let update_result = publish_patch::<DisableRestError>(
-        &deps,
+        deps,
         auth,
         &state.scid,
         &state.vta_did,
@@ -194,11 +158,11 @@ pub async fn disable_rest(
     // Persist services.rest = false to fjall (authoritative runtime state) +
     // mirror into the in-memory config. Same post-publish risk window as the
     // other ops if this fails — operator retries.
-    crate::operations::protocol::runtime_state::set_rest_enabled(service_state_ks, false)
+    crate::operations::protocol::runtime_state::set_rest_enabled(deps.service_state_ks, false)
         .await
         .map_err(|e| DisableRestError::Storage(format!("runtime state: {e}")))?;
     {
-        let mut cfg = config.write().await;
+        let mut cfg = deps.config.write().await;
         cfg.services.rest = false;
     }
 
@@ -212,7 +176,7 @@ pub async fn disable_rest(
     if let Some(tag) = ctx.telemetry_triggered_by() {
         event = event.with_field("triggered_by", JsonValue::from(tag));
     }
-    let _ = telemetry.record(event).await;
+    let _ = deps.telemetry.record(event).await;
 
     info!(
         channel,
@@ -232,12 +196,17 @@ pub async fn disable_rest(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
     use super::*;
+    use crate::config::AppConfig;
     use crate::operations::protocol::invariant::{
         CurrentServices, ProposedOp, would_violate_last_service,
     };
     use crate::operations::protocol::snapshot::ServiceKind;
-    use crate::store::Store;
+    use crate::store::{KeyspaceHandle, Store};
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
     /// Mirrors the test fixture in enable_rest / update_rest — owns the fjall

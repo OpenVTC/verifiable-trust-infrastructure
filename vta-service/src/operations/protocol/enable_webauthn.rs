@@ -9,26 +9,16 @@
 //! Brick-prevention is not consulted — enabling can only add a transport
 //! service.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
-use tokio::sync::RwLock;
-
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
-use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::service_lifecycle::{
-    EnableMutationError, ServiceLifecycleDeps, ServiceMutationError, WebauthnService, run_enable,
+    EnableMutationError, ServiceMutationError, WebauthnService, run_enable,
 };
-use crate::store::KeyspaceHandle;
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 #[derive(Debug, Clone)]
 pub struct EnableWebauthnParams {
@@ -116,53 +106,24 @@ impl EnableMutationError for EnableWebauthnError {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn enable_webauthn(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    // Threaded by every caller for signature parity with the other protocol-
-    // mutation operations; WebAuthn persists to the config file, not the
-    // per-kind service-state keyspace, so it is unused here.
-    _service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     params: EnableWebauthnParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<EnableWebauthnResult, EnableWebauthnError> {
-    let deps = ServiceLifecycleDeps {
-        config,
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        snapshot_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        telemetry,
-        webvh_auth_locks,
-    };
-    // WebAuthn persists "enabled" by writing the config file.
+    // WebAuthn persists "enabled" by writing the config file (not the per-kind
+    // service-state keyspace), so `deps.service_state_ks` is unused here.
     let ok = run_enable::<WebauthnService, EnableWebauthnError>(
-        &deps,
+        deps,
         auth,
         &params.url,
         ctx,
         channel,
         || async {
             let (contents, path) = {
-                let mut cfg = config.write().await;
+                let mut cfg = deps.config.write().await;
                 cfg.services.webauthn = true;
                 let contents = toml::to_string_pretty(&*cfg).map_err(|e| e.to_string())?;
                 let path = cfg.config_path.clone();
