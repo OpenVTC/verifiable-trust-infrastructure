@@ -1162,7 +1162,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let ks = store.keyspace("vault").unwrap();
+        let ks = store.keyspace(crate::keyspaces::VAULT).unwrap();
         (dir, store, ks)
     }
 
@@ -1861,8 +1861,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let vault = store.keyspace("vault").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let vault = store.keyspace(crate::keyspaces::VAULT).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
 
         // The holder subject key is a VTA-derived key (context `acme`).
         let seed = vec![42u8; 64];
@@ -2109,8 +2109,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let vault = store.keyspace("vault").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let vault = store.keyspace(crate::keyspaces::VAULT).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
 
         let seed = vec![42u8; 64];
         let seed_store: Arc<dyn SeedStore> =

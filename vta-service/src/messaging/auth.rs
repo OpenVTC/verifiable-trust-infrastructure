@@ -73,7 +73,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let acl_ks = store.keyspace("acl").unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
         (store, acl_ks, dir)
     }
 

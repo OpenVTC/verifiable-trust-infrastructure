@@ -60,9 +60,9 @@ pub async fn maybe_bootstrap_admin(
             ks
         }
     };
-    let keys_ks = apply_enc(store.keyspace("keys")?);
-    let contexts_ks = apply_enc(store.keyspace("contexts")?);
-    let acl_ks = apply_enc(store.keyspace("acl")?);
+    let keys_ks = apply_enc(store.keyspace(crate::keyspaces::KEYS)?);
+    let contexts_ks = apply_enc(store.keyspace(crate::keyspaces::CONTEXTS)?);
+    let acl_ks = apply_enc(store.keyspace(crate::keyspaces::ACL)?);
 
     // One-time migration: if the legacy pre-Phase-3 credential row is still in
     // the store, the old endpoint retrieving it is gone. Move any operator
@@ -76,7 +76,7 @@ pub async fn maybe_bootstrap_admin(
         info!("migrating legacy tee:admin_credential row — carve-out now closed");
         keys_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await?;
         // Old row might also be mirrored in the bootstrap keyspace.
-        if let Ok(bootstrap_ks) = store.keyspace("bootstrap") {
+        if let Ok(bootstrap_ks) = store.keyspace(crate::keyspaces::BOOTSTRAP) {
             let _ = bootstrap_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await;
         }
         keys_ks

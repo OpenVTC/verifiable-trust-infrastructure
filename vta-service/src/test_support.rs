@@ -85,19 +85,29 @@ pub async fn open_test_store() -> TestStore {
     })
     .expect("open store");
     TestStore {
-        contexts_ks: store.keyspace("contexts").expect("contexts ks"),
-        did_templates_ks: store.keyspace("did_templates").expect("did_templates ks"),
-        keys_ks: store.keyspace("keys").expect("keys ks"),
-        acl_ks: store.keyspace("acl").expect("acl ks"),
-        audit_ks: store.keyspace("audit").expect("audit ks"),
-        imported_ks: store.keyspace("imported").expect("imported ks"),
-        webvh_ks: store.keyspace("webvh").expect("webvh ks"),
-        sealed_nonces_ks: store.keyspace("sealed_nonces").expect("nonces ks"),
-        drains_ks: store.keyspace("drains").expect("drains ks"),
+        contexts_ks: store
+            .keyspace(crate::keyspaces::CONTEXTS)
+            .expect("contexts ks"),
+        did_templates_ks: store
+            .keyspace(crate::keyspaces::DID_TEMPLATES)
+            .expect("did_templates ks"),
+        keys_ks: store.keyspace(crate::keyspaces::KEYS).expect("keys ks"),
+        acl_ks: store.keyspace(crate::keyspaces::ACL).expect("acl ks"),
+        audit_ks: store.keyspace(crate::keyspaces::AUDIT).expect("audit ks"),
+        imported_ks: store
+            .keyspace(crate::keyspaces::IMPORTED_SECRETS)
+            .expect("imported ks"),
+        webvh_ks: store.keyspace(crate::keyspaces::WEBVH).expect("webvh ks"),
+        sealed_nonces_ks: store
+            .keyspace(crate::keyspaces::SEALED_NONCES)
+            .expect("nonces ks"),
+        drains_ks: store.keyspace(crate::keyspaces::DRAINS).expect("drains ks"),
         snapshot_ks: store
             .keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)
             .expect("snapshot ks"),
-        service_state_ks: store.keyspace("service_state").expect("service_state ks"),
+        service_state_ks: store
+            .keyspace(crate::keyspaces::SERVICE_STATE)
+            .expect("service_state ks"),
         _dir: dir,
         _store: store,
         data_dir,
@@ -449,10 +459,10 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
     };
     let store = Store::open(&store_config).expect("open store");
 
-    let keys_ks = store.keyspace("keys").unwrap();
-    let sessions_ks = store.keyspace("sessions").unwrap();
-    let acl_ks = store.keyspace("acl").unwrap();
-    let contexts_ks = store.keyspace("contexts").unwrap();
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+    let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
+    let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
     // Seed a default `ctx1` context so route tests that reference
     // it in ACL entries or key derivations don't have to set up
     // contexts themselves. The ACL `create`/`update` operations
@@ -478,22 +488,22 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         .await
         .expect("seed ctx1");
     }
-    let audit_ks = store.keyspace("audit").unwrap();
-    let cache_ks = store.keyspace("cache").unwrap();
-    let vault_ks = store.keyspace("vault").unwrap();
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+    let cache_ks = store.keyspace(crate::keyspaces::CACHE).unwrap();
+    let vault_ks = store.keyspace(crate::keyspaces::VAULT).unwrap();
     let vault_ks_ctx = vault_ks.clone();
-    let service_state_ks = store.keyspace("service_state").unwrap();
-    let imported_ks = store.keyspace("imported_secrets").unwrap();
-    let sealed_nonces_ks = store.keyspace("sealed_nonces").unwrap();
-    let backup_bundles_ks = store.keyspace("backup_bundles").unwrap();
+    let service_state_ks = store.keyspace(crate::keyspaces::SERVICE_STATE).unwrap();
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+    let sealed_nonces_ks = store.keyspace(crate::keyspaces::SEALED_NONCES).unwrap();
+    let backup_bundles_ks = store.keyspace(crate::keyspaces::BACKUP_BUNDLES).unwrap();
     let backup_blob_dir = dir.path().join("backups");
-    let did_templates_ks = store.keyspace("did_templates").unwrap();
+    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
     #[cfg(feature = "webvh")]
-    let webvh_ks = store.keyspace("webvh").unwrap();
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
     #[cfg(feature = "webvh")]
-    let passkey_vms_ks = store.keyspace("passkey_vms").unwrap();
+    let passkey_vms_ks = store.keyspace(crate::keyspaces::PASSKEY_VMS).unwrap();
     #[cfg(feature = "webvh")]
-    let drains_ks = store.keyspace("drains").unwrap();
+    let drains_ks = store.keyspace(crate::keyspaces::DRAINS).unwrap();
     #[cfg(feature = "webvh")]
     let snapshot_ks = store
         .keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)

@@ -303,13 +303,13 @@ mod tests {
         })
         .expect("open store");
         TestEnv {
-            contexts_ks: store.keyspace("contexts").unwrap(),
-            keys_ks: store.keyspace("keys").unwrap(),
-            imported_ks: store.keyspace("imported").unwrap(),
-            audit_ks: store.keyspace("audit").unwrap(),
-            acl_ks: store.keyspace("acl").unwrap(),
+            contexts_ks: store.keyspace(crate::keyspaces::CONTEXTS).unwrap(),
+            keys_ks: store.keyspace(crate::keyspaces::KEYS).unwrap(),
+            imported_ks: store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap(),
+            audit_ks: store.keyspace(crate::keyspaces::AUDIT).unwrap(),
+            acl_ks: store.keyspace(crate::keyspaces::ACL).unwrap(),
             #[cfg(feature = "webvh")]
-            webvh_ks: store.keyspace("webvh").unwrap(),
+            webvh_ks: store.keyspace(crate::keyspaces::WEBVH).unwrap(),
             seed_store: Arc::new(PlaintextSeedStore::new(&data_dir)),
             _dir: dir,
             _store: store,

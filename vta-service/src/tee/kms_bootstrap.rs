@@ -84,7 +84,7 @@ pub async fn bootstrap_secrets(
     store: &crate::store::Store,
 ) -> Result<BootstrappedSecrets, AppError> {
     // Bootstrap keyspace — no encryption (data is KMS-protected)
-    let bs_ks = store.keyspace("bootstrap")?;
+    let bs_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
 
     let dk_ct = bs_ks.get_raw(BOOTSTRAP_DK_CT_KEY).await?;
     let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
@@ -220,7 +220,7 @@ pub async fn re_encrypt_bootstrap_secrets(
     seed: &[u8],
     jwt_key: &[u8; 32],
 ) -> Result<(), AppError> {
-    let bs_ks = store.keyspace("bootstrap")?;
+    let bs_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
 
     // Clear any existing ciphertexts first
     let _ = bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await;

@@ -56,8 +56,8 @@ pub async fn maybe_generate_vta_did(
             ks
         }
     };
-    let keys_ks = apply_enc(store.keyspace("keys")?);
-    let contexts_ks = apply_enc(store.keyspace("contexts")?);
+    let keys_ks = apply_enc(store.keyspace(crate::keyspaces::KEYS)?);
+    let contexts_ks = apply_enc(store.keyspace(crate::keyspaces::CONTEXTS)?);
 
     // Check if DID already exists in the store (subsequent boot)
     if let Some(did_bytes) = keys_ks.get_raw(VTA_DID_STORE_KEY).await? {
@@ -232,7 +232,7 @@ pub async fn maybe_generate_vta_did(
 
     // Also store in bootstrap keyspace (no encryption) so the parent proxy
     // can read it and write did.jsonl to disk for the operator.
-    let bootstrap_ks = store.keyspace("bootstrap")?;
+    let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
     bootstrap_ks
         .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
         .await?;

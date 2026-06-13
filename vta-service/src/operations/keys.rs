@@ -996,10 +996,10 @@ mod tests {
             };
             let store = Store::open(&store_config).expect("open store");
 
-            let keys_ks = store.keyspace("keys").unwrap();
-            let contexts_ks = store.keyspace("contexts").unwrap();
-            let audit_ks = store.keyspace("audit").unwrap();
-            let imported_ks = store.keyspace("imported_secrets").unwrap();
+            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+            let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+            let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+            let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
 
             // 32-byte seed; will be expanded to 64 bytes by BIP-32 internally
             let seed_store: Arc<dyn SeedStore> =

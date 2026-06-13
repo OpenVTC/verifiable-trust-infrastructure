@@ -506,7 +506,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let ks = store.keyspace("contexts").unwrap();
+        let ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
         (dir, store, ks)
     }
 
@@ -660,15 +660,16 @@ mod tests {
         })
         .unwrap();
         let k = |n: &str| store.keyspace(n).unwrap();
+        use crate::keyspaces as ks;
         OwnedKs {
-            keys: k("keys"),
-            acl: k("acl"),
-            contexts: k("contexts"),
-            did_templates: k("did_templates"),
-            audit: k("audit"),
-            imported: k("imported"),
+            keys: k(ks::KEYS),
+            acl: k(ks::ACL),
+            contexts: k(ks::CONTEXTS),
+            did_templates: k(ks::DID_TEMPLATES),
+            audit: k(ks::AUDIT),
+            imported: k(ks::IMPORTED_SECRETS),
             #[cfg(feature = "webvh")]
-            webvh: k("webvh"),
+            webvh: k(ks::WEBVH),
             _dir: dir,
             _store: store,
         }

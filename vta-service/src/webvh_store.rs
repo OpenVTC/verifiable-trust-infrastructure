@@ -175,7 +175,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace("webvh").unwrap();
+        let ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         (dir, ks)
     }
 

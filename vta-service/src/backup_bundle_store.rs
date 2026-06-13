@@ -236,7 +236,9 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace("backup_bundles_test").unwrap();
+        let ks = store
+            .keyspace(crate::keyspaces::BACKUP_BUNDLES_TEST)
+            .unwrap();
         (dir, ks)
     }
 

@@ -121,14 +121,14 @@ async fn build_offline_deps(
         )
     })?;
 
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let audit_ks = store.keyspace("audit")?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let drains_ks = store.keyspace("drains")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let drains_ks = store.keyspace(crate::keyspaces::DRAINS)?;
     let snapshot_ks = store.keyspace(snapshot::KEYSPACE_NAME)?;
-    let service_state_ks = store.keyspace("service_state")?;
+    let service_state_ks = store.keyspace(crate::keyspaces::SERVICE_STATE)?;
     // Sync the in-memory config from fjall (authoritative) so the readers
     // throughout the codebase see the current runtime state, not the legacy
     // (possibly stale) [services] block on disk.

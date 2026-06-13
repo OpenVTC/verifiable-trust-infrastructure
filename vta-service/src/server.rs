@@ -268,23 +268,23 @@ pub async fn build_app_state(
         }
     };
 
-    let keys_ks = apply_encryption(store.keyspace("keys")?);
-    let sessions_ks = apply_encryption(store.keyspace("sessions")?);
-    let acl_ks = apply_encryption(store.keyspace("acl")?);
-    let contexts_ks = apply_encryption(store.keyspace("contexts")?);
-    let did_templates_ks = apply_encryption(store.keyspace("did_templates")?);
-    let audit_ks = apply_encryption(store.keyspace("audit")?);
-    let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
-    let cache_ks = apply_encryption(store.keyspace("cache")?);
-    let vault_ks = apply_encryption(store.keyspace("vault")?);
+    let keys_ks = apply_encryption(store.keyspace(crate::keyspaces::KEYS)?);
+    let sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::SESSIONS)?);
+    let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
+    let contexts_ks = apply_encryption(store.keyspace(crate::keyspaces::CONTEXTS)?);
+    let did_templates_ks = apply_encryption(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
+    let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
+    let imported_ks = apply_encryption(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
+    let cache_ks = apply_encryption(store.keyspace(crate::keyspaces::CACHE)?);
+    let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
     // Persistent runtime state for service enable/disable. Encrypted because
     // a couple of bool records are cheap and the keyspace may grow.
-    let service_state_ks = apply_encryption(store.keyspace("service_state")?);
+    let service_state_ks = apply_encryption(store.keyspace(crate::keyspaces::SERVICE_STATE)?);
     // Sealed-transfer anti-replay store. Bundle_ids are not secret and the
     // row is a one-byte sentinel, so the keyspace is intentionally
     // unencrypted — saves a decrypt hop on every request.
-    let sealed_nonces_ks = apply_encryption(store.keyspace("sealed_nonces")?);
-    let backup_bundles_ks = apply_encryption(store.keyspace("backup_bundles")?);
+    let sealed_nonces_ks = apply_encryption(store.keyspace(crate::keyspaces::SEALED_NONCES)?);
+    let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
     // Stage `.vtabak` blobs under `{data_dir}/backups`. Created lazily
     // by the op layer at first `initiate-*` call (so a VTA that never
     // does backups doesn't get an empty directory). See
@@ -292,11 +292,11 @@ pub async fn build_app_state(
     // machine" for the file-system layout.
     let backup_blob_dir = config.store.data_dir.join("backups");
     #[cfg(feature = "webvh")]
-    let webvh_ks = apply_encryption(store.keyspace("webvh")?);
+    let webvh_ks = apply_encryption(store.keyspace(crate::keyspaces::WEBVH)?);
     #[cfg(feature = "webvh")]
-    let passkey_vms_ks = apply_encryption(store.keyspace("passkey_vms")?);
+    let passkey_vms_ks = apply_encryption(store.keyspace(crate::keyspaces::PASSKEY_VMS)?);
     #[cfg(feature = "webvh")]
-    let drains_ks = apply_encryption(store.keyspace("drains")?);
+    let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
@@ -407,7 +407,7 @@ pub async fn run(
     // still present, the rewrite didn't finish and the state is hybrid.
     {
         let keys_ks_boot = {
-            let ks = store.keyspace("keys")?;
+            let ks = store.keyspace(crate::keyspaces::KEYS)?;
             match storage_encryption_key {
                 Some(key) => ks.with_encryption(key),
                 None => ks,
@@ -432,7 +432,7 @@ pub async fn run(
     // `[services]` block on first boot post-upgrade). Same encryption policy
     // as the rest of the keyspaces.
     let boot_service_state_ks = {
-        let ks = store.keyspace("service_state")?;
+        let ks = store.keyspace(crate::keyspaces::SERVICE_STATE)?;
         match storage_encryption_key {
             Some(key) => ks.with_encryption(key),
             None => ks,
@@ -478,7 +478,7 @@ pub async fn run(
     // continue (a stale/legacy archive is still readable via the load path).
     {
         let keys_ks_boot = {
-            let ks = store.keyspace("keys")?;
+            let ks = store.keyspace(crate::keyspaces::KEYS)?;
             match storage_encryption_key {
                 Some(key) => ks.with_encryption(key),
                 None => ks,
@@ -562,7 +562,7 @@ pub async fn run(
         let outcome = vti_common::integrity::boot_verify_and_install(
             vti_common::integrity::derive_mac_key(&storage_key),
             enc("keys")?,
-            store.keyspace("bootstrap")?, // unencrypted, KMS-protected
+            store.keyspace(crate::keyspaces::BOOTSTRAP)?, // unencrypted, KMS-protected
             enc("acl")?,
             enc("contexts")?,
             anchor,
@@ -627,14 +627,14 @@ pub async fn run(
                 None => ks,
             }
         };
-        let sessions_ks = apply_encryption(store.keyspace("sessions")?);
-        let acl_ks = apply_encryption(store.keyspace("acl")?);
-        let audit_ks = apply_encryption(store.keyspace("audit")?);
-        let vault_ks = apply_encryption(store.keyspace("vault")?);
-        let backup_bundles_ks = apply_encryption(store.keyspace("backup_bundles")?);
+        let sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::SESSIONS)?);
+        let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
+        let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
+        let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
+        let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
         let backup_blob_dir = config.store.data_dir.join("backups");
         #[cfg(feature = "webvh")]
-        let drains_ks = apply_encryption(store.keyspace("drains")?);
+        let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
 
         // Pluggable telemetry sink + multi-mediator listener registry.
         // The registry holds active/drain state and the per-mediator
@@ -1729,7 +1729,9 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("store open");
-        let keys_ks = store.keyspace("keys").expect("keys keyspace");
+        let keys_ks = store
+            .keyspace(crate::keyspaces::KEYS)
+            .expect("keys keyspace");
         (store, keys_ks, dir)
     }
 

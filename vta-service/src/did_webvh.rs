@@ -28,11 +28,11 @@ pub async fn run_create_did_webvh(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let did_templates_ks = store.keyspace("did_templates")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
 
     // Resolve context
     let ctx = match crate::contexts::get_context(&contexts_ks, &args.context).await? {
@@ -220,7 +220,7 @@ pub async fn run_create_did_webvh(
             &keys_ks,
             &imported_ks,
             &Arc::from(seed_store),
-            &store.keyspace("audit")?,
+            &store.keyspace(crate::keyspaces::AUDIT)?,
             &auth,
             &result.signing_key_id,
             "cli",
@@ -239,7 +239,7 @@ pub async fn run_create_did_webvh(
                 &keys_ks,
                 &imported_ks,
                 &Arc::from(create_seed_store(&config)?),
-                &store.keyspace("audit")?,
+                &store.keyspace(crate::keyspaces::AUDIT)?,
                 &auth,
                 &result.ka_key_id,
                 "cli",

@@ -188,7 +188,9 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace("backup_bundles_sweeper_test").unwrap();
+        let ks = store
+            .keyspace(crate::keyspaces::BACKUP_BUNDLES_SWEEPER_TEST)
+            .unwrap();
         let blob_dir = dir.path().join("backups");
         tokio::fs::create_dir_all(&blob_dir).await.unwrap();
         (dir, ks, blob_dir)

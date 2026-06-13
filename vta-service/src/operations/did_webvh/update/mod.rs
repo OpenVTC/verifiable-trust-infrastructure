@@ -306,7 +306,7 @@ mod tests {
         };
         std::mem::forget(dir);
         let store = Store::open(&cfg).expect("open store");
-        store.keyspace("keys").expect("keyspace")
+        store.keyspace(crate::keyspaces::KEYS).expect("keyspace")
     }
 
     fn test_pub_multibase() -> String {

@@ -205,10 +205,10 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 8. Gather stats from store
-    let contexts_ks = store.keyspace("contexts")?;
-    let keys_ks = store.keyspace("keys")?;
-    let acl_ks = store.keyspace("acl")?;
-    let sessions_ks = store.keyspace("sessions")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS)?;
 
     // --- Contexts ---
     let ctx_records = contexts::list_contexts(&contexts_ks).await?;
@@ -322,7 +322,7 @@ async fn send_trust_ping(
 
     let root = ExtendedSigningKey::from_seed(&seed)?;
 
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
 
     // Internal storage always uses #key-0 for the signing record, regardless
     // of DID method. The X25519 record at #key-1 only exists for did:webvh

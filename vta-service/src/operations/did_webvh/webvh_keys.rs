@@ -206,7 +206,7 @@ mod tests {
         // Test fixture only — no production code does this.
         std::mem::forget(dir);
         let store = Store::open(&cfg).expect("open store");
-        store.keyspace("keys").expect("keyspace")
+        store.keyspace(crate::keyspaces::KEYS).expect("keyspace")
     }
 
     fn handle(scid: &str, version_id: &str, role: WebvhKeyRole, hash: &str) -> WebvhKeyHandle {

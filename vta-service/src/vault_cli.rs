@@ -44,7 +44,7 @@ pub struct VaultSeedArgs {
 pub async fn run_vault_seed(args: VaultSeedArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let vault_ks = store.keyspace("vault")?;
+    let vault_ks = store.keyspace(crate::keyspaces::VAULT)?;
 
     let records: Vec<StoredVaultEntry> = match (&args.entries_file, &args.context) {
         (Some(path), _) => load_records_from_file(path)?,
@@ -293,7 +293,7 @@ pub struct VaultWipeArgs {
 pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let vault_ks = store.keyspace("vault")?;
+    let vault_ks = store.keyspace(crate::keyspaces::VAULT)?;
 
     // Enumerate every key under the `vault:` prefix. We use the raw
     // iterator so a deserialise failure on a single row doesn't abort

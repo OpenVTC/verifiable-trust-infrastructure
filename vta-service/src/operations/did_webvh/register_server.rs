@@ -289,8 +289,8 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
-        let audit_ks = store.keyspace("audit").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
         // Force the test_app_config helper to be exercised so any
         // future field addition surfaces as a test failure.
         let _ = test_app_config(dir.path().into());

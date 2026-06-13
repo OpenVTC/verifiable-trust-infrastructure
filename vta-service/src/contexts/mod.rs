@@ -133,7 +133,12 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        (store.keyspace("contexts").expect("keyspace"), dir)
+        (
+            store
+                .keyspace(crate::keyspaces::CONTEXTS)
+                .expect("keyspace"),
+            dir,
+        )
     }
 
     /// Regression test for the context-index race: N concurrent

@@ -22,8 +22,8 @@ pub struct CreateDidKeyArgs {
 pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
-    let contexts_ks = store.keyspace("contexts")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
 
     // Load seed from configured backend using the active generation
     let seed_store = create_seed_store(&config)?;
@@ -60,7 +60,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
 
     // Optionally create ACL entry
     if args.admin {
-        let acl_ks = store.keyspace("acl")?;
+        let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
         let entry = AclEntry::new(did.clone(), Role::Admin, "cli:create-did-key")
             .with_label(args.label.clone())
             .with_contexts(vec![args.context.clone()]);

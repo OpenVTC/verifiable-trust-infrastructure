@@ -17,7 +17,7 @@ pub struct ImportDidArgs {
 pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     // Validate DID format
     if !args.did.starts_with("did:") {

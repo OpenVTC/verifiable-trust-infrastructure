@@ -500,11 +500,11 @@ pub async fn apply_inputs(
     let store = Store::open(&StoreConfig {
         data_dir: inputs.data_dir.clone(),
     })?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let did_templates_ks = store.keyspace("did_templates")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
     eprintln!("  Created application context: vta");
@@ -1355,7 +1355,7 @@ async fn seed_initial_admin(
     let store = Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     if let Some(existing) = seal::get_seal(&acl_ks).await? {
         return Err(format!(

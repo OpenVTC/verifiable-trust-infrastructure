@@ -80,6 +80,12 @@ pub async fn export_backup(
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
+    // The keyspaces captured here are exactly `crate::keyspaces::BACKED_UP`
+    // ({keys, acl, contexts, audit, imported_secrets, webvh}). That registry
+    // partitions every keyspace into BACKED_UP vs EXCLUDED_FROM_BACKUP and a
+    // guard test (`keyspaces::tests::backup_partition_is_total`) keeps the
+    // partition total, so a newly-added keyspace can't be silently dropped from
+    // the backup decision. If you add a keyspace to BACKED_UP, wire it in here.
     let keys_ks = ks.keys;
     let acl_ks = ks.acl;
     let contexts_ks = ks.contexts;
@@ -1003,7 +1009,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
 
         // Plant a stale auth record (as if a previous VTA installation
         // had cached daemon REST tokens here).

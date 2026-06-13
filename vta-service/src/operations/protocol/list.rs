@@ -195,7 +195,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         let context_admin = AuthClaims {
             did: "did:key:z6Mk-context-admin".into(),
             role: Role::Admin,
@@ -232,7 +232,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
 
         let err = list_services(&config, &webvh_ks, &super_admin)
@@ -265,7 +265,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         let super_admin = AuthClaims::unsafe_local_cli_super_admin("test");
 
         let response = list_services(&config, &webvh_ks, &super_admin)
@@ -323,7 +323,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace("webvh").unwrap();
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
 
         // Stage a webvh record + log line so list_services can read
         // the on-chain document. Service array deliberately puts

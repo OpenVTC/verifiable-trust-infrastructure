@@ -1090,7 +1090,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace("drains").unwrap();
+        let ks = store.keyspace(crate::keyspaces::DRAINS).unwrap();
         (dir, ks)
     }
 

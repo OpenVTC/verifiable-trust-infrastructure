@@ -39,7 +39,7 @@ pub async fn run_add_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
 
     let auth = cli_super_admin();
@@ -69,7 +69,7 @@ pub async fn run_list_servers(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::list_webvh_servers(&webvh_ks, &auth, "cli").await?;
@@ -99,7 +99,7 @@ pub async fn run_update_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result =
@@ -121,7 +121,7 @@ pub async fn run_remove_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     operations::did_webvh::remove_webvh_server(&webvh_ks, &auth, &id, "cli").await?;
@@ -146,11 +146,11 @@ pub async fn run_create_did(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path.clone())?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let did_templates_ks = store.keyspace("did_templates")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -238,7 +238,7 @@ pub async fn run_list_dids(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::list_dids_webvh(
@@ -274,10 +274,10 @@ pub async fn run_delete_did(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let audit_ks = store.keyspace("audit")?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -315,7 +315,7 @@ pub async fn run_did_log(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let log = crate::webvh_store::get_did_log(&webvh_ks, &did)
         .await?
@@ -371,11 +371,11 @@ pub async fn run_edit_did(
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let audit_ks = store.keyspace("audit")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -510,10 +510,10 @@ pub async fn run_register_did(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace("webvh")?;
-    let keys_ks = store.keyspace("keys")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
-    let audit_ks = store.keyspace("audit")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =

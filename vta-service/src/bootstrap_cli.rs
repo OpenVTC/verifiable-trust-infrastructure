@@ -78,7 +78,7 @@ pub async fn run_seal(
     // forces the consumer to regenerate their request.
     let config_store = AppConfig::load(config_path)?;
     let persistent_store = Store::open(&config_store.store)?;
-    let nonce_ks = persistent_store.keyspace("sealed_nonces")?;
+    let nonce_ks = persistent_store.keyspace(crate::keyspaces::SEALED_NONCES)?;
     let nonce_store = PersistentNonceStore::new(nonce_ks);
     let bundle = seal_payload(&recipient_pk, bundle_id, producer, &payload, &nonce_store).await?;
     persistent_store.persist().await?;
@@ -793,8 +793,8 @@ pub async fn run_context_create(
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let acl_ks = store.keyspace("acl")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-create");
     let display_name = name.unwrap_or_else(|| id.clone());
@@ -859,7 +859,7 @@ pub async fn run_context_list(
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace("contexts")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-list");
     let resp = crate::operations::contexts::list_contexts(&contexts_ks, &auth, "vta-contexts-list")
@@ -881,7 +881,7 @@ pub async fn run_context_get(
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace("contexts")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-get");
     let record =
@@ -907,7 +907,7 @@ pub async fn run_context_update(
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace("contexts")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-update");
     let params = UpdateContextParams {
@@ -943,14 +943,14 @@ pub async fn run_context_delete(
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace("contexts")?;
-    let keys_ks = store.keyspace("keys")?;
-    let acl_ks = store.keyspace("acl")?;
-    let did_templates_ks = store.keyspace("did_templates")?;
-    let audit_ks = store.keyspace("audit")?;
-    let imported_ks = store.keyspace("imported_secrets")?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     #[cfg(feature = "webvh")]
-    let webvh_ks = store.keyspace("webvh")?;
+    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-delete");
 
@@ -1162,7 +1162,9 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let ks = store.keyspace("contexts").expect("contexts keyspace");
+        let ks = store
+            .keyspace(crate::keyspaces::CONTEXTS)
+            .expect("contexts keyspace");
         (dir, store, ks)
     }
 

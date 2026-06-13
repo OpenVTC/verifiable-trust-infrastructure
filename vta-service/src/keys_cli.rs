@@ -33,7 +33,7 @@ pub async fn run_keys_list(
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
 
     let raw = keys_ks.prefix_iter_raw("key:").await?;
 
@@ -73,7 +73,7 @@ pub async fn run_keys_secrets(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     // Resolve key IDs: explicit args or all active keys in a context
@@ -169,7 +169,7 @@ pub async fn run_keys_seeds_list(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
 
     let active_id = keys::seeds::get_active_seed_id(&keys_ks).await?;
     let records = keys::seeds::list_seed_records(&keys_ks).await?;
@@ -215,7 +215,7 @@ pub async fn run_rotate_seed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     let current_id = keys::seeds::get_active_seed_id(&keys_ks).await?;

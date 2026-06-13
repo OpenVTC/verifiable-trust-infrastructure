@@ -16,7 +16,7 @@ pub async fn run_acl_list(
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     let mut entries = list_acl_entries(&acl_ks).await?;
 
@@ -54,7 +54,7 @@ pub async fn run_acl_get(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     let entry = get_acl_entry(&acl_ks, &did)
         .await?
@@ -88,7 +88,7 @@ pub async fn run_acl_update(
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     let mut entry = get_acl_entry(&acl_ks, &did)
         .await?
@@ -135,7 +135,7 @@ pub async fn run_acl_delete(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     let entry = get_acl_entry(&acl_ks, &did)
         .await?

@@ -116,7 +116,9 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let ks = store.keyspace("vault").expect("vault keyspace");
+        let ks = store
+            .keyspace(crate::keyspaces::VAULT)
+            .expect("vault keyspace");
         let ks = match key {
             Some(k) => ks.with_encryption(k),
             None => ks,
@@ -339,7 +341,9 @@ mod tests {
         // encryption key. `get_raw` only decrypts when its handle carries a
         // key, so this plain handle returns the actual on-disk ciphertext —
         // the genuine "at rest" bytes, not a decrypted view.
-        let plain = store.keyspace("vault").expect("plain vault handle");
+        let plain = store
+            .keyspace(crate::keyspaces::VAULT)
+            .expect("plain vault handle");
         assert!(!plain.is_encrypted());
         let raw = plain
             .get_raw(record_key("cred-secret"))

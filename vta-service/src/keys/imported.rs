@@ -293,7 +293,7 @@ mod tests {
 
         let mut handles = Vec::new();
         for _ in 0..16 {
-            let ks = store.keyspace("keys").unwrap();
+            let ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
             handles.push(tokio::spawn(async move {
                 get_or_create_salt(&ks).await.expect("salt")
             }));
@@ -302,7 +302,7 @@ mod tests {
         for h in handles {
             salts.push(h.await.expect("join"));
         }
-        let persisted = get_salt(&store.keyspace("keys").unwrap())
+        let persisted = get_salt(&store.keyspace(crate::keyspaces::KEYS).unwrap())
             .await
             .unwrap()
             .expect("salt persisted");
@@ -317,8 +317,8 @@ mod tests {
     #[tokio::test]
     async fn test_store_and_load_secret() {
         let (store, _dir) = temp_store();
-        let imported_ks = store.keyspace("imported_secrets").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let seed = [42u8; 32];
         let secret = b"my-secret-key-bytes-32-chars!!!!";
 
@@ -336,8 +336,8 @@ mod tests {
     #[tokio::test]
     async fn test_wrong_aad_fails() {
         let (store, _dir) = temp_store();
-        let imported_ks = store.keyspace("imported_secrets").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let seed = [42u8; 32];
         let secret = b"my-secret-key-bytes-32-chars!!!!";
 
@@ -353,8 +353,8 @@ mod tests {
     #[tokio::test]
     async fn test_delete_secret_removes_value() {
         let (store, _dir) = temp_store();
-        let imported_ks = store.keyspace("imported_secrets").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let seed = [42u8; 32];
 
         store_secret(
@@ -377,8 +377,8 @@ mod tests {
     #[tokio::test]
     async fn test_reencrypt_all() {
         let (store, _dir) = temp_store();
-        let imported_ks = store.keyspace("imported_secrets").unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let old_seed = [42u8; 32];
         let new_seed = [99u8; 32];
         let secret = b"my-secret-key-bytes-32-chars!!!!";

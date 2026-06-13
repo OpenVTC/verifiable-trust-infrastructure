@@ -204,9 +204,9 @@ mod tests {
             };
             let store = Store::open(&store_config).expect("open store");
 
-            let keys_ks = store.keyspace("keys").unwrap();
-            let imported_ks = store.keyspace("imported_secrets").unwrap();
-            let audit_ks = store.keyspace("audit").unwrap();
+            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+            let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+            let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
 
             let initial_seed = vec![0xABu8; 32];
             let seed_store: Arc<dyn SeedStore> =
@@ -251,9 +251,9 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let keys_ks = store.keyspace("keys").unwrap();
-        let imported_ks = store.keyspace("imported_secrets").unwrap();
-        let audit_ks = store.keyspace("audit").unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
 
         // Bootstrap generation 0 as the active seed.
         save_seed_record(

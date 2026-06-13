@@ -304,7 +304,9 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let ks = store.keyspace("contexts").expect("open contexts ks");
+        let ks = store
+            .keyspace(crate::keyspaces::CONTEXTS)
+            .expect("open contexts ks");
         (dir, store, ks)
     }
 

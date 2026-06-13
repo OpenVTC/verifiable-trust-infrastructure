@@ -2005,7 +2005,7 @@ async fn run_bootstrap_admin(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = store::Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
 
     // Check if already sealed
     if let Some(existing) = seal::get_seal(&acl_ks).await? {
@@ -2317,7 +2317,7 @@ async fn auth_sign_challenge(
     let key_id = format!("{did}#{multibase}");
 
     let store = store::Store::open(&config.store)?;
-    let keys_ks = store.keyspace("keys")?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
     let record: KeyRecord = keys_ks
         .get(keys::store_key(&key_id))
         .await?
@@ -2366,8 +2366,8 @@ async fn auth_sign_challenge(
 async fn export_admin(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let store = store::Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
-    let keys_ks = store.keyspace("keys")?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     let vta_did = config.vta_did.as_deref().unwrap_or("(not set)");

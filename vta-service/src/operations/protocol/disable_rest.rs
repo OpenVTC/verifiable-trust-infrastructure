@@ -315,7 +315,7 @@ mod tests {
 
     impl TestFixture {
         fn webvh_ks(&self) -> KeyspaceHandle {
-            self.store.keyspace("webvh").unwrap()
+            self.store.keyspace(crate::keyspaces::WEBVH).unwrap()
         }
     }
 

@@ -38,7 +38,7 @@ use vti_common::store::KeyspaceHandle;
 /// [`KeyspaceHandle`] via [`vti_common::store::Store::keyspace`]
 /// once at startup (or in tests) and pass it to [`read`] / [`write`]
 /// / [`clear`].
-pub const KEYSPACE_NAME: &str = "service_prev_config";
+pub const KEYSPACE_NAME: &str = crate::keyspaces::SNAPSHOT;
 
 /// Identifier for which transport kind a snapshot pertains to.
 ///

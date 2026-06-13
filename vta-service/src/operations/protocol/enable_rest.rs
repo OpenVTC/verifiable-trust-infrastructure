@@ -283,7 +283,7 @@ mod tests {
             self.store.keyspace(snapshot::KEYSPACE_NAME).unwrap()
         }
         fn webvh_ks(&self) -> KeyspaceHandle {
-            self.store.keyspace("webvh").unwrap()
+            self.store.keyspace(crate::keyspaces::WEBVH).unwrap()
         }
     }
 

@@ -101,7 +101,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let drains_ks = store.keyspace("drains").unwrap();
+        let drains_ks = store.keyspace(crate::keyspaces::DRAINS).unwrap();
         let sink: SharedTelemetrySink = Arc::new(RingBufferTelemetry::with_capacity(64));
         let reg = Arc::new(MediatorListenerRegistry::new(Arc::clone(&sink)));
 

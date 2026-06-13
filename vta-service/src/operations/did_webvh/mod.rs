@@ -1448,7 +1448,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let webvh_ks = store.keyspace("webvh").expect("keyspace");
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).expect("keyspace");
 
         let now = Utc::now();
         let did = "did:webvh:QmTest:example.com:abc";

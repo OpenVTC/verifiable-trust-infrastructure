@@ -472,7 +472,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         };
         let store = Store::open(&store_config).expect("open store");
-        let keys_ks = store.keyspace("keys").expect("keyspace");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).expect("keyspace");
 
         let n_tasks: usize = 16;
         let successes = std::sync::Arc::new(AtomicUsize::new(0));

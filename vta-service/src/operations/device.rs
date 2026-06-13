@@ -533,8 +533,8 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let acl_ks = store.keyspace("acl").unwrap();
-        let audit_ks = store.keyspace("audit").unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
         (acl_ks, audit_ks, dir)
     }
 

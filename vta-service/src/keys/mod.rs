@@ -380,7 +380,7 @@ mod tests {
     async fn test_create_store_recover_cycle() {
         let seed = test_seed();
         let (store, _dir) = temp_store();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         let did = "did:webvh:abc123:example.com:vta";
 
         // === CREATION (first boot — derive_entity_keys + save) ===
@@ -462,7 +462,7 @@ mod tests {
                 data_dir: dir.path().to_path_buf(),
             };
             let store = Store::open(&config).unwrap();
-            let keys_ks = store.keyspace("keys").unwrap();
+            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
 
             let derived = derive_entity_keys(&seed, "m/44'/0'", "signing", "ka", &keys_ks)
                 .await
@@ -481,7 +481,7 @@ mod tests {
                 data_dir: dir.path().to_path_buf(),
             };
             let store = Store::open(&config).unwrap();
-            let keys_ks = store.keyspace("keys").unwrap();
+            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
 
             let signing: KeyRecord = keys_ks
                 .get(store_key(&format!("{did}#key-0")))
@@ -518,7 +518,7 @@ mod tests {
     async fn test_path_allocation_produces_unique_keys() {
         let seed = test_seed();
         let (store, _dir) = temp_store();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
 
         let base = "m/44'/0'";
         let mut pub_keys = Vec::new();

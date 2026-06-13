@@ -119,8 +119,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         };
         let store = Store::open(&config).unwrap();
-        let acl_ks = store.keyspace("acl").unwrap();
-        let audit_ks = store.keyspace("audit").unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
         (store, acl_ks, audit_ks, dir)
     }
 

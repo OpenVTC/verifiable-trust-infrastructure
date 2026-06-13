@@ -1051,7 +1051,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let acl_ks = store.keyspace("acl").unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
         let caller = "did:key:zCaller";
 
         let mk_config = |allow_carveout: bool, enabled: bool| {
@@ -1113,7 +1113,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let acl_ks = store.keyspace("acl").unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
         let caller = "did:key:zCaller";
 
         let mut c: crate::config::AppConfig = toml::from_str("").unwrap();
@@ -1173,7 +1173,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let ks = store.keyspace("sessions").unwrap();
+        let ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
 
         let resp = issue_step_up_challenge(
             &ks,

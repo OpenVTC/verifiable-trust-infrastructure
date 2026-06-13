@@ -45,7 +45,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let keys_ks = Arc::new(store.keyspace("keys").expect("keyspace"));
+        let keys_ks = Arc::new(store.keyspace(crate::keyspaces::KEYS).expect("keyspace"));
 
         let base = "m/26'/0'";
         let n = 64usize;

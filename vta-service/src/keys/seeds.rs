@@ -563,7 +563,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let keys_ks = store.keyspace("keys").unwrap();
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
         save_seed_record(
             &keys_ks,
             &SeedRecord {
