@@ -19,7 +19,7 @@
 //! carry the write capabilities; Application/Reader carry read-only;
 //! Monitor carries none.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
@@ -347,7 +347,7 @@ fn require_capability(
     doc: &TrustTask<Value>,
     cap: Capability,
     action: &str,
-) -> Result<(), Response> {
+) -> Result<(), TrustTaskOutcome> {
     if role_has_capability(&auth.role, cap) {
         Ok(())
     } else {
@@ -370,7 +370,7 @@ fn enforce_context_scope(
     auth: &AuthClaims,
     context_id: Option<&str>,
     doc: &TrustTask<Value>,
-) -> Result<(), Response> {
+) -> Result<(), TrustTaskOutcome> {
     let Some(ctx) = context_id else {
         return Ok(()); // No context filter — caller's full visibility applies.
     };
@@ -393,7 +393,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
         return r;
     }
@@ -466,7 +466,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
         return r;
     }
@@ -512,7 +512,7 @@ pub(super) async fn handle_upsert(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
         return r;
     }
@@ -830,7 +830,7 @@ pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
         return r;
     }
@@ -922,7 +922,7 @@ pub(super) async fn handle_release(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::FillRelease, "release") {
         return r;
     }
@@ -1031,7 +1031,7 @@ pub(super) async fn handle_proxy_login(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::ProxyLogin, "proxy-login") {
         return r;
     }
@@ -1231,7 +1231,7 @@ pub(super) async fn handle_sign_trust_task(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(r) = require_capability(auth, &doc, Capability::SignTrustTask, "sign-trust-task") {
         return r;
     }

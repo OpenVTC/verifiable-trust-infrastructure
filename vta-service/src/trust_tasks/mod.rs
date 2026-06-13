@@ -36,7 +36,7 @@
 //! framework SPEC §8.5) instead of axum's plain-text 400 default.
 
 use axum::extract::State;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 
@@ -62,10 +62,11 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
-// `pub(crate)` so the DIDComm message handlers can reach `resolve_step_up`
-// to honour step-up floors on that transport too (P0.13). The step-up engine
-// living under `routes/` is a known layering wrinkle that P2.4 relocates to
-// `operations/`.
+// `pub(crate)` so the REST routes (`routes::acl`, `routes::contexts`) can
+// reach the `RequireStepUp` extractor + op markers. The step-up *engine* lives
+// in `operations::step_up` (P2.4); this module holds only the transport
+// wrappers (the trust-task `require_step_up`/`handle_approve_response` and the
+// REST `RequireStepUp` extractor) over it.
 pub(crate) mod step_up;
 mod step_up_policy;
 pub(crate) use step_up::{
@@ -76,6 +77,11 @@ mod vault;
 mod webvh;
 mod wire_v0_2;
 
+/// The transport-neutral dispatch result — see [`helpers::TrustTaskOutcome`].
+/// Re-exported so both transports (`routes`-mounted REST handler + DIDComm
+/// `messaging::handlers::handle_trust_task`) can name `crate::trust_tasks::
+/// TrustTaskOutcome`.
+pub(crate) use helpers::TrustTaskOutcome;
 use helpers::{body_parse_error_response, method_not_found, reject_with};
 #[cfg(feature = "didcomm")]
 use trust_tasks_rs::RejectReason;
@@ -227,7 +233,7 @@ macro_rules! dispatch_table {
             state: &AppState,
             auth: &AuthClaims,
             doc: TrustTask<Value>,
-        ) -> Response {
+        ) -> TrustTaskOutcome {
             let type_uri = doc.type_uri.to_string();
             match type_uri.as_str() {
                 $(
@@ -272,18 +278,22 @@ pub async fn dispatch_trust_task(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
-    Ok(dispatch_trust_task_core(&state, &auth, &body).await)
+    Ok(dispatch_trust_task_core(&state, &auth, &body)
+        .await
+        .into_response())
 }
 
 /// Transport-agnostic trust-task dispatch core.
 ///
-/// Parses the envelope bytes and dispatches by `type` URI, returning
-/// the framework result/error document wrapped in a `Response` (the
-/// status code comes from the framework's status table). Shared by:
-/// - the REST route [`dispatch_trust_task`] (returns the `Response` as-is), and
+/// Parses the envelope bytes and dispatches by `type` URI, returning a
+/// typed [`TrustTaskOutcome`] — the framework result/error document bytes
+/// plus the status code from the framework's status table. Shared by:
+/// - the REST route [`dispatch_trust_task`], which renders it via
+///   `IntoResponse`, and
 /// - the DIDComm trust-task handler
-///   (`crate::messaging::handlers::handle_trust_task`), which decomposes
-///   the `Response` body into a DIDComm reply.
+///   (`crate::messaging::handlers::handle_trust_task`), which reads
+///   `outcome.body` straight as the reply envelope — no round-trip through
+///   an `axum::Response` to re-extract the JSON.
 ///
 /// `body` is the full `TrustTask<Value>` envelope JSON — the HTTP POST
 /// body on REST, the DIDComm message body on DIDComm.
@@ -291,7 +301,7 @@ pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
     body: &[u8],
-) -> Response {
+) -> TrustTaskOutcome {
     // 1. Parse the envelope.
     let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
@@ -344,8 +354,8 @@ pub(crate) async fn dispatch_trust_task_core(
         if let Ok(uri_0_1) = spec.uri_0_1.parse() {
             doc.type_uri = uri_0_1;
         }
-        let resp = dispatch_typed(state, auth, doc).await;
-        return wire_v0_2::upconvert_response(resp, spec).await;
+        let outcome = dispatch_typed(state, auth, doc).await;
+        return wire_v0_2::upconvert_response(outcome, spec);
     }
     dispatch_typed(state, auth, doc).await
 }
@@ -360,7 +370,7 @@ pub(crate) async fn dispatch_trust_task_core(
 /// rejects unauthenticated callers before dispatch, so this gap is
 /// DIDComm-only — hence the feature gate.)
 #[cfg(feature = "didcomm")]
-pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> Response {
+pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> TrustTaskOutcome {
     match serde_json::from_slice::<TrustTask<Value>>(body) {
         Ok(doc) => reject_with(&doc, reason),
         Err(e) => body_parse_error_response(&e.to_string()),

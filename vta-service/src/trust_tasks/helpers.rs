@@ -35,6 +35,33 @@ use crate::error::AppError;
 /// envelope (`"trust-task"`).
 pub(super) const TRANSPORT_TRUST_TASK: &str = "trust-task";
 
+/// The transport-neutral result of dispatching a Trust Task: the framework
+/// HTTP status code plus the serialised result/error document bytes.
+///
+/// Both transports render from this one value — the REST route turns it into
+/// an `axum::Response` via [`IntoResponse`]; the DIDComm `handle_trust_task`
+/// reads [`body`](Self::body) straight as the reply envelope, with no
+/// round-trip through an `axum::Response` to re-extract the JSON. The body
+/// stays raw bytes (not a `serde_json::Value`) so the wire output is
+/// byte-identical to direct document serialisation: serde_json has no
+/// `preserve_order` feature here, so a `Value` round-trip would alphabetise
+/// object keys and change the bytes.
+pub(crate) struct TrustTaskOutcome {
+    pub(crate) status: StatusCode,
+    pub(crate) body: Vec<u8>,
+}
+
+impl IntoResponse for TrustTaskOutcome {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            self.body,
+        )
+            .into_response()
+    }
+}
+
 /// Parse a trust-task document's `payload` field as the typed body
 /// `T`, or return a `MalformedRequest` rejection response.
 ///
@@ -42,7 +69,7 @@ pub(super) const TRANSPORT_TRUST_TASK: &str = "trust-task";
 /// changes is the target type.
 pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
     doc: &TrustTask<Value>,
-) -> Result<T, Response> {
+) -> Result<T, TrustTaskOutcome> {
     serde_json::from_value::<T>(doc.payload.clone()).map_err(|e| {
         reject_with(
             doc,
@@ -61,7 +88,7 @@ pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
 /// - `Validation` / `TrustTaskMalformed` → `malformed_request`
 /// - `NotFound` / `Conflict` → `task_failed`
 /// - everything else → `internal_error`
-pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Response {
+pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
     let message = err.to_string();
     let reason = match err {
         AppError::Authentication(_) | AppError::Unauthorized(_) | AppError::Forbidden(_) => {
@@ -82,7 +109,7 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Resp
 /// Build a routed rejection document for the given reason and wrap it
 /// in an HTTP response. The framework computes the status code from
 /// the reject's standard code.
-pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Response {
+pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> TrustTaskOutcome {
     let routed = doc.reject_with(format!("urn:uuid:{}", Uuid::new_v4()), reason);
     error_response(routed)
 }
@@ -92,7 +119,7 @@ pub(super) fn reject_with(doc: &TrustTask<Value>, reason: RejectReason) -> Respo
 pub(super) fn success_response<R: serde::Serialize>(
     doc: &TrustTask<Value>,
     payload: R,
-) -> Response {
+) -> TrustTaskOutcome {
     let response_doc = doc.respond_with(format!("urn:uuid:{}", Uuid::new_v4()), payload);
     let body = match serde_json::to_vec(&response_doc) {
         Ok(b) => b,
@@ -106,12 +133,10 @@ pub(super) fn success_response<R: serde::Serialize>(
             );
         }
     };
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
+    TrustTaskOutcome {
+        status: StatusCode::OK,
         body,
-    )
-        .into_response()
+    }
 }
 
 /// Build a routed `task_failed` rejection for a URI we know about but
@@ -119,7 +144,7 @@ pub(super) fn success_response<R: serde::Serialize>(
 /// land their match arms before the handler body — each new slice can
 /// stub via this helper, then replace with a real handler.
 #[allow(dead_code)]
-pub(super) fn not_implemented_yet(doc: TrustTask<Value>, reason: &str) -> Response {
+pub(super) fn not_implemented_yet(doc: TrustTask<Value>, reason: &str) -> TrustTaskOutcome {
     let reject = RejectReason::TaskFailed {
         reason: reason.to_string(),
         details: None,
@@ -129,7 +154,7 @@ pub(super) fn not_implemented_yet(doc: TrustTask<Value>, reason: &str) -> Respon
 }
 
 /// Build an `unsupported_type` rejection for an unrecognised type URI.
-pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> Response {
+pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> TrustTaskOutcome {
     let reject = RejectReason::UnsupportedType {
         type_uri: type_uri.to_string(),
     };
@@ -139,23 +164,18 @@ pub(super) fn method_not_found(doc: TrustTask<Value>, type_uri: &str) -> Respons
 
 /// Wrap a routed `ErrorResponse` in an HTTP response with the right
 /// status code per the framework's status table.
-pub(super) fn error_response(err_doc: ErrorResponse) -> Response {
+pub(super) fn error_response(err_doc: ErrorResponse) -> TrustTaskOutcome {
     let status = StatusCode::from_u16(status_for_code(&err_doc.payload.code))
         .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = serde_json::to_vec(&err_doc).unwrap_or_else(|_| Vec::new());
-    (
-        status,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
+    TrustTaskOutcome { status, body }
 }
 
 /// Build a `trust-task-error/0.1` document for a body-parse failure.
 /// Unrouted (no issuer / recipient) — the framework permits this on
 /// malformed-body failures since the producer can correlate on the
 /// response `id`.
-pub(super) fn body_parse_error_response(reason: &str) -> Response {
+pub(super) fn body_parse_error_response(reason: &str) -> TrustTaskOutcome {
     let reject = RejectReason::MalformedRequest {
         reason: format!("body did not parse as a Trust Task document: {reason}"),
     };

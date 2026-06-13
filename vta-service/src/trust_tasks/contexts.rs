@@ -4,7 +4,7 @@
 //! authenticated caller for list/get; admin for update-did;
 //! super-admin for create/update/preview-delete/delete.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::context_management::create::CreateContextBody;
@@ -25,7 +25,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _req: ListContextsBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -42,7 +42,7 @@ pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // Admin role required; `create_context` enforces the finer gate (super-admin
     // for a top-level context, admin-of-parent for a sub-context).
     if let Err(e) = auth.require_admin() {
@@ -73,7 +73,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetContextBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -96,7 +96,7 @@ pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -127,7 +127,7 @@ pub(super) async fn handle_update_did(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -154,7 +154,7 @@ pub(super) async fn handle_preview_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // Admin role; the operation enforces access to the context or an ancestor.
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
@@ -188,7 +188,7 @@ pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }

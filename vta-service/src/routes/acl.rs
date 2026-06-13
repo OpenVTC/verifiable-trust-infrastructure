@@ -9,10 +9,8 @@ use crate::acl::Role;
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::operations;
-use crate::routes::trust_tasks::{
-    AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, RequireStepUp,
-};
 use crate::server::AppState;
+use crate::trust_tasks::{AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, RequireStepUp};
 
 #[derive(Debug, Deserialize)]
 pub struct ListAclQuery {

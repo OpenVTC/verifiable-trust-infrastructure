@@ -21,7 +21,6 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod protocol;
 mod step_up;
-pub(crate) mod trust_tasks;
 mod vta;
 
 use std::sync::Arc;
@@ -302,7 +301,10 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
         // Trust-task envelope dispatcher (per
         // docs/05-design-notes/trust-task-uri-registry.md). Phase 2
         // scaffold; handlers register per Phase 3 slice.
-        .route("/api/trust-tasks", post(trust_tasks::dispatch_trust_task))
+        .route(
+            "/api/trust-tasks",
+            post(crate::trust_tasks::dispatch_trust_task),
+        )
         .route(
             "/config",
             get(config::get_config).patch(config::update_config),

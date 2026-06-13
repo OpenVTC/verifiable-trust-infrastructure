@@ -6,7 +6,7 @@
 //! `routes::auth` — see the `REST_ROUTED` allowlist in the parity
 //! harness for the full list.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse, epoch_to_rfc3339};
@@ -32,7 +32,7 @@ pub(super) async fn handle_revoke_session(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // 1. Parse the payload.
     let req: RevokeSessionRequest = match serde_json::from_value(doc.payload.clone()) {
         Ok(r) => r,
@@ -128,7 +128,7 @@ pub(super) async fn handle_whoami(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // Live session state: acr/amr are updated in place by step-up, and
     // created_at is the session's issue time.
     let session = match get_session(&state.sessions_ks, &auth.session_id).await {
@@ -202,7 +202,7 @@ pub(super) async fn handle_sessions_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let all = match list_sessions(&state.sessions_ks).await {
         Ok(s) => s,
         Err(e) => {

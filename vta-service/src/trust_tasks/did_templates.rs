@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::did_templates::TemplateVars;
@@ -43,7 +43,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _: ListDidTemplatesBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -65,7 +65,7 @@ pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: CreateDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -89,7 +89,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -112,7 +112,7 @@ pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: UpdateDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -137,7 +137,7 @@ pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: DeleteDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -168,7 +168,7 @@ pub(super) async fn handle_render(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: RenderDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -197,7 +197,7 @@ pub(super) async fn handle_context_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ListContextDidTemplatesBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -221,7 +221,7 @@ pub(super) async fn handle_context_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: CreateContextDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -248,7 +248,7 @@ pub(super) async fn handle_context_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetContextDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -273,7 +273,7 @@ pub(super) async fn handle_context_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: UpdateContextDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -300,7 +300,7 @@ pub(super) async fn handle_context_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: DeleteContextDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -332,7 +332,7 @@ pub(super) async fn handle_context_render(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: RenderContextDidTemplateBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

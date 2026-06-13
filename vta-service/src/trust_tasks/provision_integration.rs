@@ -18,7 +18,7 @@
 
 #![cfg(feature = "webvh")]
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::provision_integration::http::{
@@ -42,7 +42,7 @@ pub(super) async fn handle_request(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ProvisionIntegrationRequest = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

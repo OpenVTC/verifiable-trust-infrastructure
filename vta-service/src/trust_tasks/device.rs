@@ -6,7 +6,7 @@
 //! requires the DID to already be in the ACL (provision-integration +
 //! acl/swap-key). See dtgwg `device/*`.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use trust_tasks_rs::specs::device::disable::v0_1 as disable_spec;
@@ -27,7 +27,7 @@ pub(super) async fn handle_register(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let payload: register_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -62,7 +62,7 @@ pub(super) async fn handle_heartbeat(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let payload: heartbeat_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -78,7 +78,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let payload: list_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -94,7 +94,7 @@ pub(super) async fn handle_disable(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let payload: disable_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,
@@ -113,7 +113,7 @@ pub(super) async fn handle_set_wake(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let payload: set_wake_spec::Payload = match parse_payload(&doc) {
         Ok(p) => p,
         Err(resp) => return resp,

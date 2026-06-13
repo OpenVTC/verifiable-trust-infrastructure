@@ -278,10 +278,8 @@ pub async fn handle_trust_task(
     // `permission_denied` *envelope*, not a DIDComm problem-report — a
     // conformant Trust-Task client only understands binding envelopes.
     let response = match auth_from_message(&message, &app_state.acl_ks).await {
-        Ok(auth) => {
-            crate::routes::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await
-        }
-        Err(e) => crate::routes::trust_tasks::reject_trust_task(
+        Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await,
+        Err(e) => crate::trust_tasks::reject_trust_task(
             &body,
             trust_tasks_rs::RejectReason::PermissionDenied {
                 reason: e.to_string(),
@@ -289,22 +287,17 @@ pub async fn handle_trust_task(
         ),
     };
 
-    let doc = response_into_json(response).await?;
+    // The dispatch core returns a typed `TrustTaskOutcome`; its `body` is
+    // already the serialised framework trust-task document, so we parse it
+    // straight into the DIDComm reply — no round-trip through an
+    // `axum::Response` to re-extract the JSON. The self-describing document
+    // (its own `type` + status `code`) carries the result; the HTTP status the
+    // core attaches is dropped on the DIDComm wire.
+    let doc: serde_json::Value = serde_json::from_slice(&response.body).map_err(handler_err)?;
 
     // The reply is itself a trust-task envelope; the service sets `thid`
     // from the inbound message id for client correlation.
     Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)))
-}
-
-/// Decompose an axum `Response` (the shared core's return) into its JSON
-/// body. The body is always a serialised framework trust-task document.
-async fn response_into_json(
-    resp: axum::response::Response,
-) -> Result<serde_json::Value, DIDCommServiceError> {
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .map_err(handler_err)?;
-    serde_json::from_slice(&bytes).map_err(handler_err)
 }
 
 // ---------------------------------------------------------------------------

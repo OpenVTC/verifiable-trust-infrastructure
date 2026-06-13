@@ -17,7 +17,7 @@
 
 #![cfg(all(feature = "webvh", feature = "didcomm"))]
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::{ErrorPayload, StandardCode, TrustTask, TrustTaskCode};
 use vta_sdk::protocols::did_management::passkey_vms::{
@@ -91,7 +91,7 @@ fn slug_from_doc(doc: &TrustTask<Value>) -> String {
 
 /// Render a `PasskeyVmError` as a spec-taxonomy trust-task error response,
 /// namespaced to the task that raised it.
-fn passkey_vm_reject(doc: &TrustTask<Value>, err: PasskeyVmError) -> Response {
+fn passkey_vm_reject(doc: &TrustTask<Value>, err: PasskeyVmError) -> TrustTaskOutcome {
     let slug = slug_from_doc(doc);
     let (code, reason) = passkey_vm_code(&slug, &err);
     let mut payload = ErrorPayload::new(code).with_message(err.to_string());
@@ -107,7 +107,7 @@ pub(super) async fn handle_enroll_challenge(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: EnrollPasskeyChallengeBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -136,7 +136,7 @@ pub(super) async fn handle_enroll_submit(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: EnrollPasskeySubmitBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -182,7 +182,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ListPasskeyVmsBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -200,7 +200,7 @@ pub(super) async fn handle_revoke(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: RevokePasskeyVmBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

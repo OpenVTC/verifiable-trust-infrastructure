@@ -44,7 +44,7 @@ use vti_common::store::KeyspaceHandle;
 // turn its `StepUpDecision` into a `403`/reject + approve-request push.
 use crate::operations::step_up::{StepUpDecision, resolve_step_up};
 
-use super::helpers::{reject_with, success_response};
+use super::helpers::{TrustTaskOutcome, reject_with, success_response};
 
 /// Why a step-up gate failed to verify. Maps to the spec's approve-response
 /// error codes in the handler.
@@ -229,7 +229,7 @@ pub(super) async fn handle_approve_response(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // 1. Parse the typed payload from a version-normalised copy (see above).
     let payload: approve_response::Payload = {
         let mut payload_value = doc.payload.clone();
@@ -766,7 +766,7 @@ pub(super) async fn require_step_up(
     auth: &AuthClaims,
     op_class: &str,
     doc: &TrustTask<Value>,
-) -> Option<Response> {
+) -> Option<TrustTaskOutcome> {
     if auth.acr == STEP_UP_TARGET_ACR {
         return None;
     }

@@ -7,7 +7,7 @@
 //! modes) who must approve. It deliberately takes `config` + `acl_ks` rather
 //! than `&AppState`/`&VtaState` so **both** transports resolve the same policy:
 //! the REST `RequireStepUp` extractor + the trust-task `require_step_up`
-//! wrapper (`routes::trust_tasks::step_up`, which turn a [`StepUpDecision`] into
+//! wrapper (`crate::trust_tasks::step_up`, which turn a [`StepUpDecision`] into
 //! a `403`/reject + the approve-request push), and the DIDComm message handlers
 //! (`messaging::handlers`).
 //!
@@ -15,7 +15,7 @@
 //! `operations::step_up_policy` documented — `messaging::handlers` no longer
 //! reaches up into `routes::` to resolve a gate. The route/transport concerns
 //! (Response shaping, challenge minting, approver push, the approve-response
-//! Trust Task handler) stay in `routes::trust_tasks::step_up`.
+//! Trust Task handler) stay in `crate::trust_tasks::step_up`.
 
 use vti_common::acl::get_acl_entry;
 use vti_common::auth::step_up::StepUpMode;

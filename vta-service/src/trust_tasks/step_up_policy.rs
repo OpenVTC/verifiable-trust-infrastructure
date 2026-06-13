@@ -12,7 +12,7 @@
 //! the authenticated caller; full TT-proof verification lands with the
 //! session-pubkey binding (dispatcher Phase 3), as for every other mutating arm.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
 
 use trust_tasks_rs::specs::auth::step_up::policy::v0_2 as policy;
@@ -39,7 +39,7 @@ pub(super) async fn handle_set_step_up_policy(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     // Authz: only a super-admin may change the VTA's security posture.
     if !auth.is_super_admin() {
         return reject_with(

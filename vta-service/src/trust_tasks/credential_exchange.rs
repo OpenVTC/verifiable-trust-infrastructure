@@ -22,7 +22,7 @@
 //! caller's super-admin claims authorize key access and give correct audit
 //! attribution.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::credential_exchange::{
@@ -70,7 +70,7 @@ pub(super) async fn handle_pending_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -110,7 +110,7 @@ pub(super) async fn handle_pending_approve(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -149,7 +149,7 @@ pub(super) async fn handle_pending_deny(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }

@@ -32,9 +32,9 @@
 //! payload) — mutating those bytes would void the proof, so they get genuine
 //! version-matched typed handlers instead.
 
-use axum::body::Body;
-use axum::response::Response;
 use serde_json::Value;
+
+use super::TrustTaskOutcome;
 
 /// One spec's 0.1 ⇄ 0.2 mapping. Paths are `.`-separated and relative to the
 /// document `payload`; a `*` segment fans out over every array element or
@@ -245,29 +245,22 @@ pub(super) fn kebabize_paths(payload: &mut Value, paths: &[&str]) {
     apply_paths(payload, paths, kebabize);
 }
 
-/// Maximum response body we'll re-read to up-convert. Trust-Task responses are
-/// small; the workspace-wide 1 MB request cap bounds the inputs that produce
-/// them. Generous headroom over that.
-const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
-
-/// Up-convert a handler's response: retype `…/0.1#response` → `…/0.2#response`
+/// Up-convert a dispatch outcome: retype `…/0.1#response` → `…/0.2#response`
 /// and rewrite the response payload's enum values to camel. Error/reject
 /// documents (a different `type`) are passed through with only the type
 /// prefix swapped, since their payload carries no spec enums.
-pub(super) async fn upconvert_response(resp: Response, spec: &WireSpecV02) -> Response {
-    let (parts, body) = resp.into_parts();
-    let bytes = match axum::body::to_bytes(body, MAX_RESPONSE_BYTES).await {
-        Ok(b) => b,
-        Err(_) => {
-            // Body couldn't be buffered (shouldn't happen for our in-memory
-            // responses). Nothing left to send — surface an empty body.
-            return Response::from_parts(parts, Body::empty());
-        }
-    };
-    let mut doc: Value = match serde_json::from_slice(&bytes) {
+///
+/// Operates on the typed [`TrustTaskOutcome`] body directly — the status is
+/// preserved untouched and there is no round-trip through an `axum::Response`.
+pub(super) fn upconvert_response(
+    outcome: TrustTaskOutcome,
+    spec: &WireSpecV02,
+) -> TrustTaskOutcome {
+    let TrustTaskOutcome { status, body } = outcome;
+    let mut doc: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         // Not JSON (shouldn't happen) — pass the original bytes through.
-        Err(_) => return Response::from_parts(parts, Body::from(bytes)),
+        Err(_) => return TrustTaskOutcome { status, body },
     };
 
     // Retype the response document. A success response echoes the (now 0.1)
@@ -285,8 +278,11 @@ pub(super) async fn upconvert_response(resp: Response, spec: &WireSpecV02) -> Re
         apply_paths(payload, spec.response_paths, camelize);
     }
 
-    let new_bytes = serde_json::to_vec(&doc).unwrap_or_else(|_| bytes.to_vec());
-    Response::from_parts(parts, Body::from(new_bytes))
+    let new_body = serde_json::to_vec(&doc).unwrap_or(body);
+    TrustTaskOutcome {
+        status,
+        body: new_body,
+    }
 }
 
 #[cfg(test)]
@@ -394,18 +390,13 @@ mod tests {
                 "truncated": false
             }
         });
-        let body = serde_json::to_vec(&doc).unwrap();
-        let resp = Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(Body::from(body))
-            .unwrap();
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::to_vec(&doc).unwrap(),
+        };
 
-        let out = upconvert_response(resp, spec).await;
-        let bytes = axum::body::to_bytes(out.into_body(), MAX_RESPONSE_BYTES)
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let out = upconvert_response(outcome, spec);
+        let v: Value = serde_json::from_slice(&out.body).unwrap();
 
         assert_eq!(
             v["type"],
@@ -432,15 +423,12 @@ mod tests {
             "type": "https://trusttasks.org/spec/trust-task-error/0.1",
             "payload": { "code": "permission_denied", "reason": "nope" }
         });
-        let resp = Response::builder()
-            .status(403)
-            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
-            .unwrap();
-        let out = upconvert_response(resp, spec).await;
-        let bytes = axum::body::to_bytes(out.into_body(), MAX_RESPONSE_BYTES)
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::FORBIDDEN,
+            body: serde_json::to_vec(&doc).unwrap(),
+        };
+        let out = upconvert_response(outcome, spec);
+        let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
             "https://trusttasks.org/spec/trust-task-error/0.1"
@@ -486,15 +474,12 @@ mod tests {
                 "truncated": false
             }
         });
-        let resp = Response::builder()
-            .status(200)
-            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
-            .unwrap();
-        let out = upconvert_response(resp, spec).await;
-        let bytes = axum::body::to_bytes(out.into_body(), MAX_RESPONSE_BYTES)
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::to_vec(&doc).unwrap(),
+        };
+        let out = upconvert_response(outcome, spec);
+        let v: Value = serde_json::from_slice(&out.body).unwrap();
         assert_eq!(
             v["type"],
             "https://trusttasks.org/spec/vault/list/0.2#response"

@@ -8,7 +8,7 @@
 //! See `docs/05-design-notes/backup-descriptor-pattern.md` for the
 //! protocol design.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::backup_management::descriptors::{
@@ -27,7 +27,7 @@ pub(super) async fn handle_initiate_export(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: InitiateExportBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -45,7 +45,7 @@ pub(super) async fn handle_complete_export(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: CompleteExportBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -63,7 +63,7 @@ pub(super) async fn handle_initiate_import(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: InitiateImportBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -82,7 +82,7 @@ pub(super) async fn handle_finalize_import(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: FinalizeImportBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -100,7 +100,7 @@ pub(super) async fn handle_abort(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: AbortBundleBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

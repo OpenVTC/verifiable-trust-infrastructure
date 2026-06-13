@@ -3,7 +3,7 @@
 //! Auth: any authenticated caller for `get`; Super Admin for
 //! `update` (enforced inside the operation function).
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::vta_management::get_config::GetConfigBody;
@@ -20,7 +20,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _req: GetConfigBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -36,7 +36,7 @@ pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: UpdateConfigBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

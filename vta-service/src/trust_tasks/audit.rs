@@ -3,7 +3,7 @@
 //! Auth: Admin for list-logs and get-retention; Super-Admin for
 //! update-retention (enforced inside the operation function).
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::audit_management::list::ListAuditLogsBody;
@@ -20,7 +20,7 @@ pub(super) async fn handle_list_logs(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ListAuditLogsBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -38,7 +38,7 @@ pub(super) async fn handle_get_retention(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _req: GetRetentionBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -54,7 +54,7 @@ pub(super) async fn handle_update_retention(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: UpdateRetentionBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

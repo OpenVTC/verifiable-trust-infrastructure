@@ -3,7 +3,7 @@
 //! Mirrors the legacy REST `/acl/*` routes one-for-one. Auth: Admin or
 //! Initiator for list/create/get/delete; Admin-only for update.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::acl_management::create::CreateAclBody;
@@ -26,7 +26,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
@@ -52,7 +52,7 @@ pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
@@ -103,7 +103,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
@@ -123,7 +123,7 @@ pub(super) async fn handle_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -179,7 +179,7 @@ pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }

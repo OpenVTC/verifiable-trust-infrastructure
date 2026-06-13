@@ -4,7 +4,7 @@
 //! caller for list/get; admin for create/rename/revoke; write
 //! (Application or higher) for sign.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use base64::Engine as _;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -28,7 +28,7 @@ pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ListKeysBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -56,7 +56,7 @@ pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -95,7 +95,7 @@ pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetKeyBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -111,7 +111,7 @@ pub(super) async fn handle_rename(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -139,7 +139,7 @@ pub(super) async fn handle_revoke(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -177,7 +177,7 @@ pub(super) async fn handle_sign(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_write() {
         return app_error_to_reject(&doc, e);
     }

@@ -5,7 +5,7 @@
 //! Does NOT restart the process; calls `crate::server::trigger_restart`
 //! on the in-process supervisor channel.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::vta_management::restart::{ReloadServicesBody, RestartResult};
@@ -21,7 +21,7 @@ pub(super) async fn handle_reload_services(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }

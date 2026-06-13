@@ -5,7 +5,7 @@
 //! capabilities`. If that grows beyond trivial it should move to
 //! `operations::discovery`.
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::discovery::{
@@ -27,7 +27,7 @@ pub(super) async fn handle_capabilities(
     state: &AppState,
     _auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _req: CapabilitiesBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

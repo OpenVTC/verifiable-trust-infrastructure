@@ -33,6 +33,11 @@ pub mod status;
 pub mod store;
 #[cfg(feature = "tee")]
 pub mod tee;
+/// Transport-neutral Trust-Task dispatch subsystem. Both the REST route
+/// (`routes::trust_tasks`-mounted `dispatch_trust_task`) and the DIDComm
+/// `handle_trust_task` handler dispatch through `dispatch_trust_task_core`
+/// here, so it lives at the crate root rather than under `routes::` (P2.4).
+pub mod trust_tasks;
 pub mod vault;
 #[cfg(feature = "webvh")]
 pub mod webvh_auth;

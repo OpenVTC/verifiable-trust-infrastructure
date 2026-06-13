@@ -31,7 +31,7 @@
 
 #![cfg(feature = "webvh")]
 
-use axum::response::Response;
+use super::helpers::TrustTaskOutcome;
 use didwebvh_rs::witness::Witnesses;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
@@ -69,7 +69,7 @@ pub(super) async fn handle_servers_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let _: ListWebvhServersBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -87,7 +87,7 @@ pub(super) async fn handle_servers_add(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -125,7 +125,7 @@ pub(super) async fn handle_servers_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -152,7 +152,7 @@ pub(super) async fn handle_servers_remove(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
@@ -180,7 +180,7 @@ pub(super) async fn handle_dids_list(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: ListDidsWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -204,7 +204,7 @@ pub(super) async fn handle_dids_create(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let body: CreateDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -246,7 +246,7 @@ pub(super) async fn handle_dids_get(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -272,7 +272,7 @@ pub(super) async fn handle_dids_get_log(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: GetDidWebvhLogBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -296,7 +296,7 @@ pub(super) async fn handle_dids_delete(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: DeleteDidWebvhBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -350,7 +350,7 @@ pub(super) async fn handle_dids_update(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: UpdateDidWithDid = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -400,7 +400,7 @@ pub(super) async fn handle_dids_rotate_keys(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     let req: RotateKeysWithDid = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -448,7 +448,7 @@ pub(super) async fn handle_dids_register_with_server(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-) -> Response {
+) -> TrustTaskOutcome {
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }

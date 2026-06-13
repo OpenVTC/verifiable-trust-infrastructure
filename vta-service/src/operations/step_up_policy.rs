@@ -2,7 +2,7 @@
 //!
 //! The *gate* resolution algorithm lives alongside this module in
 //! [`crate::operations::step_up`] (the route-layer `RequireStepUp` extractor +
-//! `require_step_up` wrapper in `crate::routes::trust_tasks::step_up` turn its
+//! `require_step_up` wrapper in `crate::trust_tasks::step_up` turn its
 //! decision into a `403`/reject). This module is the *management* half:
 //! validating, canonicalizing, and durably applying a new
 //! [`StepUpPolicy`], so an operator can change the VTA's posture at runtime
@@ -10,7 +10,7 @@
 //!
 //! Two callers share [`set_step_up_policy`]:
 //! - the wire path — the `auth/step-up/policy/0.2` trust-task handler
-//!   (`routes::trust_tasks::step_up_policy`), authorized by a super-admin bearer;
+//!   (`crate::trust_tasks::step_up_policy`), authorized by a super-admin bearer;
 //! - the **break-glass** path — the offline `vta step-up policy` CLI (direct
 //!   config access, no wire auth), which the spec REQUIRES so an over-strict
 //!   policy can be recovered without traversing the step-up gate.
