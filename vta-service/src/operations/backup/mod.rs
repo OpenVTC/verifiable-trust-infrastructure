@@ -14,6 +14,7 @@
 //!   bulk byte transport from the JSON envelope. See
 //!   `docs/05-design-notes/backup-descriptor-pattern.md`.
 
+pub mod blob;
 pub mod descriptors;
 
 use std::sync::Arc;
