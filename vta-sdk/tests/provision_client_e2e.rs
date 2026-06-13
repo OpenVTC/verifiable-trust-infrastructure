@@ -551,6 +551,56 @@ async fn admin_rotated_via_rest_round_trip() {
     );
 }
 
+/// The public URL-direct AdminRotated entry point
+/// (`provision_admin_rotated_via_rest`, issue #406): one call drives auth +
+/// the `BootstrapAsk::AdminRotation` round-trip against an explicit `rest_url`,
+/// never re-resolving the VTA DID — the seam that lets the OpenVTC e2e drive a
+/// loopback `MockVta`. Mirrors [`admin_rotated_via_rest_round_trip`] but through
+/// the one public function instead of the hand-assembled auth + client + decode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn provision_admin_rotated_via_rest_public_entry_round_trip() {
+    use vta_sdk::provision_client::provision_admin_rotated_via_rest;
+
+    let server = MockServer::start().await;
+    mount_auth_mocks(&server).await;
+
+    let key = EphemeralSetupKey::generate().unwrap();
+    let seed: [u8; 32] = decode_private_key_multibase(key.private_key_multibase()).unwrap();
+    let recipient_x_pub = x25519_pub_from_setup_seed(&seed);
+
+    let rotated_admin_did = "did:key:z6MkRotatedAdminPublicEntry".to_string();
+    let rotated_admin_private_key_mb = "zRotatedAdminPublicEntryPriv".to_string();
+    Mock::given(method("POST"))
+        .and(path("/bootstrap/provision-integration"))
+        .respond_with(AdminRotationResponder {
+            recipient_x_pub,
+            admin_did: rotated_admin_did.clone(),
+            admin_private_key_mb: rotated_admin_private_key_mb.clone(),
+            producer_did: "did:webvh:vta.example.com".into(),
+        })
+        .mount(&server)
+        .await;
+
+    // One call: auth handshake + VP build + provision-integration POST + bundle
+    // open, all against the explicit `rest_url` — no DID→URL resolution.
+    let reply = provision_admin_rotated_via_rest(
+        &server.uri(),
+        &test_vta_did_key(),
+        key.did.clone(),
+        key.private_key_multibase().to_string(),
+        ProvisionAsk::vta_admin_rotated("ctx-1"),
+    )
+    .await
+    .expect("URL-direct admin rotation round-trip");
+
+    assert_eq!(reply.admin_did, rotated_admin_did);
+    assert_ne!(
+        reply.admin_did, key.did,
+        "must return the rotated DID, not the setup DID"
+    );
+    assert_eq!(reply.admin_private_key_mb, rotated_admin_private_key_mb);
+}
+
 /// DIDComm transport for the AdminRotated path — unit-test the
 /// `provision_admin_rotation_via_didcomm` decoder against a synthetic
 /// `ProvisionIntegrationResponse`. We don't have a wiremock for

@@ -26,7 +26,7 @@ use super::ask::ProvisionAsk;
 use super::diagnostics::{DiagCheck, DiagStatus, Protocol};
 use super::error::ProvisionError;
 use super::event::{AttemptOutcome, AttemptResultKind, VtaEvent};
-use super::intent::{VtaIntent, VtaReply};
+use super::intent::{AdminCredentialReply, VtaIntent, VtaReply};
 use super::messages::OperatorMessages;
 use super::resolve::{ResolvedVta, resolve_vta};
 use super::result::ProvisionResult;
@@ -495,6 +495,41 @@ pub async fn provision_via_rest(
         AttemptOutcome::Connected(VtaReply::Full(result)) => Ok(*result),
         AttemptOutcome::Connected(VtaReply::AdminOnly(_)) => Err(ProvisionError::WorkflowFailed(
             "AdminOnly reply on FullSetup REST flow — wiring bug".into(),
+        )),
+        AttemptOutcome::PreflightOk { .. } => Err(ProvisionError::WorkflowFailed(
+            "REST flow produced PreflightOk — wiring bug".into(),
+        )),
+        AttemptOutcome::PreAuthFailure(reason) => Err(ProvisionError::WorkflowFailed(reason)),
+        AttemptOutcome::PostAuthFailure(reason) => Err(ProvisionError::WorkflowFailed(reason)),
+    }
+}
+
+/// Drive a one-shot REST `provision-integration` round-trip for the
+/// **admin-rotation** intent ([`VtaIntent::AdminRotated`]). URL-direct
+/// sibling of [`provision_via_rest`] (which is `FullSetup`-only): it takes an
+/// explicit `rest_url` and never re-resolves `vta_did` — so a caller can drive
+/// it against a loopback listener (e.g. a `MockVta`) whose DID isn't
+/// resolvable back to its URL.
+///
+/// Returns the rotated admin credential ([`AdminCredentialReply`]). Stand-alone
+/// — does not emit [`VtaEvent`]s; consumers that want diagnostics drive
+/// [`run_provision`] with [`VtaIntent::AdminRotated`] instead.
+pub async fn provision_admin_rotated_via_rest(
+    rest_url: &str,
+    vta_did: &str,
+    setup_did: String,
+    setup_privkey_mb: String,
+    ask: ProvisionAsk,
+) -> Result<AdminCredentialReply, ProvisionError> {
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let outcome =
+        run_rest_attempt_admin_rotated(rest_url, vta_did, setup_did, setup_privkey_mb, ask, &tx)
+            .await;
+
+    match outcome {
+        AttemptOutcome::Connected(VtaReply::AdminOnly(reply)) => Ok(reply),
+        AttemptOutcome::Connected(VtaReply::Full(_)) => Err(ProvisionError::WorkflowFailed(
+            "Full reply on AdminRotated REST flow — wiring bug".into(),
         )),
         AttemptOutcome::PreflightOk { .. } => Err(ProvisionError::WorkflowFailed(
             "REST flow produced PreflightOk — wiring bug".into(),

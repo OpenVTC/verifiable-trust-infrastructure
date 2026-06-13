@@ -230,6 +230,10 @@ http-body-util = "0.1"
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.
 # Production builds remain unaffected — this is dev-deps only.
 vta-service = { path = ".", features = ["test-support"] }
+# Test-only: the SDK REST `VtaClient` the `MockVta` e2e tests drive (issue
+# #406) to hit `GET /webvh/servers`. The `client` feature is kept out of the
+# production `vta-sdk` dep above so the server build stays lean.
+vta-sdk = { path = "../vta-sdk", version = "0.11", features = ["client"] }
 # Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves

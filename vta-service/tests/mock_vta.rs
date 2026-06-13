@@ -62,3 +62,61 @@ async fn mock_vta_gates_authenticated_routes() {
 
     mock.shutdown().await;
 }
+
+// ── Provisionable MockVta: the OpenVTC bootstrap→join e2e seams (issue #406) ──
+
+/// `start_provisionable` must serve a real, self-resolving `did:key` VTA DID —
+/// not the non-resolvable `z6MkTestVTA` sentinel the cheap app uses. This is the
+/// VTA-identity half of Gap 1: only a real `did:key` lets the VTA sign the
+/// authorization VC and seal the provision bundle. A harness drives provisioning
+/// URL-direct with [`MockVta::base_url`] + [`MockVta::vta_did`] (no DID→URL
+/// resolution); the SDK's URL-direct entry is
+/// `vta_sdk::provision_client::provision_admin_rotated_via_rest` (covered by a
+/// wiremock round-trip in `vta-sdk`'s `provision_client_e2e`).
+#[tokio::test]
+async fn provisionable_mock_exposes_a_real_vta_did() {
+    let mock = MockVta::start_provisionable().await;
+    let did = mock.vta_did();
+    assert!(
+        did.starts_with("did:key:z6Mk"),
+        "expected a real ed25519 did:key, got {did}"
+    );
+    assert_ne!(
+        did, "did:key:z6MkTestVTA",
+        "provisionable mock must not use the non-resolvable sentinel DID"
+    );
+    mock.shutdown().await;
+}
+
+/// Gap 3: a seeded webvh hosting server shows up in the real
+/// `GET /webvh/servers` catalogue, so a DID-mint / join flow finds a server to
+/// publish to. Auth uses [`TestAppContext::mint_token`] — the REST-only mock has
+/// no ATM for the DIDComm-packed live handshake.
+#[tokio::test]
+async fn seeded_webvh_server_is_listed_over_http() {
+    let mock = MockVta::start_provisionable().await;
+    mock.seed_webvh_server("prod", "did:webvh:host.example.com")
+        .await;
+
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkTestAdmin", "admin", vec![])
+        .await;
+    let client = vta_sdk::client::VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let result = client
+        .list_webvh_servers()
+        .await
+        .expect("list webvh servers");
+    assert!(
+        result
+            .servers
+            .iter()
+            .any(|s| s.id == "prod" && s.did == "did:webvh:host.example.com"),
+        "seeded server must appear in the catalogue, got {:?}",
+        result.servers
+    );
+
+    mock.shutdown().await;
+}

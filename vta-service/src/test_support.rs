@@ -260,20 +260,33 @@ pub async fn signed_admin_rotation_request(
 ///
 /// Returns `(vta_did, deps_with_resolver)` — the caller plugs the
 /// returned deps into `provision_integration()` instead of [`test_deps`].
-pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegrationDeps) {
+/// Provision the VTA's own signing identity into `keys_ks`: write a
+/// deterministic active seed to a [`PlaintextSeedStore`] under `data_dir`,
+/// derive the `{vta_did}#key-0` VC-issuance key and the `#sealed-transfer-0`
+/// producer-assertion key, and persist their keystore records. Returns the
+/// resulting `vta_did` (a real, self-resolving `did:key`) and the seed store
+/// the keys were derived from.
+///
+/// Shared by [`bootstrap_test_vta`] (direct-call deps) and the provisionable
+/// HTTP app ([`build_provisionable_test_app`] / [`MockVta::start_provisionable`]),
+/// so both paths use the exact same identity wiring the real VTA bootstrap does.
+async fn provision_vta_signing_identity(
+    keys_ks: &KeyspaceHandle,
+    data_dir: &std::path::Path,
+) -> (String, Arc<PlaintextSeedStore>) {
     use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
 
     // Deterministic 64-byte seed (BIP-32 wants ≥16 bytes; 64 mirrors
     // the mnemonic-derived seed shape used in production setup).
     let raw_seed = [0xC5u8; 64];
-    let seed_store = PlaintextSeedStore::new(&ts.data_dir);
+    let seed_store = PlaintextSeedStore::new(data_dir);
     crate::keys::seed_store::SeedStore::set(&seed_store, &raw_seed)
         .await
         .expect("write test seed to plaintext store");
 
     let now = chrono::Utc::now();
     save_seed_record(
-        &ts.keys_ks,
+        keys_ks,
         &SeedRecord {
             id: 0,
             seed_hex: None,
@@ -284,7 +297,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     )
     .await
     .expect("save seed record");
-    set_active_seed_id(&ts.keys_ks, 0)
+    set_active_seed_id(keys_ks, 0)
         .await
         .expect("set active seed id");
 
@@ -302,7 +315,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     let key_id = format!("{vta_did}#key-0");
 
     save_key_record(
-        &ts.keys_ks,
+        keys_ks,
         &key_id,
         vta_base_path,
         SdkKeyType::Ed25519,
@@ -326,7 +339,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     let st_pub_bytes = st_signing.verifying_key().to_bytes();
     let st_multibase = ed25519_multibase_pubkey(&st_pub_bytes);
     save_key_record(
-        &ts.keys_ks,
+        keys_ks,
         &format!("{vta_did}#sealed-transfer-0"),
         st_base_path,
         SdkKeyType::Ed25519,
@@ -337,6 +350,12 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     )
     .await
     .expect("save VTA sealed-transfer key record");
+
+    (vta_did, Arc::new(PlaintextSeedStore::new(data_dir)))
+}
+
+pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegrationDeps) {
+    let (vta_did, _seed_store) = provision_vta_signing_identity(&ts.keys_ks, &ts.data_dir).await;
 
     let mut config = test_app_config(ts.data_dir.clone());
     config.vta_did = Some(vta_did.clone());
@@ -430,11 +449,77 @@ pub struct TestAppContext {
     pub vault_ks: KeyspaceHandle,
     pub backup_bundles_ks: KeyspaceHandle,
     pub backup_blob_dir: std::path::PathBuf,
+    /// The webvh keyspace — exposed so a harness can seed a hosting server
+    /// via [`seed_webvh_server`] before driving a DID-mint / join flow.
+    #[cfg(feature = "webvh")]
+    pub webvh_ks: KeyspaceHandle,
+    /// The VTA DID this app is configured with — the `did:key:z6MkTestVTA`
+    /// sentinel for [`build_test_app`], or a real, self-resolving `did:key`
+    /// for [`build_provisionable_test_app`]. A harness driving a URL-direct
+    /// provision passes this as the `vta_did` argument.
+    pub vta_did: String,
     pub config: Arc<RwLock<AppConfig>>,
     /// Owns the on-disk fjall data dir. When this drops, files are
     /// removed; the caller MUST keep it alive for the duration of the
     /// test (`TestAppContext` is normally bound to a `let _ctx = …`).
     pub _dir: tempfile::TempDir,
+}
+
+impl TestAppContext {
+    /// Mint an access token for `did` with `role` + `contexts`, bypassing the
+    /// live challenge-response handshake. The SDK's `challenge_response` packs a
+    /// DIDComm envelope the server unpacks via ATM; a REST-only [`MockVta`] has
+    /// no ATM, so authenticated-endpoint tests take this shortcut (the same one
+    /// the route-integration suite uses): store an `Authenticated` session and
+    /// encode a matching AAL1 JWT. An empty `contexts` vec is super-admin.
+    pub async fn mint_token(&self, did: &str, role: &str, contexts: Vec<String>) -> String {
+        use vti_common::auth::session::{Session, SessionState, store_session};
+        let session_id = format!("sess-{}", uuid::Uuid::new_v4());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let session = Session {
+            session_id: session_id.clone(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: Vec::new(),
+            acr: String::new(),
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+        store_session(&self.sessions_ks, &session)
+            .await
+            .expect("store session");
+        let claims = self.jwt_keys.new_claims(
+            did.to_string(),
+            session_id,
+            role.to_string(),
+            contexts,
+            900,
+            false,
+        );
+        self.jwt_keys.encode(&claims).expect("encode jwt")
+    }
+}
+
+/// Knobs for [`build_test_app_with`]. Defaults reproduce the historical
+/// [`build_test_app`] behaviour exactly.
+#[derive(Default)]
+pub struct TestAppOptions {
+    /// When `true`, provision a real VTA signing identity (active seed +
+    /// `{vta_did}#key-0` + `#sealed-transfer-0`) via
+    /// [`provision_vta_signing_identity`] and set `config.vta_did` to the
+    /// derived, self-resolving `did:key` — so `provision_integration`
+    /// round-trips (VC issuance + bundle sealing) actually succeed against
+    /// the app. The default (`false`) keeps the cheap sentinel-DID app the
+    /// bulk of route tests rely on (no seed I/O, no key derivation).
+    pub provisionable_vta: bool,
 }
 
 /// Spin up an in-memory router suitable for `tower::ServiceExt::oneshot`
@@ -446,7 +531,25 @@ pub struct TestAppContext {
 /// nowhere but satisfies the routes that just compare it as a string.
 /// `vta_name` and `public_url` are set so the JWT audience / DID
 /// document construction don't take their None branches in tests.
+///
+/// For an app whose VTA DID is real and resolvable (needed to drive a full
+/// `provision_integration` over HTTP), use [`build_provisionable_test_app`].
 pub async fn build_test_app() -> (axum::Router, TestAppContext) {
+    build_test_app_with(TestAppOptions::default()).await
+}
+
+/// [`build_test_app`] with a real, self-resolving `did:key` VTA identity and
+/// the signing keys `provision_integration` needs — the build half of
+/// [`MockVta::start_provisionable`].
+pub async fn build_provisionable_test_app() -> (axum::Router, TestAppContext) {
+    build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+    })
+    .await
+}
+
+/// Backing builder for [`build_test_app`] / [`build_provisionable_test_app`].
+pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestAppContext) {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
     use tokio::sync::watch;
@@ -514,12 +617,24 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         vti_common::auth::jwt::JwtKeys::from_ed25519_bytes(&jwt_seed, "VTA").expect("jwt keys"),
     );
 
-    let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
-        Arc::new(TestSeedStore(vec![0xABu8; 32]));
+    // Default: a cheap in-memory seed store + non-resolvable sentinel DID.
+    // Provisionable: a real signing identity (active seed + `#key-0` +
+    // `#sealed-transfer-0`) derived into `keys_ks`, and `vta_did` set to the
+    // resulting self-resolving `did:key`.
+    let (vta_did, seed_store): (String, Arc<dyn crate::keys::seed_store::SeedStore>) =
+        if opts.provisionable_vta {
+            let (did, ps) = provision_vta_signing_identity(&keys_ks, dir.path()).await;
+            let store: Arc<dyn crate::keys::seed_store::SeedStore> = ps;
+            (did, store)
+        } else {
+            let store: Arc<dyn crate::keys::seed_store::SeedStore> =
+                Arc::new(TestSeedStore(vec![0xABu8; 32]));
+            ("did:key:z6MkTestVTA".to_string(), store)
+        };
 
     let mut config: AppConfig = toml::from_str(&format!(
         r#"
-        vta_did = "did:key:z6MkTestVTA"
+        vta_did = "{vta_did}"
         [store]
         data_dir = "{}"
         [auth]
@@ -566,7 +681,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         backup_bundles_ks: backup_bundles_ks.clone(),
         backup_blob_dir: backup_blob_dir.clone(),
         #[cfg(feature = "webvh")]
-        webvh_ks,
+        webvh_ks: webvh_ks.clone(),
         #[cfg(feature = "webvh")]
         passkey_vms_ks,
         #[cfg(feature = "webvh")]
@@ -624,11 +739,39 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
         vault_ks: vault_ks_ctx,
         backup_bundles_ks,
         backup_blob_dir,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+        vta_did,
         config,
         _dir: dir,
     };
 
     (router, ctx)
+}
+
+/// Seed a webvh hosting server directly into the registry keyspace, bypassing
+/// the network DID-resolution validation that `operations::did_webvh::servers::
+/// add_webvh_server` performs.
+///
+/// `build_test_app` / [`MockVta`] register no hosting server, so the join
+/// DID-mint path (`list_webvh_servers` → pick first → `create_did_webvh`)
+/// would otherwise hit an empty catalogue. Call this against
+/// [`TestAppContext::webvh_ks`] (or [`MockVta::seed_webvh_server`]) to make
+/// that first server resolvable to `list_webvh_servers`.
+#[cfg(feature = "webvh")]
+pub async fn seed_webvh_server(webvh_ks: &KeyspaceHandle, id: &str, server_did: &str) {
+    use chrono::Utc;
+    let now = Utc::now();
+    let record = vta_sdk::webvh::WebvhServerRecord {
+        id: id.to_string(),
+        did: server_did.to_string(),
+        label: Some(format!("test server {id}")),
+        created_at: now,
+        updated_at: now,
+    };
+    crate::webvh_store::store_server(webvh_ks, &record)
+        .await
+        .expect("seed webvh server");
 }
 
 /// A **mock VTA** bound to an ephemeral local port — a real, listening HTTP
@@ -660,9 +803,33 @@ pub struct MockVta {
 
 impl MockVta {
     /// Start a mock VTA on a random loopback port and return once it is bound
-    /// and serving.
+    /// and serving. Uses the cheap sentinel-DID app ([`build_test_app`]); the
+    /// VTA DID is not resolvable. For an e2e that drives a full
+    /// `provision_integration`, use [`start_provisionable`](Self::start_provisionable).
     pub async fn start() -> MockVta {
-        let (router, ctx) = build_test_app().await;
+        Self::serve(build_test_app().await).await
+    }
+
+    /// Like [`start`](Self::start) but with a real, self-resolving `did:key`
+    /// VTA identity and the signing keys `provision_integration` needs
+    /// ([`build_provisionable_test_app`]).
+    ///
+    /// This is the seam for the full OpenVTC bootstrap→join e2e: the VTA DID
+    /// isn't resolvable *back to the loopback URL*, but it doesn't need to be —
+    /// drive provisioning **URL-direct** by passing [`base_url`](Self::base_url)
+    /// and [`vta_did`](Self::vta_did) to
+    /// [`vta_sdk::provision_client::provision_admin_rotated_via_rest`] (or the
+    /// `FullSetup` `provision_via_rest`), which never re-resolves the DID. The
+    /// VTA's own `did:key` is self-resolving, so VC issuance and bundle sealing
+    /// succeed server-side.
+    pub async fn start_provisionable() -> MockVta {
+        Self::serve(build_provisionable_test_app().await).await
+    }
+
+    /// Bind an ephemeral loopback port, serve `router` in a background task,
+    /// and return once bound. Shared by [`start`](Self::start) /
+    /// [`start_provisionable`](Self::start_provisionable).
+    async fn serve((router, ctx): (axum::Router, TestAppContext)) -> MockVta {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind ephemeral loopback port");
@@ -694,6 +861,20 @@ impl MockVta {
     /// The base URL to point a client at (e.g. `http://127.0.0.1:54321`).
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// The VTA DID this mock is configured with — pass alongside
+    /// [`base_url`](Self::base_url) to a URL-direct provision entry point.
+    pub fn vta_did(&self) -> &str {
+        &self.ctx.vta_did
+    }
+
+    /// Seed a webvh hosting server so a DID-mint / join flow finds a server in
+    /// the catalogue. Thin wrapper over [`seed_webvh_server`] against this
+    /// mock's keyspace.
+    #[cfg(feature = "webvh")]
+    pub async fn seed_webvh_server(&self, id: &str, server_did: &str) {
+        seed_webvh_server(&self.ctx.webvh_ks, id, server_did).await;
     }
 
     /// Stop the server and wait for it to wind down gracefully.

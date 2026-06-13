@@ -62,7 +62,8 @@ pub mod setup_key;
 pub mod test_helpers;
 
 pub use runner::{
-    InitialChoice, provision_via_rest, run_connection_test, run_provision, select_initial_transport,
+    InitialChoice, provision_admin_rotated_via_rest, provision_via_rest, run_connection_test,
+    run_provision, select_initial_transport,
 };
 pub use runner_didcomm::{
     provision_admin_rotation_via_didcomm, provision_via_didcomm, run_provision_flight,
