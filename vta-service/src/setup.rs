@@ -77,7 +77,6 @@ impl SetupUi for SilentUi {
 // nested enums are referenced from doc-string links (including in
 // `main.rs`) rather than imported directly; making them pub-use keeps
 // the `vta_service::setup::WizardInputs` path in the published docs.
-pub(crate) use from_toml::create_vta_did_key;
 #[allow(unused_imports)]
 pub use from_toml::{
     ExistingDataDirPolicy, MessagingInput, SecretsBackendInput, VtaDidInput, WizardInputs,

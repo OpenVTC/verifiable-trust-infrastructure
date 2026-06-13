@@ -29,7 +29,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use chrono::Utc;
 use didwebvh_rs::url::WebVHURL;
 use rand::Rng;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use url::Url;
 
@@ -50,7 +50,12 @@ use crate::webvh_cli::cli_super_admin;
 use super::{SetupUi, SilentUi, create_seed_context, generate_mnemonic_silent};
 
 /// TOML schema for `vta setup --from <file>`.
-#[derive(Debug, Deserialize)]
+///
+/// `Serialize` is derived (alongside `Deserialize`) so the interactive wizard's
+/// golden test can assert that prompt-gathered inputs and the equivalent TOML
+/// deserialize to structurally-identical `WizardInputs` (compared via
+/// `serde_json::to_value`). Production never serializes this type.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WizardInputs {
     /// Output path for the generated `config.toml`. The setup wizard refuses
@@ -142,7 +147,7 @@ fn default_services() -> ServicesConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExistingDataDirPolicy {
     /// Refuse to proceed if `data_dir` already exists.
@@ -164,7 +169,7 @@ pub enum ExistingDataDirPolicy {
 /// load-bearing — boxing just to mollify the lint would add
 /// indirection for no operational benefit.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SecretsBackendInput {
     /// OS keyring (libsecret / Keychain / Credential Vault). The
@@ -253,31 +258,31 @@ fn default_keyring_service() -> String {
     "vta".into()
 }
 
-fn default_vault_kv_mount() -> String {
+pub(crate) fn default_vault_kv_mount() -> String {
     "secret".into()
 }
 
-fn default_vault_secret_key() -> String {
+pub(crate) fn default_vault_secret_key() -> String {
     "seed".into()
 }
 
-fn default_vault_auth_method() -> String {
+pub(crate) fn default_vault_auth_method() -> String {
     "kubernetes".into()
 }
 
-fn default_vault_k8s_mount() -> String {
+pub(crate) fn default_vault_k8s_mount() -> String {
     "kubernetes".into()
 }
 
-fn default_vault_k8s_jwt_path() -> String {
+pub(crate) fn default_vault_k8s_jwt_path() -> String {
     "/var/run/secrets/kubernetes.io/serviceaccount/token".into()
 }
 
-fn default_vault_approle_mount() -> String {
+pub(crate) fn default_vault_approle_mount() -> String {
     "approle".into()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessagingInput {
     /// No DIDComm mediator. The VTA will not participate in DIDComm flows.
@@ -350,7 +355,7 @@ fn default_mediator_context() -> String {
     "mediator".into()
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum VtaDidInput {
     /// No VTA DID. REST works; DIDComm and VC issuance do not.
