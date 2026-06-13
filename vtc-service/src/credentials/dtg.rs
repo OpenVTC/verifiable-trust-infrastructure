@@ -25,6 +25,7 @@
 //! Issuance signs through the VTC's local issuer key ([`LocalSigner`]); the key
 //! is never exported. `issuer = signer.issuer_did()` for every credential.
 
+use affinidi_vc::VerifiableCredential;
 use chrono::{DateTime, Duration, Utc};
 use dtg_credentials::DTGCredential;
 use serde_json::Value;
@@ -35,6 +36,16 @@ use crate::acl::VtcRole;
 use super::signer::LocalSigner;
 use super::vec::COMMUNITY_ROLE_ENDORSEMENT_TYPE;
 use super::vmc::CredentialStatusRef;
+
+/// Parse a signed catalog credential (the JSON any `issue_*` returns) into the
+/// typed [`VerifiableCredential`] the credential builders hand back. Centralises
+/// the `serde_json::from_value` + `AppError::Internal` mapping the `build_vmc` /
+/// `build_role_vec` / `build_custom_endorsement` builders each repeated (P2.8);
+/// `kind` (e.g. `"VMC"`, `"role VEC"`) is woven into the error for diagnosis.
+pub fn into_typed(doc: Value, kind: &str) -> Result<VerifiableCredential, AppError> {
+    serde_json::from_value(doc)
+        .map_err(|e| AppError::Internal(format!("DTG {kind} -> VerifiableCredential: {e}")))
+}
 
 /// `[validFrom, validUntil]` for a credential minted `now` with `validity`.
 fn window(validity: Duration) -> (DateTime<Utc>, DateTime<Utc>) {
@@ -182,6 +193,23 @@ mod tests {
         proof
             .verify_with_public_key(&unsigned, signer.public_bytes(), VerifyOptions::new())
             .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn into_typed_maps_malformed_json_to_kind_tagged_internal() {
+        // A non-VC JSON shape fails the typed parse with an Internal error
+        // that names the credential kind for diagnosis. (The success path is
+        // covered by the build_vmc / build_role_vec / build_custom_endorsement
+        // suites, which all route through `into_typed`.)
+        let err = into_typed(serde_json::json!({ "not": "a credential" }), "VMC")
+            .expect_err("a non-VC object must not parse as a VerifiableCredential");
+        match err {
+            AppError::Internal(msg) => {
+                assert!(msg.contains("VMC"), "error must name the kind: {msg}");
+                assert!(msg.contains("VerifiableCredential"), "{msg}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
     }
 
     #[tokio::test]

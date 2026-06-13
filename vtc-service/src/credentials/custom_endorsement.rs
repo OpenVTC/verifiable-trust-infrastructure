@@ -147,11 +147,7 @@ pub async fn build_custom_endorsement(
         params.validity,
     )
     .await?;
-    serde_json::from_value(doc).map_err(|e| {
-        AppError::Internal(format!(
-            "DTG custom endorsement -> VerifiableCredential: {e}"
-        ))
-    })
+    super::dtg::into_typed(doc, "custom endorsement")
 }
 
 #[cfg(test)]

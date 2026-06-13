@@ -95,8 +95,7 @@ pub async fn build_role_vec(
         params.validity,
     )
     .await?;
-    serde_json::from_value(doc)
-        .map_err(|e| AppError::Internal(format!("DTG VEC -> VerifiableCredential: {e}")))
+    super::dtg::into_typed(doc, "role VEC")
 }
 
 #[cfg(test)]

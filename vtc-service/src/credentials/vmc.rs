@@ -163,8 +163,7 @@ pub async fn build_vmc(
         params.personhood,
     )
     .await?;
-    serde_json::from_value(doc)
-        .map_err(|e| AppError::Internal(format!("DTG VMC -> VerifiableCredential: {e}")))
+    super::dtg::into_typed(doc, "VMC")
 }
 
 #[cfg(test)]
