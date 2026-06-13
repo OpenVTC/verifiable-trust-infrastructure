@@ -79,6 +79,10 @@
 
 pub mod error;
 pub mod hex;
+// Pure, dependency-light validators shared with clients so they apply the
+// VTA's canonical context-path / identifier rules without mirroring them.
+pub mod context_path;
+pub mod identifier;
 
 #[cfg(feature = "attest-verify")]
 pub mod attestation;

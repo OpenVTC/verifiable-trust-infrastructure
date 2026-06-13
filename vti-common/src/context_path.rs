@@ -1,17 +1,21 @@
-//! Hierarchical trust-context paths — the security foundation for
+//! Server-side re-export of the canonical context-path validators.
+//!
+//! Hierarchical trust-context paths are the security foundation for
 //! folder/sub-folder contexts (`docs/05-design-notes/hierarchical-contexts.md`).
-//!
 //! A context identifier **is** its materialized path: slash-separated segments,
-//! e.g. `acme/eng/team-a`. The authorization gate
-//! ([`crate::auth`]'s `has_context_access`) decides "admin of a parent → access
-//! to descendants" with [`is_ancestor_or_self`] — a **pure, store-free**
-//! segment comparison over data already in the verified JWT.
+//! e.g. `acme/eng/team-a`. The authorization gate ([`crate::auth`]'s
+//! `has_context_access`) decides "admin of a parent → access to descendants"
+//! with [`is_ancestor_or_self`] — a **pure, store-free** segment comparison
+//! over data already in the verified JWT.
 //!
-//! ## Why this is store-free (and why that matters)
-//! Resolving ancestry without a store walk keeps the security gate pure: no
-//! fail-open on a store error, no DoS surface, no parent-pointer **cycles**, no
-//! TOCTOU. The cost — re-parenting rewrites a subtree's paths — is deferred
-//! (moves are disallowed initially).
+//! ## Why this lives in the SDK now
+//! The pure construction/validation rules moved down into
+//! [`vta_sdk::context_path`] so **clients** can derive sub-context ids under
+//! the *same* rules the VTA enforces, without depending on this server-only
+//! crate (see issue #392). This module re-exports the pure helpers verbatim and
+//! wraps the two fallible constructors so they keep returning [`AppError`] for
+//! the server's `?`-ergonomics; the [`ValidationError`](vta_sdk::identifier::ValidationError)
+//! message is preserved verbatim.
 //!
 //! ## The one footgun, handled
 //! A raw `str::starts_with` is **wrong**: `acme` would "contain" `acme-evil`.
@@ -21,115 +25,32 @@
 //! there is no `..` / slash-injection / empty-segment aliasing.
 
 use crate::error::AppError;
-use crate::identifier::validate_identifier;
 
-/// Maximum nesting depth (number of path segments). Bounds derivation depth and
-/// keeps ancestry checks cheap; deep trees are an anti-pattern, not a need.
-pub const MAX_CONTEXT_DEPTH: usize = 8;
-
-/// The path separator. A context identifier is segments joined by this; it never
-/// appears inside a segment.
-pub const SEPARATOR: char = '/';
+// Pure helpers re-exported unchanged — clients make no authz decisions, but the
+// server's ACL gate and callers consume these by their existing paths.
+pub use vta_sdk::context_path::{
+    MAX_CONTEXT_DEPTH, SEPARATOR, depth, is_ancestor_or_self, parent_path,
+};
 
 /// Validate a context path: non-empty, ≤ [`MAX_CONTEXT_DEPTH`] segments, every
 /// segment a valid identifier, and no empty / leading / trailing / doubled
 /// separators.
+///
+/// Thin wrapper over [`vta_sdk::context_path::validate_context_path`] mapping
+/// the SDK error onto [`AppError::Validation`] (message preserved verbatim).
 pub fn validate_context_path(value: &str) -> Result<(), AppError> {
-    if value.is_empty() {
-        return Err(AppError::Validation(
-            "context path must not be empty".into(),
-        ));
-    }
-    if value.starts_with(SEPARATOR) || value.ends_with(SEPARATOR) {
-        return Err(AppError::Validation(format!(
-            "context path must not start or end with '{SEPARATOR}'"
-        )));
-    }
-
-    let segments: Vec<&str> = value.split(SEPARATOR).collect();
-    if segments.len() > MAX_CONTEXT_DEPTH {
-        return Err(AppError::Validation(format!(
-            "context path is {} levels deep; maximum is {MAX_CONTEXT_DEPTH}",
-            segments.len()
-        )));
-    }
-    for segment in &segments {
-        // An empty segment means a leading/trailing/doubled separator — `split`
-        // yields `""` for each. (The leading/trailing case is caught above; this
-        // catches `a//b`.)
-        if segment.is_empty() {
-            return Err(AppError::Validation(
-                "context path must not contain an empty segment ('//')".into(),
-            ));
-        }
-        validate_identifier("context path segment", segment)?;
-    }
-    Ok(())
-}
-
-/// Split a path into its segments. The path is assumed
-/// [validated](validate_context_path); for an arbitrary string this still
-/// returns the slash-split parts.
-fn segments(path: &str) -> impl Iterator<Item = &str> {
-    path.split(SEPARATOR)
-}
-
-/// Whether `ancestor` is `descendant` itself or an ancestor of it — the test the
-/// ACL gate uses for "admin of a parent context covers the subtree".
-///
-/// **Segment-aware:** `descendant`'s segments must *begin with* `ancestor`'s
-/// segments, segment-for-segment. So `acme` is an ancestor of `acme/eng` but
-/// **not** of `acme-evil`, and `acme/eng` is not an ancestor of `acme/engineering`.
-///
-/// Inputs are compared as-is; callers gate creation through
-/// [`validate_context_path`], so malformed paths simply fail to match.
-pub fn is_ancestor_or_self(ancestor: &str, descendant: &str) -> bool {
-    // Empty strings never participate (an empty `allowed_contexts` entry must
-    // not grant access; super-admin is handled separately by the gate).
-    if ancestor.is_empty() || descendant.is_empty() {
-        return false;
-    }
-    let mut anc = segments(ancestor);
-    let mut desc = segments(descendant);
-    loop {
-        match anc.next() {
-            // Ancestor exhausted: descendant began with all of it → ancestor-or-self.
-            None => return true,
-            Some(a) => match desc.next() {
-                // Descendant ran out first, or a segment differs → not an ancestor.
-                None => return false,
-                Some(d) if a != d => return false,
-                Some(_) => continue,
-            },
-        }
-    }
-}
-
-/// The parent path (one segment shorter), or `None` for a top-level (single
-/// segment) path.
-pub fn parent_path(path: &str) -> Option<&str> {
-    path.rsplit_once(SEPARATOR).map(|(parent, _)| parent)
-}
-
-/// The depth (segment count) of a path. A top-level context is depth 1.
-pub fn depth(path: &str) -> usize {
-    if path.is_empty() {
-        return 0;
-    }
-    path.split(SEPARATOR).count()
+    vta_sdk::context_path::validate_context_path(value).map_err(|e| AppError::Validation(e.0))
 }
 
 /// Build a child path under `parent` by appending a single `segment`. The
 /// `segment` must be one valid identifier — it cannot itself contain a separator
 /// (else it would silently add *several* levels) — and the resulting path must
 /// validate (depth included).
+///
+/// Thin wrapper over [`vta_sdk::context_path::child_path`] mapping the SDK error
+/// onto [`AppError::Validation`] (message preserved verbatim).
 pub fn child_path(parent: &str, segment: &str) -> Result<String, AppError> {
-    // Reject a `segment` that is empty or contains the separator: `child_path`
-    // adds exactly one level.
-    validate_identifier("context path segment", segment)?;
-    let candidate = format!("{parent}{SEPARATOR}{segment}");
-    validate_context_path(&candidate)?;
-    Ok(candidate)
+    vta_sdk::context_path::child_path(parent, segment).map_err(|e| AppError::Validation(e.0))
 }
 
 #[cfg(test)]
