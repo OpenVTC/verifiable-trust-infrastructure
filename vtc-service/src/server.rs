@@ -26,6 +26,7 @@ use crate::store::{KeyspaceHandle, Store};
 use crate::supervisor::{SupervisorKind, detect_supervisor};
 use tokio::sync::{RwLock, watch};
 use tower_http::cors::CorsLayer;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 use vti_common::audit::{AuditKeyStore, AuditWriter};
@@ -37,6 +38,12 @@ use webauthn_rs::Webauthn;
 /// canonical "how long is an admin invite redeemable" value. An hour
 /// is the same default `webvh-common`'s passkey routes use.
 const DEFAULT_ENROLLMENT_TTL_SECS: u64 = 60 * 60;
+
+/// Whole-request timeout for the REST surface (P0.10). A wedged handler — a
+/// registry call without its own timeout, a slow downstream — must not hold
+/// its connection (and a runtime worker) open forever. `tower_http`'s
+/// `TimeoutLayer` returns `408 Request Timeout` when exceeded.
+const REST_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -961,13 +968,24 @@ fn run_rest_thread(
     routing: crate::config::RoutingConfig,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
-    let rt = tokio::runtime::Builder::new_current_thread()
+    // P0.10: the REST surface must not run CPU-bound work (Argon2id verify on
+    // the unauth claim-start, Rego eval, VC signing) on a single executor — a
+    // few distinct source IPs hitting claim-start would otherwise saturate the
+    // lone thread (the 5 rps governor is per-IP, so it doesn't help). A small
+    // worker pool lets concurrent requests progress while one is mid-Argon2id;
+    // the heavy calls themselves are also moved off-runtime via `spawn_blocking`.
+    let worker_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(2, 8);
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
         .enable_all()
         .build()
         .expect("failed to build REST runtime");
 
     rt.block_on(async {
-        info!("REST thread started");
+        info!(worker_threads, "REST thread started");
 
         let listener = tokio::net::TcpListener::from_std(std_listener)
             .expect("failed to convert std TcpListener to tokio TcpListener");
@@ -995,20 +1013,24 @@ fn run_rest_thread(
         let website_state = build_website_state(&state.config).await;
 
         let trust_xff = state.config.read().await.server.trust_xff;
+        // `TimeoutLayer` is the outermost layer so the whole-request budget
+        // (P0.10) covers every inner middleware + the handler.
         #[cfg(feature = "website")]
         let app = routes::router_with_xff(&routing, website_state, trust_xff)
             .with_state(state)
             .layer(csrf_layer)
             .layer(host_layer)
             .layer(cors_layer)
-            .layer(TraceLayer::new_for_http());
+            .layer(TraceLayer::new_for_http())
+            .layer(TimeoutLayer::new(REST_REQUEST_TIMEOUT));
         #[cfg(not(feature = "website"))]
         let app = routes::router_with_xff(&routing, trust_xff)
             .with_state(state)
             .layer(csrf_layer)
             .layer(host_layer)
             .layer(cors_layer)
-            .layer(TraceLayer::new_for_http());
+            .layer(TraceLayer::new_for_http())
+            .layer(TimeoutLayer::new(REST_REQUEST_TIMEOUT));
 
         let shutdown_rx = shutdown_rx.clone();
         // `into_make_service_with_connect_info` is required for the
@@ -1419,5 +1441,54 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => info!("received SIGINT"),
         () = terminate => info!("received SIGTERM"),
+    }
+}
+
+#[cfg(test)]
+mod p0_10_timeout_tests {
+    //! P0.10: the REST `TimeoutLayer` bounds each request so a wedged handler
+    //! can't hold a connection (and a worker) forever, and a concurrent fast
+    //! request is unaffected.
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn timeout_layer_408s_a_slow_handler_but_not_a_fast_one() {
+        async fn slow() -> &'static str {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            "done"
+        }
+        async fn fast() -> &'static str {
+            "ok"
+        }
+
+        let app = axum::Router::new()
+            .route("/slow", get(slow))
+            .route("/fast", get(fast))
+            .layer(TimeoutLayer::new(std::time::Duration::from_millis(50)));
+
+        let slow_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            slow_res.status(),
+            StatusCode::REQUEST_TIMEOUT,
+            "a handler exceeding the budget must 408"
+        );
+
+        let fast_res = app
+            .oneshot(Request::builder().uri("/fast").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            fast_res.status(),
+            StatusCode::OK,
+            "a fast request must be unaffected by the timeout"
+        );
     }
 }

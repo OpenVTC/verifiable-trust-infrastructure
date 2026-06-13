@@ -186,7 +186,14 @@ pub async fn create_invite(
 
     let minted = mint_install_token(signer.as_ref(), &vtc_did, &req.did, ttl_seconds)?;
     let claim_code = claim_secret::generate();
-    let claim_code_hash = claim_secret::hash(&claim_code)?;
+    // Argon2id hashing is CPU-bound (~50–200 ms); keep it off the async REST
+    // runtime so a burst of invite mints doesn't stall other requests (P0.10).
+    let claim_code_hash = {
+        let claim_code = claim_code.clone();
+        tokio::task::spawn_blocking(move || claim_secret::hash(&claim_code))
+            .await
+            .map_err(|e| AppError::Internal(format!("claim-secret hash task failed: {e}")))??
+    };
     let expires_at = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
     state
         .install_store

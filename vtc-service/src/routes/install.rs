@@ -134,7 +134,18 @@ pub async fn claim_start(
                 message: "claim_secret_required".into(),
             });
         };
-        if !claim_secret::verify(supplied, &stored_hash)? {
+        // Argon2id verification is CPU-bound (~50–200 ms); run it on the
+        // blocking pool so it doesn't stall the async REST runtime — this is
+        // an *unauthenticated* route, so a few concurrent claim-starts must
+        // not wedge every other request (P0.10).
+        let supplied = supplied.to_string();
+        let verified =
+            tokio::task::spawn_blocking(move || claim_secret::verify(&supplied, &stored_hash))
+                .await
+                .map_err(|e| {
+                    AppError::Internal(format!("claim-secret verify task failed: {e}"))
+                })??;
+        if !verified {
             return Err(AppError::ServiceError {
                 status: StatusCode::UNAUTHORIZED,
                 message: "claim_secret_invalid".into(),
