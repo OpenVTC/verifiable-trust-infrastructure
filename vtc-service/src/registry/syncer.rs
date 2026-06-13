@@ -190,6 +190,19 @@ impl MembershipSyncer {
             cursor,
         )
         .await?;
+        // M3.6 / P1.3: emit `RegistryRecordPolicyOverride` envelopes for any
+        // RTBF override the walker resolved — **awaited, before the cursor
+        // advances**. The override is a privacy/compliance record; if its
+        // write fails we propagate the error so the cursor stays put and the
+        // next tick re-walks the same `MemberRemoved` envelope and re-emits
+        // (at-least-once). A duplicate override envelope is a far better
+        // failure mode than a silently-dropped one. (A re-walk may also
+        // re-enqueue the window's SyncJobs; making that idempotent is P3.8,
+        // separate from this audit guarantee.)
+        for ov in &outcome.overrides {
+            self.emit_override(ov).await?;
+        }
+
         if let Some(new) = outcome.new_cursor
             && Some(new) != cursor
         {
@@ -197,18 +210,6 @@ impl MembershipSyncer {
         }
         if outcome.jobs_enqueued > 0 {
             debug!(jobs = outcome.jobs_enqueued, "tail walk enqueued jobs");
-        }
-        // M3.6: emit `RegistryRecordPolicyOverride` envelopes
-        // for any RTBF override the walker resolved. The audit
-        // emission happens *after* the SyncJob is durably
-        // enqueued — if the daemon crashes between enqueue
-        // and audit-emit, the next boot's tail walk re-runs
-        // the override path on the same MemberRemoved
-        // envelope (cursor hasn't advanced past it yet) and
-        // re-emits. A duplicate override envelope is a less
-        // bad failure mode than a silent override.
-        for ov in &outcome.overrides {
-            self.emit_override(ov);
         }
 
         let jobs = list_sync_jobs(&self.sync_queue_ks).await?;
@@ -219,30 +220,30 @@ impl MembershipSyncer {
         Ok(())
     }
 
-    fn emit_override(&self, ov: &super::tail::OverrideEvent) {
+    /// Emit one RTBF `RegistryRecordPolicyOverride` envelope, **awaited**.
+    ///
+    /// Unlike the operational `emit_outcome`, this is a privacy/compliance
+    /// record and must not be fire-and-forget: a failed write propagates so
+    /// `tick` can leave the cursor un-advanced and re-emit on the next walk
+    /// (at-least-once). With no `AuditWriter` configured the syncer runs
+    /// audit-less, so this is a no-op `Ok`.
+    async fn emit_override(&self, ov: &super::tail::OverrideEvent) -> Result<(), AppError> {
         let Some(writer) = self.audit_writer.as_ref() else {
-            return;
+            return Ok(());
         };
         let payload = RegistryRecordPolicyOverrideData {
             reason: ov.reason.clone(),
             attempted_disposition: ov.attempted_disposition.clone(),
             effective_disposition: ov.effective_disposition.clone(),
         };
-        let actor = ov.actor_did.clone();
-        let target = ov.target_did.clone();
-        let writer = writer.clone();
-        tokio::spawn(async move {
-            if let Err(e) = writer
-                .write(
-                    &actor,
-                    Some(&target),
-                    AuditEvent::RegistryRecordPolicyOverride(payload),
-                )
-                .await
-            {
-                warn!(error = %e, "failed to emit RegistryRecordPolicyOverride envelope");
-            }
-        });
+        writer
+            .write(
+                &ov.actor_did,
+                Some(&ov.target_did),
+                AuditEvent::RegistryRecordPolicyOverride(payload),
+            )
+            .await
+            .map(|_| ())
     }
 
     /// Boot-time recovery: flip any `InFlight` rows back to
@@ -666,6 +667,145 @@ default publish_on_join := false
         // Job row deleted (policy-skip is a success state).
         let jobs = list_sync_jobs(&syncer.sync_queue_ks).await.unwrap();
         assert!(jobs.is_empty());
+    }
+
+    /// P1.3: a failed RTBF-override audit write must NOT advance the
+    /// cursor, so the next tick re-walks the same `MemberRemoved`
+    /// envelope and re-emits the compliance record (at-least-once)
+    /// rather than dropping it.
+    #[tokio::test]
+    async fn rtbf_override_audit_failure_does_not_advance_cursor_and_re_emits() {
+        use crate::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+        use sha2::{Digest, Sha256};
+        use vti_common::audit::{AuditEnvelope, MemberRemovedData};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let audit_ks = store.keyspace("audit").unwrap();
+        let sync_queue_ks = store.keyspace("sync_queue").unwrap();
+        let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
+        let registry_records_ks = store.keyspace("registry_records").unwrap();
+        let policies_ks = store.keyspace("policies").unwrap();
+        let active_policies_ks = store.keyspace("active_policies").unwrap();
+
+        // A working key store seeds the tail — the walk must be able to
+        // read the `MemberRemoved` envelope that produces the override.
+        let seed_key_store = AuditKeyStore::new(store.keyspace("audit_key").unwrap());
+        seed_key_store.ensure_initial(&[0xAB; 32]).await.unwrap();
+        let seed_writer = AuditWriter::new(audit_ks.clone(), seed_key_store);
+
+        // Active registry policy with a `tombstone` floor: an RTBF purge
+        // clamps UP, so the walker emits an `OverrideEvent`.
+        let src =
+            "package vtc.registry\nimport rego.v1\ndefault min_disposition := \"tombstone\"\n";
+        let sha: [u8; 32] = Sha256::digest(src.as_bytes()).into();
+        let id = uuid::Uuid::new_v4();
+        store_policy(
+            &policies_ks,
+            &Policy {
+                id,
+                purpose: PolicyPurpose::Registry,
+                rego_source: src.into(),
+                sha256: sha,
+                activated_at: Some(chrono::Utc::now()),
+                author_did: "did:key:test".into(),
+                created_at: chrono::Utc::now(),
+                version: 1,
+            },
+        )
+        .await
+        .unwrap();
+        set_active_policy_id(&active_policies_ks, PolicyPurpose::Registry, id)
+            .await
+            .unwrap();
+
+        // RTBF self-purge (actor == target).
+        let member = "did:key:zRtbf";
+        seed_writer
+            .write(
+                member,
+                Some(member),
+                AuditEvent::MemberRemoved(MemberRemovedData {
+                    disposition: "purge".into(),
+                    reason: String::new(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let count_overrides = |ks: KeyspaceHandle| async move {
+            let raw = ks.prefix_iter_raw(b"2".to_vec()).await.unwrap();
+            raw.iter()
+                .filter(|(_, v)| {
+                    let e: AuditEnvelope = serde_json::from_slice(v).unwrap();
+                    matches!(e.event, AuditEvent::RegistryRecordPolicyOverride(_))
+                })
+                .count()
+        };
+
+        let client: Arc<dyn TrustRegistryClient> = Arc::new(MockRegistryClient::new());
+
+        // ── 1) Override audit write fails (key store never initialised). ──
+        let broken_writer = AuditWriter::new(
+            audit_ks.clone(),
+            AuditKeyStore::new(store.keyspace("audit_key_broken").unwrap()),
+        );
+        let broken_syncer = MembershipSyncer::new(
+            audit_ks.clone(),
+            sync_queue_ks.clone(),
+            sync_cursor_ks.clone(),
+            registry_records_ks.clone(),
+            policies_ks.clone(),
+            active_policies_ks.clone(),
+            client.clone(),
+            RegistryHealth::new(),
+            Some(broken_writer),
+            "did:webvh:vtc.example",
+        );
+        assert!(
+            broken_syncer.tick().await.is_err(),
+            "a failed override audit write must fail the tick"
+        );
+        assert!(
+            get_sync_cursor(&sync_cursor_ks).await.unwrap().is_none(),
+            "cursor must not advance when the override audit write fails"
+        );
+        assert_eq!(
+            count_overrides(audit_ks.clone()).await,
+            0,
+            "no override envelope persisted on the failing tick"
+        );
+
+        // ── 2) Next tick (working writer) re-walks + re-emits. ──
+        let good_writer = AuditWriter::new(
+            audit_ks.clone(),
+            AuditKeyStore::new(store.keyspace("audit_key").unwrap()),
+        );
+        let good_syncer = MembershipSyncer::new(
+            audit_ks.clone(),
+            sync_queue_ks.clone(),
+            sync_cursor_ks.clone(),
+            registry_records_ks.clone(),
+            policies_ks.clone(),
+            active_policies_ks.clone(),
+            client,
+            RegistryHealth::new(),
+            Some(good_writer),
+            "did:webvh:vtc.example",
+        );
+        good_syncer.tick().await.unwrap();
+        assert_eq!(
+            count_overrides(audit_ks.clone()).await,
+            1,
+            "override re-emitted on the next tick after the earlier failure"
+        );
+        assert!(
+            get_sync_cursor(&sync_cursor_ks).await.unwrap().is_some(),
+            "cursor advances once the override is durably audited"
+        );
     }
 
     #[tokio::test]
