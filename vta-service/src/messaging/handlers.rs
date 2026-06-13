@@ -599,15 +599,15 @@ pub async fn handle_swap_acl(
     // AAL2 in-band, so a floor that genuinely requires step-up is
     // unsatisfiable here — reject with guidance to use the REST path.
     if !matches!(
-        crate::routes::trust_tasks::step_up::resolve_step_up(
+        crate::operations::step_up::resolve_step_up(
             &state.config,
             &state.acl_ks,
-            crate::routes::trust_tasks::step_up::op::ACL_SWAP_KEY,
+            crate::operations::step_up::op::ACL_SWAP_KEY,
             &auth.did,
             true, // swap-key is non-escalating
         )
         .await,
-        crate::routes::trust_tasks::step_up::StepUpDecision::Allow
+        crate::operations::step_up::StepUpDecision::Allow
     ) {
         return Ok(Some(app_err_to_response(AppError::StepUpRequired(
             "acl/swap-key requires a stepped-up (AAL2) session under this VTA's step-up \

@@ -1,8 +1,10 @@
 //! Runtime management of the VTA's AAL2 step-up policy (`auth/step-up/policy`).
 //!
-//! The *gate* (the resolution algorithm + `RequireStepUp` extractor) already
-//! lives in [`crate::routes::trust_tasks::step_up`]. This module is the
-//! *management* half: validating, canonicalizing, and durably applying a new
+//! The *gate* resolution algorithm lives alongside this module in
+//! [`crate::operations::step_up`] (the route-layer `RequireStepUp` extractor +
+//! `require_step_up` wrapper in `crate::routes::trust_tasks::step_up` turn its
+//! decision into a `403`/reject). This module is the *management* half:
+//! validating, canonicalizing, and durably applying a new
 //! [`StepUpPolicy`], so an operator can change the VTA's posture at runtime
 //! instead of editing the config TOML and restarting.
 //!
