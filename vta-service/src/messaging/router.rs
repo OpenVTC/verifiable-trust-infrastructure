@@ -31,6 +31,7 @@ use vta_sdk::protocols::did_management;
 use vta_sdk::protocols::protocol_management;
 // `provision-integration` is unconditionally enabled via the
 // `vta-sdk` feature list in vta-service's Cargo.toml — no cfg gate.
+#[cfg(feature = "webvh")]
 use vta_sdk::protocols::provision_integration_management;
 use vta_sdk::protocols::{
     self, acl_management, audit_management, context_management, credential_exchange,
@@ -106,6 +107,14 @@ pub struct VtaState {
     pub restart_tx: tokio::sync::watch::Sender<bool>,
 }
 
+// Gated on `webvh`: provision-integration mints WebVH DIDs, so the op (and the
+// DIDComm handler/route that drive it, below) only exist in webvh builds —
+// matching the REST side (`routes::bootstrap`'s `#[cfg(feature = "webvh")] mod
+// provision`). Without this gate the impl had to fill the cfg-gated
+// `VtaState::webvh_ks` with a `panic!()` arm in non-webvh builds — a runtime
+// landmine inside a `From`. Gating the impl removes it: a non-webvh build
+// simply doesn't expose DIDComm provision-integration.
+#[cfg(feature = "webvh")]
 impl From<&VtaState> for crate::operations::provision_integration::ProvisionIntegrationDeps {
     fn from(state: &VtaState) -> Self {
         Self {
@@ -115,12 +124,7 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             contexts_ks: state.contexts_ks.clone(),
             did_templates_ks: state.did_templates_ks.clone(),
             imported_ks: state.imported_ks.clone(),
-            #[cfg(feature = "webvh")]
             webvh_ks: state.webvh_ks.clone(),
-            #[cfg(not(feature = "webvh"))]
-            webvh_ks: panic!(
-                "provision-integration requires the webvh feature; rebuild vta-service with --features webvh"
-            ),
             sealed_nonces_ks: state.sealed_nonces_ks.clone(),
             seed_store: state.seed_store.clone(),
             config: state.config.clone(),
@@ -522,8 +526,11 @@ pub fn build_handler(
             )?;
     }
 
-    // Provision-integration — always available; vta-service depends
-    // on vta-sdk with the `provision-integration` feature enabled.
+    // Provision-integration mints WebVH DIDs, so it's `webvh`-gated like the
+    // REST side (`routes::bootstrap`'s `mod provision`). Without webvh the op
+    // can't function, so we don't expose the route (vs the old unconditional
+    // registration that panicked at runtime — see the `From<&VtaState>` note
+    // above).
     //
     // Both canonical Trust Task versions (0.1 and 0.2) route to the same
     // handler; the handler reads the inbound `typ` and emits the matching
@@ -532,15 +539,18 @@ pub fn build_handler(
     // the handler verifies over the bytes as received. The legacy
     // `firstperson.network` provision URI was retired now that the browser
     // plugin and Rust CLIs all target the canonical registry.
-    router = router
-        .route(
-            provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
-            handler_fn(handlers::handle_provision_integration),
-        )?
-        .route(
-            provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2,
-            handler_fn(handlers::handle_provision_integration),
-        )?;
+    #[cfg(feature = "webvh")]
+    {
+        router = router
+            .route(
+                provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
+                handler_fn(handlers::handle_provision_integration),
+            )?
+            .route(
+                provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2,
+                handler_fn(handlers::handle_provision_integration),
+            )?;
+    }
 
     // Step-up approval — the VTA vouches (signs as itself) that a holder
     // may step up their session at a relying party. Always available.

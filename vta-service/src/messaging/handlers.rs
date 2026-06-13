@@ -1342,6 +1342,12 @@ pub async fn handle_discover_capabilities(
 /// On success, the body is the same `ProvisionIntegrationResponse`
 /// shape REST returns: armored bundle, sha256 digest, and summary
 /// (including `admin_did`/`admin_rolled_over` for rollover requests).
+///
+/// `webvh`-gated: provision-integration mints WebVH DIDs (the op needs
+/// `webvh_ks`), so the handler + its route only exist in webvh builds —
+/// matching the REST `mod provision`. See the `From<&VtaState> for
+/// ProvisionIntegrationDeps` note in `messaging::router`.
+#[cfg(feature = "webvh")]
 pub async fn handle_provision_integration(
     _ctx: HandlerContext,
     message: Message,
