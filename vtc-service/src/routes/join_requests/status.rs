@@ -19,7 +19,6 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -105,27 +104,14 @@ fn verify_holder_signature(
     request_id: Uuid,
     signature_hex: &str,
 ) -> Result<(), AppError> {
-    let pubkey_bytes =
-        affinidi_crypto::did_key::did_key_to_ed25519_pub(applicant_did).map_err(|e| {
-            AppError::Validation(format!("applicantDid is not a parseable did:key: {e}"))
-        })?;
-    let verifying = VerifyingKey::from_bytes(&pubkey_bytes).map_err(|e| {
-        AppError::Validation(format!("applicantDid decodes to an invalid key: {e}"))
-    })?;
-
     let payload = canonical_payload(applicant_did, request_id)?;
-    let signing_bytes = signing_bytes(&payload);
-
-    let raw_sig = hex::decode(signature_hex)
-        .map_err(|e| AppError::Validation(format!("signature is not hex: {e}")))?;
-    let signature = Signature::from_slice(&raw_sig).map_err(|e| {
-        AppError::Validation(format!("signature is not a 64-byte Ed25519 value: {e}"))
-    })?;
-
-    verifying
-        .verify(&signing_bytes, &signature)
-        .map_err(|e| AppError::Validation(format!("holder-binding signature failed: {e}")))?;
-    Ok(())
+    crate::holder_signature::verify_domain_signed(
+        applicant_did,
+        JOIN_STATUS_DOMAIN_TAG,
+        &payload,
+        signature_hex,
+    )
+    .map_err(AppError::Validation)
 }
 
 /// Canonical signing payload — typed struct, field order pinned by the
@@ -143,11 +129,4 @@ fn canonical_payload(applicant_did: &str, request_id: Uuid) -> Result<Vec<u8>, A
         request_id: request_id.to_string(),
     })
     .map_err(|e| AppError::Internal(format!("canonical payload serialize: {e}")))
-}
-
-fn signing_bytes(payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(JOIN_STATUS_DOMAIN_TAG.len() + payload.len());
-    buf.extend_from_slice(JOIN_STATUS_DOMAIN_TAG);
-    buf.extend_from_slice(payload);
-    buf
 }

@@ -49,7 +49,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::Utc;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
@@ -548,16 +547,6 @@ fn verify_holder_signature(
     created: i64,
     signature_hex: &str,
 ) -> Result<(), AppError> {
-    let pubkey_bytes =
-        affinidi_crypto::did_key::did_key_to_ed25519_pub(applicant_did).map_err(|e| {
-            AppError::Validation(format!("applicant_did is not a parseable did:key: {e}"))
-        })?;
-    let verifying = VerifyingKey::from_bytes(&pubkey_bytes).map_err(|e| {
-        AppError::Validation(format!(
-            "applicant_did decodes to an invalid Ed25519 pubkey: {e}"
-        ))
-    })?;
-
     let payload = canonical_payload(
         applicant_did,
         vp,
@@ -566,18 +555,13 @@ fn verify_holder_signature(
         audience,
         created,
     )?;
-    let signing_bytes = signing_bytes(&payload);
-
-    let raw_sig = hex::decode(signature_hex)
-        .map_err(|e| AppError::Validation(format!("signature is not hex: {e}")))?;
-    let signature = Signature::from_slice(&raw_sig).map_err(|e| {
-        AppError::Validation(format!("signature is not a 64-byte Ed25519 value: {e}"))
-    })?;
-
-    verifying
-        .verify(&signing_bytes, &signature)
-        .map_err(|e| AppError::Validation(format!("holder-binding signature failed: {e}")))?;
-    Ok(())
+    crate::holder_signature::verify_domain_signed(
+        applicant_did,
+        JOIN_REQUEST_SUBMIT_DOMAIN_TAG,
+        &payload,
+        signature_hex,
+    )
+    .map_err(AppError::Validation)
 }
 
 /// Canonical signing payload — a typed struct serialised via
@@ -631,7 +615,10 @@ async fn find_open_request(
         .map(|r| r.id))
 }
 
-/// Domain-tag prefixed bytes the signer hashes over.
+/// Domain-tag prefixed bytes the signer hashes over. Verification goes
+/// through [`crate::holder_signature::verify_domain_signed`]; this
+/// remains for the round-trip tests that must *produce* the same bytes.
+#[cfg(test)]
 fn signing_bytes(payload: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(JOIN_REQUEST_SUBMIT_DOMAIN_TAG.len() + payload.len());
     buf.extend_from_slice(JOIN_REQUEST_SUBMIT_DOMAIN_TAG);

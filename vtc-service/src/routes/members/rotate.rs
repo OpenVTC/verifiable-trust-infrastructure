@@ -500,15 +500,12 @@ fn canonical_signing_bytes(
     Ok(buf)
 }
 
-fn verify_did_key_signature(did: &str, payload: &[u8], hex_sig: &str) -> Result<(), String> {
-    let pub_bytes = affinidi_crypto::did_key::did_key_to_ed25519_pub(did)
-        .map_err(|e| format!("did:key parse: {e}"))?;
-    let vk =
-        VerifyingKey::from_bytes(&pub_bytes).map_err(|e| format!("invalid Ed25519 pubkey: {e}"))?;
-    let raw = hex::decode(hex_sig).map_err(|e| format!("signature is not hex: {e}"))?;
-    let sig = Signature::from_slice(&raw).map_err(|e| format!("signature is not 64 bytes: {e}"))?;
-    vk.verify(payload, &sig)
-        .map_err(|e| format!("signature verification: {e}"))
+/// Verify an Ed25519 signature from a `did:key` over the rotation's
+/// canonical signing bytes. Those bytes already include
+/// [`ROTATION_DOMAIN_TAG`] (the same buffer feeds the `did:webvh` path
+/// below), so the shared verifier is called with an empty domain tag.
+fn verify_did_key_signature(did: &str, signing_bytes: &[u8], hex_sig: &str) -> Result<(), String> {
+    crate::holder_signature::verify_domain_signed(did, &[], signing_bytes, hex_sig)
 }
 
 /// Verify an Ed25519 signature against the `#key-0`

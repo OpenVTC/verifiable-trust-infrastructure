@@ -28,6 +28,7 @@ pub mod emergency;
 pub mod endorsement_types;
 pub mod endorsements;
 pub mod error;
+pub mod holder_signature;
 pub mod install;
 pub mod join;
 pub mod keys;

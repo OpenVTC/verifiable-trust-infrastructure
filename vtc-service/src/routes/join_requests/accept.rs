@@ -26,7 +26,6 @@ use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
@@ -339,24 +338,14 @@ fn verify_holder_signature(
     vc: &JsonValue,
     signature_hex: &str,
 ) -> Result<(), AppError> {
-    let pubkey_bytes = affinidi_crypto::did_key::did_key_to_ed25519_pub(member_did)
-        .map_err(|e| AppError::Validation(format!("member_did is not a parseable did:key: {e}")))?;
-    let verifying = VerifyingKey::from_bytes(&pubkey_bytes)
-        .map_err(|e| AppError::Validation(format!("member_did decodes to an invalid key: {e}")))?;
-
     let payload = canonical_payload(member_did, vmc_id, vc)?;
-    let signing_bytes = signing_bytes(&payload);
-
-    let raw_sig = hex::decode(signature_hex)
-        .map_err(|e| AppError::Validation(format!("signature is not hex: {e}")))?;
-    let signature = Signature::from_slice(&raw_sig).map_err(|e| {
-        AppError::Validation(format!("signature is not a 64-byte Ed25519 value: {e}"))
-    })?;
-
-    verifying
-        .verify(&signing_bytes, &signature)
-        .map_err(|e| AppError::Validation(format!("holder-binding signature failed: {e}")))?;
-    Ok(())
+    crate::holder_signature::verify_domain_signed(
+        member_did,
+        JOIN_ACCEPT_DOMAIN_TAG,
+        &payload,
+        signature_hex,
+    )
+    .map_err(AppError::Validation)
 }
 
 /// Canonical signing payload — typed struct, field order pinned by the
@@ -376,11 +365,4 @@ fn canonical_payload(member_did: &str, vmc_id: &str, vc: &JsonValue) -> Result<V
         vc,
     })
     .map_err(|e| AppError::Internal(format!("canonical payload serialize: {e}")))
-}
-
-fn signing_bytes(payload: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(JOIN_ACCEPT_DOMAIN_TAG.len() + payload.len());
-    buf.extend_from_slice(JOIN_ACCEPT_DOMAIN_TAG);
-    buf.extend_from_slice(payload);
-    buf
 }
