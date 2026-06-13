@@ -1,50 +1,32 @@
 //! `update_rest` operation.
 //!
-//! Spec: `docs/05-design-notes/runtime-service-management.md` §3.4.
-//!
-//! Sequence (under [`PROTOCOL_LOCK`]):
-//! 1. Verify caller is super-admin.
-//! 2. Validate the new URL via
-//!    [`vta_sdk::protocol::services::validate_service_url`] (T1.2).
-//! 3. Confirm `services.rest` is currently `true` AND a
-//!    `#vta-rest` entry exists in the DID document — refuse with
-//!    [`UpdateRestError::ServiceNotPresent`] otherwise.
-//! 4. Read the prior URL from the on-chain DID document for the
-//!    snapshot.
-//! 5. Persist a [`RestSnapshot::Enabled { url: prior_url }`]
-//!    snapshot before the runtime mutation, per spec §3.5a — a
-//!    future rollback restores the prior URL.
-//! 6. Patch the document — replace the `#vta-rest` entry's URL
-//!    via [`with_rest_service`] — and publish via [`update_did_webvh`].
-//! 7. Emit [`TelemetryKind::ServicesRestUpdate`].
-//!
-//! No `services.rest` config flip — REST stays enabled across an
-//! update; only the URL changes. The brick-prevention invariant is
-//! not consulted (update can't change the on/off state).
+//! Spec: `docs/05-design-notes/runtime-service-management.md` §3.4. A thin
+//! wrapper over the shared [`service_lifecycle`](super::service_lifecycle)
+//! engine — see [`run_update`] for the sequence (super-admin → PROTOCOL_LOCK →
+//! validate URL → preconditions → snapshot prior URL → patch → publish →
+//! telemetry). No `services.rest` config flip — REST stays enabled across an
+//! update; only the URL changes. Brick-prevention is not consulted (update
+//! can't change the on/off state).
 
 use std::sync::Arc;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use serde_json::Value as JsonValue;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::info;
 
 use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
-
-use vta_sdk::protocol::services::validate_service_url;
+use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
-use crate::operations::protocol::document::{
-    DocumentPatchError, current_rest_service, with_rest_service,
+use crate::operations::did_webvh::UpdateDidWebvhError;
+use crate::operations::protocol::OpContext;
+use crate::operations::protocol::document::DocumentPatchError;
+use crate::operations::protocol::service_lifecycle::{
+    RestService, ServiceLifecycleDeps, ServiceMutationError, UpdateMutationError, run_update,
 };
-use crate::operations::protocol::snapshot::{self, RestSnapshot, ServiceConfigSnapshot};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone)]
@@ -57,12 +39,10 @@ pub struct UpdateRestParams {
 #[derive(Debug, Clone)]
 pub struct UpdateRestResult {
     pub new_version_id: String,
-    /// Pre-update URL — captured from the on-chain DID document
-    /// and surfaced so callers / telemetry can join the
-    /// before-and-after.
+    /// Pre-update URL — captured from the on-chain DID document and
+    /// surfaced so callers / telemetry can join the before-and-after.
     pub prior_url: String,
-    /// The validated new URL that was published — canonicalised
-    /// from `params.url` by `url::Url`.
+    /// The validated new URL that was published.
     pub url: String,
     /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
     pub vta_did: String,
@@ -117,6 +97,24 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
+impl ServiceMutationError for UpdateRestError {
+    fn validation(msg: String) -> Self {
+        Self::Validation(msg)
+    }
+    fn auth(msg: String) -> Self {
+        Self::Auth(msg)
+    }
+    fn storage(msg: String) -> Self {
+        Self::Storage(msg)
+    }
+}
+
+impl UpdateMutationError for UpdateRestError {
+    fn not_present() -> Self {
+        Self::ServiceNotPresent
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn update_rest(
     config: &Arc<RwLock<AppConfig>>,
@@ -137,130 +135,44 @@ pub async fn update_rest(
     webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateRestResult, UpdateRestError> {
-    auth.require_super_admin()
-        .map_err(|e| UpdateRestError::Auth(e.to_string()))?;
-
-    let _guard = PROTOCOL_LOCK.lock().await;
-
-    // 1. Validate the new URL up front. Cheap; runs before I/O.
-    let validated = validate_service_url(&params.url)
-        .map_err(|e| UpdateRestError::Validation(e.to_string()))?;
-    let canonical_url = validated.to_string();
-
-    // 2. Read preconditions: REST must be on, both in config and
-    //    on-chain. Capture the prior URL while we're at it — the
-    //    snapshot needs it.
-    let (vta_did, scid, current_doc, prior_url) = read_preconditions(config, webvh_ks).await?;
-
-    // 3. Persist snapshot BEFORE the runtime mutation per spec
-    //    §3.5a. Pre-state for an update is RestSnapshot::Enabled
-    //    with the prior URL — rollback restores that URL.
-    snapshot::write(
-        snapshot_ks,
-        ServiceConfigSnapshot::Rest(RestSnapshot::Enabled {
-            url: prior_url.clone(),
-        }),
-    )
-    .await
-    .map_err(|e| UpdateRestError::Storage(format!("snapshot write: {e}")))?;
-
-    // 4. Patch the document — replace the #vta-rest entry's URL.
-    //    `with_rest_service` overwrites the existing entry's URL
-    //    while preserving everything else byte-for-byte.
-    let patched = with_rest_service(current_doc, &canonical_url)?;
-
-    // 5. Publish via update_did_webvh.
-    let update_result = update_did_webvh(
+    let deps = ServiceLifecycleDeps {
+        config,
         keys_ks,
         imported_ks,
         contexts_ks,
         webvh_ks,
         audit_ks,
+        snapshot_ks,
         seed_store,
-        auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
         did_resolver,
         didcomm_bridge,
-        Some(vta_did.as_str()),
+        telemetry,
         webvh_auth_locks,
-        channel,
-    )
-    .await?;
-
-    // 6. No config persistence — services.rest stays true. The
-    //    AppConfig has no field for the public REST URL, so the
-    //    DID document is the single source of truth for the URL
-    //    (the SDK's session.rs:1100 already pulls from there).
-    //    Operators who restart the VTA pick the new URL up via
-    //    DID resolution; no config-file write is necessary.
-
-    // 7. Telemetry: prior + new URL together so external verifiers
-    //    can graph URL transitions per VTA.
-    let mut event = TelemetryEvent::new(TelemetryKind::ServicesRestUpdate)
-        .with_field("channel", JsonValue::from(channel))
-        .with_field(
-            "new_version_id",
-            JsonValue::from(update_result.new_version_id.clone()),
-        )
-        .with_field("prior_url", JsonValue::from(prior_url.clone()))
-        .with_field("url", JsonValue::from(canonical_url.clone()));
-    if let Some(tag) = ctx.telemetry_triggered_by() {
-        event = event.with_field("triggered_by", JsonValue::from(tag));
-    }
-    let _ = telemetry.record(event).await;
-
-    info!(
-        channel,
-        prior_url = %prior_url,
-        url = %canonical_url,
-        new_version_id = %update_result.new_version_id,
-        vta_did = %vta_did,
-        "REST URL updated"
-    );
+    };
+    let ok =
+        run_update::<RestService, UpdateRestError>(&deps, auth, &params.url, ctx, channel).await?;
 
     Ok(UpdateRestResult {
-        new_version_id: update_result.new_version_id,
-        prior_url,
-        url: canonical_url,
-        vta_did,
-        serverless: update_result.serverless,
+        new_version_id: ok.new_version_id,
+        // `run_update` always sets `prior_url` to `Some` on success.
+        prior_url: ok.prior_url.unwrap_or_default(),
+        url: ok.canonical_url,
+        vta_did: ok.vta_did,
+        serverless: ok.serverless,
     })
-}
-
-async fn read_preconditions(
-    config: &Arc<RwLock<AppConfig>>,
-    webvh_ks: &KeyspaceHandle,
-) -> Result<(String, String, JsonValue, String), UpdateRestError> {
-    {
-        let cfg = config.read().await;
-        if !cfg.services.rest {
-            return Err(UpdateRestError::ServiceNotPresent);
-        }
-    }
-
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-
-    let prior_url = current_rest_service(&state.current_doc)
-        .map(|s| s.url)
-        .ok_or(UpdateRestError::ServiceNotPresent)?;
-
-    Ok((state.vta_did, state.scid, state.current_doc, prior_url))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::protocol::snapshot::ServiceKind;
+    use crate::operations::protocol::service_lifecycle::check_update_preconditions;
+    use crate::operations::protocol::snapshot::{
+        self, RestSnapshot, ServiceConfigSnapshot, ServiceKind,
+    };
     use crate::store::Store;
+    use vta_sdk::protocol::services::validate_service_url;
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
-    /// Mirrors `enable_rest::tests::TestFixture` — owns the fjall
-    /// store so a single test can derive multiple keyspaces from
-    /// the same handle (fjall locks the data dir on open).
     struct TestFixture {
         _dir: tempfile::TempDir,
         config: Arc<RwLock<AppConfig>>,
@@ -299,28 +211,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_preconditions_rejects_when_rest_disabled() {
+    async fn preconditions_reject_when_rest_disabled() {
         let fx = build_fixture(false);
-        let err = read_preconditions(&fx.config, &fx.webvh_ks())
-            .await
-            .unwrap_err();
+        let err =
+            check_update_preconditions::<RestService, UpdateRestError>(&fx.config, &fx.webvh_ks())
+                .await
+                .unwrap_err();
         assert!(matches!(err, UpdateRestError::ServiceNotPresent));
     }
 
     #[tokio::test]
-    async fn read_preconditions_rejects_without_vta_did() {
+    async fn preconditions_reject_without_vta_did() {
         let fx = build_fixture(true);
         fx.config.write().await.vta_did = None;
-        let err = read_preconditions(&fx.config, &fx.webvh_ks())
-            .await
-            .unwrap_err();
+        let err =
+            check_update_preconditions::<RestService, UpdateRestError>(&fx.config, &fx.webvh_ks())
+                .await
+                .unwrap_err();
         assert!(matches!(err, UpdateRestError::VtaDidNotConfigured));
     }
 
-    /// URL validation runs first, before any storage reads or
-    /// snapshot writes — invalid URL means the snapshot keyspace
-    /// stays untouched, leaving any prior snapshot from a
-    /// successful mutation intact.
+    /// URL validation runs first, before any storage reads or snapshot
+    /// writes — invalid URL means the snapshot keyspace stays untouched.
     #[tokio::test]
     async fn invalid_url_aborts_before_snapshot_write() {
         let fx = build_fixture(true);
@@ -338,12 +250,8 @@ mod tests {
         );
     }
 
-    /// Direct exercise of the snapshot semantics: after a
-    /// successful update, the snapshot must record the *prior*
-    /// URL (not the new one). Constructed directly here because
-    /// the full operation requires a webvh store fixture too
-    /// large for a unit test — full path coverage lives in the
-    /// e2e matrix (P6).
+    /// After a successful update, the snapshot records the *prior* URL (the
+    /// rollback target), not the new one.
     #[tokio::test]
     async fn snapshot_records_prior_url_for_rollback() {
         let fx = build_fixture(true);

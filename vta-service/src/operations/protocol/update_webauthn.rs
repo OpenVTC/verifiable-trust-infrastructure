@@ -1,35 +1,31 @@
 //! `update_webauthn` operation.
 //!
-//! Mirrors [`super::update_rest`]: replaces the URL on an existing
-//! `#vta-webauthn` entry. Refuses with
-//! [`UpdateWebauthnError::ServiceNotPresent`] when WebAuthn is not
-//! currently advertised.
-//!
-//! Snapshots the prior URL so rollback can restore it.
+//! Mirrors [`super::update_rest`] for the WebAuthn-RP transport — a thin
+//! wrapper over the shared [`service_lifecycle`](super::service_lifecycle)
+//! engine. See [`run_update`] for the sequence. Replaces the URL on an existing
+//! `#vta-webauthn` entry; refuses with [`UpdateWebauthnError::ServiceNotPresent`]
+//! when WebAuthn is not currently advertised. Snapshots the prior URL so
+//! rollback can restore it.
 
 use std::sync::Arc;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use serde_json::Value as JsonValue;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::info;
 
 use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
-
-use vta_sdk::protocol::services::validate_service_url;
+use vti_common::telemetry::SharedTelemetrySink;
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
-use crate::operations::protocol::document::{
-    DocumentPatchError, current_webauthn_service, with_webauthn_service,
+use crate::operations::did_webvh::UpdateDidWebvhError;
+use crate::operations::protocol::OpContext;
+use crate::operations::protocol::document::DocumentPatchError;
+use crate::operations::protocol::service_lifecycle::{
+    ServiceLifecycleDeps, ServiceMutationError, UpdateMutationError, WebauthnService, run_update,
 };
-use crate::operations::protocol::snapshot::{self, ServiceConfigSnapshot, WebauthnSnapshot};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone)]
@@ -90,6 +86,24 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
+impl ServiceMutationError for UpdateWebauthnError {
+    fn validation(msg: String) -> Self {
+        Self::Validation(msg)
+    }
+    fn auth(msg: String) -> Self {
+        Self::Auth(msg)
+    }
+    fn storage(msg: String) -> Self {
+        Self::Storage(msg)
+    }
+}
+
+impl UpdateMutationError for UpdateWebauthnError {
+    fn not_present() -> Self {
+        Self::ServiceNotPresent
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn update_webauthn(
     config: &Arc<RwLock<AppConfig>>,
@@ -99,9 +113,7 @@ pub async fn update_webauthn(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     snapshot_ks: &KeyspaceHandle,
-    // Threaded by every caller for signature parity with the other
-    // protocol-mutation operations. Not consumed inside this function;
-    // see `enable_webauthn` for the rationale.
+    // Threaded for signature parity; see `enable_webauthn`.
     _service_state_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     did_resolver: &DIDCacheClient,
@@ -113,90 +125,28 @@ pub async fn update_webauthn(
     webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateWebauthnResult, UpdateWebauthnError> {
-    auth.require_super_admin()
-        .map_err(|e| UpdateWebauthnError::Auth(e.to_string()))?;
-
-    let _guard = PROTOCOL_LOCK.lock().await;
-
-    let validated = validate_service_url(&params.url)
-        .map_err(|e| UpdateWebauthnError::Validation(e.to_string()))?;
-    let canonical_url = validated.to_string();
-
-    let (vta_did, scid, current_doc, prior_url) = read_preconditions(config, webvh_ks).await?;
-
-    snapshot::write(
-        snapshot_ks,
-        ServiceConfigSnapshot::Webauthn(WebauthnSnapshot::Enabled { url: prior_url }),
-    )
-    .await
-    .map_err(|e| UpdateWebauthnError::Storage(format!("snapshot write: {e}")))?;
-
-    let patched = with_webauthn_service(current_doc, &canonical_url)?;
-
-    let update_result = update_did_webvh(
+    let deps = ServiceLifecycleDeps {
+        config,
         keys_ks,
         imported_ks,
         contexts_ks,
         webvh_ks,
         audit_ks,
+        snapshot_ks,
         seed_store,
-        auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
         did_resolver,
         didcomm_bridge,
-        Some(vta_did.as_str()),
+        telemetry,
         webvh_auth_locks,
-        channel,
-    )
-    .await?;
-
-    let mut event = TelemetryEvent::new(TelemetryKind::ServicesWebauthnUpdate)
-        .with_field("channel", JsonValue::from(channel))
-        .with_field(
-            "new_version_id",
-            JsonValue::from(update_result.new_version_id.clone()),
-        )
-        .with_field("url", JsonValue::from(canonical_url.clone()));
-    if let Some(tag) = ctx.telemetry_triggered_by() {
-        event = event.with_field("triggered_by", JsonValue::from(tag));
-    }
-    let _ = telemetry.record(event).await;
-
-    info!(
-        channel,
-        url = %canonical_url,
-        new_version_id = %update_result.new_version_id,
-        vta_did = %vta_did,
-        "WebAuthn updated"
-    );
+    };
+    let ok =
+        run_update::<WebauthnService, UpdateWebauthnError>(&deps, auth, &params.url, ctx, channel)
+            .await?;
 
     Ok(UpdateWebauthnResult {
-        new_version_id: update_result.new_version_id,
-        url: canonical_url,
-        vta_did,
-        serverless: update_result.serverless,
+        new_version_id: ok.new_version_id,
+        url: ok.canonical_url,
+        vta_did: ok.vta_did,
+        serverless: ok.serverless,
     })
-}
-
-async fn read_preconditions(
-    config: &Arc<RwLock<AppConfig>>,
-    webvh_ks: &KeyspaceHandle,
-) -> Result<(String, String, JsonValue, String), UpdateWebauthnError> {
-    {
-        let cfg = config.read().await;
-        if !cfg.services.webauthn {
-            return Err(UpdateWebauthnError::ServiceNotPresent);
-        }
-    }
-
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-
-    let prior = current_webauthn_service(&state.current_doc)
-        .ok_or(UpdateWebauthnError::ServiceNotPresent)?;
-
-    Ok((state.vta_did, state.scid, state.current_doc, prior.url))
 }
