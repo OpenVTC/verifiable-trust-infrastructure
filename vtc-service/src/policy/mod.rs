@@ -44,7 +44,7 @@ pub mod extract;
 pub mod model;
 pub mod storage;
 
-pub use engine::{CompiledPolicy, compile, evaluate};
+pub use engine::{CompiledPolicy, compile, evaluate, validate_purpose_package};
 pub use model::{POLICY_SOURCE_MAX_BYTES, Policy, PolicyPurpose};
 pub use storage::{
     clear_active_policy_id, delete_policy, get_active_policy_id, get_policy, list_policies,

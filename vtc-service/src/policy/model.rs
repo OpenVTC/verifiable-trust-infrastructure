@@ -156,6 +156,28 @@ impl PolicyPurpose {
             PolicyPurpose::RoleChange => "roleChange",
         }
     }
+
+    /// The Rego package an uploaded policy for this purpose must live
+    /// in, for the four ceremony purposes the decision pipeline probes
+    /// by a fixed package (`data.<pkg>.decision`). A module compiled
+    /// into the *wrong* package compiles cleanly but evaluates to
+    /// `undefined` at decision time, which the host reads as a silent
+    /// default-deny for that whole ceremony — so the package is part of
+    /// the upload contract, validated by
+    /// [`crate::policy::validate_purpose_package`].
+    ///
+    /// `None` for purposes without a single pinned decision package
+    /// (registry, personhood, role-definitions, …) — those are not
+    /// package-validated at upload.
+    pub fn expected_package(self) -> Option<&'static str> {
+        match self {
+            PolicyPurpose::Join => Some("vtc.join"),
+            PolicyPurpose::Removal => Some("vtc.removal"),
+            PolicyPurpose::RoleChange => Some("vtc.role_change"),
+            PolicyPurpose::Directory => Some("vtc.directory"),
+            _ => None,
+        }
+    }
 }
 
 /// `[u8; 32]` ↔ 64-char lowercase-hex string serde adapter. Used by

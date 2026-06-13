@@ -36,8 +36,12 @@ const SHOW_TASK: &str = UPLOAD_TASK;
 
 const ADMIN_DID: &str = "did:key:zPolicyAdmin";
 
+// Test fixtures must live in the package their declared purpose expects
+// (P1.5: a join policy in `vtc.test` is now rejected at upload as a
+// silent-deny footgun). These exercise generic upload/activate/list
+// mechanics, so they just need a valid `allow` rule in the right package.
 const JOIN_ALLOW_POLICY: &str = "\
-package vtc.test
+package vtc.join
 
 import rego.v1
 
@@ -46,8 +50,16 @@ default allow := false
 allow if input.role == \"admin\"
 ";
 
-const ALT_POLICY: &str = "\
-package vtc.test
+const JOIN_ALT_POLICY: &str = "\
+package vtc.join
+
+import rego.v1
+
+default allow := true
+";
+
+const REMOVAL_POLICY: &str = "\
+package vtc.removal
 
 import rego.v1
 
@@ -203,6 +215,32 @@ async fn upload_bad_rego_returns_400() {
     );
 }
 
+/// P1.5: a policy whose Rego package doesn't match its declared
+/// purpose is rejected at upload — it would compile + activate cleanly
+/// then evaluate to `undefined` (silent host default-deny) for the
+/// whole ceremony.
+#[tokio::test]
+async fn upload_rejects_purpose_package_mismatch() {
+    let fix = build_fixture().await;
+    // purpose=join, but the module lives in vtc.removal.
+    let mismatched = "package vtc.removal\nimport rego.v1\ndefault allow := false\n";
+    let req = auth_request(
+        "POST",
+        "/v1/policies",
+        UPLOAD_TASK,
+        &fix.admin_token,
+        json!({ "purpose": "join", "regoSource": mismatched }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp.into_body()).await;
+    let msg = body["error"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("vtc.join"),
+        "error must name the expected package: {body}"
+    );
+}
+
 /// Acceptance bullet 2: activate-after-upload swaps the active
 /// pointer and stamps `activated_at` on the row.
 #[tokio::test]
@@ -272,7 +310,7 @@ async fn activate_replaces_predecessor() {
     let fix = build_fixture().await;
     let first = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let first_id: Uuid = first["id"].as_str().unwrap().parse().unwrap();
-    let second = upload_policy(&fix, "join", ALT_POLICY).await;
+    let second = upload_policy(&fix, "join", JOIN_ALT_POLICY).await;
     let second_id: Uuid = second["id"].as_str().unwrap().parse().unwrap();
     assert_eq!(second["version"], 2, "second upload bumps version");
 
@@ -330,7 +368,7 @@ async fn test_does_not_mutate_state() {
         TEST_TASK,
         &fix.admin_token,
         json!({
-            "query": "data.vtc.test.allow",
+            "query": "data.vtc.join.allow",
             "input": { "role": "admin" }
         }),
     );
@@ -466,7 +504,7 @@ fn auth_get(uri: &str, task: &str, token: &str) -> Request<Body> {
 async fn list_returns_all_policies() {
     let fix = build_fixture().await;
     let a = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let _b = upload_policy(&fix, "removal", ALT_POLICY).await;
+    let _b = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
     let a_id = a["id"].as_str().unwrap();
 
     // Activate one of them so the isActive flag has signal.
@@ -503,7 +541,7 @@ async fn list_returns_all_policies() {
 async fn list_filters_by_purpose() {
     let fix = build_fixture().await;
     upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    upload_policy(&fix, "removal", ALT_POLICY).await;
+    upload_policy(&fix, "removal", REMOVAL_POLICY).await;
 
     let resp = fix
         .router
@@ -529,7 +567,7 @@ async fn list_filters_by_purpose() {
 async fn list_filters_by_status() {
     let fix = build_fixture().await;
     let join = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let removal = upload_policy(&fix, "removal", ALT_POLICY).await;
+    let removal = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
     let join_id = join["id"].as_str().unwrap();
     let _removal_id = removal["id"].as_str().unwrap();
 
@@ -589,7 +627,7 @@ async fn list_filters_by_status() {
 async fn list_active_by_purpose_is_exact_under_limit_one() {
     let fix = build_fixture().await;
     let join = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
-    let removal = upload_policy(&fix, "removal", ALT_POLICY).await;
+    let removal = upload_policy(&fix, "removal", REMOVAL_POLICY).await;
     let join_id = join["id"].as_str().unwrap();
     let removal_id = removal["id"].as_str().unwrap();
 

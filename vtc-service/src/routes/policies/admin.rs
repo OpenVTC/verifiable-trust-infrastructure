@@ -44,7 +44,7 @@ use crate::auth::AdminAuth;
 use crate::policy::POLICY_SOURCE_MAX_BYTES;
 use crate::policy::{
     PolicyPurpose, compile, evaluate, get_active_policy_id, get_policy, max_version_for,
-    new_policy, set_active_policy_id, store_policy,
+    new_policy, set_active_policy_id, store_policy, validate_purpose_package,
 };
 use crate::server::AppState;
 
@@ -145,6 +145,10 @@ pub async fn upload(
     // `Policy { id, .. }` after compile rather than mint twice.
     let id = Uuid::new_v4();
     let compiled = compile(&body.rego_source, id)?;
+    // Reject a module compiled into the wrong package for its declared
+    // purpose — it would compile + activate cleanly, then evaluate to
+    // `undefined` (silent host default-deny) for that whole ceremony.
+    validate_purpose_package(&compiled, body.purpose)?;
     let sha256 = *compiled.source_sha256();
     let version = max_version_for(&state.policies_ks, body.purpose).await? + 1;
 
@@ -211,6 +215,11 @@ pub async fn activate(
     let mut policy = get_policy(&state.policies_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
+
+    // Re-probe before flipping it live: a policy uploaded before the
+    // package gate (or via a path that bypassed `upload`) must not be
+    // activated into a silent default-deny for its ceremony.
+    validate_purpose_package(&compile(&policy.rego_source, policy.id)?, policy.purpose)?;
 
     let previous = get_active_policy_id(&state.active_policies_ks, policy.purpose).await?;
 
