@@ -1,28 +1,18 @@
 //! `disable_webauthn` operation.
 //!
-//! Mirrors [`super::disable_rest`] for the WebAuthn-RP transport, plus
-//! one additional concern: per the operator's chosen hard-disable
-//! semantics, this op also strips passkey VMs from every DID the VTA
-//! controls (a passkey VM is useless when its RP is no longer
-//! advertised).
+//! Mirrors [`super::disable_rest`] for the WebAuthn-RP transport — sharing the
+//! disable skeleton (brick-prevention → preconditions → snapshot → patch-remove
+//! → publish) via the [`service_lifecycle`](super::service_lifecycle) helpers —
+//! plus one WebAuthn-only concern: per the operator's chosen hard-disable
+//! semantics, this op also strips passkey VMs from every DID the VTA controls
+//! (a passkey VM is useless when its RP is no longer advertised).
 //!
 //! Sequence (under [`PROTOCOL_LOCK`]):
-//! 1. Verify caller is super-admin.
-//! 2. Brick-prevention check (REST or DIDComm or no-other-on-WebAuthn).
-//! 3. Confirm `services.webauthn = true` and `#vta-webauthn` is
-//!    advertised; load the prior URL for the snapshot.
-//! 4. Persist a [`WebauthnSnapshot::Enabled { url: prior_url }`]
-//!    snapshot before the mutation, per spec §3.5a.
-//! 5. **Strip passkey VMs** from every DID via
-//!    [`super::passkey_vm_cleanup::strip_all_passkey_vms`]. Per-DID
-//!    failures are non-fatal — they're returned in the result so
-//!    the operator can investigate, and the disable still proceeds
-//!    (an operator who disables but leaves orphan VMs can fix
-//!    individual DIDs later).
-//! 6. Patch the VTA's DID document removing `#vta-webauthn` and
-//!    publish via [`update_did_webvh`].
-//! 7. Persist `services.webauthn = false`.
-//! 8. Emit [`TelemetryKind::ServicesWebauthnDisable`].
+//! 1. super-admin → 2. brick-prevention + preconditions (capture prior URL) →
+//!    3. snapshot `WebauthnSnapshot::Enabled { prior_url }` → 4. **strip passkey
+//!    VMs** (per-DID failures non-fatal, surfaced in the result) → 5. remove
+//!    `#vta-webauthn` + publish → 6. persist `services.webauthn = false` →
+//!    7. telemetry.
 
 use std::sync::Arc;
 
@@ -32,27 +22,24 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use vta_sdk::error::VtaError;
+
 use vti_common::seed_store::SeedStore;
 use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
-
-use vta_sdk::error::VtaError;
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
-use crate::operations::protocol::document::{
-    DocumentPatchError, current_webauthn_service, without_webauthn_service,
-};
-use crate::operations::protocol::invariant::{
-    CurrentServices, ProposedOp, would_violate_last_service,
-};
+use crate::operations::did_webvh::UpdateDidWebvhError;
+use crate::operations::protocol::OpContext;
+use crate::operations::protocol::document::DocumentPatchError;
 use crate::operations::protocol::passkey_vm_cleanup::{self, CleanupSummary};
-use crate::operations::protocol::snapshot::{
-    self, ServiceConfigSnapshot, ServiceKind, WebauthnSnapshot,
+use crate::operations::protocol::service_lifecycle::{
+    DisableMutationError, ServiceLifecycle, ServiceLifecycleDeps, WebauthnService,
+    check_disable_preconditions, publish_patch,
 };
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
+use crate::operations::protocol::{PROTOCOL_LOCK, snapshot};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone, Default)]
@@ -63,9 +50,9 @@ pub struct DisableWebauthnResult {
     pub new_version_id: String,
     pub vta_did: String,
     pub serverless: bool,
-    /// Summary of the passkey-VM cleanup sweep. `succeeded` /
-    /// `failed` counts plus per-DID outcomes so the CLI can show
-    /// the operator which DIDs (if any) still need attention.
+    /// Summary of the passkey-VM cleanup sweep. `succeeded` / `failed` counts
+    /// plus per-DID outcomes so the CLI can show the operator which DIDs (if
+    /// any) still need attention.
     pub cleanup: CleanupSummary,
 }
 
@@ -127,6 +114,12 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
+impl DisableMutationError for DisableWebauthnError {
+    fn not_present() -> Self {
+        Self::ServiceNotPresent
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn disable_webauthn(
     config: &Arc<RwLock<AppConfig>>,
@@ -152,39 +145,39 @@ pub async fn disable_webauthn(
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    // 1. Brick-prevention check up front — cheap, no I/O.
-    let (rest_enabled, didcomm_enabled) = {
-        let cfg = config.read().await;
-        if !cfg.services.webauthn {
-            return Err(DisableWebauthnError::ServiceNotPresent);
-        }
-        (cfg.services.rest, cfg.services.didcomm)
+    let deps = ServiceLifecycleDeps {
+        config,
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        webvh_ks,
+        audit_ks,
+        snapshot_ks,
+        seed_store,
+        did_resolver,
+        didcomm_bridge,
+        telemetry,
+        webvh_auth_locks,
     };
-    would_violate_last_service(
-        &CurrentServices::new(rest_enabled, didcomm_enabled, true),
-        ProposedOp::disable(ServiceKind::Webauthn),
-    )?;
 
-    // 2. Read preconditions: capture the prior URL for the snapshot.
-    let (vta_did, scid, current_doc, prior_url) = read_preconditions(config, webvh_ks).await?;
+    // Brick-prevention (§3.2) + preconditions, capturing the prior URL.
+    let (state, prior_url) =
+        check_disable_preconditions::<WebauthnService, DisableWebauthnError>(config, webvh_ks)
+            .await?;
 
-    // 3. Persist snapshot BEFORE the runtime mutation per spec §3.5a.
-    //    Pre-state is WebauthnSnapshot::Enabled with the prior URL so
-    //    a rollback re-enables WebAuthn at that URL.
+    // Snapshot BEFORE the mutation (spec §3.5a): re-enables WebAuthn at the
+    // prior URL on rollback.
     snapshot::write(
         snapshot_ks,
-        ServiceConfigSnapshot::Webauthn(WebauthnSnapshot::Enabled {
-            url: prior_url.clone(),
-        }),
+        WebauthnService::snapshot_enabled(prior_url.clone()),
     )
     .await
     .map_err(|e| DisableWebauthnError::Storage(format!("snapshot write: {e}")))?;
 
-    // 4. Hard-disable: strip passkey VMs from every DID. Per-DID
-    //    failures are non-fatal — we collect them in the summary.
-    //    Best-effort by design (operator's intent on disable is
-    //    "remove this surface AND its dependent state"; partial
-    //    success is better than abort-and-leave-the-service-on).
+    // Hard-disable: strip passkey VMs from every DID. Per-DID failures are
+    // non-fatal — collected in the summary (operator's intent on disable is
+    // "remove this surface AND its dependent state"; partial success beats
+    // abort-and-leave-the-service-on).
     let cleanup = passkey_vm_cleanup::strip_all_passkey_vms(
         config,
         keys_ks,
@@ -209,34 +202,19 @@ pub async fn disable_webauthn(
         );
     }
 
-    // 5. Remove the WebAuthn service entry and publish.
-    let patched = without_webauthn_service(current_doc);
-
-    let update_result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+    let patched = WebauthnService::without_service(state.current_doc);
+    let update_result = publish_patch::<DisableWebauthnError>(
+        &deps,
         auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
-        did_resolver,
-        didcomm_bridge,
-        Some(vta_did.as_str()),
-        webvh_auth_locks,
+        &state.scid,
+        &state.vta_did,
+        patched,
         channel,
     )
     .await?;
 
-    // 6. Persist services.webauthn = false.
     persist_webauthn_disabled(config).await?;
 
-    // 7. Telemetry.
     let mut event = TelemetryEvent::new(TelemetryKind::ServicesWebauthnDisable)
         .with_field("channel", JsonValue::from(channel))
         .with_field(
@@ -257,7 +235,7 @@ pub async fn disable_webauthn(
     info!(
         channel,
         new_version_id = %update_result.new_version_id,
-        vta_did = %vta_did,
+        vta_did = %state.vta_did,
         passkey_vm_cleanup_succeeded = cleanup.succeeded,
         passkey_vm_cleanup_failed = cleanup.failed,
         "WebAuthn disabled"
@@ -265,20 +243,10 @@ pub async fn disable_webauthn(
 
     Ok(DisableWebauthnResult {
         new_version_id: update_result.new_version_id,
-        vta_did,
+        vta_did: state.vta_did,
         serverless: update_result.serverless,
         cleanup,
     })
-}
-
-async fn read_preconditions(
-    config: &Arc<RwLock<AppConfig>>,
-    webvh_ks: &KeyspaceHandle,
-) -> Result<(String, String, JsonValue, String), DisableWebauthnError> {
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-    let svc = current_webauthn_service(&state.current_doc)
-        .ok_or(DisableWebauthnError::ServiceNotPresent)?;
-    Ok((state.vta_did, state.scid, state.current_doc, svc.url))
 }
 
 async fn persist_webauthn_disabled(

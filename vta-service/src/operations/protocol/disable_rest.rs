@@ -1,32 +1,20 @@
 //! `disable_rest` operation.
 //!
-//! Spec: `docs/05-design-notes/runtime-service-management.md` §3.2,
-//! §3.4.
+//! Spec: `docs/05-design-notes/runtime-service-management.md` §3.2, §3.4.
+//! Shares the disable skeleton (brick-prevention → preconditions → snapshot →
+//! patch-remove → publish) with [`super::disable_webauthn`] via the
+//! [`service_lifecycle`](super::service_lifecycle) helpers; the REST-specific
+//! persist (runtime-state + in-memory flag) and telemetry stay here.
 //!
 //! Sequence (under [`PROTOCOL_LOCK`]):
-//! 1. Verify caller is super-admin.
-//! 2. Confirm `services.rest` is currently `true` AND a `#vta-rest`
-//!    entry exists in the DID document — refuse with
-//!    [`DisableRestError::ServiceNotPresent`] otherwise.
-//! 3. Brick-prevention via
-//!    [`would_violate_last_service`] — refuse with
-//!    [`DisableRestError::LastServiceRefused`] when DIDComm is
-//!    also disabled (VTA would have no advertised transport).
-//! 4. Read the prior URL from the on-chain DID document for the
-//!    snapshot.
-//! 5. Persist a [`RestSnapshot::Enabled { url: prior_url }`]
-//!    snapshot before the runtime mutation, per spec §3.5a — a
-//!    future rollback re-enables REST at the same URL.
-//! 6. Patch the document — remove the `#vta-rest` entry via
-//!    [`without_rest_service`] — and publish via
-//!    [`update_did_webvh`].
-//! 7. Persist `services.rest = false` to the config file.
-//! 8. Emit [`TelemetryKind::ServicesRestDisable`].
+//! 1. super-admin → 2. brick-prevention (refuse if it would leave no advertised
+//!    transport) → 3. snapshot `RestSnapshot::Enabled { prior_url }` (rollback
+//!    target) → 4. remove `#vta-rest` + publish → 5. persist `services.rest =
+//!    false` → 6. telemetry.
 //!
-//! REST has no drain semantics — there's nothing to keep listening
-//! for after the URL is unadvertised. The Axum process stays running
-//! (it's a process-level binding), so the local CLI can still reach
-//! the VTA; only the *advertisement* is removed.
+//! REST has no drain semantics — the Axum process stays running (it's a
+//! process-level binding), so the local CLI can still reach the VTA; only the
+//! *advertisement* is removed.
 
 use std::sync::Arc;
 
@@ -45,17 +33,14 @@ use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
-use crate::operations::protocol::document::{
-    DocumentPatchError, current_rest_service, without_rest_service,
+use crate::operations::did_webvh::UpdateDidWebvhError;
+use crate::operations::protocol::OpContext;
+use crate::operations::protocol::document::DocumentPatchError;
+use crate::operations::protocol::service_lifecycle::{
+    DisableMutationError, RestService, ServiceLifecycle, ServiceLifecycleDeps,
+    check_disable_preconditions, publish_patch,
 };
-use crate::operations::protocol::invariant::{
-    CurrentServices, ProposedOp, would_violate_last_service,
-};
-use crate::operations::protocol::snapshot::{
-    self, RestSnapshot, ServiceConfigSnapshot, ServiceKind,
-};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
+use crate::operations::protocol::{PROTOCOL_LOCK, snapshot};
 use crate::store::KeyspaceHandle;
 
 #[derive(Debug, Clone, Default)]
@@ -64,8 +49,8 @@ pub struct DisableRestParams;
 #[derive(Debug, Clone)]
 pub struct DisableRestResult {
     pub new_version_id: String,
-    /// Pre-disable URL — recorded so callers / telemetry / audit
-    /// can graph what was just unadvertised.
+    /// Pre-disable URL — recorded so callers / telemetry / audit can graph
+    /// what was just unadvertised.
     pub prior_url: String,
     /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
     pub vta_did: String,
@@ -124,17 +109,22 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-/// Map [`VtaError::LastServiceRefused`] (from the invariant
-/// helper) onto our typed variant. Other [`VtaError`] shapes
-/// shouldn't surface here — the helper is total over its inputs —
-/// but if one ever does we route it through `Storage` so it isn't
-/// silently swallowed.
+/// Map [`VtaError::LastServiceRefused`] (from the invariant helper) onto our
+/// typed variant. Other [`VtaError`] shapes shouldn't surface here — the helper
+/// is total over its inputs — but if one ever does we route it through
+/// `Storage` so it isn't silently swallowed.
 impl From<VtaError> for DisableRestError {
     fn from(value: VtaError) -> Self {
         match value {
             VtaError::LastServiceRefused => Self::LastServiceRefused,
             other => Self::Storage(other.to_string()),
         }
+    }
+}
+
+impl DisableMutationError for DisableRestError {
+    fn not_present() -> Self {
+        Self::ServiceNotPresent
     }
 }
 
@@ -163,69 +153,47 @@ pub async fn disable_rest(
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    // 1. Brick-prevention runs FIRST — fail-fast on the cheap
-    //    config-only check before any I/O. Mirrors disable_didcomm's
-    //    order, where the §3.2 invariant is checked before reading
-    //    the webvh log. The prior_url for the snapshot is captured
-    //    later, after the brick check has already passed.
-    let (didcomm_enabled, webauthn_enabled) = {
-        let cfg = config.read().await;
-        if !cfg.services.rest {
-            return Err(DisableRestError::ServiceNotPresent);
-        }
-        (cfg.services.didcomm, cfg.services.webauthn)
-    };
-    would_violate_last_service(
-        &CurrentServices::new(true, didcomm_enabled, webauthn_enabled),
-        ProposedOp::disable(ServiceKind::Rest),
-    )?;
-
-    // 2. Read on-chain state: VTA DID record + DID log. Validates
-    //    services.rest == true (already done above) AND captures
-    //    the prior URL for the snapshot.
-    let (vta_did, scid, current_doc, prior_url, _) = read_preconditions(config, webvh_ks).await?;
-
-    // 3. Persist snapshot BEFORE the runtime mutation per spec
-    //    §3.5a. Pre-state is RestSnapshot::Enabled with the prior
-    //    URL — rollback re-enables REST at that URL.
-    snapshot::write(
-        snapshot_ks,
-        ServiceConfigSnapshot::Rest(RestSnapshot::Enabled {
-            url: prior_url.clone(),
-        }),
-    )
-    .await
-    .map_err(|e| DisableRestError::Storage(format!("snapshot write: {e}")))?;
-
-    // 4. Patch the document — remove the #vta-rest entry.
-    let patched = without_rest_service(current_doc);
-
-    // 5. Publish via update_did_webvh.
-    let update_result = update_did_webvh(
+    let deps = ServiceLifecycleDeps {
+        config,
         keys_ks,
         imported_ks,
         contexts_ks,
         webvh_ks,
         audit_ks,
+        snapshot_ks,
         seed_store,
-        auth,
-        &scid,
-        UpdateDidWebvhOptions {
-            document: Some(patched),
-            ..Default::default()
-        },
         did_resolver,
         didcomm_bridge,
-        Some(vta_did.as_str()),
+        telemetry,
         webvh_auth_locks,
+    };
+
+    // Brick-prevention (§3.2) + preconditions, capturing the prior URL.
+    let (state, prior_url) =
+        check_disable_preconditions::<RestService, DisableRestError>(config, webvh_ks).await?;
+
+    // Snapshot BEFORE the mutation (spec §3.5a): pre-state is the prior URL.
+    snapshot::write(
+        snapshot_ks,
+        RestService::snapshot_enabled(prior_url.clone()),
+    )
+    .await
+    .map_err(|e| DisableRestError::Storage(format!("snapshot write: {e}")))?;
+
+    let patched = RestService::without_service(state.current_doc);
+    let update_result = publish_patch::<DisableRestError>(
+        &deps,
+        auth,
+        &state.scid,
+        &state.vta_did,
+        patched,
         channel,
     )
     .await?;
 
-    // 6. Persist services.rest = false to fjall (authoritative runtime state)
-    //    + mirror into the in-memory config so existing readers see it. Same
-    //    risk window as the other ops if this fails after publish — operator
-    //    retries.
+    // Persist services.rest = false to fjall (authoritative runtime state) +
+    // mirror into the in-memory config. Same post-publish risk window as the
+    // other ops if this fails — operator retries.
     crate::operations::protocol::runtime_state::set_rest_enabled(service_state_ks, false)
         .await
         .map_err(|e| DisableRestError::Storage(format!("runtime state: {e}")))?;
@@ -234,8 +202,6 @@ pub async fn disable_rest(
         cfg.services.rest = false;
     }
 
-    // 7. Telemetry. Prior URL is included so an external verifier
-    //    knows what URL just stopped being advertised.
     let mut event = TelemetryEvent::new(TelemetryKind::ServicesRestDisable)
         .with_field("channel", JsonValue::from(channel))
         .with_field(
@@ -252,61 +218,30 @@ pub async fn disable_rest(
         channel,
         prior_url = %prior_url,
         new_version_id = %update_result.new_version_id,
-        vta_did = %vta_did,
+        vta_did = %state.vta_did,
         "REST disabled"
     );
 
     Ok(DisableRestResult {
         new_version_id: update_result.new_version_id,
         prior_url,
-        vta_did,
+        vta_did: state.vta_did,
         serverless: update_result.serverless,
     })
-}
-
-async fn read_preconditions(
-    config: &Arc<RwLock<AppConfig>>,
-    webvh_ks: &KeyspaceHandle,
-) -> Result<(String, String, JsonValue, String, bool), DisableRestError> {
-    // Op-specific config check first — this is what `services.rest`
-    // gates. Capture `didcomm_enabled` while we hold the read-lock
-    // so the caller knows whether disabling REST would brick the
-    // VTA (no protocol surface).
-    let didcomm_enabled = {
-        let cfg = config.read().await;
-        if !cfg.services.rest {
-            return Err(DisableRestError::ServiceNotPresent);
-        }
-        cfg.services.didcomm
-    };
-
-    // Common load: `vta_did`, `scid`, `did_log`, `current_doc` —
-    // shared with every other protocol op via
-    // `super::preconditions::load_vta_doc_state`.
-    let state = super::preconditions::load_vta_doc_state(config, webvh_ks).await?;
-
-    let prior_url = current_rest_service(&state.current_doc)
-        .map(|s| s.url)
-        .ok_or(DisableRestError::ServiceNotPresent)?;
-
-    Ok((
-        state.vta_did,
-        state.scid,
-        state.current_doc,
-        prior_url,
-        didcomm_enabled,
-    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operations::protocol::invariant::{
+        CurrentServices, ProposedOp, would_violate_last_service,
+    };
+    use crate::operations::protocol::snapshot::ServiceKind;
     use crate::store::Store;
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
-    /// Mirrors the test fixture in enable_rest / update_rest —
-    /// owns the fjall store so a single test can derive multiple
-    /// keyspaces from the same handle.
+    /// Mirrors the test fixture in enable_rest / update_rest — owns the fjall
+    /// store so a single test can derive multiple keyspaces from one handle.
     struct TestFixture {
         _dir: tempfile::TempDir,
         config: Arc<RwLock<AppConfig>>,
@@ -342,27 +277,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_preconditions_rejects_when_rest_disabled() {
+    async fn preconditions_reject_when_rest_disabled() {
         let fx = build_fixture(false, true);
-        let err = read_preconditions(&fx.config, &fx.webvh_ks())
-            .await
-            .unwrap_err();
+        let err = check_disable_preconditions::<RestService, DisableRestError>(
+            &fx.config,
+            &fx.webvh_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DisableRestError::ServiceNotPresent));
     }
 
+    /// Brick-prevention runs before the doc load: "REST on, DIDComm off"
+    /// surfaces as `LastServiceRefused` (not a missing-vta_did storage error).
     #[tokio::test]
-    async fn read_preconditions_rejects_without_vta_did() {
+    async fn preconditions_reject_when_would_brick() {
+        let fx = build_fixture(true, false);
+        let err = check_disable_preconditions::<RestService, DisableRestError>(
+            &fx.config,
+            &fx.webvh_ks(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DisableRestError::LastServiceRefused));
+    }
+
+    #[tokio::test]
+    async fn preconditions_reject_without_vta_did() {
         let fx = build_fixture(true, true);
         fx.config.write().await.vta_did = None;
-        let err = read_preconditions(&fx.config, &fx.webvh_ks())
-            .await
-            .unwrap_err();
+        let err = check_disable_preconditions::<RestService, DisableRestError>(
+            &fx.config,
+            &fx.webvh_ks(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DisableRestError::VtaDidNotConfigured));
     }
 
-    /// The brick-prevention helper is wired correctly: invoking it
-    /// from a "REST on, DIDComm off" state with a disable-rest op
-    /// must surface as `LastServiceRefused`.
+    /// The brick-prevention helper is wired correctly: invoking it from a
+    /// "REST on, DIDComm off" state with a disable-rest op must surface as
+    /// `LastServiceRefused`.
     #[test]
     fn brick_prevention_rejects_disable_rest_when_didcomm_off() {
         let result = would_violate_last_service(
@@ -373,8 +328,7 @@ mod tests {
         assert!(matches!(err, DisableRestError::LastServiceRefused));
     }
 
-    /// Conversely, brick-prevention accepts disabling REST when
-    /// DIDComm is on (S3 → S2).
+    /// Conversely, brick-prevention accepts disabling REST when DIDComm is on.
     #[test]
     fn brick_prevention_allows_disable_rest_when_didcomm_on() {
         let result = would_violate_last_service(
@@ -384,8 +338,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    /// Disabling REST is also allowed when WebAuthn alone is on
-    /// — WebAuthn counts as a transport for invariant purposes.
+    /// Disabling REST is also allowed when WebAuthn alone is on — WebAuthn
+    /// counts as a transport for invariant purposes.
     #[test]
     fn brick_prevention_allows_disable_rest_when_webauthn_on() {
         let result = would_violate_last_service(
@@ -395,16 +349,9 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // (Removed: `persist_rest_disabled_flips_config_to_false`. The op now
-    // writes runtime state to fjall via `runtime_state::set_rest_enabled`,
-    // not to the config file on disk. The integration tests for the full
-    // `disable_rest` op cover that path end-to-end.)
-
     /// Confirms the typed `From<VtaError>` path: the helper's
-    /// `LastServiceRefused` round-trips into our error variant
-    /// correctly, and any other VtaError shape lands in `Storage`
-    /// (defensive — the helper is total today, but the impl
-    /// shouldn't drop unknown variants).
+    /// `LastServiceRefused` round-trips into our error variant, and any other
+    /// VtaError shape lands in `Storage` (defensive).
     #[test]
     fn vta_error_to_disable_rest_error_mapping_is_typed() {
         let mapped = DisableRestError::from(VtaError::LastServiceRefused);
