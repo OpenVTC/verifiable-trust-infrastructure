@@ -72,6 +72,31 @@ impl RegistryRecord {
             last_synced_at: Utc::now(),
         }
     }
+
+    /// The registry record a successfully-dispatched [`SyncJob`] should
+    /// publish + mirror, or `None` for [`SyncJobKind::DeleteMember`]
+    /// (which *removes* the record rather than writing one).
+    ///
+    /// Centralises the `fresh_active` / `departed` construction — and the
+    /// `disposition == "historical"` → `active_to` branch — that the
+    /// dispatcher (`run_call`) and the local-mirror update
+    /// (`update_mirror`) both needed (P2.7), so the two can't drift on
+    /// the disposition rule.
+    pub fn for_job(job: &SyncJob) -> Option<RegistryRecord> {
+        match job.kind {
+            SyncJobKind::PublishMember | SyncJobKind::UpdateMember => {
+                Some(Self::fresh_active(&job.member_did))
+            }
+            SyncJobKind::MarkDeparted => {
+                let now = Utc::now();
+                // Historical fills the active window's end; Tombstone
+                // leaves `active_to` open (`None`).
+                let active_to = (job.disposition.as_deref() == Some("historical")).then_some(now);
+                Some(Self::departed(&job.member_did, now, active_to))
+            }
+            SyncJobKind::DeleteMember => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -336,5 +361,44 @@ mod tests {
             v.get("activeTo").is_none(),
             "activeTo should be omitted, got {v}"
         );
+    }
+
+    // ── RegistryRecord::for_job (P2.7) ──
+
+    #[test]
+    fn for_job_publish_and_update_yield_fresh_active() {
+        for kind in [SyncJobKind::PublishMember, SyncJobKind::UpdateMember] {
+            let job = SyncJob::fresh(kind, "did:key:zA");
+            let rec = RegistryRecord::for_job(&job).expect("publish/update yields a record");
+            assert_eq!(rec.status, RegistryStatus::Active);
+            assert_eq!(rec.member_did, "did:key:zA");
+            assert!(rec.active_to.is_none(), "{kind:?} active_to must be open");
+        }
+    }
+
+    #[test]
+    fn for_job_mark_departed_historical_fills_active_to() {
+        let mut job = SyncJob::fresh(SyncJobKind::MarkDeparted, "did:key:zA");
+        job.disposition = Some("historical".into());
+        let rec = RegistryRecord::for_job(&job).expect("departed yields a record");
+        assert_eq!(rec.status, RegistryStatus::Departed);
+        assert!(rec.active_to.is_some(), "historical fills active_to");
+    }
+
+    #[test]
+    fn for_job_mark_departed_tombstone_leaves_active_to_open() {
+        let mut job = SyncJob::fresh(SyncJobKind::MarkDeparted, "did:key:zA");
+        job.disposition = Some("tombstone".into());
+        let rec = RegistryRecord::for_job(&job).unwrap();
+        assert_eq!(rec.status, RegistryStatus::Departed);
+        assert!(rec.active_to.is_none(), "tombstone leaves active_to None");
+    }
+
+    #[test]
+    fn for_job_delete_member_yields_none() {
+        // DeleteMember removes the registry record, so there is nothing to
+        // publish / mirror — the syncer takes the delete path instead.
+        let job = SyncJob::fresh(SyncJobKind::DeleteMember, "did:key:zA");
+        assert!(RegistryRecord::for_job(&job).is_none());
     }
 }

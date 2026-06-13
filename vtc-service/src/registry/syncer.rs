@@ -408,46 +408,25 @@ impl MembershipSyncer {
     }
 
     async fn run_call(&self, job: &SyncJob) -> Result<(), RegistryError> {
-        match job.kind {
-            SyncJobKind::PublishMember | SyncJobKind::UpdateMember => {
-                let record = RegistryRecord::fresh_active(&job.member_did);
-                self.client.publish_member(&record).await
-            }
-            SyncJobKind::MarkDeparted => {
-                let now = chrono::Utc::now();
-                let active_to = if job.disposition.as_deref() == Some("historical") {
-                    Some(now)
-                } else {
-                    None
-                };
-                let record = RegistryRecord::departed(&job.member_did, now, active_to);
-                self.client.publish_member(&record).await
-            }
-            SyncJobKind::DeleteMember => self.client.delete_member(&job.member_did).await,
+        // `for_job` yields the record to publish for every kind except
+        // DeleteMember, which removes the member from the registry instead.
+        match RegistryRecord::for_job(job) {
+            Some(record) => self.client.publish_member(&record).await,
+            None => self.client.delete_member(&job.member_did).await,
         }
     }
 
     async fn update_mirror(&self, job: &SyncJob) {
-        match job.kind {
-            SyncJobKind::PublishMember | SyncJobKind::UpdateMember => {
-                let record = RegistryRecord::fresh_active(&job.member_did);
+        // Mirror the same disposition the registry call applied (P2.7): a
+        // record to store for publish/update/departed, or a delete for
+        // DeleteMember.
+        match RegistryRecord::for_job(job) {
+            Some(record) => {
                 if let Err(e) = store_record(&self.registry_records_ks, &record).await {
                     warn!(error = %e, did = %job.member_did, "failed to update registry_records mirror");
                 }
             }
-            SyncJobKind::MarkDeparted => {
-                let now = chrono::Utc::now();
-                let active_to = if job.disposition.as_deref() == Some("historical") {
-                    Some(now)
-                } else {
-                    None
-                };
-                let record = RegistryRecord::departed(&job.member_did, now, active_to);
-                if let Err(e) = store_record(&self.registry_records_ks, &record).await {
-                    warn!(error = %e, did = %job.member_did, "failed to update registry_records mirror");
-                }
-            }
-            SyncJobKind::DeleteMember => {
+            None => {
                 if let Err(e) =
                     super::storage::delete_record(&self.registry_records_ks, &job.member_did).await
                 {
