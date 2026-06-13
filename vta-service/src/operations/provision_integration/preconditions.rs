@@ -165,6 +165,57 @@ pub async fn ensure_target_context_or_create(
     Ok(true)
 }
 
+/// Failure modes of [`resolve_target_context`], kept distinct so each transport
+/// renders the ambiguous case in its own idiom.
+#[derive(Debug)]
+pub enum ResolveContextError {
+    /// Inference couldn't pick a single target — carries the candidates so the
+    /// transport can surface them (REST: 400 with candidates inlined; DIDComm:
+    /// `provision/integration:context_required` problem report, `args =
+    /// candidates`).
+    Ambiguous(AmbiguousContext),
+    /// Any other failure — storage error, no-context-at-all `NotFound`, the
+    /// missing-context-without-`--create-context` `NotFound`, or the super-admin
+    /// gate inside `create_context`.
+    Op(AppError),
+}
+
+impl From<AppError> for ResolveContextError {
+    fn from(e: AppError) -> Self {
+        Self::Op(e)
+    }
+}
+
+/// Resolve the provision target context end-to-end: use the caller-supplied
+/// `requested` context verbatim, else infer it ([`infer_target_context`]); then
+/// ensure it exists, creating it inline when `create_context`
+/// ([`ensure_target_context_or_create`]). Returns `(context, context_created)`.
+///
+/// This is the shared preamble for both provision handlers (REST
+/// `routes::bootstrap`, DIDComm `messaging::handlers`) — the context policy
+/// (inference rules + create-or-reject + the super-admin gate concentration)
+/// lives here once. Both transports pass the **already VP-verified** request
+/// separately; only this context step is hoisted (the VP-verify and
+/// summary-mapping steps differ per transport by design).
+pub async fn resolve_target_context(
+    auth: &AuthClaims,
+    contexts_ks: &KeyspaceHandle,
+    requested: Option<String>,
+    create_context: bool,
+) -> Result<(String, bool), ResolveContextError> {
+    let context = match requested {
+        Some(c) => c,
+        // `?` on the outer `Result` maps store-level `AppError` → `Op`; the
+        // inner `map_err` lifts the ambiguous case.
+        None => infer_target_context(auth, contexts_ks)
+            .await?
+            .map_err(ResolveContextError::Ambiguous)?,
+    };
+    let created =
+        ensure_target_context_or_create(contexts_ks, auth, &context, create_context).await?;
+    Ok((context, created))
+}
+
 pub(super) async fn preconditions(
     state: &ProvisionIntegrationDeps,
     auth: &AuthClaims,
@@ -418,6 +469,83 @@ mod tests {
         assert!(
             matches!(err, AppError::NotFound(_)),
             "expected NotFound, got {err:?}"
+        );
+    }
+
+    // ── resolve_target_context (shared REST + DIDComm preamble) ──────────
+
+    /// Caller-supplied context that already exists → returned verbatim,
+    /// `context_created = false`, inference not consulted.
+    #[tokio::test]
+    async fn resolve_uses_requested_existing_context() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        seed_context(&ks, "ctx_a").await;
+        let a = auth(Role::Admin, vec!["ctx_a"]);
+
+        let (context, created) = resolve_target_context(&a, &ks, Some("ctx_a".into()), false)
+            .await
+            .map_err(|_| ())
+            .expect("resolves");
+        assert_eq!(context, "ctx_a");
+        assert!(!created);
+    }
+
+    /// Requested context that doesn't exist, `create_context = true` →
+    /// created inline, `context_created = true`.
+    #[tokio::test]
+    async fn resolve_creates_requested_context_inline() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        let a = auth(Role::Admin, vec![]); // super-admin (create_context gate)
+
+        let (context, created) = resolve_target_context(&a, &ks, Some("ctx-new".into()), true)
+            .await
+            .expect("resolves");
+        assert_eq!(context, "ctx-new");
+        assert!(created);
+        assert!(
+            crate::contexts::get_context(&ks, "ctx-new")
+                .await
+                .unwrap()
+                .is_some(),
+            "context must have been created"
+        );
+    }
+
+    /// Omitted context + ambiguous inference → `ResolveContextError::Ambiguous`
+    /// carrying the candidates (the transport renders them).
+    #[tokio::test]
+    async fn resolve_propagates_ambiguous_inference() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        let a = auth(Role::Admin, vec!["ctx_x", "ctx_y"]);
+
+        let err = resolve_target_context(&a, &ks, None, false)
+            .await
+            .err()
+            .expect("ambiguous");
+        match err {
+            ResolveContextError::Ambiguous(amb) => {
+                assert_eq!(
+                    amb.candidates,
+                    vec!["ctx_x".to_string(), "ctx_y".to_string()]
+                );
+            }
+            ResolveContextError::Op(e) => panic!("expected Ambiguous, got Op({e:?})"),
+        }
+    }
+
+    /// Requested missing context without `--create-context` → `Op(NotFound)`.
+    #[tokio::test]
+    async fn resolve_missing_context_without_create_is_op_not_found() {
+        let (_dir, _store, ks) = fresh_contexts_ks().await;
+        let a = auth(Role::Admin, vec!["ctx_absent"]);
+
+        let err = resolve_target_context(&a, &ks, Some("ctx_absent".into()), false)
+            .await
+            .err()
+            .expect("not found");
+        assert!(
+            matches!(err, ResolveContextError::Op(AppError::NotFound(_))),
+            "expected Op(NotFound)",
         );
     }
 }

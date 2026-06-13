@@ -658,49 +658,38 @@ mod provision {
 
         let deps = crate::operations::provision_integration::ProvisionIntegrationDeps::from(&state);
 
-        // Resolve the target context. When the caller sent one, use it
-        // verbatim; otherwise run the spec's inference rules. On
-        // ambiguity we collapse into Validation here — REST clients
-        // (pnm-cli, scripts) get the message + candidates inline. The
-        // DIDComm path emits the canonical
-        // `provision/integration:context_required` code so structured
-        // clients can branch on it; REST's typed-error vocabulary
-        // wasn't designed for arbitrary new codes, so we stay with the
-        // existing 400 shape.
-        let context = match req.context {
-            Some(c) => c,
-            None => match crate::operations::provision_integration::infer_target_context(
+        // Resolve + ensure the target context via the shared preamble. On
+        // ambiguity we collapse into Validation here — REST clients (pnm-cli,
+        // scripts) get the message + candidates inline. The DIDComm path emits
+        // the canonical `provision/integration:context_required` code so
+        // structured clients can branch on it; REST's typed-error vocabulary
+        // wasn't designed for arbitrary new codes, so we stay with the existing
+        // 400 shape. `--create-context` (super-admin gate inside
+        // `create_context`) is honoured inside the helper.
+        use crate::operations::provision_integration::ResolveContextError;
+        let (context, context_created) =
+            match crate::operations::provision_integration::resolve_target_context(
                 &auth.0,
                 &deps.contexts_ks,
+                req.context,
+                req.create_context,
             )
-            .await?
+            .await
             {
-                Ok(ctx) => ctx,
-                Err(crate::operations::provision_integration::AmbiguousContext {
-                    candidates,
-                    message,
-                }) => {
+                Ok(v) => v,
+                Err(ResolveContextError::Ambiguous(
+                    crate::operations::provision_integration::AmbiguousContext {
+                        candidates,
+                        message,
+                    },
+                )) => {
                     return Err(AppError::Validation(format!(
                         "{message} (candidates: {})",
                         candidates.join(", "),
                     )));
                 }
-            },
-        };
-
-        // `--create-context`: create the target context inline if
-        // it doesn't exist. Hits the super-admin gate inside
-        // `operations::contexts::create_context` — context-admin
-        // callers surface as Forbidden here. Idempotent when the
-        // context already exists.
-        let context_created =
-            crate::operations::provision_integration::ensure_target_context_or_create(
-                &deps.contexts_ks,
-                &auth.0,
-                &context,
-                req.create_context,
-            )
-            .await?;
+                Err(ResolveContextError::Op(e)) => return Err(e),
+            };
         let output = provision_integration_lib(
             &deps,
             &auth.0,

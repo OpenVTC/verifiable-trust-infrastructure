@@ -1431,23 +1431,28 @@ pub async fn handle_provision_integration(
 
     let deps = operations::provision_integration::ProvisionIntegrationDeps::from(state.as_ref());
 
-    // Resolve the target context. When the caller sent one, use it
-    // verbatim (integration-class consumer pattern). When omitted, run
-    // the spec's three inference rules — single-context grant, super-
-    // admin + single-context maintainer, else AmbiguousContext.
-    let context = match body.context {
-        Some(c) => c,
-        None => match app_try!(
-            operations::provision_integration::infer_target_context(&auth, &deps.contexts_ks).await
-        ) {
-            Ok(ctx) => ctx,
-            Err(operations::provision_integration::AmbiguousContext {
-                candidates,
-                message,
-            }) => {
-                // Emit the canonical Trust Task error code so clients
-                // can surface candidates structurally. `args` carries
-                // the list in arrival order (sorted by the helper).
+    // Resolve + ensure the target context via the shared preamble (inference
+    // rules — single-context grant, super-admin + single-context maintainer,
+    // else AmbiguousContext — plus `--create-context`, super-admin-gated inside
+    // `create_context`). Only the ambiguous-case rendering is transport-
+    // specific: emit the canonical Trust Task `context_required` problem report
+    // with `args = candidates` (sorted by the helper).
+    let (context, context_created) =
+        match operations::provision_integration::resolve_target_context(
+            &auth,
+            &deps.contexts_ks,
+            body.context,
+            body.create_context,
+        )
+        .await
+        {
+            Ok(v) => v,
+            Err(operations::provision_integration::ResolveContextError::Ambiguous(
+                operations::provision_integration::AmbiguousContext {
+                    candidates,
+                    message,
+                },
+            )) => {
                 let report = ProblemReport {
                     code: vta_sdk::protocols::problem_report_codes::PROVISION_CONTEXT_REQUIRED
                         .to_string(),
@@ -1457,21 +1462,10 @@ pub async fn handle_provision_integration(
                 };
                 return Ok(Some(DIDCommResponse::problem_report(report)));
             }
-        },
-    };
-
-    // `--create-context` from the wire body. Same semantics as the
-    // REST handler — super-admin gate enforced inside
-    // `operations::contexts::create_context`. Idempotent.
-    let context_created = app_try!(
-        operations::provision_integration::ensure_target_context_or_create(
-            &deps.contexts_ks,
-            &auth,
-            &context,
-            body.create_context,
-        )
-        .await
-    );
+            Err(operations::provision_integration::ResolveContextError::Op(e)) => {
+                return Ok(Some(app_err_to_response(e)));
+            }
+        };
     let output = app_try!(
         operations::provision_integration::provision_integration(
             &deps,
