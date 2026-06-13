@@ -23,13 +23,12 @@
 //! 9. Emit `Authenticated` audit event and return canonical
 //!    `AuthenticateResponse`.
 
-use uuid::Uuid;
 use vta_sdk::protocols::auth::{
     AuthenticateResponse, Session as WireSession, TokenBundle, epoch_to_rfc3339,
 };
 
 use crate::auth::AuthError;
-use crate::auth::backend::{AuthAuditEvent, AuthBackend, AuthenticateInput, SessionStore};
+use crate::auth::backend::{AuthBackend, AuthenticateInput, SessionStore};
 use crate::auth::session::{SessionState, now_epoch};
 
 /// Default first-factor AMR; the transport layer (or step-up
@@ -121,40 +120,29 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
 
     let role_resolution = backend.check_acl(&session.did).await?;
 
-    // ---- Mint tokens ----
+    // ---- Mint tokens (acr-dependent TTL + Authenticated audit) ----
     //
-    // Access-token TTL is acr-dependent: stepped-up sessions
-    // (`aal2`) get a shorter window (M2 from the May 2026
-    // security review) to bound the blast radius of a leaked
-    // elevated token.
-    let access_ttl = if acr == "aal2" {
-        backend.access_token_ttl_for_aal2()
-    } else {
-        backend.access_token_ttl()
-    };
-
-    let refresh_token = Uuid::new_v4().to_string();
-    let refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());
-    let access_expires_at = now.saturating_add(access_ttl);
-
-    let access_token = backend
-        .mint_access_token(
-            &session.did,
-            &session.session_id,
-            &role_resolution.role,
-            &role_resolution.contexts,
-            &amr,
-            &acr,
-            session.tee_attested,
-            access_ttl,
-        )
-        .await?;
+    // The shared minter centralises the `aal2` short-TTL hardening
+    // (M2 from the May 2026 security review — bound the blast radius
+    // of a leaked elevated token) so every mint path applies it
+    // identically.
+    let minted = super::mint::mint_session_tokens(
+        backend,
+        &session.did,
+        &session.session_id,
+        &role_resolution.role,
+        &role_resolution.contexts,
+        &amr,
+        &acr,
+        session.tee_attested,
+    )
+    .await?;
 
     // ---- Transition session + persist refresh index ----
 
     session.state = SessionState::Authenticated;
-    session.refresh_token = Some(refresh_token.clone());
-    session.refresh_expires_at = Some(refresh_expires_at);
+    session.refresh_token = Some(minted.refresh_token.clone());
+    session.refresh_expires_at = Some(minted.refresh_expires_at);
     session.amr = amr.clone();
     session.acr = acr.clone();
     if let Some(pk) = input.session_pubkey_b58btc {
@@ -168,16 +156,9 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         .map_err(|e| AuthError::Internal(format!("store_session failed: {e:?}")))?;
     backend
         .sessions()
-        .store_refresh_index(&refresh_token, &session.session_id)
+        .store_refresh_index(&minted.refresh_token, &session.session_id)
         .await
         .map_err(|e| AuthError::Internal(format!("store_refresh_index failed: {e:?}")))?;
-
-    backend.audit(AuthAuditEvent::Authenticated {
-        did: &session.did,
-        session_id: &session.session_id,
-        amr: &amr,
-        acr: &acr,
-    });
 
     // ---- Build canonical response ----
 
@@ -185,16 +166,16 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
         session: WireSession {
             id: session.session_id.clone(),
             subject: session.did,
-            issued_at: epoch_to_rfc3339(now),
-            expires_at: epoch_to_rfc3339(access_expires_at),
+            issued_at: epoch_to_rfc3339(minted.issued_at),
+            expires_at: epoch_to_rfc3339(minted.access_expires_at),
             amr,
             acr,
         },
         tokens: TokenBundle {
-            access_token,
-            refresh_token: Some(refresh_token),
+            access_token: minted.access_token,
+            refresh_token: Some(minted.refresh_token),
             token_type: "Bearer".to_string(),
-            expires_in: access_ttl,
+            expires_in: minted.access_ttl,
             refresh_expires_in: Some(backend.refresh_token_ttl()),
             scope: role_resolution
                 .contexts

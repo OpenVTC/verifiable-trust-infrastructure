@@ -484,10 +484,8 @@ pub async fn passkey_login_finish(
         .webauthn
         .as_ref()
         .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
-    let jwt_keys = state
-        .jwt_keys
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
+    // JWT-keys presence is enforced by `VtcAuthBackend::from_state` at the
+    // mint step below (the shared minter owns token issuance now).
 
     let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
         .await?
@@ -517,60 +515,55 @@ pub async fn passkey_login_finish(
     // clean 403, not a 500 in the VTA-taxonomy deserializer (P0.16).
     let (role, allowed_contexts) = resolve_auth_role(&state.acl_ks, &user.did).await?;
 
-    // Mint access + refresh tokens (mirrors `authenticate_and_mint`
-    // for parity with the DIDComm login path).
-    let config = state.config.read().await;
-    let access_expiry = config.auth.access_token_expiry;
-    let refresh_expiry = config.auth.refresh_token_expiry;
-    drop(config);
-
+    // Mint access + refresh tokens through the shared minter so the
+    // passkey path gets the same `aal2` short access TTL + Authenticated
+    // audit as the canonical `/auth/` handler (P1.4) — previously this
+    // hand-rolled the mint with the full `aal1` TTL, giving the one
+    // token class the hardening protects the longest exposure.
+    // Passkey-login: amr=["passkey"], acr="aal2" — the WebAuthn
+    // assertion alone is two factors (possession of the authenticator +
+    // a user-verification gesture / biometric).
+    let backend = crate::auth::VtcAuthBackend::from_state(&state).await?;
     let session_id = Uuid::new_v4().to_string();
-    // Passkey-login: WebAuthn assertion bound to the holder's
-    // registered credential. amr=["passkey"], acr="aal2" — the
-    // assertion alone is two factors (possession of the
-    // authenticator + user verification gesture / biometric).
-    let claims = jwt_keys
-        .new_claims(
-            user.did.clone(),
-            session_id.clone(),
-            role.to_string(),
-            allowed_contexts,
-            access_expiry,
-            false,
-        )
-        .with_aal(vec!["passkey".to_string()], "aal2");
-    let access_expires_at = claims.exp;
-    let access_token = jwt_keys.encode(&claims)?;
-
-    let refresh_token = Uuid::new_v4().to_string();
-    let refresh_expires_at = now_epoch() + refresh_expiry;
+    let amr = vec!["passkey".to_string()];
+    let acr = "aal2".to_string();
+    let minted = vti_common::auth::handlers::mint_session_tokens(
+        &backend,
+        &user.did,
+        &session_id,
+        &role,
+        &allowed_contexts,
+        &amr,
+        &acr,
+        false,
+    )
+    .await?;
 
     // Persist the session record so `/auth/sessions` lists it and
-    // refresh-token rotation finds it. AAL is captured from the JWT
-    // claims so refresh keeps the holder at aal2 instead of dropping
-    // to aal1 on every token rotation.
+    // refresh-token rotation finds it. AAL is captured so refresh keeps
+    // the holder at aal2 instead of dropping to aal1 on every rotation.
     let session = Session {
         session_id: session_id.clone(),
         did: user.did.clone(),
         challenge: String::new(),
         state: SessionState::Authenticated,
-        created_at: now_epoch(),
-        refresh_token: Some(refresh_token.clone()),
-        refresh_expires_at: Some(refresh_expires_at),
+        created_at: minted.issued_at,
+        refresh_token: Some(minted.refresh_token.clone()),
+        refresh_expires_at: Some(minted.refresh_expires_at),
         tee_attested: false,
-        amr: claims.amr.clone(),
-        acr: claims.acr.clone(),
+        amr: amr.clone(),
+        acr: acr.clone(),
         token_id: None,
         session_pubkey_b58btc: None,
     };
     store_session(&state.sessions_ks, &session).await?;
-    store_refresh_index(&state.sessions_ks, &refresh_token, &session_id).await?;
+    store_refresh_index(&state.sessions_ks, &minted.refresh_token, &session_id).await?;
 
     info!(did = %user.did, %session_id, "passkey login successful");
 
     // Set cookies — same shape as `admin_login`.
-    let max_age = access_expires_at.saturating_sub(now_epoch()).max(1);
-    let session_cookie = build_session_cookie(&access_token, max_age);
+    let max_age = minted.access_expires_at.saturating_sub(now_epoch()).max(1);
+    let session_cookie = build_session_cookie(&minted.access_token, max_age);
 
     use rand::RngExt;
     let mut csrf_bytes = [0u8; 32];
@@ -578,22 +571,21 @@ pub async fn passkey_login_finish(
     let csrf = hex::encode(csrf_bytes);
     let csrf_cookie = build_csrf_cookie(&csrf, max_age);
 
-    let issued_at_epoch = now_epoch();
     let resp = AuthenticateResponse {
         session: WireSession {
             id: session_id.clone(),
             subject: user.did.clone(),
-            issued_at: epoch_to_rfc3339(issued_at_epoch),
-            expires_at: epoch_to_rfc3339(access_expires_at),
-            amr: claims.amr.clone(),
-            acr: claims.acr.clone(),
+            issued_at: epoch_to_rfc3339(minted.issued_at),
+            expires_at: epoch_to_rfc3339(minted.access_expires_at),
+            amr: amr.clone(),
+            acr: acr.clone(),
         },
         tokens: TokenBundle {
-            access_token: access_token.clone(),
-            refresh_token: Some(refresh_token),
+            access_token: minted.access_token.clone(),
+            refresh_token: Some(minted.refresh_token),
             token_type: "Bearer".to_string(),
-            expires_in: access_expires_at.saturating_sub(issued_at_epoch),
-            refresh_expires_in: Some(refresh_expires_at.saturating_sub(issued_at_epoch)),
+            expires_in: minted.access_ttl,
+            refresh_expires_in: Some(minted.refresh_expires_at.saturating_sub(minted.issued_at)),
             scope: Vec::new(),
         },
     };
