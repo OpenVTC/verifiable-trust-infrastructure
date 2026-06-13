@@ -370,11 +370,20 @@ async fn assemble_join_facts(
     })
 }
 
-/// Project the VP into the verified [`Presentation`] the policy reads.
-/// Holder-binding is already checked (`verified: true`). Credentials
-/// surface with `issuer_trusted: false` / `status: valid` — issuer
-/// trust (TRQP) and status-list resolution are follow-ups; the
-/// structured shape is what matters for the decision contract.
+/// Project the VP into the [`Presentation`] the policy reads.
+///
+/// `verified: true` reflects the **presentation-level** holder-binding the
+/// route already checked (`verify_holder_signature` over the canonical
+/// payload) — the applicant proved control of `applicant_did`. It does **not**
+/// mean the *embedded VCs* were verified: this raw-VP path performs no
+/// per-credential proof / issuer / status resolution (that is the
+/// `vp_token` / credential-exchange `present` path). So each projected
+/// credential is fail-safe — `issuer_trusted: false`, `holder_bound: false`,
+/// `status: unknown` (not `valid` — its status list was never read), and
+/// **`claims: null`** so a policy that branches on credential claims cannot be
+/// fooled into auto-admitting on a forged VC presented under a verified
+/// holder-binding (P0.12). The raw claims are still surfaced for the admin
+/// show / approve UI via the request row's separate `vp_claims` projection.
 fn presentation_from_vp(applicant_did: &str, vp: &JsonValue) -> Presentation {
     let holder = vp
         .get("holder")
@@ -427,16 +436,17 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
         credential_type,
         issuer,
         issuer_trusted: false,
-        status: CredentialStatus::Valid,
-        // This raw-VC path does not verify a *per-credential* holder-key binding
-        // (no `kb-jwt` / holder proof / pseudonym check like the vp_token path) —
-        // so we don't claim one. Fail-safe: a policy requiring holder binding will
-        // (correctly) not be satisfied by these.
+        // The raw-VP submit path verifies NOTHING about the embedded VC — not
+        // its issuer proof, not its holder-key binding (no `kb-jwt` / holder
+        // proof / pseudonym check like the vp_token path), and not its
+        // status-list state. So every trust signal is fail-safe: `unknown`
+        // status (the list was never read — not `valid`), `issuer_trusted` /
+        // `holder_bound` false, and **null claims** so a claims-reading policy
+        // cannot auto-admit on attacker-supplied claim values (P0.12). A policy
+        // that needs the claims must run the verifying `present` path.
+        status: CredentialStatus::Unknown,
         holder_bound: false,
-        claims: obj
-            .get("credentialSubject")
-            .cloned()
-            .unwrap_or(JsonValue::Null),
+        claims: JsonValue::Null,
         valid_until: None,
     })
 }
@@ -587,5 +597,66 @@ mod tests {
         )
         .expect_err("non-did:key must fail");
         assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    // ── P0.12: embedded VCs on the raw-VP submit path are fail-safe ──
+
+    #[test]
+    fn presentation_from_vp_does_not_present_unverified_vc_claims() {
+        // A forged VC with attacker-chosen claims, presented under a
+        // (separately-verified) holder binding. The raw-VP path verifies none
+        // of the embedded VC, so its claims/status/trust signals must be
+        // fail-safe — otherwise a policy reading `credentials[].claims` would
+        // auto-admit on forged content.
+        let applicant = "did:key:zApplicant";
+        let vp = serde_json::json!({
+            "type": "VerifiablePresentation",
+            "holder": applicant,
+            "verifiableCredential": [
+                {
+                    "issuer": "did:key:zForgedIssuer",
+                    "type": ["VerifiableCredential", "EmailCredential"],
+                    "credentialSubject": { "email": "ceo@acme.com" }
+                }
+            ]
+        });
+
+        let p = presentation_from_vp(applicant, &vp);
+
+        // Presentation-level holder-binding is the route's verdict; the policy
+        // gate (assemble) still passes so a legitimate submit lands pending.
+        assert!(p.verified, "holder-binding is verified at the route");
+        assert_eq!(p.holder, applicant);
+        assert_eq!(p.credentials.len(), 1);
+
+        let c = &p.credentials[0];
+        // Structural metadata is fine to surface…
+        assert_eq!(c.credential_type, "EmailCredential");
+        assert_eq!(c.issuer, "did:key:zForgedIssuer");
+        // …but every trust signal must be fail-safe.
+        assert!(!c.issuer_trusted, "issuer not vetted on the raw path");
+        assert!(!c.holder_bound, "no per-credential holder proof checked");
+        assert_eq!(
+            c.status,
+            CredentialStatus::Unknown,
+            "status list was never read — must not claim `valid`"
+        );
+        assert_eq!(
+            c.claims,
+            JsonValue::Null,
+            "unverified VC claims must NOT be surfaced to the policy"
+        );
+    }
+
+    #[test]
+    fn presentation_from_vp_with_no_embedded_vcs_is_holder_binding_only() {
+        // The common case: a bare holder-binding VP (no credentials). The
+        // presentation is verified (so the submit lands pending) and carries
+        // no credentials for a policy to (mis)trust.
+        let applicant = "did:key:zApplicant";
+        let vp = serde_json::json!({ "type": "VerifiablePresentation", "holder": applicant });
+        let p = presentation_from_vp(applicant, &vp);
+        assert!(p.verified);
+        assert!(p.credentials.is_empty());
     }
 }
