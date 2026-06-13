@@ -120,3 +120,56 @@ async fn seeded_webvh_server_is_listed_over_http() {
 
     mock.shutdown().await;
 }
+
+/// Full URL-direct provision against a **REST-only** MockVta, end to end:
+/// `provision_admin_rotated_via_rest` authenticates via the DI-signed
+/// `auth/authenticate/0.1` Trust Task (no DIDComm / ATM — the mock has none),
+/// the VTA mints a fresh admin DID + issues the authorization VC + seals the
+/// rotation bundle, and the client opens it. This is the round-trip that
+/// failed with "ATM not configured" before the DI-signed REST auth path
+/// existed; it ties together the #406 seams + the DI-auth fix.
+#[tokio::test]
+async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
+    use vta_sdk::provision_client::ProvisionAsk;
+    use vta_sdk::provision_client::provision_admin_rotated_via_rest;
+    use vta_sdk::provision_client::setup_key::EphemeralSetupKey;
+    use vti_common::acl::{AclEntry, Role};
+
+    let mock = MockVta::start_provisionable().await;
+
+    // Cold-start: grant the setup did:key super-admin directly in the ACL so
+    // the relayer is authorized and the holder VP passes the provision gate.
+    let setup = EphemeralSetupKey::generate().expect("generate setup key");
+    let entry = AclEntry::new(&setup.did, Role::Admin, "test").with_contexts(vec![]);
+    mock.ctx
+        .acl_ks
+        .insert(format!("acl:{}", setup.did), &entry)
+        .await
+        .expect("seed super-admin acl");
+
+    let reply = provision_admin_rotated_via_rest(
+        mock.base_url(),
+        mock.vta_did(),
+        setup.did.clone(),
+        setup.private_key_multibase().to_string(),
+        ProvisionAsk::vta_admin_rotated("ctx1"),
+    )
+    .await
+    .expect("URL-direct admin rotation should round-trip against the REST-only mock");
+
+    assert!(
+        reply.admin_did.starts_with("did:key:"),
+        "rotated admin must be a did:key, got {}",
+        reply.admin_did
+    );
+    assert_ne!(
+        reply.admin_did, setup.did,
+        "rotation must mint a fresh admin DID, not echo the setup DID"
+    );
+    assert!(
+        !reply.admin_private_key_mb.is_empty(),
+        "rotated admin must carry its private key"
+    );
+
+    mock.shutdown().await;
+}

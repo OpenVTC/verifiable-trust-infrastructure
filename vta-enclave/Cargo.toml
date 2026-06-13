@@ -2,7 +2,7 @@
 name = "vta-enclave"
 description = "VTA binary for AWS Nitro Enclaves (TEE mode)"
 readme = "README.md"
-version = "0.7.1"
+version = "0.7.2"
 edition.workspace = true
 # `vta-enclave` is a Linux-only Nitro Enclave binary (vsock-store depends
 # on `tokio-vsock`). Publishing to crates.io would surface "fails on

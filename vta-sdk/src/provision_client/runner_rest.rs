@@ -10,7 +10,6 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::client::VtaClient;
 use crate::did_key::decode_private_key_multibase;
 use crate::provision_integration::http::ProvisionIntegrationRequest;
-use crate::session;
 
 use super::ask::ProvisionAsk;
 use super::diagnostics::{DiagCheck, DiagStatus};
@@ -21,8 +20,8 @@ use super::result::{admin_rotation_response_to_reply, decode_nonce_b64url, respo
 /// Run the REST leg of the AdminOnly auth check.
 ///
 /// AdminOnly's proof-of-ACL today is "the auth handshake completes" —
-/// for REST that's a successful round-trip through
-/// [`session::challenge_response`]. The returned access token is
+/// for REST that's a successful round-trip through the DI-signed
+/// [`super::auth_rest::challenge_response_di`]. The returned access token is
 /// discarded; the integration's downstream code re-authenticates at
 /// runtime via the same flow.
 ///
@@ -39,7 +38,9 @@ pub(crate) async fn run_rest_attempt_admin_only(
 ) -> AttemptOutcome {
     let _ = tx.send(VtaEvent::CheckStart(DiagCheck::AuthenticateREST));
 
-    match session::challenge_response(rest_url, &setup_did, &setup_privkey_mb, vta_did).await {
+    match super::auth_rest::challenge_response_di(rest_url, &setup_did, &setup_privkey_mb, vta_did)
+        .await
+    {
         Ok(_auth) => {
             let _ = tx.send(VtaEvent::CheckDone(
                 DiagCheck::AuthenticateREST,
@@ -89,7 +90,7 @@ pub(crate) async fn run_rest_attempt_admin_only(
 /// Run the REST FullSetup flow: authenticate, then POST a VP-framed
 /// provision-integration request and open the returned sealed bundle.
 ///
-/// Pre-auth boundary: failures inside [`session::challenge_response`] or
+/// Pre-auth boundary: failures inside [`super::auth_rest::challenge_response_di`] or
 /// [`VtaClient`] construction → [`AttemptOutcome::PreAuthFailure`]. Once
 /// auth completes, any error from the provision RPC, VP signing, nonce
 /// decode, or sealed-bundle opening is [`AttemptOutcome::PostAuthFailure`]
@@ -105,37 +106,43 @@ pub(crate) async fn run_rest_attempt_full_setup(
 ) -> AttemptOutcome {
     let _ = tx.send(VtaEvent::CheckStart(DiagCheck::AuthenticateREST));
 
-    let token_result =
-        match session::challenge_response(rest_url, &setup_did, &setup_privkey_mb, vta_did).await {
-            Ok(r) => {
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::AuthenticateREST,
-                    DiagStatus::Ok(format!("REST auth as {setup_did}")),
-                ));
-                r
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::AuthenticateREST,
-                    DiagStatus::Failed(msg.clone()),
-                ));
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::ListWebvhServers,
-                    DiagStatus::Skipped("REST auth did not complete".into()),
-                ));
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::ProvisionIntegration,
-                    DiagStatus::Skipped("REST auth did not complete".into()),
-                ));
-                return AttemptOutcome::PreAuthFailure(format!(
-                    "Could not complete REST authentication against the VTA. \
+    let token_result = match super::auth_rest::challenge_response_di(
+        rest_url,
+        &setup_did,
+        &setup_privkey_mb,
+        vta_did,
+    )
+    .await
+    {
+        Ok(r) => {
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::AuthenticateREST,
+                DiagStatus::Ok(format!("REST auth as {setup_did}")),
+            ));
+            r
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::AuthenticateREST,
+                DiagStatus::Failed(msg.clone()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ListWebvhServers,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ProvisionIntegration,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            return AttemptOutcome::PreAuthFailure(format!(
+                "Could not complete REST authentication against the VTA. \
                      Confirm the `pnm acl create` command ran successfully for \
                      this setup DID and that the VTA's REST endpoint is reachable. \
                      ({msg})"
-                ));
-            }
-        };
+            ));
+        }
+    };
 
     let client = VtaClient::new(rest_url);
     client.set_token_async(token_result.access_token).await;
@@ -250,37 +257,43 @@ pub(crate) async fn run_rest_attempt_admin_rotated(
 ) -> AttemptOutcome {
     let _ = tx.send(VtaEvent::CheckStart(DiagCheck::AuthenticateREST));
 
-    let token_result =
-        match session::challenge_response(rest_url, &setup_did, &setup_privkey_mb, vta_did).await {
-            Ok(r) => {
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::AuthenticateREST,
-                    DiagStatus::Ok(format!("REST auth as {setup_did}")),
-                ));
-                r
-            }
-            Err(e) => {
-                let msg = e.to_string();
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::AuthenticateREST,
-                    DiagStatus::Failed(msg.clone()),
-                ));
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::ListWebvhServers,
-                    DiagStatus::Skipped("REST auth did not complete".into()),
-                ));
-                let _ = tx.send(VtaEvent::CheckDone(
-                    DiagCheck::ProvisionIntegration,
-                    DiagStatus::Skipped("REST auth did not complete".into()),
-                ));
-                return AttemptOutcome::PreAuthFailure(format!(
-                    "Could not complete REST authentication against the VTA. \
+    let token_result = match super::auth_rest::challenge_response_di(
+        rest_url,
+        &setup_did,
+        &setup_privkey_mb,
+        vta_did,
+    )
+    .await
+    {
+        Ok(r) => {
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::AuthenticateREST,
+                DiagStatus::Ok(format!("REST auth as {setup_did}")),
+            ));
+            r
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::AuthenticateREST,
+                DiagStatus::Failed(msg.clone()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ListWebvhServers,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            let _ = tx.send(VtaEvent::CheckDone(
+                DiagCheck::ProvisionIntegration,
+                DiagStatus::Skipped("REST auth did not complete".into()),
+            ));
+            return AttemptOutcome::PreAuthFailure(format!(
+                "Could not complete REST authentication against the VTA. \
                      Confirm the `pnm acl create` command ran successfully for \
                      this setup DID and that the VTA's REST endpoint is reachable. \
                      ({msg})"
-                ));
-            }
-        };
+            ));
+        }
+    };
 
     let client = VtaClient::new(rest_url);
     client.set_token_async(token_result.access_token).await;

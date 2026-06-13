@@ -43,6 +43,7 @@
 //! end-to-end flow.
 
 pub mod ask;
+pub(crate) mod auth_rest;
 pub mod diagnostics;
 pub mod driver;
 pub mod error;

@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.11.3"
+version = "0.12.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -99,6 +99,7 @@ provision-client = [
   "provision-integration",
   "session",
   "dep:tracing",
+  "dep:trust-tasks-rs",
 ]
 # Expose in-memory test fixtures for downstream integration tests.
 # Currently gates: `SessionBackend` mocks (always); `provision_client::test_helpers`
@@ -146,6 +147,11 @@ affinidi-crypto = { workspace = true, optional = true }
 affinidi-vc = { workspace = true, optional = true }
 affinidi-data-integrity = { workspace = true, optional = true }
 affinidi-secrets-resolver = { workspace = true, optional = true }
+# Trust Task document/proof types for the DI-signed REST auth path
+# (`provision_client::auth_rest`). Optional + gated on `provision-client` so the
+# published artifact stays slim for non-provisioning consumers; also present as
+# a dev-dependency for the always-on conformance tests below.
+trust-tasks-rs = { workspace = true, optional = true }
 ciborium = { version = "0.2", optional = true }
 # Used only by sealed-transfer to feed an OS-backed CSPRNG into hpke's
 # rand_core 0.9 trait surface (rand 0.10 + rand_core 0.10 are incompatible).

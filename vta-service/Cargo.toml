@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.9.1"
+version = "0.9.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -75,7 +75,7 @@ required-features = ["cli-synthesis"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.10", features = ["encryption", "passkey"] }
-vta-sdk = { path = "../vta-sdk", version = "0.11", features = ["didcomm", "sealed-transfer", "provision-integration"] }
+vta-sdk = { path = "../vta-sdk", version = "0.12", features = ["didcomm", "sealed-transfer", "provision-integration"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -230,10 +230,11 @@ http-body-util = "0.1"
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.
 # Production builds remain unaffected — this is dev-deps only.
 vta-service = { path = ".", features = ["test-support"] }
-# Test-only: the SDK REST `VtaClient` the `MockVta` e2e tests drive (issue
-# #406) to hit `GET /webvh/servers`. The `client` feature is kept out of the
-# production `vta-sdk` dep above so the server build stays lean.
-vta-sdk = { path = "../vta-sdk", version = "0.11", features = ["client"] }
+# Test-only: the SDK REST `VtaClient` + provision-client (the URL-direct
+# `provision_admin_rotated_via_rest` + DI-signed REST auth) the `MockVta`
+# bootstrap→provision e2e tests drive (issues #406, DI-auth follow-up). Kept out
+# of the production `vta-sdk` dep above so the server build stays lean.
+vta-sdk = { path = "../vta-sdk", version = "0.12", features = ["provision-client"] }
 # Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves
