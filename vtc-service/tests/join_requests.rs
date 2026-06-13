@@ -168,13 +168,17 @@ async fn build_fixture() -> Fixture {
 }
 
 /// Build a canonical-signing-payload signature for the holder-
-/// binding check. Mirrors the verifier's payload construction.
+/// binding check. Mirrors the verifier's payload construction
+/// (P0.13: now includes `audience` + `created`).
+#[allow(clippy::too_many_arguments)]
 fn sign_holder_payload(
     sk: &SigningKey,
     applicant_did: &str,
     vp: &Value,
     registry_consent: bool,
     extensions: &Value,
+    audience: &str,
+    created: i64,
 ) -> String {
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -183,18 +187,45 @@ fn sign_holder_payload(
         vp: &'a Value,
         registry_consent: bool,
         extensions: &'a Value,
+        audience: &'a str,
+        created: i64,
     }
     let payload = serde_json::to_vec(&Payload {
         applicant_did,
         vp,
         registry_consent,
         extensions,
+        audience,
+        created,
     })
     .unwrap();
     let mut signing = Vec::with_capacity(JOIN_REQUEST_SUBMIT_DOMAIN_TAG.len() + payload.len());
     signing.extend_from_slice(JOIN_REQUEST_SUBMIT_DOMAIN_TAG);
     signing.extend_from_slice(&payload);
     hex::encode(sk.sign(&signing).to_bytes())
+}
+
+/// Build a complete, signed REST join-submit body for the common case
+/// (`registryConsent = false`, no extensions), addressed to this test VTC
+/// (`TEST_VTC_DID`) with a fresh `created`. (P0.13)
+fn signed_submit_body(sk: &SigningKey, applicant_did: &str, vp: &Value) -> Value {
+    let created = vtc_service::auth::session::now_epoch() as i64;
+    let signature = sign_holder_payload(
+        sk,
+        applicant_did,
+        vp,
+        false,
+        &Value::Null,
+        vtc_service::test_support::TEST_VTC_DID,
+        created,
+    );
+    json!({
+        "applicantDid": applicant_did,
+        "vp": vp,
+        "audience": vtc_service::test_support::TEST_VTC_DID,
+        "created": created,
+        "signature": signature,
+    })
 }
 
 fn applicant_pair() -> (SigningKey, String) {
@@ -250,7 +281,7 @@ async fn rest_submit_happy_path_persists_pending() {
     let fix = build_fixture().await;
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
 
     let (status, body) = send(
         &fix.router,
@@ -258,11 +289,7 @@ async fn rest_submit_happy_path_persists_pending() {
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": signature,
-        })),
+        Some(submit_body),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "got {body}");
@@ -276,7 +303,16 @@ async fn rest_submit_rejects_wrong_signer() {
     let (_a_sk, applicant_did) = applicant_pair();
     let other = SigningKey::from_bytes(&[0xEE; 32]);
     let vp = json!({});
-    let bad_sig = sign_holder_payload(&other, &applicant_did, &vp, false, &Value::Null);
+    let created = vtc_service::auth::session::now_epoch() as i64;
+    let bad_sig = sign_holder_payload(
+        &other,
+        &applicant_did,
+        &vp,
+        false,
+        &Value::Null,
+        vtc_service::test_support::TEST_VTC_DID,
+        created,
+    );
 
     let (status, body) = send(
         &fix.router,
@@ -287,6 +323,8 @@ async fn rest_submit_rejects_wrong_signer() {
         Some(json!({
             "applicantDid": applicant_did,
             "vp": vp,
+            "audience": vtc_service::test_support::TEST_VTC_DID,
+            "created": created,
             "signature": bad_sig,
         })),
     )
@@ -306,11 +344,126 @@ async fn rest_submit_rejects_non_did_key_applicant() {
         Some(json!({
             "applicantDid": "did:web:not-supported.example.com",
             "vp": {},
+            "audience": vtc_service::test_support::TEST_VTC_DID,
+            "created": vtc_service::auth::session::now_epoch(),
             "signature": "00",
         })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// P0.13 — replay / freshness / audience binding + per-applicant dedup.
+
+#[tokio::test]
+async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
+    // A captured body replayed while a request is still open is refused, and a
+    // second concurrent submit can't accumulate a second open row.
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(signed_submit_body(&sk, &applicant_did, &vp)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "got {body}");
+    assert_eq!(body["status"], "pending");
+
+    // Replay / duplicate → 409 (the first request is still open).
+    let (status2, body2) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(signed_submit_body(&sk, &applicant_did, &vp)),
+    )
+    .await;
+    assert_eq!(
+        status2,
+        StatusCode::CONFLICT,
+        "a second open request for one applicant must 409: {body2}"
+    );
+}
+
+#[tokio::test]
+async fn rest_submit_rejects_a_foreign_audience() {
+    // A body signed + addressed to a different community cannot be replayed
+    // against this VTC.
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let created = vtc_service::auth::session::now_epoch() as i64;
+    let foreign = "did:webvh:other.example.com:xyz";
+    let sig = sign_holder_payload(
+        &sk,
+        &applicant_did,
+        &vp,
+        false,
+        &Value::Null,
+        foreign,
+        created,
+    );
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "audience": foreign,
+            "created": created,
+            "signature": sig,
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a submission addressed to another community must be rejected: {body}"
+    );
+}
+
+#[tokio::test]
+async fn rest_submit_rejects_a_stale_created() {
+    // A captured body replayed long after signing is outside the freshness
+    // window and is rejected.
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let stale = vtc_service::auth::session::now_epoch() as i64 - 10_000;
+    let aud = vtc_service::test_support::TEST_VTC_DID;
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null, aud, stale);
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "audience": aud,
+            "created": stale,
+            "signature": sig,
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a stale `created` must be rejected: {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -320,18 +473,14 @@ async fn rest_submit_rejects_non_did_key_applicant() {
 async fn submit_pending(fix: &Fixture) -> Uuid {
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({"a":"b"});
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": sig,
-        })),
+        Some(submit_body),
     )
     .await;
     Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap()
@@ -384,18 +533,14 @@ async fn approve_writes_acl_and_member_atomically() {
     let fix = build_fixture().await;
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": sig,
-        })),
+        Some(submit_body),
     )
     .await;
     let id = body["requestId"].as_str().unwrap();
@@ -469,18 +614,14 @@ async fn approve_409_when_duplicate_acl_exists() {
     let fix = build_fixture().await;
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": sig,
-        })),
+        Some(submit_body),
     )
     .await;
     let id = body["requestId"].as_str().unwrap();
@@ -519,18 +660,14 @@ async fn reject_leaves_no_acl_or_member_rows() {
     let fix = build_fixture().await;
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": sig,
-        })),
+        Some(submit_body),
     )
     .await;
     let id = body["requestId"].as_str().unwrap();
@@ -582,18 +719,14 @@ async fn approve_409_when_request_already_decided() {
     let fix = build_fixture().await;
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": sig,
-        })),
+        Some(submit_body),
     )
     .await;
     let id = body["requestId"].as_str().unwrap();
@@ -697,7 +830,7 @@ async fn rest_submit_under_allow_policy_auto_admits() {
 
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
 
     let (status, body) = send(
         &fix.router,
@@ -705,11 +838,7 @@ async fn rest_submit_under_allow_policy_auto_admits() {
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": signature,
-        })),
+        Some(submit_body),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "got {body}");
@@ -754,7 +883,7 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
             }
         ]
     });
-    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
 
     let (status, body) = send(
         &fix.router,
@@ -762,11 +891,7 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": signature,
-        })),
+        Some(submit_body),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "got {body}");
@@ -809,7 +934,7 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
 
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
 
     let (status, body) = send(
         &fix.router,
@@ -817,11 +942,7 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": signature,
-        })),
+        Some(submit_body),
     )
     .await;
     // Submission still 201 — the row persists either way; the
@@ -859,18 +980,14 @@ async fn policy_rejected_row_cannot_be_approved() {
 
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (status, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "signature": signature,
-        })),
+        Some(submit_body),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "got {body}");
@@ -1288,14 +1405,14 @@ async fn admin_query_send_requires_admin() {
 async fn admit_member(fix: &Fixture) -> (SigningKey, String, Uuid, String) {
     let (sk, member_did) = applicant_pair();
     let vp = json!({});
-    let sig = sign_holder_payload(&sk, &member_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &member_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({ "applicantDid": member_did, "vp": vp, "signature": sig })),
+        Some(submit_body),
     )
     .await;
     let id = Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap();
@@ -1669,14 +1786,14 @@ decision := {"effect": "request_more", "with": {
 
     let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let submit_sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
     let (_, body) = send(
         &fix.router,
         "POST",
         "/v1/join-requests",
         SUBMIT_TASK,
         None,
-        Some(json!({ "applicantDid": applicant_did, "vp": vp, "signature": submit_sig })),
+        Some(submit_body),
     )
     .await;
     assert_eq!(

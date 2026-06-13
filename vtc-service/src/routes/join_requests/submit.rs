@@ -16,6 +16,8 @@
 //!   "vp":               { … opaque JSON … },
 //!   "registryConsent":  ? bool,
 //!   "extensions":       ? object,
+//!   "audience":         "<this VTC's did>",
+//!   "created":          <unix-seconds>,
 //!   "signature":        "<hex Ed25519 signature>"
 //! }
 //! ```
@@ -28,12 +30,20 @@
 //!   "vp":               vp,
 //!   "registryConsent":  registry_consent (default false),
 //!   "extensions":       extensions (default null),
+//!   "audience":         audience,
+//!   "created":          created,
 //! })
 //! ```
 //!
 //! `canonical_json` is just `serde_json::to_vec` on a
 //! key-ordered object — sufficient because both sides agree on
 //! the field ordering via the typed struct.
+//!
+//! `audience` (must equal this VTC's `vtc_did`) and `created` (within a
+//! short freshness window) are bound into the signature so a captured body
+//! can't be replayed against another community or after the window (P0.13).
+//! On the DIDComm path the authcrypt envelope authenticates + addresses the
+//! sender, so it carries no separate signature/audience/created.
 
 use axum::Json;
 use axum::extract::State;
@@ -54,12 +64,19 @@ use crate::ceremony::{
     Presentation, Purpose, State as FactsState, Subject, Verdict, VerifiedFacts,
 };
 use crate::community::load_profile;
-use crate::join::{JoinRequest, JoinStatus, JoinTransport, store_join_request};
+use crate::join::{JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request};
 use crate::members::list_members;
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
 
 pub const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
+
+/// How old a join-submit holder signature's `created` may be (seconds).
+/// Bounds replay of a captured body to this window; the per-applicant
+/// open-request dedup closes the in-window concurrent-replay gap (P0.13).
+const JOIN_SUBMIT_FRESHNESS_SECS: i64 = 300;
+/// Tolerated clock skew for a `created` slightly in the future.
+const JOIN_SUBMIT_FUTURE_SKEW_SECS: i64 = 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,8 +87,26 @@ pub struct SubmitRequestBody {
     pub registry_consent: bool,
     #[serde(default)]
     pub extensions: JsonValue,
-    /// Hex-encoded Ed25519 signature.
+    /// The VTC this submission is addressed to — must equal this VTC's
+    /// `vtc_did`. Bound into the holder signature so a body captured for one
+    /// community can't be replayed against another (P0.13).
+    pub audience: String,
+    /// Unix-seconds the applicant signed at. Must be within
+    /// [`JOIN_SUBMIT_FRESHNESS_SECS`] of now (small future skew allowed). Bound
+    /// into the signature so a stale captured body is rejected (P0.13).
+    pub created: i64,
+    /// Hex-encoded Ed25519 signature over the canonical payload (which now
+    /// includes `audience` + `created`).
     pub signature: String,
+}
+
+/// The REST holder-binding inputs threaded into [`submit_inner`]. `None` on the
+/// DIDComm path, where the authcrypt envelope authenticates the sender (and is
+/// addressed to this VTC), so no separate signed audience/freshness is needed.
+pub struct HolderBinding<'a> {
+    pub signature_hex: &'a str,
+    pub audience: &'a str,
+    pub created: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,7 +142,11 @@ pub async fn submit(
         req.vp,
         req.registry_consent,
         req.extensions,
-        Some(&req.signature),
+        Some(HolderBinding {
+            signature_hex: &req.signature,
+            audience: &req.audience,
+            created: req.created,
+        }),
         JoinTransport::Rest,
     )
     .await?;
@@ -158,25 +197,71 @@ pub async fn submit_inner(
     vp: JsonValue,
     registry_consent: bool,
     extensions: JsonValue,
-    signature_hex: Option<&str>,
+    binding: Option<HolderBinding<'_>>,
     transport: JoinTransport,
 ) -> Result<JoinSubmitOutcome, AppError> {
-    // 1. Holder binding (REST only).
-    if let Some(hex_sig) = signature_hex {
-        verify_holder_signature(&applicant_did, &vp, registry_consent, &extensions, hex_sig)?;
+    // 1. Holder binding (REST only): audience + freshness + signature. The
+    // DIDComm path (`binding == None`) is authenticated + addressed by the
+    // authcrypt envelope, so it skips this.
+    if let Some(b) = binding.as_ref() {
+        // Audience: the signed payload must name THIS VTC, so a body captured
+        // for another community can't be replayed here (P0.13).
+        let vtc_did = state
+            .config
+            .read()
+            .await
+            .vtc_did
+            .clone()
+            .ok_or_else(|| AppError::Internal("vtc_did not configured".into()))?;
+        if b.audience != vtc_did {
+            return Err(AppError::Validation(format!(
+                "join-request audience ({}) does not match this VTC ({vtc_did})",
+                b.audience
+            )));
+        }
+        // Freshness: a stale captured body is rejected; small future skew ok.
+        let now = crate::auth::session::now_epoch() as i64;
+        if b.created < now - JOIN_SUBMIT_FRESHNESS_SECS
+            || b.created > now + JOIN_SUBMIT_FUTURE_SKEW_SECS
+        {
+            return Err(AppError::Validation(
+                "join-request `created` is outside the freshness window — re-sign and resubmit"
+                    .into(),
+            ));
+        }
+        verify_holder_signature(
+            &applicant_did,
+            &vp,
+            registry_consent,
+            &extensions,
+            b.audience,
+            b.created,
+            b.signature_hex,
+        )?;
     }
 
-    // 2. The lossy `vp_claims` projection is still stored on the row
+    // 2. Dedup: at most one open (Pending/Deferred) request per applicant
+    // (P0.13). Blocks replay of a captured body while a request is open and
+    // caps unbounded accumulation. An already-admitted applicant is caught
+    // later by the admit duplicate-ACL guard.
+    if let Some(existing) = find_open_request(&state.join_requests_ks, &applicant_did).await? {
+        return Err(AppError::Conflict(format!(
+            "an open join request already exists for {applicant_did} (id {existing}); \
+             withdraw or await its decision before resubmitting"
+        )));
+    }
+
+    // 3. The lossy `vp_claims` projection is still stored on the row
     // for the admin show + the approve path; the decision pipeline
     // reads structured Facts instead (assembled below).
     let vp_claims = extract_vp_claims(&vp);
 
-    // 3. Decide: assemble verified Facts (the route-layer holder-binding
+    // 4. Decide: assemble verified Facts (the route-layer holder-binding
     // makes this presentation `verified`) and run the active join policy.
     let presentation = presentation_from_vp(&applicant_did, &vp);
     let verdict = decide_join(state, &applicant_did, presentation).await?;
 
-    // 4. Realize the verdict (store + audit + auto-admit on allow).
+    // 5. Realize the verdict (store + audit + auto-admit on allow).
     realize_join_verdict(
         state,
         &applicant_did,
@@ -443,11 +528,14 @@ fn credential_from_vc(vc: &JsonValue) -> Option<Credential> {
 
 /// Verify the Ed25519 signature over the canonical signing
 /// payload (see module docs).
+#[allow(clippy::too_many_arguments)]
 fn verify_holder_signature(
     applicant_did: &str,
     vp: &JsonValue,
     registry_consent: bool,
     extensions: &JsonValue,
+    audience: &str,
+    created: i64,
     signature_hex: &str,
 ) -> Result<(), AppError> {
     let pubkey_bytes =
@@ -460,7 +548,14 @@ fn verify_holder_signature(
         ))
     })?;
 
-    let payload = canonical_payload(applicant_did, vp, registry_consent, extensions)?;
+    let payload = canonical_payload(
+        applicant_did,
+        vp,
+        registry_consent,
+        extensions,
+        audience,
+        created,
+    )?;
     let signing_bytes = signing_bytes(&payload);
 
     let raw_sig = hex::decode(signature_hex)
@@ -486,6 +581,9 @@ struct CanonicalPayload<'a> {
     vp: &'a JsonValue,
     registry_consent: bool,
     extensions: &'a JsonValue,
+    /// P0.13 audience + freshness binding.
+    audience: &'a str,
+    created: i64,
 }
 
 fn canonical_payload(
@@ -493,14 +591,34 @@ fn canonical_payload(
     vp: &JsonValue,
     registry_consent: bool,
     extensions: &JsonValue,
+    audience: &str,
+    created: i64,
 ) -> Result<Vec<u8>, AppError> {
     serde_json::to_vec(&CanonicalPayload {
         applicant_did,
         vp,
         registry_consent,
         extensions,
+        audience,
+        created,
     })
     .map_err(|e| AppError::Internal(format!("canonical payload serialize: {e}")))
+}
+
+/// Find an applicant's open (Pending/Deferred) join request, if any. Used to
+/// dedup / cap open requests per applicant (P0.13).
+async fn find_open_request(
+    ks: &vti_common::store::KeyspaceHandle,
+    applicant_did: &str,
+) -> Result<Option<Uuid>, AppError> {
+    let all = list_join_requests(ks).await?;
+    Ok(all
+        .into_iter()
+        .find(|r| {
+            r.applicant_did == applicant_did
+                && matches!(r.status, JoinStatus::Pending | JoinStatus::Deferred)
+        })
+        .map(|r| r.id))
 }
 
 /// Domain-tag prefixed bytes the signer hashes over.
@@ -527,15 +645,19 @@ mod tests {
         (sk, did)
     }
 
+    const AUD: &str = "did:key:zThisVtc";
+    const CREATED: i64 = 1_900_000_000;
+
     #[test]
     fn sign_then_verify_round_trip() {
         let (sk, did) = pair();
         let vp = serde_json::json!({"vp":"placeholder"});
-        let payload = canonical_payload(&did, &vp, false, &JsonValue::Null).unwrap();
+        let payload = canonical_payload(&did, &vp, false, &JsonValue::Null, AUD, CREATED).unwrap();
         let sig = sk.sign(&signing_bytes(&payload));
         let sig_hex = hex::encode(sig.to_bytes());
 
-        verify_holder_signature(&did, &vp, false, &JsonValue::Null, &sig_hex).unwrap();
+        verify_holder_signature(&did, &vp, false, &JsonValue::Null, AUD, CREATED, &sig_hex)
+            .unwrap();
     }
 
     #[test]
@@ -543,12 +665,14 @@ mod tests {
         let (_a_sk, a_did) = pair();
         let other = SigningKey::from_bytes(&[0xCD; 32]);
         let vp = serde_json::json!({});
-        let payload = canonical_payload(&a_did, &vp, false, &JsonValue::Null).unwrap();
+        let payload =
+            canonical_payload(&a_did, &vp, false, &JsonValue::Null, AUD, CREATED).unwrap();
         let sig = other.sign(&signing_bytes(&payload));
         let sig_hex = hex::encode(sig.to_bytes());
 
-        let err = verify_holder_signature(&a_did, &vp, false, &JsonValue::Null, &sig_hex)
-            .expect_err("wrong signer must fail");
+        let err =
+            verify_holder_signature(&a_did, &vp, false, &JsonValue::Null, AUD, CREATED, &sig_hex)
+                .expect_err("wrong signer must fail");
         assert!(matches!(err, AppError::Validation(_)));
     }
 
@@ -556,23 +680,61 @@ mod tests {
     fn verify_rejects_tampered_payload() {
         let (sk, did) = pair();
         let vp = serde_json::json!({"vp":"original"});
-        let payload = canonical_payload(&did, &vp, false, &JsonValue::Null).unwrap();
+        let payload = canonical_payload(&did, &vp, false, &JsonValue::Null, AUD, CREATED).unwrap();
         let sig = sk.sign(&signing_bytes(&payload));
         let sig_hex = hex::encode(sig.to_bytes());
 
         // Same signature, different VP body.
         let tampered = serde_json::json!({"vp":"changed"});
-        let err = verify_holder_signature(&did, &tampered, false, &JsonValue::Null, &sig_hex)
-            .expect_err("tampered VP must fail");
+        let err = verify_holder_signature(
+            &did,
+            &tampered,
+            false,
+            &JsonValue::Null,
+            AUD,
+            CREATED,
+            &sig_hex,
+        )
+        .expect_err("tampered VP must fail");
+        assert!(matches!(err, AppError::Validation(_)));
+    }
+
+    #[test]
+    fn verify_rejects_tampered_audience() {
+        // P0.13: the audience is part of the signed payload, so re-pointing it
+        // (cross-community replay) breaks the signature.
+        let (sk, did) = pair();
+        let vp = serde_json::json!({"vp":"x"});
+        let payload = canonical_payload(&did, &vp, false, &JsonValue::Null, AUD, CREATED).unwrap();
+        let sig = sk.sign(&signing_bytes(&payload));
+        let sig_hex = hex::encode(sig.to_bytes());
+
+        let err = verify_holder_signature(
+            &did,
+            &vp,
+            false,
+            &JsonValue::Null,
+            "did:key:zOtherVtc",
+            CREATED,
+            &sig_hex,
+        )
+        .expect_err("re-pointed audience must fail the signature");
         assert!(matches!(err, AppError::Validation(_)));
     }
 
     #[test]
     fn verify_rejects_garbage_signature() {
         let (_sk, did) = pair();
-        let err =
-            verify_holder_signature(&did, &JsonValue::Null, false, &JsonValue::Null, "not-hex")
-                .expect_err("garbage sig must fail");
+        let err = verify_holder_signature(
+            &did,
+            &JsonValue::Null,
+            false,
+            &JsonValue::Null,
+            AUD,
+            CREATED,
+            "not-hex",
+        )
+        .expect_err("garbage sig must fail");
         assert!(matches!(err, AppError::Validation(_)));
     }
 
@@ -583,6 +745,8 @@ mod tests {
             &JsonValue::Null,
             false,
             &JsonValue::Null,
+            AUD,
+            CREATED,
             "00",
         )
         .expect_err("non-did:key must fail");
