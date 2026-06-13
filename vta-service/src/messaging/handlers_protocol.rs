@@ -84,16 +84,199 @@ fn problem_report_unauthorized(msg: impl Into<String>) -> DIDCommResponse {
     DIDCommResponse::problem_report(ProblemReport::unauthorized(msg.into()))
 }
 
-fn problem_report_conflict(msg: impl Into<String>) -> DIDCommResponse {
-    DIDCommResponse::problem_report(ProblemReport::conflict(msg.into()))
+/// Authenticate the authcrypt sender, or early-return the byte-identical
+/// `unauthorized` problem-report. Every protocol-management handler runs this
+/// first; making it a macro keeps the early-return at the call site (so a
+/// handler cannot accidentally proceed unauthenticated) while removing the
+/// 4-line `match` each one repeated.
+macro_rules! protocol_auth {
+    ($state:expr, $message:expr) => {
+        match auth_from_message(&$message, &$state.acl_ks).await {
+            Ok(a) => a,
+            Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
+        }
+    };
 }
 
-fn problem_report_bad_request(msg: impl Into<String>) -> DIDCommResponse {
-    DIDCommResponse::problem_report(ProblemReport::bad_request(msg.into()))
+/// Maps a protocol-management operation's typed error to its DIDComm
+/// [`ProblemReport`]. Folds the per-handler `match result { Err(...) => ... }`
+/// tails (which hand-rolled the same `Auth → unauthorized` / catch-all →
+/// `internal-error` shape plus a few op-specific `conflict`/`bad-request`
+/// arms) into one impl per error type. The emitted codes + comments are
+/// byte-identical to the prior inline matches. Returns the `ProblemReport`
+/// (not a wrapped `DIDCommResponse`) so the code/comment contract is
+/// unit-testable on its public fields.
+trait ToProblemReport {
+    fn to_problem_report(self) -> ProblemReport;
 }
 
-fn problem_report_internal(msg: impl Into<String>) -> DIDCommResponse {
-    DIDCommResponse::problem_report(ProblemReport::internal_error(msg.into()))
+impl ToProblemReport for crate::operations::protocol::disable_didcomm::DisableDidcommError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::disable_didcomm::DisableDidcommError as E;
+        match self {
+            E::DidcommNotEnabled => ProblemReport::conflict("DIDComm is not currently enabled"),
+            E::NoProtocolRemaining => {
+                ProblemReport::conflict("cannot disable DIDComm — REST is also disabled")
+            }
+            E::DrainTtlOutOfBounds {
+                min,
+                max,
+                requested,
+            } => ProblemReport::bad_request(format!(
+                "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
+            )),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::update_didcomm::UpdateDidcommError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::update_didcomm::UpdateDidcommError as E;
+        match self {
+            E::DidcommNotEnabled => ProblemReport::conflict("DIDComm is not currently enabled"),
+            E::SameAsActive(did) => {
+                ProblemReport::conflict(format!("{did} is already the active mediator"))
+            }
+            E::AlreadyDraining(did) => ProblemReport::conflict(format!(
+                "{did} is currently in drain state — cancel or rollback first"
+            )),
+            E::DrainTtlOutOfBounds {
+                min,
+                max,
+                requested,
+            } => ProblemReport::bad_request(format!(
+                "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
+            )),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::drain_cancel::DrainCancelError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::messaging::registry::RegistryError;
+        use crate::operations::protocol::drain_cancel::DrainCancelError as E;
+        match self {
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            E::Registry(RegistryError::CannotCancelActive(did)) => ProblemReport::conflict(
+                format!("{did} is the active mediator — use disable instead"),
+            ),
+            E::Registry(RegistryError::NotRegistered(did)) => {
+                ProblemReport::conflict(format!("{did} is not registered (no drain entry)"))
+            }
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::report::ReportError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::report::ReportError as E;
+        match self {
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::enable_rest::EnableRestError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::enable_rest::EnableRestError as E;
+        match self {
+            E::ServiceAlreadyEnabled => ProblemReport::conflict("REST is already enabled"),
+            E::Validation(e) => ProblemReport::bad_request(e),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::update_rest::UpdateRestError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::update_rest::UpdateRestError as E;
+        match self {
+            E::ServiceNotPresent => ProblemReport::conflict("REST is not currently enabled"),
+            E::Validation(e) => ProblemReport::bad_request(e),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::disable_rest::DisableRestError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::disable_rest::DisableRestError as E;
+        match self {
+            E::ServiceNotPresent => {
+                ProblemReport::conflict("REST is not currently enabled — nothing to disable")
+            }
+            E::LastServiceRefused => ProblemReport::conflict(
+                "refusing operation: would leave the VTA with no advertised services",
+            ),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::rollback_rest::RollbackRestError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::rollback_rest::RollbackRestError as E;
+        match self {
+            E::NoPriorMutation => {
+                ProblemReport::conflict("no prior REST mutation to roll back from")
+            }
+            E::DisableForward(
+                crate::operations::protocol::disable_rest::DisableRestError::LastServiceRefused,
+            ) => ProblemReport::conflict(
+                "rolling back this REST mutation would leave the VTA with no advertised services",
+            ),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::rollback_didcomm::RollbackDidcommError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::rollback_didcomm::RollbackDidcommError as E;
+        match self {
+            E::NoPriorMutation => {
+                ProblemReport::conflict("no prior DIDComm mutation to roll back from")
+            }
+            E::DisableForward(
+                crate::operations::protocol::disable_didcomm::DisableDidcommError::NoProtocolRemaining,
+            ) => ProblemReport::conflict(
+                "rolling back this DIDComm mutation would leave the VTA with no advertised services",
+            ),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::list::ListServicesError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::list::ListServicesError as E;
+        match self {
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            E::VtaDidNotConfigured => ProblemReport::conflict("VTA DID is not configured"),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::list_drain::ListDrainError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::list_drain::ListDrainError as E;
+        match self {
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
 }
 
 // ── disable_didcomm over DIDComm ────────────────────────────────────
@@ -109,10 +292,7 @@ pub async fn handle_disable_didcomm(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let body: DisableDidcommBody = serde_json::from_value(message.body).map_err(handler_err)?;
 
@@ -148,7 +328,6 @@ pub async fn handle_disable_didcomm(
     )
     .await;
 
-    use crate::operations::protocol::disable_didcomm::DisableDidcommError;
     match result {
         Ok(r) => response(
             protocol_management::DISABLE_DIDCOMM_RESULT,
@@ -160,21 +339,7 @@ pub async fn handle_disable_didcomm(
                 "serverless": r.serverless,
             }),
         ),
-        Err(DisableDidcommError::DidcommNotEnabled) => Ok(Some(problem_report_conflict(
-            "DIDComm is not currently enabled",
-        ))),
-        Err(DisableDidcommError::NoProtocolRemaining) => Ok(Some(problem_report_conflict(
-            "cannot disable DIDComm — REST is also disabled",
-        ))),
-        Err(DisableDidcommError::DrainTtlOutOfBounds {
-            min,
-            max,
-            requested,
-        }) => Ok(Some(problem_report_bad_request(format!(
-            "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
-        )))),
-        Err(DisableDidcommError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -197,10 +362,7 @@ pub async fn handle_update_didcomm(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let body: UpdateDidcommBody = serde_json::from_value(message.body).map_err(handler_err)?;
 
@@ -252,7 +414,6 @@ pub async fn handle_update_didcomm(
     )
     .await;
 
-    use crate::operations::protocol::update_didcomm::UpdateDidcommError;
     match result {
         Ok(r) => response(
             protocol_management::UPDATE_DIDCOMM_RESULT,
@@ -266,24 +427,7 @@ pub async fn handle_update_didcomm(
                 "serverless": r.serverless,
             }),
         ),
-        Err(UpdateDidcommError::DidcommNotEnabled) => Ok(Some(problem_report_conflict(
-            "DIDComm is not currently enabled",
-        ))),
-        Err(UpdateDidcommError::SameAsActive(did)) => Ok(Some(problem_report_conflict(format!(
-            "{did} is already the active mediator"
-        )))),
-        Err(UpdateDidcommError::AlreadyDraining(did)) => Ok(Some(problem_report_conflict(
-            format!("{did} is currently in drain state — cancel or rollback first"),
-        ))),
-        Err(UpdateDidcommError::DrainTtlOutOfBounds {
-            min,
-            max,
-            requested,
-        }) => Ok(Some(problem_report_bad_request(format!(
-            "drain ttl {requested}s outside allowed range [{min}s, {max}s]"
-        )))),
-        Err(UpdateDidcommError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -299,10 +443,7 @@ pub async fn handle_drain_cancel(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
     let body: DrainCancelBody = serde_json::from_value(message.body).map_err(handler_err)?;
 
     let result = drain_cancel(
@@ -318,23 +459,12 @@ pub async fn handle_drain_cancel(
     )
     .await;
 
-    use crate::messaging::registry::RegistryError;
-    use crate::operations::protocol::drain_cancel::DrainCancelError;
     match result {
         Ok(r) => response(
             protocol_management::DRAIN_CANCEL_RESULT,
             &serde_json::json!({ "mediator_did": r.mediator_did }),
         ),
-        Err(DrainCancelError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(DrainCancelError::Registry(RegistryError::CannotCancelActive(did))) => {
-            Ok(Some(problem_report_conflict(format!(
-                "{did} is the active mediator — use disable instead",
-            ))))
-        }
-        Err(DrainCancelError::Registry(RegistryError::NotRegistered(did))) => Ok(Some(
-            problem_report_conflict(format!("{did} is not registered (no drain entry)",)),
-        )),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -353,10 +483,7 @@ pub async fn handle_mediator_report(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
     let body: MediatorReportBody = serde_json::from_value(message.body).map_err(handler_err)?;
 
     let parse_ts = |s: Option<String>| -> Result<Option<DateTime<Utc>>, DIDCommServiceError> {
@@ -371,11 +498,9 @@ pub async fn handle_mediator_report(
     let until = parse_ts(body.until)?;
 
     let result = mediator_report(&state.telemetry, &auth, ReportParams { since, until }).await;
-    use crate::operations::protocol::report::ReportError;
     match result {
         Ok(r) => response(protocol_management::MEDIATOR_REPORT_RESULT, &r),
-        Err(ReportError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -403,10 +528,7 @@ pub async fn handle_enable_rest(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let url = body_str_field(&message, "url")?;
 
@@ -434,7 +556,6 @@ pub async fn handle_enable_rest(
     )
     .await;
 
-    use crate::operations::protocol::enable_rest::EnableRestError;
     match result {
         Ok(r) => response(
             protocol_management::ENABLE_REST_RESULT,
@@ -446,12 +567,7 @@ pub async fn handle_enable_rest(
                 "serverless": r.serverless,
             }),
         ),
-        Err(EnableRestError::ServiceAlreadyEnabled) => {
-            Ok(Some(problem_report_conflict("REST is already enabled")))
-        }
-        Err(EnableRestError::Validation(e)) => Ok(Some(problem_report_bad_request(e))),
-        Err(EnableRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -460,10 +576,7 @@ pub async fn handle_update_rest(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let url = body_str_field(&message, "url")?;
 
@@ -491,7 +604,6 @@ pub async fn handle_update_rest(
     )
     .await;
 
-    use crate::operations::protocol::update_rest::UpdateRestError;
     match result {
         Ok(r) => response(
             protocol_management::UPDATE_REST_RESULT,
@@ -504,12 +616,7 @@ pub async fn handle_update_rest(
                 "serverless": r.serverless,
             }),
         ),
-        Err(UpdateRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
-            "REST is not currently enabled",
-        ))),
-        Err(UpdateRestError::Validation(e)) => Ok(Some(problem_report_bad_request(e))),
-        Err(UpdateRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -518,10 +625,7 @@ pub async fn handle_disable_rest(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let result = disable_rest(
         &state.config,
@@ -547,7 +651,6 @@ pub async fn handle_disable_rest(
     )
     .await;
 
-    use crate::operations::protocol::disable_rest::DisableRestError;
     match result {
         Ok(r) => response(
             protocol_management::DISABLE_REST_RESULT,
@@ -559,14 +662,7 @@ pub async fn handle_disable_rest(
                 "serverless": r.serverless,
             }),
         ),
-        Err(DisableRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
-            "REST is not currently enabled — nothing to disable",
-        ))),
-        Err(DisableRestError::LastServiceRefused) => Ok(Some(problem_report_conflict(
-            "refusing operation: would leave the VTA with no advertised services",
-        ))),
-        Err(DisableRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -577,10 +673,7 @@ pub async fn handle_rollback_rest(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let result = rollback_rest(
         &state.config,
@@ -605,7 +698,6 @@ pub async fn handle_rollback_rest(
     )
     .await;
 
-    use crate::operations::protocol::rollback_rest::RollbackRestError;
     match result {
         Ok(r) => response(
             protocol_management::ROLLBACK_REST_RESULT,
@@ -622,16 +714,7 @@ pub async fn handle_rollback_rest(
                 "serverless": r.serverless,
             }),
         ),
-        Err(RollbackRestError::NoPriorMutation) => Ok(Some(problem_report_conflict(
-            "no prior REST mutation to roll back from",
-        ))),
-        Err(RollbackRestError::DisableForward(
-            crate::operations::protocol::disable_rest::DisableRestError::LastServiceRefused,
-        )) => Ok(Some(problem_report_conflict(
-            "rolling back this REST mutation would leave the VTA with no advertised services",
-        ))),
-        Err(RollbackRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -646,10 +729,7 @@ pub async fn handle_rollback_didcomm(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let body: RollbackDidcommBody = serde_json::from_value(message.body).map_err(handler_err)?;
     let drain_ttl = std::time::Duration::from_secs(body.drain_ttl_secs.unwrap_or(86_400));
@@ -698,7 +778,6 @@ pub async fn handle_rollback_didcomm(
     )
     .await;
 
-    use crate::operations::protocol::rollback_didcomm::RollbackDidcommError;
     match result {
         Ok(r) => response(
             protocol_management::ROLLBACK_DIDCOMM_RESULT,
@@ -716,16 +795,7 @@ pub async fn handle_rollback_didcomm(
                 "serverless": r.serverless,
             }),
         ),
-        Err(RollbackDidcommError::NoPriorMutation) => Ok(Some(problem_report_conflict(
-            "no prior DIDComm mutation to roll back from",
-        ))),
-        Err(RollbackDidcommError::DisableForward(
-            crate::operations::protocol::disable_didcomm::DisableDidcommError::NoProtocolRemaining,
-        )) => Ok(Some(problem_report_conflict(
-            "rolling back this DIDComm mutation would leave the VTA with no advertised services",
-        ))),
-        Err(RollbackDidcommError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -736,23 +806,15 @@ pub async fn handle_list_services(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
 
     let result =
         crate::operations::protocol::list::list_services(&state.config, &state.webvh_ks, &auth)
             .await;
 
-    use crate::operations::protocol::list::ListServicesError;
     match result {
         Ok(r) => response(protocol_management::LIST_SERVICES_RESULT, &r),
-        Err(ListServicesError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(ListServicesError::VtaDidNotConfigured) => {
-            Ok(Some(problem_report_conflict("VTA DID is not configured")))
-        }
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
     }
 }
 
@@ -763,18 +825,90 @@ pub async fn handle_list_drain(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = match auth_from_message(&message, &state.acl_ks).await {
-        Ok(a) => a,
-        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
-    };
+    let auth = protocol_auth!(state, message);
     let result =
         crate::operations::protocol::list_drain::list_drain(&state.config, &state.drains_ks, &auth)
             .await;
 
-    use crate::operations::protocol::list_drain::ListDrainError;
     match result {
         Ok(r) => response(protocol_management::LIST_DRAIN_RESULT, &r),
-        Err(ListDrainError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
-        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messaging::registry::RegistryError;
+    use crate::operations::protocol::disable_didcomm::DisableDidcommError;
+    use crate::operations::protocol::disable_rest::DisableRestError;
+    use crate::operations::protocol::drain_cancel::DrainCancelError;
+    use crate::operations::protocol::enable_rest::EnableRestError;
+    use crate::operations::protocol::list::ListServicesError;
+    use crate::operations::protocol::rollback_rest::RollbackRestError;
+    use vta_sdk::protocols::problem_report_codes as codes;
+
+    /// Pins the protocol-management error → `e.p.msg.*` problem-report contract
+    /// that the `ToProblemReport` impls centralize. Covers each code path
+    /// (conflict / bad-request / unauthorized / catch-all internal) across
+    /// several error types — a regression would change the code/comment SDK
+    /// clients depend on. Codes + comments are byte-identical to the prior
+    /// per-handler inline matches.
+    #[test]
+    fn protocol_errors_map_to_byte_identical_problem_reports() {
+        let did_disabled = DisableDidcommError::DidcommNotEnabled.to_problem_report();
+        assert_eq!(did_disabled.code, codes::CONFLICT);
+        assert_eq!(did_disabled.comment, "DIDComm is not currently enabled");
+
+        let ttl = DisableDidcommError::DrainTtlOutOfBounds {
+            min: 3600,
+            max: 2_592_000,
+            requested: 1,
+        }
+        .to_problem_report();
+        assert_eq!(ttl.code, codes::BAD_REQUEST);
+        assert_eq!(
+            ttl.comment,
+            "drain ttl 1s outside allowed range [3600s, 2592000s]"
+        );
+
+        let auth = DisableDidcommError::Auth("nope".into()).to_problem_report();
+        assert_eq!(auth.code, codes::UNAUTHORIZED);
+        assert_eq!(auth.comment, "nope");
+
+        // Catch-all → internal-error (uses the variant's Display as comment).
+        let internal = DisableDidcommError::Storage("disk gone".into()).to_problem_report();
+        assert_eq!(internal.code, codes::INTERNAL);
+
+        let already = EnableRestError::ServiceAlreadyEnabled.to_problem_report();
+        assert_eq!(already.code, codes::CONFLICT);
+        assert_eq!(already.comment, "REST is already enabled");
+
+        let validation = EnableRestError::Validation("bad url".into()).to_problem_report();
+        assert_eq!(validation.code, codes::BAD_REQUEST);
+        assert_eq!(validation.comment, "bad url");
+
+        let no_vta = ListServicesError::VtaDidNotConfigured.to_problem_report();
+        assert_eq!(no_vta.code, codes::CONFLICT);
+        assert_eq!(no_vta.comment, "VTA DID is not configured");
+
+        let not_registered =
+            DrainCancelError::Registry(RegistryError::NotRegistered("did:m:x".into()))
+                .to_problem_report();
+        assert_eq!(not_registered.code, codes::CONFLICT);
+        assert_eq!(
+            not_registered.comment,
+            "did:m:x is not registered (no drain entry)"
+        );
+
+        // Fail-forward rollback that would brick the VTA → conflict with the
+        // dedicated message (not the inner DisableRest message).
+        let last_service = RollbackRestError::DisableForward(DisableRestError::LastServiceRefused)
+            .to_problem_report();
+        assert_eq!(last_service.code, codes::CONFLICT);
+        assert_eq!(
+            last_service.comment,
+            "rolling back this REST mutation would leave the VTA with no advertised services"
+        );
     }
 }

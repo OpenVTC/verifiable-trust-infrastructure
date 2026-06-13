@@ -25,6 +25,8 @@ use crate::server::AppState;
 
 use super::router::VtaState;
 
+#[cfg(feature = "webvh")]
+use vta_sdk::protocols::did_management;
 use vta_sdk::protocols::{
     acl_management, audit_management, context_management, credential_exchange, key_management,
     seed_management, vta_management,
@@ -41,13 +43,15 @@ fn handler_err(e: impl std::fmt::Display) -> DIDCommServiceError {
     DIDCommServiceError::Handler(e.to_string())
 }
 
-/// Map an [`AppError`] to a typed [`DIDCommResponse::problem_report`] so the
-/// client sees the right `e.p.msg.*` code (conflict/not-found/unauthorized/
+/// Map an [`AppError`] to its typed [`ProblemReport`] so the client sees the
+/// right `e.p.msg.*` code (conflict/not-found/unauthorized/forbidden/
 /// bad-request) instead of everything collapsing into `internal-error`.
 ///
-/// Call via the [`app_try!`] macro at operation, auth, and role-check sites.
-fn app_err_to_response(e: AppError) -> DIDCommResponse {
-    let report = match &e {
+/// Split out from [`app_err_to_response`] so the variant → code contract can
+/// be unit-tested on `ProblemReport`'s public fields (the `DIDCommResponse`
+/// body is `pub(crate)` in the transport crate and not inspectable here).
+fn app_err_to_problem_report(e: &AppError) -> ProblemReport {
+    match e {
         AppError::Conflict(msg) => ProblemReport::conflict(msg.clone()),
         AppError::NotFound(msg) => ProblemReport::not_found(msg.clone()),
         AppError::Authentication(msg) | AppError::Unauthorized(msg) => {
@@ -71,8 +75,14 @@ fn app_err_to_response(e: AppError) -> DIDCommResponse {
         },
         AppError::Validation(msg) => ProblemReport::bad_request(msg.clone()),
         _ => ProblemReport::internal_error(e.to_string()),
-    };
-    DIDCommResponse::problem_report(report)
+    }
+}
+
+/// Wrap [`app_err_to_problem_report`] in a [`DIDCommResponse::problem_report`].
+///
+/// Call via the [`app_try!`] macro at operation, auth, and role-check sites.
+fn app_err_to_response(e: AppError) -> DIDCommResponse {
+    DIDCommResponse::problem_report(app_err_to_problem_report(&e))
 }
 
 /// `?`-style early-return for `Result<T, AppError>` inside a `HandlerResult`.
@@ -93,6 +103,142 @@ fn response<T: serde::Serialize>(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let body = serde_json::to_value(result).map_err(handler_err)?;
     Ok(Some(DIDCommResponse::new(msg_type, body)))
+}
+
+/// Capability gate applied uniformly by [`dispatch`] / [`dispatch_no_body`]
+/// before the operation runs. Encodes the same `auth.require_*` checks the
+/// hand-written handlers performed inline. Making it a required parameter
+/// means a handler cannot be wired without declaring its gate — there is no
+/// accidental auth-skip path (the discovery handler, which is genuinely
+/// unauthenticated, doesn't go through `dispatch` at all).
+#[derive(Clone, Copy)]
+enum Gate {
+    /// Authenticated sender only — the operation enforces any finer-grained
+    /// gate (e.g. `create_context` checks super-admin vs admin-of-parent).
+    None,
+    Write,
+    Manage,
+    Admin,
+    SuperAdmin,
+}
+
+impl Gate {
+    fn check(self, auth: &crate::auth::AuthClaims) -> Result<(), AppError> {
+        match self {
+            Gate::None => Ok(()),
+            Gate::Write => auth.require_write(),
+            Gate::Manage => auth.require_manage(),
+            Gate::Admin => auth.require_admin(),
+            Gate::SuperAdmin => auth.require_super_admin(),
+        }
+    }
+}
+
+/// Generic DIDComm handler body: authenticate the authcrypt sender, apply the
+/// capability `gate`, deserialize the message body into `B`, run `op`, and
+/// render its `Result<R, AppError>` as a typed response / problem-report.
+///
+/// Collapses the ~25-line `auth → gate → deserialize → op → respond` stanza
+/// that the bulk of the handlers repeated. Body-deserialization failure stays
+/// an `internal-error` (byte-identical to the prior `map_err(handler_err)`);
+/// the op's `AppError` is mapped to the right `e.p.msg.*` code by
+/// [`app_err_to_response`]. The op closure captures `state` for the
+/// keyspaces / config / resolver it needs.
+async fn dispatch<B, R>(
+    message: Message,
+    state: &Arc<VtaState>,
+    gate: Gate,
+    result_type: &str,
+    op: impl AsyncFnOnce(crate::auth::AuthClaims, B) -> Result<R, AppError>,
+) -> HandlerResult
+where
+    B: serde::de::DeserializeOwned,
+    R: serde::Serialize,
+{
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    app_try!(gate.check(&auth));
+    let body: B = serde_json::from_value(message.body).map_err(handler_err)?;
+    let result = app_try!(op(auth, body).await);
+    response(result_type, &result)
+}
+
+/// [`dispatch`] for the handlers whose message carries no body — the op runs
+/// from the authenticated `auth` alone (e.g. `list-seeds`, `get-config`).
+async fn dispatch_no_body<R>(
+    message: Message,
+    state: &Arc<VtaState>,
+    gate: Gate,
+    result_type: &str,
+    op: impl AsyncFnOnce(crate::auth::AuthClaims) -> Result<R, AppError>,
+) -> HandlerResult
+where
+    R: serde::Serialize,
+{
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    app_try!(gate.check(&auth));
+    let result = app_try!(op(auth).await);
+    response(result_type, &result)
+}
+
+/// Declares a DIDComm handler as a single line over [`dispatch`] /
+/// [`dispatch_no_body`]. Generates the `pub async fn` with the standard
+/// `(_ctx, message, Extension<Arc<VtaState>>)` signature so the only thing a
+/// new simple handler costs is its `URI → gate, body, op` declaration.
+///
+/// The `op` is a full expression returning `Result<_, AppError>` (`.await` the
+/// operation inside it); `$s` is bound to `&state` so the op can reach the
+/// keyspaces / config / seed store it needs. The `resolver`-prefixed arms
+/// additionally pre-fetch `did_resolver`, returning the byte-identical
+/// `internal-error` problem-report when it is absent, and bind it to `$res`.
+macro_rules! didcomm_handler {
+    // Body-carrying handler.
+    ($name:ident, $gate:expr, $result:expr, $body:ty,
+     |$s:ident, $auth:ident, $b:ident| $op:expr $(,)?) => {
+        pub async fn $name(
+            _ctx: HandlerContext,
+            message: Message,
+            Extension(state): Extension<Arc<VtaState>>,
+        ) -> HandlerResult {
+            dispatch(message, &state, $gate, $result, async |$auth, $b: $body| {
+                let $s = &state;
+                $op
+            })
+            .await
+        }
+    };
+    // No-body handler.
+    ($name:ident, $gate:expr, $result:expr, |$s:ident, $auth:ident| $op:expr $(,)?) => {
+        pub async fn $name(
+            _ctx: HandlerContext,
+            message: Message,
+            Extension(state): Extension<Arc<VtaState>>,
+        ) -> HandlerResult {
+            dispatch_no_body(message, &state, $gate, $result, async |$auth| {
+                let $s = &state;
+                $op
+            })
+            .await
+        }
+    };
+    // Body-carrying handler that needs the DID resolver pre-fetched.
+    (resolver $name:ident, $gate:expr, $result:expr, $body:ty,
+     |$s:ident, $auth:ident, $b:ident, $res:ident| $op:expr $(,)?) => {
+        pub async fn $name(
+            _ctx: HandlerContext,
+            message: Message,
+            Extension(state): Extension<Arc<VtaState>>,
+        ) -> HandlerResult {
+            let $res = state
+                .did_resolver
+                .as_ref()
+                .ok_or_else(|| handler_err("DID resolver not available"))?;
+            dispatch(message, &state, $gate, $result, async |$auth, $b: $body| {
+                let $s = &state;
+                $op
+            })
+            .await
+        }
+    };
 }
 
 /// DIDComm `type` for Trust-Tasks envelopes, per the framework binding
@@ -165,168 +311,123 @@ async fn response_into_json(
 // Key management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_create_key(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::key_management::create::CreateKeyBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::keys::create_key(
-            &state.keys_ks,
-            &state.contexts_ks,
-            &state.seed_store,
-            &state.audit_ks,
-            &auth,
-            operations::keys::CreateKeyParams {
-                key_type: body.key_type,
-                derivation_path: if body.derivation_path.is_empty() {
-                    None
-                } else {
-                    Some(body.derivation_path)
-                },
-                key_id: None,
-                mnemonic: body.mnemonic,
-                label: body.label,
-                context_id: body.context_id,
+didcomm_handler!(
+    handle_create_key,
+    Gate::Admin,
+    key_management::CREATE_KEY_RESULT,
+    key_management::create::CreateKeyBody,
+    |s, auth, body| operations::keys::create_key(
+        &s.keys_ks,
+        &s.contexts_ks,
+        &s.seed_store,
+        &s.audit_ks,
+        &auth,
+        operations::keys::CreateKeyParams {
+            key_type: body.key_type,
+            derivation_path: if body.derivation_path.is_empty() {
+                None
+            } else {
+                Some(body.derivation_path)
             },
-            "didcomm",
-        )
-        .await
-    );
-    response(key_management::CREATE_KEY_RESULT, &result)
-}
+            key_id: None,
+            mnemonic: body.mnemonic,
+            label: body.label,
+            context_id: body.context_id,
+        },
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_get_key(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::key_management::get::GetKeyBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result =
-        app_try!(operations::keys::get_key(&state.keys_ks, &auth, &body.key_id, "didcomm").await);
-    response(key_management::GET_KEY_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_key,
+    Gate::None,
+    key_management::GET_KEY_RESULT,
+    key_management::get::GetKeyBody,
+    |s, auth, body| operations::keys::get_key(&s.keys_ks, &auth, &body.key_id, "didcomm").await
+);
 
-pub async fn handle_list_keys(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::key_management::list::ListKeysBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::keys::list_keys(
-            &state.keys_ks,
-            &auth,
-            operations::keys::ListKeysParams {
-                offset: body.offset,
-                limit: body.limit,
-                status: body.status,
-                context_id: body.context_id,
-            },
-            "didcomm",
-        )
-        .await
-    );
-    response(key_management::LIST_KEYS_RESULT, &result)
-}
+didcomm_handler!(
+    handle_list_keys,
+    Gate::None,
+    key_management::LIST_KEYS_RESULT,
+    key_management::list::ListKeysBody,
+    |s, auth, body| operations::keys::list_keys(
+        &s.keys_ks,
+        &auth,
+        operations::keys::ListKeysParams {
+            offset: body.offset,
+            limit: body.limit,
+            status: body.status,
+            context_id: body.context_id,
+        },
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_rename_key(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::key_management::rename::RenameKeyBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::keys::rename_key(
-            &state.keys_ks,
-            &state.audit_ks,
-            &auth,
-            &body.key_id,
-            &body.new_key_id,
-            "didcomm",
-        )
-        .await
-    );
-    response(key_management::RENAME_KEY_RESULT, &result)
-}
+didcomm_handler!(
+    handle_rename_key,
+    Gate::Admin,
+    key_management::RENAME_KEY_RESULT,
+    key_management::rename::RenameKeyBody,
+    |s, auth, body| operations::keys::rename_key(
+        &s.keys_ks,
+        &s.audit_ks,
+        &auth,
+        &body.key_id,
+        &body.new_key_id,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_revoke_key(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::key_management::revoke::RevokeKeyBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::keys::revoke_key(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.audit_ks,
-            &auth,
-            &body.key_id,
-            "didcomm",
-        )
-        .await
-    );
-    response(key_management::REVOKE_KEY_RESULT, &result)
-}
+didcomm_handler!(
+    handle_revoke_key,
+    Gate::Admin,
+    key_management::REVOKE_KEY_RESULT,
+    key_management::revoke::RevokeKeyBody,
+    |s, auth, body| operations::keys::revoke_key(
+        &s.keys_ks,
+        &s.imported_ks,
+        &s.audit_ks,
+        &auth,
+        &body.key_id,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_get_key_secret(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::key_management::secret::GetKeySecretBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::keys::get_key_secret(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.seed_store,
-            &state.audit_ks,
-            &auth,
-            &body.key_id,
-            "didcomm",
-        )
-        .await
-    );
-    response(key_management::GET_KEY_SECRET_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_key_secret,
+    Gate::Admin,
+    key_management::GET_KEY_SECRET_RESULT,
+    key_management::secret::GetKeySecretBody,
+    |s, auth, body| operations::keys::get_key_secret(
+        &s.keys_ks,
+        &s.imported_ks,
+        &s.seed_store,
+        &s.audit_ks,
+        &auth,
+        &body.key_id,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_sign_request(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_write());
-    let body: vta_sdk::protocols::key_management::sign::SignRequestBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&body.payload)
-        .map_err(|e| handler_err(format!("invalid base64url payload: {e}")))?;
-
-    let result = app_try!(
+didcomm_handler!(
+    handle_sign_request,
+    Gate::Write,
+    key_management::SIGN_RESULT,
+    key_management::sign::SignRequestBody,
+    |s, auth, body| {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&body.payload)
+            .map_err(|e| AppError::Validation(format!("invalid base64url payload: {e}")))?;
         operations::keys::sign_payload(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.seed_store,
+            &s.keys_ks,
+            &s.imported_ks,
+            &s.seed_store,
             &auth,
             &body.key_id,
             &payload,
@@ -334,213 +435,160 @@ pub async fn handle_sign_request(
             "didcomm",
         )
         .await
-    );
-    response(key_management::SIGN_RESULT, &result)
-}
+    }
+);
 
 // ---------------------------------------------------------------------------
 // Seed management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_list_seeds(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let result = app_try!(operations::seeds::list_seeds(&state.keys_ks, "didcomm").await);
-    response(seed_management::LIST_SEEDS_RESULT, &result)
-}
+didcomm_handler!(
+    handle_list_seeds,
+    Gate::Admin,
+    seed_management::LIST_SEEDS_RESULT,
+    |s, _auth| operations::seeds::list_seeds(&s.keys_ks, "didcomm").await
+);
 
-pub async fn handle_rotate_seed(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::seed_management::rotate::RotateSeedBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::seeds::rotate_seed(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.seed_store,
-            &state.audit_ks,
-            &auth.did,
-            body.mnemonic.as_deref(),
-            "didcomm",
-        )
-        .await
-    );
-    response(seed_management::ROTATE_SEED_RESULT, &result)
-}
+didcomm_handler!(
+    handle_rotate_seed,
+    Gate::Admin,
+    seed_management::ROTATE_SEED_RESULT,
+    seed_management::rotate::RotateSeedBody,
+    |s, auth, body| operations::seeds::rotate_seed(
+        &s.keys_ks,
+        &s.imported_ks,
+        &s.seed_store,
+        &s.audit_ks,
+        &auth.did,
+        body.mnemonic.as_deref(),
+        "didcomm",
+    )
+    .await
+);
 
 // ---------------------------------------------------------------------------
 // Context management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_create_context(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    // Admin role required; `create_context` enforces the finer gate (super-admin
-    // for a top-level context, admin-of-parent for a sub-context).
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::context_management::create::CreateContextBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::contexts::create_context(
-            &state.contexts_ks,
-            &auth,
-            &body.id,
-            body.name,
-            body.description,
-            body.parent,
-            "didcomm",
-        )
-        .await
-    );
-    response(context_management::CREATE_CONTEXT_RESULT, &result)
-}
+// Admin role required; `create_context` enforces the finer gate (super-admin
+// for a top-level context, admin-of-parent for a sub-context).
+didcomm_handler!(
+    handle_create_context,
+    Gate::Admin,
+    context_management::CREATE_CONTEXT_RESULT,
+    context_management::create::CreateContextBody,
+    |s, auth, body| operations::contexts::create_context(
+        &s.contexts_ks,
+        &auth,
+        &body.id,
+        body.name,
+        body.description,
+        body.parent,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_get_context(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::context_management::get::GetContextBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::contexts::get_context_op(&state.contexts_ks, &auth, &body.id, "didcomm").await
-    );
-    response(context_management::GET_CONTEXT_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_context,
+    Gate::None,
+    context_management::GET_CONTEXT_RESULT,
+    context_management::get::GetContextBody,
+    |s, auth, body| operations::contexts::get_context_op(
+        &s.contexts_ks,
+        &auth,
+        &body.id,
+        "didcomm"
+    )
+    .await
+);
 
-pub async fn handle_list_contexts(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let result =
-        app_try!(operations::contexts::list_contexts(&state.contexts_ks, &auth, "didcomm").await);
-    response(context_management::LIST_CONTEXTS_RESULT, &result)
-}
+didcomm_handler!(
+    handle_list_contexts,
+    Gate::None,
+    context_management::LIST_CONTEXTS_RESULT,
+    |s, auth| operations::contexts::list_contexts(&s.contexts_ks, &auth, "didcomm").await
+);
 
-pub async fn handle_update_context(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
-    let body: vta_sdk::protocols::context_management::update::UpdateContextBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::contexts::update_context(
-            &state.contexts_ks,
-            &auth,
-            &body.id,
-            operations::contexts::UpdateContextParams {
-                name: body.name,
-                did: body.did,
-                description: body.description,
-            },
-            "didcomm",
-        )
-        .await
-    );
-    response(context_management::UPDATE_CONTEXT_RESULT, &result)
-}
+didcomm_handler!(
+    handle_update_context,
+    Gate::SuperAdmin,
+    context_management::UPDATE_CONTEXT_RESULT,
+    context_management::update::UpdateContextBody,
+    |s, auth, body| operations::contexts::update_context(
+        &s.contexts_ks,
+        &auth,
+        &body.id,
+        operations::contexts::UpdateContextParams {
+            name: body.name,
+            did: body.did,
+            description: body.description,
+        },
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_update_context_did(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::context_management::update_did::UpdateContextDidBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::contexts::update_context_did(
-            &state.contexts_ks,
-            &auth,
-            &body.id,
-            body.did,
-            "didcomm",
-        )
-        .await
-    );
-    response(context_management::UPDATE_CONTEXT_DID_RESULT, &result)
-}
+didcomm_handler!(
+    handle_update_context_did,
+    Gate::Admin,
+    context_management::UPDATE_CONTEXT_DID_RESULT,
+    context_management::update_did::UpdateContextDidBody,
+    |s, auth, body| operations::contexts::update_context_did(
+        &s.contexts_ks,
+        &auth,
+        &body.id,
+        body.did,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_preview_delete_context(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::context_management::delete::DeleteContextPreviewBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::contexts::preview_delete_context(
-            &state.contexts_ks,
-            &state.keys_ks,
-            &state.acl_ks,
-            &state.did_templates_ks,
-            #[cfg(feature = "webvh")]
-            &state.webvh_ks,
-            &auth,
-            &body.id,
-            "didcomm",
-        )
-        .await
-    );
-    response(context_management::PREVIEW_DELETE_CONTEXT_RESULT, &result)
-}
+didcomm_handler!(
+    handle_preview_delete_context,
+    Gate::Admin,
+    context_management::PREVIEW_DELETE_CONTEXT_RESULT,
+    context_management::delete::DeleteContextPreviewBody,
+    |s, auth, body| operations::contexts::preview_delete_context(
+        &s.contexts_ks,
+        &s.keys_ks,
+        &s.acl_ks,
+        &s.did_templates_ks,
+        #[cfg(feature = "webvh")]
+        &s.webvh_ks,
+        &auth,
+        &body.id,
+        "didcomm",
+    )
+    .await
+);
 
-pub async fn handle_delete_context(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::context_management::delete::DeleteContextBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let ks = operations::Keyspaces::from_vta_state(&state);
-    let result = app_try!(
+didcomm_handler!(
+    handle_delete_context,
+    Gate::Admin,
+    context_management::DELETE_CONTEXT_RESULT,
+    context_management::delete::DeleteContextBody,
+    |s, auth, body| {
+        let ks = operations::Keyspaces::from_vta_state(s);
         operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm").await
-    );
-    response(context_management::DELETE_CONTEXT_RESULT, &result)
-}
+    }
+);
 
 // ---------------------------------------------------------------------------
 // ACL management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_create_acl(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_manage());
-    let body: vta_sdk::protocols::acl_management::create::CreateAclBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let role = app_try!(Role::parse(&body.role));
-    let result = app_try!(
+didcomm_handler!(
+    handle_create_acl,
+    Gate::Manage,
+    acl_management::CREATE_ACL_RESULT,
+    acl_management::create::CreateAclBody,
+    |s, auth, body| {
+        let role = Role::parse(&body.role)?;
         operations::acl::create_acl(
-            &state.acl_ks,
-            &state.audit_ks,
-            &state.contexts_ks,
+            &s.acl_ks,
+            &s.audit_ks,
+            &s.contexts_ks,
             &auth,
             &body.did,
             role,
@@ -552,9 +600,8 @@ pub async fn handle_create_acl(
             "didcomm",
         )
         .await
-    );
-    response(acl_management::CREATE_ACL_RESULT, &result)
-}
+    }
+);
 
 pub async fn handle_swap_acl(
     _ctx: HandlerContext,
@@ -663,53 +710,37 @@ pub async fn handle_swap_acl(
     response(response_type, &result)
 }
 
-pub async fn handle_get_acl(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_manage());
-    let body: vta_sdk::protocols::acl_management::get::GetAclBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result =
-        app_try!(operations::acl::get_acl(&state.acl_ks, &auth, &body.did, "didcomm").await);
-    response(acl_management::GET_ACL_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_acl,
+    Gate::Manage,
+    acl_management::GET_ACL_RESULT,
+    acl_management::get::GetAclBody,
+    |s, auth, body| operations::acl::get_acl(&s.acl_ks, &auth, &body.did, "didcomm").await
+);
 
-pub async fn handle_list_acl(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_manage());
-    let body: vta_sdk::protocols::acl_management::list::ListAclBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::acl::list_acl(&state.acl_ks, &auth, body.context.as_deref(), "didcomm").await
-    );
-    response(acl_management::LIST_ACL_RESULT, &result)
-}
+didcomm_handler!(
+    handle_list_acl,
+    Gate::Manage,
+    acl_management::LIST_ACL_RESULT,
+    acl_management::list::ListAclBody,
+    |s, auth, body| operations::acl::list_acl(&s.acl_ks, &auth, body.context.as_deref(), "didcomm")
+        .await
+);
 
-pub async fn handle_update_acl(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_manage());
-    let body: vta_sdk::protocols::acl_management::update::UpdateAclBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let role = match body.role {
-        Some(r) => Some(app_try!(Role::parse(&r))),
-        None => None,
-    };
-    let result = app_try!(
+didcomm_handler!(
+    handle_update_acl,
+    Gate::Manage,
+    acl_management::UPDATE_ACL_RESULT,
+    acl_management::update::UpdateAclBody,
+    |s, auth, body| {
+        let role = match body.role {
+            Some(r) => Some(Role::parse(&r)?),
+            None => None,
+        };
         operations::acl::update_acl(
-            &state.acl_ks,
-            &state.audit_ks,
-            &state.contexts_ks,
+            &s.acl_ks,
+            &s.audit_ks,
+            &s.contexts_ks,
             &auth,
             &body.did,
             operations::acl::UpdateAclParams {
@@ -722,425 +753,291 @@ pub async fn handle_update_acl(
             "didcomm",
         )
         .await
-    );
-    response(acl_management::UPDATE_ACL_RESULT, &result)
-}
+    }
+);
 
-pub async fn handle_delete_acl(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_manage());
-    let body: vta_sdk::protocols::acl_management::delete::DeleteAclBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::acl::delete_acl(&state.acl_ks, &state.audit_ks, &auth, &body.did, "didcomm")
-            .await
-    );
-    response(acl_management::DELETE_ACL_RESULT, &result)
-}
+didcomm_handler!(
+    handle_delete_acl,
+    Gate::Manage,
+    acl_management::DELETE_ACL_RESULT,
+    acl_management::delete::DeleteAclBody,
+    |s, auth, body| operations::acl::delete_acl(
+        &s.acl_ks,
+        &s.audit_ks,
+        &auth,
+        &body.did,
+        "didcomm"
+    )
+    .await
+);
 
 // ---------------------------------------------------------------------------
 // Audit management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_list_logs(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let body: vta_sdk::protocols::audit_management::list::ListAuditLogsBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::audit::list_audit_logs(&state.audit_ks, &auth, &body, "didcomm").await
-    );
-    response(audit_management::LIST_LOGS_RESULT, &result)
-}
+didcomm_handler!(
+    handle_list_logs,
+    Gate::Admin,
+    audit_management::LIST_LOGS_RESULT,
+    audit_management::list::ListAuditLogsBody,
+    |s, auth, body| operations::audit::list_audit_logs(&s.audit_ks, &auth, &body, "didcomm").await
+);
 
-pub async fn handle_get_retention(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_admin());
-    let result = app_try!(operations::audit::get_retention(&state.config, &auth, "didcomm").await);
-    response(audit_management::GET_RETENTION_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_retention,
+    Gate::Admin,
+    audit_management::GET_RETENTION_RESULT,
+    |s, auth| operations::audit::get_retention(&s.config, &auth, "didcomm").await
+);
 
-pub async fn handle_update_retention(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
-    let body: vta_sdk::protocols::audit_management::retention::UpdateRetentionBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::audit::update_retention(
-            &state.config,
-            &state.audit_ks,
-            &auth,
-            body.retention_days,
-            "didcomm",
-        )
-        .await
-    );
-    response(audit_management::UPDATE_RETENTION_RESULT, &result)
-}
+didcomm_handler!(
+    handle_update_retention,
+    Gate::SuperAdmin,
+    audit_management::UPDATE_RETENTION_RESULT,
+    audit_management::retention::UpdateRetentionBody,
+    |s, auth, body| operations::audit::update_retention(
+        &s.config,
+        &s.audit_ks,
+        &auth,
+        body.retention_days,
+        "didcomm",
+    )
+    .await
+);
 
 // ---------------------------------------------------------------------------
 // VTA management
 // ---------------------------------------------------------------------------
 
-pub async fn handle_get_config(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let result = app_try!(operations::config::get_config(&state.config, &auth, "didcomm").await);
-    response(vta_management::GET_CONFIG_RESULT, &result)
-}
+didcomm_handler!(
+    handle_get_config,
+    Gate::None,
+    vta_management::GET_CONFIG_RESULT,
+    |s, auth| operations::config::get_config(&s.config, &auth, "didcomm").await
+);
 
-pub async fn handle_update_config(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    app_try!(auth.require_super_admin());
-    let body: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::config::update_config(
-            &state.config,
-            &auth,
-            operations::config::UpdateConfigParams {
-                vta_did: body.vta_did,
-                vta_name: body.vta_name,
-                public_url: body.public_url,
-            },
-            "didcomm",
-        )
-        .await
-    );
-    response(vta_management::UPDATE_CONFIG_RESULT, &result)
-}
+didcomm_handler!(
+    handle_update_config,
+    Gate::SuperAdmin,
+    vta_management::UPDATE_CONFIG_RESULT,
+    vta_management::update_config::UpdateConfigBody,
+    |s, auth, body| operations::config::update_config(
+        &s.config,
+        &auth,
+        operations::config::UpdateConfigParams {
+            vta_did: body.vta_did,
+            vta_name: body.vta_name,
+            public_url: body.public_url,
+        },
+        "didcomm",
+    )
+    .await
+);
 
 // ---------------------------------------------------------------------------
 // DID WebVH management (feature-gated)
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "webvh")]
-pub async fn handle_create_did_webvh(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::create::CreateDidWebvhBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let config = state.config.read().await;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| handler_err("DID resolver not available"))?;
-
-    let result = app_try!(
+didcomm_handler!(
+    resolver handle_create_did_webvh, Gate::None, did_management::CREATE_DID_WEBVH_RESULT,
+    did_management::create::CreateDidWebvhBody,
+    |s, auth, body, did_resolver| {
+        let config = s.config.read().await;
         operations::did_webvh::create_did_webvh(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.contexts_ks,
-            &state.webvh_ks,
-            &state.did_templates_ks,
-            &*state.seed_store,
+            &s.keys_ks,
+            &s.imported_ks,
+            &s.contexts_ks,
+            &s.webvh_ks,
+            &s.did_templates_ks,
+            &*s.seed_store,
             &config,
             &auth,
             body.into(),
             did_resolver,
-            &state.didcomm_bridge,
+            &s.didcomm_bridge,
             "didcomm",
         )
         .await
-    );
-    response(
-        vta_sdk::protocols::did_management::CREATE_DID_WEBVH_RESULT,
-        &result,
-    )
-}
+    }
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_get_did_webvh(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::get::GetDidWebvhBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::did_webvh::get_did_webvh(&state.webvh_ks, &auth, &body.did, "didcomm").await
-    );
-    response(
-        vta_sdk::protocols::did_management::GET_DID_WEBVH_RESULT,
-        &result,
-    )
-}
-
-#[cfg(feature = "webvh")]
-pub async fn handle_get_did_webvh_log(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::get::GetDidWebvhBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::did_webvh::get_did_webvh_log(&state.webvh_ks, &auth, &body.did, "didcomm")
-            .await
-    );
-    response(
-        vta_sdk::protocols::did_management::GET_DID_WEBVH_LOG_RESULT,
-        &result,
-    )
-}
-
-#[cfg(feature = "webvh")]
-pub async fn handle_list_dids_webvh(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::list::ListDidsWebvhBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::did_webvh::list_dids_webvh(
-            &state.webvh_ks,
-            &auth,
-            body.context_id.as_deref(),
-            body.server_id.as_deref(),
-            "didcomm",
-        )
+didcomm_handler!(
+    handle_get_did_webvh,
+    Gate::None,
+    did_management::GET_DID_WEBVH_RESULT,
+    did_management::get::GetDidWebvhBody,
+    |s, auth, body| operations::did_webvh::get_did_webvh(&s.webvh_ks, &auth, &body.did, "didcomm")
         .await
-    );
-    response(
-        vta_sdk::protocols::did_management::LIST_DIDS_WEBVH_RESULT,
-        &result,
-    )
-}
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_delete_did_webvh(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::delete::DeleteDidWebvhBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| handler_err("DID resolver not available"))?;
-    let vta_did = state.config.read().await.vta_did.clone();
-    let result = app_try!(
+didcomm_handler!(
+    handle_get_did_webvh_log,
+    Gate::None,
+    did_management::GET_DID_WEBVH_LOG_RESULT,
+    did_management::get::GetDidWebvhBody,
+    |s, auth, body| operations::did_webvh::get_did_webvh_log(
+        &s.webvh_ks,
+        &auth,
+        &body.did,
+        "didcomm"
+    )
+    .await
+);
+
+#[cfg(feature = "webvh")]
+didcomm_handler!(
+    handle_list_dids_webvh,
+    Gate::None,
+    did_management::LIST_DIDS_WEBVH_RESULT,
+    did_management::list::ListDidsWebvhBody,
+    |s, auth, body| operations::did_webvh::list_dids_webvh(
+        &s.webvh_ks,
+        &auth,
+        body.context_id.as_deref(),
+        body.server_id.as_deref(),
+        "didcomm",
+    )
+    .await
+);
+
+#[cfg(feature = "webvh")]
+didcomm_handler!(
+    resolver handle_delete_did_webvh, Gate::None, did_management::DELETE_DID_WEBVH_RESULT,
+    did_management::delete::DeleteDidWebvhBody,
+    |s, auth, body, did_resolver| {
+        let vta_did = s.config.read().await.vta_did.clone();
         operations::did_webvh::delete_did_webvh(
-            &state.webvh_ks,
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.audit_ks,
-            &*state.seed_store,
+            &s.webvh_ks,
+            &s.keys_ks,
+            &s.imported_ks,
+            &s.audit_ks,
+            &*s.seed_store,
             &auth,
             &body.did,
             did_resolver,
-            &state.didcomm_bridge,
+            &s.didcomm_bridge,
             vta_did.as_deref(),
-            &state.webvh_auth_locks,
+            &s.webvh_auth_locks,
             "didcomm",
         )
         .await
-    );
-    response(
-        vta_sdk::protocols::did_management::DELETE_DID_WEBVH_RESULT,
-        &result,
-    )
-}
+    }
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_add_webvh_server(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::servers::AddWebvhServerBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| handler_err("DID resolver not available"))?;
-    let result = app_try!(
-        operations::did_webvh::add_webvh_server(
-            &state.webvh_ks,
-            &auth,
-            &body.id,
-            &body.did,
-            body.label,
-            did_resolver,
-            "didcomm",
-        )
-        .await
-    );
-    response(
-        vta_sdk::protocols::did_management::ADD_WEBVH_SERVER_RESULT,
-        &result,
+didcomm_handler!(
+    resolver handle_add_webvh_server, Gate::None, did_management::ADD_WEBVH_SERVER_RESULT,
+    did_management::servers::AddWebvhServerBody,
+    |s, auth, body, did_resolver| operations::did_webvh::add_webvh_server(
+        &s.webvh_ks,
+        &auth,
+        &body.id,
+        &body.did,
+        body.label,
+        did_resolver,
+        "didcomm",
     )
-}
+    .await
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_list_webvh_servers(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let result = app_try!(
-        operations::did_webvh::list_webvh_servers(&state.webvh_ks, &auth, "didcomm").await
-    );
-    response(
-        vta_sdk::protocols::did_management::LIST_WEBVH_SERVERS_RESULT,
-        &result,
-    )
-}
+didcomm_handler!(
+    handle_list_webvh_servers,
+    Gate::None,
+    did_management::LIST_WEBVH_SERVERS_RESULT,
+    |s, auth| operations::did_webvh::list_webvh_servers(&s.webvh_ks, &auth, "didcomm").await
+);
 
-/// `list-webvh-server-domains` — relay the registered hosting
-/// server's `/api/me/domains` view through the VTA. Used by `pnm
-/// did-mgmt list-domains` and the interactive `--domain` prompt in
-/// `create-did` / `register-did`. The handler authenticates to the
-/// server with the VTA's own credentials and returns the
-/// caller-scoped subset of hosting domains plus the system default.
-///
-/// Without this arm in the router, pnm-cli's DIDComm transport
-/// returns `unsupported message type:
-/// firstperson.network/protocols/did-management/1.0/list-webvh-server-domains`
-/// and the CLI falls back to the server's resolution chain with a
-/// warning — the symptom that motivated this addition.
+// `list-webvh-server-domains` — relay the registered hosting
+// server's `/api/me/domains` view through the VTA. Used by `pnm
+// did-mgmt list-domains` and the interactive `--domain` prompt in
+// `create-did` / `register-did`. The handler authenticates to the
+// server with the VTA's own credentials and returns the
+// caller-scoped subset of hosting domains plus the system default.
+//
+// Without this arm in the router, pnm-cli's DIDComm transport
+// returns `unsupported message type:
+// firstperson.network/protocols/did-management/1.0/list-webvh-server-domains`
+// and the CLI falls back to the server's resolution chain with a
+// warning — the symptom that motivated this addition.
 #[cfg(feature = "webvh")]
-pub async fn handle_list_webvh_server_domains(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::servers::ListWebvhServerDomainsBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| handler_err("DID resolver not available"))?;
-    let vta_did = state.config.read().await.vta_did.clone();
-    let result = app_try!(
+didcomm_handler!(
+    resolver handle_list_webvh_server_domains, Gate::None,
+    did_management::LIST_WEBVH_SERVER_DOMAINS_RESULT,
+    did_management::servers::ListWebvhServerDomainsBody,
+    |s, auth, body, did_resolver| {
+        let vta_did = s.config.read().await.vta_did.clone();
         operations::did_webvh::list_webvh_server_domains(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.audit_ks,
-            &state.webvh_ks,
-            &*state.seed_store,
+            &s.keys_ks,
+            &s.imported_ks,
+            &s.audit_ks,
+            &s.webvh_ks,
+            &*s.seed_store,
             &auth,
             did_resolver,
-            &state.didcomm_bridge,
-            &state.webvh_auth_locks,
+            &s.didcomm_bridge,
+            &s.webvh_auth_locks,
             vta_did.as_deref(),
             &body.server_id,
         )
         .await
-    );
-    response(
-        vta_sdk::protocols::did_management::LIST_WEBVH_SERVER_DOMAINS_RESULT,
-        &result,
-    )
-}
+    }
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_update_webvh_server(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::servers::UpdateWebvhServerBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::did_webvh::update_webvh_server(
-            &state.webvh_ks,
-            &auth,
-            &body.id,
-            body.label,
-            "didcomm",
-        )
-        .await
-    );
-    response(
-        vta_sdk::protocols::did_management::UPDATE_WEBVH_SERVER_RESULT,
-        &result,
+didcomm_handler!(
+    handle_update_webvh_server,
+    Gate::None,
+    did_management::UPDATE_WEBVH_SERVER_RESULT,
+    did_management::servers::UpdateWebvhServerBody,
+    |s, auth, body| operations::did_webvh::update_webvh_server(
+        &s.webvh_ks,
+        &auth,
+        &body.id,
+        body.label,
+        "didcomm",
     )
-}
+    .await
+);
 
 #[cfg(feature = "webvh")]
-pub async fn handle_remove_webvh_server(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::servers::RemoveWebvhServerBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let result = app_try!(
-        operations::did_webvh::remove_webvh_server(&state.webvh_ks, &auth, &body.id, "didcomm")
-            .await
-    );
-    response(
-        vta_sdk::protocols::did_management::REMOVE_WEBVH_SERVER_RESULT,
-        &result,
+didcomm_handler!(
+    handle_remove_webvh_server,
+    Gate::None,
+    did_management::REMOVE_WEBVH_SERVER_RESULT,
+    did_management::servers::RemoveWebvhServerBody,
+    |s, auth, body| operations::did_webvh::remove_webvh_server(
+        &s.webvh_ks,
+        &auth,
+        &body.id,
+        "didcomm"
     )
-}
+    .await
+);
 
-/// DIDComm handler for `did-management/1.0/register-did-with-server`.
-/// Mirrors [`crate::routes::did_webvh::register_did_with_server_handler`]:
-/// promotes a serverless WebVH DID to a server-managed one by pushing the
-/// existing log to the host and flipping the local record's `server_id`.
+// DIDComm handler for `did-management/1.0/register-did-with-server`.
+// Mirrors [`crate::routes::did_webvh::register_did_with_server_handler`]:
+// promotes a serverless WebVH DID to a server-managed one by pushing the
+// existing log to the host and flipping the local record's `server_id`.
 #[cfg(feature = "webvh")]
-pub async fn handle_register_did_with_server(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<Arc<VtaState>>,
-) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
-    let body: vta_sdk::protocols::did_management::servers::RegisterDidWithServerBody =
-        serde_json::from_value(message.body).map_err(handler_err)?;
-    let did_resolver = state
-        .did_resolver
-        .as_ref()
-        .ok_or_else(|| handler_err("DID resolver not available"))?;
-    let vta_did = state.config.read().await.vta_did.clone();
-    let result = app_try!(
-        operations::did_webvh::register_did_with_server(
-            &state.webvh_ks,
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.audit_ks,
-            &*state.seed_store,
+didcomm_handler!(
+    resolver handle_register_did_with_server, Gate::None,
+    did_management::REGISTER_DID_WITH_SERVER_RESULT,
+    did_management::servers::RegisterDidWithServerBody,
+    |s, auth, body, did_resolver| {
+        let vta_did = s.config.read().await.vta_did.clone();
+        let result = operations::did_webvh::register_did_with_server(
+            &s.webvh_ks,
+            &s.keys_ks,
+            &s.imported_ks,
+            &s.audit_ks,
+            &*s.seed_store,
             &auth,
             did_resolver,
-            &state.didcomm_bridge,
+            &s.didcomm_bridge,
             operations::did_webvh::RegisterDidWithServerParams {
                 did: body.did,
                 server_id: body.server_id,
@@ -1148,22 +1045,18 @@ pub async fn handle_register_did_with_server(
                 domain: body.domain,
             },
             vta_did.as_deref(),
-            &state.webvh_auth_locks,
+            &s.webvh_auth_locks,
             "didcomm",
         )
         .await
-        .map_err(register_err_to_app_error)
-    );
-    let body = vta_sdk::protocols::did_management::servers::RegisterDidWithServerResultBody {
-        did: result.did,
-        server_id: result.server_id,
-        log_entry_count: result.log_entry_count,
-    };
-    response(
-        vta_sdk::protocols::did_management::REGISTER_DID_WITH_SERVER_RESULT,
-        &body,
-    )
-}
+        .map_err(register_err_to_app_error)?;
+        Ok(did_management::servers::RegisterDidWithServerResultBody {
+            did: result.did,
+            server_id: result.server_id,
+            log_entry_count: result.log_entry_count,
+        })
+    }
+);
 
 /// Map `RegisterDidWithServerError` onto `AppError` for the DIDComm
 /// handler. Mirrors `routes::did_webvh::map_register_err`.
@@ -2122,4 +2015,45 @@ pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerRe
     Ok(Some(DIDCommResponse::problem_report(
         ProblemReport::bad_request(format!("unsupported message type: {}", message.typ)),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vta_sdk::protocols::problem_report_codes as codes;
+
+    /// Pins the `AppError` → `e.p.msg.*` code contract for the shared DIDComm
+    /// error mapping that every `dispatch`-based handler funnels through. A
+    /// regression here would silently change the problem-report code SDK
+    /// clients switch on (e.g. forbidden collapsing back into unauthorized).
+    #[test]
+    fn app_error_maps_to_byte_identical_codes() {
+        let cases = [
+            (AppError::Conflict("c".into()), codes::CONFLICT, "c"),
+            (AppError::NotFound("n".into()), codes::NOT_FOUND, "n"),
+            (
+                AppError::Authentication("a".into()),
+                codes::UNAUTHORIZED,
+                "a",
+            ),
+            (AppError::Unauthorized("u".into()), codes::UNAUTHORIZED, "u"),
+            (AppError::Forbidden("f".into()), codes::FORBIDDEN, "f"),
+            (AppError::StepUpRequired("s".into()), codes::FORBIDDEN, "s"),
+            (AppError::Validation("v".into()), codes::BAD_REQUEST, "v"),
+        ];
+        for (err, expected_code, expected_comment) in cases {
+            let report = app_err_to_problem_report(&err);
+            assert_eq!(report.code, expected_code, "code for {err:?}");
+            assert_eq!(report.comment, expected_comment, "comment for {err:?}");
+        }
+    }
+
+    /// Catch-all variants collapse to `internal-error` with the `Display`
+    /// string as the comment — matches the prior `_ => internal_error(...)`.
+    #[test]
+    fn app_error_catch_all_is_internal_error() {
+        let report = app_err_to_problem_report(&AppError::Internal("boom".into()));
+        assert_eq!(report.code, codes::INTERNAL);
+        assert_eq!(report.comment, "internal error: boom");
+    }
 }
