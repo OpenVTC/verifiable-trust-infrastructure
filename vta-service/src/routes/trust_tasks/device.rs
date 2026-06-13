@@ -21,18 +21,6 @@ use crate::server::AppState;
 
 use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity harness.
-/// `#[allow(deprecated)]`: the 0.1 URIs remain dual-accepted during the
-/// migration (their 0.2 counterparts are edge-transformed in `wire_v0_2`).
-#[allow(dead_code, deprecated)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1,
-    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1,
-    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1,
-    vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1,
-    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1,
-];
-
 /// `device/register/0.1` — the caller claims its DeviceBinding. The DID must
 /// already be in the ACL; re-registration is refused.
 pub(super) async fn handle_register(

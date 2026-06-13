@@ -26,9 +26,8 @@ use axum::response::Response;
 use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use vta_sdk::protocols::credential_exchange::{
-    PENDING_APPROVE, PENDING_DENY, PENDING_LIST, PendingApproveBody, PendingDenyBody,
-    PendingDenyResponse, PendingListResponse, PendingPresentationSummary,
-    RequestedCredentialSummary,
+    PendingApproveBody, PendingDenyBody, PendingDenyResponse, PendingListResponse,
+    PendingPresentationSummary, RequestedCredentialSummary,
 };
 
 use crate::audit::audit;
@@ -39,10 +38,6 @@ use crate::operations::credential_exchange::{
 use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, parse_payload, success_response};
-
-/// URIs handled by this slice. Aggregated by the dispatcher's parity harness.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[PENDING_LIST, PENDING_APPROVE, PENDING_DENY];
 
 /// Project an internal pending record into the approver-facing wire summary.
 /// Drops the full DCQL `query` (an internal re-present detail).

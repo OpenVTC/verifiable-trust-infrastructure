@@ -22,13 +22,6 @@ use crate::server::AppState;
 use super::helpers::app_error_to_reject;
 use super::helpers::{parse_payload, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] =
-    &[vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0];
-
 /// Handler for `spec/vta/discovery/capabilities/1.0`.
 pub(super) async fn handle_capabilities(
     state: &AppState,

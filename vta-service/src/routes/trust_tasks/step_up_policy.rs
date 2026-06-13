@@ -27,10 +27,6 @@ use crate::server::AppState;
 
 use super::helpers::{reject_with, success_response};
 
-/// URIs this slice dispatches (aggregated by the dispatcher parity harness).
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2];
-
 fn policy_failure(code: &str, details: Option<Value>) -> RejectReason {
     RejectReason::TaskFailed {
         reason: code.to_string(),

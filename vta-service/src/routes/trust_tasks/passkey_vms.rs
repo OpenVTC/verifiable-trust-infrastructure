@@ -101,18 +101,6 @@ fn passkey_vm_reject(doc: &TrustTask<Value>, err: PasskeyVmError) -> Response {
     error_response(doc.reject_with(format!("urn:uuid:{}", uuid::Uuid::new_v4()), payload))
 }
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    // Canonical 0.1 only — the pre-spec 1.0 aliases were removed.
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
-    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
-];
-
 /// Handler for `spec/vta/passkey-vms/enroll-challenge/0.1`. Admin only
 /// (enforced by the operation function).
 pub(super) async fn handle_enroll_challenge(

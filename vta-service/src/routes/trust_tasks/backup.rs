@@ -21,17 +21,6 @@ use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, parse_payload, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness. Not feature-gated — backup ships unconditionally.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0,
-    vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0,
-    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0,
-    vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0,
-    vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0,
-];
-
 /// `spec/vta/backup/initiate-export/1.0` — mint an export bundle.
 /// Auth: super-admin.
 pub(super) async fn handle_initiate_export(

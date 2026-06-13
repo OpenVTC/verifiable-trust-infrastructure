@@ -23,9 +23,10 @@
 //!    `ALL_URIS` array.
 //! 2. Add a `handle_*` function in the appropriate slice module
 //!    (create a new one if no slice fits).
-//! 3. Add a match arm in `dispatch_typed` that calls the handler.
-//! 4. Add the URI to the `dispatched` array in
-//!    `tests::dispatcher_handles_every_vta_sdk_uri`.
+//! 3. Add one line to the [`dispatch_table!`] invocation: `TASK_* =>
+//!    slice::handle_*`. That single declaration generates **both** the
+//!    `dispatch_typed` match arm **and** the parity-harness entry — they
+//!    can't drift, so there is no separate test array to update.
 //!
 //! ## Body-parse failures emit framework-conformant errors
 //!
@@ -115,10 +116,9 @@ const REST_ROUTED: &[&str] = &[
 /// every build because they depend on `vta-service` feature flags
 /// (e.g. `webvh`, `didcomm`, `tee`).
 ///
-/// When their feature is **on**, the slice module's `DISPATCHED_URIS`
-/// const also lists them, so they're tracked by
-/// `aggregate_dispatched_uris()`. When the feature is **off**, the
-/// slice module isn't compiled — its const isn't aggregated — so only
+/// When their feature is **on**, the [`dispatch_table!`] entry is compiled, so
+/// `dispatched_uris()` lists them. When the feature is **off**, the entry's
+/// `#[cfg(...)]` excludes it from both the match and the parity list — so only
 /// this allowlist keeps the parity harness from failing on them.
 ///
 /// Adding a URI here is a deliberate act: it says "this URI's
@@ -130,19 +130,18 @@ const REST_ROUTED: &[&str] = &[
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // Passkey-VMs slice — requires `webvh` + `didcomm` features. The
-    // slice module's `DISPATCHED_URIS` lists the same URIs and is
-    // aggregated by the parity harness when both features are on; this
-    // allowlist covers builds where either feature is off.
+    // `dispatch_table!` entries list the same URIs and are tracked by the
+    // parity harness when both features are on; this allowlist covers builds
+    // where either feature is off.
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0,
-    // WebVH-DID-lifecycle slice — requires `webvh`. The slice
-    // module's `DISPATCHED_URIS` lists the same URIs and is
-    // aggregated by the parity harness when `webvh` is on; this
-    // allowlist covers builds where `webvh` is off.
+    // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
+    // entries list the same URIs and are tracked by the parity harness when
+    // `webvh` is on; this allowlist covers builds where `webvh` is off.
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0,
@@ -192,40 +191,70 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
 ];
 
-/// Aggregate `DISPATCHED_URIS` from every slice module. Feature-gated
-/// slices contribute only when their cfg is satisfied — this is the
-/// load-bearing detail that lets `KNOWN_FEATURE_GATED_URIS` work as a
-/// shrunk-build allowlist.
-#[cfg(test)]
-fn aggregate_dispatched_uris() -> Vec<&'static str> {
-    let mut v: Vec<&'static str> = Vec::new();
-    v.extend(acl::DISPATCHED_URIS);
-    v.extend(audit::DISPATCHED_URIS);
-    v.extend(auth::DISPATCHED_URIS);
-    v.extend(backup::DISPATCHED_URIS);
-    v.extend(config::DISPATCHED_URIS);
-    v.extend(contexts::DISPATCHED_URIS);
-    v.extend(credential_exchange::DISPATCHED_URIS);
-    v.extend(device::DISPATCHED_URIS);
-    v.extend(did_templates::DISPATCHED_URIS);
-    v.extend(discovery::DISPATCHED_URIS);
-    v.extend(keys::DISPATCHED_URIS);
-    v.extend(management::DISPATCHED_URIS);
-    v.extend(seeds::DISPATCHED_URIS);
-    v.extend(step_up::DISPATCHED_URIS);
-    v.extend(step_up_policy::DISPATCHED_URIS);
-    v.extend(vault::DISPATCHED_URIS);
-    // Feature-gated slices add their `v.extend(slice::DISPATCHED_URIS)`
-    // here under `#[cfg(feature = "...")]`. The corresponding URIs
-    // must also appear in `KNOWN_FEATURE_GATED_URIS` so the parity
-    // harness passes in builds where the feature is off.
-    #[cfg(all(feature = "webvh", feature = "didcomm"))]
-    v.extend(passkey_vms::DISPATCHED_URIS);
-    #[cfg(feature = "webvh")]
-    v.extend(provision_integration::DISPATCHED_URIS);
-    #[cfg(feature = "webvh")]
-    v.extend(webvh::DISPATCHED_URIS);
-    v
+/// Declarative Trust-Task dispatch table.
+///
+/// Each entry is `URI(s) => slice::handler`. From one list the macro generates
+/// **both** [`dispatch_typed`]'s `match` arms **and** (test-only) the
+/// `dispatched_uris()` parity list — so a handler and its parity entry are the
+/// same declaration and cannot drift. Adding a slice is one line.
+///
+/// Supported per entry:
+/// - `#[cfg(...)]` attributes (feature-gated arms contribute to the parity
+///   list only when their cfg is active — mirrors the prior per-slice consts;
+///   the URI must also sit in [`KNOWN_FEATURE_GATED_URIS`] for builds with the
+///   feature off);
+/// - `A | B => handler` for dual-accepted URIs sharing one handler.
+///
+/// Every handler has the uniform `(&AppState, &AuthClaims, TrustTask<Value>)
+/// -> Response` signature; the dispatcher spine ([`dispatch_trust_task_core`])
+/// keeps `validate_basic` + the 0.2 down/up-convert.
+macro_rules! dispatch_table {
+    (
+        $(
+            $(#[$meta:meta])*
+            $($uri:path)|+ => $handler:path
+        ),+ $(,)?
+    ) => {
+        /// Type-dispatch over the inbound document's `type` URI; generated by
+        /// [`dispatch_table!`]. Unknown URIs fall through to `method_not_found`
+        /// (`unsupported_type` per the framework's status table).
+        ///
+        /// `#[allow(deprecated)]`: arms match deprecated `*_0_1` URI constants
+        /// on purpose — the VTA keeps serving 0.1 during the migration; 0.2
+        /// counterparts arrive pre-down-converted (see `wire_v0_2`).
+        #[allow(deprecated)]
+        async fn dispatch_typed(
+            state: &AppState,
+            auth: &AuthClaims,
+            doc: TrustTask<Value>,
+        ) -> Response {
+            let type_uri = doc.type_uri.to_string();
+            match type_uri.as_str() {
+                $(
+                    $(#[$meta])*
+                    $($uri)|+ => $handler(state, auth, doc).await,
+                )+
+                // A client mistakenly sending a REST-routed URI through the
+                // envelope path gets `unsupported_type` here — correct from the
+                // dispatcher's POV; the operation lives elsewhere.
+                _ => method_not_found(doc, &type_uri),
+            }
+        }
+
+        /// URIs wired into [`dispatch_typed`], collected from the same
+        /// declarations that generate the match arms. Feature-gated arms
+        /// contribute only when their cfg is active.
+        #[cfg(test)]
+        #[allow(deprecated)]
+        fn dispatched_uris() -> Vec<&'static str> {
+            let mut v: Vec<&'static str> = Vec::new();
+            $(
+                $(#[$meta])*
+                v.extend([$($uri),+]);
+            )+
+            v
+        }
+    };
 }
 
 /// `POST /api/trust-tasks` handler.
@@ -338,289 +367,156 @@ pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> Response {
     }
 }
 
-/// Type-dispatch over the inbound document's `type` URI.
-///
-/// Each match arm delegates to the slice's `handle_*` function. Phase
-/// 3 slices land in their own modules — new slices add a `mod foo;`
-/// declaration at the top and a match arm here.
-///
-/// Unknown URIs fall through to `method_not_found` which returns
-/// `unsupported_type` per the framework's status table.
-///
-/// `#[allow(deprecated)]`: the device / vault / step-up / passkey arms match on
-/// the deprecated `*_0_1` URI constants on purpose — the VTA keeps serving 0.1
-/// during the migration. The 0.2 counterparts arrive pre-down-converted (see
-/// `wire_v0_2`) so they match the same arms.
-#[allow(deprecated)]
-async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
-    let type_uri = doc.type_uri.to_string();
-
-    // Note: `passkey-login-{start,finish}/1.0`, `challenge/1.0`,
-    // `authenticate/1.0`, and `refresh/1.0` are NOT handled here.
-    // They are UNAUTHENTICATED operations served as dedicated REST
-    // routes (`/auth/*`) — the user has no session JWT, so they
-    // can't pass `AuthClaims` through the dispatcher's extractor.
-    // The parity harness's `REST_ROUTED` allowlist tracks them.
-    match type_uri.as_str() {
-        // ─── Auth slice (authenticated operations) ───────────────────
-        vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1 => {
-            auth::handle_revoke_session(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1 => auth::handle_whoami(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => {
-            auth::handle_sessions_list(state, auth, doc).await
-        }
-        // Dual-accept: both versions route to the same typed handler, which
-        // normalises the `evidence.kind` discriminator on a copy (the signed
-        // document is never mutated). Not edge-transformed in `wire_v0_2`
-        // because the payload carries the approver's signature.
-        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
-        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2 => {
-            step_up::handle_approve_response(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => {
-            step_up_policy::handle_set_step_up_policy(state, auth, doc).await
-        }
-        // ─── ACL slice ────────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => acl::handle_create(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => acl::handle_get(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete(state, auth, doc).await,
-        // ─── Device slice ─────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => {
-            device::handle_register(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => {
-            device::handle_heartbeat(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => {
-            device::handle_disable(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1 => {
-            device::handle_set_wake(state, auth, doc).await
-        }
-        // ─── Contexts slice ──────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => {
-            contexts::handle_list(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_CREATE_1_0 => {
-            contexts::handle_create(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_GET_1_0 => contexts::handle_get(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_1_0 => {
-            contexts::handle_update(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 => {
-            contexts::handle_update_did(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => {
-            contexts::handle_preview_delete(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => {
-            contexts::handle_delete(state, auth, doc).await
-        }
-        // ─── Keys slice ──────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_KEYS_LIST_1_0 => keys::handle_list(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_KEYS_CREATE_1_0 => keys::handle_create(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_KEYS_GET_1_0 => keys::handle_get(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_KEYS_RENAME_1_0 => keys::handle_rename(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_KEYS_REVOKE_1_0 => keys::handle_revoke(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_KEYS_SIGN_1_0 => keys::handle_sign(state, auth, doc).await,
-        // ─── Seeds slice ─────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_SEEDS_LIST_1_0 => seeds::handle_list(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0 => {
-            seeds::handle_export_mnemonic(state, auth, doc).await
-        }
-        // ─── Audit slice ─────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_AUDIT_LIST_LOGS_1_0 => {
-            audit::handle_list_logs(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0 => {
-            audit::handle_get_retention(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => {
-            audit::handle_update_retention(state, auth, doc).await
-        }
-        // ─── Discovery ───────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => {
-            discovery::handle_capabilities(state, auth, doc).await
-        }
-        // ─── Credential-exchange: deferred-presentation approval ─────
-        //
-        // The holder operator's out-of-band surface over deferred
-        // presentations (the `credential-exchange/*` family keeps its
-        // URIs in `vta_sdk::protocols::credential_exchange`, not the
-        // central `trust_tasks` registry — so these are matched on that
-        // module's consts and sit outside the `ALL_URIS` parity harness,
-        // like the existing `query`/`present` message types).
-        vta_sdk::protocols::credential_exchange::PENDING_LIST => {
-            credential_exchange::handle_pending_list(state, auth, doc).await
-        }
-        vta_sdk::protocols::credential_exchange::PENDING_APPROVE => {
-            credential_exchange::handle_pending_approve(state, auth, doc).await
-        }
-        vta_sdk::protocols::credential_exchange::PENDING_DENY => {
-            credential_exchange::handle_pending_deny(state, auth, doc).await
-        }
-        // ─── Vault slice (public 0.1 spec) ──────────────────────────
-        vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1 => vault::handle_list(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_VAULT_GET_0_1 => vault::handle_get(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_1 => vault::handle_upsert(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1 => vault::handle_delete(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => {
-            vault::handle_release(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => {
-            vault::handle_proxy_login(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => {
-            vault::handle_sign_trust_task(state, auth, doc).await
-        }
-        // ─── Config slice ────────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get(state, auth, doc).await,
-        vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => {
-            config::handle_update(state, auth, doc).await
-        }
-        // ─── Management slice ────────────────────────────────────────
-        vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => {
-            management::handle_reload_services(state, auth, doc).await
-        }
-        // ─── Backup slice (descriptor pattern) ───────────────────────
-        vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0 => {
-            backup::handle_initiate_export(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0 => {
-            backup::handle_complete_export(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0 => {
-            backup::handle_initiate_import(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0 => {
-            backup::handle_finalize_import(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort(state, auth, doc).await,
-        // ─── DID-templates slice (global) ────────────────────────────
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_1_0 => {
-            did_templates::handle_list(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_1_0 => {
-            did_templates::handle_create(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_1_0 => {
-            did_templates::handle_get(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_1_0 => {
-            did_templates::handle_update(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_1_0 => {
-            did_templates::handle_delete(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_1_0 => {
-            did_templates::handle_render(state, auth, doc).await
-        }
-        // ─── DID-templates slice (context-scoped) ────────────────────
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0 => {
-            did_templates::handle_context_list(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0 => {
-            did_templates::handle_context_create(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_GET_1_0 => {
-            did_templates::handle_context_get(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0 => {
-            did_templates::handle_context_update(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0 => {
-            did_templates::handle_context_delete(state, auth, doc).await
-        }
-        vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0 => {
-            did_templates::handle_context_render(state, auth, doc).await
-        }
-        // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
-        //
-        // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the
-        // browser plugin migrated to 0.1; a 1.0 doc now gets UnsupportedType).
-        #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1 => {
-            passkey_vms::handle_enroll_challenge(state, auth, doc).await
-        }
-        #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1 => {
-            passkey_vms::handle_enroll_submit(state, auth, doc).await
-        }
-        #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1 => {
-            passkey_vms::handle_list(state, auth, doc).await
-        }
-        #[cfg(all(feature = "webvh", feature = "didcomm"))]
-        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1 => {
-            passkey_vms::handle_revoke(state, auth, doc).await
-        }
-        // ─── Provision-integration (feature-gated: webvh) ────────────
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0 => {
-            provision_integration::handle_request(state, auth, doc).await
-        }
-        // ─── WebVH-DID-lifecycle slice (feature-gated: webvh) ────────
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0 => {
-            webvh::handle_servers_list(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0 => {
-            webvh::handle_servers_add(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0 => {
-            webvh::handle_servers_update(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0 => {
-            webvh::handle_servers_remove(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => {
-            webvh::handle_dids_list(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => {
-            webvh::handle_dids_create(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0 => {
-            webvh::handle_dids_get(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0 => {
-            webvh::handle_dids_get_log(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0 => {
-            webvh::handle_dids_delete(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => {
-            webvh::handle_dids_update(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => {
-            webvh::handle_dids_rotate_keys(state, auth, doc).await
-        }
-        #[cfg(feature = "webvh")]
-        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0 => {
-            webvh::handle_dids_register_with_server(state, auth, doc).await
-        }
-        // ─── Unknown / REST-routed ───────────────────────────────────
-        //
-        // A client mistakenly sending a REST-routed URI through the
-        // envelope path gets `unsupported_type` here — correct from
-        // the dispatcher's POV; the operation lives elsewhere.
-        _ => method_not_found(doc, &type_uri),
-    }
+// Note: `passkey-login-{start,finish}/1.0`, `challenge/1.0`,
+// `authenticate/1.0`, and `refresh/1.0` are NOT in this table. They are
+// UNAUTHENTICATED operations served as dedicated REST routes (`/auth/*`) — the
+// user has no session JWT, so they can't pass `AuthClaims` through the
+// dispatcher's extractor. The parity harness's `REST_ROUTED` allowlist tracks
+// them.
+dispatch_table! {
+    // ─── Auth slice (authenticated operations) ───────────────────
+    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1 => auth::handle_revoke_session,
+    vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1 => auth::handle_whoami,
+    vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => auth::handle_sessions_list,
+    // Dual-accept: both versions route to the same typed handler, which
+    // normalises the `evidence.kind` discriminator on a copy (the signed
+    // document is never mutated). Not edge-transformed in `wire_v0_2` because
+    // the payload carries the approver's signature.
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
+        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
+        => step_up::handle_approve_response,
+    vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => step_up_policy::handle_set_step_up_policy,
+    // ─── ACL slice ────────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list,
+    vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => acl::handle_create,
+    vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => acl::handle_get,
+    vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update,
+    vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete,
+    // ─── Device slice ─────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => device::handle_register,
+    vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => device::handle_heartbeat,
+    vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list,
+    vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => device::handle_disable,
+    vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1 => device::handle_set_wake,
+    // ─── Contexts slice ──────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_CREATE_1_0 => contexts::handle_create,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_GET_1_0 => contexts::handle_get,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_1_0 => contexts::handle_update,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0 => contexts::handle_update_did,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0 => contexts::handle_preview_delete,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0 => contexts::handle_delete,
+    // ─── Keys slice ──────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_KEYS_LIST_1_0 => keys::handle_list,
+    vta_sdk::trust_tasks::TASK_KEYS_CREATE_1_0 => keys::handle_create,
+    vta_sdk::trust_tasks::TASK_KEYS_GET_1_0 => keys::handle_get,
+    vta_sdk::trust_tasks::TASK_KEYS_RENAME_1_0 => keys::handle_rename,
+    vta_sdk::trust_tasks::TASK_KEYS_REVOKE_1_0 => keys::handle_revoke,
+    vta_sdk::trust_tasks::TASK_KEYS_SIGN_1_0 => keys::handle_sign,
+    // ─── Seeds slice ─────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_SEEDS_LIST_1_0 => seeds::handle_list,
+    vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate,
+    vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0 => seeds::handle_export_mnemonic,
+    // ─── Audit slice ─────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_AUDIT_LIST_LOGS_1_0 => audit::handle_list_logs,
+    vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0 => audit::handle_get_retention,
+    vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => audit::handle_update_retention,
+    // ─── Discovery ───────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => discovery::handle_capabilities,
+    // ─── Credential-exchange: deferred-presentation approval ─────
+    //
+    // The holder operator's out-of-band surface over deferred presentations.
+    // The `credential-exchange/*` family keeps its URIs in
+    // `vta_sdk::protocols::credential_exchange`, not the central `trust_tasks`
+    // registry — so these sit outside the `ALL_URIS` parity harness (like the
+    // `query`/`present` message types), but are still tracked by
+    // `dispatched_uris()` (harmless extra entries).
+    vta_sdk::protocols::credential_exchange::PENDING_LIST
+        => credential_exchange::handle_pending_list,
+    vta_sdk::protocols::credential_exchange::PENDING_APPROVE
+        => credential_exchange::handle_pending_approve,
+    vta_sdk::protocols::credential_exchange::PENDING_DENY
+        => credential_exchange::handle_pending_deny,
+    // ─── Vault slice (public 0.1 spec) ──────────────────────────
+    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1 => vault::handle_list,
+    vta_sdk::trust_tasks::TASK_VAULT_GET_0_1 => vault::handle_get,
+    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_1 => vault::handle_upsert,
+    vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1 => vault::handle_delete,
+    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => vault::handle_release,
+    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => vault::handle_proxy_login,
+    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => vault::handle_sign_trust_task,
+    // ─── Config slice ────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get,
+    vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update,
+    // ─── Management slice ────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => management::handle_reload_services,
+    // ─── Backup slice (descriptor pattern) ───────────────────────
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_EXPORT_1_0 => backup::handle_initiate_export,
+    vta_sdk::trust_tasks::TASK_BACKUP_COMPLETE_EXPORT_1_0 => backup::handle_complete_export,
+    vta_sdk::trust_tasks::TASK_BACKUP_INITIATE_IMPORT_1_0 => backup::handle_initiate_import,
+    vta_sdk::trust_tasks::TASK_BACKUP_FINALIZE_IMPORT_1_0 => backup::handle_finalize_import,
+    vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort,
+    // ─── DID-templates slice (global) ────────────────────────────
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_1_0 => did_templates::handle_list,
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_1_0 => did_templates::handle_create,
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_1_0 => did_templates::handle_get,
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_1_0 => did_templates::handle_update,
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_1_0 => did_templates::handle_delete,
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_1_0 => did_templates::handle_render,
+    // ─── DID-templates slice (context-scoped) ────────────────────
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0 => did_templates::handle_context_list,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0
+        => did_templates::handle_context_create,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_GET_1_0 => did_templates::handle_context_get,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0
+        => did_templates::handle_context_update,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0
+        => did_templates::handle_context_delete,
+    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0
+        => did_templates::handle_context_render,
+    // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
+    //
+    // Canonical 0.1 only — the pre-spec 1.0 aliases were removed (the browser
+    // plugin migrated to 0.1; a 1.0 doc now gets UnsupportedType).
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1
+        => passkey_vms::handle_enroll_challenge,
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_0_1 => passkey_vms::handle_enroll_submit,
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1 => passkey_vms::handle_list,
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1 => passkey_vms::handle_revoke,
+    // ─── Provision-integration (feature-gated: webvh) ────────────
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0
+        => provision_integration::handle_request,
+    // ─── WebVH-DID-lifecycle slice (feature-gated: webvh) ────────
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0 => webvh::handle_servers_list,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0 => webvh::handle_servers_add,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0 => webvh::handle_servers_update,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0 => webvh::handle_servers_remove,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => webvh::handle_dids_list,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => webvh::handle_dids_create,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0 => webvh::handle_dids_get,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0 => webvh::handle_dids_get_log,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0 => webvh::handle_dids_delete,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => webvh::handle_dids_update,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys,
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0
+        => webvh::handle_dids_register_with_server,
 }
 
 #[cfg(test)]
@@ -708,8 +604,8 @@ mod tests {
     /// invariant). Every URI declared in `vta-sdk::trust_tasks` must
     /// either:
     ///
-    /// 1. Be tracked by a slice module's `DISPATCHED_URIS` const
-    ///    (the slice's handler IS wired into `dispatch_typed`), OR
+    /// 1. Be tracked by `dispatched_uris()` (i.e. have a
+    ///    [`dispatch_table!`] entry wiring its handler into `dispatch_typed`), OR
     /// 2. Be on the `REST_ROUTED` allowlist (served by dedicated
     ///    unauth REST handlers — passkey login, legacy challenge/
     ///    authenticate/refresh, TEE attestation), OR
@@ -724,7 +620,7 @@ mod tests {
     /// offending URI in the message.
     #[test]
     fn dispatcher_handles_every_vta_sdk_uri() {
-        let dispatched = aggregate_dispatched_uris();
+        let dispatched = dispatched_uris();
 
         for declared in vta_sdk::trust_tasks::ALL_URIS {
             let in_dispatched = dispatched.contains(declared);
@@ -738,7 +634,7 @@ mod tests {
             assert!(
                 in_dispatched || in_rest_routed || in_feature_gated || in_wire_v0_2,
                 "vta-sdk declares URI `{declared}` but it is not tracked in this dispatcher — \
-                 either (a) add it to a slice's `DISPATCHED_URIS` const and wire a match arm, \
+                 either (a) add a `dispatch_table!` entry (`URI => slice::handler`), \
                  (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
                  (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
                  (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
@@ -751,7 +647,7 @@ mod tests {
     /// 1.0 document now falls through to `UnsupportedType`.
     #[test]
     fn passkey_vms_0_1_dispatched() {
-        let dispatched = aggregate_dispatched_uris();
+        let dispatched = dispatched_uris();
         let tracked = |u: &&str| dispatched.contains(u) || KNOWN_FEATURE_GATED_URIS.contains(u);
         for v0_1 in [
             vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_0_1,
@@ -765,22 +661,22 @@ mod tests {
     }
 
     /// Defensive guard against double-tracking. A URI should appear in
-    /// exactly one of (DISPATCHED_URIS for some slice, REST_ROUTED,
-    /// KNOWN_FEATURE_GATED_URIS) — except that
-    /// `KNOWN_FEATURE_GATED_URIS` redundantly mirrors a feature-gated
-    /// slice's URIs when the feature is on. That redundancy is allowed
-    /// (the harness tolerates it); other overlaps would indicate
-    /// confusion about which transport a URI uses.
+    /// exactly one of (`dispatched_uris()`, `REST_ROUTED`,
+    /// `KNOWN_FEATURE_GATED_URIS`) — except that `KNOWN_FEATURE_GATED_URIS`
+    /// redundantly mirrors a feature-gated `dispatch_table!` entry's URIs when
+    /// the feature is on. That redundancy is allowed (the harness tolerates
+    /// it); other overlaps would indicate confusion about which transport a URI
+    /// uses.
     ///
-    /// Specifically: a URI MUST NOT be in BOTH `aggregate_dispatched_uris()`
+    /// Specifically: a URI MUST NOT be in BOTH `dispatched_uris()`
     /// AND `REST_ROUTED`. That'd mean two handlers compete for it.
     #[test]
     fn no_uri_is_both_dispatched_and_rest_routed() {
-        let dispatched = aggregate_dispatched_uris();
+        let dispatched = dispatched_uris();
         for uri in REST_ROUTED {
             assert!(
                 !dispatched.contains(uri),
-                "URI `{uri}` is in REST_ROUTED but also in a slice's DISPATCHED_URIS — \
+                "URI `{uri}` is in REST_ROUTED but also in a `dispatch_table!` entry — \
                  a URI must live on exactly one transport"
             );
         }

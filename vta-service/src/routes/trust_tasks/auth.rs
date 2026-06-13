@@ -19,16 +19,6 @@ use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, reject_with, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_WHOAMI_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1,
-];
-
 /// Handler for `spec/vta/auth/revoke-session/1.0`.
 ///
 /// Parses the request payload, looks up the session, authorises the

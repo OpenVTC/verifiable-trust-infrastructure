@@ -38,20 +38,6 @@ use crate::server::AppState;
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
 use trust_tasks_rs::RejectReason;
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness. `#[allow(deprecated)]`: the 0.1 URIs remain dual-accepted during
-/// the migration (their 0.2 counterparts are edge-transformed in `wire_v0_2`).
-#[allow(dead_code, deprecated)]
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_VAULT_LIST_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_GET_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_DELETE_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1,
-    vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1,
-];
-
 /// Request body for `vault/list/0.1`. Mirrors the canonical
 /// `payload.schema.json` of the spec; field names are camelCase to match
 /// the wire form Companions emit from `@openvtc/trust-tasks`.
@@ -342,102 +328,34 @@ struct VaultProxyLoginResponseBody {
     expires_at: String,
 }
 
-/// Reject the request unless the caller's role implies `VaultRead`. When
-/// AclEntry-level explicit capabilities arrive (M4), this check upgrades
-/// to consult the entry's `capabilities` Vec instead of deriving from role.
-fn require_vault_read(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
-    if role_has_capability(&auth.role, Capability::VaultRead) {
+/// Reject the request unless the caller's role implies `cap`. `action` names
+/// the operation for the rejection message (`"read"`, `"write"`, `"release"`,
+/// `"proxy-login"`, `"sign-trust-task"`); the `{cap:?}` Debug repr renders the
+/// canonical capability name. When AclEntry-level explicit capabilities arrive
+/// (M4), this upgrades to consult the entry's `capabilities` Vec instead of
+/// deriving from role.
+///
+/// Capability semantics (role→capability fallback in
+/// [`role_has_capability`]): `VaultRead` (list/get), `VaultWrite` (upsert/
+/// delete — Admin + Initiator), `FillRelease` (release — + Application),
+/// `ProxyLogin` (the VTA performs the login; same roles as FillRelease but the
+/// consumer never sees the long-term secret), `SignTrustTask` (per-envelope
+/// signing on the entry's principal DID — split from ProxyLogin so operators
+/// can limit blast radius on Service consumers).
+fn require_capability(
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    cap: Capability,
+    action: &str,
+) -> Result<(), Response> {
+    if role_has_capability(&auth.role, cap) {
         Ok(())
     } else {
         Err(reject_with(
             doc,
             RejectReason::PermissionDenied {
                 reason: format!(
-                    "vault read denied: role {} does not carry VaultRead capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
-}
-
-/// Reject the request unless the caller's role implies `VaultWrite` —
-/// Admin and Initiator pass; Application, Reader, Monitor do not. Used by
-/// upsert + delete. Same role→capability fallback story as
-/// [`require_vault_read`]; upgrades to explicit `capabilities` in M4.
-fn require_vault_write(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
-    if role_has_capability(&auth.role, Capability::VaultWrite) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault write denied: role {} does not carry VaultWrite capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
-}
-
-/// Reject the request unless the caller's role implies `FillRelease` —
-/// Admin, Initiator, and Application pass; Reader and Monitor do not.
-/// Used by release. Same role→capability fallback as the other
-/// require_* helpers.
-fn require_fill_release(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
-    if role_has_capability(&auth.role, Capability::FillRelease) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault release denied: role {} does not carry FillRelease capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
-}
-
-/// Reject the request unless the caller's role implies `ProxyLogin` —
-/// Admin, Initiator, and Application pass; Reader and Monitor do not.
-/// Used by vault/proxy-login. ProxyLogin is the "VTA performs the login
-/// for the consumer" capability; it's strictly more privileged than
-/// FillRelease (the consumer never sees the long-term secret) so the
-/// role→capability mapping carries it on the same roles as FillRelease.
-fn require_proxy_login(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
-    if role_has_capability(&auth.role, Capability::ProxyLogin) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault proxy-login denied: role {} does not carry ProxyLogin capability",
-                    auth.role
-                ),
-            },
-        ))
-    }
-}
-
-/// Used by vault/sign-trust-task. Per-envelope signing on the entry's
-/// principal DID — strictly more privileged than `Sign` (which is the
-/// generic signing oracle), distinct from `ProxyLogin` (which mints a
-/// session credential, not an arbitrary envelope). Splitting them lets
-/// operators grant proxy-login without sign-trust-task to limit blast
-/// radius on Service consumers.
-fn require_sign_trust_task(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<(), Response> {
-    if role_has_capability(&auth.role, Capability::SignTrustTask) {
-        Ok(())
-    } else {
-        Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault sign-trust-task denied: role {} does not carry SignTrustTask capability",
+                    "vault {action} denied: role {} does not carry {cap:?} capability",
                     auth.role
                 ),
             },
@@ -476,7 +394,7 @@ pub(super) async fn handle_list(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_vault_read(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
         return r;
     }
 
@@ -549,7 +467,7 @@ pub(super) async fn handle_get(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_vault_read(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultRead, "read") {
         return r;
     }
     let req: VaultGetBody = match parse_payload(&doc) {
@@ -595,7 +513,7 @@ pub(super) async fn handle_upsert(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_vault_write(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
         return r;
     }
 
@@ -913,7 +831,7 @@ pub(super) async fn handle_delete(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_vault_write(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "write") {
         return r;
     }
 
@@ -1005,7 +923,7 @@ pub(super) async fn handle_release(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_fill_release(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::FillRelease, "release") {
         return r;
     }
 
@@ -1114,7 +1032,7 @@ pub(super) async fn handle_proxy_login(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_proxy_login(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::ProxyLogin, "proxy-login") {
         return r;
     }
 
@@ -1314,7 +1232,7 @@ pub(super) async fn handle_sign_trust_task(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> Response {
-    if let Err(r) = require_sign_trust_task(auth, &doc) {
+    if let Err(r) = require_capability(auth, &doc, Capability::SignTrustTask, "sign-trust-task") {
         return r;
     }
     let req: VaultSignTrustTaskBody = match parse_payload(&doc) {

@@ -62,25 +62,6 @@ use super::helpers::{
     TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
 };
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
-];
-
 // ─── Server CRUD ────────────────────────────────────────────────────────
 
 /// `webvh/servers/list/1.0` — list registered webvh hosts.

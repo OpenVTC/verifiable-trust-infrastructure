@@ -20,20 +20,6 @@ use crate::server::AppState;
 
 use super::helpers::{TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_CREATE_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_GET_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_UPDATE_DID_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_PREVIEW_DELETE_1_0,
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DELETE_1_0,
-];
-
 /// Handler for `spec/vta/contexts/list/1.0`.
 pub(super) async fn handle_list(
     state: &AppState,

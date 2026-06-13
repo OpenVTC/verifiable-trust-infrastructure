@@ -23,19 +23,6 @@ use super::helpers::{
     TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
 };
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] = &[
-    vta_sdk::trust_tasks::TASK_KEYS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_KEYS_CREATE_1_0,
-    vta_sdk::trust_tasks::TASK_KEYS_GET_1_0,
-    vta_sdk::trust_tasks::TASK_KEYS_RENAME_1_0,
-    vta_sdk::trust_tasks::TASK_KEYS_REVOKE_1_0,
-    vta_sdk::trust_tasks::TASK_KEYS_SIGN_1_0,
-];
-
 /// Handler for `spec/vta/keys/list/1.0`.
 pub(super) async fn handle_list(
     state: &AppState,

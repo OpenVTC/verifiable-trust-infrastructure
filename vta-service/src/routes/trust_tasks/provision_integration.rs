@@ -35,13 +35,6 @@ use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
 
-/// URIs handled by this slice. Aggregated by the dispatcher's parity
-/// harness — see the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`.
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
-pub(super) const DISPATCHED_URIS: &[&str] =
-    &[vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0];
-
 /// Handler for `spec/vta/provision-integration/request/1.0`. Admin
 /// role on the target context required; super-admin required if the
 /// request asks to create the context inline.
