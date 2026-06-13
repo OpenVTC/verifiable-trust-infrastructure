@@ -1220,6 +1220,17 @@ Three-layer overlay:
 the `config` keyspace. `POST .../reload` re-applies hot-reloadable
 settings; `POST .../restart` initiates graceful shutdown.
 
+**Boot-time application (P1.1).** The db-overlay (`config` keyspace) is
+**canonical**: at startup `config_store::apply_overrides` folds every
+stored override onto the in-memory `AppConfig` (through the same
+`env > db > toml > default` precedence) *before* anything derives from
+it — the server bind `host`/`port` and the `public_url`-derived WebAuthn
+RP + status-list URLs. Without this a `PATCH` to a `requires_restart`
+key would be stored but never applied, even after the restart it asks
+for. (`log.level` is the exception: the tracing subscriber is
+initialised in `main` before this runs, so its subscriber reload is a
+separate follow-up; the in-memory value is still updated.)
+
 **Restart-endpoint supervisor handshake.** The restart endpoint
 refuses to exit unless a supervisor is detected — either
 `VTC_SUPERVISED=1` or the systemd notify socket (`NOTIFY_SOCKET`)

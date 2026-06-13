@@ -318,6 +318,65 @@ pub async fn compute_effective_config(
 }
 
 // ---------------------------------------------------------------------------
+// Boot-time override application
+// ---------------------------------------------------------------------------
+
+/// Write the resolved (effective) `value` for `key` back into the
+/// in-memory [`AppConfig`]. The inverse of [`toml_layer_value`] — one
+/// arm per registry key (the step-4 the [`REGISTRY`] doc references).
+///
+/// A type mismatch is skipped rather than panicked: the value was
+/// validated by the PATCH that stored it, so a mismatch here means a
+/// corrupt row, and a corrupt row must not take down boot.
+fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
+    match key {
+        "server.host" => {
+            if let Some(s) = value.as_str() {
+                cfg.server.host = s.to_string();
+            }
+        }
+        "server.port" => match value.as_u64().and_then(|n| u16::try_from(n).ok()) {
+            Some(p) => cfg.server.port = p,
+            None => tracing::warn!(
+                %value,
+                "config override `server.port` is not a valid u16 — ignored"
+            ),
+        },
+        "log.level" => {
+            if let Some(s) = value.as_str() {
+                cfg.log.level = s.to_string();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Fold the db-overlay (the `config` keyspace) onto the in-memory
+/// [`AppConfig`] at boot, so an operator's runtime PATCHes actually
+/// take effect.
+///
+/// This is the step that makes `config_store` **canonical** (P1.1):
+/// without it a `PATCH /v1/admin/config` against a `requires_restart`
+/// key (the server bind host/port) is stored but never applied — even
+/// after the restart it asks for, because boot read only TOML + env.
+/// Resolves every registry key through the same
+/// `env > db > toml > default` precedence [`compute_effective_config`]
+/// uses, then writes the resolved value back into `cfg`.
+///
+/// **`log.level` caveat:** the tracing subscriber is initialised from
+/// `cfg.log.level` in `main` *before* this runs, so a db-override of
+/// `log.level` updates the in-memory config but not the already-live
+/// filter — wiring the subscriber reload is the same separate follow-up
+/// `reload_config` documents.
+pub async fn apply_overrides(cfg: &mut AppConfig, db: &ConfigStore) -> Result<(), AppError> {
+    let eff = compute_effective_config(cfg, db).await?;
+    for field in eff.fields {
+        set_app_config_field(cfg, &field.key, &field.value);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
 
@@ -509,5 +568,64 @@ mod tests {
         assert!(host.requires_restart);
         let level = eff.fields.iter().find(|f| f.key == "log.level").unwrap();
         assert!(!level.requires_restart);
+    }
+
+    // ── apply_overrides (P1.1: boot folds the db overlay onto AppConfig) ──
+
+    #[tokio::test]
+    async fn apply_overrides_writes_db_layer_into_config() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        assert_eq!(cfg.server.host, "0.0.0.0");
+        assert_eq!(cfg.server.port, 8200);
+
+        store.put("server.host", &json!("10.0.0.5")).await.unwrap();
+        store.put("server.port", &json!(9100)).await.unwrap();
+        store.put("log.level", &json!("debug")).await.unwrap();
+
+        apply_overrides(&mut cfg, &store).await.unwrap();
+
+        assert_eq!(cfg.server.host, "10.0.0.5");
+        assert_eq!(cfg.server.port, 9100);
+        assert_eq!(cfg.log.level, "debug");
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_preserves_toml_when_no_db_override() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        cfg.server.host = "192.168.1.1".into(); // toml-layer value
+        cfg.server.port = 8443;
+
+        apply_overrides(&mut cfg, &store).await.unwrap();
+
+        assert_eq!(cfg.server.host, "192.168.1.1");
+        assert_eq!(cfg.server.port, 8443);
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_db_beats_toml() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        cfg.server.port = 8443; // toml-layer
+        store.put("server.port", &json!(9100)).await.unwrap();
+
+        apply_overrides(&mut cfg, &store).await.unwrap();
+
+        assert_eq!(cfg.server.port, 9100, "db override must win over toml");
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_ignores_out_of_range_port() {
+        // The U64 registry kind accepts any u64, but the field is u16 —
+        // a stored 70000 is a corrupt row and must not be applied.
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        cfg.server.port = 8443;
+        store.put("server.port", &json!(70_000)).await.unwrap();
+
+        apply_overrides(&mut cfg, &store).await.unwrap();
+
+        assert_eq!(cfg.server.port, 8443, "out-of-range port override ignored");
     }
 }

@@ -198,7 +198,7 @@ impl PasskeyState for AppState {
 }
 
 pub async fn run(
-    config: AppConfig,
+    mut config: AppConfig,
     store: Store,
     secret_store: Box<dyn SecretStore>,
 ) -> Result<(), AppError> {
@@ -207,6 +207,19 @@ pub async fn run(
     let acl_ks = store.keyspace("acl")?;
     let community_ks = store.keyspace("community")?;
     let config_ks = store.keyspace("config")?;
+
+    // P1.1: `config_store` (the db overlay) is canonical for the runtime
+    // config keys — fold any operator PATCHes onto the in-memory config
+    // *before* anything derives from it. The server bind address
+    // (`server.host`/`server.port`) and the `public_url`-derived WebAuthn
+    // RP + status-list URLs are all read from `config` below; without this
+    // a PATCH to a `requires_restart` key is stored but never applied,
+    // even after the restart it asks for.
+    crate::config_store::apply_overrides(
+        &mut config,
+        &crate::config_store::ConfigStore::new(config_ks.clone()),
+    )
+    .await?;
     let passkey_ks = store.keyspace("passkey")?;
     let install_ks = store.keyspace("install")?;
     // `install_store` is built later (after `init_auth` yields the storage
