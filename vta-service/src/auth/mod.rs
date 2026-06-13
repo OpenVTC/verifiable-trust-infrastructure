@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod credentials;
+pub mod di_proof;
 
 pub use backend::VtaAuthBackend;
 pub use vti_common::auth::extractor::{

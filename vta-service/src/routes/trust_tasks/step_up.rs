@@ -15,7 +15,6 @@
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 
-use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use axum::http::request::Parts;
@@ -78,31 +77,30 @@ pub(super) async fn verify_did_signed_gate(
     doc: &TrustTask<Value>,
     expected_signer: &str,
 ) -> Result<(), GateError> {
-    let proof = doc.proof.as_ref().ok_or(GateError::NoGate)?;
+    use crate::auth::di_proof::DiProofError;
 
-    // The framework `Proof` round-trips into a `DataIntegrityProof` (same shape;
-    // the mobile engine builds it the same way).
-    let di: DataIntegrityProof = serde_json::to_value(proof)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or_else(|| GateError::ProofInvalid("not a Data Integrity proof".to_string()))?;
+    // Verify the eddsa-jcs-2022 proof via the single shared verifier (P1.4),
+    // which returns the cryptographically-proven signer DID.
+    let signer_did = crate::auth::di_proof::verify_trust_task_proof(doc)
+        .await
+        .map_err(|e| match e {
+            DiProofError::NoProof => GateError::NoGate,
+            DiProofError::NotDataIntegrity => {
+                GateError::ProofInvalid("not a Data Integrity proof".to_string())
+            }
+            DiProofError::NoDid | DiProofError::VerifyFailed(_) => {
+                GateError::ProofInvalid(e.to_string())
+            }
+        })?;
 
-    // Bind identity: the signing key's DID must be the signer (the document
-    // `issuer`). The resolver confirms the signature is by this
-    // verificationMethod; this check ties that VM to the issuer so a valid proof
-    // by some *other* DID can't stand in for the approver.
-    let vm_did = di.verification_method.split('#').next().unwrap_or_default();
-    if vm_did != expected_signer {
+    // Bind identity: the proven signer must be the expected signer (the document
+    // `issuer`), so a valid proof by some *other* DID can't stand in for the
+    // approver.
+    if signer_did != expected_signer {
         return Err(GateError::SubjectMismatch);
     }
 
-    // Verify over the document with the proof removed (eddsa-jcs-2022
-    // canonicalizes the proofless document; the signature lives on `di`).
-    let mut unsigned = doc.clone();
-    unsigned.proof = None;
-    di.verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
-        .await
-        .map_err(|e| GateError::ProofInvalid(e.to_string()))
+    Ok(())
 }
 
 /// A `task_failed` reject carrying a spec error code (e.g.
@@ -1030,6 +1028,7 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use affinidi_data_integrity::DataIntegrityProof;
     use affinidi_data_integrity::crypto_suites::CryptoSuite;
     use affinidi_data_integrity::prepare_sign_input;
     use ed25519_dalek::{Signer, SigningKey};

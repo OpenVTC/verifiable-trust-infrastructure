@@ -1,4 +1,3 @@
-use affinidi_data_integrity::{DataIntegrityProof, DidKeyResolver, VerifyOptions};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -10,15 +9,12 @@ use trust_tasks_rs::specs::auth::authenticate::v0_1 as authenticate;
 use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
-use vta_sdk::protocols::auth::{
-    AuthenticateResponse, ChallengeRequest, Session as WireSession, TokenBundle, epoch_to_rfc3339,
-};
+use vta_sdk::protocols::auth::{AuthenticateResponse, ChallengeRequest};
 
-use crate::acl::{Role, check_acl, check_acl_full};
+use crate::acl::{Role, check_acl};
 use crate::audit::audit;
 use crate::auth::session::{
-    Session, SessionState, delete_session, get_session, list_sessions, now_epoch,
-    store_refresh_index, store_session, update_session,
+    Session, SessionState, delete_session, get_session, list_sessions, now_epoch, store_session,
 };
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
@@ -285,35 +281,9 @@ async fn try_authenticate_trust_task(
 /// downstream by the canonical handler (`signer_did == session.did`).
 /// `did:key` resolution is local (no I/O), matching the mobile holder key.
 async fn verify_authenticate_proof(doc: &TrustTask<Value>) -> Result<String, AppError> {
-    let proof = doc
-        .proof
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("authenticate document has no proof".into()))?;
-
-    let di: DataIntegrityProof = serde_json::to_value(proof)
-        .ok()
-        .and_then(|v| serde_json::from_value(v).ok())
-        .ok_or_else(|| AppError::Authentication("proof is not a Data Integrity proof".into()))?;
-
-    let signer_did = di
-        .verification_method
-        .split('#')
-        .next()
-        .unwrap_or_default()
-        .to_string();
-    if signer_did.is_empty() {
-        return Err(AppError::Authentication(
-            "proof verificationMethod carries no DID".into(),
-        ));
-    }
-
-    let mut unsigned = doc.clone();
-    unsigned.proof = None;
-    di.verify(&unsigned, &DidKeyResolver, VerifyOptions::new())
+    crate::auth::di_proof::verify_trust_task_proof(doc)
         .await
-        .map_err(|e| AppError::Authentication(format!("proof verification failed: {e}")))?;
-
-    Ok(signer_did)
+        .map_err(|e| AppError::Authentication(e.to_string()))
 }
 
 // ---------- POST /auth/refresh ----------
@@ -646,17 +616,13 @@ pub async fn passkey_login_finish(
         ));
     }
 
-    let jwt_keys = state
-        .jwt_keys
-        .as_ref()
-        .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
     let did_resolver = state
         .did_resolver
         .clone()
         .ok_or_else(|| AppError::Authentication("DID resolver not configured".into()))?;
 
     // 1. Look up pending session.
-    let mut session = get_session(&state.sessions_ks, &req.session_id)
+    let session = get_session(&state.sessions_ks, &req.session_id)
         .await?
         .ok_or_else(|| AppError::Authentication("session not found".into()))?;
     if session.state != SessionState::ChallengeSent {
@@ -666,15 +632,9 @@ pub async fn passkey_login_finish(
         ));
     }
 
-    // 2. Challenge TTL.
-    let (challenge_ttl, access_expiry, refresh_expiry) = {
-        let config = state.config.read().await;
-        (
-            config.auth.challenge_ttl,
-            config.auth.access_token_expiry,
-            config.auth.refresh_token_expiry,
-        )
-    };
+    // 2. Challenge TTL — gate early so we don't burn a crypto verify on an
+    //    expired challenge. (The canonical handler re-checks it too.)
+    let challenge_ttl = state.config.read().await.auth.challenge_ttl;
     if now_epoch().saturating_sub(session.created_at) > challenge_ttl {
         warn!(session_id = %req.session_id, "passkey login rejected: challenge expired");
         return Err(AppError::Authentication("challenge expired".into()));
@@ -725,42 +685,30 @@ pub async fn passkey_login_finish(
             .await
             .map_err(|e| AppError::Authentication(format!("assertion verification failed: {e}")))?;
 
-    // 6. ACL lookup for role + contexts.
-    let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &session.did).await?;
-
-    // 7. Mint tokens — same shape as the legacy authenticate() flow.
-    #[cfg(feature = "tee")]
-    let tee_attested = session.tee_attested;
-    #[cfg(not(feature = "tee"))]
-    let tee_attested = false;
-    // Passkey-login is the second factor (DID-key challenged first via
-    // the challenge endpoint, then a WebAuthn assertion proves
-    // possession of a passkey VM). amr captures both, acr promotes to
-    // aal2.
-    let claims = jwt_keys
-        .new_claims(
-            session.did.clone(),
-            session.session_id.clone(),
-            role.to_string(),
-            allowed_contexts,
-            access_expiry,
-            tee_attested,
-        )
-        .with_aal(vec!["did".to_string(), "passkey".to_string()], "aal2");
-    let access_expires_at = claims.exp;
-    let access_token = jwt_keys.encode(&claims)?;
-    let refresh_token = Uuid::new_v4().to_string();
-    let refresh_expires_at = now_epoch() + refresh_expiry;
-
-    // Persist AAL on the session row so a subsequent /auth/refresh
-    // re-mints at aal2 (rather than silently dropping back to aal1).
-    session.state = SessionState::Authenticated;
-    session.refresh_token = Some(refresh_token.clone());
-    session.refresh_expires_at = Some(refresh_expires_at);
-    session.amr = claims.amr.clone();
-    session.acr = claims.acr.clone();
-    update_session(&state.sessions_ks, &session).await?;
-    store_refresh_index(&state.sessions_ks, &refresh_token, &session.session_id).await?;
+    // 6. Mint tokens through the single canonical authenticate path
+    //    (`handle_authenticate_with_aal`) rather than re-deriving the
+    //    session/JWT/refresh-token logic here (P1.4). Passkey-login is the
+    //    second factor — the DID-key was challenged first via the challenge
+    //    endpoint, then this WebAuthn assertion proved possession of a passkey
+    //    VM — so we issue `amr=["did","passkey"], acr="aal2"`. The challenge was
+    //    already verified cryptographically above (step 5), so we pass the
+    //    session's own challenge for the handler's constant-time match. Routing
+    //    through the handler also applies the acr-correct (shortened) aal2
+    //    access-token TTL, which the bespoke mint here did not.
+    let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
+    let resp = vti_common::auth::handlers::handle_authenticate_with_aal(
+        &backend,
+        vti_common::auth::AuthenticateInput {
+            session_id: session.session_id.clone(),
+            challenge: session.challenge.clone(),
+            signer_did: session.did.clone(),
+            created_time: None,
+            session_pubkey_b58btc: None,
+        },
+        vec!["did".to_string(), "passkey".to_string()],
+        "aal2".to_string(),
+    )
+    .await?;
 
     info!(did = %session.did, session_id = %session.session_id, "passkey login successful");
     audit!(
@@ -770,23 +718,5 @@ pub async fn passkey_login_finish(
         outcome = "success"
     );
 
-    let issued_at_epoch = now_epoch();
-    Ok(Json(AuthenticateResponse {
-        session: WireSession {
-            id: session.session_id.clone(),
-            subject: session.did.clone(),
-            issued_at: epoch_to_rfc3339(issued_at_epoch),
-            expires_at: epoch_to_rfc3339(access_expires_at),
-            amr: claims.amr.clone(),
-            acr: claims.acr.clone(),
-        },
-        tokens: TokenBundle {
-            access_token,
-            refresh_token: Some(refresh_token),
-            token_type: "Bearer".to_string(),
-            expires_in: access_expires_at.saturating_sub(issued_at_epoch),
-            refresh_expires_in: Some(refresh_expires_at.saturating_sub(issued_at_epoch)),
-            scope: Vec::new(),
-        },
-    }))
+    Ok(Json(resp))
 }
