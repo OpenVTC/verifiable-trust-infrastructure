@@ -19,7 +19,6 @@
 //! carry the write capabilities; Application/Reader carry read-only;
 //! Monitor carries none.
 
-use affinidi_messaging_didcomm::Message;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,8 +26,8 @@ use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vti_common::acl::{Capability, role_has_capability};
 use vti_common::vault::{
-    RequestHeader, SecretKind, SessionBlob, SiteTarget, StoredVaultEntry, VaultEntry,
-    VaultListFilter, VaultSecret, delete_vault_entry, get_stored_vault_entry, get_vault_entry,
+    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter, VaultSecret,
+    delete_vault_entry, get_stored_vault_entry, get_vault_entry,
     list_vault_entries as list_entries_store, put_stored_vault_entry,
 };
 
@@ -272,13 +271,6 @@ struct VaultReleaseResponseBody {
 enum SealedEnvelopeWire {
     DidcommAuthcrypt { jwe: String },
 }
-
-/// DIDComm `Message.typ` for the proxy-login envelope's cleartext.
-/// Counterpart of [`RELEASE_INNER_MSG_TYPE`] for the SessionBlob the
-/// wallet receives. Same workspace namespace; the JWE body is a
-/// [`SessionBlob`] per `vault/_shared/0.1/session-blob`.
-const PROXY_LOGIN_INNER_MSG_TYPE: &str =
-    "https://openvtc.org/vault/proxy-login/session-envelope/1.0";
 
 /// Request body for `vault/proxy-login/0.1`. Mirrors the canonical schema.
 /// `consumerContext` / `stepUpProof` are accepted but not yet consumed
@@ -1119,15 +1111,6 @@ pub(super) async fn handle_release(
     }
 }
 
-/// Per-driver TTL ceilings. SIOP is capped by the underlying id_token's
-/// `exp` (300 s, the canonical M2B.2b limit). Password POST is capped
-/// by the maintainer's policy; we keep it short by default so a
-/// compromised wallet can't replay the session indefinitely. The
-/// caller's `ttlSecondsHint` is honoured up to the ceiling and
-/// silently truncated above it.
-#[cfg(feature = "webvh")]
-const PASSWORD_POST_TTL_CEILING_SECS: u64 = 900;
-
 /// Handler for `spec/vault/proxy-login/0.1`. Two drivers wired today:
 ///
 /// - **`did-self-issued`** (M2B.2b): VTA mints a SIOPv2 id_token on
@@ -1180,7 +1163,7 @@ pub(super) async fn handle_proxy_login(
 
     // Load entry — conflate not-found with permission-denied to deny
     // enumeration (matches handle_release).
-    let mut stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
+    let stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
         Ok(Some(e)) => e,
         Ok(None) => {
             return reject_with(
@@ -1210,9 +1193,8 @@ pub(super) async fn handle_proxy_login(
         return reject;
     }
 
-    // ATM + vta_did are needed for the shared authcrypt tail
-    // regardless of driver — hoist them above the dispatch so both
-    // arms see the same readiness checks.
+    // ATM + vta_did readiness — checked here so the error is clearly
+    // "infrastructure not configured" rather than a packing failure mid-flow.
     let atm = match state.atm.as_ref() {
         Some(atm) => atm,
         None => {
@@ -1224,229 +1206,85 @@ pub(super) async fn handle_proxy_login(
             );
         }
     };
-
-    let vta_did = {
-        let config = state.config.read().await;
-        match config.vta_did.clone() {
-            Some(d) => d,
-            None => {
-                return reject_with(
-                    &doc,
-                    RejectReason::InternalError {
-                        reason: "vta_did not configured — server cannot identify itself as signer"
-                            .into(),
-                    },
-                );
-            }
-        }
-    };
-
-    // Driver dispatch. Each arm constructs a `SessionBlob` (plus its
-    // own session_id + expires_at) and the shared tail authcrypts +
-    // persists + responds. Adding a new driver (e.g. OAuth refresh)
-    // means one more arm here — the wrapper code stays put.
-    let (session_blob, session_id, expires_at) = match &stored.secret {
-        // ─── M2B.2b: did-self-issued (SIOP id_token) ───
-        VaultSecret::DidSelfIssued {
-            did: siop_did,
-            signing_key_id,
-            ..
-        } => {
-            let (audience, bind_origin) = match resolve_siop_audience(
-                &req.target,
-                &stored.entry.targets,
-            ) {
-                Some(pair) => pair,
-                None => {
-                    return reject_with(
-                        &doc,
-                        RejectReason::TaskFailed {
-                            reason:
-                                "vault/proxy-login:no_audience — entry has no DID or web-origin target to use as SIOP audience"
-                                    .into(),
-                            details: Some(serde_json::json!({
-                                "entryTargets": &stored.entry.targets,
-                            })),
-                        },
-                    );
-                }
-            };
-            let ttl_secs = req
-                .ttl_seconds_hint
-                .map(|t| (t as u64).min(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS))
-                .unwrap_or(crate::operations::vault::PROXY_LOGIN_ID_TOKEN_TTL_SECS);
-            let signing_key = match crate::operations::vault::load_signing_key_by_id(
-                &state.keys_ks,
-                &state.imported_ks,
-                &*state.seed_store,
-                &state.audit_ks,
-                signing_key_id,
-            )
-            .await
-            {
-                Ok(k) => k,
-                Err(e) => return app_error_to_reject(&doc, e),
-            };
-            let iat = chrono::Utc::now().timestamp().max(0) as u64;
-            let id_token = match crate::operations::vault::build_siop_id_token(
-                siop_did,
-                signing_key_id,
-                &audience,
-                req.nonce.as_deref(),
-                iat,
-                ttl_secs,
-                &signing_key,
-            ) {
-                Ok(t) => t,
-                Err(e) => return app_error_to_reject(&doc, e),
-            };
-            build_session_blob_with_bearer(id_token, bind_origin, ttl_secs)
-        }
-        // ─── M2B.5: password (HTTP-POST driver) ───
-        VaultSecret::Password {
-            username,
-            password,
-            totp,
-            login_config: Some(login_config),
-            ..
-        } => {
-            #[cfg(feature = "webvh")]
-            {
-                let cookies = match crate::operations::vault::password_post::run_password_post(
-                    login_config,
-                    username.as_deref(),
-                    password,
-                    totp.as_ref(),
-                )
-                .await
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        return reject_with(
-                            &doc,
-                            password_post_error_to_reject(&e, &stored.entry.id),
-                        );
-                    }
-                };
-                let ttl_secs = req
-                    .ttl_seconds_hint
-                    .map(|t| (t as u64).min(PASSWORD_POST_TTL_CEILING_SECS))
-                    .unwrap_or(PASSWORD_POST_TTL_CEILING_SECS);
-                // bind_origin: prefer the entry's first WebOrigin (where the
-                // user actually browses); falls back to the loginUrl's
-                // origin when the entry only carries DID / app targets
-                // (atypical but possible — e.g. an API-first site with a
-                // DID-bound target).
-                let bind_origin = first_web_origin(&stored.entry.targets).or_else(|| {
-                    url::Url::parse(&login_config.login_url)
-                        .ok()
-                        .and_then(|u| u.origin().ascii_serialization().into())
-                });
-                build_session_blob_with_cookies(cookies, bind_origin, ttl_secs)
-            }
-            #[cfg(not(feature = "webvh"))]
-            {
-                let _ = (username, password, totp, login_config);
-                return reject_with(
-                    &doc,
-                    RejectReason::TaskFailed {
-                        reason:
-                            "vault/proxy-login:not_implemented — password driver requires the `webvh` feature"
-                                .into(),
-                        details: None,
-                    },
-                );
-            }
-        }
-        VaultSecret::Password {
-            login_config: None, ..
-        } => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason:
-                        "vault/proxy-login:not_proxyable — password entry has no loginConfig; use vault/release for browser-fill"
-                            .into(),
-                    details: Some(serde_json::json!({
-                        "secretKind": "password",
-                        "remediation": "fall back to vault/release/0.1",
-                    })),
-                },
-            );
-        }
-        other => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: format!(
-                        "vault/proxy-login:not_implemented — entry secretKind {kind} has no proxy-login driver yet",
-                        kind = secret_kind_label(other.kind())
-                    ),
-                    details: Some(serde_json::json!({
-                        "secretKind": other.kind(),
-                        "supportedKinds": ["did-self-issued", "password"],
-                    })),
-                },
-            );
-        }
-    };
-
-    let session_body = match serde_json::to_value(&session_blob) {
-        Ok(v) => v,
-        Err(e) => {
+    let vta_did = match state.config.read().await.vta_did.clone() {
+        Some(d) => d,
+        None => {
             return reject_with(
                 &doc,
                 RejectReason::InternalError {
-                    reason: format!("vault/proxy-login: failed to serialise SessionBlob: {e}"),
+                    reason: "vta_did not configured — server cannot identify itself as signer"
+                        .into(),
                 },
             );
         }
     };
 
-    let msg = Message::build(
-        Uuid::new_v4().to_string(),
-        PROXY_LOGIN_INNER_MSG_TYPE.to_string(),
-        session_body,
+    // Driver dispatch + session-blob sealing (operations layer; P2.4). The
+    // typed `ProxyLoginError` maps back to the canonical spec reject codes.
+    use crate::operations::vault::proxy_login::ProxyLoginError;
+    match crate::operations::vault::proxy_login::proxy_login(
+        atm,
+        &state.vault_ks,
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.audit_ks,
+        &*state.seed_store,
+        &vta_did,
+        &auth.did,
+        stored,
+        req.target,
+        req.nonce,
+        req.ttl_seconds_hint,
     )
-    .from(vta_did.clone())
-    .to(auth.did.clone())
-    .finalize();
-
-    let (jwe, _metadata) = match atm
-        .pack_encrypted(&msg, &auth.did, Some(&vta_did), Some(&vta_did))
-        .await
+    .await
     {
-        Ok(packed) => packed,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!("vault/proxy-login: pack_encrypted failed: {e}"),
-                },
-            );
+        Ok(out) => success_response(
+            &doc,
+            VaultProxyLoginResponseBody {
+                sealed_session_blob: SealedEnvelopeWire::DidcommAuthcrypt { jwe: out.jwe },
+                session_id: out.session_id,
+                expires_at: out.expires_at,
+            },
+        ),
+        Err(ProxyLoginError::NoAudience { entry_targets }) => reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason:
+                    "vault/proxy-login:no_audience — entry has no DID or web-origin target to use as SIOP audience"
+                        .into(),
+                details: Some(serde_json::json!({ "entryTargets": entry_targets })),
+            },
+        ),
+        Err(ProxyLoginError::NotProxyable) => reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason:
+                    "vault/proxy-login:not_proxyable — password entry has no loginConfig; use vault/release for browser-fill"
+                        .into(),
+                details: Some(serde_json::json!({
+                    "secretKind": "password",
+                    "remediation": "fall back to vault/release/0.1",
+                })),
+            },
+        ),
+        Err(ProxyLoginError::NotImplemented { kind }) => reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: format!(
+                    "vault/proxy-login:not_implemented — entry secretKind {kind} has no proxy-login driver yet"
+                ),
+                details: Some(serde_json::json!({
+                    "secretKind": kind,
+                    "supportedKinds": ["did-self-issued", "password"],
+                })),
+            },
+        ),
+        #[cfg(feature = "webvh")]
+        Err(ProxyLoginError::PasswordPost(e)) => {
+            reject_with(&doc, password_post_error_to_reject(&e, &req.entry_id))
         }
-    };
-
-    // Same lastUsedAt update as handle_release — server-managed
-    // metadata, NOT a version bump.
-    let now = chrono::Utc::now().to_rfc3339();
-    stored.entry.last_used_at = Some(now);
-    if let Err(e) = put_stored_vault_entry(&state.vault_ks, &stored).await {
-        tracing::warn!(
-            entry_id = %stored.entry.id,
-            error = %e,
-            "vault/proxy-login: lastUsedAt update failed; session release proceeded"
-        );
+        Err(ProxyLoginError::App(e)) => app_error_to_reject(&doc, e),
     }
-
-    success_response(
-        &doc,
-        VaultProxyLoginResponseBody {
-            sealed_session_blob: SealedEnvelopeWire::DidcommAuthcrypt { jwe },
-            session_id,
-            expires_at,
-        },
-    )
 }
 
 // ─── vault/sign-trust-task/0.1 ─────────────────────────────────────
@@ -1562,10 +1400,10 @@ pub(super) async fn handle_sign_trust_task(
                 RejectReason::TaskFailed {
                     reason: format!(
                         "vault/sign-trust-task:not_signable — entry kind '{}' has no DID-based signing identity",
-                        secret_kind_label(other.kind()),
+                        crate::operations::vault::secret_kind_label(other.kind()),
                     ),
                     details: Some(serde_json::json!({
-                        "secretKind": secret_kind_label(other.kind()),
+                        "secretKind": crate::operations::vault::secret_kind_label(other.kind()),
                     })),
                 },
             );
@@ -1753,112 +1591,6 @@ pub(super) async fn handle_sign_trust_task(
     )
 }
 
-/// Resolve the SIOP audience (and the SessionBlob's `bind_origin`) from
-/// the optional request target + the entry's declared targets.
-///
-/// Priority:
-/// 1. Explicit `req.target`: must be `Did` or `WebOrigin` (the only two
-///    SIOP-meaningful target kinds). App targets reject — they'd need a
-///    different flow.
-/// 2. First `Did` target on the entry.
-/// 3. First `WebOrigin` target on the entry.
-/// 4. None — caller rejects with `no_audience`.
-///
-/// `bind_origin` is set when the *audience* is a web origin (the wallet
-/// MUST refuse to inject the session into any other origin) OR when the
-/// entry has a web-origin target alongside the DID audience (the wallet
-/// uses the DID for the SIOP exchange but the page lives at the origin).
-/// Returns `None` from `bind_origin` when no web origin is in play (e.g.
-/// pure-DIDComm RP — no browser origin to bind to).
-/// Construct a SessionBlob carrying a bearer-token Authorization
-/// header — the SIOP driver's output shape. Cookie-free. Returns
-/// `(blob, session_id, expires_at_rfc3339)`.
-fn build_session_blob_with_bearer(
-    bearer: String,
-    bind_origin: Option<String>,
-    ttl_secs: u64,
-) -> (SessionBlob, String, String) {
-    let session_id = Uuid::new_v4().to_string();
-    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64)).to_rfc3339();
-    let blob = SessionBlob {
-        session_id: session_id.clone(),
-        expires_at: expires_at.clone(),
-        cookies: Vec::new(),
-        headers: vec![RequestHeader {
-            name: "Authorization".to_string(),
-            value: format!("Bearer {bearer}"),
-        }],
-        local_storage: Vec::new(),
-        session_storage: Vec::new(),
-        bind_origin,
-        // SIOP id_tokens are one-shot — the wallet calls vault/proxy-login
-        // again when the token expires. M3 may upgrade to BeforeExpiry once
-        // the wallet has a background-refresh loop.
-        refresh_hint: None,
-    };
-    (blob, session_id, expires_at)
-}
-
-/// Construct a SessionBlob carrying cookies — the Password POST
-/// driver's output shape. No bearer header (the cookies ARE the
-/// session). Returns `(blob, session_id, expires_at_rfc3339)`.
-///
-/// Only called from the Password POST proxy-login branch (gated on
-/// `webvh` for `password_post::run_password_post`).
-#[cfg(feature = "webvh")]
-fn build_session_blob_with_cookies(
-    cookies: Vec<vti_common::vault::CookieJarEntry>,
-    bind_origin: Option<String>,
-    ttl_secs: u64,
-) -> (SessionBlob, String, String) {
-    let session_id = Uuid::new_v4().to_string();
-    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64)).to_rfc3339();
-    let blob = SessionBlob {
-        session_id: session_id.clone(),
-        expires_at: expires_at.clone(),
-        cookies,
-        headers: Vec::new(),
-        local_storage: Vec::new(),
-        session_storage: Vec::new(),
-        bind_origin,
-        // Password POST sessions can hint the wallet to refresh on 401
-        // (the third party's cookie expired); the maintainer would then
-        // re-run vault/proxy-login. M3 wires this hint into a real
-        // wallet-side refresh loop.
-        refresh_hint: Some(vti_common::vault::RefreshHint::On401),
-    };
-    (blob, session_id, expires_at)
-}
-
-/// Pick the first `web-origin` target on the entry. Used by the
-/// password driver to derive the SessionBlob's `bind_origin` — the
-/// scheme + host + port the wallet will inject cookies into. Returns
-/// `None` if the entry has no web-origin target. Gated on `webvh`
-/// alongside its only caller.
-#[cfg(feature = "webvh")]
-fn first_web_origin(targets: &[SiteTarget]) -> Option<String> {
-    targets.iter().find_map(|t| match t {
-        SiteTarget::WebOrigin { origin } => Some(origin.clone()),
-        _ => None,
-    })
-}
-
-/// Human-readable label for a [`SecretKind`] — used in error messages
-/// so the consumer sees `secretKind password` instead of
-/// `secretKind 0`.
-fn secret_kind_label(kind: SecretKind) -> &'static str {
-    match kind {
-        SecretKind::Password => "password",
-        SecretKind::Passkey => "passkey",
-        SecretKind::OauthTokens => "oauth-tokens",
-        SecretKind::DidSelfIssued => "did-self-issued",
-        SecretKind::DidcommPeer => "didcomm-peer",
-        SecretKind::BearerToken => "bearer-token",
-        SecretKind::SshKey => "ssh-key",
-        SecretKind::Custom => "custom",
-    }
-}
-
 /// Translate a [`crate::operations::vault::password_post::PasswordPostError`]
 /// into the canonical `vault/proxy-login/0.1` reject reason. Per the
 /// spec: 4xx HTTP → `credential_rejected` (not retryable); 5xx HTTP +
@@ -1902,130 +1634,5 @@ fn password_post_error_to_reject(
         PasswordPostError::ResponseParse(msg) => RejectReason::InternalError {
             reason: format!("vault/proxy-login: response parse failure — {msg}"),
         },
-    }
-}
-
-fn resolve_siop_audience(
-    explicit: &Option<SiteTarget>,
-    entry_targets: &[SiteTarget],
-) -> Option<(String, Option<String>)> {
-    // First web-origin on the entry — used as bind_origin whenever the
-    // entry has one, regardless of whether the audience itself is a DID.
-    let entry_origin: Option<String> = entry_targets.iter().find_map(|t| match t {
-        SiteTarget::WebOrigin { origin } => Some(origin.clone()),
-        _ => None,
-    });
-
-    if let Some(t) = explicit {
-        return match t {
-            SiteTarget::Did { did } => Some((did.clone(), entry_origin)),
-            SiteTarget::WebOrigin { origin } => Some((origin.clone(), Some(origin.clone()))),
-            // App targets aren't SIOP audiences.
-            _ => None,
-        };
-    }
-
-    // No explicit target — pick the entry's first DID target, falling
-    // back to its first web-origin.
-    let entry_did: Option<String> = entry_targets.iter().find_map(|t| match t {
-        SiteTarget::Did { did } => Some(did.clone()),
-        _ => None,
-    });
-    if let Some(did) = entry_did {
-        return Some((did, entry_origin));
-    }
-    entry_origin.clone().map(|o| (o, entry_origin))
-}
-
-// Suppress an unused-import warning on the SiteTarget re-export — kept
-// available for handler call-sites that materialise SiteTarget literals
-// in upcoming milestones.
-#[allow(dead_code)]
-type _SiteTargetReexport = SiteTarget;
-
-// M1 leaves handler-level tests to the integration suite (tests/) and to
-// end-to-end verification via the plugin UI in M1.6. The vti-common
-// `vault` module's tests cover the filter/sort logic in isolation; the
-// dispatcher's parity-harness test asserts these URIs are wired. Real
-// HTTP round-trips against the dispatcher arrive in M2 once vault/upsert
-// is available to seed entries through the same authenticated channel
-// (rather than reaching into the keyspace from a test, which would
-// duplicate the wire-form encoder).
-#[allow(dead_code)]
-const _: &() = &();
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn web(o: &str) -> SiteTarget {
-        SiteTarget::WebOrigin {
-            origin: o.to_string(),
-        }
-    }
-    fn did(d: &str) -> SiteTarget {
-        SiteTarget::Did { did: d.to_string() }
-    }
-    fn ios() -> SiteTarget {
-        SiteTarget::IosApp {
-            bundle_id: "com.example.app".into(),
-            team_id: None,
-        }
-    }
-
-    #[test]
-    fn explicit_did_target_uses_did_as_audience_with_entry_origin_as_bind() {
-        let entry_targets = vec![did("did:web:rp.example"), web("https://rp.example")];
-        let (aud, bind) = resolve_siop_audience(&Some(did("did:web:rp.example")), &entry_targets)
-            .expect("audience");
-        assert_eq!(aud, "did:web:rp.example");
-        assert_eq!(bind.as_deref(), Some("https://rp.example"));
-    }
-
-    #[test]
-    fn explicit_web_origin_target_audience_equals_bind() {
-        let entry_targets = vec![web("https://rp.example")];
-        let (aud, bind) = resolve_siop_audience(&Some(web("https://rp.example")), &entry_targets)
-            .expect("audience");
-        assert_eq!(aud, "https://rp.example");
-        assert_eq!(bind.as_deref(), Some("https://rp.example"));
-    }
-
-    #[test]
-    fn explicit_app_target_rejects_for_siop() {
-        let entry_targets = vec![did("did:web:rp.example")];
-        assert!(
-            resolve_siop_audience(&Some(ios()), &entry_targets).is_none(),
-            "app targets aren't SIOP audiences"
-        );
-    }
-
-    #[test]
-    fn no_explicit_target_prefers_first_did_on_entry() {
-        let entry_targets = vec![
-            web("https://rp.example"),
-            did("did:web:rp.example"),
-            did("did:web:other"),
-        ];
-        let (aud, bind) = resolve_siop_audience(&None, &entry_targets).expect("audience");
-        assert_eq!(aud, "did:web:rp.example", "first DID wins over later DIDs");
-        assert_eq!(bind.as_deref(), Some("https://rp.example"));
-    }
-
-    #[test]
-    fn no_explicit_target_falls_back_to_first_web_origin_when_no_did() {
-        let entry_targets = vec![web("https://rp.example")];
-        let (aud, bind) = resolve_siop_audience(&None, &entry_targets).expect("audience");
-        assert_eq!(aud, "https://rp.example");
-        assert_eq!(bind.as_deref(), Some("https://rp.example"));
-    }
-
-    #[test]
-    fn no_audience_when_entry_has_only_app_targets() {
-        let entry_targets = vec![ios()];
-        assert!(
-            resolve_siop_audience(&None, &entry_targets).is_none(),
-            "app-only entry yields no SIOP audience"
-        );
     }
 }

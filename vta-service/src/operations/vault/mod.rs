@@ -26,8 +26,33 @@ use crate::operations::internal_authority::InternalAuthority;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
 
+/// `vault/proxy-login/0.1` driver dispatch + session-blob sealing.
+pub mod proxy_login;
 /// `vault/release/0.1` sealing logic.
 pub mod release;
+
+/// DIDComm `Message.typ` for the proxy-login envelope's cleartext (a
+/// `SessionBlob` per `vault/_shared/0.1/session-blob`). Workspace-namespaced,
+/// same as [`RELEASE_INNER_MSG_TYPE`].
+pub const PROXY_LOGIN_INNER_MSG_TYPE: &str =
+    "https://openvtc.org/vault/proxy-login/session-envelope/1.0";
+
+/// Human-readable label for a [`vti_common::vault::SecretKind`] — used in
+/// error messages so the consumer sees `secretKind password` instead of a
+/// numeric discriminant. Shared by the proxy-login + sign-trust-task handlers.
+pub fn secret_kind_label(kind: vti_common::vault::SecretKind) -> &'static str {
+    use vti_common::vault::SecretKind;
+    match kind {
+        SecretKind::Password => "password",
+        SecretKind::Passkey => "passkey",
+        SecretKind::OauthTokens => "oauth-tokens",
+        SecretKind::DidSelfIssued => "did-self-issued",
+        SecretKind::DidcommPeer => "didcomm-peer",
+        SecretKind::BearerToken => "bearer-token",
+        SecretKind::SshKey => "ssh-key",
+        SecretKind::Custom => "custom",
+    }
+}
 
 /// DIDComm `Message.typ` for the release envelope's cleartext. Workspace-
 /// namespaced (not a Trust Task URI) — purely transport metadata inside the
