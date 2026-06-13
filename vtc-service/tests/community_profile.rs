@@ -32,6 +32,17 @@ async fn build() -> Fixture {
     }
 }
 
+/// Fixture with an `AuditWriter` wired — required for any PUT that
+/// actually changes a field (audit is fail-closed).
+async fn build_with_audit() -> Fixture {
+    let vtc = TestVtc::builder().with_audit(true).build().await;
+    Fixture {
+        router: vtc.router.clone(),
+        state: vtc.state.clone(),
+        vtc,
+    }
+}
+
 async fn token_for(fix: &Fixture, role: &str) -> String {
     fix.vtc.token("did:key:z6MkAdmin", role, vec![]).await
 }
@@ -128,7 +139,7 @@ async fn put_requires_admin_role() {
 
 #[tokio::test]
 async fn put_updates_profile_and_lists_changed_fields() {
-    let fix = build().await;
+    let fix = build_with_audit().await;
     seed_profile(&fix).await;
     let token = token_for(&fix, "admin").await;
     let req = Request::builder()
@@ -219,7 +230,7 @@ async fn put_rejects_oversized_extensions() {
 
 #[tokio::test]
 async fn put_does_not_accept_community_did_in_request() {
-    let fix = build().await;
+    let fix = build_with_audit().await;
     seed_profile(&fix).await;
     let token = token_for(&fix, "admin").await;
 
@@ -251,6 +262,88 @@ async fn put_does_not_accept_community_did_in_request() {
     let changed = body["fieldsChanged"].as_array().unwrap();
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0], "name");
+}
+
+#[tokio::test]
+async fn put_emits_profile_updated_audit_with_real_actor() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent};
+
+    let fix = build_with_audit().await;
+    seed_profile(&fix).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/v1/community/profile")
+        .header("Trust-Task", PROFILE_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"name":"Renamed","description":"new"}"#))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let raw = fix
+        .state
+        .audit_ks
+        .prefix_iter_raw(b"2".to_vec())
+        .await
+        .unwrap();
+    let envelopes: Vec<AuditEnvelope> = raw
+        .iter()
+        .map(|(_, v)| serde_json::from_slice(v).unwrap())
+        .collect();
+    let updated: Vec<&AuditEnvelope> = envelopes
+        .iter()
+        .filter(|e| matches!(e.event, AuditEvent::CommunityProfileUpdated(_)))
+        .collect();
+    assert_eq!(updated.len(), 1, "one CommunityProfileUpdated envelope");
+    let env = updated[0];
+    assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+    let AuditEvent::CommunityProfileUpdated(data) = &env.event else {
+        unreachable!()
+    };
+    assert!(data.fields_changed.contains(&"name".to_string()));
+    assert!(data.fields_changed.contains(&"description".to_string()));
+}
+
+#[tokio::test]
+async fn put_503_when_audit_writer_missing() {
+    // Fail-closed: a profile change that can't be audited is refused.
+    let fix = build().await; // no AuditWriter
+    seed_profile(&fix).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/v1/community/profile")
+        .header("Trust-Task", PROFILE_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"name":"Renamed"}"#))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn put_idempotent_noop_does_not_need_audit_writer() {
+    // A no-op PUT emits no audit, so it must not 503 without a writer.
+    let fix = build().await;
+    seed_profile(&fix).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/v1/community/profile")
+        .header("Trust-Task", PROFILE_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"name":"Example Community"}"#)) // already the value
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["fieldsChanged"].as_array().unwrap().is_empty());
 }
 
 // ──────────────────────── Public profile (unauth) ─────────────

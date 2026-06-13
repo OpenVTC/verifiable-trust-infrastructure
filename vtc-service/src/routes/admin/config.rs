@@ -9,11 +9,13 @@
 //!   require a daemon restart (M0.8.3), and which were rejected
 //!   (and why).
 //!
-//! Sensitive values are run through
-//! `vti_common::audit::ConfigChange::redact_if` before the
-//! `ConfigChanged` audit event is emitted (audit emission is
-//! deferred until `AuditWriter` lands on `AppState` post-M0.9 —
-//! same pattern as `community/profile`).
+//! Every mutating handler emits an audit event keyed to the calling
+//! admin's real DID (the `AdminAuth` extractor's `did`). Sensitive
+//! values are run through `vti_common::audit::ConfigChange::redact_if`
+//! before the `ConfigChanged` event is persisted. Audit is
+//! fail-closed: a mutation that produces a change but cannot be
+//! recorded (no `AuditWriter` configured) returns 503 rather than
+//! applying silently.
 
 use std::collections::HashMap;
 
@@ -79,14 +81,19 @@ pub async fn get_config(
 
 /// PATCH handler.
 pub async fn patch_config(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<PatchRequest>,
 ) -> Result<(StatusCode, Json<PatchResponse>), AppError> {
     let store = ConfigStore::new(state.config_ks.clone());
+    // Snapshot the current db-layer overrides up front so each applied
+    // key's audit record carries its real `old_value` + source.
+    let current = store.snapshot().await?;
     let mut applied = Vec::new();
     let mut pending_restart = Vec::new();
     let mut rejected = Vec::new();
+    let mut audit_changes: Vec<ConfigChange> = Vec::new();
+    let mut requires_restart = false;
 
     for (key, value) in req.overrides {
         let Some(def) = lookup(&key) else {
@@ -105,6 +112,8 @@ pub async fn patch_config(
             continue;
         }
 
+        let old_value = current.get(&key).cloned();
+
         if let Err(e) = store.put(&key, &value).await {
             rejected.push(RejectedKey {
                 key,
@@ -120,16 +129,47 @@ pub async fn patch_config(
             "admin config PATCH applied"
         );
 
+        let mut change = ConfigChange {
+            key: key.clone(),
+            old_value: old_value.clone(),
+            new_value: value,
+            // The db-overlay is the only PATCH-writable layer, so a
+            // prior db value was `Db`; absence means the resolved
+            // value came from a lower (env/toml/default) layer — we
+            // record `Default` to match the import path's convention.
+            source_before: if old_value.is_some() {
+                ConfigSource::Db
+            } else {
+                ConfigSource::Default
+            },
+        };
+        change.redact_if(|k| matches!(lookup(k), Some(d) if d.sensitive));
+        audit_changes.push(change);
+
         if def.requires_restart {
+            requires_restart = true;
             pending_restart.push(key);
         } else {
             applied.push(key);
         }
     }
 
-    // `ConfigChanged` audit emission lands when AuditWriter is wired
-    // into AppState post-M0.9. The audit event's sensitive-value
-    // redaction will use `ConfigChange::redact_if` from M0.1.5.
+    // Fail-closed: a config mutation that can't be audited is refused
+    // (matches reload/restart/import). No applied changes → nothing to
+    // audit, so a rejects-only or empty PATCH never needs the writer.
+    if !audit_changes.is_empty() {
+        let audit_writer = require_audit_writer(&state)?;
+        audit_writer
+            .write(
+                &admin.0.did,
+                None,
+                AuditEvent::ConfigChanged(ConfigChangedData {
+                    changes: audit_changes,
+                    requires_restart,
+                }),
+            )
+            .await?;
+    }
 
     Ok((
         StatusCode::OK,
@@ -173,7 +213,7 @@ pub struct ReloadResponse {
 /// session-cleanup interval, etc.) will plug into the same diff
 /// loop.
 pub async fn reload_config(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<ReloadResponse>, AppError> {
     let audit_writer = require_audit_writer(&state)?;
@@ -217,8 +257,7 @@ pub async fn reload_config(
 
     audit_writer
         .write(
-            "did:key:vtc-admin", // M0.6.2 will swap this for the real admin DID once
-            // the audit-actor plumbing wires `AdminAuth` through.
+            &admin.0.did,
             None,
             AuditEvent::ConfigReloaded(ConfigReloadedData {
                 keys_reloaded: keys_reloaded.clone(),
@@ -261,7 +300,7 @@ pub struct RestartResponse {
 /// log *before* signalling shutdown — so the row survives even if
 /// the drain wedges.
 pub async fn restart_config(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
 ) -> Result<Json<RestartResponse>, AppError> {
     let audit_writer = require_audit_writer(&state)?;
@@ -275,7 +314,7 @@ pub async fn restart_config(
 
     audit_writer
         .write(
-            "did:key:vtc-admin",
+            &admin.0.did,
             None,
             AuditEvent::RestartRequested(RestartRequestedData {
                 drain_timeout_seconds: DEFAULT_DRAIN_TIMEOUT_SECS,
@@ -442,7 +481,7 @@ pub struct ImportResponse {
 }
 
 pub async fn import_config(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Query(query): Query<ImportQuery>,
     Json(req): Json<ConfigExport>,
@@ -583,7 +622,7 @@ pub async fn import_config(
     if !audit_changes.is_empty() {
         audit_writer
             .write(
-                "did:key:vtc-admin",
+                &admin.0.did,
                 None,
                 AuditEvent::ConfigChanged(ConfigChangedData {
                     changes: audit_changes,
@@ -595,7 +634,7 @@ pub async fn import_config(
     if !community_profile_applied.is_empty() {
         audit_writer
             .write(
-                "did:key:vtc-admin",
+                &admin.0.did,
                 None,
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: community_profile_applied.clone(),

@@ -1237,6 +1237,18 @@ diff-and-confirm flow: the response surfaces every changed field
 with a pre-apply preview; a second call with `confirm=true` applies.
 Per-field audit events emitted on apply.
 
+**Config-mutation audit (P1.2).** Every config-mutation door audits
+to the calling admin's real DID — there is no longer a
+`did:key:vtc-admin` actor sentinel. `PATCH /v1/admin/config` emits
+`ConfigChanged` (with per-key `sensitive` redaction), `PUT
+/v1/community/profile` emits `CommunityProfileUpdated`, and
+`reload`/`restart`/`import` carry the real actor too. Audit is
+**fail-closed**: a mutation that produces a change but cannot be
+recorded (no `AuditWriter` configured) returns `503` rather than
+applying silently, so auditability never depends on which equivalent
+door the admin used. A no-op (nothing changed) emits nothing and does
+not require the writer.
+
 Full config taxonomy (which key reloads, which restarts, which is
 UX-settable, sensitive-flag) lives in `docs/04-reference/vtc-config.md`,
 not in this spec.

@@ -126,7 +126,7 @@ async fn get_requires_authentication() {
 
 #[tokio::test]
 async fn patch_applies_reloadable_key_immediately() {
-    let fix = build().await;
+    let fix = build_with(true, None).await;
     let token = token_for(&fix, "admin").await;
     let req = Request::builder()
         .method("PATCH")
@@ -165,7 +165,7 @@ async fn patch_applies_reloadable_key_immediately() {
 
 #[tokio::test]
 async fn patch_restart_required_key_is_pending() {
-    let fix = build().await;
+    let fix = build_with(true, None).await;
     let token = token_for(&fix, "admin").await;
     let req = Request::builder()
         .method("PATCH")
@@ -237,7 +237,7 @@ async fn patch_invalid_value_rejected_with_reason() {
 
 #[tokio::test]
 async fn patch_mixed_batch_partitions_correctly() {
-    let fix = build().await;
+    let fix = build_with(true, None).await;
     let token = token_for(&fix, "admin").await;
     let body = json!({
         "log.level": "debug",      // applied
@@ -305,6 +305,94 @@ async fn patch_empty_body_returns_empty_response() {
     assert_eq!(body["applied"], json!([]));
     assert_eq!(body["pendingRestart"], json!([]));
     assert_eq!(body["rejected"], json!([]));
+}
+
+#[tokio::test]
+async fn patch_emits_config_changed_audit_with_real_actor() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent};
+
+    let fix = build_with(true, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", CONFIG_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"log.level":"debug","server.port":9100}"#))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let raw = fix
+        .state
+        .audit_ks
+        .prefix_iter_raw(b"2".to_vec())
+        .await
+        .unwrap();
+    let envelopes: Vec<AuditEnvelope> = raw
+        .iter()
+        .map(|(_, v)| serde_json::from_slice(v).unwrap())
+        .collect();
+    let changed: Vec<&AuditEnvelope> = envelopes
+        .iter()
+        .filter(|e| matches!(e.event, AuditEvent::ConfigChanged(_)))
+        .collect();
+    assert_eq!(changed.len(), 1, "exactly one ConfigChanged envelope");
+    let env = changed[0];
+    // Actor is the calling admin's real DID, not the old sentinel.
+    assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+    let AuditEvent::ConfigChanged(data) = &env.event else {
+        unreachable!()
+    };
+    assert!(
+        data.requires_restart,
+        "server.port change flags requires_restart"
+    );
+    let keys: Vec<&str> = data.changes.iter().map(|c| c.key.as_str()).collect();
+    assert!(keys.contains(&"log.level"));
+    assert!(keys.contains(&"server.port"));
+}
+
+#[tokio::test]
+async fn patch_rejects_only_does_not_need_audit_writer() {
+    // A PATCH that applies nothing (only rejects) emits no audit, so
+    // it must not 503 even when no AuditWriter is configured.
+    let fix = build_with(false, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", CONFIG_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"made.up.key":"value"}"#))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["applied"], json!([]));
+    assert_eq!(body["rejected"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn patch_503_when_audit_writer_missing() {
+    // A PATCH that would apply a real change is refused (fail-closed)
+    // when the change can't be audited.
+    let fix = build_with(false, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", CONFIG_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _body) = body_value(resp).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ──────────────────────── Trust-Task gate ────────────────────────
@@ -727,8 +815,15 @@ async fn import_confirm_applies_profile_and_overrides() {
     let mut saw_config = false;
     for env in &envelopes {
         match &env.event {
-            vti_common::audit::AuditEvent::CommunityProfileUpdated(_) => saw_profile = true,
-            vti_common::audit::AuditEvent::ConfigChanged(_) => saw_config = true,
+            vti_common::audit::AuditEvent::CommunityProfileUpdated(_) => {
+                saw_profile = true;
+                // Actor is the importing admin's real DID, not the sentinel.
+                assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+            }
+            vti_common::audit::AuditEvent::ConfigChanged(_) => {
+                saw_config = true;
+                assert_eq!(env.actor_did_plain.as_deref(), Some("did:key:z6MkAdmin"));
+            }
             _ => {}
         }
     }

@@ -19,6 +19,7 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tracing::info;
+use vti_common::audit::{AuditEvent, CommunityProfileUpdatedData};
 use vti_common::auth::{AdminAuth, AuthClaims};
 use vti_common::error::AppError;
 
@@ -126,8 +127,14 @@ pub struct UpdateProfileResponse {
 }
 
 /// PUT handler. Admin-only. Refuses changes to `community_did`.
+///
+/// Emits a `CommunityProfileUpdated` audit event keyed to the
+/// calling admin's real DID. Audit is fail-closed: a change that
+/// can't be recorded (no `AuditWriter`) returns 503 rather than
+/// persisting silently — matching the `/v1/admin/config` doors so
+/// auditability doesn't depend on which surface the admin used.
 pub async fn put_profile(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Json(update): Json<CommunityProfileUpdate>,
 ) -> Result<(StatusCode, Json<UpdateProfileResponse>), AppError> {
@@ -149,6 +156,15 @@ pub async fn put_profile(
         ));
     }
 
+    // Fail-closed: refuse to persist a change we can't audit.
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "audit writer not configured".into(),
+        })?;
+
     store_profile(&state.community_ks, &profile).await?;
     info!(
         community_did = %profile.community_did,
@@ -156,10 +172,15 @@ pub async fn put_profile(
         "community profile updated"
     );
 
-    // Audit emission (`CommunityProfileUpdated` per M0.1.5) is wired
-    // in once an `AuditWriter` lands in `AppState` (post-M0.9). The
-    // `fields_changed` list returned here is the same shape the
-    // event will carry.
+    audit_writer
+        .write(
+            &admin.0.did,
+            None,
+            AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
+                fields_changed: fields_changed.clone(),
+            }),
+        )
+        .await?;
 
     Ok((
         StatusCode::OK,
