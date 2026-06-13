@@ -27,27 +27,24 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
 use vti_common::config::MessagingConfig;
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
+use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::messaging::handshake::{
     HandshakeError, HandshakeOptions, ListenerProver, mediator_handshake,
 };
-use crate::messaging::registry::{MediatorBinding, MediatorListenerRegistry, RegistryError};
+use crate::messaging::registry::{MediatorBinding, RegistryError};
 use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
 use crate::operations::protocol::document::{DocumentPatchError, with_didcomm_service};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 /// Caller-supplied parameters.
@@ -121,26 +118,12 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn enable_didcomm(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    registry: &MediatorListenerRegistry,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     prover: &(dyn ListenerProver + Send + Sync),
     auth: &AuthClaims,
     params: EnableDidcommParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<EnableDidcommResult, EnableDidcommError> {
     auth.require_super_admin()
@@ -150,15 +133,15 @@ pub async fn enable_didcomm(
 
     // Pre-flight: must currently be disabled, VTA DID must exist,
     // current DID document must be loadable.
-    let (vta_did, scid, current_doc) = read_preconditions(config, webvh_ks).await?;
+    let (vta_did, scid, current_doc) = read_preconditions(deps.config, deps.webvh_ks).await?;
 
     // Step 1–5: handshake (with --force gating step 2–5). On failure
     // this returns before any LogEntry is published — atomicity
     // guarantee.
     let resolved = mediator_handshake(
-        did_resolver,
+        deps.did_resolver,
         prover,
-        telemetry,
+        deps.telemetry,
         &params.mediator_did,
         &vta_did,
         HandshakeOptions {
@@ -175,7 +158,7 @@ pub async fn enable_didcomm(
     // mutation never started; no snapshot needed).
     use crate::operations::protocol::snapshot::{self, DidcommSnapshot, ServiceConfigSnapshot};
     snapshot::write(
-        snapshot_ks,
+        deps.snapshot_ks,
         ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Disabled),
     )
     .await
@@ -190,22 +173,22 @@ pub async fn enable_didcomm(
     // LogEntry append. Rotates control keys; preserves
     // verificationMethod.
     let update_result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         &scid,
         UpdateDidWebvhOptions {
             document: Some(patched),
             ..Default::default()
         },
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         Some(vta_did.as_str()),
-        webvh_auth_locks,
+        deps.webvh_auth_locks,
         channel,
     )
     .await?;
@@ -216,16 +199,16 @@ pub async fn enable_didcomm(
     //   * `messaging.mediator_did` / `mediator_url` to disk — that's operator
     //     config (the endpoint to register with), not runtime state, so it
     //     belongs in config.toml.
-    crate::operations::protocol::runtime_state::set_didcomm_enabled(service_state_ks, true)
+    crate::operations::protocol::runtime_state::set_didcomm_enabled(deps.service_state_ks, true)
         .await
         .map_err(|e| EnableDidcommError::ConfigPersistence(format!("runtime state: {e}")))?;
-    persist_didcomm_enabled(config, &resolved.mediator_did, &resolved.endpoint).await?;
+    persist_didcomm_enabled(deps.config, &resolved.mediator_did, &resolved.endpoint).await?;
 
     // Register the mediator as active. The caller (the route layer)
     // is responsible for opening the upstream listener if it isn't
     // already; the registry's `record_activate` updates state +
     // emits the `ServicesDidcommUpdate` telemetry event.
-    registry
+    deps.registry
         .record_activate(MediatorBinding {
             mediator_did: resolved.mediator_did.clone(),
             endpoint: resolved.endpoint.clone(),
@@ -243,7 +226,7 @@ pub async fn enable_didcomm(
     if let Some(tag) = ctx.telemetry_triggered_by() {
         event = event.with_field("triggered_by", JsonValue::from(tag));
     }
-    let _ = telemetry.record(event).await;
+    let _ = deps.telemetry.record(event).await;
 
     info!(
         channel,
@@ -300,10 +283,17 @@ async fn persist_didcomm_enabled(
 
 #[cfg(test)]
 mod tests {
+    use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+    use vti_common::seed_store::SeedStore;
+    use vti_common::telemetry::SharedTelemetrySink;
+
     use super::*;
     use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
     use crate::keys::seed_store::PlaintextSeedStore;
+    use crate::messaging::drain_sweeper::DrainSweeper;
     use crate::messaging::handshake::{AlwaysOkProver, FailingProver, HandshakeStage};
+    use crate::messaging::registry::MediatorListenerRegistry;
     use crate::operations::protocol::snapshot;
     use crate::store::Store;
     use crate::test_support::test_app_config;
@@ -350,41 +340,105 @@ mod tests {
         Arc::new(PlaintextSeedStore::new(dir))
     }
 
+    /// Owns every keyspace (each from its own fjall store, as the refusal-path
+    /// tests need) plus the shared infra, and hands out a borrowed
+    /// [`ServiceOpDeps`]. Consolidates the previously-inline per-test setup so
+    /// the op can be called with the P2.5 dep bundle.
+    struct TestEnv {
+        _dirs: Vec<tempfile::TempDir>,
+        keys_ks: KeyspaceHandle,
+        imported_ks: KeyspaceHandle,
+        contexts_ks: KeyspaceHandle,
+        webvh_ks: KeyspaceHandle,
+        audit_ks: KeyspaceHandle,
+        snapshot_ks: KeyspaceHandle,
+        service_state_ks: KeyspaceHandle,
+        drains_ks: KeyspaceHandle,
+        config: Arc<RwLock<AppConfig>>,
+        seed: Arc<dyn SeedStore>,
+        resolver: DIDCacheClient,
+        bridge: Arc<DIDCommBridge>,
+        sink: SharedTelemetrySink,
+        registry: Arc<MediatorListenerRegistry>,
+        sweeper: Arc<DrainSweeper>,
+        locks: crate::operations::did_webvh::WebvhAuthLocks,
+    }
+
+    impl TestEnv {
+        async fn new(seed_dir: &std::path::Path, config: Arc<RwLock<AppConfig>>) -> Self {
+            let (bridge, registry, sink) = mocks();
+            let (d1, keys_ks) = empty_keyspace("keys").await;
+            let (d2, imported_ks) = empty_keyspace("imported_secrets").await;
+            let (d3, contexts_ks) = empty_keyspace("contexts").await;
+            let (d4, webvh_ks) = empty_keyspace("webvh").await;
+            let (d5, audit_ks) = empty_keyspace("audit").await;
+            let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
+            let (d7, service_state_ks) = empty_keyspace("service_state").await;
+            let (d8, drains_ks) = empty_keyspace("drains").await;
+            let (tx, _rx) = crate::messaging::drain_sweeper::teardown_channel(8);
+            let sweeper = Arc::new(DrainSweeper::new(
+                Arc::clone(&registry),
+                drains_ks.clone(),
+                tx,
+            ));
+            let resolver = DIDCacheClient::new(
+                affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+            )
+            .await
+            .unwrap();
+            Self {
+                _dirs: vec![d1, d2, d3, d4, d5, d6, d7, d8],
+                keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                audit_ks,
+                snapshot_ks,
+                service_state_ks,
+                drains_ks,
+                config,
+                seed: dummy_seed_store(seed_dir),
+                resolver,
+                bridge,
+                sink,
+                registry,
+                sweeper,
+                locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
+            }
+        }
+
+        fn deps(&self) -> ServiceOpDeps<'_> {
+            ServiceOpDeps {
+                config: &self.config,
+                keys_ks: &self.keys_ks,
+                imported_ks: &self.imported_ks,
+                contexts_ks: &self.contexts_ks,
+                webvh_ks: &self.webvh_ks,
+                audit_ks: &self.audit_ks,
+                snapshot_ks: &self.snapshot_ks,
+                service_state_ks: &self.service_state_ks,
+                drains_ks: &self.drains_ks,
+                seed_store: &*self.seed,
+                did_resolver: &self.resolver,
+                didcomm_bridge: &self.bridge,
+                telemetry: &self.sink,
+                webvh_auth_locks: &self.locks,
+                registry: &self.registry,
+                sweeper: &self.sweeper,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn refuses_when_didcomm_already_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path());
         config.write().await.services.didcomm = true;
-        let (bridge, registry, sink) = mocks();
-        let (_kd, keys_ks) = empty_keyspace("keys").await;
-        let (_imp_d, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_cd, contexts_ks) = empty_keyspace("contexts").await;
-        let (_wd, webvh_ks) = empty_keyspace("webvh").await;
-        let (_ad, audit_ks) = empty_keyspace("audit").await;
-        let (_sd, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state2, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = DIDCacheClient::new(
-            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
-        )
-        .await
-        .unwrap();
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed_store(dir.path());
 
         let result = enable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &registry,
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             EnableDidcommParams {
@@ -393,7 +447,6 @@ mod tests {
                 handshake_timeout: Duration::from_secs(1),
             },
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await;
@@ -409,36 +462,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path());
         config.write().await.vta_did = None;
-        let (bridge, registry, sink) = mocks();
-        let (_kd, keys_ks) = empty_keyspace("keys").await;
-        let (_imp_d, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_cd, contexts_ks) = empty_keyspace("contexts").await;
-        let (_wd, webvh_ks) = empty_keyspace("webvh").await;
-        let (_ad, audit_ks) = empty_keyspace("audit").await;
-        let (_sd, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state2, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = DIDCacheClient::new(
-            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
-        )
-        .await
-        .unwrap();
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed_store(dir.path());
 
         let result = enable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &registry,
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             EnableDidcommParams {
@@ -447,7 +475,6 @@ mod tests {
                 handshake_timeout: Duration::from_secs(1),
             },
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await;
@@ -463,36 +490,11 @@ mod tests {
         // Configured VTA DID, but webvh_ks is empty — corrupted state.
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path());
-        let (bridge, registry, sink) = mocks();
-        let (_kd, keys_ks) = empty_keyspace("keys").await;
-        let (_imp_d, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_cd, contexts_ks) = empty_keyspace("contexts").await;
-        let (_wd, webvh_ks) = empty_keyspace("webvh").await;
-        let (_ad, audit_ks) = empty_keyspace("audit").await;
-        let (_sd, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state2, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = DIDCacheClient::new(
-            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
-        )
-        .await
-        .unwrap();
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed_store(dir.path());
 
         let result = enable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &registry,
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             EnableDidcommParams {
@@ -501,7 +503,6 @@ mod tests {
                 handshake_timeout: Duration::from_secs(1),
             },
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await;
@@ -524,39 +525,14 @@ mod tests {
         // leaves config and registry untouched.
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path());
-        let (bridge, registry, sink) = mocks();
-        let (_kd, keys_ks) = empty_keyspace("keys").await;
-        let (_imp_d, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_cd, contexts_ks) = empty_keyspace("contexts").await;
-        let (_wd, webvh_ks) = empty_keyspace("webvh").await;
-        let (_ad, audit_ks) = empty_keyspace("audit").await;
-        let (_sd, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state2, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = DIDCacheClient::new(
-            affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
-        )
-        .await
-        .unwrap();
+        let env = TestEnv::new(dir.path(), config.clone()).await;
         let prover = FailingProver {
             stage: HandshakeStage::TrustPing,
             cause: "synthetic".into(),
         };
-        let seed = dummy_seed_store(dir.path());
 
         let _ = enable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &registry,
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             EnableDidcommParams {
@@ -565,7 +541,6 @@ mod tests {
                 handshake_timeout: Duration::from_secs(1),
             },
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await;
@@ -575,7 +550,7 @@ mod tests {
         assert!(!cfg.services.didcomm);
         assert!(cfg.messaging.is_none());
         // Registry untouched.
-        assert!(registry.active_listener_id().await.is_none());
+        assert!(env.registry.active_listener_id().await.is_none());
     }
 
     // The success path lands in the integration test (P3.5) — it

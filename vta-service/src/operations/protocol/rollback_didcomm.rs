@@ -35,23 +35,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::SharedTelemetrySink;
-
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::messaging::drain_sweeper::DrainSweeper;
 use crate::messaging::handshake::{HandshakeError, ListenerProver};
-use crate::messaging::registry::MediatorListenerRegistry;
 use crate::operations::did_webvh::UpdateDidWebvhError;
-use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommError, DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -65,6 +57,7 @@ use crate::operations::protocol::snapshot::{
 use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommError, UpdateDidcommParams, update_didcomm,
 };
+use crate::operations::protocol::{OpContext, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 /// Handshake timeout when re-promoting a prior mediator. Matches
@@ -179,27 +172,11 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn rollback_didcomm(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    drains_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    registry: &MediatorListenerRegistry,
-    sweeper: &DrainSweeper,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     prover: &(dyn ListenerProver + Send + Sync),
     auth: &AuthClaims,
     params: RollbackDidcommParams,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<RollbackDidcommResult, RollbackDidcommError> {
     auth.require_super_admin()
@@ -208,7 +185,7 @@ pub async fn rollback_didcomm(
     // PROTOCOL_LOCK is taken by the dispatched forward op —
     // holding it twice would deadlock. The snapshot read is
     // atomic via fjall.
-    let snap = snapshot::read(snapshot_ks, ServiceKind::Didcomm)
+    let snap = snapshot::read(deps.snapshot_ks, ServiceKind::Didcomm)
         .await
         .map_err(|e| RollbackDidcommError::Storage(format!("snapshot read: {e}")))?
         .ok_or(RollbackDidcommError::NoPriorMutation)?;
@@ -221,7 +198,7 @@ pub async fn rollback_didcomm(
         }
     };
 
-    let current_mediator = read_current_didcomm_mediator(config, webvh_ks).await?;
+    let current_mediator = read_current_didcomm_mediator(deps.config, deps.webvh_ks).await?;
 
     info!(
         channel,
@@ -234,28 +211,13 @@ pub async fn rollback_didcomm(
         // Snapshot says off, currently on → disable.
         (DidcommSnapshot::Disabled, Some(prior)) => {
             let result = disable_didcomm(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                drains_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                registry,
-                sweeper,
-                telemetry,
+                deps,
                 auth,
                 DisableDidcommParams {
                     drain_ttl: params.drain_ttl,
                     transport: params.transport,
                 },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;
@@ -279,19 +241,7 @@ pub async fn rollback_didcomm(
             None,
         ) => {
             let result = enable_didcomm(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                registry,
-                telemetry,
+                deps,
                 prover,
                 auth,
                 EnableDidcommParams {
@@ -300,7 +250,6 @@ pub async fn rollback_didcomm(
                     handshake_timeout: DEFAULT_ROLLBACK_HANDSHAKE_TIMEOUT,
                 },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;
@@ -324,21 +273,7 @@ pub async fn rollback_didcomm(
             Some(current),
         ) if mediator_did != current => {
             let result = update_didcomm(
-                config,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                audit_ks,
-                drains_ks,
-                snapshot_ks,
-                service_state_ks,
-                seed_store,
-                did_resolver,
-                didcomm_bridge,
-                registry,
-                sweeper,
-                telemetry,
+                deps,
                 prover,
                 auth,
                 UpdateDidcommParams {
@@ -350,7 +285,6 @@ pub async fn rollback_didcomm(
                     transport: params.transport,
                 },
                 OpContext::Rollback,
-                webvh_auth_locks,
                 channel,
             )
             .await?;

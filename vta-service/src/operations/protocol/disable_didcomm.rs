@@ -33,18 +33,15 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::info;
 
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
+use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::messaging::drain_sweeper::DrainSweeper;
-use crate::messaging::registry::{MediatorListenerRegistry, RegistryError};
+use crate::messaging::registry::RegistryError;
 use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
 use crate::operations::protocol::document::{DocumentPatchError, without_didcomm_service};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 /// Spec minimum drain TTL when called over DIDComm transport: 1
@@ -147,27 +144,11 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn disable_didcomm(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    drains_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    registry: &MediatorListenerRegistry,
-    sweeper: &DrainSweeper,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     auth: &AuthClaims,
     params: DisableDidcommParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<DisableDidcommResult, DisableDidcommError> {
     auth.require_super_admin()
@@ -177,7 +158,7 @@ pub async fn disable_didcomm(
 
     // Pre-flight checks (atomic; nothing mutated until past here).
     let (vta_did, scid, current_doc, prior_mediator) =
-        read_preconditions(config, webvh_ks, &params).await?;
+        read_preconditions(deps.config, deps.webvh_ks, &params).await?;
 
     // Persist snapshot BEFORE the runtime mutation per spec §3.5a.
     // Pre-state is DidcommSnapshot::Enabled with the prior mediator
@@ -186,7 +167,7 @@ pub async fn disable_didcomm(
     // service entry doesn't carry routing-keys today.
     use crate::operations::protocol::snapshot::{self, DidcommSnapshot, ServiceConfigSnapshot};
     snapshot::write(
-        snapshot_ks,
+        deps.snapshot_ks,
         ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Enabled {
             mediator_did: prior_mediator.clone(),
             routing_keys: vec![],
@@ -200,22 +181,22 @@ pub async fn disable_didcomm(
 
     // Publish via update_did_webvh.
     let update_result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         &scid,
         UpdateDidWebvhOptions {
             document: Some(patched),
             ..Default::default()
         },
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         Some(vta_did.as_str()),
-        webvh_auth_locks,
+        deps.webvh_auth_locks,
         channel,
     )
     .await?;
@@ -223,11 +204,11 @@ pub async fn disable_didcomm(
     // Persist: `services.didcomm = false` to fjall (authoritative runtime
     // state) + mirror into the in-memory config. `messaging` stays intact so
     // the drained listener can still reach the mediator until its TTL expires.
-    crate::operations::protocol::runtime_state::set_didcomm_enabled(service_state_ks, false)
+    crate::operations::protocol::runtime_state::set_didcomm_enabled(deps.service_state_ks, false)
         .await
         .map_err(|e| DisableDidcommError::ConfigPersistence(format!("runtime state: {e}")))?;
     {
-        let mut cfg = config.write().await;
+        let mut cfg = deps.config.write().await;
         cfg.services.didcomm = false;
     }
 
@@ -239,13 +220,13 @@ pub async fn disable_didcomm(
         // sweeper fires; with TTL=0 we don't go through the
         // sweeper, so deactivate is the only signal — the
         // listener is removed on next service restart.
-        registry.record_deactivate().await;
+        deps.registry.record_deactivate().await;
         None
     } else {
         // First, dethrone the active mediator in registry state so
         // the subsequent drain insert isn't refused with
         // `ActiveMediatorMustBeReplaced`.
-        registry.record_deactivate().await;
+        deps.registry.record_deactivate().await;
         let deadline = Utc::now()
             + chrono::Duration::from_std(params.drain_ttl).map_err(|e| {
                 DisableDidcommError::ConfigPersistence(format!("drain TTL out of range: {e}"))
@@ -254,14 +235,14 @@ pub async fn disable_didcomm(
         // entry. Re-resolving the prior mediator here is bounded
         // and avoids carrying the endpoint through several layers
         // of state.
-        let endpoint = best_effort_endpoint(did_resolver, &prior_mediator).await;
-        registry
-            .record_drain_persisted(drains_ks, &prior_mediator, endpoint, deadline)
+        let endpoint = best_effort_endpoint(deps.did_resolver, &prior_mediator).await;
+        deps.registry
+            .record_drain_persisted(deps.drains_ks, &prior_mediator, endpoint, deadline)
             .await?;
         // Arm the sweeper so the TTL actually fires. Without this
         // call the drain entry sits in fjall + registry forever
         // (it would be replayed on next boot but never expire).
-        sweeper.arm(&prior_mediator, deadline).await;
+        deps.sweeper.arm(&prior_mediator, deadline).await;
         Some(deadline)
     };
 
@@ -285,7 +266,7 @@ pub async fn disable_didcomm(
     if let Some(tag) = ctx.telemetry_triggered_by() {
         event = event.with_field("triggered_by", JsonValue::from(tag));
     }
-    let _ = telemetry.record(event).await;
+    let _ = deps.telemetry.record(event).await;
 
     info!(
         channel,
@@ -367,9 +348,15 @@ async fn best_effort_endpoint(resolver: &DIDCacheClient, mediator_did: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use vti_common::seed_store::SeedStore;
+    use vti_common::telemetry::SharedTelemetrySink;
+
     use super::*;
     use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
     use crate::keys::seed_store::PlaintextSeedStore;
+    use crate::messaging::drain_sweeper::DrainSweeper;
+    use crate::messaging::registry::MediatorListenerRegistry;
     use crate::operations::protocol::snapshot;
     use crate::store::Store;
     use crate::test_support::test_app_config;
@@ -444,6 +431,84 @@ mod tests {
         }
     }
 
+    /// Owns every keyspace + shared infra and hands out a borrowed
+    /// [`ServiceOpDeps`] (P2.5). All the refusal-path tests below bail before
+    /// touching the registry/sweeper, so a fresh bundle per test is enough.
+    struct TestEnv {
+        _dirs: Vec<tempfile::TempDir>,
+        keys_ks: KeyspaceHandle,
+        imported_ks: KeyspaceHandle,
+        contexts_ks: KeyspaceHandle,
+        webvh_ks: KeyspaceHandle,
+        audit_ks: KeyspaceHandle,
+        snapshot_ks: KeyspaceHandle,
+        service_state_ks: KeyspaceHandle,
+        drains_ks: KeyspaceHandle,
+        config: Arc<RwLock<AppConfig>>,
+        seed: Arc<dyn SeedStore>,
+        resolver: DIDCacheClient,
+        bridge: Arc<DIDCommBridge>,
+        sink: SharedTelemetrySink,
+        registry: Arc<MediatorListenerRegistry>,
+        sweeper: Arc<DrainSweeper>,
+        locks: crate::operations::did_webvh::WebvhAuthLocks,
+    }
+
+    impl TestEnv {
+        async fn new(seed_dir: &std::path::Path, config: Arc<RwLock<AppConfig>>) -> Self {
+            let (bridge, registry, sink) = registry();
+            let (d1, keys_ks) = empty_keyspace("keys").await;
+            let (d2, imported_ks) = empty_keyspace("imported_secrets").await;
+            let (d3, contexts_ks) = empty_keyspace("contexts").await;
+            let (d4, webvh_ks) = empty_keyspace("webvh").await;
+            let (d5, audit_ks) = empty_keyspace("audit").await;
+            let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
+            let (d7, service_state_ks) = empty_keyspace("service_state").await;
+            let (d8, drains_ks) = empty_keyspace("drains").await;
+            let sweeper = sweeper_for(Arc::clone(&registry), drains_ks.clone());
+            Self {
+                _dirs: vec![d1, d2, d3, d4, d5, d6, d7, d8],
+                keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                audit_ks,
+                snapshot_ks,
+                service_state_ks,
+                drains_ks,
+                config,
+                seed: dummy_seed(seed_dir),
+                resolver: resolver().await,
+                bridge,
+                sink,
+                registry,
+                sweeper,
+                locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
+            }
+        }
+
+        fn deps(&self) -> ServiceOpDeps<'_> {
+            ServiceOpDeps {
+                config: &self.config,
+                keys_ks: &self.keys_ks,
+                imported_ks: &self.imported_ks,
+                contexts_ks: &self.contexts_ks,
+                webvh_ks: &self.webvh_ks,
+                audit_ks: &self.audit_ks,
+                snapshot_ks: &self.snapshot_ks,
+                service_state_ks: &self.service_state_ks,
+                drains_ks: &self.drains_ks,
+                seed_store: &*self.seed,
+                did_resolver: &self.resolver,
+                didcomm_bridge: &self.bridge,
+                telemetry: &self.sink,
+                webvh_auth_locks: &self.locks,
+                registry: &self.registry,
+                sweeper: &self.sweeper,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn refuses_when_not_currently_enabled() {
         let dir = tempfile::tempdir().unwrap();
@@ -452,38 +517,13 @@ mod tests {
             /* didcomm = */ false,
             /* rest = */ true,
         );
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             rest_params(Duration::from_secs(3600)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -501,38 +541,13 @@ mod tests {
             /* didcomm = */ true,
             /* rest = */ false,
         );
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             rest_params(Duration::from_secs(3600)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -546,39 +561,14 @@ mod tests {
         // DIDComm transport.
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true, true);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         // 30 minutes < 1h minimum.
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             didcomm_params(Duration::from_secs(1800)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -600,39 +590,14 @@ mod tests {
     async fn refuses_drain_ttl_above_max() {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true, true);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         // 31 days > 30-day MAX_DRAIN_TTL.
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             rest_params(Duration::from_secs(31 * 86_400)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -651,41 +616,16 @@ mod tests {
         // 0s is permitted over REST transport.
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true, true);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         // 0s over REST passes the TTL guard; the next refusal
         // will be VtaDidRecordMissing (because no webvh setup in
         // the fixture). That confirms TTL=0 is not the blocker.
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             rest_params(Duration::from_secs(0)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -700,38 +640,13 @@ mod tests {
     async fn allows_1h_drain_over_didcomm() {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true, true);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
-        let seed = dummy_seed(dir.path());
+        let env = TestEnv::new(dir.path(), config).await;
 
         let err = disable_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &super_admin(),
             didcomm_params(Duration::from_secs(3600)),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await

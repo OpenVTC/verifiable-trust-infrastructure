@@ -32,14 +32,11 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use vti_common::config::MessagingConfig;
-use vti_common::seed_store::SeedStore;
-use vti_common::telemetry::{SharedTelemetrySink, TelemetryEvent, TelemetryKind};
+use vti_common::telemetry::{TelemetryEvent, TelemetryKind};
 
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::messaging::drain_sweeper::DrainSweeper;
 use crate::messaging::handshake::{
     HandshakeError, HandshakeOptions, ListenerProver, mediator_handshake,
 };
@@ -48,7 +45,7 @@ use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, u
 use crate::operations::protocol::document::{
     DocumentPatchError, current_didcomm_service, with_didcomm_service,
 };
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 /// Distinguish a forward migrate from a rollback in telemetry. The
@@ -163,28 +160,12 @@ impl From<crate::operations::protocol::preconditions::ProtocolPreconditionError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn update_didcomm(
-    config: &Arc<RwLock<AppConfig>>,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    drains_ks: &KeyspaceHandle,
-    snapshot_ks: &KeyspaceHandle,
-    _service_state_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
-    registry: &MediatorListenerRegistry,
-    sweeper: &DrainSweeper,
-    telemetry: &SharedTelemetrySink,
+    deps: &ServiceOpDeps<'_>,
     prover: &(dyn ListenerProver + Send + Sync),
     auth: &AuthClaims,
     params: UpdateDidcommParams,
     ctx: OpContext,
-    webvh_auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateDidcommResult, UpdateDidcommError> {
     auth.require_super_admin()
@@ -208,7 +189,7 @@ pub async fn update_didcomm(
     //    active and not be in drain. Read-only — purely captures
     //    the prior state we'll snapshot.
     let (vta_did, scid, current_doc, prior_mediator) =
-        read_preconditions(config, registry, webvh_ks, &params).await?;
+        read_preconditions(deps.config, deps.registry, deps.webvh_ks, &params).await?;
 
     // 2. Persist snapshot BEFORE any side-effecting I/O per spec
     //    §3.5a. Mirrors `update_rest`'s ordering. The handshake
@@ -221,7 +202,7 @@ pub async fn update_didcomm(
     //    today (tracked: list.rs's matching gap).
     use crate::operations::protocol::snapshot::{self, DidcommSnapshot, ServiceConfigSnapshot};
     snapshot::write(
-        snapshot_ks,
+        deps.snapshot_ks,
         ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Enabled {
             mediator_did: prior_mediator.clone(),
             routing_keys: vec![],
@@ -234,9 +215,9 @@ pub async fn update_didcomm(
     //    — the spec's atomicity guarantee. Snapshot already on disk
     //    is harmless; a subsequent successful update overwrites it.
     let resolved = mediator_handshake(
-        did_resolver,
+        deps.did_resolver,
         prover,
-        telemetry,
+        deps.telemetry,
         &params.new_mediator_did,
         &vta_did,
         HandshakeOptions {
@@ -252,33 +233,33 @@ pub async fn update_didcomm(
 
     // Publish new LogEntry.
     let update_result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         &scid,
         UpdateDidWebvhOptions {
             document: Some(patched),
             ..Default::default()
         },
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         Some(vta_did.as_str()),
-        webvh_auth_locks,
+        deps.webvh_auth_locks,
         channel,
     )
     .await?;
 
     // Persist config: messaging.mediator_did = new.
-    persist_new_mediator(config, &resolved.mediator_did, &resolved.endpoint).await?;
+    persist_new_mediator(deps.config, &resolved.mediator_did, &resolved.endpoint).await?;
 
     // Promote new mediator; place prior in drain. The
     // record_activate call evicts any drain entry for the new
     // mediator (rollback semantics).
-    registry
+    deps.registry
         .record_activate(MediatorBinding {
             mediator_did: resolved.mediator_did.clone(),
             endpoint: resolved.endpoint.clone(),
@@ -289,12 +270,12 @@ pub async fn update_didcomm(
         + chrono::Duration::from_std(params.drain_ttl).map_err(|e| {
             UpdateDidcommError::ConfigPersistence(format!("drain TTL out of range: {e}"))
         })?;
-    let prior_endpoint = best_effort_endpoint(did_resolver, &prior_mediator).await;
-    registry
-        .record_drain_persisted(drains_ks, &prior_mediator, prior_endpoint, deadline)
+    let prior_endpoint = best_effort_endpoint(deps.did_resolver, &prior_mediator).await;
+    deps.registry
+        .record_drain_persisted(deps.drains_ks, &prior_mediator, prior_endpoint, deadline)
         .await?;
     // Arm the sweeper so the drain TTL actually fires.
-    sweeper.arm(&prior_mediator, deadline).await;
+    deps.sweeper.arm(&prior_mediator, deadline).await;
 
     let mut event = TelemetryEvent::new(TelemetryKind::ServicesDidcommUpdate)
         .with_mediator(&resolved.mediator_did)
@@ -311,7 +292,7 @@ pub async fn update_didcomm(
     if let Some(tag) = ctx.telemetry_triggered_by() {
         event = event.with_field("triggered_by", JsonValue::from(tag));
     }
-    let _ = telemetry.record(event).await;
+    let _ = deps.telemetry.record(event).await;
 
     info!(
         channel,
@@ -404,9 +385,14 @@ async fn best_effort_endpoint(resolver: &DIDCacheClient, mediator_did: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use vti_common::seed_store::SeedStore;
+    use vti_common::telemetry::SharedTelemetrySink;
+
     use super::*;
     use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
     use crate::keys::seed_store::PlaintextSeedStore;
+    use crate::messaging::drain_sweeper::DrainSweeper;
     use crate::messaging::handshake::AlwaysOkProver;
     use crate::operations::protocol::snapshot;
     use crate::store::Store;
@@ -468,6 +454,84 @@ mod tests {
         .unwrap()
     }
 
+    /// Owns every keyspace + shared infra and hands out a borrowed
+    /// [`ServiceOpDeps`] (P2.5). `registry` / `drains_ks` stay public so a
+    /// test can pre-seed drain state before the op runs.
+    struct TestEnv {
+        _dirs: Vec<tempfile::TempDir>,
+        keys_ks: KeyspaceHandle,
+        imported_ks: KeyspaceHandle,
+        contexts_ks: KeyspaceHandle,
+        webvh_ks: KeyspaceHandle,
+        audit_ks: KeyspaceHandle,
+        snapshot_ks: KeyspaceHandle,
+        service_state_ks: KeyspaceHandle,
+        drains_ks: KeyspaceHandle,
+        config: Arc<RwLock<AppConfig>>,
+        seed: Arc<dyn SeedStore>,
+        resolver: DIDCacheClient,
+        bridge: Arc<DIDCommBridge>,
+        sink: SharedTelemetrySink,
+        registry: Arc<MediatorListenerRegistry>,
+        sweeper: Arc<DrainSweeper>,
+        locks: crate::operations::did_webvh::WebvhAuthLocks,
+    }
+
+    impl TestEnv {
+        async fn new(seed_dir: &std::path::Path, config: Arc<RwLock<AppConfig>>) -> Self {
+            let (bridge, registry, sink) = registry();
+            let (d1, keys_ks) = empty_keyspace("keys").await;
+            let (d2, imported_ks) = empty_keyspace("imported_secrets").await;
+            let (d3, contexts_ks) = empty_keyspace("contexts").await;
+            let (d4, webvh_ks) = empty_keyspace("webvh").await;
+            let (d5, audit_ks) = empty_keyspace("audit").await;
+            let (d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
+            let (d7, service_state_ks) = empty_keyspace("service_state").await;
+            let (d8, drains_ks) = empty_keyspace("drains").await;
+            let sweeper = sweeper_for(Arc::clone(&registry), drains_ks.clone());
+            Self {
+                _dirs: vec![d1, d2, d3, d4, d5, d6, d7, d8],
+                keys_ks,
+                imported_ks,
+                contexts_ks,
+                webvh_ks,
+                audit_ks,
+                snapshot_ks,
+                service_state_ks,
+                drains_ks,
+                config,
+                seed: dummy_seed(seed_dir),
+                resolver: resolver().await,
+                bridge,
+                sink,
+                registry,
+                sweeper,
+                locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
+            }
+        }
+
+        fn deps(&self) -> ServiceOpDeps<'_> {
+            ServiceOpDeps {
+                config: &self.config,
+                keys_ks: &self.keys_ks,
+                imported_ks: &self.imported_ks,
+                contexts_ks: &self.contexts_ks,
+                webvh_ks: &self.webvh_ks,
+                audit_ks: &self.audit_ks,
+                snapshot_ks: &self.snapshot_ks,
+                service_state_ks: &self.service_state_ks,
+                drains_ks: &self.drains_ks,
+                seed_store: &*self.seed,
+                did_resolver: &self.resolver,
+                didcomm_bridge: &self.bridge,
+                telemetry: &self.sink,
+                webvh_auth_locks: &self.locks,
+                registry: &self.registry,
+                sweeper: &self.sweeper,
+            }
+        }
+    }
+
     fn forward_params(new_mediator: &str) -> UpdateDidcommParams {
         UpdateDidcommParams {
             new_mediator_did: new_mediator.into(),
@@ -483,40 +547,15 @@ mod tests {
     async fn refuses_when_didcomm_not_enabled() {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), /* didcomm = */ false);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed(dir.path());
 
         let err = update_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             forward_params("did:m:B"),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -529,40 +568,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true);
         config.write().await.vta_did = None;
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed(dir.path());
 
         let err = update_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             forward_params("did:m:B"),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -577,60 +591,38 @@ mod tests {
         // operator at `drain cancel` or `rollback`.
         let dir = tempfile::tempdir().unwrap();
         let config = fresh_config(dir.path(), true);
-        let (bridge, reg, sink) = registry();
-        let (_d1, keys_ks) = empty_keyspace("keys").await;
-        let (_dimp, imported_ks) = empty_keyspace("imported_secrets").await;
-        let (_d2, contexts_ks) = empty_keyspace("contexts").await;
-        let (_d3, webvh_ks) = empty_keyspace("webvh").await;
-        let (_d4, audit_ks) = empty_keyspace("audit").await;
-        let (_d5, drains_ks) = empty_keyspace("drains").await;
-        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
-        let (_d_svc_state, service_state_ks) = empty_keyspace("service_state").await;
-        let resolver = resolver().await;
+        let env = TestEnv::new(dir.path(), config).await;
         let prover = AlwaysOkProver;
-        let seed = dummy_seed(dir.path());
 
         // Pre-populate registry with mediator B in drain.
-        reg.record_activate(MediatorBinding {
-            mediator_did: "did:m:A".into(),
-            endpoint: "wss://A".into(),
-        })
-        .await;
-        reg.record_activate(MediatorBinding {
-            mediator_did: "did:m:placeholder".into(),
-            endpoint: "wss://placeholder".into(),
-        })
-        .await;
-        reg.record_drain_persisted(
-            &drains_ks,
-            "did:m:B",
-            "wss://B".into(),
-            Utc::now() + chrono::Duration::seconds(3600),
-        )
-        .await
-        .unwrap();
+        env.registry
+            .record_activate(MediatorBinding {
+                mediator_did: "did:m:A".into(),
+                endpoint: "wss://A".into(),
+            })
+            .await;
+        env.registry
+            .record_activate(MediatorBinding {
+                mediator_did: "did:m:placeholder".into(),
+                endpoint: "wss://placeholder".into(),
+            })
+            .await;
+        env.registry
+            .record_drain_persisted(
+                &env.drains_ks,
+                "did:m:B",
+                "wss://B".into(),
+                Utc::now() + chrono::Duration::seconds(3600),
+            )
+            .await
+            .unwrap();
 
         let err = update_didcomm(
-            &config,
-            &keys_ks,
-            &imported_ks,
-            &contexts_ks,
-            &webvh_ks,
-            &audit_ks,
-            &drains_ks,
-            &snapshot_ks,
-            &service_state_ks,
-            &*seed,
-            &resolver,
-            &bridge,
-            &reg,
-            &sweeper_for(Arc::clone(&reg), drains_ks.clone()),
-            &sink,
+            &env.deps(),
             &prover,
             &super_admin(),
             forward_params("did:m:B"),
             OpContext::Direct,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await

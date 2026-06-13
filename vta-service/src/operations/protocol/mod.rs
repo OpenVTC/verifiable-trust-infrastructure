@@ -132,23 +132,27 @@ impl OpContext {
     }
 }
 
-/// Ambient dependencies shared by every REST/WebAuthn service-management
-/// operation (`enable` / `update` / `disable` / `rollback`).
+/// Ambient dependencies shared by every service-management operation
+/// (`enable` / `update` / `disable` / `rollback`, across REST, WebAuthn, and
+/// DIDComm).
 ///
-/// Before P2.5 each of these eight ops took the same ~14 positional arguments
-/// (config + keyspaces + seed-store + resolver + bridge + telemetry +
-/// auth-locks), tripping `clippy::too_many_arguments`. Bundling them into one
-/// borrowed struct — built once at the transport boundary via
-/// [`ServiceOpDeps::from_app_state`] / [`ServiceOpDeps::from_vta_state`] (or
+/// Before P2.5 each op took the same long run of positional arguments (config,
+/// keyspaces, seed-store, resolver, bridge, telemetry, auth-locks, and — for the
+/// DIDComm family — the mediator registry, drain sweeper, and drain keyspace),
+/// tripping `clippy::too_many_arguments` (the worst topped out at 25 args).
+/// Bundling them into one borrowed struct — built once at the transport boundary
+/// via [`ServiceOpDeps::from_app_state`] / [`ServiceOpDeps::from_vta_state`] (or
 /// directly by the offline CLI) and threaded through unchanged — drops every op
-/// to ≤5 args and lets the rollback dispatcher hand its forward op the deps
+/// to ≤6 args and lets the rollback dispatcher hand its forward op the deps
 /// verbatim instead of re-listing every keyspace.
 ///
 /// All fields are borrows: the struct is cheap to build per request and never
-/// outlives the state it borrows from. The internal lifecycle engine
-/// ([`service_lifecycle`]) reads the subset it needs; `service_state_ks` is
-/// consumed only by the REST enable/disable runtime-state persist step (the
-/// engine itself never touches it).
+/// outlives the state it borrows from. Each op reads the subset it needs — the
+/// REST/WebAuthn ops ignore `drains_ks` / `registry` / `sweeper`; the lifecycle
+/// engine ([`service_lifecycle`]) additionally ignores `service_state_ks` (the
+/// REST persist step's concern). The per-call mediator handshake `prover` is
+/// **not** here — it's constructed per invocation (transient vs live), so the
+/// DIDComm ops still take it as a separate argument.
 pub struct ServiceOpDeps<'a> {
     pub config: &'a std::sync::Arc<tokio::sync::RwLock<crate::config::AppConfig>>,
     pub keys_ks: &'a crate::store::KeyspaceHandle,
@@ -158,11 +162,21 @@ pub struct ServiceOpDeps<'a> {
     pub audit_ks: &'a crate::store::KeyspaceHandle,
     pub snapshot_ks: &'a crate::store::KeyspaceHandle,
     pub service_state_ks: &'a crate::store::KeyspaceHandle,
+    /// Persisted drain set — read only by the DIDComm family (mediator
+    /// changes go through a drain window; REST/WebAuthn have no drain
+    /// semantics).
+    pub drains_ks: &'a crate::store::KeyspaceHandle,
     pub seed_store: &'a dyn vti_common::seed_store::SeedStore,
     pub did_resolver: &'a affinidi_did_resolver_cache_sdk::DIDCacheClient,
     pub didcomm_bridge: &'a std::sync::Arc<crate::didcomm_bridge::DIDCommBridge>,
     pub telemetry: &'a vti_common::telemetry::SharedTelemetrySink,
     pub webvh_auth_locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
+    /// Active + draining mediator listener registry — DIDComm family only.
+    #[cfg(feature = "webvh")]
+    pub registry: &'a crate::messaging::registry::MediatorListenerRegistry,
+    /// Per-mediator drain-TTL sweeper — DIDComm family only.
+    #[cfg(feature = "webvh")]
+    pub sweeper: &'a crate::messaging::drain_sweeper::DrainSweeper,
 }
 
 impl<'a> ServiceOpDeps<'a> {
@@ -186,11 +200,14 @@ impl<'a> ServiceOpDeps<'a> {
             audit_ks: &s.audit_ks,
             snapshot_ks: &s.snapshot_ks,
             service_state_ks: &s.service_state_ks,
+            drains_ks: &s.drains_ks,
             seed_store: &*s.seed_store,
             did_resolver,
             didcomm_bridge: &s.didcomm_bridge,
             telemetry: &s.telemetry,
             webvh_auth_locks: &s.webvh_auth_locks,
+            registry: &s.mediator_registry,
+            sweeper: &s.drain_sweeper,
         }
     }
 
@@ -210,11 +227,14 @@ impl<'a> ServiceOpDeps<'a> {
             audit_ks: &s.audit_ks,
             snapshot_ks: &s.snapshot_ks,
             service_state_ks: &s.service_state_ks,
+            drains_ks: &s.drains_ks,
             seed_store: &*s.seed_store,
             did_resolver,
             didcomm_bridge: &s.didcomm_bridge,
             telemetry: &s.telemetry,
             webvh_auth_locks: &s.webvh_auth_locks,
+            registry: &s.mediator_registry,
+            sweeper: &s.drain_sweeper,
         }
     }
 }

@@ -296,25 +296,13 @@ pub async fn handle_disable_didcomm(
 
     let body: DisableDidcommBody = serde_json::from_value(message.body).map_err(handler_err)?;
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = disable_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         &auth,
         DisableDidcommParams {
             drain_ttl: Duration::from_secs(body.drain_ttl_secs),
@@ -323,7 +311,6 @@ pub async fn handle_disable_didcomm(
             transport: DisableTransport::Didcomm,
         },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;
@@ -379,25 +366,13 @@ pub async fn handle_update_didcomm(
         MigrateAuditKind::Forward
     };
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = update_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         &prover,
         &auth,
         UpdateDidcommParams {
@@ -409,7 +384,6 @@ pub async fn handle_update_didcomm(
             transport: crate::operations::protocol::disable_didcomm::DisableTransport::Didcomm,
         },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;
@@ -699,25 +673,13 @@ pub async fn handle_rollback_didcomm(
             None => &always_ok,
         };
 
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
     let result = rollback_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        state
-            .did_resolver
-            .as_ref()
-            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
-        &state.didcomm_bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         prover_ref,
         &auth,
         RollbackDidcommParams {
@@ -727,7 +689,6 @@ pub async fn handle_rollback_didcomm(
             // the dispatch ends up in disable_didcomm.
             transport: DisableTransport::Didcomm,
         },
-        &state.webvh_auth_locks,
         "didcomm",
     )
     .await;

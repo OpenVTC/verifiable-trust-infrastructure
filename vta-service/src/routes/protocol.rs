@@ -114,7 +114,6 @@ pub async fn enable_didcomm_handler(
         });
     }
 
-    let bridge = Arc::clone(&state.didcomm_bridge);
     let did_resolver = state
         .did_resolver
         .as_ref()
@@ -144,20 +143,9 @@ pub async fn enable_didcomm_handler(
 
     let prover = AlwaysOkProver;
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = match enable_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &bridge,
-        &state.mediator_registry,
-        &state.telemetry,
+        &deps,
         &prover,
         &auth.0,
         EnableDidcommParams {
@@ -166,7 +154,6 @@ pub async fn enable_didcomm_handler(
             handshake_timeout: timeout,
         },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await
@@ -498,36 +485,21 @@ pub async fn disable_didcomm_handler(
     State(state): State<AppState>,
     Json(req): Json<DisableDidcommRequest>,
 ) -> Result<Json<DisableDidcommResponse>, DisableDidcommHttpError> {
-    let bridge = Arc::clone(&state.didcomm_bridge);
     let did_resolver = state
         .did_resolver
         .as_ref()
         .ok_or(DisableDidcommHttpError::DidResolverUnavailable)?
         .clone();
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = disable_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         &auth.0,
         DisableDidcommParams {
             drain_ttl: Duration::from_secs(req.drain_ttl_secs),
             transport: DisableTransport::Rest,
         },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -811,22 +783,9 @@ pub async fn update_didcomm_handler(
             None => &always_ok,
         };
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = update_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         prover_ref,
         &auth.0,
         UpdateDidcommParams {
@@ -838,7 +797,6 @@ pub async fn update_didcomm_handler(
             transport: crate::operations::protocol::disable_didcomm::DisableTransport::Rest,
         },
         OpContext::Direct,
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;
@@ -1767,29 +1725,15 @@ pub async fn rollback_didcomm_handler(
 
     let drain_ttl = Duration::from_secs(req.drain_ttl_secs.unwrap_or(86_400));
 
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
     let result = rollback_didcomm(
-        &state.config,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &state.drains_ks,
-        &state.snapshot_ks,
-        &state.service_state_ks,
-        &*state.seed_store,
-        &did_resolver,
-        &bridge,
-        &state.mediator_registry,
-        &state.drain_sweeper,
-        &state.telemetry,
+        &deps,
         prover_ref,
         &auth.0,
         RollbackDidcommParams {
             drain_ttl,
             transport: DidcommTransport::Rest,
         },
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;

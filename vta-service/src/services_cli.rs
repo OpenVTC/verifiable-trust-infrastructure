@@ -99,10 +99,10 @@ struct OfflineDeps {
 }
 
 impl OfflineDeps {
-    /// Borrow the REST/WebAuthn service-op dependency bundle. The offline CLI
-    /// owns its `did_resolver` (always present, unlike `AppState`'s `Option`),
-    /// so this is infallible — the same shape `ServiceOpDeps::from_app_state`
-    /// produces for the online path.
+    /// Borrow the full service-op dependency bundle. The offline CLI owns its
+    /// `did_resolver` (always present, unlike `AppState`'s `Option`), so this is
+    /// infallible — the same shape `ServiceOpDeps::from_app_state` produces for
+    /// the online path (REST/WebAuthn + DIDComm).
     fn service_op_deps(&self) -> ServiceOpDeps<'_> {
         ServiceOpDeps {
             config: &self.config,
@@ -113,11 +113,14 @@ impl OfflineDeps {
             audit_ks: &self.audit_ks,
             snapshot_ks: &self.snapshot_ks,
             service_state_ks: &self.service_state_ks,
+            drains_ks: &self.drains_ks,
             seed_store: &self.seed_store,
             did_resolver: &self.did_resolver,
             didcomm_bridge: &self.didcomm_bridge,
             telemetry: &self.telemetry,
             webvh_auth_locks: &self.webvh_auth_locks,
+            registry: &self.registry,
+            sweeper: &self.sweeper,
         }
     }
 }
@@ -369,20 +372,9 @@ pub async fn run_services_didcomm_enable(
     let d = build_offline_deps(config_path).await?;
     let prover = AlwaysOkProver;
     let timeout = std::time::Duration::from_secs(handshake_timeout_secs.unwrap_or(10));
+    let deps = d.service_op_deps();
     let result = enable_didcomm(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.registry,
-        &d.telemetry,
+        &deps,
         &prover,
         &d.auth,
         EnableDidcommParams {
@@ -391,7 +383,6 @@ pub async fn run_services_didcomm_enable(
             handshake_timeout: timeout,
         },
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -415,22 +406,9 @@ pub async fn run_services_didcomm_update(
 ) -> CliResult {
     let d = build_offline_deps(config_path).await?;
     let prover = AlwaysOkProver;
+    let deps = d.service_op_deps();
     let result = update_didcomm(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.drains_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.registry,
-        &d.sweeper,
-        &d.telemetry,
+        &deps,
         &prover,
         &d.auth,
         UpdateDidcommParams {
@@ -442,7 +420,6 @@ pub async fn run_services_didcomm_update(
             transport: crate::operations::protocol::disable_didcomm::DisableTransport::Rest,
         },
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -461,22 +438,9 @@ pub async fn run_services_didcomm_disable(
     drain_ttl_secs: u64,
 ) -> CliResult {
     let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
     let result = disable_didcomm(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.drains_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.registry,
-        &d.sweeper,
-        &d.telemetry,
+        &deps,
         &d.auth,
         DisableDidcommParams {
             drain_ttl: std::time::Duration::from_secs(drain_ttl_secs),
@@ -486,7 +450,6 @@ pub async fn run_services_didcomm_disable(
             transport: DisableTransport::Rest,
         },
         OpContext::Direct,
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
@@ -514,29 +477,15 @@ pub async fn run_services_didcomm_rollback(
     // `AlwaysOkProver`. A subsequent `pnm services didcomm update`
     // against a running VTA exercises the live prover.
     let prover = AlwaysOkProver;
+    let deps = d.service_op_deps();
     let result = rollback_didcomm(
-        &d.config,
-        &d.keys_ks,
-        &d.imported_ks,
-        &d.contexts_ks,
-        &d.webvh_ks,
-        &d.audit_ks,
-        &d.drains_ks,
-        &d.snapshot_ks,
-        &d.service_state_ks,
-        &d.seed_store,
-        &d.did_resolver,
-        &d.didcomm_bridge,
-        &d.registry,
-        &d.sweeper,
-        &d.telemetry,
+        &deps,
         &prover,
         &d.auth,
         RollbackDidcommParams {
             drain_ttl: std::time::Duration::from_secs(drain_ttl_secs.unwrap_or(86_400)),
             transport: DisableTransport::Rest,
         },
-        &d.webvh_auth_locks,
         "vta-cli-offline",
     )
     .await
