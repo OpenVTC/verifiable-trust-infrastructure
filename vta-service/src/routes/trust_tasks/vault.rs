@@ -273,13 +273,6 @@ enum SealedEnvelopeWire {
     DidcommAuthcrypt { jwe: String },
 }
 
-/// DIDComm `Message.typ` for the release envelope's cleartext. Workspace-
-/// namespaced (not a Trust Task URI) — this is purely transport metadata
-/// inside the JWE; the outer Trust Task envelope carries the
-/// `vault/release/0.1#response` type and the consumer parses the JWE
-/// body as `VaultSecret` directly per the spec.
-const RELEASE_INNER_MSG_TYPE: &str = "https://openvtc.org/vault/release/secret-envelope/1.0";
-
 /// DIDComm `Message.typ` for the proxy-login envelope's cleartext.
 /// Counterpart of [`RELEASE_INNER_MSG_TYPE`] for the SessionBlob the
 /// wallet receives. Same workspace namespace; the JWE body is a
@@ -1049,7 +1042,7 @@ pub(super) async fn handle_release(
         Err(resp) => return resp,
     };
 
-    let mut stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
+    let stored = match get_stored_vault_entry(&state.vault_ks, &req.entry_id).await {
         Ok(Some(e)) => e,
         Ok(None) => {
             return reject_with(
@@ -1077,9 +1070,8 @@ pub(super) async fn handle_release(
         return reject;
     }
 
-    // ATM is required for outbound authcrypt. Pre-flight check before
-    // we build the message so the error is clearly "infrastructure not
-    // configured" rather than a packing failure mid-flow.
+    // ATM + vta_did readiness — checked here so the error is clearly
+    // "infrastructure not configured" rather than a packing failure mid-flow.
     let atm = match state.atm.as_ref() {
         Some(atm) => atm,
         None => {
@@ -1091,97 +1083,40 @@ pub(super) async fn handle_release(
             );
         }
     };
-
-    let vta_did = {
-        let config = state.config.read().await;
-        match config.vta_did.clone() {
-            Some(d) => d,
-            None => {
-                return reject_with(
-                    &doc,
-                    RejectReason::InternalError {
-                        reason: "vta_did not configured — server cannot identify itself as signer"
-                            .into(),
-                    },
-                );
-            }
-        }
-    };
-
-    // Cap TTL. Client hint is honoured up to the M2A.3 ceiling (60s);
-    // a higher hint silently caps rather than rejecting.
-    const TTL_CEILING: u32 = 60;
-    let ttl_seconds = req
-        .ttl_seconds_hint
-        .map(|t| t.min(TTL_CEILING))
-        .unwrap_or(TTL_CEILING);
-
-    // Serialise the VaultSecret as the cleartext body of the inner
-    // DIDComm message. Per the canonical sealed-envelope schema, the
-    // cleartext inside the JWE is the VaultSecret JSON directly.
-    let secret_body = match serde_json::to_value(&stored.secret) {
-        Ok(v) => v,
-        Err(e) => {
+    let vta_did = match state.config.read().await.vta_did.clone() {
+        Some(d) => d,
+        None => {
             return reject_with(
                 &doc,
                 RejectReason::InternalError {
-                    reason: format!("vault/release: failed to serialise secret: {e}"),
+                    reason: "vta_did not configured — server cannot identify itself as signer"
+                        .into(),
                 },
             );
         }
     };
 
-    let msg = Message::build(
-        Uuid::new_v4().to_string(),
-        RELEASE_INNER_MSG_TYPE.to_string(),
-        secret_body,
+    // Seal the secret to the holder (operations layer; P2.4).
+    match crate::operations::vault::release::release_secret(
+        atm,
+        &state.vault_ks,
+        &vta_did,
+        &auth.did,
+        stored,
+        req.ttl_seconds_hint,
     )
-    .from(vta_did.clone())
-    .to(auth.did.clone())
-    .finalize();
-
-    let (jwe, _metadata) = match atm
-        .pack_encrypted(&msg, &auth.did, Some(&vta_did), Some(&vta_did))
-        .await
+    .await
     {
-        Ok(packed) => packed,
-        Err(e) => {
-            return reject_with(
-                &doc,
-                RejectReason::InternalError {
-                    reason: format!("vault/release: pack_encrypted failed: {e}"),
-                },
-            );
-        }
-    };
-
-    // Update lastUsedAt on the stored entry. Server-managed metadata —
-    // NOT a version bump (that's reserved for user-visible mutations
-    // gated by optimistic concurrency). A concurrent upsert with a
-    // stale expectedVersion still validates against the version this
-    // release didn't touch.
-    let now = chrono::Utc::now().to_rfc3339();
-    stored.entry.last_used_at = Some(now);
-    if let Err(e) = put_stored_vault_entry(&state.vault_ks, &stored).await {
-        // Persist failure isn't fatal — the secret has been sealed and
-        // is on its way. Log via the audit reject path so an operator
-        // can see lastUsedAt drift if it ever happens.
-        tracing::warn!(
-            entry_id = %stored.entry.id,
-            error = %e,
-            "vault/release: lastUsedAt update failed; secret release proceeded"
-        );
+        Ok(out) => success_response(
+            &doc,
+            VaultReleaseResponseBody {
+                sealed_secret: SealedEnvelopeWire::DidcommAuthcrypt { jwe: out.jwe },
+                secret_kind: out.secret_kind,
+                ttl_seconds: out.ttl_seconds,
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, e),
     }
-
-    let secret_kind = stored.entry.secret_kind;
-    success_response(
-        &doc,
-        VaultReleaseResponseBody {
-            sealed_secret: SealedEnvelopeWire::DidcommAuthcrypt { jwe },
-            secret_kind,
-            ttl_seconds,
-        },
-    )
 }
 
 /// Per-driver TTL ceilings. SIOP is capped by the underlying id_token's

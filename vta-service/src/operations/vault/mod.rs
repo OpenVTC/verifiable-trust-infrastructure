@@ -11,17 +11,51 @@
 //! land in M2B.5 — they'll grow this module rather than the handler's
 //! file so the auth-elevated paths stay scoped here.
 
+use affinidi_messaging_didcomm::Message;
 use affinidi_secrets_resolver::secrets::Secret;
+use affinidi_tdk::messaging::ATM;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
 use crate::operations::internal_authority::InternalAuthority;
 use crate::store::KeyspaceHandle;
 use vta_sdk::did_key::decode_private_key_multibase;
+
+/// `vault/release/0.1` sealing logic.
+pub mod release;
+
+/// DIDComm `Message.typ` for the release envelope's cleartext. Workspace-
+/// namespaced (not a Trust Task URI) — purely transport metadata inside the
+/// JWE; the consumer parses the JWE body as `VaultSecret` directly per the
+/// `vault/release/0.1` spec.
+pub const RELEASE_INNER_MSG_TYPE: &str = "https://openvtc.org/vault/release/secret-envelope/1.0";
+
+/// Authcrypt `body` from the VTA (`vta_did`) to `holder_did`, returning the
+/// JWE. Shared by the release + proxy-login flows — both seal a cleartext body
+/// (a `VaultSecret` / a `SessionBlob`) to the calling holder, signed and
+/// encrypted as the VTA. `inner_type` is the inner DIDComm `Message.typ`.
+pub async fn authcrypt_to_holder(
+    atm: &ATM,
+    vta_did: &str,
+    holder_did: &str,
+    inner_type: &str,
+    body: serde_json::Value,
+) -> Result<String, AppError> {
+    let msg = Message::build(Uuid::new_v4().to_string(), inner_type.to_string(), body)
+        .from(vta_did.to_string())
+        .to(holder_did.to_string())
+        .finalize();
+    let (jwe, _metadata) = atm
+        .pack_encrypted(&msg, holder_did, Some(vta_did), Some(vta_did))
+        .await
+        .map_err(|e| AppError::Internal(format!("pack_encrypted failed: {e}")))?;
+    Ok(jwe)
+}
 
 /// HTTP-POST driver for vault/proxy-login/0.1 against
 /// `VaultSecret::Password` entries with a populated `loginConfig`.
