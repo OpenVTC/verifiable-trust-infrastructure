@@ -316,6 +316,22 @@ statement — all data operations require attestation:
 or config change baked into the EIF). After each build, update the KMS key policy
 with the new PCR0 value from `nitro-cli build-enclave` output.
 
+**Client-side PCR pinning (P3.4).** The KMS key policy pins the image *server-side*
+(KMS won't release secrets to the wrong PCR0/PCR8). Operators can additionally pin
+it *client-side* at first-boot bootstrap:
+
+```bash
+pnm bootstrap connect --vta-url https://vta.example.com \
+    --expect-pcr0 <hash> --expect-pcr8 <hash>
+```
+
+The attestation is always cryptographically verified; `--expect-pcr0/--expect-pcr8`
+add defense-in-depth — a genuine-but-*wrong* enclave build produces a valid quote
+with a different PCR0, and the pin makes `pnm` refuse to install the admin
+credential (typed `PcrMismatch`). Use the **same** `nitro-cli build-enclave` hashes
+you put in the KMS policy; when PCR0 rotates on a rebuild, update both. Omit the
+flags to accept any genuine Nitro enclave (the pre-P3.4 behaviour).
+
 ### Component 4: Config Changes
 
 ```toml

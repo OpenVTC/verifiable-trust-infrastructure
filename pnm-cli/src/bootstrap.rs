@@ -160,7 +160,10 @@ pub async fn run_open(
             }
             println!();
             println!("To install this credential, use the online bootstrap flow:");
-            println!("  pnm bootstrap connect --vta-url <url> [--expect-digest <sha256>]");
+            println!(
+                "  pnm bootstrap connect --vta-url <url> [--expect-digest <sha256>] \
+                 [--expect-pcr0 <hex>] [--expect-pcr8 <hex>]"
+            );
         }
         SealedPayloadV1::ContextProvision(p) => {
             println!("Payload: ContextProvision");
@@ -255,20 +258,25 @@ struct BootstrapResponseWire {
     digest: String,
 }
 
-/// `pnm bootstrap connect --vta-url <URL> [--expect-digest <HEX>]`
+/// `pnm bootstrap connect --vta-url <URL> [--expect-digest <HEX>]
+///   [--expect-pcr0 <HEX>] [--expect-pcr8 <HEX>]`
 ///
 /// Online TEE first-boot bootstrap. Generates an ephemeral Ed25519 keypair,
 /// POSTs the `did:key` as `client_did` to `/bootstrap/request`, verifies
-/// the attestation quote, installs the minted admin credential, and
+/// the attestation quote (optionally pinning the enclave PCR0/PCR8 — P3.4),
+/// installs the minted admin credential, and
 /// registers the VTA under a slug in `pnm` config. Only the first successful
 /// call against a fresh TEE VTA succeeds — the carve-out closes on success.
 ///
 /// For non-TEE VTAs use `pnm setup` (temp did:key + admin grant via
 /// `vta acl create` + auto-rotate on first authenticated connect).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_connect(
     vta_url: String,
     expect_digest: Option<String>,
     no_verify_digest: bool,
+    expect_pcr0: Option<String>,
+    expect_pcr8: Option<String>,
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -333,13 +341,34 @@ pub async fn run_connect(
     // so we pass the raw Ed25519 pubkey we generated (the same bytes the
     // server decoded from `client_did`) rather than any X25519 derivative.
     let attest = verify_nitro_assertion(&opened.producer, &ed_pub, &nonce)?;
+    // Client-side PCR pinning (P3.4): refuse a genuine-but-WRONG enclave image
+    // / signing cert. No-op unless the operator passed --expect-pcr0/8.
+    attest
+        .check_pcrs(expect_pcr0.as_deref(), expect_pcr8.as_deref())
+        .map_err(|e| {
+            format!(
+                "{e}. The attestation is cryptographically valid but the enclave does not \
+                 match the pinned measurement — refusing to bootstrap. Confirm the expected \
+                 PCR against the deployed EIF / KMS key policy."
+            )
+        })?;
     println!("TEE attestation verified.");
     println!("  Enclave module: {}", attest.module_id);
     if !attest.pcr0_hex.is_empty() {
-        println!("  PCR0:           {}", attest.pcr0_hex);
+        let pinned = if expect_pcr0.is_some() {
+            " (pinned ✓)"
+        } else {
+            ""
+        };
+        println!("  PCR0:           {}{pinned}", attest.pcr0_hex);
     }
     if !attest.pcr8_hex.is_empty() {
-        println!("  PCR8:           {}", attest.pcr8_hex);
+        let pinned = if expect_pcr8.is_some() {
+            " (pinned ✓)"
+        } else {
+            ""
+        };
+        println!("  PCR8:           {}{pinned}", attest.pcr8_hex);
     }
 
     let credential = match opened.payload {

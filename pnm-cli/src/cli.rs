@@ -284,6 +284,16 @@ pub(crate) enum BootstrapCommands {
         /// Required when `--expect-digest` is not provided; there is no silent TOFU.
         #[arg(long)]
         no_verify_digest: bool,
+        /// Pin the enclave image measurement (PCR0, hex). When set, refuse to
+        /// bootstrap unless the attested PCR0 matches — defense-in-depth so a
+        /// genuine-but-wrong enclave build can't complete the handshake. Match
+        /// the value baked into the KMS key policy (see the TEE runbook).
+        #[arg(long)]
+        expect_pcr0: Option<String>,
+        /// Pin the EIF signing-certificate measurement (PCR8, hex). As
+        /// `--expect-pcr0`, but for the signing cert.
+        #[arg(long)]
+        expect_pcr8: Option<String>,
         /// Slug to register this VTA under in pnm config (default: tail of the
         /// VTA DID).
         #[arg(long)]

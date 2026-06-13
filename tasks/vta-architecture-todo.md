@@ -349,7 +349,19 @@ CLAUDE.md hot-spots section updated.
   P1.3 — PR: ____
 - `[ ]` **P3.3** (M) Vetted CMS/DER crate + real-KMS golden vector; bounded KMS
   retry at boot — PR: ____
-- `[ ]` **P3.4** (S) `--expect-pcr0/8` pinning in `pnm bootstrap connect` — PR: ____
+- `[x]` **P3.4** (S) `--expect-pcr0/8` pinning in `pnm bootstrap connect` —
+  branch `fix/p3.4-pcr-pinning` (worktree). `verify_nitro_assertion` extracted
+  PCR0/8 but never checked them — any genuine Nitro enclave passed, only the
+  KMS key policy pinned the image. Added `VerifiedAttestation::check_pcrs`
+  (case/0x/whitespace-tolerant) + typed `PcrMismatch { which, expected, actual }`
+  in `vta-sdk::attestation`; new `pnm bootstrap connect --expect-pcr0/--expect-pcr8`
+  thread through to it and **refuse to install the admin credential** on
+  mismatch (genuine-but-wrong build → valid quote, different PCR0). Non-breaking
+  (method on the returned `VerifiedAttestation`, opt-in; `None` = pre-P3.4
+  accept-any). Docs: client-pin block in `tee-architecture.md` next to the KMS
+  PCR0-rotation note (use the same `nitro-cli build-enclave` hashes). Tests:
+  check_pcrs none/match (case+0x)/pcr0-mismatch/pcr8-mismatch/absent-pcr.
+  fmt + clippy clean; vta-sdk 168, pnm-cli 39 green — PR: ____
 - `[ ]` **P3.5** (S) `cargo hack --each-feature` CI + REST-only test job — PR: ____
 - `[ ]` **P3.6** (M) Pure `BootDecision` resolver in kms_bootstrap with full
   truth-table tests — PR: ____

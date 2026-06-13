@@ -50,6 +50,19 @@ pub enum AttestationVerifyError {
     BadProducerDid(String),
 }
 
+/// An attested enclave measurement did not match the operator-pinned value
+/// (P3.4). The attestation itself is cryptographically valid — this is the
+/// defense-in-depth check that the *right* enclave image / signing cert is
+/// running, which otherwise only the KMS key policy pins.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("PCR{which} mismatch: enclave reported {actual}, operator expected {expected}")]
+pub struct PcrMismatch {
+    /// Which PCR diverged (0 = image, 8 = signing cert).
+    pub which: u8,
+    pub expected: String,
+    pub actual: String,
+}
+
 use crate::hex::lower as hex_lower;
 
 fn is_nitro_format(format: &str) -> bool {
@@ -135,6 +148,59 @@ pub fn verify_nitro_quote(
         pcr0_hex,
         pcr8_hex,
     })
+}
+
+/// Normalize a hex PCR string for comparison: strip an optional `0x`/`0X`
+/// prefix and any whitespace, lowercase the rest.
+fn normalize_pcr_hex(s: &str) -> String {
+    let s = s.trim();
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
+    s.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+impl VerifiedAttestation {
+    /// Pin the verified enclave's measurements to operator-supplied expected
+    /// values (P3.4 — client-side PCR pinning). A `None` expectation is not
+    /// checked; comparison is case-insensitive and tolerates a `0x` prefix /
+    /// whitespace. Returns [`PcrMismatch`] on the first divergence.
+    ///
+    /// The cryptographic attestation only proves the quote came from *a*
+    /// genuine Nitro enclave — a different (wrong) VTA build still produces a
+    /// valid quote, just with a different PCR0. Pinning lets the operator
+    /// refuse to bootstrap against anything but the exact expected image
+    /// (PCR0) and signing cert (PCR8), the same values the KMS key policy pins
+    /// server-side.
+    pub fn check_pcrs(
+        &self,
+        expect_pcr0: Option<&str>,
+        expect_pcr8: Option<&str>,
+    ) -> Result<(), PcrMismatch> {
+        check_pcr(0, expect_pcr0, &self.pcr0_hex)?;
+        check_pcr(8, expect_pcr8, &self.pcr8_hex)?;
+        Ok(())
+    }
+}
+
+fn check_pcr(which: u8, expected: Option<&str>, actual: &str) -> Result<(), PcrMismatch> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let expected = normalize_pcr_hex(expected);
+    let actual = normalize_pcr_hex(actual);
+    if expected != actual {
+        return Err(PcrMismatch {
+            which,
+            expected,
+            actual,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -296,5 +362,55 @@ mod tests {
         // trips through the public API. A later CI job with real
         // fixtures will exercise the full path.
         let _ = AttestationVerifyError::BadProducerDid("smoke".into());
+    }
+
+    fn attest(pcr0: &str, pcr8: &str) -> VerifiedAttestation {
+        VerifiedAttestation {
+            module_id: "i-abc".into(),
+            pcr0_hex: pcr0.into(),
+            pcr8_hex: pcr8.into(),
+        }
+    }
+
+    #[test]
+    fn check_pcrs_none_is_noop() {
+        // No pins → accept any genuine attestation (pre-P3.4 behaviour).
+        assert!(attest("aaaa", "bbbb").check_pcrs(None, None).is_ok());
+    }
+
+    #[test]
+    fn check_pcrs_matching_passes_case_and_prefix_insensitive() {
+        let a = attest("ABCD1234", " effff ");
+        // Case-insensitive, tolerates 0x prefix and surrounding whitespace.
+        assert!(a.check_pcrs(Some("0xabcd1234"), Some("EFFFF")).is_ok());
+        assert!(a.check_pcrs(Some("abcd1234"), None).is_ok());
+    }
+
+    #[test]
+    fn check_pcrs_pcr0_mismatch_is_typed() {
+        let err = attest("aaaa", "bbbb")
+            .check_pcrs(Some("dead"), None)
+            .expect_err("wrong PCR0 must be rejected");
+        assert_eq!(err.which, 0);
+        assert_eq!(err.expected, "dead");
+        assert_eq!(err.actual, "aaaa");
+    }
+
+    #[test]
+    fn check_pcrs_pcr8_mismatch_is_typed() {
+        let err = attest("aaaa", "bbbb")
+            .check_pcrs(Some("aaaa"), Some("cafe"))
+            .expect_err("wrong PCR8 must be rejected");
+        assert_eq!(err.which, 8);
+    }
+
+    #[test]
+    fn check_pcrs_expecting_an_absent_pcr_fails() {
+        // Operator pins PCR0 but the quote carried none (empty) → mismatch.
+        let err = attest("", "bbbb")
+            .check_pcrs(Some("abcd"), None)
+            .expect_err("pinning an absent PCR must fail closed");
+        assert_eq!(err.which, 0);
+        assert_eq!(err.actual, "");
     }
 }
