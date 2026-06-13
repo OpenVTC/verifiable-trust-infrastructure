@@ -30,6 +30,8 @@ use vta_sdk::did_key::decode_private_key_multibase;
 pub mod proxy_login;
 /// `vault/release/0.1` sealing logic.
 pub mod release;
+/// `vault/sign-trust-task/0.1` envelope validation + signing.
+pub mod sign_trust_task;
 
 /// DIDComm `Message.typ` for the proxy-login envelope's cleartext (a
 /// `SessionBlob` per `vault/_shared/0.1/session-blob`). Workspace-namespaced,

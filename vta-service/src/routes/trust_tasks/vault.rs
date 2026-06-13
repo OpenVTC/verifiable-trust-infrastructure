@@ -1378,44 +1378,33 @@ pub(super) async fn handle_sign_trust_task(
         return reject;
     }
 
-    // Only signable kinds (DID-anchored secrets) carry a principal
-    // identity the maintainer can sign as. Password / OAuth / passkey
-    // / bearer / ssh / custom kinds have no DID — reject loudly so the
-    // consumer can fall back to a different flow (proxy-login for
-    // session creds, release for browser autofill).
-    let (principal_did, signing_key_id) = match &stored.secret {
-        VaultSecret::DidSelfIssued {
-            did,
-            signing_key_id,
-            ..
-        }
-        | VaultSecret::DidcommPeer {
-            peer_did: did,
-            signing_key_id,
-            ..
-        } => (did.clone(), signing_key_id.clone()),
-        other => {
+    // Validate the envelope against the entry's principal identity and sign
+    // (operations layer; P2.4). The typed `SignTrustTaskError` maps back to the
+    // canonical spec reject codes.
+    use crate::operations::vault::sign_trust_task::SignTrustTaskError;
+    let signed = match crate::operations::vault::sign_trust_task::sign_envelope(
+        &state.keys_ks,
+        &state.imported_ks,
+        &state.audit_ks,
+        &*state.seed_store,
+        &stored.secret,
+        &req.unsigned_envelope,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(SignTrustTaskError::NotSignable { kind }) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
                     reason: format!(
-                        "vault/sign-trust-task:not_signable — entry kind '{}' has no DID-based signing identity",
-                        crate::operations::vault::secret_kind_label(other.kind()),
+                        "vault/sign-trust-task:not_signable — entry kind '{kind}' has no DID-based signing identity"
                     ),
-                    details: Some(serde_json::json!({
-                        "secretKind": crate::operations::vault::secret_kind_label(other.kind()),
-                    })),
+                    details: Some(serde_json::json!({ "secretKind": kind })),
                 },
             );
         }
-    };
-
-    // Structural validation of the supplied envelope. Per spec: id,
-    // type, issuer, recipient, issuedAt, payload all required; proof
-    // must be absent.
-    let envelope_obj = match req.unsigned_envelope.as_object() {
-        Some(o) => o,
-        None => {
+        Err(SignTrustTaskError::EnvelopeNotObject) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
@@ -1424,9 +1413,7 @@ pub(super) async fn handle_sign_trust_task(
                 },
             );
         }
-    };
-    for field in ["id", "type", "issuer", "recipient", "issuedAt", "payload"] {
-        if !envelope_obj.contains_key(field) {
+        Err(SignTrustTaskError::EnvelopeMissingField { field }) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
@@ -1437,24 +1424,7 @@ pub(super) async fn handle_sign_trust_task(
                 },
             );
         }
-    }
-    if envelope_obj.contains_key("proof") {
-        return reject_with(
-            &doc,
-            RejectReason::TaskFailed {
-                reason: "vault/sign-trust-task:envelope_already_proofed — strip the existing proof and resubmit".into(),
-                details: None,
-            },
-        );
-    }
-
-    // Strict issuer match: the maintainer refuses to silently rewrite
-    // the consumer's issuer. Mismatch is loud so consumer bugs surface
-    // explicitly rather than as cryptic verification failures at the
-    // recipient.
-    let envelope_issuer = match envelope_obj.get("issuer").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => {
+        Err(SignTrustTaskError::IssuerNotString) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
@@ -1464,129 +1434,77 @@ pub(super) async fn handle_sign_trust_task(
                 },
             );
         }
-    };
-    if envelope_issuer != principal_did {
-        return reject_with(
-            &doc,
-            RejectReason::TaskFailed {
-                reason: "vault/sign-trust-task:envelope_issuer_mismatch — envelope.issuer must equal the entry's principalDid".into(),
-                details: Some(serde_json::json!({
-                    "envelopeIssuer": envelope_issuer,
-                    "expectedIssuer": principal_did,
-                })),
-            },
-        );
-    }
-
-    // expiresAt (if present) must not be in the past.
-    if let Some(exp_v) = envelope_obj.get("expiresAt") {
-        let exp_str = exp_v.as_str().unwrap_or_default();
-        match chrono::DateTime::parse_from_rfc3339(exp_str) {
-            Ok(exp) if exp < chrono::Utc::now() => {
-                return reject_with(
-                    &doc,
-                    RejectReason::TaskFailed {
-                        reason: "vault/sign-trust-task:envelope_expired — envelope.expiresAt is in the past".into(),
-                        details: Some(serde_json::json!({ "expiresAt": exp_str })),
-                    },
-                );
-            }
-            Ok(_) => {} // future-dated, fine
-            Err(_) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::TaskFailed {
-                        reason: "vault/sign-trust-task:envelope_invalid — expiresAt must be an RFC 3339 timestamp".into(),
-                        details: Some(serde_json::json!({ "expiresAt": exp_str })),
-                    },
-                );
-            }
-        }
-    }
-
-    // Load the signing key as an affinidi Secret (the shape
-    // DataIntegrityProof::sign consumes). The kid the proof's
-    // verificationMethod field carries IS the entry's signing_key_id —
-    // the maintainer trusts the stored entry's reference because the
-    // upsert path validated it at the time the entry was written.
-    let secret = match crate::operations::vault::load_signing_secret_by_id(
-        &state.keys_ks,
-        &state.imported_ks,
-        &*state.seed_store,
-        &state.audit_ks,
-        &signing_key_id,
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(e) => return app_error_to_reject(&doc, e),
-    };
-
-    // Sign. `DataIntegrityProof::sign` takes the document WITHOUT a
-    // `proof` field — we already validated none is present. The
-    // resulting `proof` object carries cryptosuite, verificationMethod
-    // (`<principalDid>#<signingKeyId>`), proofPurpose=assertionMethod,
-    // created, and proofValue.
-    let proof = match affinidi_data_integrity::DataIntegrityProof::sign(
-        &req.unsigned_envelope,
-        &secret,
-        affinidi_data_integrity::SignOptions::new(),
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            return app_error_to_reject(
+        Err(SignTrustTaskError::AlreadyProofed) => {
+            return reject_with(
                 &doc,
-                AppError::Internal(format!("DataIntegrityProof sign failed: {e}")),
+                RejectReason::TaskFailed {
+                    reason: "vault/sign-trust-task:envelope_already_proofed — strip the existing proof and resubmit".into(),
+                    details: None,
+                },
             );
         }
-    };
-    let proof_value = match serde_json::to_value(&proof) {
-        Ok(v) => v,
-        Err(e) => {
-            return app_error_to_reject(&doc, AppError::Internal(format!("serialize proof: {e}")));
+        Err(SignTrustTaskError::IssuerMismatch {
+            envelope_issuer,
+            expected,
+        }) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: "vault/sign-trust-task:envelope_issuer_mismatch — envelope.issuer must equal the entry's principalDid".into(),
+                    details: Some(serde_json::json!({
+                        "envelopeIssuer": envelope_issuer,
+                        "expectedIssuer": expected,
+                    })),
+                },
+            );
         }
+        Err(SignTrustTaskError::ExpiresAtNotRfc3339 { value }) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason: "vault/sign-trust-task:envelope_invalid — expiresAt must be an RFC 3339 timestamp".into(),
+                    details: Some(serde_json::json!({ "expiresAt": value })),
+                },
+            );
+        }
+        Err(SignTrustTaskError::Expired { value }) => {
+            return reject_with(
+                &doc,
+                RejectReason::TaskFailed {
+                    reason:
+                        "vault/sign-trust-task:envelope_expired — envelope.expiresAt is in the past"
+                            .into(),
+                    details: Some(serde_json::json!({ "expiresAt": value })),
+                },
+            );
+        }
+        Err(SignTrustTaskError::App(e)) => return app_error_to_reject(&doc, e),
     };
 
-    // Attach proof to the envelope. Mutate the parsed JSON in place so
-    // every other field — including any consumer-supplied `ext` — is
-    // preserved byte-for-byte.
-    let mut signed = req.unsigned_envelope.clone();
-    signed
-        .as_object_mut()
-        .expect("envelope is an object — checked above")
-        .insert("proof".to_string(), proof_value);
-
-    // Audit log — `{who, when, entryId, envelope: {id, type, recipient}, outcome}`.
-    // Per the spec, payload is OMITTED (it may carry sensitive RP-side
-    // task content).
-    let envelope_id = envelope_obj
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let envelope_type = envelope_obj
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let envelope_recipient = envelope_obj
-        .get("recipient")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    // Audit log — `{who, when, entryId, envelope: {id, type, recipient}}`.
+    // Per the spec, payload is OMITTED (it may carry sensitive RP-side content).
+    let str_field = |k: &str| {
+        signed
+            .signed
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
     tracing::info!(
         actor = %auth.did,
         entry_id = %req.entry_id,
-        envelope_id,
-        envelope_type,
-        envelope_recipient,
-        principal_did = %principal_did,
+        envelope_id = %str_field("id"),
+        envelope_type = %str_field("type"),
+        envelope_recipient = %str_field("recipient"),
+        principal_did = %signed.principal_did,
         "vault/sign-trust-task: signed"
     );
 
     success_response(
         &doc,
         VaultSignTrustTaskResponseBody {
-            signed_envelope: signed,
+            signed_envelope: signed.signed,
         },
     )
 }
