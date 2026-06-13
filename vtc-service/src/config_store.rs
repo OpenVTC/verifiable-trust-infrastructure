@@ -129,6 +129,16 @@ pub const REGISTRY: &[ConfigKeyDef] = &[
         requires_restart: false,
         sensitive: false,
     },
+    // The operational RP origin: the WebAuthn relying-party handle +
+    // every VMC's `credentialStatus` status-list URL derive from it at
+    // boot, so a change needs a restart. Canonical in the db-overlay
+    // (P1.1 part 2b) — no longer round-tripped through `config.toml`.
+    ConfigKeyDef {
+        key: "public_url",
+        kind: ConfigKeyKind::String,
+        requires_restart: true,
+        sensitive: false,
+    },
 ];
 
 /// Look up a key's metadata. `None` means the key is not
@@ -254,6 +264,9 @@ fn toml_layer_value(key: &str, cfg: &AppConfig) -> Option<Value> {
                 Some(Value::String(cfg.log.level.clone()))
             }
         }
+        // `public_url` has no compiled-in default — `None` (unset) is the
+        // default, so any configured value is the toml-layer value.
+        "public_url" => cfg.public_url.clone().map(Value::String),
         _ => None,
     }
 }
@@ -267,6 +280,9 @@ fn default_layer_value(key: &str) -> Value {
         "server.host" => Value::String(default_host_value()),
         "server.port" => Value::Number(serde_json::Number::from(default_port_value())),
         "log.level" => Value::String("info".into()),
+        // No compiled-in default: `null` means "unset" (pre-setup
+        // deployment — WebAuthn / status lists deferred).
+        "public_url" => Value::Null,
         _ => Value::Null, // unreachable for registry keys
     }
 }
@@ -283,6 +299,7 @@ fn env_layer_value(key: &str) -> Option<Value> {
             .and_then(|s| s.parse::<u64>().ok())
             .map(|n| Value::Number(serde_json::Number::from(n))),
         "log.level" => std::env::var("VTC_LOG_LEVEL").ok().map(Value::String),
+        "public_url" => std::env::var("VTC_PUBLIC_URL").ok().map(Value::String),
         _ => None,
     }
 }
@@ -346,6 +363,12 @@ fn set_app_config_field(cfg: &mut AppConfig, key: &str, value: &Value) {
             if let Some(s) = value.as_str() {
                 cfg.log.level = s.to_string();
             }
+        }
+        // A string sets it; `null` (the default layer, i.e. unset) leaves
+        // it `None`. A configured value resolves via `toml_layer_value`,
+        // so an absent db override never clears a TOML-set `public_url`.
+        "public_url" => {
+            cfg.public_url = value.as_str().map(str::to_string);
         }
         _ => {}
     }
@@ -627,5 +650,38 @@ mod tests {
         apply_overrides(&mut cfg, &store).await.unwrap();
 
         assert_eq!(cfg.server.port, 8443, "out-of-range port override ignored");
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_public_url_db_beats_toml_and_preserves_toml() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        cfg.public_url = Some("https://toml.example".into()); // toml-layer
+
+        // No db override → toml value preserved.
+        apply_overrides(&mut cfg, &store).await.unwrap();
+        assert_eq!(cfg.public_url.as_deref(), Some("https://toml.example"));
+
+        // db override wins.
+        store
+            .put("public_url", &json!("https://db.example"))
+            .await
+            .unwrap();
+        apply_overrides(&mut cfg, &store).await.unwrap();
+        assert_eq!(cfg.public_url.as_deref(), Some("https://db.example"));
+    }
+
+    #[tokio::test]
+    async fn apply_overrides_public_url_unset_stays_none() {
+        let (store, _dir) = temp_store();
+        let mut cfg = default_app_config();
+        assert!(cfg.public_url.is_none());
+        // No db override + no toml value → default layer (null) → stays None,
+        // never spuriously set to an empty string.
+        apply_overrides(&mut cfg, &store).await.unwrap();
+        assert!(
+            cfg.public_url.is_none(),
+            "no override → public_url stays unset"
+        );
     }
 }

@@ -1231,6 +1231,11 @@ for. (`log.level` is the exception: the tracing subscriber is
 initialised in `main` before this runs, so its subscriber reload is a
 separate follow-up; the in-memory value is still updated.)
 
+`public_url` is itself a `requires_restart` registry key (P1.1 part 2b):
+both `PATCH /v1/admin/config` and the legacy `PATCH /v1/config` write it
+to the db-overlay — there is no `config.toml` round-trip — and boot
+applies it like any other overlay key.
+
 **Restart-endpoint supervisor handshake.** The restart endpoint
 refuses to exit unless a supervisor is detected — either
 `VTC_SUPERVISED=1` or the systemd notify socket (`NOTIFY_SOCKET`)

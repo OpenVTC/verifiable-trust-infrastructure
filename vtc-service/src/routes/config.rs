@@ -11,19 +11,13 @@
 //!   `vtc_name` / `vtc_description` are applied to the profile, and
 //!   `GET /v1/config` reads them back from the profile — so there is one write
 //!   path per field, not two diverging copies.
-//! - **`public_url` is persisted env-safely + atomically.** It is the
-//!   operational RP origin the WebAuthn handle + status-list URLs derive from at
-//!   boot, so it stays in `config.toml`; the write re-reads the on-disk TOML as
-//!   its base (ephemeral `VTC_*` env overlays never leak in), writes
-//!   tempfile-then-rename, and re-restricts perms. It is boot-stable, so the
-//!   response flags it under `pending_restart`.
-//!
-//! Migrating `public_url` into the `config_store` overlay as a
-//! `requires_restart` key (so it shares the canonical PATCH surface) is the
-//! follow-up increment — it needs the boot path to apply `config_store`
-//! overrides, which it does not yet.
-
-use std::path::Path;
+//! - **`public_url` is canonical in the `config_store` overlay** (P1.1 part 2b).
+//!   It is the operational RP origin the WebAuthn handle + status-list URLs
+//!   derive from at boot, so it's `requires_restart`: a PATCH writes it to the
+//!   db-overlay (not `config.toml`) and `config_store::apply_overrides` folds it
+//!   onto `AppConfig` at the next boot. Both this surface and
+//!   `PATCH /v1/admin/config` now write the same place — one canonical store,
+//!   no `config.toml` round-trip. The response flags it under `pending_restart`.
 
 use axum::Json;
 use axum::extract::State;
@@ -33,6 +27,7 @@ use tracing::info;
 
 use crate::auth::{AuthClaims, SuperAdminAuth};
 use crate::community::{CommunityProfileUpdate, load_profile, store_profile};
+use crate::config_store::ConfigStore;
 use crate::error::AppError;
 use crate::server::AppState;
 
@@ -77,18 +72,34 @@ async fn resolved_name_description(
     }
 }
 
+/// Resolve the effective `public_url` — the value in force, or pending after
+/// a restart: `env > db-overlay > in-memory (toml/boot)`. After a PATCH the
+/// db-overlay carries the new value, so GET reflects it even though it is
+/// `requires_restart` and not yet live. Mirrors `config_store`'s precedence.
+async fn resolved_public_url(state: &AppState) -> Result<Option<String>, AppError> {
+    if let Ok(v) = std::env::var("VTC_PUBLIC_URL") {
+        return Ok(Some(v));
+    }
+    let store = ConfigStore::new(state.config_ks.clone());
+    if let Some(v) = store.get("public_url").await? {
+        return Ok(v.as_str().map(str::to_string));
+    }
+    Ok(state.config.read().await.public_url.clone())
+}
+
 pub async fn get_config(
     auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<Json<ConfigResponse>, AppError> {
     let (vtc_name, vtc_description) = resolved_name_description(&state).await?;
-    let config = state.config.read().await;
+    let public_url = resolved_public_url(&state).await?;
+    let vtc_did = state.config.read().await.vtc_did.clone();
     info!(caller = %auth.did, "config retrieved");
     Ok(Json(ConfigResponse {
-        vtc_did: config.vtc_did.clone(),
+        vtc_did,
         vtc_name,
         vtc_description,
-        public_url: config.public_url.clone(),
+        public_url,
     }))
 }
 
@@ -130,120 +141,37 @@ pub async fn update_config(
         }
     }
 
-    // public_url → the operational RP origin (WebAuthn + status-list URLs derive
-    // from it at boot). Persist env-safely + atomically; restart required.
+    // public_url → the `config_store` db-overlay (canonical, P1.1 part 2b). It
+    // is the operational RP origin (WebAuthn + status-list URLs derive from it
+    // at boot), so it's `requires_restart`: stored now, folded onto `AppConfig`
+    // at the next boot by `apply_overrides`. We deliberately do NOT touch the
+    // in-memory value — mutating it would diverge the live derived state (the
+    // already-built WebAuthn RP) from the stored config.
     if let Some(public_url) = req.public_url.clone() {
-        let path = {
-            let mut config = state.config.write().await;
-            config.public_url = Some(public_url.clone());
-            config.config_path.clone()
-        };
-        persist_public_url(&path, Some(&public_url))?;
+        let store = ConfigStore::new(state.config_ks.clone());
+        store
+            .put("public_url", &serde_json::Value::String(public_url))
+            .await?;
         pending_restart.push("public_url".into());
     }
 
     let (vtc_name, vtc_description) = resolved_name_description(&state).await?;
-    let config = state.config.read().await;
+    let public_url = resolved_public_url(&state).await?;
+    let vtc_did = state.config.read().await.vtc_did.clone();
     info!(caller = %auth.0.did, ?pending_restart, "config updated");
     Ok(Json(UpdateConfigResponse {
         config: ConfigResponse {
-            vtc_did: config.vtc_did.clone(),
+            vtc_did,
             vtc_name,
             vtc_description,
-            public_url: config.public_url.clone(),
+            public_url,
         },
         pending_restart,
     }))
 }
 
-/// Persist `public_url` into `config.toml` **env-safely** and **atomically**.
-///
-/// Re-reads the on-disk TOML as the base so the ephemeral `VTC_*` env overlays
-/// folded into the in-memory `AppConfig` are never baked into the file (P1.1) —
-/// only the single `public_url` key is touched. Writes tempfile-then-rename for
-/// atomicity and re-restricts the file to its owner (it holds the JWT signing
-/// key, and under the config-secret backend the key bundle).
-fn persist_public_url(path: &Path, public_url: Option<&str>) -> Result<(), AppError> {
-    let existing = std::fs::read_to_string(path).map_err(AppError::Io)?;
-    let mut doc: toml::Table = toml::from_str(&existing)
-        .map_err(|e| AppError::Config(format!("failed to parse {}: {e}", path.display())))?;
-    match public_url {
-        Some(url) => {
-            doc.insert("public_url".into(), toml::Value::String(url.to_string()));
-        }
-        None => {
-            doc.remove("public_url");
-        }
-    }
-    let contents = toml::to_string_pretty(&doc)
-        .map_err(|e| AppError::Config(format!("failed to serialize config: {e}")))?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("config.toml");
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let tmp = dir.join(format!(".{file_name}.tmp"));
-
-    std::fs::write(&tmp, contents).map_err(AppError::Io)?;
-    // Harden the temp file *before* the rename so the published file is never
-    // briefly world-readable.
-    crate::secure_file::restrict_file_to_owner(&tmp).map_err(AppError::Io)?;
-    std::fs::rename(&tmp, path).map_err(AppError::Io)?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    #[test]
-    fn persist_public_url_is_env_safe_and_atomic() {
-        // The on-disk base has no env-sourced values; updating public_url must
-        // leave every other key exactly as written (no env-overlay bake-in).
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(
-            f,
-            "vtc_did = \"did:webvh:vtc.example\"\n\
-             [server]\nhost = \"127.0.0.1\"\nport = 8200\n"
-        )
-        .unwrap();
-        drop(f);
-
-        persist_public_url(&path, Some("https://vtc.example.com")).unwrap();
-
-        let written = std::fs::read_to_string(&path).unwrap();
-        let doc: toml::Table = toml::from_str(&written).unwrap();
-        assert_eq!(
-            doc.get("public_url").and_then(|v| v.as_str()),
-            Some("https://vtc.example.com")
-        );
-        // Untouched keys survive verbatim.
-        assert_eq!(
-            doc.get("vtc_did").and_then(|v| v.as_str()),
-            Some("did:webvh:vtc.example")
-        );
-        let server = doc.get("server").and_then(|v| v.as_table()).unwrap();
-        assert_eq!(
-            server.get("host").and_then(|v| v.as_str()),
-            Some("127.0.0.1")
-        );
-        assert_eq!(server.get("port").and_then(|v| v.as_integer()), Some(8200));
-
-        // No leftover temp file.
-        assert!(!dir.path().join(".config.toml.tmp").exists());
-    }
-
-    #[test]
-    fn persist_public_url_none_removes_the_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "public_url = \"https://old.example\"\n").unwrap();
-        persist_public_url(&path, None).unwrap();
-        let doc: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(doc.get("public_url").is_none());
-    }
-}
+// Behavioural coverage lives in `tests/config_legacy.rs` — the
+// `public_url` write path now stores to the `config_store` db-overlay
+// (canonical, P1.1 part 2b) rather than rewriting `config.toml`, so the
+// round-trip is exercised through the full router stack there. Per-key
+// overlay precedence is unit-tested in `crate::config_store::tests`.

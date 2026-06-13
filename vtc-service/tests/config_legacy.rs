@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use vtc_service::community::{CommunityProfile, store_profile};
+use vtc_service::config_store::ConfigStore;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
@@ -166,19 +167,14 @@ async fn patch_name_without_a_profile_is_409() {
 }
 
 #[tokio::test]
-async fn patch_public_url_flags_pending_restart_and_persists_to_toml() {
+async fn patch_public_url_flags_pending_restart_and_stores_in_config_store() {
     let fix = build().await;
     let token = super_admin_token(&fix).await;
 
-    // Point the in-memory config at a real on-disk config.toml so the
-    // env-safe atomic write has a base to read.
-    let cfg_dir = tempfile::tempdir().unwrap();
-    let cfg_path = cfg_dir.path().join("config.toml");
-    std::fs::write(&cfg_path, "vtc_did = \"did:webvh:vtc.example.com:abc\"\n").unwrap();
-    {
-        let mut c = fix.state.config.write().await;
-        c.config_path = cfg_path.clone();
-    }
+    // The running (in-memory) value before the PATCH — must be untouched, since
+    // public_url is requires_restart (mutating it would diverge the live
+    // WebAuthn RP / status-list URLs from the stored config).
+    let before = fix.state.config.read().await.public_url.clone();
 
     let (status, body) = send(
         &fix,
@@ -195,15 +191,20 @@ async fn patch_public_url_flags_pending_restart_and_persists_to_toml() {
     );
     assert_eq!(body["public_url"], "https://vtc.example.com");
 
-    // Persisted to the on-disk TOML, base preserved.
-    let written = std::fs::read_to_string(&cfg_path).unwrap();
-    let doc: toml::Table = toml::from_str(&written).unwrap();
+    // Canonical store: the db-overlay (`config` keyspace), NOT config.toml.
+    let store = ConfigStore::new(fix.state.config_ks.clone());
     assert_eq!(
-        doc.get("public_url").and_then(|v| v.as_str()),
-        Some("https://vtc.example.com")
+        store.get("public_url").await.unwrap(),
+        Some(json!("https://vtc.example.com")),
+        "public_url must be stored in the config_store overlay"
     );
-    assert_eq!(
-        doc.get("vtc_did").and_then(|v| v.as_str()),
-        Some("did:webvh:vtc.example.com:abc")
-    );
+
+    // Running value untouched (applied only at the next boot).
+    assert_eq!(fix.state.config.read().await.public_url, before);
+
+    // GET reflects the pending value (reads the overlay), with pending_restart
+    // already signalled on the PATCH.
+    let (status, body) = send(&fix, "GET", &token, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["public_url"], "https://vtc.example.com");
 }
