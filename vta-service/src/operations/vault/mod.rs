@@ -32,6 +32,8 @@ pub mod proxy_login;
 pub mod release;
 /// `vault/sign-trust-task/0.1` envelope validation + signing.
 pub mod sign_trust_task;
+/// `vault/upsert/0.1` sealed-secret unsealing.
+pub mod upsert;
 
 /// DIDComm `Message.typ` for the proxy-login envelope's cleartext (a
 /// `SessionBlob` per `vault/_shared/0.1/session-blob`). Workspace-namespaced,

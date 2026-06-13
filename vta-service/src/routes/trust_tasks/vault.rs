@@ -445,105 +445,6 @@ fn require_sign_trust_task(auth: &AuthClaims, doc: &TrustTask<Value>) -> Result<
     }
 }
 
-/// Unseal a `SealedEnvelope` into the cleartext [`VaultSecret`].
-///
-/// M2A supports the `didcomm-authcrypt` variant only. The JWE is unpacked
-/// through the VTA's ATM (same machinery the `/auth/` endpoint uses), the
-/// resulting message's `from` is cross-checked against the authenticated
-/// caller (an attacker can't relay someone else's pre-signed seal through
-/// their own auth context), and the cleartext body is deserialised as
-/// `VaultSecret`.
-///
-/// Returns an `axum::Response` carrying the appropriate Trust Task reject
-/// on failure — `envelope_unsupported` for non-DIDComm variants,
-/// `permission_denied` for sender mismatch, `sealed_secret_invalid` for
-/// every other failure path (parse, unpack, schema mismatch).
-async fn unseal_secret(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: &TrustTask<Value>,
-    envelope: &SealedEnvelope,
-) -> Result<VaultSecret, Response> {
-    let jwe = match envelope {
-        SealedEnvelope::DidcommAuthcrypt { jwe } => jwe,
-        other => {
-            return Err(reject_with(
-                doc,
-                RejectReason::TaskFailed {
-                    reason: format!(
-                        "vault/upsert:envelope_unsupported — received {kind}; this maintainer accepts only didcomm-authcrypt in M2A",
-                        kind = other.kind_name()
-                    ),
-                    details: Some(serde_json::json!({
-                        "receivedEnvelope": other.kind_name(),
-                        "supportedEnvelopes": ["didcomm-authcrypt"],
-                    })),
-                },
-            ));
-        }
-    };
-
-    let atm = state.atm.as_ref().ok_or_else(|| {
-        reject_with(
-            doc,
-            RejectReason::InternalError {
-                reason: "ATM not configured — server cannot unpack DIDComm envelopes".into(),
-            },
-        )
-    })?;
-
-    let (msg, _metadata) = atm.unpack(jwe).await.map_err(|e| {
-        reject_with(
-            doc,
-            RejectReason::TaskFailed {
-                reason: format!("vault/upsert:sealed_secret_invalid — DIDComm unpack: {e}"),
-                details: Some(serde_json::json!({ "reason": "unpack_failed" })),
-            },
-        )
-    })?;
-
-    // Cross-check: the authcrypt sender's DID must equal the authenticated
-    // caller. Stops an attacker from replaying someone else's pre-signed
-    // seal through their own session.
-    let sender = msg
-        .from
-        .as_deref()
-        .map(|s| s.split('#').next().unwrap_or(s).to_string())
-        .ok_or_else(|| {
-            reject_with(
-                doc,
-                RejectReason::TaskFailed {
-                    reason: "vault/upsert:sealed_secret_invalid — JWE has no sender (from)".into(),
-                    details: Some(serde_json::json!({ "reason": "missing_sender" })),
-                },
-            )
-        })?;
-    if sender != auth.did {
-        return Err(reject_with(
-            doc,
-            RejectReason::PermissionDenied {
-                reason: format!(
-                    "vault/upsert:sealed_secret_invalid — JWE sender {sender} does not match authenticated caller {}",
-                    auth.did
-                ),
-            },
-        ));
-    }
-
-    let secret: VaultSecret = serde_json::from_value(msg.body).map_err(|e| {
-        reject_with(
-            doc,
-            RejectReason::TaskFailed {
-                reason: format!(
-                    "vault/upsert:sealed_secret_invalid — cleartext not a VaultSecret: {e}"
-                ),
-                details: Some(serde_json::json!({ "reason": "cleartext_schema_invalid" })),
-            },
-        )
-    })?;
-    Ok(secret)
-}
-
 /// Reject if the caller's `allowed_contexts` is non-empty AND `context_id`
 /// (if supplied) is not in the allowed list. Empty allowed_contexts means
 /// super-admin scope.
@@ -774,10 +675,89 @@ pub(super) async fn handle_upsert(
     //   - no sealed_secret, existing entry → reuse existing secret.
     //   - no sealed_secret, create → secret_required.
     let secret: VaultSecret = match (&req.sealed_secret, existing.as_ref()) {
-        (Some(env), _) => match unseal_secret(state, auth, &doc, env).await {
-            Ok(s) => s,
-            Err(resp) => return resp,
-        },
+        (Some(env), _) => {
+            // Envelope-variant check stays here (the route owns the
+            // `SealedEnvelope` wire shape); the unpack + sender cross-check +
+            // cleartext deserialise are the operations-layer crypto (P2.4).
+            let jwe = match env {
+                SealedEnvelope::DidcommAuthcrypt { jwe } => jwe,
+                other => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::TaskFailed {
+                            reason: format!(
+                                "vault/upsert:envelope_unsupported — received {kind}; this maintainer accepts only didcomm-authcrypt in M2A",
+                                kind = other.kind_name()
+                            ),
+                            details: Some(serde_json::json!({
+                                "receivedEnvelope": other.kind_name(),
+                                "supportedEnvelopes": ["didcomm-authcrypt"],
+                            })),
+                        },
+                    );
+                }
+            };
+            let atm = match state.atm.as_ref() {
+                Some(atm) => atm,
+                None => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::InternalError {
+                            reason: "ATM not configured — server cannot unpack DIDComm envelopes"
+                                .into(),
+                        },
+                    );
+                }
+            };
+            use crate::operations::vault::upsert::UnsealError;
+            match crate::operations::vault::upsert::unseal_secret(atm, &auth.did, jwe).await {
+                Ok(s) => s,
+                Err(UnsealError::SenderMismatch { sender, caller }) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::PermissionDenied {
+                            reason: format!(
+                                "vault/upsert:sealed_secret_invalid — JWE sender {sender} does not match authenticated caller {caller}"
+                            ),
+                        },
+                    );
+                }
+                Err(UnsealError::UnpackFailed(e)) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::TaskFailed {
+                            reason: format!(
+                                "vault/upsert:sealed_secret_invalid — DIDComm unpack: {e}"
+                            ),
+                            details: Some(serde_json::json!({ "reason": "unpack_failed" })),
+                        },
+                    );
+                }
+                Err(UnsealError::MissingSender) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::TaskFailed {
+                            reason: "vault/upsert:sealed_secret_invalid — JWE has no sender (from)"
+                                .into(),
+                            details: Some(serde_json::json!({ "reason": "missing_sender" })),
+                        },
+                    );
+                }
+                Err(UnsealError::CleartextInvalid(e)) => {
+                    return reject_with(
+                        &doc,
+                        RejectReason::TaskFailed {
+                            reason: format!(
+                                "vault/upsert:sealed_secret_invalid — cleartext not a VaultSecret: {e}"
+                            ),
+                            details: Some(
+                                serde_json::json!({ "reason": "cleartext_schema_invalid" }),
+                            ),
+                        },
+                    );
+                }
+            }
+        }
         (None, Some(e)) => e.secret.clone(),
         (None, None) => {
             return reject_with(
