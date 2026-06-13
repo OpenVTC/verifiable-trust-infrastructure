@@ -515,6 +515,7 @@ pub async fn run_provision_integration(
         None,
         None,
         restart_tx,
+        crate::server::AppStateParts::default(),
     )
     .await
     .map_err(|e| format!("build app state: {e}"))?;
@@ -721,6 +722,7 @@ pub async fn run_keys_bundle(
         None,
         None,
         restart_tx,
+        crate::server::AppStateParts::default(),
     )
     .await
     .map_err(|e| format!("build app state: {e}"))?;
@@ -1043,6 +1045,7 @@ pub async fn run_context_reprovision(
         None,
         None,
         restart_tx,
+        crate::server::AppStateParts::default(),
     )
     .await
     .map_err(|e| format!("build app state: {e}"))?;

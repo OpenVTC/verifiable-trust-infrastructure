@@ -130,6 +130,60 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
     }
 }
 
+/// Derive the DIDComm-transport view of shared state from the canonical
+/// [`AppState`].
+///
+/// `VtaState` is a strict subset of `AppState` — every field is a cheap clone
+/// of the corresponding `AppState` field (an `Arc`, a `KeyspaceHandle`, or the
+/// `Arc`-backed [`WebvhAuthLocks`]). Building it this way is what guarantees the
+/// REST front-end and the DIDComm router share the *same* config `RwLock`,
+/// `WebvhAuthLocks`, mediator registry, drain sweeper, and telemetry sink
+/// (P1.1): a `PATCH /config` on the REST side is visible to DIDComm handlers,
+/// and the per-server webvh auth-cache lock serialises across both transports.
+/// Constructing `VtaState` with a freshly-minted webvh auth-lock registry or a
+/// freshly-wrapped config lock was a live divergence bug — don't reintroduce
+/// it; always derive from the canonical `AppState`.
+impl From<&AppState> for VtaState {
+    fn from(state: &AppState) -> Self {
+        Self {
+            keys_ks: state.keys_ks.clone(),
+            acl_ks: state.acl_ks.clone(),
+            contexts_ks: state.contexts_ks.clone(),
+            did_templates_ks: state.did_templates_ks.clone(),
+            audit_ks: state.audit_ks.clone(),
+            imported_ks: state.imported_ks.clone(),
+            service_state_ks: state.service_state_ks.clone(),
+            #[cfg(feature = "webvh")]
+            webvh_ks: state.webvh_ks.clone(),
+            sealed_nonces_ks: state.sealed_nonces_ks.clone(),
+            #[cfg(feature = "webvh")]
+            drains_ks: state.drains_ks.clone(),
+            #[cfg(feature = "webvh")]
+            snapshot_ks: state.snapshot_ks.clone(),
+            #[cfg(feature = "webvh")]
+            mediator_registry: Arc::clone(&state.mediator_registry),
+            #[cfg(feature = "webvh")]
+            drain_sweeper: Arc::clone(&state.drain_sweeper),
+            #[cfg(feature = "webvh")]
+            webvh_auth_locks: state.webvh_auth_locks.clone(),
+            telemetry: Arc::clone(&state.telemetry),
+            seed_store: state.seed_store.clone(),
+            config: Arc::clone(&state.config),
+            did_resolver: state.did_resolver.clone(),
+            didcomm_bridge: Arc::clone(&state.didcomm_bridge),
+            #[cfg(feature = "didcomm")]
+            secrets_resolver: state.secrets_resolver.clone(),
+            #[cfg(feature = "didcomm")]
+            signing_vm_id: state.signing_vm_id.clone(),
+            #[cfg(feature = "didcomm")]
+            ka_vm_id: state.ka_vm_id.clone(),
+            #[cfg(feature = "tee")]
+            tee_state: state.tee.as_ref().map(|tc| tc.state.clone()),
+            restart_tx: state.restart_tx.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BridgeHandler — wraps the Router to intercept outbound-response routing
 // ---------------------------------------------------------------------------

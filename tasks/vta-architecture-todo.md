@@ -106,7 +106,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
     config). Tests: `WriterCredentials` JSON parse (tolerate-extra/require-both);
     the KMS+DynamoDB paths need real AWS/NSM (inspection-tested like the rest of
     the TEE KMS code). fmt + clippy (default & tee) clean; vta-service 747 (tee)
-    green; vta-enclave checks; no version bump (additive) — PR: ____
+    green; vta-enclave checks; no version bump (additive) — PR: #386 (merged)
   - `[ ]` **P0.2e** (XL, deferred) Option C cross-account anchor service —
     out of Phase-0 scope; documented as the max-assurance / multi-tenant upgrade.
 - `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
@@ -185,7 +185,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   error; backup seed_enc round-trip; updated rotation test. fmt + clippy
   (default & tee) clean; lib 715 + all integration suites green; no-default /
   rest-only compile; no version bump (additive `seed_enc` field, serde-default)
-  — PR: ____
+  — PR: #375 (merged)
 - `[x]` **P0.8** (S) Atomic + persisted carve-out close — branch
   `fix/p0.8-carveout-durability`. Added `KeyspaceHandle::persist()` (local
   fsync + vsock OP_PERSIST passthrough). `mint_mode_b` now: seal first
@@ -235,7 +235,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   material). Smoke-tested end-to-end: no-identity boot exits non-zero with the
   message; `--allow-degraded` binds the listener. New dep `serde_ignored`. fmt
   + clippy (default & tee) clean; lib suite 709 green; no-default / rest-only
-  combos compile — PR: ____
+  combos compile — PR: #371 (merged)
 - `[x]` **P0.10** (S) `TimeoutLayer`; attestation routes onto governed branch;
   explicit 100 MB layer + governor on `/backup/blob` — branch
   `fix/p0.10-timeouts-ratelimit`. Global `TimeoutLayer` (120s, →408) as the
@@ -255,7 +255,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   audit-gated (#294), so full BBS DCQL presentation is a follow-up tied to
   that audit. Guard test `formats_admitted_for_dcql_are_all_presentable`
   locks the invariant (passes on default + bbs feature) — PR: #349 (merged)
-- `[~]` **P0.12a** (S) Deferred-presentation sweeper — branch
+- `[x]` **P0.12a** (S) Deferred-presentation sweeper — branch
   `fix/p0.12a-pending-present-sweeper` (worktree). Added `pending::sweep`
   (reclaims terminal `Approved`/`Denied` + stale `expires_at<=now` records;
   also reclaims undecodable garbage rows; tolerant — one bad/stuck row never
@@ -263,12 +263,27 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   sweep loop (threaded `vault_ks` through `run_storage_thread`), runs each
   `session_cleanup_interval` alongside the acl/audit/backup sweepers. Fixes the
   unbounded `pending-present:` growth (one record per untrusted-verifier query).
-  Test: sweep reclaims terminal+stale, keeps live, idempotent — PR: #363 (in review)
-- `[ ]` **P0.12b** (M) Reachable approve/deny/list wire surface — expose the
-  zero-caller `approve_pending_presentation`/`deny_pending_presentation`/
-  `pending::list` over a TT slice (defer→list→approve→re-present end-to-end),
-  delete-on-terminal in approve/deny. Plan sequenced this AFTER the sweeper
-  (P0.12a). — PR: ____
+  Test: sweep reclaims terminal+stale, keeps live, idempotent — PR: #363 (merged)
+- `[x]` **P0.12b** (M) Reachable approve/deny/list wire surface — branch
+  `fix/p0.12b-pending-present-wire` (worktree). New `credential-exchange` TT
+  slice (`pending-list`/`pending-approve`/`pending-deny`) wired into
+  `dispatch_typed` — reachable over BOTH REST + DIDComm (shared dispatch core).
+  Super-admin gate (presented creds are the VTA's own; mirrors the autonomous
+  query path's own-authority); approve passes the operator's claims to
+  `approve_pending_presentation` and `resolve_holder_keys` resolves the holder
+  key from the credential subject + gates on context/super-admin (correct key
+  resolution + audit attribution). Added **delete-on-terminal** to approve/deny
+  (record removed on resolution; sweeper's terminal branch now a backstop, its
+  main job reclaiming abandoned/stale deferrals). SDK URIs + body types live in
+  `protocols::credential_exchange` alongside query/present (the CE family is
+  outside the central `ALL_URIS` registry — namespace allowlist excludes
+  credential-exchange — so outside the parity harness, like the existing message
+  types). Tests: ops-layer end-to-end (real defer→list→approve→vp_token via
+  holder_fixture) updated for delete-on-terminal; new wire integration tests
+  (dispatch/gate/list/deny/approve-plumbing/unauth); `TestAppContext` gains
+  `vault_ks`. CLI (pnm) commands are a follow-up. CI: fmt + clippy (default &
+  tee) clean, full vta-sdk+vta-service suites green; no new deps, no version
+  bump — PR: #368 (merged)
 - **P0.13** — DECISION (operator): ENFORCE on both transports (not document).
 - `[x]` **P0.13a** (M) DIDComm `swap_acl` honours step-up floors — branch
   `fix/p0.13a-didcomm-stepup` (worktree). Refactored `resolve_step_up` to take
@@ -280,7 +295,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   unelevatable in-band) is rejected with a `forbidden`/StepUpRequired problem
   report directing to REST. Added `StepUpRequired` → `forbidden` arm to
   `app_err_to_response`. Test: `resolve_step_up` swap-key floor/carve-out/
-  disabled matrix — PR: ____
+  disabled matrix — PR: #360 (merged)
 - `[x]` **P0.13b** (M) Vault step-up enforcement — branch
   `fix/p0.13b-vault-stepup` (worktree). Added `vault/release`,
   `vault/proxy-login`, `vault/sign-trust-task` op-classes (vti-common
@@ -361,7 +376,7 @@ CLAUDE.md hot-spots section updated.
   accept-any). Docs: client-pin block in `tee-architecture.md` next to the KMS
   PCR0-rotation note (use the same `nitro-cli build-enclave` hashes). Tests:
   check_pcrs none/match (case+0x)/pcr0-mismatch/pcr8-mismatch/absent-pcr.
-  fmt + clippy clean; vta-sdk 168, pnm-cli 39 green — PR: ____
+  fmt + clippy clean; vta-sdk 168, pnm-cli 39 green — PR: #388 (merged)
 - `[ ]` **P3.5** (S) `cargo hack --each-feature` CI + REST-only test job — PR: ____
 - `[ ]` **P3.6** (M) Pure `BootDecision` resolver in kms_bootstrap with full
   truth-table tests — PR: ____

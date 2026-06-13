@@ -176,7 +176,19 @@ pub async fn list_for_did(
             continue;
         };
         if let Some(raw) = primary.get_raw(primary_key(id)).await? {
-            hydrated.push((idx_key, raw));
+            // P0.11: the prefix `relationships_by_did:<did>:` also matches a
+            // *longer* DID that has `<did>` as a colon-delimited prefix —
+            // `did:webvh:scid:host` vs `did:webvh:scid:host:acme` — because
+            // `did:webvh` DIDs legitimately contain colons. Such a hydrated
+            // row belongs to a different DID, so post-filter on the actual
+            // edge endpoints before including it. Undecodable rows are skipped
+            // (orphan-tolerant, same as a missing primary row).
+            match decode(&raw) {
+                Ok(rel) if rel.issuer_did == did || rel.subject_did == did => {
+                    hydrated.push((idx_key, raw));
+                }
+                _ => {}
+            }
         }
     }
 
@@ -318,6 +330,39 @@ mod tests {
         assert_eq!(got.map(|r| r.id), Some(rel.id));
         let miss = find_by_hash(&primary, "feedface").await.unwrap();
         assert!(miss.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_does_not_leak_colon_prefix_colliding_did() {
+        // P0.11: `did:webvh` DIDs contain colons, so the index scan for
+        // `did:webvh:s:h` would otherwise also match the keys of
+        // `did:webvh:s:h:x` (whose index keys share the scanned prefix),
+        // leaking another member's relationship rows.
+        let (primary, index, audit, _dir) = temp_kss().await;
+        let short = fresh("did:webvh:s:h", "did:key:zPeer");
+        let long = fresh("did:webvh:s:h:x", "did:key:zPeer2");
+        store_relationship(&primary, &index, &short).await.unwrap();
+        store_relationship(&primary, &index, &long).await.unwrap();
+
+        // Querying the shorter DID must return only its own edge.
+        let page = list_for_did(&primary, &index, &audit, "did:webvh:s:h", None, 10)
+            .await
+            .unwrap();
+        let ids: Vec<_> = page.items.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![short.id], "must return only the exact DID's edge");
+        assert!(
+            !ids.contains(&long.id),
+            "colon-extended DID's edge must not leak"
+        );
+
+        // …and the longer DID still finds its own edge.
+        let page_long = list_for_did(&primary, &index, &audit, "did:webvh:s:h:x", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            page_long.items.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![long.id]
+        );
     }
 
     #[tokio::test]

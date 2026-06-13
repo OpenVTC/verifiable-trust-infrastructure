@@ -56,10 +56,12 @@ use crate::members::{Disposition, Member, delete_member, get_member, store_membe
 use crate::server::AppState;
 use crate::status_list;
 
-/// Process-wide mutex serialising every member departure so the
-/// "would this leave zero admins?" check + ACL delete is one atomic
-/// critical section — concurrent removals can't both pass the check
-/// and both delete. (fjall isn't multi-process safe regardless, so a
+/// Process-wide mutex serialising member-state mutations — admit,
+/// depart, and role-change — so each check-then-write is one atomic
+/// critical section. Departures can't both pass the "would this leave
+/// zero admins?" check and both delete; admits can't both pass the
+/// "no existing ACL row" check and both mint a VMC + burn a status-list
+/// slot (P0.15). (fjall isn't multi-process safe regardless, so a
 /// process-wide lock is the right grain.)
 static LAST_ADMIN_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -174,12 +176,21 @@ fn parse_role(role: &str) -> Result<VtcRole, AppError> {
 /// then issues credentials and stamps their ids back onto the member.
 /// A failure partway leaves the safer state (auth path works; metadata
 /// reconcilable by the next admin action).
+///
+/// The existence check + writes run under [`LAST_ADMIN_LOCK`], matching
+/// `depart`/`remint` — without it two concurrent admits for the same DID
+/// (two approved `Pending`s, or a submit auto-admit racing an approve)
+/// both observe "no ACL row" and both proceed, minting two VMCs and
+/// burning two status-list slots (P0.15). With the lock, the loser sees
+/// the row the winner wrote and gets a `Conflict`.
 async fn admit(
     state: &AppState,
     subject_did: &str,
     role: VtcRole,
     actor_did: &str,
 ) -> Result<AdmitOutcome, AppError> {
+    let _guard = LAST_ADMIN_LOCK.lock().await;
+
     if get_acl_entry(&state.acl_ks, subject_did).await?.is_some() {
         return Err(AppError::Conflict(format!(
             "{subject_did} already has an ACL row; refusing to admit a duplicate membership"
