@@ -212,11 +212,45 @@ impl AuthState for AppState {
     }
 }
 
+/// Run-path-specific shared components injected into [`build_app_state`].
+///
+/// The full server path (`run()`) builds these *before* the `AppState` because
+/// it needs them for drain replay and the teardown-channel consumer, and they
+/// must be the live wiring rather than the inert defaults. Non-axum front-ends
+/// (Lambda, offline CLI) pass [`AppStateParts::default`] and `build_app_state`
+/// fills in self-contained defaults: a fresh telemetry ring buffer + registry,
+/// a drain sweeper whose teardown signals go nowhere, a placeholder DIDComm
+/// bridge, and no metrics handle.
+///
+/// Injecting these (rather than letting `run()` assemble its own `AppState`
+/// literal) keeps `build_app_state` the single `AppState` constructor — one
+/// `WebvhAuthLocks::new()`, one config `RwLock`, one `init_auth` — so the REST
+/// and DIDComm transports can't diverge (P1.1).
+#[derive(Default)]
+pub struct AppStateParts {
+    /// Telemetry sink shared with the mediator registry. `None` → fresh ring buffer.
+    pub telemetry: Option<vti_common::telemetry::SharedTelemetrySink>,
+    /// Live mediator listener registry. `None` → fresh registry over `telemetry`.
+    #[cfg(feature = "webvh")]
+    pub mediator_registry: Option<Arc<crate::messaging::registry::MediatorListenerRegistry>>,
+    /// Drain sweeper wired to a real teardown channel. `None` → dead-channel no-op sweeper.
+    #[cfg(feature = "webvh")]
+    pub drain_sweeper: Option<Arc<crate::messaging::drain_sweeper::DrainSweeper>>,
+    /// Outbound DIDComm bridge. `None` → placeholder (no live service).
+    #[cfg(feature = "didcomm")]
+    pub didcomm_bridge: Option<Arc<DIDCommBridge>>,
+    /// Prometheus handle for `/metrics`. `None` → no metrics rendering.
+    #[cfg(feature = "rest")]
+    pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
+}
+
 /// Build the shared application state from config, store, and TEE context.
 ///
-/// Use this to construct `AppState` without the full thread orchestration
-/// of `run()`. Useful for non-axum front-ends (e.g., Lambda handlers)
-/// that need the state but manage their own request loop.
+/// This is the **single** `AppState` constructor. The server path (`run()`)
+/// injects its live shared components via `parts` and then derives the
+/// DIDComm-transport `VtaState` from the returned `AppState` (so both
+/// transports share the same Arcs); non-axum front-ends (e.g., Lambda handlers)
+/// pass `AppStateParts::default()` and manage their own request loop.
 pub async fn build_app_state(
     config: AppConfig,
     store: &Store,
@@ -224,6 +258,7 @@ pub async fn build_app_state(
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
     restart_tx: watch::Sender<bool>,
+    parts: AppStateParts,
 ) -> Result<AppState, AppError> {
     let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
         if let Some(key) = storage_encryption_key {
@@ -268,20 +303,23 @@ pub async fn build_app_state(
 
     let auth = init_auth(&config, &*seed_store, &keys_ks).await;
 
-    let telemetry: vti_common::telemetry::SharedTelemetrySink =
-        Arc::new(vti_common::telemetry::RingBufferTelemetry::new());
+    // Telemetry sink: reuse the run-path's live sink when injected, else a
+    // fresh ring buffer for non-axum front-ends.
+    let telemetry: vti_common::telemetry::SharedTelemetrySink = parts
+        .telemetry
+        .unwrap_or_else(|| Arc::new(vti_common::telemetry::RingBufferTelemetry::new()));
     #[cfg(feature = "webvh")]
-    let mediator_registry = Arc::new(crate::messaging::registry::MediatorListenerRegistry::new(
-        Arc::clone(&telemetry),
-    ));
-    // `build_app_state` is called from non-axum front-ends (e.g.
-    // Lambda) that don't run a teardown consumer — give them a
-    // sweeper whose channel sender goes nowhere so signals
-    // become no-ops. The full `run()` path replaces this with a
-    // sweeper whose receiver is consumed by a real task that
-    // calls `DIDCommService::remove_listener`.
+    let mediator_registry = parts.mediator_registry.unwrap_or_else(|| {
+        Arc::new(crate::messaging::registry::MediatorListenerRegistry::new(
+            Arc::clone(&telemetry),
+        ))
+    });
+    // The full `run()` path injects a sweeper whose teardown receiver is
+    // consumed by a real task that calls `DIDCommService::remove_listener`.
+    // Non-axum front-ends (e.g. Lambda) that don't run a teardown consumer get
+    // a sweeper whose channel sender goes nowhere, so signals become no-ops.
     #[cfg(feature = "webvh")]
-    let drain_sweeper = {
+    let drain_sweeper = parts.drain_sweeper.unwrap_or_else(|| {
         let (tx, _rx) = crate::messaging::drain_sweeper::teardown_channel(
             crate::messaging::drain_sweeper::DEFAULT_TEARDOWN_CHANNEL_CAPACITY,
         );
@@ -290,7 +328,7 @@ pub async fn build_app_state(
             drains_ks.clone(),
             tx,
         ))
-    };
+    });
 
     Ok(AppState {
         keys_ks,
@@ -332,7 +370,9 @@ pub async fn build_app_state(
         #[cfg(feature = "didcomm")]
         ka_vm_id: auth.ka_vm_id,
         #[cfg(feature = "didcomm")]
-        didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        didcomm_bridge: parts
+            .didcomm_bridge
+            .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
         #[cfg(feature = "didcomm")]
         didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
 
@@ -341,7 +381,7 @@ pub async fn build_app_state(
         tee: tee_context,
         restart_tx,
         #[cfg(feature = "rest")]
-        metrics_handle: None,
+        metrics_handle: parts.metrics_handle,
     })
 }
 
@@ -576,57 +616,25 @@ pub async fn run(
     // or restart signal, tears everything down, then either exits
     // or loops back to re-initialize with updated state.
     loop {
-        // Open cached keyspace handles with optional encryption.
+        // Keyspace handles `run()` needs directly: the storage-thread inputs
+        // (un-gated, so the storage thread compiles in every feature combo) and
+        // the drain set (webvh — needed for boot replay + the sweeper, which
+        // are built before `AppState` exists). Every other keyspace is opened
+        // by `build_app_state`, the single `AppState` constructor (P1.1).
         let apply_encryption = |ks: KeyspaceHandle| -> KeyspaceHandle {
             match storage_encryption_key {
-                Some(key) => {
-                    info!("storage encryption enabled for keyspace");
-                    ks.with_encryption(key)
-                }
+                Some(key) => ks.with_encryption(key),
                 None => ks,
             }
         };
-
-        let keys_ks = apply_encryption(store.keyspace("keys")?);
         let sessions_ks = apply_encryption(store.keyspace("sessions")?);
         let acl_ks = apply_encryption(store.keyspace("acl")?);
-        let contexts_ks = apply_encryption(store.keyspace("contexts")?);
-        let did_templates_ks = apply_encryption(store.keyspace("did_templates")?);
         let audit_ks = apply_encryption(store.keyspace("audit")?);
-        let imported_ks = apply_encryption(store.keyspace("imported_secrets")?);
-        let cache_ks = apply_encryption(store.keyspace("cache")?);
         let vault_ks = apply_encryption(store.keyspace("vault")?);
-        let service_state_ks = apply_encryption(store.keyspace("service_state")?);
-        let sealed_nonces_ks = apply_encryption(store.keyspace("sealed_nonces")?);
         let backup_bundles_ks = apply_encryption(store.keyspace("backup_bundles")?);
         let backup_blob_dir = config.store.data_dir.join("backups");
         #[cfg(feature = "webvh")]
-        let webvh_ks = apply_encryption(store.keyspace("webvh")?);
-        #[cfg(feature = "webvh")]
-        let passkey_vms_ks = apply_encryption(store.keyspace("passkey_vms")?);
-        #[cfg(feature = "webvh")]
         let drains_ks = apply_encryption(store.keyspace("drains")?);
-        #[cfg(feature = "webvh")]
-        let snapshot_ks =
-            apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
-
-        // Initialize auth infrastructure
-        let auth = init_auth(&config, &*seed_store, &keys_ks).await;
-
-        // Fail-closed on missing identity (P0.9b). `init_auth` yields
-        // `jwt_keys: Some` only when the VTA has a complete, usable signing
-        // identity: a configured `vta_did`, its key records + seed present, and
-        // a decodable JWT signing key. With any of those missing the VTA still
-        // *boots* but every authenticated endpoint returns 401 — a service that
-        // looks "up" to a liveness probe while being inert. Refuse to start
-        // unless the operator explicitly opted into a degraded boot (e.g. to
-        // inspect or finish provisioning a half-set-up instance). TEE
-        // front-ends pass `allow_degraded = true`: their identity is
-        // established by KMS autogen / admin-bootstrap earlier in enclave boot,
-        // and a degraded first boot there is an existing, documented state.
-        if auth.jwt_keys.is_none() && !allow_degraded {
-            return Err(AppError::Config(missing_identity_message(&config)));
-        }
 
         // Pluggable telemetry sink + multi-mediator listener registry.
         // The registry holds active/drain state and the per-mediator
@@ -669,16 +677,6 @@ pub async fn run(
             }
         }
 
-        // In TEE required mode, warn if auth isn't initialized.
-        #[cfg(feature = "tee")]
-        if config.tee.mode == crate::config::TeeMode::Required && auth.jwt_keys.is_none() {
-            warn!(
-                "TEE mode is 'required' but authentication is not initialized \
-                 (vta_did not configured). The VTA will start but authenticated \
-                 endpoints will return 401."
-            );
-        }
-
         // Shutdown + restart coordination
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (restart_tx, mut restart_rx) = watch::channel(false);
@@ -717,113 +715,92 @@ pub async fn run(
         let storage_backup_blob_dir = backup_blob_dir.clone();
         let storage_audit_config = config.audit.clone();
         let storage_auth_config = config.auth.clone();
-        let has_auth = auth.jwt_keys.is_some();
 
         // Shared DIDComm bridge for outbound request-response messaging.
         // The service reference is set after DIDCommService::start().
         #[cfg(feature = "didcomm")]
         let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::new("vta-main"));
 
-        // Build VtaState for the DIDComm service router
+        // Build the shared `AppState` once, via the single constructor
+        // (`build_app_state`), injecting the live shared components `run()`
+        // built above (telemetry sink, mediator registry, drain sweeper, the
+        // real DIDComm bridge, the metrics handle). Both the REST front-end and
+        // the DIDComm → trust-task dispatch bridge clone from this one owned
+        // copy. `AppState` is `Clone`. (P1.1)
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        let app_state = {
+            let parts = AppStateParts {
+                telemetry: Some(Arc::clone(&telemetry)),
+                #[cfg(feature = "webvh")]
+                mediator_registry: Some(Arc::clone(&mediator_registry)),
+                #[cfg(feature = "webvh")]
+                drain_sweeper: Some(Arc::clone(&drain_sweeper)),
+                #[cfg(feature = "didcomm")]
+                didcomm_bridge: Some(didcomm_bridge.clone()),
+                #[cfg(feature = "rest")]
+                metrics_handle: metrics_handle.clone(), // installed once, before the loop
+            };
+            build_app_state(
+                config.clone(),
+                &store,
+                seed_store.clone(),
+                storage_encryption_key,
+                tee_context.clone(),
+                restart_tx.clone(),
+                parts,
+            )
+            .await?
+        };
+        // The wrapping-key cache reaper is a run()-path concern (build_app_state
+        // just constructs the cache); arm it on the live state.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        app_state.wrapping_cache.clone().spawn_reaper();
+
+        // Fail-closed on missing identity (P0.9b). `init_auth` (inside
+        // build_app_state) yields `jwt_keys: Some` only when the VTA has a
+        // complete, usable signing identity: a configured `vta_did`, its key
+        // records + seed present, and a decodable JWT signing key. With any of
+        // those missing the VTA still *boots* but every authenticated endpoint
+        // returns 401 — a service that looks "up" to a liveness probe while
+        // being inert. Refuse to start unless the operator explicitly opted
+        // into a degraded boot (e.g. to inspect or finish provisioning a
+        // half-set-up instance). TEE front-ends pass `allow_degraded = true`:
+        // their identity is established by KMS autogen / admin-bootstrap earlier
+        // in enclave boot, and a degraded first boot there is an existing,
+        // documented state.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        if app_state.jwt_keys.is_none() && !allow_degraded {
+            return Err(AppError::Config(missing_identity_message(&config)));
+        }
+
+        // Whether a usable signing identity is present — drives session cleanup
+        // in the storage thread (and the TEE warn below). Defined in every
+        // feature combo so the un-gated storage thread compiles; a build with
+        // neither transport returns at the "no services enabled" guard above
+        // before this is read.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        let has_auth = app_state.jwt_keys.is_some();
+        #[cfg(not(any(feature = "rest", feature = "didcomm")))]
+        let has_auth = false;
+
+        // In TEE required mode, warn if auth isn't initialized.
+        #[cfg(feature = "tee")]
+        if config.tee.mode == crate::config::TeeMode::Required && !has_auth {
+            warn!(
+                "TEE mode is 'required' but authentication is not initialized \
+                 (vta_did not configured). The VTA will start but authenticated \
+                 endpoints will return 401."
+            );
+        }
+
+        // The DIDComm-transport view of shared state. Derived from the single
+        // `AppState` so REST and DIDComm share the same config `RwLock`,
+        // `WebvhAuthLocks`, registry, sweeper, and telemetry (P1.1).
         #[cfg(feature = "didcomm")]
         let vta_state = if config.services.didcomm {
-            Some(Arc::new(messaging::router::VtaState {
-                keys_ks: keys_ks.clone(),
-                acl_ks: acl_ks.clone(),
-                contexts_ks: contexts_ks.clone(),
-                did_templates_ks: did_templates_ks.clone(),
-                audit_ks: audit_ks.clone(),
-                imported_ks: imported_ks.clone(),
-                service_state_ks: service_state_ks.clone(),
-                #[cfg(feature = "webvh")]
-                webvh_ks: webvh_ks.clone(),
-                sealed_nonces_ks: sealed_nonces_ks.clone(),
-                #[cfg(feature = "webvh")]
-                drains_ks: drains_ks.clone(),
-                #[cfg(feature = "webvh")]
-                snapshot_ks: snapshot_ks.clone(),
-                #[cfg(feature = "webvh")]
-                mediator_registry: Arc::clone(&mediator_registry),
-                #[cfg(feature = "webvh")]
-                drain_sweeper: Arc::clone(&drain_sweeper),
-                #[cfg(feature = "webvh")]
-                webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
-                telemetry: Arc::clone(&telemetry),
-                seed_store: seed_store.clone(),
-                config: Arc::new(RwLock::new(config.clone())),
-                did_resolver: auth.did_resolver.clone(),
-                didcomm_bridge: didcomm_bridge.clone(),
-                secrets_resolver: auth.secrets_resolver.clone(),
-                signing_vm_id: auth.signing_vm_id.clone(),
-                ka_vm_id: auth.ka_vm_id.clone(),
-                #[cfg(feature = "tee")]
-                tee_state: tee_context.as_ref().map(|tc| tc.state.clone()),
-                restart_tx: restart_tx.clone(),
-            }))
+            Some(Arc::new(messaging::router::VtaState::from(&app_state)))
         } else {
             None
-        };
-
-        // Build the shared `AppState` once, before the REST thread spawn.
-        // Both the REST front-end and the DIDComm → trust-task dispatch
-        // bridge need it; constructing it here (rather than inside the
-        // REST block) keeps a single owned copy in scope that each
-        // consumer clones. `AppState` is `Clone`.
-        #[cfg(any(feature = "rest", feature = "didcomm"))]
-        let wrapping_cache = crate::keys::wrapping::WrappingKeyCache::new();
-        #[cfg(any(feature = "rest", feature = "didcomm"))]
-        wrapping_cache.clone().spawn_reaper();
-
-        #[cfg(any(feature = "rest", feature = "didcomm"))]
-        let app_state = AppState {
-            keys_ks,
-            sessions_ks,
-            acl_ks,
-            contexts_ks,
-            did_templates_ks,
-            audit_ks,
-            imported_ks,
-            cache_ks,
-            vault_ks,
-            service_state_ks: service_state_ks.clone(),
-            sealed_nonces_ks,
-            backup_bundles_ks,
-            backup_blob_dir,
-            #[cfg(feature = "webvh")]
-            webvh_ks,
-            #[cfg(feature = "webvh")]
-            passkey_vms_ks,
-            #[cfg(feature = "webvh")]
-            drains_ks,
-            #[cfg(feature = "webvh")]
-            snapshot_ks,
-            #[cfg(feature = "webvh")]
-            mediator_registry: Arc::clone(&mediator_registry),
-            #[cfg(feature = "webvh")]
-            drain_sweeper: Arc::clone(&drain_sweeper),
-            #[cfg(feature = "webvh")]
-            webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
-            telemetry: Arc::clone(&telemetry),
-            wrapping_cache,
-            config: Arc::new(RwLock::new(config.clone())),
-            seed_store: seed_store.clone(),
-            did_resolver: auth.did_resolver.clone(),
-            status_list_resolver: crate::vault::status::default_status_resolver(auth.did_resolver),
-            secrets_resolver: auth.secrets_resolver.clone(),
-            #[cfg(feature = "didcomm")]
-            signing_vm_id: auth.signing_vm_id.clone(),
-            #[cfg(feature = "didcomm")]
-            ka_vm_id: auth.ka_vm_id.clone(),
-            #[cfg(feature = "didcomm")]
-            didcomm_bridge: didcomm_bridge.clone(),
-            #[cfg(feature = "didcomm")]
-            didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
-            jwt_keys: auth.jwt_keys,
-            atm: auth.atm,
-            tee: tee_context.clone(),
-            restart_tx: restart_tx.clone(),
-            #[cfg(feature = "rest")]
-            metrics_handle: metrics_handle.clone(), // installed once, before the loop
         };
 
         // Spawn REST thread (conditional)
@@ -847,17 +824,21 @@ pub async fn run(
         // Start DIDComm service (conditional)
         #[cfg(feature = "didcomm")]
         let didcomm_service: Option<DIDCommService> = if let Some(ref vta_state) = vta_state {
-            match (&auth.secrets_resolver, &config.vta_did, &config.messaging) {
+            match (
+                &app_state.secrets_resolver,
+                &config.vta_did,
+                &config.messaging,
+            ) {
                 (Some(sr), Some(vta_did), Some(messaging_config)) => {
                     // Collect secrets using the VM IDs from init_auth (correct for both
                     // did:key and did:webvh — avoids hardcoding #key-0/#key-1 fragments).
                     let mut secrets = Vec::new();
-                    if let Some(ref signing_id) = auth.signing_vm_id
+                    if let Some(ref signing_id) = app_state.signing_vm_id
                         && let Some(s) = sr.get_secret(signing_id).await
                     {
                         secrets.push(s);
                     }
-                    if let Some(ref ka_id) = auth.ka_vm_id
+                    if let Some(ref ka_id) = app_state.ka_vm_id
                         && let Some(s) = sr.get_secret(ka_id).await
                     {
                         secrets.push(s);
