@@ -10,6 +10,8 @@
 //! `crate::setup::*` — `main.rs` and `did_webvh.rs` don't need to know
 //! the internal layout.
 
+use std::path::{Path, PathBuf};
+
 use bip39::Mnemonic;
 use dialoguer::{Confirm, Input};
 use didwebvh_rs::url::WebVHURL;
@@ -23,6 +25,52 @@ use crate::store::KeyspaceHandle;
 
 mod from_toml;
 mod interactive;
+
+/// UI seam between the shared setup engine ([`apply_inputs`]) and the two
+/// front-ends that drive it: the interactive `vta setup` wizard (real prompts)
+/// and the non-interactive `vta setup --from <file>` path ([`SilentUi`]).
+///
+/// The engine owns all the *work* (mint keys, create DIDs, write the store,
+/// seal); the few places where the interactive wizard needs operator input
+/// that the TOML file can't express — confirming the displayed mnemonic, and
+/// choosing where to write a freshly-minted DID's `did.jsonl` — are funnelled
+/// through this trait so a single engine serves both front-ends (P1.2).
+pub trait SetupUi {
+    /// Called once, right after the master mnemonic is generated.
+    ///
+    /// The interactive wizard displays the phrase and requires the operator to
+    /// confirm they've recorded it (returning an error aborts setup); the
+    /// silent impl is a no-op — the `--from` path never displays the mnemonic,
+    /// and the operator captures it via `pnm backup export` after the first
+    /// admin connects.
+    fn confirm_mnemonic(&self, mnemonic: &Mnemonic) -> Result<(), Box<dyn std::error::Error>>;
+
+    /// Resolve where a freshly-created DID's `did.jsonl` log should be written,
+    /// or `None` to skip writing it.
+    ///
+    /// `default` is the canonical in-store location
+    /// (`<data_dir>/did-logs/<label>-did.jsonl`). The silent impl returns
+    /// `Some(default)` — `--from` has always written the log to that canonical
+    /// path. The interactive wizard prompts for a path (offering its own
+    /// default) so the operator can place it wherever the hosting tool expects.
+    fn did_log_path(&self, label: &str, default: &Path) -> Option<PathBuf>;
+}
+
+/// Non-interactive [`SetupUi`] for `vta setup --from <file>`: never displays
+/// the mnemonic, always writes `did.jsonl` to the canonical in-store path.
+/// Preserves the exact behaviour the `--from` path had before the engine was
+/// shared with the interactive wizard.
+pub struct SilentUi;
+
+impl SetupUi for SilentUi {
+    fn confirm_mnemonic(&self, _mnemonic: &Mnemonic) -> Result<(), Box<dyn std::error::Error>> {
+        Ok(())
+    }
+
+    fn did_log_path(&self, _label: &str, default: &Path) -> Option<PathBuf> {
+        Some(default.to_path_buf())
+    }
+}
 
 // Submodules are private — external callers reach the entry points via
 // the re-exports below. Allowed-unused because `WizardInputs` and its

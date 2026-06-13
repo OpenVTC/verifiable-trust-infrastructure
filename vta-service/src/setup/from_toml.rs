@@ -47,7 +47,7 @@ use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::store::{KeyspaceHandle, Store};
 use crate::webvh_cli::cli_super_admin;
 
-use super::{create_seed_context, generate_mnemonic_silent};
+use super::{SetupUi, SilentUi, create_seed_context, generate_mnemonic_silent};
 
 /// TOML schema for `vta setup --from <file>`.
 #[derive(Debug, Deserialize)]
@@ -363,21 +363,63 @@ pub enum VtaDidInput {
     /// but no external hosting needed. Ideal for local development and
     /// deployments that don't need webvh's portability/rotation.
     CreateDidKey,
-    /// Mint a new `did:webvh` for the VTA. Always uses the operations
-    /// layer's "simple mode" (VTA generates keys + document).
+    /// Mint a new `did:webvh` for the VTA. Defaults to the operations
+    /// layer's "simple mode" (VTA generates keys + document); the optional
+    /// `did_document_file` / `did_log_file` / `signing_key_id` fields select
+    /// the advanced modes the interactive wizard exposes (see their docs).
     CreateWebvh {
         /// Hosting URL for the DID document, e.g.
         /// `https://trust.example.com/dids/vta`.
         url: String,
         /// Whether the DID is portable (can move to a different domain
-        /// later). Default true.
+        /// later). Default true. Ignored when `did_log_file` is set (the
+        /// pre-signed log already fixes portability).
         #[serde(default = "default_true")]
         portable: bool,
         /// Number of pre-rotation keys to publish (defence against key
-        /// compromise). Default 1; recommended 1–3.
+        /// compromise). Default 1; recommended 1–3. Ignored when
+        /// `did_log_file` is set.
         #[serde(default = "default_pre_rotation_count")]
         pre_rotation_count: u32,
+        /// Advanced: path to a DID-document JSON template file. The VTA still
+        /// mints the keys and fills the document's key material; this only
+        /// supplies the document *shape*. Mutually exclusive with
+        /// `did_log_file` and `signing_key_id`.
+        #[serde(default)]
+        did_document_file: Option<PathBuf>,
+        /// Advanced: path to a complete, pre-signed `did.jsonl` log to import
+        /// verbatim. Mutually exclusive with `did_document_file` and
+        /// `signing_key_id`; `portable` / `pre_rotation_count` are ignored.
+        #[serde(default)]
+        did_log_file: Option<PathBuf>,
+        /// Advanced: id of an existing imported key to use as the signing
+        /// verification method instead of minting a fresh one. Mutually
+        /// exclusive with `did_document_file` and `did_log_file`.
+        #[serde(default)]
+        signing_key_id: Option<String>,
+        /// Advanced: id of an existing imported key to use as the
+        /// key-agreement verification method. Requires `signing_key_id`.
+        #[serde(default)]
+        ka_key_id: Option<String>,
     },
+}
+
+/// The interactive wizard's advanced webvh-DID options, lifted into the
+/// shared engine. All-`None` (`Default`) is the common "simple mode" where the
+/// VTA mints keys and renders the document itself — the only mode the mediator
+/// DID path uses. The `CreateDidWebvhParams` layer enforces that
+/// `did_document` / `did_log` / `template` are mutually exclusive; setup
+/// validation (`validate_inputs`) rejects conflicting combinations up front.
+#[derive(Default)]
+struct AdvancedWebvhOptions {
+    /// Caller-supplied DID-document template (parsed from `did_document_file`).
+    did_document: Option<serde_json::Value>,
+    /// Pre-signed did.jsonl log (read from `did_log_file`).
+    did_log: Option<String>,
+    /// Existing signing-key id to reuse.
+    signing_key_id: Option<String>,
+    /// Existing key-agreement-key id to reuse.
+    ka_key_id: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -399,14 +441,23 @@ pub async fn run_setup_from_file(file_path: PathBuf) -> Result<(), Box<dyn std::
         "Running non-interactive setup from {} ...",
         file_path.display()
     );
-    apply_inputs(inputs).await
+    apply_inputs(inputs, &SilentUi).await
 }
 
-/// Run the setup wizard non-interactively from a deserialized
-/// [`WizardInputs`]. Mirrors [`super::interactive::run_setup_wizard`]
-/// step-for-step but with no prompts and no display of generated key
-/// material.
-pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error::Error>> {
+/// Run the setup wizard from a [`WizardInputs`] (the canonical schema for
+/// both `vta setup` and `vta setup --from <file>`).
+///
+/// This is the single setup engine: it owns all the work (store init, seed
+/// persistence, mnemonic generation, mediator + VTA DID minting, config write,
+/// optional admin seal). The two operator-input points the TOML schema can't
+/// carry — confirming the displayed mnemonic and choosing where to write a
+/// DID's `did.jsonl` — are delegated to `ui` ([`SetupUi`]). The non-interactive
+/// path passes [`SilentUi`] (no display, canonical log path); the interactive
+/// wizard passes an impl that prompts.
+pub async fn apply_inputs(
+    inputs: WizardInputs,
+    ui: &dyn SetupUi,
+) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Refuse to overwrite an existing config — same stance as the
     //    interactive wizard. Operators who want a re-run can delete the
     //    file first.
@@ -453,9 +504,12 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
     eprintln!("  Created application context: vta");
 
-    // 5. Mnemonic — silent generate, never displayed. Operator captures via
-    //    `pnm backup export` after first admin connects.
+    // 5. Mnemonic — generate, then hand to the UI. `--from` (SilentUi) never
+    //    displays it (operator captures via `pnm backup export` after the
+    //    first admin connects); the interactive wizard shows it and requires
+    //    the operator to confirm they've recorded it before continuing.
     let mnemonic = generate_mnemonic_silent()?;
+    ui.confirm_mnemonic(&mnemonic)?;
     let seed = mnemonic.to_seed("");
 
     // 6. Translate the typed backend choice into a SecretsConfig the
@@ -562,6 +616,8 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
                 /* template */ Some("didcomm-mediator".into()),
                 effective_vars,
                 /* is_vta_identity */ false,
+                AdvancedWebvhOptions::default(),
+                ui,
                 &keys_ks,
                 &imported_ks,
                 &contexts_ks,
@@ -599,7 +655,40 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
             url,
             portable,
             pre_rotation_count,
+            did_document_file,
+            did_log_file,
+            signing_key_id,
+            ka_key_id,
         } => {
+            // Resolve the advanced-mode inputs (validated mutually exclusive in
+            // `validate_inputs`): a DID-document template file is parsed as
+            // JSON, a pre-signed log file is read verbatim.
+            let did_document = match did_document_file {
+                Some(path) => {
+                    let raw = std::fs::read_to_string(path).map_err(|e| {
+                        format!("read vta_did.did_document_file {}: {e}", path.display())
+                    })?;
+                    Some(
+                        serde_json::from_str::<serde_json::Value>(&raw).map_err(|e| {
+                            format!("parse vta_did.did_document_file {}: {e}", path.display())
+                        })?,
+                    )
+                }
+                None => None,
+            };
+            let did_log =
+                match did_log_file {
+                    Some(path) => Some(std::fs::read_to_string(path).map_err(|e| {
+                        format!("read vta_did.did_log_file {}: {e}", path.display())
+                    })?),
+                    None => None,
+                };
+            let advanced = AdvancedWebvhOptions {
+                did_document,
+                did_log,
+                signing_key_id: signing_key_id.clone(),
+                ka_key_id: ka_key_id.clone(),
+            };
             let services = super::build_vta_additional_services(
                 &inputs.services,
                 inputs.public_url.as_deref(),
@@ -615,6 +704,8 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
                 /* template */ None,
                 HashMap::new(),
                 /* is_vta_identity */ true,
+                advanced,
+                ui,
                 &keys_ks,
                 &imported_ks,
                 &contexts_ks,
@@ -788,13 +879,40 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
         }
     }
     if let VtaDidInput::CreateWebvh {
-        pre_rotation_count, ..
+        pre_rotation_count,
+        did_document_file,
+        did_log_file,
+        signing_key_id,
+        ka_key_id,
+        ..
     } = &inputs.vta_did
-        && *pre_rotation_count > 32
     {
-        errors.push(format!(
-            "vta_did.pre_rotation_count = {pre_rotation_count} is unreasonably large (max 32)"
-        ));
+        if *pre_rotation_count > 32 {
+            errors.push(format!(
+                "vta_did.pre_rotation_count = {pre_rotation_count} is unreasonably large (max 32)"
+            ));
+        }
+        // The advanced modes are mutually exclusive — each selects a different
+        // way of supplying the DID document / keys, and the operations layer
+        // rejects more than one of `did_document` / `did_log` / existing-key
+        // anyway. Surface the conflict at parse time with a clear message.
+        let advanced_modes = usize::from(did_document_file.is_some())
+            + usize::from(did_log_file.is_some())
+            + usize::from(signing_key_id.is_some());
+        if advanced_modes > 1 {
+            errors.push(
+                "vta_did: at most one of `did_document_file`, `did_log_file`, `signing_key_id` \
+                 may be set — they select mutually-exclusive advanced DID-creation modes"
+                    .into(),
+            );
+        }
+        if ka_key_id.is_some() && signing_key_id.is_none() {
+            errors.push(
+                "vta_did.ka_key_id requires vta_did.signing_key_id (the key-agreement key pairs \
+                 with an existing signing key)"
+                    .into(),
+            );
+        }
     }
     if let Some(did) = &inputs.admin_did
         && !did.starts_with("did:")
@@ -1128,6 +1246,8 @@ async fn create_simple_webvh_did(
     template: Option<String>,
     template_vars: HashMap<String, serde_json::Value>,
     is_vta_identity: bool,
+    advanced: AdvancedWebvhOptions,
+    ui: &dyn SetupUi,
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
@@ -1161,11 +1281,11 @@ async fn create_simple_webvh_did(
         add_mediator_service,
         additional_services,
         pre_rotation_count,
-        did_document: None,
-        did_log: None,
+        did_document: advanced.did_document,
+        did_log: advanced.did_log,
         set_primary: true,
-        signing_key_id: None,
-        ka_key_id: None,
+        signing_key_id: advanced.signing_key_id,
+        ka_key_id: advanced.ka_key_id,
         template,
         template_context: None,
         template_vars,
@@ -1192,15 +1312,23 @@ async fn create_simple_webvh_did(
     let final_did = result.did.clone();
     eprintln!("  Created DID: {final_did}");
 
-    // Save did.jsonl alongside other VTA data so operators can re-publish or
-    // audit later. Single canonical location — no per-DID prompt as in the
-    // interactive wizard.
+    // Persist the did.jsonl so operators can re-publish or audit later. The UI
+    // picks the destination: `--from` (SilentUi) writes the canonical in-store
+    // location (`<data_dir>/did-logs/<label>-did.jsonl`); the interactive
+    // wizard prompts. `None` skips the write entirely.
     if let Some(ref log_entry) = result.log_entry {
-        let log_dir = config.store.data_dir.join("did-logs");
-        std::fs::create_dir_all(&log_dir)?;
-        let log_path = log_dir.join(format!("{label}-did.jsonl"));
-        std::fs::write(&log_path, log_entry)?;
-        eprintln!("  DID log:     {}", log_path.display());
+        let canonical = config
+            .store
+            .data_dir
+            .join("did-logs")
+            .join(format!("{label}-did.jsonl"));
+        if let Some(log_path) = ui.did_log_path(label, &canonical) {
+            if let Some(parent) = log_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&log_path, log_entry)?;
+            eprintln!("  DID log:     {}", log_path.display());
+        }
     }
 
     Ok(final_did)
@@ -1831,5 +1959,136 @@ mod tests {
         assert_eq!(inputs.vta_name.as_deref(), Some("trust-prod-1"));
         assert!(matches!(inputs.secrets, SecretsBackendInput::Aws { .. }));
         validate_inputs(&inputs).expect("full inputs should validate");
+    }
+
+    // ── Advanced webvh-DID options (P1.2a) ──────────────────────────────
+
+    /// Back-compat: a `create_webvh` block without any advanced field parses
+    /// with all advanced options absent (plain simple-mode).
+    #[test]
+    fn create_webvh_advanced_fields_default_absent() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [vta_did]
+            kind = "create_webvh"
+            url  = "https://trust.example.com/dids/vta"
+        "#;
+        let inputs = parse(raw).expect("simple create_webvh should parse");
+        match &inputs.vta_did {
+            VtaDidInput::CreateWebvh {
+                did_document_file,
+                did_log_file,
+                signing_key_id,
+                ka_key_id,
+                portable,
+                pre_rotation_count,
+                ..
+            } => {
+                assert!(did_document_file.is_none());
+                assert!(did_log_file.is_none());
+                assert!(signing_key_id.is_none());
+                assert!(ka_key_id.is_none());
+                assert!(*portable, "portable defaults true");
+                assert_eq!(*pre_rotation_count, 1, "pre_rotation_count defaults 1");
+            }
+            other => panic!("expected CreateWebvh, got {other:?}"),
+        }
+        validate_inputs(&inputs).expect("simple create_webvh should validate");
+    }
+
+    /// Each advanced mode parses and, on its own, validates.
+    #[test]
+    fn create_webvh_single_advanced_mode_validates() {
+        for (field, value) in [
+            ("did_document_file", "\"/tmp/doc.json\""),
+            ("did_log_file", "\"/tmp/did.jsonl\""),
+            ("signing_key_id", "\"did:key:z6MkSigner#key-0\""),
+        ] {
+            let raw = format!(
+                r#"
+                config_path = "/tmp/vta-test/config.toml"
+                data_dir    = "/tmp/vta-test/data"
+                public_url  = "https://trust.example.com"
+
+                [secrets]
+                backend = "keyring"
+
+                [vta_did]
+                kind = "create_webvh"
+                url  = "https://trust.example.com/dids/vta"
+                {field} = {value}
+            "#
+            );
+            let inputs = parse(&raw).unwrap_or_else(|e| panic!("{field} should parse: {e}"));
+            validate_inputs(&inputs)
+                .unwrap_or_else(|e| panic!("{field} alone should validate: {e}"));
+        }
+    }
+
+    /// Two advanced modes at once is rejected (they're mutually exclusive).
+    #[test]
+    fn create_webvh_conflicting_advanced_modes_rejected() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [vta_did]
+            kind              = "create_webvh"
+            url               = "https://trust.example.com/dids/vta"
+            did_document_file = "/tmp/doc.json"
+            signing_key_id    = "did:key:z6MkSigner#key-0"
+        "#;
+        let inputs = parse(raw).expect("conflicting advanced modes should still parse");
+        let err =
+            validate_inputs(&inputs).expect_err("conflicting advanced modes must be rejected");
+        assert!(err.to_string().contains("mutually-exclusive"), "got: {err}");
+    }
+
+    /// `ka_key_id` without `signing_key_id` is rejected.
+    #[test]
+    fn create_webvh_ka_key_without_signing_key_rejected() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+            public_url  = "https://trust.example.com"
+
+            [secrets]
+            backend = "keyring"
+
+            [vta_did]
+            kind      = "create_webvh"
+            url       = "https://trust.example.com/dids/vta"
+            ka_key_id = "did:key:z6MkKA#key-1"
+        "#;
+        let inputs = parse(raw).expect("ka_key_id alone should parse");
+        let err = validate_inputs(&inputs)
+            .expect_err("ka_key_id without signing_key_id must be rejected");
+        assert!(err.to_string().contains("ka_key_id requires"), "got: {err}");
+    }
+
+    /// SilentUi preserves the `--from` behaviour: never display the mnemonic,
+    /// always write the canonical did.jsonl path.
+    #[test]
+    fn silent_ui_behaviour() {
+        let ui = super::super::SilentUi;
+        let mnemonic = super::super::generate_mnemonic_silent().expect("mnemonic");
+        ui.confirm_mnemonic(&mnemonic)
+            .expect("SilentUi must never block on mnemonic confirmation");
+        let canonical = std::path::Path::new("/data/did-logs/vta-did.jsonl");
+        assert_eq!(
+            ui.did_log_path("vta", canonical),
+            Some(canonical.to_path_buf()),
+            "SilentUi must echo the canonical did.jsonl path"
+        );
     }
 }
