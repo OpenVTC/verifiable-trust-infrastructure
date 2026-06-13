@@ -1,3 +1,4 @@
+use crate::store::keyspaces;
 use std::path::PathBuf;
 
 use base64::Engine;
@@ -22,7 +23,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
 
     // Optionally create ACL entry
     if args.admin {
-        let acl_ks = store.keyspace("acl")?;
+        let acl_ks = store.keyspace(keyspaces::ACL)?;
         let entry = VtcAclEntry {
             did: did.clone(),
             role: VtcRole::Admin,

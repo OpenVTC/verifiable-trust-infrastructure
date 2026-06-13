@@ -1,6 +1,7 @@
 // Module tree is declared in lib.rs (so integration tests under
 // `tests/` can pull the same modules the binary uses). Re-import the
 // pieces this binary needs at the top level.
+use vtc_service::store::keyspaces;
 use vtc_service::{acl_cli, config, did_key, keys, server, status, store};
 #[cfg(feature = "setup")]
 use vtc_service::{emergency, setup};
@@ -372,9 +373,9 @@ async fn run_invite_cli(
     // be stopped — fjall does not allow concurrent processes on
     // the same data dir.
     let store = VtiStore::open(&config.store)?;
-    let install_ks = store.keyspace("install")?;
+    let install_ks = store.keyspace(keyspaces::INSTALL)?;
     let install_store = InstallTokenStore::new(install_ks);
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     // Ensure the ACL entry exists with Admin role. The post-login
     // flow gates on `check_acl(acl_ks, &user.did)`, so a DID
@@ -410,6 +411,12 @@ async fn run_invite_cli(
             Some(admin_did.clone()),
         )
         .await?;
+
+    // Flush the ACL entry + install-token row to disk before handing out the
+    // URL — without this the token row may not survive a crash between mint and
+    // the operator's first claim, leaving them with a dead URL (P2.5). Matches
+    // the `acl_cli` / `did_key` offline write paths.
+    store.persist().await?;
 
     let install_url = format!(
         "{}/admin/install?token={}",

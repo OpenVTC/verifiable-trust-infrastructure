@@ -35,6 +35,7 @@
 //! - The `VtcKeyBundle` — the VTC's DID + integration keys stay
 //!   put, only the admin ACL state resets.
 
+use crate::store::keyspaces;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -245,9 +246,9 @@ pub async fn run_emergency_bootstrap_with_store(
         )
         .await?;
 
-    let acl_ks = store.keyspace("acl")?;
-    let passkey_ks = store.keyspace("passkey")?;
-    let install_ks = store.keyspace("install")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
+    let passkey_ks = store.keyspace(keyspaces::PASSKEY)?;
+    let install_ks = store.keyspace(keyspaces::INSTALL)?;
     let install_store = InstallTokenStore::new(install_ks);
 
     // --- destructive cleanup ----------------------------------------
@@ -355,6 +356,12 @@ pub async fn run_emergency_bootstrap_with_store(
              fresh-install state?"
         );
     }
+
+    // Flush the destructive cleanup + the freshly-minted install-token row to
+    // disk before handing the URL back — without this a crash could leave the
+    // old admins half-deleted or the new token row non-durable, handing the
+    // operator a dead recovery URL (P2.5).
+    store.persist().await?;
 
     Ok(EmergencyBootstrapOutcome {
         install_url,

@@ -1,3 +1,4 @@
+use crate::store::keyspaces;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -203,10 +204,10 @@ pub async fn run(
     secret_store: Box<dyn SecretStore>,
 ) -> Result<(), AppError> {
     // Open cached keyspace handles
-    let sessions_ks = store.keyspace("sessions")?;
-    let acl_ks = store.keyspace("acl")?;
-    let community_ks = store.keyspace("community")?;
-    let config_ks = store.keyspace("config")?;
+    let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
+    let community_ks = store.keyspace(keyspaces::COMMUNITY)?;
+    let config_ks = store.keyspace(keyspaces::CONFIG)?;
 
     // P1.1: `config_store` (the db overlay) is canonical for the runtime
     // config keys — fold any operator PATCHes onto the in-memory config
@@ -220,29 +221,29 @@ pub async fn run(
         &crate::config_store::ConfigStore::new(config_ks.clone()),
     )
     .await?;
-    let passkey_ks = store.keyspace("passkey")?;
-    let install_ks = store.keyspace("install")?;
+    let passkey_ks = store.keyspace(keyspaces::PASSKEY)?;
+    let install_ks = store.keyspace(keyspaces::INSTALL)?;
     // `install_store` is built later (after `init_auth` yields the storage
     // key) so it wraps the encrypted `install` handle — see P0.7 below.
-    let members_ks = store.keyspace("members")?;
-    let join_requests_ks = store.keyspace("join_requests")?;
-    let policies_ks = store.keyspace("policies")?;
-    let active_policies_ks = store.keyspace("active_policies")?;
-    let status_lists_ks = store.keyspace("status_lists")?;
-    let registry_records_ks = store.keyspace("registry_records")?;
-    let sync_queue_ks = store.keyspace("sync_queue")?;
-    let sync_cursor_ks = store.keyspace("sync_cursor")?;
-    let relationships_ks = store.keyspace("relationships")?;
-    let relationships_by_did_ks = store.keyspace("relationships_by_did")?;
-    let endorsement_types_ks = store.keyspace("endorsement_types")?;
-    let schemas_ks = store.keyspace("schemas")?;
+    let members_ks = store.keyspace(keyspaces::MEMBERS)?;
+    let join_requests_ks = store.keyspace(keyspaces::JOIN_REQUESTS)?;
+    let policies_ks = store.keyspace(keyspaces::POLICIES)?;
+    let active_policies_ks = store.keyspace(keyspaces::ACTIVE_POLICIES)?;
+    let status_lists_ks = store.keyspace(keyspaces::STATUS_LISTS)?;
+    let registry_records_ks = store.keyspace(keyspaces::REGISTRY_RECORDS)?;
+    let sync_queue_ks = store.keyspace(keyspaces::SYNC_QUEUE)?;
+    let sync_cursor_ks = store.keyspace(keyspaces::SYNC_CURSOR)?;
+    let relationships_ks = store.keyspace(keyspaces::RELATIONSHIPS)?;
+    let relationships_by_did_ks = store.keyspace(keyspaces::RELATIONSHIPS_BY_DID)?;
+    let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
+    let schemas_ks = store.keyspace(keyspaces::SCHEMAS)?;
     // Seed the schema store with the built-in catalog Issues types (idempotent;
     // never overwrites operator edits) so the registry reflects what the VTC
     // mints out of the box.
     crate::schemas::seed_default_issues(&schemas_ks).await?;
-    let endorsements_ks = store.keyspace("endorsements")?;
-    let audit_ks = store.keyspace("audit")?;
-    let audit_key_ks = store.keyspace("audit_key")?;
+    let endorsements_ks = store.keyspace(keyspaces::ENDORSEMENTS)?;
+    let audit_ks = store.keyspace(keyspaces::AUDIT)?;
+    let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
 
     // M2.5: install the workspace-shipped default policies for any
     // PolicyPurpose that lacks an active row. Idempotent — operator

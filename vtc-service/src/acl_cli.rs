@@ -11,6 +11,7 @@
 //! For online ACL management against a running VTC, use the admin UI
 //! (ACL plugin) or the REST `/v1/acl` surface.
 
+use crate::store::keyspaces;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,7 +35,7 @@ fn now_epoch() -> u64 {
 pub async fn run_acl_list(config_path: Option<PathBuf>) -> CliResult {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     let mut entries = list_acl_entries(&acl_ks).await?;
     if entries.is_empty() {
@@ -94,7 +95,7 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
 
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     let now = now_epoch();
     let existing = get_acl_entry(&acl_ks, &args.did).await?;
@@ -128,7 +129,7 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
 pub async fn run_acl_remove(config_path: Option<PathBuf>, did: String) -> CliResult {
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace("acl")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
 
     if get_acl_entry(&acl_ks, &did).await?.is_none() {
         println!("No ACL entry for {did} — nothing to remove.");

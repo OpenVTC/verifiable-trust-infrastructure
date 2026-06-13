@@ -28,6 +28,7 @@
 //! Refuses to re-run on an already-set-up daemon (config or seed
 //! present).
 
+use crate::store::keyspaces;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1348,16 +1349,11 @@ fn open_keyspaces(config: &AppConfig) -> Result<(), AppError> {
     let store = Store::open(&StoreConfig {
         data_dir: config.store.data_dir.clone(),
     })?;
-    for ks in [
-        "sessions",
-        "acl",
-        "community",
-        "config",
-        "passkey",
-        "install",
-        "audit",
-        "audit_key",
-    ] {
+    // Pre-create *every* keyspace the daemon opens at boot, not a subset
+    // (this used to open 8 of 21), so the first `vtc start` doesn't pay the
+    // partition-creation cost. Iterating `keyspaces::ALL` keeps it in lockstep
+    // with `server::run`.
+    for ks in keyspaces::ALL {
         let _ = store.keyspace(ks)?;
     }
     Ok(())
@@ -1385,7 +1381,7 @@ async fn mint_initial_install_token(
     let store = Store::open(&StoreConfig {
         data_dir: config.store.data_dir.clone(),
     })?;
-    let install_ks = store.keyspace("install")?;
+    let install_ks = store.keyspace(keyspaces::INSTALL)?;
     let install_store = InstallTokenStore::new(install_ks);
     let exp = Utc::now() + ChronoDuration::seconds(INSTALL_TOKEN_DEFAULT_TTL_SECS as i64);
     install_store

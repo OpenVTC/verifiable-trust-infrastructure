@@ -1,3 +1,4 @@
+use crate::store::keyspaces;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -198,8 +199,8 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 8. Gather stats from store
-    let acl_ks = store.keyspace("acl")?;
-    let sessions_ks = store.keyspace("sessions")?;
+    let acl_ks = store.keyspace(keyspaces::ACL)?;
+    let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
 
     // --- ACL ---
     let acl_entries = acl::list_acl_entries(&acl_ks).await?;
