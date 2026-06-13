@@ -114,6 +114,9 @@ pub async fn update_member(
             &did,
             &acl.role.to_string(),
             &new_role.to_string(),
+            // PATCH carries no reauth — the step-up path is the
+            // promote-to-admin endpoint, which passes `true`.
+            false,
         )
         .await?;
         audit_writer
@@ -153,27 +156,40 @@ pub async fn update_member(
     Ok(Json(MemberResponse::from_pair_for_route(acl, member)))
 }
 
-struct RoleChangeResult {
-    previous_role: String,
-    new_role: String,
+#[derive(Debug)]
+pub(crate) struct RoleChangeResult {
+    pub(crate) previous_role: String,
+    pub(crate) new_role: String,
 }
 
-/// Run a (non-admin) role change through the decision pipeline:
-/// assemble Facts → decide the active `roleChange` policy → apply via
-/// the Remint executor. A policy `deny` → 403; a `refer` (admin
-/// promotion needing step-up — not reachable here since admin is
-/// refused upstream, but an operator policy could still refer) →
+/// Run a role change through the decision pipeline: assemble Facts →
+/// decide the active `roleChange` policy → apply via the Remint executor.
+/// A policy `deny` → 403; a `refer` (admin promotion needing step-up) →
 /// `StepUpRequired`.
-async fn role_change_via_pipeline(
+///
+/// `step_up` reports whether a verified reauth accompanies this change.
+/// PATCH passes `false` (and refuses `admin` upstream); the
+/// promote-to-admin endpoint passes `true` after its UV ceremony so the
+/// policy's "admin with step-up" branch can allow. Shared by both so the
+/// operator's `role_change.rego` governs *every* role transition,
+/// including the highest-privilege admin grant (P0.14).
+pub(crate) async fn role_change_via_pipeline(
     state: &AppState,
     actor_did: &str,
     subject_did: &str,
     current_role: &str,
     target_role: &str,
+    step_up: bool,
 ) -> Result<RoleChangeResult, AppError> {
-    let facts =
-        assemble_role_change_facts(state, actor_did, subject_did, current_role, target_role)
-            .await?;
+    let facts = assemble_role_change_facts(
+        state,
+        actor_did,
+        subject_did,
+        current_role,
+        target_role,
+        step_up,
+    )
+    .await?;
     let verified = VerifiedFacts::assemble(facts)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -240,15 +256,16 @@ async fn role_change_via_pipeline(
 }
 
 /// Assemble purpose-`role-change` [`Facts`]: the actor's role, the
-/// subject's current member facts, and the requested `target_role`
-/// (with `step_up: false` — PATCH carries no reauth; the step-up path
-/// is the promote-to-admin endpoint).
+/// subject's current member facts, and the requested `target_role`.
+/// `step_up` flows into `evidence.request.step_up` so the policy's
+/// "admin with a verified step-up" branch can fire on the promote path.
 async fn assemble_role_change_facts(
     state: &AppState,
     actor_did: &str,
     subject_did: &str,
     current_role: &str,
     target_role: &str,
+    step_up: bool,
 ) -> Result<Facts, AppError> {
     let actor_role = get_acl_entry(&state.acl_ks, actor_did)
         .await?
@@ -280,7 +297,7 @@ async fn assemble_role_change_facts(
         evidence: Evidence {
             invitation: None,
             presentation: None,
-            request: Some(json!({ "target_role": target_role, "step_up": false })),
+            request: Some(json!({ "target_role": target_role, "step_up": step_up })),
         },
         state: FactsState {
             subject_member: Some(MemberState {
@@ -324,5 +341,135 @@ impl MemberResponse {
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,
         }
+    }
+}
+
+#[cfg(test)]
+mod p0_14_role_change_policy_tests {
+    //! P0.14: admin promotion must flow through `role_change_via_pipeline`
+    //! (called by `promote_finish` with `step_up = true`), so the operator's
+    //! `role_change.rego` governs the grant. These exercise the shared
+    //! pipeline directly — the full UV ceremony is covered separately.
+    use super::*;
+    use affinidi_status_list::StatusPurpose;
+
+    use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+    use crate::members::{Member, store_member};
+    use crate::policy::{Policy, PolicyPurpose, set_active_policy_id, store_policy};
+    use crate::test_support::TestVtc;
+
+    const RP: &str = "https://vtc.example.com";
+    const ADMIN: &str = "did:key:zPromoter";
+    const SUBJECT: &str = "did:key:zCandidate";
+
+    async fn build() -> TestVtc {
+        let vtc = TestVtc::builder()
+            .with_signers(true)
+            .with_public_url(RP)
+            .build()
+            .await;
+        crate::policy::default::install_defaults(
+            &vtc.state.policies_ks,
+            &vtc.state.active_policies_ks,
+        )
+        .await
+        .expect("install default policies");
+        for purpose in [StatusPurpose::Revocation, StatusPurpose::Suspension] {
+            crate::status_list::ensure_initial(
+                &vtc.state.status_lists_ks,
+                purpose,
+                format!("{RP}/v1/status-lists/{purpose}"),
+            )
+            .await
+            .expect("ensure status list");
+        }
+        seed(&vtc, ADMIN, VtcRole::Admin).await;
+        seed(&vtc, SUBJECT, VtcRole::Member).await;
+        vtc
+    }
+
+    async fn seed(vtc: &TestVtc, did: &str, role: VtcRole) {
+        store_acl_entry(
+            &vtc.state.acl_ks,
+            &VtcAclEntry {
+                did: did.into(),
+                role,
+                label: None,
+                allowed_contexts: vec![],
+                created_at: crate::auth::session::now_epoch(),
+                created_by: "did:key:vtc-install".into(),
+                expires_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        store_member(&vtc.state.members_ks, &Member::fresh(did))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn admin_promotion_with_step_up_is_allowed_by_default_policy() {
+        let vtc = build().await;
+        let granted = role_change_via_pipeline(
+            &vtc.state, ADMIN, SUBJECT, "member", "admin", /* step_up */ true,
+        )
+        .await
+        .expect("default policy allows admin promotion with a verified step-up");
+        assert_eq!(granted.new_role, "admin");
+        assert_eq!(granted.previous_role, "member");
+        // The Remint executor wrote the new role.
+        let acl = get_acl_entry(&vtc.state.acl_ks, SUBJECT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acl.role, VtcRole::Admin);
+    }
+
+    #[tokio::test]
+    async fn admin_promotion_is_403_when_policy_denies_even_with_step_up() {
+        let vtc = build().await;
+        // Activate a role_change policy that refuses every promotion.
+        let src = "package vtc.role_change\nimport rego.v1\n\
+                   default decision := {\"effect\": \"deny\", \"with\": {\"code\": \"frozen\"}}\n";
+        let id = uuid::Uuid::new_v4();
+        let sha: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(src.as_bytes()).into()
+        };
+        store_policy(
+            &vtc.state.policies_ks,
+            &Policy {
+                id,
+                purpose: PolicyPurpose::RoleChange,
+                rego_source: src.into(),
+                sha256: sha,
+                activated_at: Some(Utc::now()),
+                author_did: "did:key:test".into(),
+                created_at: Utc::now(),
+                version: 1,
+            },
+        )
+        .await
+        .unwrap();
+        set_active_policy_id(&vtc.state.active_policies_ks, PolicyPurpose::RoleChange, id)
+            .await
+            .unwrap();
+
+        let err = role_change_via_pipeline(
+            &vtc.state, ADMIN, SUBJECT, "member", "admin", /* step_up */ true,
+        )
+        .await
+        .expect_err("a deny policy must block the promotion even after a valid UV");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "deny → 403 Forbidden; got {err:?}"
+        );
+        // The ACL was left untouched.
+        let acl = get_acl_entry(&vtc.state.acl_ks, SUBJECT)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acl.role, VtcRole::Member, "denied promotion must not write");
     }
 }

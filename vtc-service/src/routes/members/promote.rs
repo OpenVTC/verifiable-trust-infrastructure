@@ -26,7 +26,7 @@ use vti_common::auth::passkey::store::{
 };
 
 use crate::acl::admin::{AdminEntry, get_admin_entry, store_admin_entry};
-use crate::acl::{VtcRole, get_acl_entry, store_acl_entry};
+use crate::acl::{VtcRole, get_acl_entry};
 use crate::auth::AdminAuth;
 use crate::error::AppError;
 use crate::members::get_member;
@@ -161,13 +161,13 @@ pub async fn promote_finish(
 
     let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(uv_result.cred_id()));
 
-    // 2. Critical section: re-check + apply role change.
+    // 2. Critical section: re-check, then run the role-change ceremony.
     let _guard = PROMOTE_LOCK.lock().await;
 
-    let mut target_acl = get_acl_entry(&state.acl_ks, &target_did)
+    let target_acl = get_acl_entry(&state.acl_ks, &target_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {target_did}")))?;
-    let _target_member = get_member(&state.members_ks, &target_did)
+    get_member(&state.members_ks, &target_did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {target_did}")))?;
 
@@ -177,9 +177,24 @@ pub async fn promote_finish(
         )));
     }
 
-    let previous_role = target_acl.role.clone();
-    target_acl.role = VtcRole::Admin;
-    store_acl_entry(&state.acl_ks, &target_acl).await?;
+    // P0.14: route the actual promotion through the role-change ceremony so the
+    // operator's `role_change.rego` — plus the host no-last-admin / step-up
+    // invariants in the Remint executor — governs the community's
+    // highest-privilege grant, instead of a bare ACL write that bypassed
+    // policy entirely. The UV ceremony above is the verified step-up, so we
+    // pass `step_up = true`: the default policy's "admin with a verified
+    // step-up" branch allows, while a tightened policy (quorum/tenure) denies
+    // → 403 even after a valid UV. Remint re-mints the role VEC at `admin` and
+    // delivers it to the member's wallet.
+    let granted = crate::routes::members::update::role_change_via_pipeline(
+        &state,
+        &auth.0.did,
+        &target_did,
+        &target_acl.role.to_string(),
+        "admin",
+        true,
+    )
+    .await?;
 
     // Create the admin sister record so the new admin can enrol a
     // device via the existing passkey flow. Empty passkey list
@@ -205,7 +220,7 @@ pub async fn promote_finish(
             &auth.0.did,
             Some(&target_did),
             AuditEvent::AdminPromoted(AdminPromotedData {
-                previous_role: previous_role.to_string(),
+                previous_role: granted.previous_role,
                 authorising_credential_id: cred_id_hex,
             }),
         )
