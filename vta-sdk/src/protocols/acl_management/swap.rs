@@ -26,6 +26,7 @@ pub use super::create::CreateAclResultBody;
 /// *verified* presentation, not the body, so it can't be spoofed
 /// independently of the proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SwapAclBody {
     /// Compact Ed25519 JWS (VP-JWT) proving control of the new DID.
     pub presentation: String,
@@ -38,6 +39,7 @@ pub struct SwapAclBody {
 /// the holder DID extracted from `link_proof` and rejects on mismatch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SwapKeyBody {
     /// The VID being swapped out — MUST equal the DIDComm sender / REST caller.
     pub current_subject: String,

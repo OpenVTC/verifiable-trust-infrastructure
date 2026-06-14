@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 /// short-TTL, and bound to `bundle_id` server-side. Server stores
 /// only `SHA-256(token)` so a leaked DB doesn't leak the token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BundleDescriptor {
     /// Server-generated UUID v4. Unique to this bundle for its
     /// entire lifecycle.
@@ -69,6 +70,7 @@ fn default_true() -> bool {
 /// `spec/vta/backup/initiate-export/1.0` payload.
 /// Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InitiateExportBody {
     /// Password to derive the AES-256-GCM key (Argon2id KDF).
     /// Minimum 12 chars enforced at the op layer.
@@ -87,6 +89,7 @@ pub struct InitiateExportBody {
 
 /// `spec/vta/backup/initiate-export/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InitiateExportResultBody {
     pub descriptor: BundleDescriptor,
 
@@ -98,12 +101,14 @@ pub struct InitiateExportResultBody {
 /// `spec/vta/backup/complete-export/1.0` payload. Optional ack
 /// from the client after a successful download.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CompleteExportBody {
     pub bundle_id: String,
 }
 
 /// `spec/vta/backup/complete-export/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CompleteExportResultBody {
     pub bundle_id: String,
     /// True if the byte stream was downloaded before this ack.
@@ -117,6 +122,7 @@ pub struct CompleteExportResultBody {
 /// `spec/vta/backup/initiate-import/1.0` payload.
 /// Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InitiateImportBody {
     /// Hex-encoded SHA-256 of the `.vtabak` bytes the client is
     /// about to upload. Pre-committed so the VTA detects tampered
@@ -133,6 +139,7 @@ pub struct InitiateImportBody {
 
 /// `spec/vta/backup/initiate-import/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InitiateImportResultBody {
     pub descriptor: BundleDescriptor,
     pub completion_hint: String,
@@ -143,6 +150,7 @@ pub struct InitiateImportResultBody {
 /// endpoint. Two-phase: `confirm: false` runs validation in preview
 /// mode (no state mutation), `confirm: true` commits.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FinalizeImportBody {
     pub bundle_id: String,
 
@@ -162,6 +170,7 @@ pub struct FinalizeImportBody {
 /// shape mirrors the legacy `ImportResult` minus `status` which
 /// becomes a structured `"preview" | "committed"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FinalizeImportResultBody {
     pub bundle_id: String,
     /// `"preview"` or `"committed"`.
@@ -184,12 +193,14 @@ pub struct FinalizeImportResultBody {
 /// bundle in any non-terminal state. Caller-DID must match
 /// `BundleRecord.created_by`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AbortBundleBody {
     pub bundle_id: String,
 }
 
 /// `spec/vta/backup/abort/1.0` response body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AbortBundleResultBody {
     pub bundle_id: String,
     /// True when the abort transitioned a live bundle to

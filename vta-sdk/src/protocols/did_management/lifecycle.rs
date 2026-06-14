@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 /// Trust-task payload for `spec/vta/webvh/dids/get-log/1.0`.
 /// Fetches the raw `did.jsonl` for an authed caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetDidWebvhLogBody {
     pub did: String,
 }
@@ -16,6 +17,7 @@ pub struct GetDidWebvhLogBody {
 /// signal to differentiate "DID not found" (404) from "DID exists
 /// but no log yet" (200 + null).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetDidWebvhLogResultBody {
     pub did: String,
     pub log: Option<String>,

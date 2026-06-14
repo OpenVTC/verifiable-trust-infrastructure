@@ -23,6 +23,7 @@ pub const JOIN_REQUEST_SUBMIT_RECEIPT_TYPE: &str =
 /// DIDComm `from` field, not the body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestSubmitBody {
     pub vp: JsonValue,
     #[serde(default)]
@@ -34,6 +35,7 @@ pub struct JoinRequestSubmitBody {
 /// Body of the receipt message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestSubmitReceiptBody {
     pub request_id: Uuid,
     /// Status string. Always `"pending"` for a successful submit;
@@ -63,6 +65,7 @@ pub const JOIN_REQUEST_ACCEPT_RECEIPT_TYPE: &str =
 /// VMC it reciprocates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestAcceptBody {
     /// The join request being reciprocated. Over REST this is the
     /// `{id}` path segment; over DIDComm (no path) it travels in the
@@ -75,6 +78,7 @@ pub struct JoinRequestAcceptBody {
 /// Body of the accept receipt message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestAcceptReceiptBody {
     pub request_id: Uuid,
     /// Status string. `"accepted"` once the reciprocal edge is recorded.
@@ -100,6 +104,7 @@ pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
 /// Definition the applicant may present against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ManifestCriterion {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -110,6 +115,7 @@ pub struct ManifestCriterion {
 /// Manifest response: the community's join evidence requirements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestManifestResponseBody {
     pub community_did: String,
     pub criteria: Vec<ManifestCriterion>,
@@ -132,6 +138,7 @@ pub const JOIN_REQUEST_STATUS_RESPONSE_TYPE: &str =
 /// path segment; over DIDComm it travels here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestStatusBody {
     pub request_id: Uuid,
 }
@@ -140,6 +147,7 @@ pub struct JoinRequestStatusBody {
 /// the applicant must present next.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct JoinRequestStatusResponseBody {
     pub request_id: Uuid,
     /// `pending` | `deferred` | `approved` | `rejected` | `withdrawn`.
@@ -171,6 +179,7 @@ pub const MEMBER_SELF_REMOVE_RECEIPT_TYPE: &str =
 /// `departure_preference` and then to PolicyDefault→Tombstone.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelfRemoveBody {
     #[serde(default)]
     pub disposition: Option<String>,
@@ -178,6 +187,7 @@ pub struct SelfRemoveBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SelfRemoveReceiptBody {
     pub did: String,
     /// Resolved disposition (`"purge"` | `"tombstone"` |

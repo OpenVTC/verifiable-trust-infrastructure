@@ -32,6 +32,7 @@ use serde_json::Value;
 /// Trust-task payload for `spec/vta/passkey-vms/enroll-challenge/0.1`.
 /// Requests a fresh WebAuthn registration challenge for a DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollPasskeyChallengeBody {
     /// DID the new VM will be added to. Caller must have admin role
     /// on the DID's context.
@@ -45,6 +46,7 @@ pub struct EnrollPasskeyChallengeBody {
 /// Trust-task payload for `spec/vta/passkey-vms/list/0.1`.
 /// Lists every passkey VM currently on a DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListPasskeyVmsBody {
     /// DID whose passkey VMs to enumerate.
     pub did: String,
@@ -53,6 +55,7 @@ pub struct ListPasskeyVmsBody {
 /// Trust-task payload for `spec/vta/passkey-vms/revoke/0.1`.
 /// Removes a passkey VM from a DID document via a WebVH log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RevokePasskeyVmBody {
     /// DID the VM lives on.
     pub did: String,
@@ -64,6 +67,7 @@ pub struct RevokePasskeyVmBody {
 /// empty success body. Modelled as a struct so future additive fields
 /// don't bump the wire version.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RevokePasskeyVmResponse {}
 
 /// Server-issued WebAuthn registration challenge. Returned by
@@ -72,6 +76,7 @@ pub struct RevokePasskeyVmResponse {}
 /// All byte-valued fields are base64url-encoded (no padding). The
 /// browser passes the decoded bytes to `navigator.credentials.create`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollPasskeyChallengeResponse {
     /// Opaque ceremony id — pass back via the `Idempotency-Key` /
     /// `X-Pnm-Ceremony-Id` header on submit. Stored server-side
@@ -117,6 +122,7 @@ pub struct EnrollPasskeyChallengeResponse {
 /// mismatch with `public_key_multibase` — the browser's value is
 /// **not** trusted as the authoritative public key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollPasskeySubmitBody {
     /// DID the new VM is to be added to. Must match the DID
     /// associated with `ceremony_id`.
@@ -164,6 +170,7 @@ pub struct EnrollPasskeySubmitBody {
 /// Successful enrolment response. The VM has already been appended
 /// to the DID document via a WebVH log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollPasskeySubmitResponse {
     /// The full verificationMethod entry as it now appears in the
     /// DID document.
@@ -178,6 +185,7 @@ pub struct EnrollPasskeySubmitResponse {
 
 /// `GET` response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListPasskeyVmsResponse {
     #[serde(rename = "verificationMethods")]
     pub verification_methods: Vec<PasskeyVerificationMethod>,
@@ -187,6 +195,7 @@ pub struct ListPasskeyVmsResponse {
 /// document. Mirrors the wallet-side
 /// `@pnm/core` `PasskeyVerificationMethod` type byte-for-byte.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PasskeyVerificationMethod {
     /// `<did>#passkey-<base64url(sha256(credential_id))>`.
     pub id: String,

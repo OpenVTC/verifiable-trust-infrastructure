@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ContextRecord {
     /// The context's materialized path identifier — slash-separated segments
     /// (e.g. `acme/eng/team-a`). A top-level context is a single segment.

@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 /// the rest of the codebase. `alias = "did"` keeps clients that still
 /// send the legacy name working through one upgrade cycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChallengeRequest {
     #[serde(rename = "subject", alias = "did")]
     pub did: String,
@@ -40,6 +41,7 @@ pub struct ChallengeRequest {
 /// schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RevokeSessionRequest {
     /// Identifier of the session to revoke.
     pub session_id: String,
@@ -50,6 +52,7 @@ pub struct RevokeSessionRequest {
 /// (e.g. `revokedAt`) can be added without a wire-format version bump.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RevokeSessionResponse {}
 
 /// Server responds from `POST /auth/challenge`.
@@ -60,6 +63,7 @@ pub struct RevokeSessionResponse {}
 /// TEE deployments omit it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ChallengeResponse {
     /// base64url-encoded one-time nonce.
     pub challenge: String,
@@ -87,6 +91,7 @@ pub struct ChallengeResponse {
 ///   biometric factor), `"aal3"` (hardware-bound second factor).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Session {
     pub id: String,
     pub subject: String,
@@ -108,6 +113,7 @@ pub struct Session {
 /// store the issuance moment alongside the bundle.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TokenBundle {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,6 +151,7 @@ impl std::fmt::Debug for TokenBundle {
 /// `spec/auth/authenticate/0.1#response`: `{ session, tokens }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuthenticateResponse {
     pub session: Session,
     pub tokens: TokenBundle,

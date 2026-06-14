@@ -3,11 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::keys::KeyType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetKeySecretBody {
     pub key_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetKeySecretResultBody {
     pub key_id: String,
     pub key_type: KeyType,

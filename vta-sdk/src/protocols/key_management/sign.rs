@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Signing algorithms supported by the VTA sign-request protocol.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum SignAlgorithm {
     /// Ed25519 / EdDSA signing.
     EdDSA,
@@ -12,6 +13,7 @@ pub enum SignAlgorithm {
 
 /// Body of a sign-request message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SignRequestBody {
     /// Key ID to sign with (must be an active key the caller has access to).
     pub key_id: String,
@@ -23,6 +25,7 @@ pub struct SignRequestBody {
 
 /// Body of a sign-result message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SignResultBody {
     /// Key ID that was used.
     pub key_id: String,

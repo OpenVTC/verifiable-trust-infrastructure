@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 /// Wire shape conforms to `spec/auth/passkey/login/start/0.1`: the
 /// `did` field serialises as `subject` per the canonical schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PasskeyLoginStartRequest {
     /// The DID the holder claims they control. Server resolves the
     /// DID document, locates passkey VMs, and returns their
@@ -41,6 +42,7 @@ pub struct PasskeyLoginStartRequest {
 /// Server → client: challenge + allowable credentials.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PasskeyLoginStartResponse {
     /// Opaque session id; client returns it in
     /// [`PasskeyLoginFinishRequest`].
@@ -62,6 +64,7 @@ pub struct PasskeyLoginStartResponse {
 /// All byte fields are base64url-encoded (no padding) when serialised.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PasskeyLoginFinishRequest {
     /// The session id returned by `start`.
     pub session_id: String,

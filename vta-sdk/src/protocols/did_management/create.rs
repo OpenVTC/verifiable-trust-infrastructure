@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 /// `server_id`, where the DID location comes from the `URL` itself).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(tag = "mode", content = "path", rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum WebvhPathMode {
     /// Root DID at the host: resolves at `<host>/.well-known/did.jsonl`.
     WellKnown,
@@ -85,6 +86,7 @@ impl From<String> for WebvhPathMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateDidWebvhBody {
     pub context_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +163,7 @@ pub struct CreateDidWebvhBody {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateDidWebvhResultBody {
     pub did: String,
     pub context_id: String,

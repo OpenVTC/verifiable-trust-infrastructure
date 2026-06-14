@@ -77,6 +77,7 @@ pub const RESERVED_VARS: &[&str] = &[
 /// to the VTA); `Global` and `Context` are persisted by the VTA in Phase 2+.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum Scope {
     Builtin,
     Global,
@@ -88,6 +89,7 @@ pub enum Scope {
 
 /// A parsed DID template. Serialized shape matches the on-disk JSON file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DidTemplate {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u32,
@@ -210,6 +212,7 @@ impl TemplateVars {
 /// the raw authored shape; this wrapper adds provenance metadata the server
 /// maintains (scope, timestamps, author DID).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DidTemplateRecord {
     #[serde(flatten)]
     pub template: DidTemplate,

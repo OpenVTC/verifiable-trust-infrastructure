@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// A single audit log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditLogEntry {
     pub id: String,
     pub timestamp: u64,
@@ -18,6 +19,7 @@ pub struct AuditLogEntry {
 
 /// Request body for listing audit logs with filtering and pagination.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListAuditLogsBody {
     /// Start of time range (unix epoch seconds, inclusive).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,6 +56,7 @@ fn default_page_size() -> u64 {
 
 /// Response body for listing audit logs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListAuditLogsResultBody {
     pub entries: Vec<AuditLogEntry>,
     pub total: u64,

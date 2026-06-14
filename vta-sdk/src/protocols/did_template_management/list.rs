@@ -7,11 +7,13 @@ use crate::did_templates::DidTemplateRecord;
 /// `spec/vta/did-templates/list/1.0` payload — list global
 /// templates. Empty body; the request has no parameters.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListDidTemplatesBody {}
 
 /// `spec/vta/contexts/did-templates/list/1.0` payload — list
 /// templates scoped to a specific context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListContextDidTemplatesBody {
     pub context_id: String,
 }
@@ -20,6 +22,7 @@ pub struct ListContextDidTemplatesBody {
 /// templates (global ones for the global URI, context-scoped ones
 /// for the context URI).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListDidTemplatesResultBody {
     pub templates: Vec<DidTemplateRecord>,
 }

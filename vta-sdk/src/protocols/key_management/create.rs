@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::keys::{KeyOrigin, KeyStatus, KeyType};
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateKeyBody {
     pub key_type: KeyType,
     pub derivation_path: String,
@@ -28,6 +29,7 @@ impl std::fmt::Debug for CreateKeyBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateKeyResultBody {
     pub key_id: String,
     pub key_type: KeyType,

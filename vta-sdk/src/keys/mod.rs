@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum KeyType {
     Ed25519,
     X25519,
@@ -12,6 +13,7 @@ pub enum KeyType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum KeyStatus {
     Active,
     Revoked,
@@ -20,6 +22,7 @@ pub enum KeyStatus {
 /// Whether a key was derived from the BIP-32 seed or imported externally.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum KeyOrigin {
     Derived,
     Imported,
@@ -30,6 +33,7 @@ fn default_derived() -> KeyOrigin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KeyRecord {
     pub key_id: String,
     pub derivation_path: String,

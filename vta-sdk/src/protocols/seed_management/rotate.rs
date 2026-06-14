@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RotateSeedBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mnemonic: Option<String>,
@@ -18,6 +19,7 @@ impl std::fmt::Debug for RotateSeedBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RotateSeedResultBody {
     pub previous_seed_id: u32,
     pub new_seed_id: u32,

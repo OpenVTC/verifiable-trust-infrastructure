@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 /// `spec/vta/did-templates/get/1.0` payload — fetch one global
 /// template by name. Auth: any authed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetDidTemplateBody {
     pub name: String,
 }
@@ -16,6 +17,7 @@ pub struct GetDidTemplateBody {
 /// context-scoped template by name. Auth: any authed with access to
 /// the context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct GetContextDidTemplateBody {
     pub context_id: String,
     pub name: String,

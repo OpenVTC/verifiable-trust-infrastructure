@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteContextBody {
     pub id: String,
     #[serde(default)]
@@ -8,6 +9,7 @@ pub struct DeleteContextBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteContextResultBody {
     pub id: String,
     pub deleted: bool,
@@ -15,11 +17,13 @@ pub struct DeleteContextResultBody {
 
 /// Summary of resources that will be removed when deleting a context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteContextPreviewBody {
     pub id: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeleteContextPreviewResultBody {
     pub id: String,
     pub keys: Vec<String>,

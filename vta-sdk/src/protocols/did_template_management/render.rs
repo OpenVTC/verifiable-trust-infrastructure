@@ -13,6 +13,7 @@ use serde_json::Value;
 /// `spec/vta/did-templates/render/1.0` payload — render a global
 /// template with caller vars. Auth: any authed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RenderDidTemplateBody {
     pub name: String,
     #[serde(default)]
@@ -23,6 +24,7 @@ pub struct RenderDidTemplateBody {
 /// context-scoped template (or fall through to global). Auth: any
 /// authed with access to the context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RenderContextDidTemplateBody {
     pub context_id: String,
     pub name: String,
@@ -32,6 +34,7 @@ pub struct RenderContextDidTemplateBody {
 
 /// Shared result body. `document` is the rendered DID document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RenderDidTemplateResultBody {
     pub document: Value,
 }

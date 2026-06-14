@@ -10,6 +10,7 @@ use crate::did_templates::DidTemplate;
 /// `spec/vta/did-templates/create/1.0` payload — create a global
 /// template. Auth: super-admin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateDidTemplateBody {
     /// Full template document. The template's `name` field is the
     /// resource id; the VTA refuses duplicates.
@@ -19,6 +20,7 @@ pub struct CreateDidTemplateBody {
 /// `spec/vta/contexts/did-templates/create/1.0` payload — create a
 /// context-scoped template. Auth: super-admin OR admin-with-context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateContextDidTemplateBody {
     pub context_id: String,
     pub template: DidTemplate,

@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateContextBody {
     /// Leaf segment when `parent` is set (full path = `<parent>/<id>`), else a
     /// top-level segment.
@@ -15,6 +16,7 @@ pub struct CreateContextBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateContextResultBody {
     pub id: String,
     pub name: String,

@@ -15,6 +15,7 @@ use serde_json::Value;
 /// `didwebvh-rs` dependency. The vta-service handler deserializes it
 /// into the library's `Witnesses` enum at intake.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateDidWebvhBody {
     /// New DID document. `None` = keep existing. When `Some`, the VTA
     /// rotates `update_keys` + pre-rotation commitments as a parallel
@@ -55,6 +56,7 @@ pub struct UpdateDidWebvhBody {
 
 /// Caller-supplied parameters for a rotate-keys call.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RotateDidWebvhKeysBody {
     /// Override pre-rotation count for the new commitment set.
     #[serde(default)]
@@ -66,6 +68,7 @@ pub struct RotateDidWebvhKeysBody {
 
 /// Result of a successful update or rotate-keys call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateDidWebvhResultBody {
     pub did: String,
     pub new_version_id: String,

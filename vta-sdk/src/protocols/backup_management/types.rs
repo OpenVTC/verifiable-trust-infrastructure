@@ -10,6 +10,7 @@ use crate::webvh::{WebvhDidRecord, WebvhServerRecord};
 
 /// The on-disk `.vtabak` file format.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BackupEnvelope {
     pub version: u32,
     pub format: String,
@@ -25,6 +26,7 @@ pub struct BackupEnvelope {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct KdfParams {
     pub algorithm: String,
     pub salt: String, // base64url
@@ -34,6 +36,7 @@ pub struct KdfParams {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EncryptionParams {
     pub algorithm: String,
     pub nonce: String, // base64url
@@ -43,6 +46,7 @@ pub struct EncryptionParams {
 
 /// All VTA state, serialized as JSON then encrypted.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BackupPayload {
     /// Hex-encoded active seed bytes (32 bytes → 64 hex chars).
     pub active_seed_hex: String,
@@ -148,6 +152,7 @@ impl std::fmt::Debug for BackupPayload {
 
 /// An imported secret included in the backup payload.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ImportedSecretBackup {
     pub key_id: String,
     /// Hex-encoded raw private key bytes.
@@ -165,6 +170,7 @@ impl std::fmt::Debug for ImportedSecretBackup {
 
 /// Seed record for backup (mirrors SeedRecord from vta-service).
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SeedRecordBackup {
     pub id: u32,
     /// Legacy plaintext archive. Present only on records that predate the
@@ -195,6 +201,7 @@ impl std::fmt::Debug for SeedRecordBackup {
 
 /// ACL entry for backup (mirrors AclEntry from vti-common).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AclEntryBackup {
     pub did: String,
     pub role: String,
@@ -207,6 +214,7 @@ pub struct AclEntryBackup {
 
 /// Seal record for backup.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SealRecordBackup {
     pub sealed_by: String,
     pub sealed_at: DateTime<Utc>,
@@ -215,6 +223,7 @@ pub struct SealRecordBackup {
 
 /// WebVH DID log entry for backup.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WebvhLogBackup {
     pub did: String,
     pub log_json: String,
@@ -222,6 +231,7 @@ pub struct WebvhLogBackup {
 
 /// Subset of VTA config that should be backed up.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BackupConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vta_did: Option<String>,
@@ -239,6 +249,7 @@ pub struct BackupConfig {
 
 /// Export request body (REST + DIDComm).
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ExportRequest {
     pub password: String,
     #[serde(default)]
@@ -256,6 +267,7 @@ impl std::fmt::Debug for ExportRequest {
 
 /// Import request body (REST + DIDComm).
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ImportRequest {
     pub backup: BackupEnvelope,
     pub password: String,
@@ -280,6 +292,7 @@ fn default_true() -> bool {
 
 /// Import preview/result response.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ImportResult {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]

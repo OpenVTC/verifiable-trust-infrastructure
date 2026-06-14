@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 /// path explicitly wipes the `server-auth:` keyspace so a backup
 /// from another VTA can't replay stale tokens here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WebvhServerRecord {
     pub id: String,
     pub did: String,
@@ -32,6 +33,7 @@ pub struct WebvhServerRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WebvhDidRecord {
     pub did: String,
     pub server_id: String,

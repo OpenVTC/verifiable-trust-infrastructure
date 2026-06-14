@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::webvh::WebvhServerRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AddWebvhServerBody {
     pub id: String,
     pub did: String,
@@ -13,9 +14,11 @@ pub struct AddWebvhServerBody {
 pub type AddWebvhServerResultBody = WebvhServerRecord;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListWebvhServersBody {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListWebvhServersResultBody {
     pub servers: Vec<WebvhServerRecord>,
 }
@@ -26,12 +29,14 @@ pub struct ListWebvhServersResultBody {
 /// `pnm did-mgmt list-domains` and the interactive `--domain`
 /// prompt in `create-did` / `register-did`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListWebvhServerDomainsBody {
     pub server_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ListWebvhServerDomainsResultBody {
     pub domains: Vec<WebvhServerDomainEntry>,
     /// System-default domain on the server, if any.
@@ -41,6 +46,7 @@ pub struct ListWebvhServerDomainsResultBody {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WebvhServerDomainEntry {
     pub name: String,
     #[serde(default)]
@@ -53,6 +59,7 @@ pub struct WebvhServerDomainEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateWebvhServerBody {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,11 +69,13 @@ pub struct UpdateWebvhServerBody {
 pub type UpdateWebvhServerResultBody = WebvhServerRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RemoveWebvhServerBody {
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RemoveWebvhServerResultBody {
     pub id: String,
     pub removed: bool,
@@ -84,6 +93,7 @@ pub struct RemoveWebvhServerResultBody {
 /// An owner re-registering their own slot is idempotent and
 /// always allowed without force.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RegisterDidWithServerBody {
     pub did: String,
     pub server_id: String,
@@ -99,6 +109,7 @@ pub struct RegisterDidWithServerBody {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RegisterDidWithServerResultBody {
     pub did: String,
     pub server_id: String,
