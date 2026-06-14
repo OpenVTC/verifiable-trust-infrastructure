@@ -774,6 +774,27 @@ pub async fn seed_webvh_server(webvh_ks: &KeyspaceHandle, id: &str, server_did: 
         .expect("seed webvh server");
 }
 
+/// Authorize `did` in the ACL so a URL-direct provision / authenticated call is
+/// accepted instead of bouncing off the challenge gate with
+/// `403 forbidden: DID not in ACL`. An empty `contexts` vec is super-admin.
+///
+/// Goes through the canonical [`store_acl_entry`](crate::acl::store_acl_entry)
+/// so the internal `acl:{did}` key convention and `AclEntry` shape stay
+/// encapsulated — callers don't touch the raw [`KeyspaceHandle`]. Counterpart
+/// to [`seed_webvh_server`]; reach it ergonomically via
+/// [`MockVta::authorize_did`] / [`MockVta::grant_super_admin`].
+pub async fn seed_acl_entry(
+    acl_ks: &KeyspaceHandle,
+    did: &str,
+    role: crate::acl::Role,
+    contexts: Vec<String>,
+) {
+    let entry = crate::acl::AclEntry::new(did, role, "test-support").with_contexts(contexts);
+    crate::acl::store_acl_entry(acl_ks, &entry)
+        .await
+        .expect("seed acl entry");
+}
+
 /// A **mock VTA** bound to an ephemeral local port — a real, listening HTTP
 /// server a test harness can drive over the wire, with no setup ceremony.
 ///
@@ -875,6 +896,23 @@ impl MockVta {
     #[cfg(feature = "webvh")]
     pub async fn seed_webvh_server(&self, id: &str, server_did: &str) {
         seed_webvh_server(&self.ctx.webvh_ks, id, server_did).await;
+    }
+
+    /// Authorize `did` in the ACL with `role` + `contexts` so a URL-direct
+    /// provision / authenticated call against this mock is accepted (rather than
+    /// 403ing at the challenge gate). An empty `contexts` vec is super-admin.
+    /// Thin wrapper over [`seed_acl_entry`] against this mock's ACL keyspace;
+    /// counterpart to [`seed_webvh_server`](Self::seed_webvh_server).
+    pub async fn authorize_did(&self, did: &str, role: crate::acl::Role, contexts: Vec<String>) {
+        seed_acl_entry(&self.ctx.acl_ks, did, role, contexts).await;
+    }
+
+    /// Convenience: authorize `did` as a super-admin (admin role, no context
+    /// scope) — the common case for driving a URL-direct provision. Shorthand
+    /// for [`authorize_did`](Self::authorize_did)`(did, Role::Admin, vec![])`.
+    pub async fn grant_super_admin(&self, did: &str) {
+        self.authorize_did(did, crate::acl::Role::Admin, Vec::new())
+            .await;
     }
 
     /// Stop the server and wait for it to wind down gracefully.

@@ -133,19 +133,13 @@ async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
     use vta_sdk::provision_client::ProvisionAsk;
     use vta_sdk::provision_client::provision_admin_rotated_via_rest;
     use vta_sdk::provision_client::setup_key::EphemeralSetupKey;
-    use vti_common::acl::{AclEntry, Role};
 
     let mock = MockVta::start_provisionable().await;
 
-    // Cold-start: grant the setup did:key super-admin directly in the ACL so
-    // the relayer is authorized and the holder VP passes the provision gate.
+    // Cold-start: authorize the setup did:key as super-admin so the relayer is
+    // authorized and the holder VP passes the provision gate.
     let setup = EphemeralSetupKey::generate().expect("generate setup key");
-    let entry = AclEntry::new(&setup.did, Role::Admin, "test").with_contexts(vec![]);
-    mock.ctx
-        .acl_ks
-        .insert(format!("acl:{}", setup.did), &entry)
-        .await
-        .expect("seed super-admin acl");
+    mock.grant_super_admin(&setup.did).await;
 
     let reply = provision_admin_rotated_via_rest(
         mock.base_url(),
