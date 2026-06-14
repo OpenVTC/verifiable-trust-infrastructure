@@ -35,6 +35,7 @@ pub const DEFAULT_VALIDITY: Duration = Duration::hours(1);
 /// the context's term mappings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VtaAuthorizationClaim {
     /// Subject DID — the holder's `client_did`. Serialized as `id` to
     /// match the VC Data Model 2.0 `credentialSubject.id` convention.
@@ -52,6 +53,7 @@ pub struct VtaAuthorizationClaim {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminOfClaim {
     /// The VTA's DID. Same as the VC's `issuer` — duplicated here for
     /// claim clarity ("admin of *this* VTA").
@@ -64,6 +66,7 @@ pub struct AdminOfClaim {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct OperatorOfClaim {
     /// The agent DID the template rendered (e.g. the mediator's own
     /// `did:webvh`).

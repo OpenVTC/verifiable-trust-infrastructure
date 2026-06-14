@@ -14,7 +14,7 @@ use crate::operations;
 use crate::server::AppState;
 use crate::trust_tasks::{ContextDeleteOp, RequireStepUp};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateContextRequest {
     pub id: String,
     pub name: String,
@@ -24,14 +24,14 @@ pub struct CreateContextRequest {
     pub parent: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateContextRequest {
     pub name: Option<String>,
     pub did: Option<String>,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DeleteContextQuery {
     #[serde(default)]
     pub force: bool,
@@ -100,7 +100,7 @@ pub async fn update_context_handler(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateDidRequest {
     pub did: String,
 }

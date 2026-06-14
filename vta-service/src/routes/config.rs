@@ -9,7 +9,7 @@ use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigRequest {
     pub vta_did: Option<String>,
     pub vta_name: Option<String>,

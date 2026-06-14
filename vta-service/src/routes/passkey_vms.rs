@@ -42,12 +42,12 @@ async fn ensure_webauthn_enabled(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PasskeyVmDidQuery {
     pub did: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct EnrollPasskeyChallengeBody {
     pub did: String,
     #[serde(default)]

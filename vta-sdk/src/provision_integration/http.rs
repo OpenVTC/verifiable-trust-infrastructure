@@ -13,6 +13,7 @@ use super::BootstrapRequest;
 /// the DIDComm provision-integration handler (`vta-service`) deserializes.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProvisionIntegrationRequest {
     /// The integration's VP-framed bootstrap request (signed by its
     /// ephemeral `client_did`). The caller sends it unverified — the
@@ -67,6 +68,7 @@ fn is_false(b: &bool) -> bool {
 /// verification needed.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum AssertionMode {
     #[default]
     #[serde(alias = "didSigned")]
@@ -80,6 +82,7 @@ pub enum AssertionMode {
 /// deserializes the result message body.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProvisionIntegrationResponse {
     /// Armored sealed bundle.
     pub bundle: String,
@@ -90,6 +93,7 @@ pub struct ProvisionIntegrationResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProvisionSummary {
     /// Ephemeral DID that signed the VP and opens the sealed bundle.
     pub client_did: String,

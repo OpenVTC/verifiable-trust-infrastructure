@@ -7,7 +7,7 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::server::AppState;
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct RestartResponse {
     status: &'static str,
 }

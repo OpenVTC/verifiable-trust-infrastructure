@@ -12,7 +12,7 @@ use crate::operations;
 use crate::server::AppState;
 use crate::trust_tasks::{AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, RequireStepUp};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListAclQuery {
     pub context: Option<String>,
 }
@@ -28,7 +28,7 @@ pub async fn list_acl(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateAclRequest {
     pub did: String,
     pub role: Role,
@@ -87,7 +87,7 @@ pub async fn get_acl(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateAclRequest {
     pub role: Option<Role>,
     pub label: Option<String>,
@@ -150,6 +150,7 @@ pub async fn delete_acl(
 /// producer); the spec is camelCase.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
+#[derive(utoipa::ToSchema)]
 pub enum SwapAclRequest {
     /// Canonical Trust Task `acl/swap-key/0.1` body. Discriminated by the
     /// presence of `linkProof` (camelCase per spec, with snake_case alias).

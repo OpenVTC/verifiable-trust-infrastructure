@@ -37,7 +37,7 @@ use crate::server::AppState;
 /// carries only the caller variables. Distinct from the trust-task
 /// `RenderDidTemplateBody` which carries `name` inline since the
 /// envelope has no path component.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RenderDidTemplateRequest {
     #[serde(default)]
     pub vars: HashMap<String, Value>,

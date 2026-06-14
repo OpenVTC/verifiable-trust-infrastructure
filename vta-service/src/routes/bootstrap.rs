@@ -58,6 +58,7 @@ const MAX_LABEL_LEN: usize = 256;
 /// determined entirely by attestation policy.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct BootstrapRequestBody {
     /// Wire-format version. Currently 1.
     pub version: u8,
@@ -93,7 +94,7 @@ where
 
 /// Response body — a single armored sealed bundle as UTF-8 text, plus the
 /// canonical SHA-256 digest so clients can optionally anchor on it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BootstrapResponseBody {
     pub bundle: String,
     pub digest: String,
@@ -551,7 +552,7 @@ mod provision {
     use vta_sdk::provision_integration::BootstrapRequest;
 
     /// Request body for `POST /bootstrap/provision-integration`.
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, utoipa::ToSchema)]
     pub struct ProvisionIntegrationRequestBody {
         /// The integration's VP-framed bootstrap request (signed by its
         /// ephemeral `client_did`).
@@ -585,6 +586,7 @@ mod provision {
     /// `#[serde(rename_all = ...)]`).
     #[derive(Debug, Clone, Copy, Deserialize)]
     #[serde(rename_all = "kebab-case")]
+    #[derive(utoipa::ToSchema)]
     pub enum AssertionModeWire {
         DidSigned,
         PinnedOnly,
@@ -600,7 +602,7 @@ mod provision {
     }
 
     /// Response body.
-    #[derive(Debug, Serialize)]
+    #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct ProvisionIntegrationResponseBody {
         /// Armored sealed bundle (PGP-style BEGIN/END blocks).
         pub bundle: String,
@@ -610,7 +612,7 @@ mod provision {
         pub summary: ProvisionSummaryWire,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Debug, Serialize, utoipa::ToSchema)]
     pub struct ProvisionSummaryWire {
         pub client_did: String,
         pub admin_did: String,

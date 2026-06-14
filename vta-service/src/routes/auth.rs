@@ -408,6 +408,7 @@ async fn try_refresh_trust_task(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SessionSummary {
     pub session_id: String,
     pub did: String,
@@ -471,12 +472,12 @@ pub async fn revoke_session(
 
 // ---------- DELETE /auth/sessions?did=X ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RevokeByDidQuery {
     pub did: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RevokeByDidResponse {
     pub revoked: u64,
 }

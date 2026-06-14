@@ -39,6 +39,7 @@ use super::{BOOTSTRAP_CONTEXT_URL, ProvisionIntegrationError, VC_V2_CONTEXT_URL}
 /// request is rejected before the DI proof is even checked.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct BootstrapRequest {
     /// JSON-LD contexts. Must include `https://www.w3.org/ns/credentials/v2`
     /// and `https://openvtc.org/contexts/bootstrap-v1`.
@@ -82,6 +83,7 @@ pub struct BootstrapRequest {
 /// kinds of integration bootstrap emerge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum BootstrapAsk {
     /// Template-driven integration bootstrap. The VTA mints a fresh
     /// integration DID via `template`, optionally rotates the admin DID
@@ -119,6 +121,7 @@ pub enum BootstrapAsk {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct TemplateBootstrapAsk {
     /// VTA context this integration will live in. The operator must
     /// confirm on the producer side (via CLI `--context`); this field
@@ -158,6 +161,7 @@ pub struct TemplateBootstrapAsk {
 /// `admin_template`; no integration template, no integration DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AdminRotationAsk {
     /// VTA context the admin grant lands in. Hint for the common case;
     /// the producer-side caller must agree with `--context` if both are
@@ -179,6 +183,7 @@ pub struct AdminRotationAsk {
 /// Reference to a DID template registered at the VTA.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DidTemplateRef {
     /// Template name the VTA already knows (built-in or operator-
     /// uploaded via `pnm did-templates create`).

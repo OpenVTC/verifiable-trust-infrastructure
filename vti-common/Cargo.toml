@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.10.2"
+version = "0.10.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -31,6 +31,11 @@ passkey = ["dep:webauthn-rs", "dep:url"]
 # `dialoguer` + its console deps. The prompts return services'
 # own config shapes (each service has its own `SecretsConfig`).
 setup = ["dep:dialoguer"]
+# OpenAPI schema generation: derives `utoipa::ToSchema` on the shared wire
+# types the VTA + VTC services expose through their `OpenApiRouter` (the ACL
+# `Role`, session `SessionState`). Off by default and zero-cost when off —
+# only the services turn it on.
+openapi = ["dep:utoipa"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -84,6 +89,10 @@ zeroize = { version = "1", features = ["derive"], optional = true }
 # Vsock storage proxy client (feature-gated, Linux only)
 tokio-vsock = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
+
+# OpenAPI: `#[derive(ToSchema)]` on shared wire types (`Role`, `SessionState`).
+# Optional + gated on the `openapi` feature so non-service consumers stay slim.
+utoipa = { workspace = true, optional = true }
 
 # Passkey feature deps. `rand` / `uuid` / `hex` are non-optional and
 # live in the main dep block since audit + idempotency need them

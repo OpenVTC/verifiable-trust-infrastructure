@@ -23,7 +23,7 @@ use crate::keys::KeyType;
 use crate::operations;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateKeyRequest {
     pub key_type: KeyType,
     pub derivation_path: Option<String>,
@@ -106,7 +106,7 @@ pub async fn invalidate_key(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RenameKeyRequest {
     pub key_id: String,
 }
@@ -130,7 +130,7 @@ pub async fn rename_key(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListKeysQuery {
     pub offset: Option<u64>,
     pub limit: Option<u64>,
@@ -170,7 +170,7 @@ pub async fn list_seeds(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RotateSeedRequest {
     pub mnemonic: Option<String>,
 }
@@ -196,7 +196,7 @@ pub async fn rotate_seed(
 
 // ── Sign endpoint ─────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SignRequest {
     pub payload: String,
     pub algorithm: SignAlgorithm,
@@ -231,7 +231,7 @@ pub async fn sign_with_key(
 
 // ── Import key endpoints ─────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WrappingKeyResponse {
     pub kid: String,
     pub kty: String,
@@ -286,6 +286,7 @@ pub async fn get_wrapping_key(
 ///     vta_sdk::sealed_transfer::SealedPayloadV1::RawPrivateKey
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[derive(utoipa::ToSchema)]
 pub struct ImportKeyRestRequest {
     pub key_type: KeyType,
     /// Sealed-transfer armored bundle — preferred REST transport.

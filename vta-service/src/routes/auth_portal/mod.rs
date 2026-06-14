@@ -47,7 +47,7 @@ use crate::server::AppState;
 /// so we only need a single route — no separate asset paths to wire.
 const PORTAL_HTML: &str = include_str!("index.html");
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PortalQuery {
     /// Parent-window origin, exact-match against `cors_origins`. The
     /// page uses this as the postMessage target so the result only

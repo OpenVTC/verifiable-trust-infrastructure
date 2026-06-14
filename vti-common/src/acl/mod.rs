@@ -16,6 +16,7 @@ use crate::store::KeyspaceHandle;
 /// - **Reader** — read-only access to keys, contexts, DIDs within allowed contexts
 /// - **Monitor** — infrastructure-only: metrics and health endpoints
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     Admin,

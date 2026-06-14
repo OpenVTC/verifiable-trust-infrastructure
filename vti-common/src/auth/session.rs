@@ -7,6 +7,7 @@ use tracing::debug;
 
 /// Session lifecycle state.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum SessionState {
     ChallengeSent,
     Authenticated,

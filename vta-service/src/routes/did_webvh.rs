@@ -22,14 +22,14 @@ use crate::operations::did_webvh::{
 };
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AddServerRequest {
     pub id: String,
     pub did: String,
     pub label: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListDidsQuery {
     pub context_id: Option<String>,
     pub server_id: Option<String>,
@@ -96,7 +96,7 @@ pub async fn list_server_domains_handler(
     Ok(Json(result))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateServerRequest {
     pub label: Option<String>,
 }

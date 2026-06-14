@@ -10097,7 +10097,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
@@ -10129,6 +10129,7 @@ dependencies = [
  "tower 0.5.3",
  "tracing",
  "url",
+ "utoipa",
  "uuid",
  "vta-sdk 0.13.1",
  "webauthn-rs",

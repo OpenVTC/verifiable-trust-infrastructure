@@ -60,7 +60,7 @@ use vta_sdk::protocol::DidcommStatusResponse;
 /// caller doesn't specify `handshake_timeout_secs`. Spec default 10s.
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct EnableDidcommRequest {
     pub mediator_did: String,
     /// Optional: skip steps 2-5 of the handshake (DID resolution
@@ -74,7 +74,7 @@ pub struct EnableDidcommRequest {
     pub handshake_timeout_secs: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EnableDidcommResponse {
     pub new_version_id: String,
     pub mediator_did: String,
@@ -451,7 +451,7 @@ fn stage_str(stage: HandshakeStage) -> &'static str {
 // disable_didcomm
 // ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DisableDidcommRequest {
     /// Drain TTL in seconds. 0 = immediate teardown (REST only;
     /// over DIDComm transport, minimum 1h is enforced).
@@ -459,7 +459,7 @@ pub struct DisableDidcommRequest {
     pub drain_ttl_secs: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DisableDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -709,7 +709,7 @@ impl IntoResponse for DisableDidcommHttpError {
 // update_didcomm
 // ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateDidcommRequest {
     pub new_mediator_did: String,
     pub drain_ttl_secs: u64,
@@ -722,7 +722,7 @@ pub struct UpdateDidcommRequest {
     pub rollback: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UpdateDidcommResponse {
     pub new_version_id: String,
     pub prior_mediator_did: String,
@@ -1049,12 +1049,12 @@ impl IntoResponse for UpdateDidcommHttpError {
 // drain_cancel
 // ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DrainCancelRequest {
     pub mediator_did: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DrainCancelResponse {
     pub mediator_did: String,
 }
@@ -1146,7 +1146,7 @@ impl IntoResponse for DrainCancelHttpError {
 
 use axum::extract::Query;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct MediatorReportQuery {
     /// Lower bound (RFC 3339).
     #[serde(default)]
@@ -1752,7 +1752,7 @@ pub async fn rollback_didcomm_handler(
 /// REST handler request body for didcomm rollback. The drain_ttl
 /// is optional — server applies the spec §3.6 default (24h) when
 /// omitted.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RollbackDidcommHttpRequest {
     #[serde(default)]
     pub drain_ttl_secs: Option<u64>,
@@ -1764,7 +1764,7 @@ pub struct RollbackDidcommHttpRequest {
 /// "rolled back to enabled at https://x.example.com" vs.
 /// "rollback was a no-op") and a `draining_mediator` field
 /// for the DIDComm update / disable arms.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RollbackResponse {
     /// New WebVH LogEntry version-id. Empty string when the
     /// rollback was a no-op (snapshot ≡ current state).

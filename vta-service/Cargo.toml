@@ -74,7 +74,7 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.10", features = ["encryption", "passkey"] }
+vti-common = { path = "../vti-common", version = "0.10", features = ["encryption", "passkey", "openapi"] }
 vta-sdk = { path = "../vta-sdk", version = "0.13", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
