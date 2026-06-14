@@ -520,6 +520,20 @@ pub struct TestAppOptions {
     /// the app. The default (`false`) keeps the cheap sentinel-DID app the
     /// bulk of route tests rely on (no seed I/O, no key derivation).
     pub provisionable_vta: bool,
+
+    /// DID documents to pre-seed into the app's DID resolver cache as
+    /// `(did, document-json)` pairs. `resolve()` is cache-first, so a seeded
+    /// DID resolves in-process with no network — used to make a stub webvh
+    /// hosting server's `did:webvh:<scid>:<domain>` resolve to a loopback
+    /// `WebVHHosting` endpoint (see [`MockVta::start_with_webvh_host`]). The
+    /// JSON deserializes into the resolver's `Document` type.
+    pub preseed_did_docs: Vec<(String, serde_json::Value)>,
+
+    /// webvh hosting servers to register in the registry keyspace as
+    /// `(server_id, server_did)` — the equivalent of [`seed_webvh_server`]
+    /// applied at build time, so `create_did_webvh` finds the server.
+    #[cfg(feature = "webvh")]
+    pub webvh_servers: Vec<(String, String)>,
 }
 
 /// Spin up an in-memory router suitable for `tower::ServiceExt::oneshot`
@@ -544,6 +558,7 @@ pub async fn build_test_app() -> (axum::Router, TestAppContext) {
 pub async fn build_provisionable_test_app() -> (axum::Router, TestAppContext) {
     build_test_app_with(TestAppOptions {
         provisionable_vta: true,
+        ..Default::default()
     })
     .await
 }
@@ -603,6 +618,12 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES).unwrap();
     #[cfg(feature = "webvh")]
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+    // Register any caller-requested webvh hosting servers up front so
+    // `create_did_webvh` finds them in the catalogue.
+    #[cfg(feature = "webvh")]
+    for (id, did) in &opts.webvh_servers {
+        seed_webvh_server(&webvh_ks, id, did).await;
+    }
     #[cfg(feature = "webvh")]
     let passkey_vms_ks = store.keyspace(crate::keyspaces::PASSKEY_VMS).unwrap();
     #[cfg(feature = "webvh")]
@@ -666,6 +687,23 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 
     let config = Arc::new(RwLock::new(config));
 
+    // Build the DID resolver and pre-seed any caller-supplied documents into its
+    // cache. `resolve()` is cache-first, so a seeded `did:webvh:<scid>:<domain>`
+    // resolves in-process (no network) to its loopback `WebVHHosting` endpoint.
+    let did_resolver = {
+        let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .ok();
+        if let Some(client) = resolver.as_mut() {
+            for (did, doc_json) in &opts.preseed_did_docs {
+                let doc = serde_json::from_value(doc_json.clone())
+                    .expect("preseed DID document must deserialize into a resolver Document");
+                client.add_did_document(did, doc).await;
+            }
+        }
+        resolver
+    };
+
     let state = crate::server::AppState {
         keys_ks: keys_ks.clone(),
         sessions_ks: sessions_ks.clone(),
@@ -698,9 +736,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         wrapping_cache: crate::keys::wrapping::WrappingKeyCache::new(),
         config: config.clone(),
         seed_store,
-        did_resolver: DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
-            .await
-            .ok(),
+        did_resolver,
         status_list_resolver: None,
         secrets_resolver: None,
         #[cfg(feature = "didcomm")]
@@ -757,7 +793,14 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
 /// DID-mint path (`list_webvh_servers` → pick first → `create_did_webvh`)
 /// would otherwise hit an empty catalogue. Call this against
 /// [`TestAppContext::webvh_ks`] (or [`MockVta::seed_webvh_server`]) to make
-/// that first server resolvable to `list_webvh_servers`.
+/// that first server appear in `list_webvh_servers`.
+///
+/// The `server_did` is stored verbatim and is **not** made resolvable — this
+/// is enough for catalogue/listing tests, but a `create_did_webvh` *mint*
+/// additionally needs the server DID to resolve to a reachable
+/// `WebVHHosting` endpoint. For that, use
+/// [`MockVta::start_with_webvh_host`], which stands up an in-process
+/// [`StubWebvhHost`] and registers a resolvable server DID pointing at it.
 #[cfg(feature = "webvh")]
 pub async fn seed_webvh_server(webvh_ks: &KeyspaceHandle, id: &str, server_did: &str) {
     use chrono::Utc;
@@ -795,6 +838,128 @@ pub async fn seed_acl_entry(
         .expect("seed acl entry");
 }
 
+/// The WebVH URL the [`StubWebvhHost`] hands back from `request_uri` — a
+/// syntactically valid WebVH URL the VTA mints the persona DID from (same shape
+/// the serverless `create_did_webvh` tests are known to mint against). The
+/// resulting persona DID is `did:webvh:<scid>:webvh-host.test`.
+#[cfg(feature = "webvh")]
+pub const STUB_WEBVH_DID_URL: &str = "https://webvh-host.test/dids/persona/did.jsonl";
+
+/// A minimal in-process stub of a **webvh hosting server** — just enough of the
+/// REST API (`webvh_client.rs`) for the VTA's `create_did_webvh` server-managed
+/// path to complete a round-trip: authenticate, reserve a path
+/// (`request_uri`), and publish the signed `did.jsonl`.
+///
+/// It ignores the VTA's auth credentials (returns canned tokens) and persists
+/// nothing — the actual DID minting happens VTA-side via `didwebvh-rs`; the host
+/// only needs to hand back a valid WebVH URL and accept the publish. Pair it
+/// with a resolver-seeded server DID (see [`MockVta::start_with_webvh_host`]).
+/// Bound to a random loopback port; shuts down on drop.
+#[cfg(feature = "webvh")]
+pub struct StubWebvhHost {
+    base_url: String,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[cfg(feature = "webvh")]
+impl StubWebvhHost {
+    /// Start the stub host on a random loopback port and return once bound.
+    pub async fn start() -> StubWebvhHost {
+        use axum::routing::{post, put};
+        use serde_json::json;
+
+        async fn tokens() -> axum::Json<serde_json::Value> {
+            axum::Json(json!({
+                "sessionId": "stub-session",
+                "data": {
+                    "accessToken": "stub-access-token",
+                    "accessExpiresAt": 9_999_999_999u64,
+                    "refreshToken": "stub-refresh-token",
+                    "refreshExpiresAt": 9_999_999_999u64,
+                }
+            }))
+        }
+
+        let router = axum::Router::new()
+            .route(
+                "/api/auth/challenge",
+                post(|| async {
+                    axum::Json(json!({
+                        "sessionId": "stub-session",
+                        "data": { "challenge": "stub-challenge-0000000000000000" }
+                    }))
+                }),
+            )
+            .route("/api/auth/", post(tokens))
+            .route("/api/auth/refresh", post(tokens))
+            .route(
+                "/api/dids",
+                post(|| async {
+                    axum::Json(
+                        json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
+                    )
+                }),
+            )
+            .route(
+                "/api/dids/register",
+                post(|| async {
+                    axum::Json(
+                        json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
+                    )
+                }),
+            )
+            .route(
+                "/api/dids/check",
+                post(|| async { axum::Json(json!({ "available": true })) }),
+            )
+            .route(
+                "/api/dids/{mnemonic}",
+                put(|| async { axum::http::StatusCode::OK })
+                    .delete(|| async { axum::http::StatusCode::OK }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub webvh host port");
+        let addr = listener.local_addr().expect("stub host local addr");
+        let base_url = format!("http://{addr}");
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+
+        StubWebvhHost {
+            base_url,
+            shutdown: Some(tx),
+            handle: Some(handle),
+        }
+    }
+
+    /// The loopback base URL of the stub host (e.g. `http://127.0.0.1:54321`) —
+    /// goes into the seeded server DID's `WebVHHosting` service endpoint.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+}
+
+#[cfg(feature = "webvh")]
+impl Drop for StubWebvhHost {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// A **mock VTA** bound to an ephemeral local port — a real, listening HTTP
 /// server a test harness can drive over the wire, with no setup ceremony.
 ///
@@ -820,6 +985,11 @@ pub struct MockVta {
     pub ctx: TestAppContext,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
+    /// A stub webvh hosting server kept alive for the mock's lifetime when
+    /// started via [`start_with_webvh_host`](Self::start_with_webvh_host).
+    /// Dropped (shut down) with the `MockVta`.
+    #[cfg(feature = "webvh")]
+    webvh_host: Option<StubWebvhHost>,
 }
 
 impl MockVta {
@@ -845,6 +1015,49 @@ impl MockVta {
     /// succeed server-side.
     pub async fn start_provisionable() -> MockVta {
         Self::serve(build_provisionable_test_app().await).await
+    }
+
+    /// The webvh hosting server id registered by
+    /// [`start_with_webvh_host`](Self::start_with_webvh_host).
+    #[cfg(feature = "webvh")]
+    pub const WEBVH_SERVER_ID: &'static str = "stub-webvh";
+
+    /// Like [`start_provisionable`](Self::start_provisionable), but additionally
+    /// stands up an in-process [`StubWebvhHost`] and registers a **resolvable**
+    /// `did:webvh` hosting server pointing at it — so a server-managed
+    /// `create_did_webvh` round-trips against the mock.
+    ///
+    /// Wiring: the stub host binds a loopback port; a `did:webvh:<scid>:<domain>`
+    /// server DID is seeded into the resolver cache with a `WebVHHosting` service
+    /// at the host's URL (resolution is in-process, no network); the server is
+    /// registered under [`WEBVH_SERVER_ID`](Self::WEBVH_SERVER_ID). Drive a mint
+    /// with `create_did_webvh { server_id: Some(MockVta::WEBVH_SERVER_ID), .. }`.
+    #[cfg(feature = "webvh")]
+    pub async fn start_with_webvh_host() -> MockVta {
+        use serde_json::json;
+
+        let host = StubWebvhHost::start().await;
+        // A valid-format did:webvh (`<scid>:<domain>`); the domain is cosmetic
+        // because resolution is served from the seeded cache, not the network.
+        let server_did = "did:webvh:stubscid0000000000000000:webvh-host.test".to_string();
+        let server_doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": server_did,
+            "service": [{
+                "id": format!("{server_did}#webvh"),
+                "type": "WebVHHosting",
+                "serviceEndpoint": host.base_url(),
+            }]
+        });
+
+        let opts = TestAppOptions {
+            provisionable_vta: true,
+            preseed_did_docs: vec![(server_did.clone(), server_doc)],
+            webvh_servers: vec![(Self::WEBVH_SERVER_ID.to_string(), server_did)],
+        };
+        let mut mock = Self::serve(build_test_app_with(opts).await).await;
+        mock.webvh_host = Some(host);
+        mock
     }
 
     /// Bind an ephemeral loopback port, serve `router` in a background task,
@@ -876,6 +1089,8 @@ impl MockVta {
             ctx,
             shutdown: Some(tx),
             handle: Some(handle),
+            #[cfg(feature = "webvh")]
+            webvh_host: None,
         }
     }
 

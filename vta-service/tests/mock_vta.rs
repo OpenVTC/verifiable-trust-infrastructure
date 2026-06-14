@@ -167,3 +167,70 @@ async fn url_direct_admin_rotation_round_trips_against_rest_only_mock() {
 
     mock.shutdown().await;
 }
+
+/// Full server-managed `create_did_webvh` round-trip against a REST-only mock
+/// with an in-process stub hosting backend (#431): the VTA resolves the seeded
+/// `did:webvh` server DID to the loopback stub, reserves a path, mints the
+/// persona `did:webvh` via `didwebvh-rs`, and publishes the signed log to the
+/// stub. Mirrors `url_direct_admin_rotation_round_trips_against_rest_only_mock`
+/// for the persona-mint layer.
+#[tokio::test]
+async fn create_did_webvh_round_trips_against_stub_host() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+
+    let mock = MockVta::start_with_webvh_host().await;
+
+    // Authenticate as a super-admin (mint-token shortcut — no live handshake).
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let req = CreateDidWebvhRequest {
+        context_id: "ctx1".into(),
+        server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+        url: None,
+        path: None,
+        path_mode: Some(WebvhPathMode::AutoAssign),
+        domain: None,
+        label: None,
+        portable: false,
+        add_mediator_service: false,
+        additional_services: None,
+        pre_rotation_count: 0,
+        did_document: None,
+        did_log: None,
+        set_primary: false,
+        signing_key_id: None,
+        ka_key_id: None,
+        template: None,
+        template_context: None,
+        template_vars: Default::default(),
+    };
+
+    let res = client
+        .create_did_webvh(req)
+        .await
+        .expect("create_did_webvh round-trip against the stub host");
+
+    assert!(
+        res.did.starts_with("did:webvh:"),
+        "expected a minted did:webvh, got {}",
+        res.did
+    );
+    assert_eq!(
+        res.server_id.as_deref(),
+        Some(MockVta::WEBVH_SERVER_ID),
+        "result must record the server it was minted against"
+    );
+    assert!(
+        res.mnemonic.is_some(),
+        "a server-managed mint must return the server-assigned mnemonic"
+    );
+    assert!(!res.scid.is_empty(), "minted DID must carry an SCID");
+
+    mock.shutdown().await;
+}
