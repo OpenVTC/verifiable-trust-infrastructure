@@ -367,19 +367,18 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
             "/config",
             get(config::get_config).patch(config::update_config),
         )
-        .route("/keys", get(keys::list_keys).post(keys::create_key))
-        .route(
-            "/keys/{key_id}",
-            get(keys::get_key)
-                .delete(keys::invalidate_key)
-                .patch(keys::rename_key),
-        )
-        .route("/keys/{key_id}/secret", get(keys::get_key_secret))
-        .route("/keys/{key_id}/sign", post(keys::sign_with_key))
-        .route("/keys/import/wrapping-key", get(keys::get_wrapping_key))
-        .route("/keys/import", post(keys::import_key))
-        .route("/keys/seeds", get(keys::list_seeds))
-        .route("/keys/seeds/rotate", post(keys::rotate_seed))
+        .routes(routes!(keys::list_keys, keys::create_key))
+        .routes(routes!(
+            keys::get_key,
+            keys::invalidate_key,
+            keys::rename_key
+        ))
+        .routes(routes!(keys::get_key_secret))
+        .routes(routes!(keys::sign_with_key))
+        .routes(routes!(keys::get_wrapping_key))
+        .routes(routes!(keys::import_key))
+        .routes(routes!(keys::list_seeds))
+        .routes(routes!(keys::rotate_seed))
         // Context routes
         .route(
             "/contexts",
