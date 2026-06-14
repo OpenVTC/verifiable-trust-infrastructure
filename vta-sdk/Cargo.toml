@@ -82,13 +82,20 @@ provision-integration = [
 ]
 # Full AWS Nitro attestation verification (COSE_Sign1 + certificate chain
 # against the AWS Nitro root). Consumers of sealed-bootstrap Mode B enable
-# this to validate the `Attested` producer assertion end-to-end.
+# this to validate the `Attested` producer assertion end-to-end. The COSE/CBOR
+# decode + cert-chain walk is done locally (see `attestation::{parse,verify}`)
+# so we can expose a parse-only fuzz target and inject a trust anchor + clock
+# for deterministic tests (#449); `nitro_attest` is a dev-dependency that the
+# parity tests cross-check the local verifier against.
 attest-verify = [
   "sealed-transfer",
-  "dep:nitro_attest",
   "dep:time",
   "dep:affinidi-crypto",
   "dep:sha2",
+  "dep:coset",
+  "dep:aws-nitro-enclaves-nsm-api",
+  "dep:x509-parser",
+  "dep:ring",
 ]
 # Integration-side provisioning workflow: the orchestration layer above
 # `provision-integration` that drives setup-key minting, transport selection,
@@ -174,7 +181,15 @@ ciborium = { version = "0.2", optional = true }
 # Used only by sealed-transfer to feed an OS-backed CSPRNG into hpke's
 # rand_core 0.9 trait surface (rand 0.10 + rand_core 0.10 are incompatible).
 getrandom = { version = "0.4", optional = true }
-nitro_attest = { version = "0.2", optional = true }
+# Local AWS Nitro attestation decode + verify (`attest-verify`). Same crates
+# and versions the upstream `nitro_attest` verifier uses internally — we depend
+# on them directly so the parse step is a standalone, fuzzable entry point and
+# the cert-chain walk takes an injectable trust anchor + clock (#449). `ring` is
+# a crypto dep, so pin a minimum patch per the workspace versioning policy.
+coset = { version = "0.3", optional = true, features = ["std"] }
+aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true, default-features = false }
+x509-parser = { version = "0.17", optional = true, features = ["verify", "validate"] }
+ring = { version = "0.17.14", optional = true }
 time = { version = "0.3", optional = true, features = ["macros"] }
 # Scrub secret byte buffers on drop (sealed-transfer, key derivation).
 zeroize = { version = "1", optional = true }
@@ -238,6 +253,11 @@ affinidi-sd-jwt = { workspace = true }
 # BBS / OID4VP-DCQL integration is later-phase work.
 affinidi-bbs = { workspace = true }
 affinidi-data-integrity = { workspace = true, features = ["bbs-2023"] }
+# Upstream AWS Nitro verifier — kept as a dev-dependency so the attestation
+# parity tests (#449) can cross-check the local `NitroVerifier` against it and
+# assemble synthetic quote chains via its `builder` feature. Production no
+# longer calls into it.
+nitro_attest = { version = "0.2", features = ["builder"] }
 
 [lints]
 workspace = true

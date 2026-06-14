@@ -1,0 +1,42 @@
+# cargo-fuzz harness for the Verifiable Trust Infrastructure workspace.
+#
+# This is a **nested workspace** (note the empty `[workspace]` below): it is not
+# a member of the root workspace, so `cargo build`/`test` at the repo root never
+# pull in `libfuzzer-sys` or the nightly-only fuzz instrumentation. Drive it
+# explicitly from this directory with `cargo +nightly fuzz run <target>`.
+#
+# Seed corpora live under `seeds/` (regenerate via the generators documented in
+# `seeds/README.md`); point a target at its matching seed dir with
+# `cargo +nightly fuzz run <target> seeds/<target>`.
+[package]
+name = "vti-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+time = "0.3"
+# The parse + verify entry points under test (issue #449). `attest-verify`
+# pulls in the local COSE/CBOR decoder + cert-chain verifier.
+vta-sdk = { path = "../vta-sdk", features = ["attest-verify"] }
+
+[[bin]]
+name = "fuzz_nitro_quote"
+path = "fuzz_targets/fuzz_nitro_quote.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_nitro_verify"
+path = "fuzz_targets/fuzz_nitro_verify.rs"
+test = false
+doc = false
+bench = false
+
+# Nested workspace: keep this crate out of the root workspace graph.
+[workspace]

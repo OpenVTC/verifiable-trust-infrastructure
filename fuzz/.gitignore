@@ -1,0 +1,8 @@
+# cargo-fuzz build + run artifacts. The curated `seeds/` corpus IS committed
+# (it is the hand-picked starting set); the fuzzer's working corpus, crash
+# artifacts, build output, and lockfile are not.
+/target
+/corpus
+/artifacts
+/coverage
+Cargo.lock

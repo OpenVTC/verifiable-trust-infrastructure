@@ -15,11 +15,21 @@
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64STD;
-use nitro_attest::UnparsedAttestationDoc;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use crate::sealed_transfer::{AssertionProof, AttestationQuoteAssertion, ProducerAssertion};
+
+pub mod parse;
+#[cfg(test)]
+mod test_quote;
+pub mod verify;
+
+pub use parse::{NitroParseError, ParsedNitroQuote, parse_nitro_quote};
+pub use verify::{
+    AWS_NITRO_ROOT_G1_FINGERPRINT, AWS_NITRO_ROOT_G1_PEM, NitroVerifier, NitroVerifyError,
+    TrustAnchor,
+};
 
 /// Successfully verified attestation details, returned for callers that want
 /// to log or display the enclave identity after a Mode B bootstrap.
@@ -96,11 +106,36 @@ pub fn verify_nitro_assertion(
 
 /// Variant that takes the quote + expected commitment components directly.
 /// Useful for callers that already pulled the did:key out of the assertion.
+///
+/// Verifies against the production AWS Nitro root at the current wall clock.
+/// For deterministic tests / fuzzing with an injected trust anchor or clock,
+/// use [`verify_nitro_quote_with`].
 pub fn verify_nitro_quote(
     quote: &AttestationQuoteAssertion,
     client_ed25519_pub: &[u8; 32],
     nonce: &[u8; 16],
     producer_did: &str,
+) -> Result<VerifiedAttestation, AttestationVerifyError> {
+    verify_nitro_quote_with(
+        quote,
+        client_ed25519_pub,
+        nonce,
+        producer_did,
+        &NitroVerifier::aws_production(OffsetDateTime::now_utc()),
+    )
+}
+
+/// As [`verify_nitro_quote`], but with an explicit [`NitroVerifier`] so the
+/// trust anchor and clock can be injected (issue #449). The format check,
+/// base64 decode, `user_data` commitment binding, and PCR0/PCR8 extraction are
+/// identical to the production path — only the chain anchor + validity clock
+/// come from `verifier`.
+pub fn verify_nitro_quote_with(
+    quote: &AttestationQuoteAssertion,
+    client_ed25519_pub: &[u8; 32],
+    nonce: &[u8; 16],
+    producer_did: &str,
+    verifier: &NitroVerifier,
 ) -> Result<VerifiedAttestation, AttestationVerifyError> {
     if !is_nitro_format(&quote.format) {
         return Err(AttestationVerifyError::UnknownFormat(quote.format.clone()));
@@ -110,8 +145,8 @@ pub fn verify_nitro_quote(
         .decode(&quote.quote_b64)
         .map_err(|e| AttestationVerifyError::Base64(e.to_string()))?;
 
-    let parsed = UnparsedAttestationDoc::from(quote_bytes.as_slice())
-        .parse_and_verify(OffsetDateTime::now_utc())
+    let parsed = verifier
+        .verify(&quote_bytes)
         .map_err(|e| AttestationVerifyError::QuoteInvalid(format!("{e:?}")))?;
 
     let producer_ed_pub = affinidi_crypto::did_key::did_key_to_ed25519_pub(producer_did)
@@ -125,28 +160,27 @@ pub fn verify_nitro_quote(
 
     let user_data_bytes: &[u8] = parsed
         .user_data
-        .as_ref()
-        .map(|b| b.as_ref())
+        .as_deref()
         .ok_or(AttestationVerifyError::MissingUserData)?;
     if user_data_bytes != expected.as_slice() {
         return Err(AttestationVerifyError::UserDataMismatch);
     }
 
-    let pcr0_hex = parsed
-        .pcrs
-        .get(&0)
-        .map(|d| hex_lower(&d.value))
-        .unwrap_or_default();
-    let pcr8_hex = parsed
-        .pcrs
-        .get(&8)
-        .map(|d| hex_lower(&d.value))
-        .unwrap_or_default();
+    // Match upstream's PCR semantics: an all-zero (unset) PCR is treated as
+    // absent. `parse_nitro_quote` retains zero PCRs verbatim, so filter here.
+    let pcr_hex = |idx: usize| -> String {
+        parsed
+            .pcrs
+            .get(&idx)
+            .filter(|v| v.iter().any(|b| *b != 0))
+            .map(|v| hex_lower(v))
+            .unwrap_or_default()
+    };
 
     Ok(VerifiedAttestation {
         module_id: parsed.module_id,
-        pcr0_hex,
-        pcr8_hex,
+        pcr0_hex: pcr_hex(0),
+        pcr8_hex: pcr_hex(8),
     })
 }
 
