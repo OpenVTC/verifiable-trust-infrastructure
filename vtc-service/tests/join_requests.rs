@@ -17,6 +17,7 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
+use vti_common::audit::{AuditEnvelope, AuditEvent, CredentialIssuedData, MemberAddedData};
 use vti_common::auth::session::{Session, SessionState, store_session};
 use vti_common::store::KeyspaceHandle;
 
@@ -862,6 +863,124 @@ async fn rest_submit_under_allow_policy_auto_admits() {
             .is_some(),
         "auto-admitted applicant has a Member row"
     );
+}
+
+/// The three audit envelopes an admit effect must emit, collected from the
+/// audit keyspace.
+#[derive(Default)]
+struct AdmitAudit {
+    member_added: Vec<MemberAddedData>,
+    vmc_issued: Vec<CredentialIssuedData>,
+    vec_issued: Vec<CredentialIssuedData>,
+}
+
+async fn collect_admit_audit(audit_ks: &KeyspaceHandle) -> AdmitAudit {
+    let pairs = audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+    let mut out = AdmitAudit::default();
+    for (_k, raw) in pairs {
+        let env: AuditEnvelope = serde_json::from_slice(&raw).unwrap();
+        match env.event {
+            AuditEvent::MemberAdded(d) => out.member_added.push(d),
+            AuditEvent::VmcIssued(d) => out.vmc_issued.push(d),
+            AuditEvent::VecIssued(d) => out.vec_issued.push(d),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Regression for the auto-admit audit gap: policy auto-admit runs the same
+/// Admit effect as a manual approve (mints a VMC + role VEC, burns a status
+/// slot), so it must emit the same `MemberAdded` + `VmcIssued` + `VecIssued`
+/// envelopes. Before the shared `audit::emit_admit_audit` helper, the
+/// auto-admit path emitted none of them — credentials were issued with no
+/// audit trail.
+#[tokio::test]
+async fn auto_admit_emits_membership_issuance_audit() {
+    let fix = build_fixture().await;
+    activate_join_policy(
+        &fix,
+        "package vtc.join\nimport rego.v1\n\n\
+         default decision := {\"effect\": \"allow\", \"with\": {\"role\": \"member\"}}\n",
+    )
+    .await;
+
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
+    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(submit_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "got {body}");
+    assert_eq!(body["status"], "approved");
+
+    let audit = collect_admit_audit(&fix.state.audit_ks).await;
+    assert_eq!(
+        audit.member_added.len(),
+        1,
+        "auto-admit must emit exactly one MemberAdded"
+    );
+    assert_eq!(audit.member_added[0].role, "member");
+    assert!(
+        audit.member_added[0].via_join_request_id.is_some(),
+        "MemberAdded must link the originating join request"
+    );
+    assert_eq!(audit.vmc_issued.len(), 1, "auto-admit must emit VmcIssued");
+    assert!(
+        audit.vmc_issued[0].status_list_index.is_some(),
+        "the VMC carries its allocated status-list slot"
+    );
+    assert_eq!(audit.vec_issued.len(), 1, "auto-admit must emit VecIssued");
+    assert!(
+        audit.vec_issued[0].status_list_index.is_none(),
+        "the role VEC has no status-list slot"
+    );
+}
+
+/// The manual-approve path emits the same admit-effect audit set, now via the
+/// shared helper — pins parity with the auto-admit path so the two cannot drift
+/// again.
+#[tokio::test]
+async fn manual_approve_emits_membership_issuance_audit() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let submit_body = signed_submit_body(&sk, &applicant_did, &json!({}));
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(submit_body),
+    )
+    .await;
+    let id = body["requestId"].as_str().unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+
+    let audit = collect_admit_audit(&fix.state.audit_ks).await;
+    assert_eq!(audit.member_added.len(), 1, "approve emits one MemberAdded");
+    assert_eq!(audit.member_added[0].role, "member");
+    assert!(audit.member_added[0].via_join_request_id.is_some());
+    assert_eq!(audit.vmc_issued.len(), 1, "approve emits VmcIssued");
+    assert!(audit.vmc_issued[0].status_list_index.is_some());
+    assert_eq!(audit.vec_issued.len(), 1, "approve emits VecIssued");
+    assert!(audit.vec_issued[0].status_list_index.is_none());
 }
 
 /// With the default `policies.open` join policy the submit

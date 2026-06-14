@@ -342,7 +342,7 @@ pub(crate) async fn realize_join_verdict(
             let role = allow.role.clone().unwrap_or_else(|| "member".to_string());
             let plan = EffectPlan::Admit {
                 subject: applicant_did.to_string(),
-                role,
+                role: role.clone(),
                 obligations: allow.obligations.clone(),
             };
             if let EffectOutcome::Admitted(creds) =
@@ -368,6 +368,21 @@ pub(crate) async fn realize_join_verdict(
                         "membership-credential delivery failed on auto-admit; credentials issued",
                     );
                 }
+                // Record the admit effect's audit envelopes (MemberAdded +
+                // VmcIssued + VecIssued) — the same set the manual-approve path
+                // emits. Policy auto-admit has no human approver, so the
+                // applicant (whose submission triggered the admission) is the
+                // actor. Closes the gap where auto-admitted credentials were
+                // issued with no audit trail.
+                super::audit::emit_admit_audit(
+                    audit_writer,
+                    applicant_did,
+                    applicant_did,
+                    &creds,
+                    &role,
+                    Some(request.id.to_string()),
+                )
+                .await?;
                 admit = Some(creds);
             }
             request.status = JoinStatus::Approved;

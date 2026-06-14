@@ -7,7 +7,6 @@
 //! already validated at submit time so the only failure modes
 //! here are auth + duplicate-membership.
 
-use affinidi_vc::VerifiableCredential;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -16,17 +15,13 @@ use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use vti_common::audit::{
-    AuditEvent, CredentialIssuedData, JoinRequestData, JoinRequestRejectedData, MemberAddedData,
-};
+use vti_common::audit::{AuditEvent, JoinRequestData, JoinRequestRejectedData};
 use vti_common::error::AppError;
 
 use crate::acl::VtcRole;
 use crate::auth::AdminAuth;
-use crate::ceremony::execute::{self, top_level_id};
+use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
-use crate::credentials::vec::VEC_TYPE;
-use crate::credentials::vmc::VMC_TYPE;
 use crate::join::{JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
@@ -124,8 +119,6 @@ pub async fn approve(
         );
     }
 
-    let (vmc, role_vec, status_list_index) = (creds.vmc, creds.role_vec, creds.status_list_index);
-
     req.status = JoinStatus::Approved;
     store_join_request(&state.join_requests_ks, &req).await?;
 
@@ -139,36 +132,24 @@ pub async fn approve(
             }),
         )
         .await?;
-    audit_writer
-        .write(
-            &admin.0.did,
-            Some(&req.applicant_did),
-            AuditEvent::MemberAdded(MemberAddedData {
-                role: VtcRole::Member.to_string(),
-                via_join_request_id: Some(id.to_string()),
-            }),
-        )
-        .await?;
-    audit_writer
-        .write(
-            &admin.0.did,
-            Some(&req.applicant_did),
-            AuditEvent::VmcIssued(credential_issued_data(&vmc, Some(status_list_index))?),
-        )
-        .await?;
-    audit_writer
-        .write(
-            &admin.0.did,
-            Some(&req.applicant_did),
-            AuditEvent::VecIssued(credential_issued_data(&role_vec, None)?),
-        )
-        .await?;
+    // The MemberAdded + VmcIssued + VecIssued envelopes for the admit effect are
+    // shared with the auto-admit path (see `super::audit`) so the two cannot
+    // record divergent trails for the same effect.
+    super::audit::emit_admit_audit(
+        audit_writer,
+        &admin.0.did,
+        &req.applicant_did,
+        &creds,
+        &VtcRole::Member.to_string(),
+        Some(id.to_string()),
+    )
+    .await?;
 
     info!(
         request_id = %id,
         applicant = %req.applicant_did,
         admin = %admin.0.did,
-        status_list_index,
+        status_list_index = creds.status_list_index,
         "join request approved"
     );
 
@@ -178,46 +159,15 @@ pub async fn approve(
             request_id: id,
             status: req.status.to_string(),
             vmc: Some(
-                serde_json::to_value(&vmc)
+                serde_json::to_value(&creds.vmc)
                     .map_err(|e| AppError::Internal(format!("serialise VMC for response: {e}")))?,
             ),
             role_vec: Some(
-                serde_json::to_value(&role_vec)
+                serde_json::to_value(&creds.role_vec)
                     .map_err(|e| AppError::Internal(format!("serialise VEC for response: {e}")))?,
             ),
         }),
     ))
-}
-
-/// Build a [`CredentialIssuedData`] payload from a signed VC.
-fn credential_issued_data(
-    vc: &VerifiableCredential,
-    status_list_index: Option<u32>,
-) -> Result<CredentialIssuedData, AppError> {
-    let id = top_level_id(vc).ok_or_else(|| {
-        AppError::Internal("credential is missing top-level `id` — issuance dropped it".into())
-    })?;
-    let credential_type = vc
-        .types
-        .iter()
-        .find(|t| *t == VMC_TYPE || *t == VEC_TYPE)
-        .cloned()
-        .ok_or_else(|| AppError::Internal("credential carries neither VMC nor VEC type".into()))?;
-    let valid_from = vc
-        .valid_from
-        .clone()
-        .ok_or_else(|| AppError::Internal("credential missing validFrom".into()))?;
-    let valid_until = vc
-        .valid_until
-        .clone()
-        .ok_or_else(|| AppError::Internal("credential missing validUntil".into()))?;
-    Ok(CredentialIssuedData {
-        credential_id: id,
-        credential_type,
-        valid_from,
-        valid_until,
-        status_list_index,
-    })
 }
 
 // ---------------------------------------------------------------------------
