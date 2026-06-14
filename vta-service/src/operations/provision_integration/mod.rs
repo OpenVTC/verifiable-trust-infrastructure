@@ -411,14 +411,26 @@ pub async fn provision_integration(
         let template_vars_hashmap: std::collections::HashMap<String, Value> =
             template_vars.clone().into_iter().collect();
 
+        let config = state.config.read().await;
+        let did_resolver = state
+            .did_resolver
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?;
+        // `state` is a `ProvisionIntegrationDeps`, not an `AppState`, so build
+        // the create-deps by hand (it carries all nine fields).
+        let create_deps = super::did_webvh::CreateDidWebvhDeps {
+            keys_ks: &state.keys_ks,
+            imported_ks: &state.imported_ks,
+            contexts_ks: &state.contexts_ks,
+            webvh_ks: &state.webvh_ks,
+            did_templates_ks: &state.did_templates_ks,
+            seed_store: &*state.seed_store,
+            config: &config,
+            did_resolver,
+            didcomm_bridge: &state.didcomm_bridge,
+        };
         let create_result = super::did_webvh::create_did_webvh(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.contexts_ks,
-            &state.webvh_ks,
-            &state.did_templates_ks,
-            &*state.seed_store,
-            &*state.config.read().await,
+            &create_deps,
             auth,
             super::did_webvh::CreateDidWebvhParams {
                 context_id: context.clone(),
@@ -450,11 +462,6 @@ pub async fn provision_integration(
                 // never the VTA's own identity.
                 is_vta_identity: false,
             },
-            state
-                .did_resolver
-                .as_ref()
-                .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?,
-            &state.didcomm_bridge,
             "provision-integration",
         )
         .await?;

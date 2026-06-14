@@ -589,7 +589,9 @@ mod pre_rotation_e2e_tests {
     use crate::config::AppConfig;
     use crate::didcomm_bridge::DIDCommBridge;
     use crate::keys::seed_store::PlaintextSeedStore;
-    use crate::operations::did_webvh::{CreateDidWebvhParams, create_did_webvh};
+    use crate::operations::did_webvh::{
+        CreateDidWebvhDeps, CreateDidWebvhParams, create_did_webvh,
+    };
     use crate::test_support::{TestStore, open_test_store, test_app_config};
 
     fn admin_auth() -> AuthClaims {
@@ -653,14 +655,19 @@ mod pre_rotation_e2e_tests {
         context_id: &str,
         pre_rotation_count: u32,
     ) -> (String, String) {
-        let result = create_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.did_templates_ks,
+        let deps = CreateDidWebvhDeps {
+            keys_ks: &ts.keys_ks,
+            imported_ks: &ts.imported_ks,
+            contexts_ks: &ts.contexts_ks,
+            webvh_ks: &ts.webvh_ks,
+            did_templates_ks: &ts.did_templates_ks,
             seed_store,
-            cfg,
+            config: cfg,
+            did_resolver: resolver,
+            didcomm_bridge: bridge,
+        };
+        let result = create_did_webvh(
+            &deps,
             auth,
             CreateDidWebvhParams {
                 context_id: context_id.into(),
@@ -683,8 +690,6 @@ mod pre_rotation_e2e_tests {
                 template_vars: Default::default(),
                 is_vta_identity: false,
             },
-            resolver,
-            bridge,
             "test",
         )
         .await

@@ -140,21 +140,9 @@ pub async fn create_did_handler(
         .did_resolver
         .as_ref()
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
-    let result = operations::did_webvh::create_did_webvh(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.did_templates_ks,
-        &*state.seed_store,
-        &config,
-        &auth.0,
-        params,
-        did_resolver,
-        &state.didcomm_bridge,
-        "rest",
-    )
-    .await?;
+    let deps =
+        operations::did_webvh::CreateDidWebvhDeps::from_app_state(&state, &config, did_resolver);
+    let result = operations::did_webvh::create_did_webvh(&deps, &auth.0, params, "rest").await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
 

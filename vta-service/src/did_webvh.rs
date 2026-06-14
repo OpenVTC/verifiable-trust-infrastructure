@@ -171,21 +171,18 @@ pub async fn run_create_did_webvh(
         is_vta_identity: false,
     };
 
-    let result = operations::did_webvh::create_did_webvh(
-        &keys_ks,
-        &imported_ks,
-        &contexts_ks,
-        &webvh_ks,
-        &did_templates_ks,
-        &*seed_store,
-        &config,
-        &auth,
-        params,
-        &did_resolver,
-        &no_bridge,
-        "cli",
-    )
-    .await?;
+    let deps = operations::did_webvh::CreateDidWebvhDeps {
+        keys_ks: &keys_ks,
+        imported_ks: &imported_ks,
+        contexts_ks: &contexts_ks,
+        webvh_ks: &webvh_ks,
+        did_templates_ks: &did_templates_ks,
+        seed_store: &*seed_store,
+        config: &config,
+        did_resolver: &did_resolver,
+        didcomm_bridge: &no_bridge,
+    };
+    let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "cli").await?;
 
     let final_did = &result.did;
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");

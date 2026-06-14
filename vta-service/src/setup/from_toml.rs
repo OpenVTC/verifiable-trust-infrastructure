@@ -1297,7 +1297,7 @@ async fn create_simple_webvh_did(
         is_vta_identity,
     };
 
-    let result = operations::did_webvh::create_did_webvh(
+    let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks,
         imported_ks,
         contexts_ks,
@@ -1305,14 +1305,12 @@ async fn create_simple_webvh_did(
         did_templates_ks,
         seed_store,
         config,
-        &auth,
-        params,
-        &did_resolver,
-        &no_bridge,
-        "setup",
-    )
-    .await
-    .map_err(|e| format!("{e}"))?;
+        did_resolver: &did_resolver,
+        didcomm_bridge: &no_bridge,
+    };
+    let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "setup")
+        .await
+        .map_err(|e| format!("{e}"))?;
 
     let final_did = result.did.clone();
     eprintln!("  Created DID: {final_did}");

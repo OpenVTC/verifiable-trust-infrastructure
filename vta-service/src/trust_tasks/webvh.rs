@@ -220,22 +220,9 @@ pub(super) async fn handle_dids_create(
         }
     };
     let params = body.into();
-    match operations::did_webvh::create_did_webvh(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.did_templates_ks,
-        &*state.seed_store,
-        &config,
-        auth,
-        params,
-        did_resolver,
-        &state.didcomm_bridge,
-        TRANSPORT_TRUST_TASK,
-    )
-    .await
-    {
+    let deps =
+        operations::did_webvh::CreateDidWebvhDeps::from_app_state(state, &config, did_resolver);
+    match operations::did_webvh::create_did_webvh(&deps, auth, params, TRANSPORT_TRUST_TASK).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }

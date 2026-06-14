@@ -149,6 +149,73 @@ impl<'a> WebvhDeps<'a> {
     }
 }
 
+/// Dependency bundle for [`create_did_webvh`] — P2.5.
+///
+/// Create has a *different* shape from [`WebvhDeps`]: it mints + stores a new
+/// DID locally (no remote publish at create time, so no `auth_locks` / `audit_ks`
+/// / `vta_did`), but it renders a DID template (`did_templates_ks`) and reads
+/// operator config (`config`). Distinct struct rather than a strained reuse.
+///
+/// `config` is a borrowed `&AppConfig` snapshot — REST/DIDComm callers pass the
+/// guard from `state.config.read().await`, so the constructors take it as an
+/// explicit argument (it can't be produced synchronously from `&state`).
+pub struct CreateDidWebvhDeps<'a> {
+    pub keys_ks: &'a KeyspaceHandle,
+    pub imported_ks: &'a KeyspaceHandle,
+    pub contexts_ks: &'a KeyspaceHandle,
+    pub webvh_ks: &'a KeyspaceHandle,
+    pub did_templates_ks: &'a KeyspaceHandle,
+    pub seed_store: &'a dyn SeedStore,
+    pub config: &'a AppConfig,
+    pub did_resolver: &'a DIDCacheClient,
+    pub didcomm_bridge: &'a Arc<DIDCommBridge>,
+}
+
+impl<'a> CreateDidWebvhDeps<'a> {
+    /// Borrow create-deps from an [`AppState`](crate::server::AppState) (REST +
+    /// trust-task). `config` (the read-guard snapshot) and the unwrapped
+    /// `did_resolver` are threaded separately.
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_app_state(
+        s: &'a crate::server::AppState,
+        config: &'a AppConfig,
+        did_resolver: &'a DIDCacheClient,
+    ) -> Self {
+        Self {
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            did_templates_ks: &s.did_templates_ks,
+            seed_store: &*s.seed_store,
+            config,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+        }
+    }
+
+    /// Borrow create-deps from a
+    /// [`VtaState`](crate::messaging::router::VtaState) (DIDComm transport).
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_vta_state(
+        s: &'a crate::messaging::router::VtaState,
+        config: &'a AppConfig,
+        did_resolver: &'a DIDCacheClient,
+    ) -> Self {
+        Self {
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            did_templates_ks: &s.did_templates_ks,
+            seed_store: &*s.seed_store,
+            config,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+        }
+    }
+}
+
 /// Resolve a DID template by name for use in a create-DID flow.
 ///
 /// Resolution order:
@@ -391,21 +458,27 @@ fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn create_did_webvh(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    did_templates_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    config: &AppConfig,
+    deps: &CreateDidWebvhDeps<'_>,
     auth: &AuthClaims,
     mut params: CreateDidWebvhParams,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<CreateDidWebvhResultBody, AppError> {
+    // Re-bind the bundled deps to the historical local names so the (large)
+    // body below is unchanged. All fields are `Copy` references, so this
+    // copies the borrows out of `*deps` rather than moving the struct.
+    let CreateDidWebvhDeps {
+        keys_ks,
+        imported_ks,
+        contexts_ks,
+        webvh_ks,
+        did_templates_ks,
+        seed_store,
+        config,
+        did_resolver,
+        didcomm_bridge,
+    } = *deps;
+
     auth.require_admin()?;
     auth.require_context(&params.context_id)?;
 

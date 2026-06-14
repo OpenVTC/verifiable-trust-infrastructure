@@ -837,21 +837,9 @@ didcomm_handler!(
     did_management::create::CreateDidWebvhBody,
     |s, auth, body, did_resolver| {
         let config = s.config.read().await;
-        operations::did_webvh::create_did_webvh(
-            &s.keys_ks,
-            &s.imported_ks,
-            &s.contexts_ks,
-            &s.webvh_ks,
-            &s.did_templates_ks,
-            &*s.seed_store,
-            &config,
-            &auth,
-            body.into(),
-            did_resolver,
-            &s.didcomm_bridge,
-            "didcomm",
-        )
-        .await
+        let deps =
+            operations::did_webvh::CreateDidWebvhDeps::from_vta_state(s, &config, did_resolver);
+        operations::did_webvh::create_did_webvh(&deps, &auth, body.into(), "didcomm").await
     }
 );
 
