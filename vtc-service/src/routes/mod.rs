@@ -119,6 +119,33 @@ pub const MAX_BODY_SIZE: usize = 1024 * 1024;
 /// blob floods that the rate limiter alone cannot starve out.
 pub const UNAUTH_BODY_SIZE: usize = 64 * 1024;
 
+/// Attach the static Trust-Task URL gate to a `routes!(...)` group in one call.
+///
+/// Collapses the former two-step `let <name> = TrustTask::new(<url>).expect(...)`
+/// declaration + `task_routes(routes!(handler), <name>)` usage into a single
+/// `tt(routes!(handler), <url>)`, so each mount reads as "handler(s) → their
+/// Trust-Task URL" on one line and the URL lives at the route, not in a separate
+/// block at the top of the builder.
+fn tt(
+    routes: utoipa_axum::router::UtoipaMethodRouter<AppState>,
+    url: &'static str,
+) -> utoipa_axum::router::UtoipaMethodRouter<AppState> {
+    task_routes(routes, TrustTask::new(url).expect("static Trust-Task URL"))
+}
+
+/// As [`tt`], but for a plain [`axum::routing::MethodRouter`] mounted via
+/// `OpenApiRouter::route(...)` (handlers not yet `#[utoipa::path]`-annotated, or
+/// carrying their own per-route layers — e.g. the website caps).
+fn ttl(
+    method_router: axum::routing::MethodRouter<AppState>,
+    url: &'static str,
+) -> axum::routing::MethodRouter<AppState> {
+    task_layer(
+        method_router,
+        TrustTask::new(url).expect("static Trust-Task URL"),
+    )
+}
+
 /// Build the public router with default routing (path mode, `/v1`
 /// API mount, `/admin` UX placeholder, `/` website fallback).
 ///
@@ -223,88 +250,22 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // openvtc/vtc/auth/legacy/* slugs were VTC-specific reimplementations
     // of primitives that VTA + did-hosting also have; consolidating here
     // so a multi-service deployment can use one client library.
-    let auth_sessions_manage = TrustTask::new("https://trusttasks.org/spec/auth/sessions/list/0.1")
-        .expect("static Trust-Task URL");
-    let auth_sessions_revoke =
-        TrustTask::new("https://trusttasks.org/spec/auth/revoke-session/0.1")
-            .expect("static Trust-Task URL");
     // Browser-SPA convenience surface: `whoami` + `sign-out`. Both
     // are bound to the access-token session (cookie or bearer);
     // sign-out revokes the server-side session and clears the
     // browser cookies in one trip.
-    let auth_whoami = TrustTask::new("https://trusttasks.org/spec/auth/whoami/0.1")
-        .expect("static Trust-Task URL");
-    let auth_sign_out = TrustTask::new("https://trusttasks.org/spec/auth/revoke-session/0.1")
-        .expect("static Trust-Task URL");
     // Audit log list — super-admin only since envelopes carry
     // plaintext DIDs.
-    let audit_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/audit/list/1.0")
-        .expect("static Trust-Task URL");
-    let config_manage =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0")
-            .expect("static Trust-Task URL");
-    let acl_manage = TrustTask::new("https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0")
-        .expect("static Trust-Task URL");
-    let acl_entry = TrustTask::new("https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0")
-        .expect("static Trust-Task URL");
-    let community_profile =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0")
-            .expect("static Trust-Task URL");
-    let admin_config = TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0")
-        .expect("static Trust-Task URL");
-    let admin_config_reload =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0")
-            .expect("static Trust-Task URL");
-    let admin_config_restart =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0")
-            .expect("static Trust-Task URL");
-    let admin_config_export =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/config/export/1.0")
-            .expect("static Trust-Task URL");
-    let admin_config_import =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/config/import/1.0")
-            .expect("static Trust-Task URL");
-    let admin_bootstrap = TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0")
-        .expect("static Trust-Task URL");
-    let admin_passkeys_list =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0")
-            .expect("static Trust-Task URL");
-    let admin_passkeys_register =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0")
-            .expect("static Trust-Task URL");
-    let admin_passkeys_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0")
-            .expect("static Trust-Task URL");
     // Admin invites — REST surface for `vtc admin invite`. Single
     // Trust Task covers GET + POST on `/admin/invites` (same Phase-0
     // workaround community/profile + admin/config use); DELETE on
     // `/admin/invites/{jti}` has its own Trust Task since it's on a
     // distinct mount.
-    let admin_invites_manage =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0")
-            .expect("static Trust-Task URL");
-    let admin_invites_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0")
-            .expect("static Trust-Task URL");
-    let members_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/list/1.0")
-        .expect("static Trust-Task URL");
-    let members_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/show/1.0")
-        .expect("static Trust-Task URL");
-    let directory_query = TrustTask::new("https://trusttasks.org/openvtc/vtc/directory/query/1.0")
-        .expect("static Trust-Task URL");
-    let ceremonies_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/ceremonies/list/1.0")
-        .expect("static Trust-Task URL");
     // `members_update` (`members/update/1.0`) shares the
     // `members/{did}` mount with `show` for now — TrustTaskRouter
     // doesn't support per-method Trust-Task selectors yet
     // (same Phase-0 workaround `admin/config` + `community/profile`
     // use). When that lands, split show + update.
-    let members_promote =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0")
-            .expect("static Trust-Task URL");
-    let members_self_remove =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/self-remove/1.0")
-            .expect("static Trust-Task URL");
     // `members_admin_remove` (`members/admin-remove/1.0`) shares
     // the `members/{did}` mount with show + update for now —
     // TrustTaskRouter doesn't support per-method Trust-Task
@@ -323,102 +284,31 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // task it has always required (axum merges this GET with the governed POST;
     // the task descriptor collapse to `submit/1.0` for the list is unchanged —
     // a per-method `list/1.0` split is future work, tracked separately).
-    let join_submit = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0")
-        .expect("static Trust-Task URL");
-    let join_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/show/1.0")
-        .expect("static Trust-Task URL");
-    let join_approve =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0")
-            .expect("static Trust-Task URL");
-    let join_reject = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0")
-        .expect("static Trust-Task URL");
-    let join_manifest =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0")
-            .expect("static Trust-Task URL");
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
     // filters + soft-gate consumers can target each precisely.
-    let policies_upload = TrustTask::new("https://trusttasks.org/openvtc/vtc/policies/upload/1.0")
-        .expect("static Trust-Task URL");
-    let policies_activate =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/policies/activate/1.0")
-            .expect("static Trust-Task URL");
-    let policies_test = TrustTask::new("https://trusttasks.org/openvtc/vtc/policies/test/1.0")
-        .expect("static Trust-Task URL");
-    let members_renew = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/renew/1.0")
-        .expect("static Trust-Task URL");
-    let members_rotate_challenge =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/rotate-challenge/1.0")
-            .expect("static Trust-Task URL");
-    let members_rotate = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/rotate/1.0")
-        .expect("static Trust-Task URL");
     // Phase 4 M4.3 + M4.4 — personhood lifecycle.
-    let members_personhood_challenge =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0")
-            .expect("static Trust-Task URL");
-    let members_personhood_assert =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/personhood/assert/1.0")
-            .expect("static Trust-Task URL");
     // `members_personhood_revoke` (`members/personhood/revoke/1.0`)
     // exists on disk + in index.json so the soft-gate surface
     // stays complete, but the DELETE method shares the
     // `members/personhood/assert/1.0` mount at the router
     // layer pending per-method selectors. Same workaround as
     // `members/{did}` show + update + admin-remove.
-    let _members_personhood_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/members/personhood/revoke/1.0")
-            .expect("static Trust-Task URL");
     // Phase 4 M4.6 — VRC trust-graph endpoints.
-    let relationships_publish =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/relationships/publish/1.0")
-            .expect("static Trust-Task URL");
-    let relationships_list =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/relationships/list/1.0")
-            .expect("static Trust-Task URL");
-    let relationships_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0")
-            .expect("static Trust-Task URL");
     // Phase 4 M4.8 — endorsement type registry + custom
     // endorsement CRUD. Seven Trust Tasks total — list / show
     // / delete share their mount where TrustTaskRouter
     // doesn't yet support per-method selectors (standalone
     // tasks ship on disk + in index.json).
-    let endorsement_types_register =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0")
-            .expect("static Trust-Task URL");
-    let _endorsement_types_list =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/endorsement-types/list/1.0")
-            .expect("static Trust-Task URL");
-    let endorsement_types_delete =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0")
-            .expect("static Trust-Task URL");
-    let endorsements_issue =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0")
-            .expect("static Trust-Task URL");
-    let _endorsements_list =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/credentials/endorsements/list/1.0")
-            .expect("static Trust-Task URL");
     // `endorsements_show` + `endorsements_revoke` share the
     // `endorsements/{id}` mount with the Trust Task header
     // pinned to the `show` variant. Standalone tasks ship on
     // disk + in index.json so the soft-gate surface stays
     // complete (same workaround as members/{did}, etc.).
-    let _endorsements_show =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0")
-            .expect("static Trust-Task URL");
-    let _endorsements_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/credentials/endorsements/revoke/1.0")
-            .expect("static Trust-Task URL");
-    let endorsements_show_revoke =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0")
-            .expect("static Trust-Task URL");
     // Phase 3 M3.8 — trust-registry reconciler diagnostics.
     // Admin-gated (not super-admin) so on-call ops can read
     // queue depth + RTBF-batched + failed counts without the
     // super-admin role.
-    let health_diagnostics =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0")
-            .expect("static Trust-Task URL");
     // Phase 3 M3.10 — cross-community session mint. The Trust
     // Task declaration moved to `build_unauth_routes` so the
     // handler sits behind the tower-governor + the 64 KB body
@@ -439,9 +329,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // the POST task on the shared mount.
 
     let api = OpenApiRouter::<AppState>::new()
-        .routes(task_routes(
+        .routes(tt(
             routes!(health::diagnostics),
-            health_diagnostics,
+            "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0",
         ))
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
@@ -452,42 +342,51 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // tower-governor + tighter body cap apply. The two
         // session-management endpoints below are authenticated and
         // stay on the main chain.
-        .routes(task_routes(
+        .routes(tt(
             routes!(auth::session_list, auth::revoke_sessions_by_did),
-            auth_sessions_manage,
+            "https://trusttasks.org/spec/auth/sessions/list/0.1",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(auth::revoke_session),
-            auth_sessions_revoke,
+            "https://trusttasks.org/spec/auth/revoke-session/0.1",
         ))
-        .routes(task_routes(routes!(auth::whoami), auth_whoami))
-        .routes(task_routes(routes!(auth::sign_out), auth_sign_out))
+        .routes(tt(
+            routes!(auth::whoami),
+            "https://trusttasks.org/spec/auth/whoami/0.1",
+        ))
+        .routes(tt(
+            routes!(auth::sign_out),
+            "https://trusttasks.org/spec/auth/revoke-session/0.1",
+        ))
         // Audit log read (super-admin only).
-        .routes(task_routes(routes!(audit::list_audit), audit_list))
+        .routes(tt(
+            routes!(audit::list_audit),
+            "https://trusttasks.org/openvtc/vtc/audit/list/1.0",
+        ))
         // Config
-        .routes(task_routes(
+        .routes(tt(
             routes!(config::get_config, config::update_config),
-            config_manage,
+            "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
         ))
         // ACL
-        .routes(task_routes(
+        .routes(tt(
             routes!(acl::list_acl, acl::create_acl),
-            acl_manage,
+            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(acl::get_acl, acl::update_acl, acl::delete_acl),
-            acl_entry,
+            "https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0",
         ))
         // Community profile (GET + PUT share one Trust Task today;
         // a spec-aligned split into community/profile/show/1.0 +
         // community/profile/update/1.0 lands when TrustTaskRouter
         // gains per-method task selectors in Phase 1+).
-        .routes(task_routes(
+        .routes(tt(
             routes!(
                 community::profile::get_profile,
                 community::profile::put_profile
             ),
-            community_profile,
+            "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0",
         ))
         // Public read of the community profile. Trust-Task-exempt and
         // unauthenticated — visitors landing on the default public
@@ -498,31 +397,31 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Admin config (M0.8 — GET + PATCH share one task; will
         // split into admin/config/show/1.0 + patch/1.0 when
         // TrustTaskRouter gains per-method selectors).
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::config::get_config, admin::config::patch_config),
-            admin_config,
+            "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
         ))
         // Reload + restart (M0.8.3). Reload applies hot-reloadable
         // settings in-place; restart requires a supervisor (412
         // `SupervisorRequired` otherwise).
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::config::reload_config),
-            admin_config_reload,
+            "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::config::restart_config),
-            admin_config_restart,
+            "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0",
         ))
         // Export / import (M0.8.4). Export returns the portable
         // (db-layer overrides + community profile) JSON; import runs
         // diff-and-confirm via `?confirm=true|false`.
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::config::export_config),
-            admin_config_export,
+            "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::config::import_config),
-            admin_config_import,
+            "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0",
         ))
         // Install claim endpoints (`/install/claim/start` and
         // `/install/claim/finish`) are unauthenticated and live in
@@ -531,126 +430,135 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Admin bootstrap (M0.6.2) — closes the install carve-out
         // and writes the first admin ACL entry. Unauthenticated
         // because the setup-session JWT IS the auth credential.
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::bootstrap::bootstrap),
-            admin_bootstrap,
+            "https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0",
         ))
         // Admin passkey management (M0.6.3). Step-up UV is enforced
         // via the two-phase ceremony: `register/start` and
         // `revoke/start` issue a UV challenge bound to an existing
         // passkey; `register/finish` and `revoke/finish` reject if
         // the UV assertion doesn't verify.
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::passkeys::list),
-            admin_passkeys_list,
+            "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::passkeys::register_start),
-            admin_passkeys_register.clone(),
+            "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::passkeys::register_finish),
-            admin_passkeys_register,
+            "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::passkeys::revoke_start),
-            admin_passkeys_revoke.clone(),
+            "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::passkeys::revoke_finish),
-            admin_passkeys_revoke,
+            "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0",
         ))
         // Admin invites — REST mirror of `vtc admin invite`. GET +
         // POST share the same mount; DELETE on `/admin/invites/{jti}`
         // revokes outstanding (Issued) invites. Consumed rows are
         // immutable (audit history) — DELETE on those returns 409.
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::invites::list_invites, admin::invites::create_invite),
-            admin_invites_manage,
+            "https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(admin::invites::revoke_invite),
-            admin_invites_revoke,
+            "https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0",
         ))
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
-        .routes(task_routes(routes!(directory::query), directory_query))
+        .routes(tt(
+            routes!(directory::query),
+            "https://trusttasks.org/openvtc/vtc/directory/query/1.0",
+        ))
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        .routes(task_routes(routes!(ceremonies::list), ceremonies_list))
+        .routes(tt(
+            routes!(ceremonies::list),
+            "https://trusttasks.org/openvtc/vtc/ceremonies/list/1.0",
+        ))
         // Members (Phase 1 M1.4–M1.6).
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::read::list_members),
-            members_list,
+            "https://trusttasks.org/openvtc/vtc/members/list/1.0",
         ))
         // `/v1/members/me` for self-remove (M1.11.1). Must be
         // declared BEFORE the `/v1/members/{did}` mount otherwise
         // axum's path-trie picks the parameterised route first
         // and routes "me" as a literal DID.
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::remove::self_remove),
-            members_self_remove,
+            "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",
         ))
         // Renewal (M2.13). POST on its own mount so the
         // Trust Task header check + per-method selectors are
         // unambiguous.
-        .routes(task_routes(routes!(members::renew::renew), members_renew))
+        .routes(tt(
+            routes!(members::renew::renew),
+            "https://trusttasks.org/openvtc/vtc/members/renew/1.0",
+        ))
         // DID rotation (M2.15.1). Two-step ceremony — challenge
         // mints a single-use rotation_id, the finish endpoint
         // applies the co-signed swap atomically.
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::rotate::challenge),
-            members_rotate_challenge,
+            "https://trusttasks.org/openvtc/vtc/members/rotate-challenge/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::rotate::rotate),
-            members_rotate,
+            "https://trusttasks.org/openvtc/vtc/members/rotate/1.0",
         ))
         // Phase 4 M4.3 + M4.4 — personhood lifecycle. Three
         // mounts on the same path prefix; declared BEFORE
         // `/v1/members/{did}` so axum's path-trie matches the
         // literal segment first. Personhood is a per-member
         // resource; `{did}` is the subject.
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::personhood::challenge),
-            members_personhood_challenge,
+            "https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::personhood::assert, members::personhood::revoke), // POST + DELETE share `personhood/assert/1.0` at
             // the router layer pending per-method selectors;
             // the standalone `personhood/revoke/1.0` Trust Task
             // exists on disk + in index.json so the soft-gate
             // surface stays complete. (Same workaround as
             // members/{did}'s show + update + admin-remove.)
-            members_personhood_assert,
+            "https://trusttasks.org/openvtc/vtc/members/personhood/assert/1.0",
         ))
         // Phase 4 M4.6 — VRC trust-graph endpoints. The
         // per-member list mounts under /v1/members/{did}/
         // and must precede the catchall `/v1/members/{did}`
         // (same path-trie precedence as personhood).
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::relationships::list),
-            relationships_list,
+            "https://trusttasks.org/openvtc/vtc/relationships/list/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(relationships::publish),
-            relationships_publish,
+            "https://trusttasks.org/openvtc/vtc/relationships/publish/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(relationships::revoke),
-            relationships_revoke,
+            "https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0",
         ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type
         // registry. Admin-gated CRUD.
-        .routes(task_routes(
+        .routes(tt(
             routes!(endorsement_types::register, endorsement_types::list), // POST + GET share `register/1.0` at the router
             // layer pending per-method selectors; standalone
             // `list/1.0` exists on disk + in index.json.
-            endorsement_types_register,
+            "https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(endorsement_types::delete),
-            endorsement_types_delete,
+            "https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0",
         ))
         // Phase 2 §8 — community schema store (Issues + Accepts
         // registry). Plain admin-gated CRUD (AdminAuth extractor),
@@ -668,19 +576,19 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         .routes(routes!(schemas::get_one, schemas::delete_one))
         // Phase 4 M4.8.2-4 — custom endorsement issuance +
         // retrieval + revocation. Admin OR Issuer-role member.
-        .routes(task_routes(
+        .routes(tt(
             routes!(endorsements::issue, endorsements::list), // POST + GET share `issue/1.0` at the router
             // layer pending per-method selectors; standalone
             // `list/1.0` exists on disk + in index.json.
-            endorsements_issue,
+            "https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(endorsements::show, endorsements::revoke), // GET + DELETE share `show/1.0` at the router
             // layer pending per-method selectors; standalone
             // `revoke/1.0` exists on disk + in index.json.
-            endorsements_show_revoke,
+            "https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(
                 members::read::show_member,
                 members::update::update_member,
@@ -691,42 +599,42 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             // `members/admin-remove/1.0` Trust Tasks exist on
             // disk + in index.json so the soft-gate surface stays
             // complete.
-            members_show,
+            "https://trusttasks.org/openvtc/vtc/members/show/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::promote::promote_start),
-            members_promote.clone(),
+            "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(members::promote::promote_finish),
-            members_promote,
+            "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
         ))
         // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
         // accept / status live on the governed branch (`build_unauth_routes`,
         // P0.5); the admin GET list keeps this `/join-requests` mount (axum
         // merges this GET with the governed-branch POST submit).
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::read::list_join_requests),
-            join_submit,
+            "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::read::show_join_request),
-            join_show,
+            "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::decide::approve),
-            join_approve,
+            "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::decide::reject),
-            join_reject,
+            "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
         ))
         // Manifest (unauth public discovery): the community's join
         // evidence requirements. Static `manifest` segment takes
         // precedence over the `{id}` show route.
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::manifest::manifest),
-            join_manifest,
+            "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0",
         ))
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
@@ -737,21 +645,24 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Trust Tasks. `upload` mints + persists; `activate` flips
         // the per-purpose active pointer; `test` evaluates a stored
         // policy without mutating state.
-        .routes(task_routes(
+        .routes(tt(
             routes!(policies::read::list_policies, policies::admin::upload),
-            policies_upload.clone(),
+            "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(policies::read::show_policy), // Reuses the upload task on the shared mount; the
             // `policies/show/1.0` Trust Task lives in index.json
             // + on disk for the soft-gate surface (see above).
-            policies_upload.clone(),
+            "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(policies::admin::activate),
-            policies_activate,
+            "https://trusttasks.org/openvtc/vtc/policies/activate/1.0",
         ))
-        .routes(task_routes(routes!(policies::admin::test), policies_test));
+        .routes(tt(
+            routes!(policies::admin::test),
+            "https://trusttasks.org/openvtc/vtc/policies/test/1.0",
+        ));
 
     // Phase 5 M5.5 — public-website management routes. The
     // `route_with_task` helper accepts a pre-layered `MethodRouter`
@@ -762,30 +673,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     let api = {
         use axum::extract::DefaultBodyLimit;
 
-        let website_files_list =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/files/list/1.0")
-                .expect("static Trust-Task URL");
-        let website_files_show =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/files/show/1.0")
-                .expect("static Trust-Task URL");
         // write + delete tasks share the show mount; standalone
         // tasks ship on disk + in index.json for the soft-gate
         // surface (same workaround the rest of the router uses).
-        let _website_files_write =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/files/write/1.0")
-                .expect("static Trust-Task URL");
-        let _website_files_delete =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/files/delete/1.0")
-                .expect("static Trust-Task URL");
-        let website_deploy =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/deploy/1.0")
-                .expect("static Trust-Task URL");
-        let website_gens_list =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/generations/list/1.0")
-                .expect("static Trust-Task URL");
-        let website_rollback =
-            TrustTask::new("https://trusttasks.org/openvtc/vtc/website/rollback/1.0")
-                .expect("static Trust-Task URL");
 
         // 64 MiB upper bound on the per-route body cap covers
         // both `max_bundle_size_mb` (default 50) and
@@ -795,11 +685,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
 
         api.route(
             "/website/files",
-            task_layer(get(website::files::list), website_files_list),
+            ttl(
+                get(website::files::list),
+                "https://trusttasks.org/openvtc/vtc/website/files/list/1.0",
+            ),
         )
         .route(
             "/website/files/{*path}",
-            task_layer(
+            ttl(
                 get(website::files::show)
                     .put(website::files::write)
                     .delete(website::files::delete)
@@ -808,23 +701,29 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
                 // documented elsewhere. The `write` and `delete`
                 // tasks are still registered on disk + in index.json
                 // for the soft-gate surface.
-                website_files_show,
+                "https://trusttasks.org/openvtc/vtc/website/files/show/1.0",
             ),
         )
         .route(
             "/website/deploy",
-            task_layer(
+            ttl(
                 post(website::deploy::deploy).layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
-                website_deploy,
+                "https://trusttasks.org/openvtc/vtc/website/deploy/1.0",
             ),
         )
         .route(
             "/website/generations",
-            task_layer(get(website::generations::list), website_gens_list),
+            ttl(
+                get(website::generations::list),
+                "https://trusttasks.org/openvtc/vtc/website/generations/list/1.0",
+            ),
         )
         .route(
             "/website/rollback/{gen_num}",
-            task_layer(post(website::generations::rollback), website_rollback),
+            ttl(
+                post(website::generations::rollback),
+                "https://trusttasks.org/openvtc/vtc/website/rollback/1.0",
+            ),
         )
     };
 
@@ -857,40 +756,16 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
 ///   [`SmartIpKeyExtractor`].
 fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
-    let auth_challenge = TrustTask::new("https://trusttasks.org/spec/auth/challenge/0.1")
-        .expect("static Trust-Task URL");
-    let auth_authenticate = TrustTask::new("https://trusttasks.org/spec/auth/authenticate/0.1")
-        .expect("static Trust-Task URL");
-    let auth_refresh = TrustTask::new("https://trusttasks.org/spec/auth/refresh/0.1")
-        .expect("static Trust-Task URL");
     // Phase 5 M5.2.3 — admin SPA cookie-session mint endpoint. VTC-
     // specific because the response includes Set-Cookie semantics
     // (vtc_admin_session + csrf) that the canonical authenticate
     // doesn't define. Stays under openvtc/vtc/ until the cookie
     // semantics are absorbed into a binding spec.
-    let auth_admin_login =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0")
-            .expect("static Trust-Task URL");
     // Bearer→cookie bridge for the VTA-wallet login: the SPA posts the
     // wallet-issued access token, the daemon mirrors it into the
     // `vtc_admin_session` + `csrf` cookies (same shape as admin-login).
-    let auth_admin_session =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0")
-            .expect("static Trust-Task URL");
     // Browser-friendly passkey login — same canonical spec serves
     // initial login and AAL step-up via the payload's `purpose` field.
-    let auth_passkey_login_start =
-        TrustTask::new("https://trusttasks.org/spec/auth/passkey/login/start/0.1")
-            .expect("static Trust-Task URL");
-    let auth_passkey_login_finish =
-        TrustTask::new("https://trusttasks.org/spec/auth/passkey/login/finish/0.1")
-            .expect("static Trust-Task URL");
-    let install_claim_start =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/start/1.0")
-            .expect("static Trust-Task URL");
-    let install_claim_finish =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0")
-            .expect("static Trust-Task URL");
     // Phase 3 M3.10 — cross-community session mint. Sits in the
     // unauth chain (not the main API chain) so the tower-governor
     // + 64 KB body cap apply: the handler runs DID resolution,
@@ -899,26 +774,15 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // attacker-supplied JSON. Behind the rate limit, a sustained
     // SSRF / CPU-amplification probe is throttled to 5 rps per
     // source IP.
-    let auth_recognise = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/1.0")
-        .expect("static Trust-Task URL");
     // Step 1 of the recognise flow — issues the single-use challenge nonce the
     // holder binds into the VP presented to `/auth/recognise`. Same unauth
     // chain (governor + body cap) as the other challenge endpoints.
-    let auth_recognise_challenge =
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0")
-            .expect("static Trust-Task URL");
     // P0.5 — the unauthenticated join-request POSTs (submit / accept / status)
     // do the same attacker-driven crypto as recognise (Ed25519 holder-binding
     // verify, reciprocal-VC counter-sign verify, Rego eval) but were left on
     // the 1 MiB / no-limiter main chain. Move them here so the governor + 64
     // KiB cap apply. The admin GET list + show + approve / reject and the
     // public GET manifest stay on the `api` chain.
-    let join_submit = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0")
-        .expect("static Trust-Task URL");
-    let join_accept = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0")
-        .expect("static Trust-Task URL");
-    let join_status = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/status/1.0")
-        .expect("static Trust-Task URL");
 
     // L2: rate-limiter key extractor honours `trust_xff`. The
     // governor is applied in the routing chain below via a
@@ -940,8 +804,14 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     let synth_connect_info = axum::middleware::from_fn(insert_default_connect_info_if_missing);
 
     let unauth_router = OpenApiRouter::<AppState>::new()
-        .routes(task_routes(routes!(auth::challenge), auth_challenge))
-        .routes(task_routes(routes!(auth::authenticate), auth_authenticate))
+        .routes(tt(
+            routes!(auth::challenge),
+            "https://trusttasks.org/spec/auth/challenge/0.1",
+        ))
+        .routes(tt(
+            routes!(auth::authenticate),
+            "https://trusttasks.org/spec/auth/authenticate/0.1",
+        ))
         // VTA-wallet login surface. The browser wallet extension drives
         // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
         // + `<base>/auth/` with **no** `Trust-Task` header (the op `type`
@@ -953,48 +823,57 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         // CLI clients. Mirrors did-hosting-control's header-less auth.
         .route("/wallet/auth/challenge", post(auth::challenge))
         .route("/wallet/auth/", post(auth::authenticate))
-        .routes(task_routes(routes!(auth::refresh), auth_refresh))
-        .routes(task_routes(routes!(auth::admin_login), auth_admin_login))
-        .routes(task_routes(
+        .routes(tt(
+            routes!(auth::refresh),
+            "https://trusttasks.org/spec/auth/refresh/0.1",
+        ))
+        .routes(tt(
+            routes!(auth::admin_login),
+            "https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0",
+        ))
+        .routes(tt(
             routes!(auth::admin_session),
-            auth_admin_session,
+            "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(auth::passkey_login_start),
-            auth_passkey_login_start,
+            "https://trusttasks.org/spec/auth/passkey/login/start/0.1",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(auth::passkey_login_finish),
-            auth_passkey_login_finish,
+            "https://trusttasks.org/spec/auth/passkey/login/finish/0.1",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(install::claim_start),
-            install_claim_start,
+            "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(install::claim_finish),
-            install_claim_finish,
+            "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(recognise::recognise_challenge),
-            auth_recognise_challenge,
+            "https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0",
         ))
-        .routes(task_routes(routes!(recognise::recognise), auth_recognise))
+        .routes(tt(
+            routes!(recognise::recognise),
+            "https://trusttasks.org/openvtc/vtc/auth/recognise/1.0",
+        ))
         // Join-request POSTs (P0.5). Submit shares the `/join-requests` mount
         // with the admin GET list on the `api` chain — axum merges the GET +
         // POST method routers; the unauth POST lands here (governed), the admin
         // GET stays there (JWT-gated).
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::submit::submit),
-            join_submit,
+            "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::accept::accept),
-            join_accept,
+            "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0",
         ))
-        .routes(task_routes(
+        .routes(tt(
             routes!(join_requests::status::status),
-            join_status,
+            "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0",
         ))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
