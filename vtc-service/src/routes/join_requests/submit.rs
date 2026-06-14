@@ -48,7 +48,6 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::{info, warn};
@@ -59,10 +58,10 @@ use vti_common::error::AppError;
 
 use crate::ceremony::execute::{self, AdmitOutcome};
 use crate::ceremony::{
-    Actor, Context, Credential, CredentialStatus, EffectOutcome, EffectPlan, Evidence, Facts,
-    Presentation, Purpose, State as FactsState, Subject, Verdict, VerifiedFacts,
+    Credential, CredentialStatus, EffectOutcome, EffectPlan, Evidence, Facts, Presentation,
+    Purpose, Verdict, VerifiedFacts,
 };
-use crate::community::load_profile;
+use crate::ceremony::{FactsInputs, assemble_facts};
 use crate::join::{JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request};
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
@@ -445,40 +444,25 @@ async fn assemble_join_facts(
     applicant_did: &str,
     presentation: Presentation,
 ) -> Result<Facts, AppError> {
-    let community_did = load_profile(&state.community_ks)
-        .await?
-        .map(|p| p.community_did)
-        .unwrap_or_default();
-    let member_count = state.member_count();
-
-    Ok(Facts {
-        purpose: Purpose::Join,
-        now: Utc::now(),
-        // The applicant proved holder-binding (route-layer for the VP path,
-        // cryptographic kb-jwt for the credential-exchange path); they are not
-        // (yet) a member, so they carry no community role.
-        actor: Actor {
-            did: applicant_did.to_string(),
-            role: None,
-            authenticated: true,
-        },
-        subject: Subject {
-            did: applicant_did.to_string(),
-        },
-        context: Context {
-            community_did,
-            channel: "rest".to_string(),
-            member_count,
-        },
-        evidence: Evidence {
-            invitation: None,
-            presentation: Some(presentation),
-            request: None,
-        },
-        state: FactsState {
+    // The applicant proved holder-binding (route-layer for the VP path,
+    // cryptographic kb-jwt for the credential-exchange path) but is not (yet) a
+    // member, so they carry no community role and no subject member-state.
+    assemble_facts(
+        state,
+        FactsInputs {
+            purpose: Purpose::Join,
+            actor_did: applicant_did.to_string(),
+            actor_role: None,
+            subject_did: applicant_did.to_string(),
             subject_member: None,
+            evidence: Evidence {
+                invitation: None,
+                presentation: Some(presentation),
+                request: None,
+            },
         },
-    })
+    )
+    .await
 }
 
 /// Project the VP into the [`Presentation`] the policy reads.

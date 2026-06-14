@@ -56,6 +56,7 @@
 //! until ceremonies are ported over (build-vs-reuse map, pipeline
 //! §10).
 
+pub mod assemble;
 pub mod effects;
 pub mod evaluate;
 pub mod execute;
@@ -64,6 +65,7 @@ pub mod invariant;
 pub mod verdict;
 pub mod verify;
 
+pub use assemble::{FactsInputs, assemble_facts, load_actor_role, member_state};
 pub use effects::{EffectPlan, plan};
 pub use evaluate::evaluate;
 pub use execute::{AdmitOutcome, DepartOutcome, EffectOutcome, RemintOutcome, apply};

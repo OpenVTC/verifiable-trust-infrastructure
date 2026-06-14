@@ -31,7 +31,6 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue, json};
 
@@ -40,10 +39,9 @@ use vti_common::error::AppError;
 use crate::acl::get_acl_entry;
 use crate::auth::AuthClaims;
 use crate::ceremony::{
-    self, Actor, Context, Evidence, Facts, MemberState, Purpose, State as FactsState, Subject,
-    Verdict, VerifiedFacts, effects::EffectPlan,
+    self, Evidence, Facts, Purpose, Verdict, VerifiedFacts, effects::EffectPlan,
 };
-use crate::community::load_profile;
+use crate::ceremony::{FactsInputs, assemble_facts, load_actor_role, member_state};
 use crate::members::get_member;
 use crate::policy::load_active_compiled;
 use crate::policy::model::PolicyPurpose;
@@ -152,42 +150,19 @@ async fn assemble_directory_facts(
     subject_did: &str,
     fields_hint: Option<String>,
 ) -> Result<Facts, AppError> {
-    // Actor's community role comes from the ACL, not the JWT.
-    let actor_role = get_acl_entry(&state.acl_ks, &viewer.did)
-        .await?
-        .map(|e| e.role.to_string());
-
-    // Subject's member facts: role from the ACL, status from the
-    // member row's tombstone, joined_at from the member row.
+    // Subject's member facts: role from the ACL, status + joined_at from the
+    // member row (directory sources the subject's role from the ACL rather than
+    // a caller-supplied current role, so it builds the MemberState explicitly).
     let subject_member = match get_member(&state.members_ks, subject_did).await? {
         Some(m) => {
             let role = get_acl_entry(&state.acl_ks, subject_did)
                 .await?
                 .map(|e| e.role.to_string())
                 .unwrap_or_else(|| "member".to_string());
-            let status = if m.removed_at.is_some() {
-                "removed"
-            } else {
-                "active"
-            };
-            Some(MemberState {
-                role,
-                status: status.to_string(),
-                joined_at: m.joined_at,
-                personhood: None,
-            })
+            Some(member_state(role, Some(&m)))
         }
         None => None,
     };
-
-    // community_did is informational for directory (the policy doesn't
-    // branch on it); empty when no profile is set yet.
-    let community_did = load_profile(&state.community_ks)
-        .await?
-        .map(|p| p.community_did)
-        .unwrap_or_default();
-
-    let member_count = state.member_count();
 
     let request = fields_hint.map(|raw| {
         let fields: Vec<String> = raw
@@ -198,27 +173,20 @@ async fn assemble_directory_facts(
         json!({ "fields_requested": fields })
     });
 
-    Ok(Facts {
-        purpose: Purpose::Directory,
-        now: Utc::now(),
-        actor: Actor {
-            did: viewer.did.clone(),
-            role: actor_role,
-            authenticated: true,
+    assemble_facts(
+        state,
+        FactsInputs {
+            purpose: Purpose::Directory,
+            actor_did: viewer.did.clone(),
+            actor_role: load_actor_role(state, &viewer.did).await?,
+            subject_did: subject_did.to_string(),
+            subject_member,
+            evidence: Evidence {
+                invitation: None,
+                presentation: None,
+                request,
+            },
         },
-        subject: Subject {
-            did: subject_did.to_string(),
-        },
-        context: Context {
-            community_did,
-            channel: "rest".to_string(),
-            member_count,
-        },
-        evidence: Evidence {
-            invitation: None,
-            presentation: None,
-            request,
-        },
-        state: FactsState { subject_member },
-    })
+    )
+    .await
 }

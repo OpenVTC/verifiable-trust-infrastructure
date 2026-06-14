@@ -26,7 +26,6 @@ use affinidi_status_list::StatusPurpose;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::info;
@@ -38,10 +37,9 @@ use crate::acl::get_acl_entry;
 use crate::auth::{AdminAuth, AuthClaims};
 use crate::ceremony::execute;
 use crate::ceremony::{
-    Actor, Context, EffectOutcome, EffectPlan, Evidence, Facts, MemberState, Purpose,
-    State as FactsState, Subject, Verdict, VerifiedFacts,
+    EffectOutcome, EffectPlan, Evidence, Facts, Purpose, Verdict, VerifiedFacts,
 };
-use crate::community::load_profile;
+use crate::ceremony::{FactsInputs, assemble_facts, load_actor_role, member_state};
 use crate::members::{Disposition, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
@@ -320,32 +318,6 @@ async fn assemble_leave_facts(
     disposition: Option<Disposition>,
     reason: &str,
 ) -> Result<Facts, AppError> {
-    let actor_role = get_acl_entry(&state.acl_ks, actor_did)
-        .await?
-        .map(|e| e.role.to_string());
-
-    let subject_member_state = Some(MemberState {
-        role: subject_role.to_string(),
-        status: subject_member
-            .map(|m| {
-                if m.removed_at.is_some() {
-                    "removed"
-                } else {
-                    "active"
-                }
-            })
-            .unwrap_or("active")
-            .to_string(),
-        joined_at: subject_member.map(|m| m.joined_at).unwrap_or_else(Utc::now),
-        personhood: None,
-    });
-
-    let community_did = load_profile(&state.community_ks)
-        .await?
-        .map(|p| p.community_did)
-        .unwrap_or_default();
-    let member_count = state.member_count();
-
     // Ceremony request params: the operator's requested disposition +
     // the admin-supplied reason. Absent when neither is set.
     let request = if disposition.is_some() || !reason.is_empty() {
@@ -361,31 +333,22 @@ async fn assemble_leave_facts(
         None
     };
 
-    Ok(Facts {
-        purpose: Purpose::Leave,
-        now: Utc::now(),
-        actor: Actor {
-            did: actor_did.to_string(),
-            role: actor_role,
-            authenticated: true,
+    assemble_facts(
+        state,
+        FactsInputs {
+            purpose: Purpose::Leave,
+            actor_did: actor_did.to_string(),
+            actor_role: load_actor_role(state, actor_did).await?,
+            subject_did: subject_did.to_string(),
+            subject_member: Some(member_state(subject_role.to_string(), subject_member)),
+            evidence: Evidence {
+                invitation: None,
+                presentation: None,
+                request,
+            },
         },
-        subject: Subject {
-            did: subject_did.to_string(),
-        },
-        context: Context {
-            community_did,
-            channel: "rest".to_string(),
-            member_count,
-        },
-        evidence: Evidence {
-            invitation: None,
-            presentation: None,
-            request,
-        },
-        state: FactsState {
-            subject_member: subject_member_state,
-        },
-    })
+    )
+    .await
 }
 
 /// Parse a disposition wire string into a concrete `Disposition`.

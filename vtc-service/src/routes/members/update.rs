@@ -14,7 +14,6 @@
 
 use axum::Json;
 use axum::extract::{Path, State};
-use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value as JsonValue, json};
 use tracing::warn;
@@ -25,10 +24,9 @@ use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{
-    Actor, Context, EffectOutcome, EffectPlan, Evidence, Facts, MemberState, Purpose,
-    State as FactsState, Subject, Verdict, VerifiedFacts,
+    EffectOutcome, EffectPlan, Evidence, Facts, Purpose, Verdict, VerifiedFacts,
 };
-use crate::community::load_profile;
+use crate::ceremony::{FactsInputs, assemble_facts, load_actor_role, member_state};
 use crate::error::AppError;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
@@ -281,57 +279,29 @@ async fn assemble_role_change_facts(
     target_role: &str,
     step_up: bool,
 ) -> Result<Facts, AppError> {
-    let actor_role = get_acl_entry(&state.acl_ks, actor_did)
-        .await?
-        .map(|e| e.role.to_string());
     let subject_member = get_member(&state.members_ks, subject_did).await?;
 
-    let community_did = load_profile(&state.community_ks)
-        .await?
-        .map(|p| p.community_did)
-        .unwrap_or_default();
-    let member_count = state.member_count();
-
-    Ok(Facts {
-        purpose: Purpose::RoleChange,
-        now: Utc::now(),
-        actor: Actor {
-            did: actor_did.to_string(),
-            role: actor_role,
-            authenticated: true,
+    assemble_facts(
+        state,
+        FactsInputs {
+            purpose: Purpose::RoleChange,
+            actor_did: actor_did.to_string(),
+            actor_role: load_actor_role(state, actor_did).await?,
+            subject_did: subject_did.to_string(),
+            // The subject's role on the facts is their *current* role (the
+            // transition target lives in the evidence, below).
+            subject_member: Some(member_state(
+                current_role.to_string(),
+                subject_member.as_ref(),
+            )),
+            evidence: Evidence {
+                invitation: None,
+                presentation: None,
+                request: Some(json!({ "target_role": target_role, "step_up": step_up })),
+            },
         },
-        subject: Subject {
-            did: subject_did.to_string(),
-        },
-        context: Context {
-            community_did,
-            channel: "rest".to_string(),
-            member_count,
-        },
-        evidence: Evidence {
-            invitation: None,
-            presentation: None,
-            request: Some(json!({ "target_role": target_role, "step_up": step_up })),
-        },
-        state: FactsState {
-            subject_member: Some(MemberState {
-                role: current_role.to_string(),
-                status: subject_member
-                    .as_ref()
-                    .map(|m| {
-                        if m.removed_at.is_some() {
-                            "removed"
-                        } else {
-                            "active"
-                        }
-                    })
-                    .unwrap_or("active")
-                    .to_string(),
-                joined_at: subject_member.map(|m| m.joined_at).unwrap_or_else(Utc::now),
-                personhood: None,
-            }),
-        },
-    })
+    )
+    .await
 }
 
 // Re-export `from_pair` under a route-only alias so this module
@@ -366,6 +336,7 @@ mod p0_14_role_change_policy_tests {
     //! pipeline directly — the full UV ceremony is covered separately.
     use super::*;
     use affinidi_status_list::StatusPurpose;
+    use chrono::Utc;
 
     use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
     use crate::members::{Member, store_member};
