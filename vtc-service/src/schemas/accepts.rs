@@ -44,6 +44,7 @@ fn key(id: &str) -> Vec<u8> {
 /// credentials satisfy the community's acceptance rules.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AcceptsCriterion {
     /// Criterion id (e.g. a ceremony purpose or a named manifest). Primary key.
     pub id: String,

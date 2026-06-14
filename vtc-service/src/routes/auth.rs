@@ -26,6 +26,14 @@ use vti_common::store::KeyspaceHandle;
 
 /// Thin dispatcher — every substantive concern (ACL, rate
 /// limit, session persistence) lives in the canonical handler.
+#[utoipa::path(
+    post, path = "/auth/challenge", tag = "auth",
+    request_body = ChallengeRequest,
+    responses(
+        (status = 200, description = "DID-auth challenge nonce", body = ChallengeResponse),
+        (status = 401, description = "ACL gate rejected the subject DID"),
+    ),
+)]
 pub async fn challenge(
     State(state): State<AppState>,
     Json(req): Json<ChallengeRequest>,
@@ -44,6 +52,16 @@ pub async fn challenge(
 
 // ---------- POST /auth/ ----------
 
+/// `POST /v1/auth/` — verify a DIDComm/SIOP/Trust-Task authentication
+/// document and issue access + refresh tokens. Unauthenticated.
+#[utoipa::path(
+    post, path = "/auth/", tag = "auth",
+    request_body(content = String, description = "DIDComm envelope, SIOP id_token envelope, or Trust-Task auth document"),
+    responses(
+        (status = 200, description = "Access + refresh tokens"),
+        (status = 401, description = "Authentication failed (bad proof, challenge mismatch, or replay)"),
+    ),
+)]
 pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
@@ -283,6 +301,14 @@ async fn authenticate_and_mint(
 ///
 /// Programmatic clients (cnm-cli, DIDComm bridges) keep using
 /// `POST /v1/auth/` — same JWT shape, no cookie side effects.
+#[utoipa::path(
+    post, path = "/auth/admin-login", tag = "auth",
+    request_body(content = String, description = "DIDComm/SIOP/Trust-Task authentication document"),
+    responses(
+        (status = 200, description = "Access + refresh tokens (sets admin session + CSRF cookies)"),
+        (status = 401, description = "Authentication failed"),
+    ),
+)]
 pub async fn admin_login(
     State(state): State<AppState>,
     body: String,
@@ -354,6 +380,14 @@ pub struct AdminSessionRequest {
 /// access token, which it could use directly as a bearer; this only mirrors
 /// it into the cookie the browser SPA expects. Browser-only by nature: the
 /// CSRF layer's same-origin check carries the (cookie-less) first call.
+#[utoipa::path(
+    post, path = "/auth/admin-session", tag = "auth",
+    request_body = AdminSessionRequest,
+    responses(
+        (status = 204, description = "Admin session + CSRF cookies set"),
+        (status = 401, description = "Invalid or expired access token"),
+    ),
+)]
 pub async fn admin_session(
     State(state): State<AppState>,
     Json(req): Json<AdminSessionRequest>,
@@ -420,6 +454,15 @@ pub struct PasskeyLoginStartResponse {
     pub options: webauthn_rs::prelude::RequestChallengeResponse,
 }
 
+/// `POST /v1/auth/passkey-login/start` — issue a WebAuthn assertion
+/// challenge across every registered passkey. Unauthenticated.
+#[utoipa::path(
+    post, path = "/auth/passkey-login/start", tag = "auth",
+    responses(
+        (status = 200, description = "WebAuthn assertion challenge", body = PasskeyLoginStartResponse),
+        (status = 401, description = "WebAuthn not configured or no passkeys registered"),
+    ),
+)]
 pub async fn passkey_login_start(
     State(state): State<AppState>,
 ) -> Result<Json<PasskeyLoginStartResponse>, AppError> {
@@ -474,6 +517,16 @@ pub struct PasskeyLoginFinishRequest {
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
 }
 
+/// `POST /v1/auth/passkey-login/finish` — verify the WebAuthn assertion
+/// and mint a cookie session + bearer token. Unauthenticated.
+#[utoipa::path(
+    post, path = "/auth/passkey-login/finish", tag = "auth",
+    request_body = PasskeyLoginFinishRequest,
+    responses(
+        (status = 200, description = "Access + refresh tokens (sets admin session + CSRF cookies)"),
+        (status = 401, description = "Passkey assertion verification failed or credential not registered"),
+    ),
+)]
 pub async fn passkey_login_finish(
     State(state): State<AppState>,
     Json(req): Json<PasskeyLoginFinishRequest>,
@@ -700,6 +753,14 @@ mod cookie_format_tests {
 /// claim, refresh-expiry check, ACL re-look-up, AAL preservation
 /// across rotation, RFC 6749 §10.4 rotation semantics — lives in
 /// the canonical handler in vti-common.
+#[utoipa::path(
+    post, path = "/auth/refresh", tag = "auth",
+    request_body(content = String, description = "DIDComm envelope or Trust-Task refresh document"),
+    responses(
+        (status = 200, description = "Rotated access + refresh tokens"),
+        (status = 401, description = "Refresh token not found, revoked, or already used"),
+    ),
+)]
 pub async fn refresh(
     State(state): State<AppState>,
     body: String,
@@ -790,6 +851,14 @@ pub struct WhoamiResponse {
 /// pulled from the access token. Lets browser SPAs render a
 /// "signed in as" indicator without exposing the JWT to JS (the
 /// session cookie is HttpOnly by design).
+#[utoipa::path(
+    get, path = "/auth/whoami", tag = "auth",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Caller identity claims", body = WhoamiResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
     Json(WhoamiResponse {
         did: auth.did,
@@ -806,6 +875,14 @@ pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
 /// expire the cookie pair. The cookies' HttpOnly flag means JS
 /// can't clear them itself — only the server can issue
 /// `Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.
+#[utoipa::path(
+    post, path = "/auth/sign-out", tag = "auth",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 204, description = "Session revoked and session/CSRF cookies cleared"),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn sign_out(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -840,6 +917,17 @@ pub async fn sign_out(
     Ok(response)
 }
 
+/// `GET /v1/auth/sessions` — list active sessions visible to the caller.
+/// Super-admin sees all; context-admin sees only sessions in their contexts.
+#[utoipa::path(
+    get, path = "/auth/sessions", tag = "auth",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Active sessions", body = [SessionSummary]),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin/initiator"),
+    ),
+)]
 pub async fn session_list(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -873,6 +961,19 @@ pub async fn session_list(
 
 // ---------- DELETE /auth/sessions/{session_id} ----------
 
+/// `DELETE /v1/auth/sessions/{session_id}` — revoke a single session
+/// (caller's own, or any if admin).
+#[utoipa::path(
+    delete, path = "/auth/sessions/{session_id}", tag = "auth",
+    security(("bearer_jwt" = [])),
+    params(("session_id" = String, Path, description = "Session identifier")),
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Cannot revoke another user's session"),
+        (status = 404, description = "Session not found"),
+    ),
+)]
 pub async fn revoke_session(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -907,6 +1008,18 @@ pub struct RevokeByDidResponse {
     pub revoked: u64,
 }
 
+/// `DELETE /v1/auth/sessions?did=X` — revoke all sessions for a DID.
+/// Super-admin unrestricted; context-admin limited to visible DIDs.
+#[utoipa::path(
+    delete, path = "/auth/sessions", tag = "auth",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Query, description = "Subject DID whose sessions to revoke")),
+    responses(
+        (status = 200, description = "Sessions revoked", body = RevokeByDidResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller cannot revoke sessions for this DID"),
+    ),
+)]
 pub async fn revoke_sessions_by_did(
     auth: AdminAuth,
     State(state): State<AppState>,

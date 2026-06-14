@@ -147,6 +147,16 @@ fn revoke_target_key(revocation_id: &str) -> Vec<u8> {
 // GET list
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(
+    get, path = "/admin/passkeys", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Registered admin passkeys", body = ListResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "No admin entry for caller"),
+    ),
+)]
 pub async fn list(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -163,6 +173,16 @@ pub async fn list(
 // Register start + finish
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(
+    post, path = "/admin/passkeys/register/start", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "New-device registration + step-up UV challenges", body = RegisterStartResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "No passkey user for caller"),
+    ),
+)]
 pub async fn register_start(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -204,6 +224,16 @@ pub async fn register_start(
     }))
 }
 
+#[utoipa::path(
+    post, path = "/admin/passkeys/register/finish", tag = "admin",
+    security(("bearer_jwt" = [])),
+    request_body = RegisterFinishRequest,
+    responses(
+        (status = 200, description = "New passkey registered", body = RegisterFinishResponse),
+        (status = 401, description = "Missing/invalid bearer token, or step-up UV failed"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn register_finish(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -282,6 +312,17 @@ pub async fn register_finish(
 // Revoke start + finish
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(
+    post, path = "/admin/passkeys/revoke/start", tag = "admin",
+    security(("bearer_jwt" = [])),
+    request_body = RevokeStartRequest,
+    responses(
+        (status = 200, description = "Step-up UV challenge for the revocation", body = RevokeStartResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "credential_id not registered for this admin"),
+    ),
+)]
 pub async fn revoke_start(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -331,6 +372,18 @@ pub async fn revoke_start(
     }))
 }
 
+#[utoipa::path(
+    post, path = "/admin/passkeys/revoke/finish", tag = "admin",
+    security(("bearer_jwt" = [])),
+    request_body = RevokeFinishRequest,
+    responses(
+        (status = 200, description = "Passkey revoked", body = RevokeFinishResponse),
+        (status = 401, description = "Missing/invalid bearer token, or step-up UV failed"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "credential_id not registered for this admin"),
+        (status = 409, description = "Refusing to leave the admin with zero passkeys"),
+    ),
+)]
 pub async fn revoke_finish(
     admin: AdminAuth,
     State(state): State<AppState>,

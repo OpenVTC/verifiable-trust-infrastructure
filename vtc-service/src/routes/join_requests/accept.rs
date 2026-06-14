@@ -77,6 +77,19 @@ pub struct AcceptOutcome {
     pub recorded: bool,
 }
 
+/// POST /join-requests/{id}/accept — record the member's reciprocal VC.
+/// Public: the reciprocal VC + holder-binding signature IS the auth.
+#[utoipa::path(
+    post, path = "/join-requests/{id}/accept", tag = "join-requests",
+    params(("id" = String, Path, description = "Join request id")),
+    request_body = AcceptRequestBody,
+    responses(
+        (status = 201, description = "Reciprocal VC recorded", body = AcceptResponse),
+        (status = 400, description = "Holder-binding / reciprocal-VC validation failed"),
+        (status = 404, description = "Join request or member not found"),
+        (status = 409, description = "Request not Approved, or VMC already reciprocated"),
+    ),
+)]
 pub async fn accept(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

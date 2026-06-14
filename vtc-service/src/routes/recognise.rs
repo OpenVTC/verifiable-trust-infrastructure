@@ -118,6 +118,12 @@ pub struct RecogniseData {
 /// `POST /v1/auth/recognise/challenge` — issue a single-use, TTL'd nonce the
 /// holder binds into their recognise VP. Bound to this VTC's DID as the
 /// audience, so the resulting VP can't be replayed against a different VTC.
+#[utoipa::path(
+    post, path = "/auth/recognise/challenge", tag = "recognise",
+    responses(
+        (status = 200, description = "Single-use recognition nonce", body = RecogniseChallengeResponse),
+    ),
+)]
 pub async fn recognise_challenge(
     State(state): State<AppState>,
 ) -> Result<Json<RecogniseChallengeResponse>, AppError> {
@@ -134,6 +140,16 @@ pub async fn recognise_challenge(
     Ok(Json(RecogniseChallengeResponse { nonce, expires_at }))
 }
 
+/// `POST /v1/auth/recognise` — cross-community session mint from a
+/// holder-signed VP embedding a foreign VEC + VMC.
+#[utoipa::path(
+    post, path = "/auth/recognise", tag = "recognise",
+    request_body = RecogniseRequest,
+    responses(
+        (status = 200, description = "Minted cross-community session", body = RecogniseResponse),
+        (status = 403, description = "Holder-binding, recognition gate, or role-mapping denied"),
+    ),
+)]
 pub async fn recognise(
     State(state): State<AppState>,
     Json(req): Json<RecogniseRequest>,

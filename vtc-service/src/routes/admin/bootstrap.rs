@@ -51,6 +51,14 @@ pub struct BootstrapResponse {
     pub event_id: Uuid,
 }
 
+#[utoipa::path(
+    post, path = "/admin/bootstrap", tag = "admin",
+    request_body = BootstrapRequest,
+    responses(
+        (status = 200, description = "First admin bootstrapped; community installed", body = BootstrapResponse),
+        (status = 409, description = "An admin already exists"),
+    ),
+)]
 pub async fn bootstrap(
     State(state): State<AppState>,
     Json(req): Json<BootstrapRequest>,

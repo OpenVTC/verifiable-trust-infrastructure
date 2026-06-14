@@ -29,7 +29,8 @@ use tracing::info;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct AuditQuery {
     /// Pagination cursor (returned by a previous call).
     pub cursor: Option<String>,
@@ -37,6 +38,17 @@ pub struct AuditQuery {
     pub limit: Option<usize>,
 }
 
+/// GET /audit — newest-first paginated audit envelopes. Auth: Super-admin.
+#[utoipa::path(
+    get, path = "/audit", tag = "audit",
+    security(("bearer_jwt" = [])),
+    params(AuditQuery),
+    responses(
+        (status = 200, description = "Paginated audit envelopes", body = Object),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn list_audit(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

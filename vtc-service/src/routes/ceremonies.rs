@@ -309,6 +309,14 @@ fn manifests() -> Vec<CeremonyManifest> {
 /// `GET /v1/ceremonies` — list the ceremony manifests. Authenticated
 /// (any session); the payload is admin-UI metadata, not secret, but
 /// the surface lives behind the same gate as the rest of the API.
+#[utoipa::path(
+    get, path = "/ceremonies", tag = "ceremonies",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Ceremony manifests", body = [CeremonyManifest]),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list(_claims: AuthClaims) -> Json<Vec<CeremonyManifest>> {
     Json(manifests())
 }

@@ -40,6 +40,17 @@ fn parse_purpose(s: &str) -> Option<StatusPurpose> {
     }
 }
 
+/// GET /status-lists/{purpose} — public BitstringStatusList credential.
+/// Unauthenticated, Trust-Task-exempt verifier endpoint.
+#[utoipa::path(
+    get, path = "/status-lists/{purpose}", tag = "status-lists",
+    params(("purpose" = String, Path, description = "'revocation' or 'suspension'")),
+    responses(
+        (status = 200, description = "Bitstring status list credential", content_type = "application/json"),
+        (status = 404, description = "Unknown or unprovisioned purpose"),
+        (status = 503, description = "Credential signer or state not ready"),
+    ),
+)]
 pub async fn show(
     State(state): State<AppState>,
     Path(purpose_str): Path<String>,

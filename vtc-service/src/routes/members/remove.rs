@@ -74,6 +74,17 @@ const REASON_MAX: usize = 1024;
 // DELETE /v1/members/me — M1.11.1
 // ---------------------------------------------------------------------------
 
+/// DELETE /members/me — self-leave ceremony. Auth: any authenticated member.
+#[utoipa::path(
+    delete, path = "/members/me", tag = "members",
+    security(("bearer_jwt" = [])),
+    request_body = RemoveBody,
+    responses(
+        (status = 200, description = "Member removed", body = RemoveResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Removal denied by policy"),
+    ),
+)]
 pub async fn self_remove(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -102,6 +113,19 @@ pub async fn self_remove(
 // DELETE /v1/members/{did} — M1.12.1 (REST only)
 // ---------------------------------------------------------------------------
 
+/// DELETE /members/{did} — admin removes another member. Auth: Admin.
+#[utoipa::path(
+    delete, path = "/members/{did}", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    request_body = RemoveBody,
+    responses(
+        (status = 200, description = "Member removed", body = RemoveResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin / removal denied by policy"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn admin_remove(
     admin: AdminAuth,
     State(state): State<AppState>,

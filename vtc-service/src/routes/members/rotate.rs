@@ -173,6 +173,17 @@ pub struct ChallengeResponse {
     pub canonical_template: JsonValue,
 }
 
+/// POST /members/me/rotate/challenge — mint a DID-rotation challenge.
+/// Auth: any authenticated member.
+#[utoipa::path(
+    post, path = "/members/me/rotate/challenge", tag = "members",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Rotation challenge issued", body = ChallengeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Caller is not a member"),
+    ),
+)]
 pub async fn challenge(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -245,6 +256,18 @@ pub struct FinishResponse {
     pub role_vec: JsonValue,
 }
 
+/// POST /members/me/rotate — complete a DID rotation. Auth: old DID's session.
+#[utoipa::path(
+    post, path = "/members/me/rotate", tag = "members",
+    security(("bearer_jwt" = [])),
+    request_body = FinishBody,
+    responses(
+        (status = 200, description = "DID rotated", body = FinishResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Session DID does not match oldDid"),
+        (status = 404, description = "Caller is not a member"),
+    ),
+)]
 pub async fn rotate(
     auth: AuthClaims,
     State(state): State<AppState>,

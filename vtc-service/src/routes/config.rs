@@ -87,6 +87,15 @@ async fn resolved_public_url(state: &AppState) -> Result<Option<String>, AppErro
     Ok(state.config.read().await.public_url.clone())
 }
 
+/// GET /config — resolved community config view. Auth: any session.
+#[utoipa::path(
+    get, path = "/config", tag = "config",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Resolved config view", body = ConfigResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn get_config(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -103,6 +112,18 @@ pub async fn get_config(
     }))
 }
 
+/// PATCH /config — update mutable community config. Auth: Super-admin.
+#[utoipa::path(
+    patch, path = "/config", tag = "config",
+    security(("bearer_jwt" = [])),
+    request_body = UpdateConfigRequest,
+    responses(
+        (status = 200, description = "Updated config view", body = UpdateConfigResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "Attempt to rewrite immutable identity (vtc_did / vta_did)"),
+    ),
+)]
 pub async fn update_config(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

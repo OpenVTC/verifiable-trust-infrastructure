@@ -109,6 +109,16 @@ pub struct ClaimFinishResponse {
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// `POST /v1/install/claim/start` — begin the WebAuthn install
+/// ceremony for the first admin. Unauthenticated.
+#[utoipa::path(
+    post, path = "/install/claim/start", tag = "install",
+    request_body = ClaimStartRequest,
+    responses(
+        (status = 201, description = "WebAuthn creation challenge", body = ClaimStartResponse),
+        (status = 401, description = "Invalid install token or claim secret"),
+    ),
+)]
 pub async fn claim_start(
     State(state): State<AppState>,
     Json(req): Json<ClaimStartRequest>,
@@ -198,6 +208,16 @@ pub async fn claim_start(
     ))
 }
 
+/// `POST /v1/install/claim/finish` — complete the WebAuthn install
+/// ceremony, mint the admin DID + setup-session token. Unauthenticated.
+#[utoipa::path(
+    post, path = "/install/claim/finish", tag = "install",
+    request_body = ClaimFinishRequest,
+    responses(
+        (status = 200, description = "Admin DID + setup-session token", body = ClaimFinishResponse),
+        (status = 401, description = "Invalid install token or registration state"),
+    ),
+)]
 pub async fn claim_finish(
     State(state): State<AppState>,
     Json(req): Json<ClaimFinishRequest>,

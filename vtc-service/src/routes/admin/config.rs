@@ -70,6 +70,15 @@ pub struct RejectedKey {
 }
 
 /// GET handler.
+#[utoipa::path(
+    get, path = "/admin/config", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Four-layer-merged effective config", body = EffectiveConfig),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn get_config(
     _admin: AdminAuth,
     State(state): State<AppState>,
@@ -81,6 +90,16 @@ pub async fn get_config(
 }
 
 /// PATCH handler.
+#[utoipa::path(
+    patch, path = "/admin/config", tag = "admin",
+    security(("bearer_jwt" = [])),
+    request_body = PatchRequest,
+    responses(
+        (status = 200, description = "Applied / pending-restart / rejected keys", body = PatchResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn patch_config(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -214,6 +233,15 @@ pub struct ReloadResponse {
 /// runtime-state subscribers (tracing subscriber filter handle,
 /// session-cleanup interval, etc.) will plug into the same diff
 /// loop.
+#[utoipa::path(
+    post, path = "/admin/config/reload", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Keys re-applied in-memory", body = ReloadResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn reload_config(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -302,6 +330,15 @@ pub struct RestartResponse {
 /// On success the handler emits `RestartRequested` to the audit
 /// log *before* signalling shutdown — so the row survives even if
 /// the drain wedges.
+#[utoipa::path(
+    post, path = "/admin/config/restart", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Restart requested", body = RestartResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn restart_config(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -414,6 +451,15 @@ pub struct ConfigExport {
     pub config_overrides: HashMap<String, Value>,
 }
 
+#[utoipa::path(
+    post, path = "/admin/config/export", tag = "admin",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Portable config + community-profile export", body = ConfigExport),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn export_config(
     _admin: AdminAuth,
     State(state): State<AppState>,
@@ -486,6 +532,17 @@ pub struct ImportResponse {
     pub rejected: Vec<RejectedKey>,
 }
 
+#[utoipa::path(
+    post, path = "/admin/config/import", tag = "admin",
+    security(("bearer_jwt" = [])),
+    params(("confirm" = Option<bool>, Query, description = "Apply the import (true) or dry-run diff (false, default)")),
+    request_body = ConfigExport,
+    responses(
+        (status = 200, description = "Import diff (dry-run) or applied keys", body = ImportResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn import_config(
     admin: AdminAuth,
     State(state): State<AppState>,

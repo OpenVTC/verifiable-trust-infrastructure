@@ -191,6 +191,19 @@ pub struct SendQueryResponse {
 /// push is unavailable — relayer ≠ holder is supported). The holder presents on
 /// the returned `threadId`, and the `credential-exchange/present` handler
 /// consumes the challenge.
+/// POST /join-requests/query — prepare + push a credential-exchange query to
+/// a holder for a registered Accepts criterion. Auth: Admin.
+#[utoipa::path(
+    post, path = "/join-requests/query", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    request_body = SendQueryRequest,
+    responses(
+        (status = 200, description = "Prepared query + thread to present on", body = SendQueryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "No such Accepts criterion registered"),
+    ),
+)]
 pub async fn send_query(
     _auth: AdminAuth,
     State(state): State<AppState>,

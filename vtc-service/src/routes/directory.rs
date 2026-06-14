@@ -62,7 +62,8 @@ pub const DIRECTORY_FIELD_WHITELIST: [&str; 4] = ["did", "role", "joined_at", "s
 /// in. Advisory: the policy decides what it returns, and the PII
 /// boundary caps it. Recorded into the facts so a policy *may* honour
 /// it, but the default directory policy projects by viewer role.
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DirectoryQuery {
     #[serde(default)]
     pub fields: Option<String>,
@@ -78,6 +79,19 @@ pub struct DirectoryResponse {
 }
 
 /// `GET /v1/directory/{did}`.
+#[utoipa::path(
+    get, path = "/directory/{did}", tag = "directory",
+    security(("bearer_jwt" = [])),
+    params(
+        ("did" = String, Path, description = "Subject DID"),
+        DirectoryQuery,
+    ),
+    responses(
+        (status = 200, description = "Projected subject record", body = DirectoryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Directory access denied"),
+    ),
+)]
 pub async fn query(
     viewer: AuthClaims,
     State(state): State<AppState>,

@@ -58,6 +58,7 @@ pub enum SchemaKind {
 /// One registered credential-type schema in the community's schema store.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SchemaEntry {
     /// The credential type URI / `vct`. Primary key — URL-encoded into the key.
     pub type_uri: String,

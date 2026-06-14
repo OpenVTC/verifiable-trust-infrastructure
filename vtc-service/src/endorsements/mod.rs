@@ -37,6 +37,7 @@ pub use storage::{
 /// VEC's `id` field if they need the proof.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct Endorsement {
     /// Server-allocated UUID. Forms `vec_id`'s
     /// `urn:uuid:<id>` shape.

@@ -72,6 +72,16 @@ pub struct IssueResponse {
     pub vec: JsonValue,
 }
 
+#[utoipa::path(
+    post, path = "/credentials/endorsements", tag = "endorsements",
+    security(("bearer_jwt" = [])),
+    request_body = IssueBody,
+    responses(
+        (status = 201, description = "Endorsement issued", body = IssueResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin or issuer"),
+    ),
+)]
 pub async fn issue(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -245,12 +255,22 @@ pub async fn issue(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
+#[utoipa::path(
+    get, path = "/credentials/endorsements", tag = "endorsements",
+    security(("bearer_jwt" = [])),
+    params(ListQuery),
+    responses(
+        (status = 200, description = "Paginated list of endorsements", body = Paginated<Endorsement>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin or issuer"),
+    ),
+)]
 pub async fn list(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -285,6 +305,17 @@ pub async fn list(
 
 // ─── Show ────────────────────────────────────────────────
 
+#[utoipa::path(
+    get, path = "/credentials/endorsements/{id}", tag = "endorsements",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Endorsement id")),
+    responses(
+        (status = 200, description = "Endorsement", body = Endorsement),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin or issuer"),
+        (status = 404, description = "Endorsement not found"),
+    ),
+)]
 pub async fn show(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -313,6 +344,17 @@ pub struct RevokeResponse {
     pub id: String,
 }
 
+#[utoipa::path(
+    delete, path = "/credentials/endorsements/{id}", tag = "endorsements",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Endorsement id")),
+    responses(
+        (status = 200, description = "Endorsement revoked", body = RevokeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin or issuer"),
+        (status = 404, description = "Endorsement not found"),
+    ),
+)]
 pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,

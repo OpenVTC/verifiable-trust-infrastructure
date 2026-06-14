@@ -17,6 +17,14 @@ use vti_common::error::AppError;
 use crate::schemas::accepts::list_accepts;
 use crate::server::AppState;
 
+/// GET /join-requests/manifest — pre-submit discovery of the community's
+/// Accepts criteria. Public, stateless read.
+#[utoipa::path(
+    get, path = "/join-requests/manifest", tag = "join-requests",
+    responses(
+        (status = 200, description = "Community join evidence requirements", body = JoinRequestManifestResponseBody),
+    ),
+)]
 pub async fn manifest(
     State(state): State<AppState>,
 ) -> Result<Json<JoinRequestManifestResponseBody>, AppError> {

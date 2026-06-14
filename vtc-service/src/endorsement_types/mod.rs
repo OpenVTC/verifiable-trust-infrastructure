@@ -38,6 +38,7 @@ pub const RESERVED_TYPE_URIS: &[&str] = &["CommunityRole"];
 /// registrar route enforces validation at insert time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct EndorsementType {
     /// The type URI. Primary key — URL-encoded into the
     /// keyspace key.

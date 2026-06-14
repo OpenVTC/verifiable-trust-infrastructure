@@ -31,12 +31,24 @@ const MAX_LIMIT: usize = 200;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
 }
 
+/// GET /members/{did}/relationships — paginated VRC list for a member.
+/// Auth: any authenticated session.
+#[utoipa::path(
+    get, path = "/members/{did}/relationships", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID"), ListQuery),
+    responses(
+        (status = 200, description = "Paginated relationship list", body = Paginated<Relationship>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not authorised"),
+    ),
+)]
 pub async fn list(
     _auth: AuthClaims,
     State(state): State<AppState>,

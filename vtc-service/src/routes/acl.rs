@@ -46,11 +46,23 @@ impl From<VtcAclEntry> for AclEntryResponse {
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListAclQuery {
     pub context: Option<String>,
 }
 
+/// GET /acl — list ACL entries visible to the caller. Auth: Manage.
+#[utoipa::path(
+    get, path = "/acl", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(ListAclQuery),
+    responses(
+        (status = 200, description = "Visible ACL entries", body = AclListResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller lacks manage authority"),
+    ),
+)]
 pub async fn list_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -91,6 +103,17 @@ pub struct CreateAclRequest {
     pub expires_at: Option<u64>,
 }
 
+/// POST /acl — create a new ACL entry. Auth: Manage.
+#[utoipa::path(
+    post, path = "/acl", tag = "acl",
+    security(("bearer_jwt" = [])),
+    request_body = CreateAclRequest,
+    responses(
+        (status = 201, description = "ACL entry created", body = AclEntryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller lacks manage authority"),
+    ),
+)]
 pub async fn create_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -129,6 +152,18 @@ pub async fn create_acl(
 
 // ---------- GET /acl/{did} ----------
 
+/// GET /acl/{did} — retrieve a single ACL entry. Auth: Manage.
+#[utoipa::path(
+    get, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    responses(
+        (status = 200, description = "ACL entry", body = AclEntryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller lacks manage authority"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -156,6 +191,19 @@ pub struct UpdateAclRequest {
     pub allowed_contexts: Option<Vec<String>>,
 }
 
+/// PATCH /acl/{did} — modify an ACL entry. Auth: Admin.
+#[utoipa::path(
+    patch, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    request_body = UpdateAclRequest,
+    responses(
+        (status = 200, description = "Updated ACL entry", body = AclEntryResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn update_acl(
     // Modifying an ACL entry can downgrade an existing admin or shrink their
     // `allowed_contexts`. Gate on Admin so a non-admin can't tamper with
@@ -230,6 +278,18 @@ pub async fn update_acl(
 
 // ---------- DELETE /acl/{did} ----------
 
+/// DELETE /acl/{did} — remove an ACL entry. Auth: Admin.
+#[utoipa::path(
+    delete, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    responses(
+        (status = 204, description = "ACL entry deleted"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn delete_acl(
     // Deletion is strictly more destructive than the `PATCH` edit, yet the
     // previous `ManageAuth` gate let an Initiator delete entries while `PATCH`

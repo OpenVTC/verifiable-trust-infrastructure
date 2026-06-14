@@ -76,6 +76,15 @@ pub struct PublicCommunityProfile {
 
 /// Public GET handler. Trust-Task-exempt, no auth. Returns only the
 /// curated subset of profile fields a visitor's browser should see.
+/// GET /community/public-profile — curated public community profile.
+/// Public, unauthenticated.
+#[utoipa::path(
+    get, path = "/community/public-profile", tag = "community",
+    responses(
+        (status = 200, description = "Public community profile", body = PublicCommunityProfile),
+        (status = 404, description = "Community profile not initialised"),
+    ),
+)]
 pub async fn get_public_profile(
     State(state): State<AppState>,
 ) -> Result<Json<PublicCommunityProfile>, AppError> {
@@ -104,6 +113,17 @@ pub async fn get_public_profile(
 
 /// GET handler. Returns the singleton profile + the live
 /// trust-registry status.
+/// GET /community/profile — full community profile + live registry status.
+/// Auth: any authenticated session.
+#[utoipa::path(
+    get, path = "/community/profile", tag = "community",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Community profile + registry status", body = CommunityProfileResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Community profile not initialised"),
+    ),
+)]
 pub async fn get_profile(
     _auth: AuthClaims,
     State(state): State<AppState>,
@@ -136,6 +156,20 @@ pub struct UpdateProfileResponse {
 /// can't be recorded (no `AuditWriter`) returns 503 rather than
 /// persisting silently — matching the `/v1/admin/config` doors so
 /// auditability doesn't depend on which surface the admin used.
+/// PUT /community/profile — update the community profile. Auth: Admin.
+/// Refuses changes to the immutable `community_did`.
+#[utoipa::path(
+    put, path = "/community/profile", tag = "community",
+    security(("bearer_jwt" = [])),
+    request_body = CommunityProfileUpdate,
+    responses(
+        (status = 200, description = "Updated profile + the fields that changed", body = UpdateProfileResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Community profile not initialised"),
+        (status = 503, description = "Audit writer not configured — change refused"),
+    ),
+)]
 pub async fn put_profile(
     admin: AdminAuth,
     State(state): State<AppState>,

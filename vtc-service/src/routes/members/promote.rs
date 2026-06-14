@@ -56,6 +56,19 @@ pub struct PromoteStartResponse {
     pub options: RequestChallengeResponse,
 }
 
+/// POST /members/{did}/promote-to-admin/start — begin step-up UV ceremony.
+/// Auth: Admin.
+#[utoipa::path(
+    post, path = "/members/{did}/promote-to-admin/start", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID being promoted")),
+    responses(
+        (status = 200, description = "UV challenge issued", body = PromoteStartResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin / has no registered passkeys"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn promote_start(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -133,6 +146,20 @@ pub struct PromoteFinishResponse {
     pub event_id: Uuid,
 }
 
+/// POST /members/{did}/promote-to-admin/finish — complete the promotion.
+/// Auth: Admin.
+#[utoipa::path(
+    post, path = "/members/{did}/promote-to-admin/finish", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID being promoted")),
+    request_body = PromoteFinishRequest,
+    responses(
+        (status = 200, description = "Member promoted to admin", body = PromoteFinishResponse),
+        (status = 401, description = "Missing or invalid bearer token / step-up UV failed"),
+        (status = 403, description = "Caller is not an admin / promotion denied by policy"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn promote_finish(
     auth: AdminAuth,
     State(state): State<AppState>,

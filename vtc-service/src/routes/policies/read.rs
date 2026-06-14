@@ -69,7 +69,7 @@ impl PolicyResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListPoliciesQuery {
     /// Filter by purpose (wire-form camelCase).
     pub purpose: Option<PolicyPurpose>,
@@ -91,6 +91,16 @@ pub enum PolicyStatusFilter {
     Archived,
 }
 
+#[utoipa::path(
+    get, path = "/policies", tag = "policies",
+    security(("bearer_jwt" = [])),
+    params(ListPoliciesQuery),
+    responses(
+        (status = 200, description = "Paginated list of policies", body = Paginated<PolicyResponse>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn list_policies(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -183,6 +193,17 @@ pub async fn list_policies(
 // GET /v1/policies/{id}
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(
+    get, path = "/policies/{id}", tag = "policies",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Policy id")),
+    responses(
+        (status = 200, description = "Policy", body = PolicyResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Policy not found"),
+    ),
+)]
 pub async fn show_policy(
     _auth: AdminAuth,
     State(state): State<AppState>,

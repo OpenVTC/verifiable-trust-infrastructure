@@ -133,6 +133,17 @@ pub struct JoinSubmitOutcome {
     pub admit: Option<Box<AdmitOutcome>>,
 }
 
+/// POST /join-requests — submit a join request. Public: the holder-binding
+/// signature (REST) or authcrypt sender (DIDComm) IS the auth.
+#[utoipa::path(
+    post, path = "/join-requests", tag = "join-requests",
+    request_body = SubmitRequestBody,
+    responses(
+        (status = 201, description = "Join request submitted", body = SubmitResponse),
+        (status = 400, description = "Holder-binding / audience / freshness validation failed"),
+        (status = 409, description = "An open join request already exists for this applicant"),
+    ),
+)]
 pub async fn submit(
     State(state): State<AppState>,
     Json(req): Json<SubmitRequestBody>,

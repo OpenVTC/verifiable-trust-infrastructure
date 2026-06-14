@@ -29,7 +29,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{any, delete, get, post};
+use axum::routing::{any, get, post};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
@@ -446,104 +446,84 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // BitstringStatusList publication (M2.11). Trust-Task-
         // exempt — external verifiers don't carry our extension
         // header (same rationale as `did.jsonl`).
-        .route("/status-lists/{purpose}", get(status_lists::show))
+        .routes(routes!(status_lists::show))
         // Auth routes. `POST /v1/auth/{challenge,authenticate,refresh}`
         // are unauthenticated and live in `build_unauth_routes` so the
         // tower-governor + tighter body cap apply. The two
         // session-management endpoints below are authenticated and
         // stay on the main chain.
-        .route(
-            "/auth/sessions",
-            task_layer(
-                get(auth::session_list).delete(auth::revoke_sessions_by_did),
-                auth_sessions_manage,
-            ),
-        )
-        .route(
-            "/auth/sessions/{session_id}",
-            task_layer(delete(auth::revoke_session), auth_sessions_revoke),
-        )
-        .route("/auth/whoami", task_layer(get(auth::whoami), auth_whoami))
-        .route(
-            "/auth/sign-out",
-            task_layer(post(auth::sign_out), auth_sign_out),
-        )
+        .routes(task_routes(
+            routes!(auth::session_list, auth::revoke_sessions_by_did),
+            auth_sessions_manage,
+        ))
+        .routes(task_routes(
+            routes!(auth::revoke_session),
+            auth_sessions_revoke,
+        ))
+        .routes(task_routes(routes!(auth::whoami), auth_whoami))
+        .routes(task_routes(routes!(auth::sign_out), auth_sign_out))
         // Audit log read (super-admin only).
-        .route("/audit", task_layer(get(audit::list_audit), audit_list))
+        .routes(task_routes(routes!(audit::list_audit), audit_list))
         // Config
-        .route(
-            "/config",
-            task_layer(
-                get(config::get_config).patch(config::update_config),
-                config_manage,
-            ),
-        )
+        .routes(task_routes(
+            routes!(config::get_config, config::update_config),
+            config_manage,
+        ))
         // ACL
-        .route(
-            "/acl",
-            task_layer(get(acl::list_acl).post(acl::create_acl), acl_manage),
-        )
-        .route(
-            "/acl/{did}",
-            task_layer(
-                get(acl::get_acl)
-                    .patch(acl::update_acl)
-                    .delete(acl::delete_acl),
-                acl_entry,
-            ),
-        )
+        .routes(task_routes(
+            routes!(acl::list_acl, acl::create_acl),
+            acl_manage,
+        ))
+        .routes(task_routes(
+            routes!(acl::get_acl, acl::update_acl, acl::delete_acl),
+            acl_entry,
+        ))
         // Community profile (GET + PUT share one Trust Task today;
         // a spec-aligned split into community/profile/show/1.0 +
         // community/profile/update/1.0 lands when TrustTaskRouter
         // gains per-method task selectors in Phase 1+).
-        .route(
-            "/community/profile",
-            task_layer(
-                get(community::profile::get_profile).put(community::profile::put_profile),
-                community_profile,
+        .routes(task_routes(
+            routes!(
+                community::profile::get_profile,
+                community::profile::put_profile
             ),
-        )
+            community_profile,
+        ))
         // Public read of the community profile. Trust-Task-exempt and
         // unauthenticated — visitors landing on the default public
         // website need the community's name + description + DIDs to
         // render before any session exists. Curated subset only (no
         // extensions, no registry status).
-        .route(
-            "/community/public-profile",
-            get(community::profile::get_public_profile),
-        )
+        .routes(routes!(community::profile::get_public_profile))
         // Admin config (M0.8 — GET + PATCH share one task; will
         // split into admin/config/show/1.0 + patch/1.0 when
         // TrustTaskRouter gains per-method selectors).
-        .route(
-            "/admin/config",
-            task_layer(
-                get(admin::config::get_config).patch(admin::config::patch_config),
-                admin_config,
-            ),
-        )
+        .routes(task_routes(
+            routes!(admin::config::get_config, admin::config::patch_config),
+            admin_config,
+        ))
         // Reload + restart (M0.8.3). Reload applies hot-reloadable
         // settings in-place; restart requires a supervisor (412
         // `SupervisorRequired` otherwise).
-        .route(
-            "/admin/config/reload",
-            task_layer(post(admin::config::reload_config), admin_config_reload),
-        )
-        .route(
-            "/admin/config/restart",
-            task_layer(post(admin::config::restart_config), admin_config_restart),
-        )
+        .routes(task_routes(
+            routes!(admin::config::reload_config),
+            admin_config_reload,
+        ))
+        .routes(task_routes(
+            routes!(admin::config::restart_config),
+            admin_config_restart,
+        ))
         // Export / import (M0.8.4). Export returns the portable
         // (db-layer overrides + community profile) JSON; import runs
         // diff-and-confirm via `?confirm=true|false`.
-        .route(
-            "/admin/config/export",
-            task_layer(post(admin::config::export_config), admin_config_export),
-        )
-        .route(
-            "/admin/config/import",
-            task_layer(post(admin::config::import_config), admin_config_import),
-        )
+        .routes(task_routes(
+            routes!(admin::config::export_config),
+            admin_config_export,
+        ))
+        .routes(task_routes(
+            routes!(admin::config::import_config),
+            admin_config_import,
+        ))
         // Install claim endpoints (`/install/claim/start` and
         // `/install/claim/finish`) are unauthenticated and live in
         // `build_unauth_routes` so the tower-governor + tighter
@@ -551,288 +531,227 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Admin bootstrap (M0.6.2) — closes the install carve-out
         // and writes the first admin ACL entry. Unauthenticated
         // because the setup-session JWT IS the auth credential.
-        .route(
-            "/admin/bootstrap",
-            task_layer(post(admin::bootstrap::bootstrap), admin_bootstrap),
-        )
+        .routes(task_routes(
+            routes!(admin::bootstrap::bootstrap),
+            admin_bootstrap,
+        ))
         // Admin passkey management (M0.6.3). Step-up UV is enforced
         // via the two-phase ceremony: `register/start` and
         // `revoke/start` issue a UV challenge bound to an existing
         // passkey; `register/finish` and `revoke/finish` reject if
         // the UV assertion doesn't verify.
-        .route(
-            "/admin/passkeys",
-            task_layer(get(admin::passkeys::list), admin_passkeys_list),
-        )
-        .route(
-            "/admin/passkeys/register/start",
-            task_layer(
-                post(admin::passkeys::register_start),
-                admin_passkeys_register.clone(),
-            ),
-        )
-        .route(
-            "/admin/passkeys/register/finish",
-            task_layer(
-                post(admin::passkeys::register_finish),
-                admin_passkeys_register,
-            ),
-        )
-        .route(
-            "/admin/passkeys/revoke/start",
-            task_layer(
-                post(admin::passkeys::revoke_start),
-                admin_passkeys_revoke.clone(),
-            ),
-        )
-        .route(
-            "/admin/passkeys/revoke/finish",
-            task_layer(post(admin::passkeys::revoke_finish), admin_passkeys_revoke),
-        )
+        .routes(task_routes(
+            routes!(admin::passkeys::list),
+            admin_passkeys_list,
+        ))
+        .routes(task_routes(
+            routes!(admin::passkeys::register_start),
+            admin_passkeys_register.clone(),
+        ))
+        .routes(task_routes(
+            routes!(admin::passkeys::register_finish),
+            admin_passkeys_register,
+        ))
+        .routes(task_routes(
+            routes!(admin::passkeys::revoke_start),
+            admin_passkeys_revoke.clone(),
+        ))
+        .routes(task_routes(
+            routes!(admin::passkeys::revoke_finish),
+            admin_passkeys_revoke,
+        ))
         // Admin invites — REST mirror of `vtc admin invite`. GET +
         // POST share the same mount; DELETE on `/admin/invites/{jti}`
         // revokes outstanding (Issued) invites. Consumed rows are
         // immutable (audit history) — DELETE on those returns 409.
-        .route(
-            "/admin/invites",
-            task_layer(
-                get(admin::invites::list_invites).post(admin::invites::create_invite),
-                admin_invites_manage,
-            ),
-        )
-        .route(
-            "/admin/invites/{jti}",
-            task_layer(
-                axum::routing::delete(admin::invites::revoke_invite),
-                admin_invites_revoke,
-            ),
-        )
+        .routes(task_routes(
+            routes!(admin::invites::list_invites, admin::invites::create_invite),
+            admin_invites_manage,
+        ))
+        .routes(task_routes(
+            routes!(admin::invites::revoke_invite),
+            admin_invites_revoke,
+        ))
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
-        .route(
-            "/directory/{did}",
-            task_layer(get(directory::query), directory_query),
-        )
+        .routes(task_routes(routes!(directory::query), directory_query))
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
-        .route(
-            "/ceremonies",
-            task_layer(get(ceremonies::list), ceremonies_list),
-        )
+        .routes(task_routes(routes!(ceremonies::list), ceremonies_list))
         // Members (Phase 1 M1.4–M1.6).
-        .route(
-            "/members",
-            task_layer(get(members::read::list_members), members_list),
-        )
+        .routes(task_routes(
+            routes!(members::read::list_members),
+            members_list,
+        ))
         // `/v1/members/me` for self-remove (M1.11.1). Must be
         // declared BEFORE the `/v1/members/{did}` mount otherwise
         // axum's path-trie picks the parameterised route first
         // and routes "me" as a literal DID.
-        .route(
-            "/members/me",
-            task_layer(
-                axum::routing::delete(members::remove::self_remove),
-                members_self_remove,
-            ),
-        )
+        .routes(task_routes(
+            routes!(members::remove::self_remove),
+            members_self_remove,
+        ))
         // Renewal (M2.13). POST on its own mount so the
         // Trust Task header check + per-method selectors are
         // unambiguous.
-        .route(
-            "/members/me/renew",
-            task_layer(post(members::renew::renew), members_renew),
-        )
+        .routes(task_routes(routes!(members::renew::renew), members_renew))
         // DID rotation (M2.15.1). Two-step ceremony — challenge
         // mints a single-use rotation_id, the finish endpoint
         // applies the co-signed swap atomically.
-        .route(
-            "/members/me/rotate/challenge",
-            task_layer(post(members::rotate::challenge), members_rotate_challenge),
-        )
-        .route(
-            "/members/me/rotate",
-            task_layer(post(members::rotate::rotate), members_rotate),
-        )
+        .routes(task_routes(
+            routes!(members::rotate::challenge),
+            members_rotate_challenge,
+        ))
+        .routes(task_routes(
+            routes!(members::rotate::rotate),
+            members_rotate,
+        ))
         // Phase 4 M4.3 + M4.4 — personhood lifecycle. Three
         // mounts on the same path prefix; declared BEFORE
         // `/v1/members/{did}` so axum's path-trie matches the
         // literal segment first. Personhood is a per-member
         // resource; `{did}` is the subject.
-        .route(
-            "/members/{did}/personhood/challenge",
-            task_layer(
-                post(members::personhood::challenge),
-                members_personhood_challenge,
-            ),
-        )
-        .route(
-            "/members/{did}/personhood",
-            task_layer(
-                post(members::personhood::assert).delete(members::personhood::revoke), // POST + DELETE share `personhood/assert/1.0` at
-                // the router layer pending per-method selectors;
-                // the standalone `personhood/revoke/1.0` Trust Task
-                // exists on disk + in index.json so the soft-gate
-                // surface stays complete. (Same workaround as
-                // members/{did}'s show + update + admin-remove.)
-                members_personhood_assert,
-            ),
-        )
+        .routes(task_routes(
+            routes!(members::personhood::challenge),
+            members_personhood_challenge,
+        ))
+        .routes(task_routes(
+            routes!(members::personhood::assert, members::personhood::revoke), // POST + DELETE share `personhood/assert/1.0` at
+            // the router layer pending per-method selectors;
+            // the standalone `personhood/revoke/1.0` Trust Task
+            // exists on disk + in index.json so the soft-gate
+            // surface stays complete. (Same workaround as
+            // members/{did}'s show + update + admin-remove.)
+            members_personhood_assert,
+        ))
         // Phase 4 M4.6 — VRC trust-graph endpoints. The
         // per-member list mounts under /v1/members/{did}/
         // and must precede the catchall `/v1/members/{did}`
         // (same path-trie precedence as personhood).
-        .route(
-            "/members/{did}/relationships",
-            task_layer(get(members::relationships::list), relationships_list),
-        )
-        .route(
-            "/relationships",
-            task_layer(post(relationships::publish), relationships_publish),
-        )
-        .route(
-            "/relationships/{id}",
-            task_layer(delete(relationships::revoke), relationships_revoke),
-        )
+        .routes(task_routes(
+            routes!(members::relationships::list),
+            relationships_list,
+        ))
+        .routes(task_routes(
+            routes!(relationships::publish),
+            relationships_publish,
+        ))
+        .routes(task_routes(
+            routes!(relationships::revoke),
+            relationships_revoke,
+        ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type
         // registry. Admin-gated CRUD.
-        .route(
-            "/endorsement-types",
-            task_layer(
-                post(endorsement_types::register).get(endorsement_types::list), // POST + GET share `register/1.0` at the router
-                // layer pending per-method selectors; standalone
-                // `list/1.0` exists on disk + in index.json.
-                endorsement_types_register,
-            ),
-        )
-        .route(
-            "/endorsement-types/{type_uri}",
-            task_layer(delete(endorsement_types::delete), endorsement_types_delete),
-        )
+        .routes(task_routes(
+            routes!(endorsement_types::register, endorsement_types::list), // POST + GET share `register/1.0` at the router
+            // layer pending per-method selectors; standalone
+            // `list/1.0` exists on disk + in index.json.
+            endorsement_types_register,
+        ))
+        .routes(task_routes(
+            routes!(endorsement_types::delete),
+            endorsement_types_delete,
+        ))
         // Phase 2 §8 — community schema store (Issues + Accepts
         // registry). Plain admin-gated CRUD (AdminAuth extractor),
         // exempt from the Trust-Task soft-gate. (`accepts` static
         // segments bind before the `{type_uri}` param via matchit.)
-        .route(
-            "/schemas/accepts",
-            post(schemas::register_accepts).get(schemas::list_accepts_route),
-        )
-        .route(
-            "/schemas/accepts/{id}",
-            get(schemas::get_accepts_route).delete(schemas::delete_accepts_route),
-        )
-        .route("/schemas", post(schemas::register).get(schemas::list))
-        .route(
-            "/schemas/{type_uri}",
-            get(schemas::get_one).delete(schemas::delete_one),
-        )
+        .routes(routes!(
+            schemas::register_accepts,
+            schemas::list_accepts_route
+        ))
+        .routes(routes!(
+            schemas::get_accepts_route,
+            schemas::delete_accepts_route
+        ))
+        .routes(routes!(schemas::register, schemas::list))
+        .routes(routes!(schemas::get_one, schemas::delete_one))
         // Phase 4 M4.8.2-4 — custom endorsement issuance +
         // retrieval + revocation. Admin OR Issuer-role member.
-        .route(
-            "/credentials/endorsements",
-            task_layer(
-                post(endorsements::issue).get(endorsements::list), // POST + GET share `issue/1.0` at the router
-                // layer pending per-method selectors; standalone
-                // `list/1.0` exists on disk + in index.json.
-                endorsements_issue,
-            ),
-        )
-        .route(
-            "/credentials/endorsements/{id}",
-            task_layer(
-                axum::routing::get(endorsements::show).delete(endorsements::revoke), // GET + DELETE share `show/1.0` at the router
-                // layer pending per-method selectors; standalone
-                // `revoke/1.0` exists on disk + in index.json.
-                endorsements_show_revoke,
-            ),
-        )
-        .route(
-            "/members/{did}",
-            task_layer(
-                get(members::read::show_member)
-                    .patch(members::update::update_member)
-                    .delete(members::remove::admin_remove), // GET + PATCH + DELETE share `members/show/1.0` at the
-                // router layer pending per-method selectors; the
-                // standalone `members/update/1.0` and
-                // `members/admin-remove/1.0` Trust Tasks exist on
-                // disk + in index.json so the soft-gate surface stays
-                // complete.
-                members_show,
-            ),
-        )
-        .route(
-            "/members/{did}/promote-to-admin/start",
-            task_layer(
-                post(members::promote::promote_start),
-                members_promote.clone(),
-            ),
-        )
-        .route(
-            "/members/{did}/promote-to-admin/finish",
-            task_layer(post(members::promote::promote_finish), members_promote),
-        )
+        .routes(task_routes(
+            routes!(endorsements::issue, endorsements::list), // POST + GET share `issue/1.0` at the router
+            // layer pending per-method selectors; standalone
+            // `list/1.0` exists on disk + in index.json.
+            endorsements_issue,
+        ))
+        .routes(task_routes(
+            routes!(endorsements::show, endorsements::revoke), // GET + DELETE share `show/1.0` at the router
+            // layer pending per-method selectors; standalone
+            // `revoke/1.0` exists on disk + in index.json.
+            endorsements_show_revoke,
+        ))
+        .routes(task_routes(
+            routes!(
+                members::read::show_member,
+                members::update::update_member,
+                members::remove::admin_remove
+            ), // GET + PATCH + DELETE share `members/show/1.0` at the
+            // router layer pending per-method selectors; the
+            // standalone `members/update/1.0` and
+            // `members/admin-remove/1.0` Trust Tasks exist on
+            // disk + in index.json so the soft-gate surface stays
+            // complete.
+            members_show,
+        ))
+        .routes(task_routes(
+            routes!(members::promote::promote_start),
+            members_promote.clone(),
+        ))
+        .routes(task_routes(
+            routes!(members::promote::promote_finish),
+            members_promote,
+        ))
         // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
         // accept / status live on the governed branch (`build_unauth_routes`,
         // P0.5); the admin GET list keeps this `/join-requests` mount (axum
         // merges this GET with the governed-branch POST submit).
-        .route(
-            "/join-requests",
-            task_layer(get(join_requests::read::list_join_requests), join_submit),
-        )
-        .route(
-            "/join-requests/{id}",
-            task_layer(get(join_requests::read::show_join_request), join_show),
-        )
-        .route(
-            "/join-requests/{id}/approve",
-            task_layer(post(join_requests::decide::approve), join_approve),
-        )
-        .route(
-            "/join-requests/{id}/reject",
-            task_layer(post(join_requests::decide::reject), join_reject),
-        )
+        .routes(task_routes(
+            routes!(join_requests::read::list_join_requests),
+            join_submit,
+        ))
+        .routes(task_routes(
+            routes!(join_requests::read::show_join_request),
+            join_show,
+        ))
+        .routes(task_routes(
+            routes!(join_requests::decide::approve),
+            join_approve,
+        ))
+        .routes(task_routes(
+            routes!(join_requests::decide::reject),
+            join_reject,
+        ))
         // Manifest (unauth public discovery): the community's join
         // evidence requirements. Static `manifest` segment takes
         // precedence over the `{id}` show route.
-        .route(
-            "/join-requests/manifest",
-            task_layer(get(join_requests::manifest::manifest), join_manifest),
-        )
+        .routes(task_routes(
+            routes!(join_requests::manifest::manifest),
+            join_manifest,
+        ))
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
         // Trust-Task descriptor) — the holder answers over the credential-exchange
         // DIDComm `present` surface.
-        .route(
-            "/join-requests/query",
-            post(join_requests::present::send_query),
-        )
+        .routes(routes!(join_requests::present::send_query))
         // Policies (Phase 2 M2.3). Three POST endpoints, three
         // Trust Tasks. `upload` mints + persists; `activate` flips
         // the per-purpose active pointer; `test` evaluates a stored
         // policy without mutating state.
-        .route(
-            "/policies",
-            task_layer(
-                get(policies::read::list_policies).post(policies::admin::upload),
-                policies_upload.clone(),
-            ),
-        )
-        .route(
-            "/policies/{id}",
-            task_layer(
-                get(policies::read::show_policy), // Reuses the upload task on the shared mount; the
-                // `policies/show/1.0` Trust Task lives in index.json
-                // + on disk for the soft-gate surface (see above).
-                policies_upload.clone(),
-            ),
-        )
-        .route(
-            "/policies/{id}/activate",
-            task_layer(post(policies::admin::activate), policies_activate),
-        )
-        .route(
-            "/policies/{id}/test",
-            task_layer(post(policies::admin::test), policies_test),
-        );
+        .routes(task_routes(
+            routes!(policies::read::list_policies, policies::admin::upload),
+            policies_upload.clone(),
+        ))
+        .routes(task_routes(
+            routes!(policies::read::show_policy), // Reuses the upload task on the shared mount; the
+            // `policies/show/1.0` Trust Task lives in index.json
+            // + on disk for the soft-gate surface (see above).
+            policies_upload.clone(),
+        ))
+        .routes(task_routes(
+            routes!(policies::admin::activate),
+            policies_activate,
+        ))
+        .routes(task_routes(routes!(policies::admin::test), policies_test));
 
     // Phase 5 M5.5 — public-website management routes. The
     // `route_with_task` helper accepts a pre-layered `MethodRouter`
@@ -1021,14 +940,8 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     let synth_connect_info = axum::middleware::from_fn(insert_default_connect_info_if_missing);
 
     let unauth_router = OpenApiRouter::<AppState>::new()
-        .route(
-            "/auth/challenge",
-            task_layer(post(auth::challenge), auth_challenge),
-        )
-        .route(
-            "/auth/",
-            task_layer(post(auth::authenticate), auth_authenticate),
-        )
+        .routes(task_routes(routes!(auth::challenge), auth_challenge))
+        .routes(task_routes(routes!(auth::authenticate), auth_authenticate))
         // VTA-wallet login surface. The browser wallet extension drives
         // the SIOPv2 round-trip itself and posts to `<base>/auth/challenge`
         // + `<base>/auth/` with **no** `Trust-Task` header (the op `type`
@@ -1040,61 +953,49 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         // CLI clients. Mirrors did-hosting-control's header-less auth.
         .route("/wallet/auth/challenge", post(auth::challenge))
         .route("/wallet/auth/", post(auth::authenticate))
-        .route(
-            "/auth/refresh",
-            task_layer(post(auth::refresh), auth_refresh),
-        )
-        .route(
-            "/auth/admin-login",
-            task_layer(post(auth::admin_login), auth_admin_login),
-        )
-        .route(
-            "/auth/admin-session",
-            task_layer(post(auth::admin_session), auth_admin_session),
-        )
-        .route(
-            "/auth/passkey-login/start",
-            task_layer(post(auth::passkey_login_start), auth_passkey_login_start),
-        )
-        .route(
-            "/auth/passkey-login/finish",
-            task_layer(post(auth::passkey_login_finish), auth_passkey_login_finish),
-        )
-        .route(
-            "/install/claim/start",
-            task_layer(post(install::claim_start), install_claim_start),
-        )
-        .route(
-            "/install/claim/finish",
-            task_layer(post(install::claim_finish), install_claim_finish),
-        )
-        .route(
-            "/auth/recognise/challenge",
-            task_layer(
-                post(recognise::recognise_challenge),
-                auth_recognise_challenge,
-            ),
-        )
-        .route(
-            "/auth/recognise",
-            task_layer(post(recognise::recognise), auth_recognise),
-        )
+        .routes(task_routes(routes!(auth::refresh), auth_refresh))
+        .routes(task_routes(routes!(auth::admin_login), auth_admin_login))
+        .routes(task_routes(
+            routes!(auth::admin_session),
+            auth_admin_session,
+        ))
+        .routes(task_routes(
+            routes!(auth::passkey_login_start),
+            auth_passkey_login_start,
+        ))
+        .routes(task_routes(
+            routes!(auth::passkey_login_finish),
+            auth_passkey_login_finish,
+        ))
+        .routes(task_routes(
+            routes!(install::claim_start),
+            install_claim_start,
+        ))
+        .routes(task_routes(
+            routes!(install::claim_finish),
+            install_claim_finish,
+        ))
+        .routes(task_routes(
+            routes!(recognise::recognise_challenge),
+            auth_recognise_challenge,
+        ))
+        .routes(task_routes(routes!(recognise::recognise), auth_recognise))
         // Join-request POSTs (P0.5). Submit shares the `/join-requests` mount
         // with the admin GET list on the `api` chain — axum merges the GET +
         // POST method routers; the unauth POST lands here (governed), the admin
         // GET stays there (JWT-gated).
-        .route(
-            "/join-requests",
-            task_layer(post(join_requests::submit::submit), join_submit),
-        )
-        .route(
-            "/join-requests/{id}/accept",
-            task_layer(post(join_requests::accept::accept), join_accept),
-        )
-        .route(
-            "/join-requests/{id}/status",
-            task_layer(post(join_requests::status::status), join_status),
-        )
+        .routes(task_routes(
+            routes!(join_requests::submit::submit),
+            join_submit,
+        ))
+        .routes(task_routes(
+            routes!(join_requests::accept::accept),
+            join_accept,
+        ))
+        .routes(task_routes(
+            routes!(join_requests::status::status),
+            join_status,
+        ))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
     // Apply the per-IP rate limiter in a branch so the two
@@ -1357,6 +1258,42 @@ mod openapi_tests {
         assert!(
             components.schemas.contains_key("DiagnosticsResponse"),
             "DiagnosticsResponse schema must be emitted"
+        );
+    }
+
+    #[test]
+    fn openapi_spec_covers_the_route_groups() {
+        let spec = openapi_spec();
+        let paths = &spec.paths.paths;
+        // A representative path (all nested under /v1) from each major group.
+        for p in [
+            "/v1/acl",
+            "/v1/acl/{did}",
+            "/v1/audit",
+            "/v1/config",
+            "/v1/auth/challenge",
+            "/v1/auth/sessions",
+            "/v1/admin/config",
+            "/v1/admin/invites",
+            "/v1/admin/passkeys",
+            "/v1/members",
+            "/v1/members/{did}",
+            "/v1/community/profile",
+            "/v1/join-requests",
+            "/v1/policies",
+            "/v1/credentials/endorsements",
+            "/v1/endorsement-types",
+            "/v1/schemas",
+            "/v1/relationships",
+            "/v1/directory/{did}",
+            "/v1/install/claim/start",
+        ] {
+            assert!(paths.contains_key(p), "spec missing documented path {p}");
+        }
+        assert!(
+            paths.len() >= 55,
+            "expected the documented surface to be >= 55 paths, got {}",
+            paths.len()
         );
     }
 }

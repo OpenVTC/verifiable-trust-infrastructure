@@ -82,6 +82,7 @@ impl CommunityProfile {
 /// clears the blob; omitting it (`None`) leaves it untouched.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CommunityProfileUpdate {
     pub name: Option<String>,
     pub description: Option<String>,

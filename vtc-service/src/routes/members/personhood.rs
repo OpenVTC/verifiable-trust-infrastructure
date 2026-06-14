@@ -140,6 +140,18 @@ pub struct ChallengeResponse {
     pub expires_at: DateTime<Utc>,
 }
 
+/// POST /members/{did}/personhood/challenge — mint a personhood challenge.
+/// Auth: any authenticated session.
+#[utoipa::path(
+    post, path = "/members/{did}/personhood/challenge", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    responses(
+        (status = 200, description = "Personhood challenge minted", body = ChallengeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn challenge(
     _auth: AuthClaims,
     State(state): State<AppState>,
@@ -197,6 +209,20 @@ pub struct AssertResponse {
     pub role_vec: JsonValue,
 }
 
+/// POST /members/{did}/personhood — assert personhood via a VP.
+/// Auth: any authenticated session.
+#[utoipa::path(
+    post, path = "/members/{did}/personhood", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    request_body = AssertBody,
+    responses(
+        (status = 200, description = "Personhood asserted", body = AssertResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Personhood proof invalid / policy denied"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn assert(
     _auth: AuthClaims,
     State(state): State<AppState>,
@@ -384,6 +410,18 @@ pub struct RevokeResponse {
     pub role_vec: Option<JsonValue>,
 }
 
+/// DELETE /members/{did}/personhood — revoke personhood. Auth: Admin or self.
+#[utoipa::path(
+    delete, path = "/members/{did}/personhood", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    responses(
+        (status = 200, description = "Personhood revoked", body = RevokeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is neither admin nor the subject member"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,

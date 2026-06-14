@@ -53,6 +53,20 @@ pub struct DecideResponse {
 // Approve
 // ---------------------------------------------------------------------------
 
+/// POST /join-requests/{id}/approve — admit the applicant + issue the VMC.
+/// Auth: Admin.
+#[utoipa::path(
+    post, path = "/join-requests/{id}/approve", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Join request id")),
+    responses(
+        (status = 201, description = "Applicant admitted; VMC + role VEC issued", body = DecideResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Join request not found"),
+        (status = 409, description = "Request is not Pending, or applicant is already a member"),
+    ),
+)]
 pub async fn approve(
     admin: AdminAuth,
     State(state): State<AppState>,
@@ -218,6 +232,22 @@ pub struct RejectBody {
     pub reason: Option<String>,
 }
 
+/// POST /join-requests/{id}/reject — reject a pending join request.
+/// Auth: Admin.
+#[utoipa::path(
+    post, path = "/join-requests/{id}/reject", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Join request id")),
+    request_body = RejectBody,
+    responses(
+        (status = 201, description = "Join request rejected", body = DecideResponse),
+        (status = 400, description = "Reject reason exceeds the length cap"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Join request not found"),
+        (status = 409, description = "Request is not Pending"),
+    ),
+)]
 pub async fn reject(
     admin: AdminAuth,
     State(state): State<AppState>,

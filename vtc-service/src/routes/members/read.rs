@@ -81,7 +81,7 @@ impl MemberResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListMembersQuery {
     /// Filter by role, expressed in the same wire form
     /// [`VtcRole`] uses (`"admin"`, `"moderator"`,
@@ -95,6 +95,17 @@ pub struct ListMembersQuery {
     pub limit: Option<usize>,
 }
 
+/// GET /members — paginated member list. Auth: Admin.
+#[utoipa::path(
+    get, path = "/members", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(ListMembersQuery),
+    responses(
+        (status = 200, description = "Paginated member list", body = Paginated<MemberResponse>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn list_members(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -160,6 +171,18 @@ pub async fn list_members(
 // GET /v1/members/{did}
 // ---------------------------------------------------------------------------
 
+/// GET /members/{did} — single member. Auth: Admin.
+#[utoipa::path(
+    get, path = "/members/{did}", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    responses(
+        (status = 200, description = "Member record", body = MemberResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Member not found"),
+    ),
+)]
 pub async fn show_member(
     _auth: AdminAuth,
     State(state): State<AppState>,

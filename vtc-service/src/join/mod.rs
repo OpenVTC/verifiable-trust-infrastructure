@@ -72,6 +72,7 @@ impl std::fmt::Display for JoinStatus {
 /// One join request. Stored under `join_requests:<id>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct JoinRequest {
     pub id: Uuid,
     pub applicant_did: String,

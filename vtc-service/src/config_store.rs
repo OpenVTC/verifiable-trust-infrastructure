@@ -48,7 +48,7 @@ fn storage_key(key: &str) -> Vec<u8> {
 
 /// Where the **prior** value came from in the four-layer overlay.
 /// Mirrors the variant on `vti_common::audit::ConfigSource` (M0.1.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSource {
     Env,
@@ -214,7 +214,7 @@ impl ConfigStore {
 /// operator can tell whether the running value was set in TOML, by
 /// an env override, by a PATCH against the DB layer, or fell back
 /// to the compiled-in default.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectiveField {
     pub key: String,
@@ -225,7 +225,7 @@ pub struct EffectiveField {
 
 /// Response shape for `GET /v1/admin/config` — every registry key
 /// resolved through the four-layer overlay.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct EffectiveConfig {
     pub fields: Vec<EffectiveField>,
 }

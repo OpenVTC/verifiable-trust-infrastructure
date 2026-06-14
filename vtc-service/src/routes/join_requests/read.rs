@@ -15,7 +15,7 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
+#[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListJoinRequestsQuery {
     /// Filter by status. Default `pending` — the operator-facing
     /// surface usually wants the work queue.
@@ -24,6 +24,17 @@ pub struct ListJoinRequestsQuery {
     pub limit: Option<usize>,
 }
 
+/// GET /join-requests — list join requests (admin work queue). Auth: Admin.
+#[utoipa::path(
+    get, path = "/join-requests", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(ListJoinRequestsQuery),
+    responses(
+        (status = 200, description = "Paginated join requests", body = Paginated<JoinRequest>),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn list_join_requests(
     _admin: AdminAuth,
     State(state): State<AppState>,
@@ -56,6 +67,18 @@ pub async fn list_join_requests(
     Ok(Json(page))
 }
 
+/// GET /join-requests/{id} — show a single join request. Auth: Admin.
+#[utoipa::path(
+    get, path = "/join-requests/{id}", tag = "join-requests",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Join request id")),
+    responses(
+        (status = 200, description = "Join request", body = JoinRequest),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Join request not found"),
+    ),
+)]
 pub async fn show_join_request(
     _admin: AdminAuth,
     State(state): State<AppState>,

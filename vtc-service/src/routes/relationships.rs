@@ -72,6 +72,16 @@ pub struct PublishResponse {
     pub vrc_sha256: String,
 }
 
+#[utoipa::path(
+    post, path = "/relationships", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    request_body = PublishBody,
+    responses(
+        (status = 201, description = "Relationship (VRC) published", body = PublishResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not the VRC issuer or policy denied"),
+    ),
+)]
 pub async fn publish(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -216,6 +226,17 @@ pub struct RevokeResponse {
     pub id: String,
 }
 
+#[utoipa::path(
+    delete, path = "/relationships/{id}", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Relationship (VRC) id")),
+    responses(
+        (status = 200, description = "Relationship (VRC) revoked", body = RevokeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not the issuer or an admin"),
+        (status = 404, description = "Relationship not found"),
+    ),
+)]
 pub async fn revoke(
     auth: AuthClaims,
     State(state): State<AppState>,

@@ -58,6 +58,7 @@ pub use storage::{
 /// surface (issuer/subject DIDs + the credential body).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct Relationship {
     /// Server-allocated UUID. Surfaced as `urn:uuid:<id>` on
     /// the VRC's top-level `id` field at publish time when
