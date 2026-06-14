@@ -1,0 +1,32 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/credentials/v2",
+    "https://openvtc.org/contexts/bootstrap-v1"
+  ],
+  "type": [
+    "VerifiablePresentation",
+    "BootstrapRequest"
+  ],
+  "id": "urn:uuid:00bace00-2c9d-4027-85c7-da2d06740985",
+  "holder": "did:key:z6MkpKe9U4JbWCcJ3PaPdX37dawbXgaeW342eF1rbJHpydsK",
+  "nonce": "doiURQ6p_trLh8wHcpXaFg",
+  "validUntil": "2026-06-14T09:02:42Z",
+  "label": "fuzz-seed-mediator",
+  "ask": {
+    "type": "TemplateBootstrap",
+    "contextHint": "prod-mediator",
+    "template": {
+      "name": "didcomm-mediator",
+      "vars": {}
+    },
+    "note": "fuzz seed from vta-sdk/examples/gen_fuzz_seeds.rs"
+  },
+  "proof": {
+    "created": "2026-06-14T08:02:42Z",
+    "cryptosuite": "eddsa-jcs-2022",
+    "proofPurpose": "authentication",
+    "proofValue": "z2C79kZQAwdFLJwDPTR7nX31xmwEtDuZFCvVkwKhD9DB3GfygL4SeGcD24688DhkpAMZvtT5qoay1KX7AD7K6z1zj",
+    "type": "DataIntegrityProof",
+    "verificationMethod": "did:key:z6MkpKe9U4JbWCcJ3PaPdX37dawbXgaeW342eF1rbJHpydsK#z6MkpKe9U4JbWCcJ3PaPdX37dawbXgaeW342eF1rbJHpydsK"
+  }
+}

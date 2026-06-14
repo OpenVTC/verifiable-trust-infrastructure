@@ -105,6 +105,12 @@ provision-client = [
 # Currently gates: `SessionBackend` mocks (always); `provision_client::test_helpers`
 # (when `provision-client` is also on). Additive, zero-cost when off.
 test-support = ["session"]
+# Structure-aware fuzzing support: derives `arbitrary::Arbitrary` on the
+# sealed-transfer wire structs (`SealedBundle`, `ArmoredChunk`, the producer
+# assertion family) so a libFuzzer harness can generate well-typed bundles
+# directly instead of mutating armor-decode output. Off by default and
+# zero-cost when off — only a downstream `fuzz/` workspace turns it on.
+arbitrary = ["dep:arbitrary", "sealed-transfer"]
 
 [dependencies]
 serde = { workspace = true }
@@ -160,6 +166,10 @@ nitro_attest = { version = "0.2", optional = true }
 time = { version = "0.3", optional = true, features = ["macros"] }
 # Scrub secret byte buffers on drop (sealed-transfer, key derivation).
 zeroize = { version = "1", optional = true }
+# Structure-aware fuzzing: `#[derive(Arbitrary)]` on the sealed-transfer wire
+# structs. Optional + gated on the `arbitrary` feature so the published
+# artifact stays slim for non-fuzzing consumers.
+arbitrary = { version = "1", optional = true, features = ["derive"] }
 
 # Per-target platform credential stores for keyring-core. Only one is
 # active per build; the install helper picks the matching one via cfg.
@@ -178,6 +188,10 @@ required-features = ["sealed-transfer"]
 
 [[example]]
 name = "bootstrap_request"
+required-features = ["sealed-transfer", "provision-integration"]
+
+[[example]]
+name = "gen_fuzz_seeds"
 required-features = ["sealed-transfer", "provision-integration"]
 
 [dev-dependencies]

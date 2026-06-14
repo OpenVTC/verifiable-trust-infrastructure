@@ -484,28 +484,42 @@ impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver<'_> {
     }
 }
 
-/// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
+/// The structural, IO-free projection of an SD-JWT-VC presentation that
+/// [`parse_sd_jwt_presentation`] extracts *before* any signature check or DID
+/// resolution: the parsed SD-JWT, the holder-binding presence check, the
+/// `iss` / JWS-`kid` binding, and the `cnf.jwk` holder key decode.
 ///
-/// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
-/// JWS signature (issuer key resolved from the JWS `kid`, bound to `iss` — a
-/// `did:key` issuer resolves locally, a `did:webvh` / `did:web` issuer through
-/// `did_resolver`); the holder key-binding JWT — bound to `expected_aud` +
-/// `expected_nonce`, signed by the `cnf.jwk` key the issuer committed to (RFC
-/// 9901 §8.3); and temporal validity (`nbf` / `exp`).
-///
-/// Deferred to follow-up slices: status-list revocation, issuer-trust (TRQP),
-/// and re-checking DCQL satisfaction.
-pub async fn verify_presentation(
-    vp_token: &Value,
-    expected_aud: &str,
-    expected_nonce: &str,
-    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
-    now: DateTime<Utc>,
-) -> Result<VerifiedPresentation, AppError> {
-    let compact = vp_token.as_str().ok_or_else(|| {
-        AppError::Validation("vp_token must be a compact SD-JWT-VC string".into())
-    })?;
+/// [`verify_presentation`] resolves the issuer key and runs the cryptographic
+/// verification on top of this. Splitting the parse out keeps it synchronous,
+/// runtime-free, and resolver-free — a libFuzzer target that drives the exact
+/// parser production uses, with no tokio or network.
+#[derive(Debug)]
+pub struct ParsedSdJwtPresentation {
+    /// The parsed SD-JWT-VC (issuer JWS + disclosures + holder `kb-jwt`).
+    pub sd: SdJwt,
+    /// The credential issuer DID, from the SD-JWT payload `iss`.
+    pub issuer_did: String,
+    /// The issuer verification-method id — the JWS `kid`, or `iss` for a bare
+    /// `did:key` issuer. Already checked to sit under `issuer_did`.
+    pub issuer_vm: String,
+    /// The holder binding key, decoded from `cnf.jwk` (RFC 9901 §8.3).
+    pub holder_key: VerifyingKey,
+    /// The proven holder DID — the `did:key` of `holder_key`.
+    pub holder_did: String,
+}
 
+/// Structurally parse an SD-JWT-VC presentation without verifying any
+/// signature or resolving any DID.
+///
+/// Checks, in order: the token is a parseable SD-JWT-VC; it carries a holder
+/// `kb-jwt` (an unbound presentation is refused); it has an `iss`; the issuer
+/// JWS `kid` (or `iss` fallback) sits under `iss`; and it carries a decodable
+/// `cnf.jwk` Ed25519 holder key. Returns the [`ParsedSdJwtPresentation`]
+/// projection the cryptographic verifier builds on.
+///
+/// Pure and IO-free — the high-value SD-JWT-VC parser fuzz target. The
+/// signature checks and issuer-key resolution live in [`verify_presentation`].
+pub fn parse_sd_jwt_presentation(compact: &str) -> Result<ParsedSdJwtPresentation, AppError> {
     let hasher = Sha256Hasher;
     let sd = SdJwt::parse(compact, &hasher)
         .map_err(|e| AppError::Validation(format!("vp_token is not a parseable SD-JWT-VC: {e}")))?;
@@ -540,10 +554,6 @@ pub async fn verify_presentation(
             "SD-JWT issuer kid `{issuer_vm}` is not under `iss` (`{issuer_did}`)"
         )));
     }
-    let resolver = DidVmResolver::new(did_resolver);
-    let issuer_verifier = EdDsaJwtVerifier {
-        key: resolver.resolve_verifying_key(&issuer_vm).await?,
-    };
 
     let cnf_jwk = payload
         .get("cnf")
@@ -554,6 +564,54 @@ pub async fn verify_presentation(
     let holder_key = ed25519_from_okp_jwk(cnf_jwk)?;
     // The proven holder DID is the did:key of the cnf binding key.
     let holder_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&holder_key.to_bytes());
+
+    Ok(ParsedSdJwtPresentation {
+        sd,
+        issuer_did,
+        issuer_vm,
+        holder_key,
+        holder_did,
+    })
+}
+
+/// Verify an SD-JWT-VC `vp_token` received on `credential-exchange/present`.
+///
+/// Checks, in order: the token parses and carries a holder `kb-jwt`; the issuer
+/// JWS signature (issuer key resolved from the JWS `kid`, bound to `iss` — a
+/// `did:key` issuer resolves locally, a `did:webvh` / `did:web` issuer through
+/// `did_resolver`); the holder key-binding JWT — bound to `expected_aud` +
+/// `expected_nonce`, signed by the `cnf.jwk` key the issuer committed to (RFC
+/// 9901 §8.3); and temporal validity (`nbf` / `exp`).
+///
+/// The IO-free structural parse is [`parse_sd_jwt_presentation`]; this adds the
+/// issuer-key resolution and signature checks. Deferred to follow-up slices:
+/// status-list revocation, issuer-trust (TRQP), and re-checking DCQL
+/// satisfaction.
+pub async fn verify_presentation(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentation, AppError> {
+    let compact = vp_token.as_str().ok_or_else(|| {
+        AppError::Validation("vp_token must be a compact SD-JWT-VC string".into())
+    })?;
+
+    let ParsedSdJwtPresentation {
+        sd,
+        issuer_did,
+        issuer_vm,
+        holder_key,
+        holder_did,
+    } = parse_sd_jwt_presentation(compact)?;
+
+    let hasher = Sha256Hasher;
+    let resolver = DidVmResolver::new(did_resolver);
+    let issuer_verifier = EdDsaJwtVerifier {
+        key: resolver.resolve_verifying_key(&issuer_vm).await?,
+    };
+
     let holder_verifier = EdDsaJwtVerifier { key: holder_key };
 
     let options = VerificationOptions {
@@ -612,29 +670,19 @@ pub struct VerifiedPresentationSet {
     pub presentations: Vec<VerifiedPresentation>,
 }
 
-/// Verify an OID4VP DCQL `vp_token` — the map the VTA holder produces, keyed by
-/// DCQL `credential_query_id`. Each entry is verified against `expected_aud` +
-/// `expected_nonce`; every entry must bind the **same holder** (a join is one
-/// applicant). Returns the verified set.
+/// Flatten an OID4VP DCQL `vp_token` into the individual presentation values to
+/// verify, without verifying or resolving anything.
 ///
-/// Accepts three shapes for forward/backward compatibility:
+/// Accepts the same shapes [`verify_vp_token`] does:
 /// - a JSON **object** (the canonical DCQL `vp_token`): each value is one
 ///   presentation, or an **array** of presentations under one query id;
 /// - a bare **string** (a single SD-JWT-VC presentation — the pre-map form).
 ///
-/// **SD-JWT-VC** entries (compact strings) and **W3C Data-Integrity VP** entries
-/// (JSON objects) are both verified. A `did:webvh` / `did:web` issuer or holder
-/// is resolved through `did_resolver` (a `did:key` resolves locally).
-pub async fn verify_vp_token(
-    vp_token: &Value,
-    expected_aud: &str,
-    expected_nonce: &str,
-    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
-    now: DateTime<Utc>,
-) -> Result<VerifiedPresentationSet, AppError> {
-    // Flatten the vp_token into the individual presentation values to verify.
-    let entries: Vec<&Value> = match vp_token {
-        Value::String(_) => vec![vp_token],
+/// Pure and IO-free — the OID4VP DCQL envelope-shape fuzz target. The per-entry
+/// signature verification is [`verify_vp_token`].
+pub fn flatten_vp_token(vp_token: &Value) -> Result<Vec<&Value>, AppError> {
+    match vp_token {
+        Value::String(_) => Ok(vec![vp_token]),
         Value::Object(map) => {
             if map.is_empty() {
                 return Err(AppError::Validation(
@@ -648,14 +696,37 @@ pub async fn verify_vp_token(
                     other => out.push(other),
                 }
             }
-            out
+            Ok(out)
         }
-        _ => {
-            return Err(AppError::Validation(
-                "vp_token must be a DCQL object or a compact SD-JWT-VC string".into(),
-            ));
-        }
-    };
+        _ => Err(AppError::Validation(
+            "vp_token must be a DCQL object or a compact SD-JWT-VC string".into(),
+        )),
+    }
+}
+
+/// Verify an OID4VP DCQL `vp_token` — the map the VTA holder produces, keyed by
+/// DCQL `credential_query_id`. Each entry is verified against `expected_aud` +
+/// `expected_nonce`; every entry must bind the **same holder** (a join is one
+/// applicant). Returns the verified set.
+///
+/// Accepts three shapes for forward/backward compatibility:
+/// - a JSON **object** (the canonical DCQL `vp_token`): each value is one
+///   presentation, or an **array** of presentations under one query id;
+/// - a bare **string** (a single SD-JWT-VC presentation — the pre-map form).
+///
+/// **SD-JWT-VC** entries (compact strings) and **W3C Data-Integrity VP** entries
+/// (JSON objects) are both verified. A `did:webvh` / `did:web` issuer or holder
+/// is resolved through `did_resolver` (a `did:key` resolves locally). The
+/// IO-free envelope flatten is [`flatten_vp_token`].
+pub async fn verify_vp_token(
+    vp_token: &Value,
+    expected_aud: &str,
+    expected_nonce: &str,
+    did_resolver: Option<&affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+    now: DateTime<Utc>,
+) -> Result<VerifiedPresentationSet, AppError> {
+    // Flatten the vp_token into the individual presentation values to verify.
+    let entries = flatten_vp_token(vp_token)?;
 
     let mut presentations = Vec::with_capacity(entries.len());
     let mut holder: Option<String> = None;
@@ -1791,6 +1862,81 @@ mod tests {
         (issuer_did, holder_did, json!(presentation.serialize()))
     }
 
+    /// Emit valid seed-corpus fixtures for the credential-exchange parser fuzz
+    /// targets (issue #439, item 6): an SD-JWT-VC presentation, the OID4VP DCQL
+    /// `vp_token` shapes (bare string + map), and an OID4VCI key-binding proof
+    /// JWT. The sealed-transfer-armor + bootstrap-request seeds come from the
+    /// sibling `vta-sdk/examples/gen_fuzz_seeds.rs` generator.
+    ///
+    /// `#[ignore]`d so it never runs in normal CI — invoke it on demand to
+    /// regenerate the committed seeds:
+    /// ```bash
+    /// VTC_SKIP_ADMIN_UI_BUILD=1 cargo test -p vtc-service \
+    ///     --lib credentials::exchange::tests::gen_fuzz_seed_corpus -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "fixture generator — run on demand to refresh fuzz/seeds"]
+    fn gen_fuzz_seed_corpus() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("vtc-service has a parent (the workspace root)")
+            .join("fuzz")
+            .join("seeds");
+        let sd_dir = root.join("sd-jwt-presentation");
+        let vp_dir = root.join("vp-token");
+        let proof_dir = root.join("oid4vci-proof");
+        for d in [&sd_dir, &vp_dir, &proof_dir] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+
+        let aud = "did:web:vtc.example";
+        let nonce = "fuzz-seed-nonce";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+
+        // A single SD-JWT-VC presentation: the compact string (for the
+        // `parse_sd_jwt_presentation` target) and the bare-string `vp_token`
+        // JSON (for the `flatten_vp_token` / `verify_vp_token` target).
+        let (_issuer, vp) = make_presentation(aud, nonce, iat, exp, true);
+        let compact = vp.as_str().unwrap();
+        std::fs::write(sd_dir.join("membership.sdjwt"), compact).unwrap();
+        std::fs::write(
+            vp_dir.join("single-presentation.json"),
+            serde_json::to_vec(&vp).unwrap(),
+        )
+        .unwrap();
+
+        // A DCQL `vp_token` map: two presentations from the same holder under
+        // distinct query ids.
+        let (_i1, _h1, vp_membership) =
+            make_presentation_holder(5, MEMBERSHIP_VCT, aud, nonce, iat, exp);
+        let (_i2, _h2, vp_invitation) = make_presentation_holder(
+            5,
+            "https://openvtc.org/credentials/Invitation",
+            aud,
+            nonce,
+            iat,
+            exp,
+        );
+        let dcql = json!({ "membership": vp_membership, "invitation": vp_invitation });
+        std::fs::write(
+            vp_dir.join("dcql-map.json"),
+            serde_json::to_vec(&dcql).unwrap(),
+        )
+        .unwrap();
+
+        // An OID4VCI key-binding proof JWT (the `verify_oid4vci_proof` target).
+        let holder = Holder::new(7);
+        let proof = holder.proof_jwt(ISSUER, now.timestamp(), Some("fuzz-seed-cnonce"));
+        std::fs::write(proof_dir.join("holder-proof.jwt"), proof).unwrap();
+
+        eprintln!(
+            "wrote credential-exchange fuzz seeds under {}",
+            root.display()
+        );
+    }
+
     #[tokio::test]
     async fn verify_vp_token_verifies_a_dcql_map() {
         let aud = "did:web:vtc.example";
@@ -2083,6 +2229,64 @@ mod tests {
         assert_eq!(verified.issuer_did, issuer_did);
         assert_eq!(verified.vct.as_deref(), Some(MEMBERSHIP_VCT));
         assert_eq!(verified.claims["givenName"], "Alice");
+    }
+
+    #[test]
+    fn parse_core_extracts_a_well_formed_presentation_without_io() {
+        // `parse_sd_jwt_presentation` is the sync, resolver-free fuzz target —
+        // it must extract the structural projection of a valid presentation
+        // (the proven holder DID, issuer binding) with no clock and no network.
+        let aud = "did:web:vtc.example";
+        let nonce = "n";
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (issuer_did, vp) = make_presentation(aud, nonce, iat, exp, true);
+
+        let parsed = parse_sd_jwt_presentation(vp.as_str().unwrap()).expect("parse");
+        assert_eq!(parsed.issuer_did, issuer_did);
+        assert!(parsed.holder_did.starts_with("did:key:"));
+        // The issuer VM sits under `iss`.
+        assert_eq!(
+            parsed.issuer_vm.split('#').next().unwrap(),
+            parsed.issuer_did
+        );
+    }
+
+    #[test]
+    fn parse_core_refuses_an_unbound_presentation() {
+        let now = Utc::now();
+        let iat = now.timestamp() as u64;
+        let exp = (now + Duration::hours(1)).timestamp();
+        let (_did, vp) = make_presentation("did:web:vtc.example", "n", iat, exp, false);
+
+        let err = parse_sd_jwt_presentation(vp.as_str().unwrap()).unwrap_err();
+        assert!(
+            matches!(&err, AppError::Validation(m) if m.contains("kb-jwt")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn parse_core_rejects_garbage_without_panicking() {
+        // The fuzz target's whole point: arbitrary bytes return an error, never
+        // a panic.
+        for junk in ["", "~", "not.a.jwt", "a~b~c", "\u{0}\u{1}\u{2}"] {
+            assert!(parse_sd_jwt_presentation(junk).is_err(), "junk: {junk:?}");
+        }
+    }
+
+    #[test]
+    fn flatten_vp_token_shreds_the_dcql_envelope_shapes() {
+        // Bare string → one entry.
+        assert_eq!(flatten_vp_token(&json!("compact-sd-jwt")).unwrap().len(), 1);
+        // Object with scalar + array values → flattened across query ids.
+        let dcql = json!({ "q1": "p1", "q2": ["p2", "p3"] });
+        assert_eq!(flatten_vp_token(&dcql).unwrap().len(), 3);
+        // Empty object and non-string/object scalars are refused.
+        assert!(flatten_vp_token(&json!({})).is_err());
+        assert!(flatten_vp_token(&json!(42)).is_err());
+        assert!(flatten_vp_token(&json!(null)).is_err());
     }
 
     #[tokio::test]

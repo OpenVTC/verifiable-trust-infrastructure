@@ -9,6 +9,7 @@ use crate::did_secrets::DidSecretsBundle;
 /// A labeled key entry, used by the `AdminKeySet` payload variant for
 /// multi-admin / future expansion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct LabeledKey {
     pub label: String,
@@ -91,6 +92,7 @@ pub struct IssuedCredentialBundle {
 /// between the outer request's declared key type and what was actually
 /// sealed — a defence against a compromised client mis-declaring its key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct RawPrivateKey {
     /// One of: `ed25519`, `x25519`, `p256`.
@@ -103,6 +105,7 @@ pub struct RawPrivateKey {
 /// known DID. Used in Modes A and C when the consumer knows the VTA's DID up
 /// front.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct DidSignedAssertion {
     pub did: String,
@@ -116,6 +119,7 @@ pub struct DidSignedAssertion {
 /// An attestation quote (e.g. AWS Nitro CBOR document) committing to the
 /// producer's pubkey + nonce + VTA pubkey. Used in Mode B (TEE first-boot).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct AttestationQuoteAssertion {
     /// Vendor / format tag, e.g. "aws-nitro-v1".
@@ -127,6 +131,7 @@ pub struct AttestationQuoteAssertion {
 /// How the consumer establishes that the producer pubkey it pinned is the right
 /// one for this bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssertionProof {
     /// DID-signed assertion. The consumer resolves the DID and verifies.
@@ -141,6 +146,7 @@ pub enum AssertionProof {
 
 /// The producer's claim that it owns the did:key embedded in chunk 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[serde(deny_unknown_fields)]
 pub struct ProducerAssertion {
     /// Producer's ephemeral Ed25519 `did:key`. Pinned by the consumer
@@ -157,6 +163,7 @@ pub struct ProducerAssertion {
 /// sharing a `Bundle-Id`. This struct is the in-memory representation produced
 /// by the armor parser.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct SealedBundle {
     pub bundle_id: [u8; 16],
     pub digest_algo: String,
@@ -165,6 +172,7 @@ pub struct SealedBundle {
 
 /// One armored chunk of a sealed bundle.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ArmoredChunk {
     pub chunk_index: u16,
     pub total_chunks: u16,
