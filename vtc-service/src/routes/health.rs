@@ -79,7 +79,7 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// Diagnostics is **admin-gated**, not super-admin: ops staff
 /// running on-call should be able to read this without
 /// holding the super-admin role.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DiagnosticsResponse {
     pub registry_status: String,
     pub queue_depth: u64,
@@ -95,6 +95,15 @@ pub struct DiagnosticsResponse {
     pub last_error: Option<String>,
 }
 
+#[utoipa::path(
+    get, path = "/health/diagnostics", tag = "health",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Trust-registry reconciler diagnostics", body = DiagnosticsResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn diagnostics(
     State(state): State<AppState>,
     _auth: AdminAuth,

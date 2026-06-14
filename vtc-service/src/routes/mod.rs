@@ -34,10 +34,82 @@ use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
 
-use vti_common::trust_task::{TrustTask, TrustTaskRouter};
+use utoipa::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
+use vti_common::trust_task::{TrustTask, TrustTaskRouter, task_routes};
 
 use crate::config::RoutingConfig;
 use crate::server::AppState;
+
+/// OpenAPI document root for the VTC REST surface.
+///
+/// As in the VTA, the router is the single source of truth for *paths*: each
+/// handler annotated with `#[utoipa::path]` and registered via
+/// `routes!()` — wrapped in [`task_routes`] so the per-route Trust-Task header
+/// validation is preserved — contributes its operation to the served
+/// `/openapi.json`. This struct only seeds document metadata + the security
+/// scheme.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Verifiable Trust Community (VTC) API",
+        description = "Community lifecycle, ACL, audit, policy, credentials, \
+                       endorsements, and cross-community recognition REST surface \
+                       of a Verifiable Trust Community.",
+        version = env!("CARGO_PKG_VERSION"),
+    ),
+    modifiers(&SecurityAddon),
+)]
+pub struct ApiDoc;
+
+/// Registers the `bearer_jwt` HTTP-bearer security scheme referenced by
+/// authenticated operations' `security(("bearer_jwt" = []))`.
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer_jwt",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .build(),
+            ),
+        );
+    }
+}
+
+/// Serve the assembled OpenAPI document as JSON at `GET /openapi.json`.
+/// Unauthenticated by design — it describes the API shape, not any secret.
+async fn serve_openapi(api: utoipa::openapi::OpenApi) -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(api)
+}
+
+/// The assembled OpenAPI document describing the VTC REST surface.
+///
+/// **Spike scope:** currently documents the single migrated route
+/// (`GET /v1/health/diagnostics`) to prove the `OpenApiRouter` +
+/// [`task_routes`] integration end-to-end. The remaining ~95 routes are
+/// migrated from [`build_api_chain`]'s `TrustTaskRouter` in follow-up work,
+/// at which point this is built from that same assembly (drift-free).
+pub fn openapi_spec() -> utoipa::openapi::OpenApi {
+    let diagnostics_task =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0")
+            .expect("static Trust-Task URL");
+    let api = OpenApiRouter::<AppState>::new()
+        .routes(task_routes(routes!(health::diagnostics), diagnostics_task));
+    // The API surface nests under `/v1` (the default mount), mirroring how
+    // `assemble` mounts the live router; OpenApiRouter::nest composes the
+    // documented paths the same way.
+    OpenApiRouter::<AppState>::with_openapi(ApiDoc::openapi())
+        .nest("/v1", api)
+        .split_for_parts()
+        .1
+}
 
 /// Global API surface body cap (Phase 5 M5.1.4 — §14.4 runtime
 /// guard). Matches the VTA's `MAX_BODY_SIZE`. Website management
@@ -1074,6 +1146,7 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         .fallback(any(placeholder_503))
         .layer(from_fn(security_headers));
 
+    let spec = openapi_spec();
     let mut app: Router<AppState> = Router::new()
         // `/health` is the single Trust-Task-exempt endpoint;
         // attached at the parent-router root so monitoring works
@@ -1081,6 +1154,10 @@ fn assemble(routing: &RoutingConfig, api: Router<AppState>) -> Router<AppState> 
         // operator just curls `/health` on whichever host the
         // daemon is reachable on).
         .route("/health", get(health::health))
+        // Machine-readable API description for black-box conformance / fuzz
+        // tooling. Unauthenticated (API shape, not secrets); served at the
+        // parent root like `/health`.
+        .route("/openapi.json", get(move || serve_openapi(spec.clone())))
         // `did:webvh` log publication. Mounted at the parent root
         // (above the `/v1` nest) because a serverless VTC's DID,
         // `did:webvh:<scid>:<host>`, resolves to
@@ -1186,8 +1263,12 @@ pub fn assemble_with_website(
             .layer(from_fn(security_headers)),
     };
 
+    let spec = openapi_spec();
     let mut app: Router<AppState> = Router::new()
         .route("/health", get(health::health))
+        // Machine-readable API description — see the matching comment in
+        // `assemble`.
+        .route("/openapi.json", get(move || serve_openapi(spec.clone())))
         // `did:webvh` log publication — see the matching comment in
         // `assemble`. Parent-root mount so a serverless VTC's
         // `did:webvh:<scid>:<host>` resolves to
@@ -1228,4 +1309,29 @@ async fn placeholder_503() -> impl IntoResponse {
         StatusCode::SERVICE_UNAVAILABLE,
         "surface not yet implemented",
     )
+}
+
+#[cfg(test)]
+mod openapi_tests {
+    use super::*;
+
+    #[test]
+    fn openapi_spec_documents_the_migrated_route_and_security_scheme() {
+        let spec = openapi_spec();
+        assert_eq!(spec.info.title, "Verifiable Trust Community (VTC) API");
+        // The migrated route is nested under the /v1 API mount.
+        let diag = spec
+            .paths
+            .paths
+            .get("/v1/health/diagnostics")
+            .expect("/v1/health/diagnostics must be documented");
+        assert!(diag.get.is_some(), "diagnostics documents a GET operation");
+        // The bearer scheme + the response schema are present.
+        let components = spec.components.as_ref().expect("components present");
+        assert!(components.security_schemes.contains_key("bearer_jwt"));
+        assert!(
+            components.schemas.contains_key("DiagnosticsResponse"),
+            "DiagnosticsResponse schema must be emitted"
+        );
+    }
 }

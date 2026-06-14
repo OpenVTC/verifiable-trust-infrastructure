@@ -23,9 +23,13 @@
 //! route without any procedural-macro indirection.
 
 pub mod extractor;
+#[cfg(feature = "openapi")]
+pub mod openapi;
 pub mod router;
 
 pub use extractor::TrustTaskHeader;
+#[cfg(feature = "openapi")]
+pub use openapi::{task_layer, task_routes};
 pub use router::TrustTaskRouter;
 
 use crate::error::AppError;

@@ -10084,6 +10084,8 @@ dependencies = [
  "tracing-subscriber",
  "unicode-normalization",
  "url",
+ "utoipa",
+ "utoipa-axum",
  "uuid",
  "vta-sdk 0.13.1",
  "vtc-service",
@@ -10097,7 +10099,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.10.3"
+version = "0.10.4"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
@@ -10130,6 +10132,7 @@ dependencies = [
  "tracing",
  "url",
  "utoipa",
+ "utoipa-axum",
  "uuid",
  "vta-sdk 0.13.1",
  "webauthn-rs",

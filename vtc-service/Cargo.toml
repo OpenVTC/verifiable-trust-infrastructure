@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.9.3"
+version = "0.9.4"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -88,6 +88,9 @@ vti-common = { path = "../vti-common", version = "0.10", features = [
   # `migrate_to_encrypted` for at-rest encryption of the secret-bearing
   # keyspaces (install, audit_key, passkey) — P0.7.
   "encryption",
+  # `openapi` gates ToSchema on shared wire types (Role, SessionState) +
+  # the OpenAPI-aware Trust-Task route helpers (`task_routes`/`task_layer`).
+  "openapi",
 ] }
 vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   "didcomm",
@@ -99,6 +102,9 @@ vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   # opener so it can bootstrap the VTC's identity against a VTA
   # (see `tasks/vtc-mvp/vta-driven-keys.md` §3).
   "provision-client",
+  # `openapi` gates ToSchema on the vta-sdk protocol wire types the VTC
+  # surface references (credential-exchange, discovery, etc.).
+  "openapi",
 ] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm-service = { workspace = true }
@@ -154,6 +160,10 @@ affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }
 axum = { workspace = true }
 axum-extra = { workspace = true }
+# OpenAPI: `OpenApiRouter` makes the router the source of truth for the served
+# `/openapi.json`; `utoipa` provides `#[utoipa::path]` + `ToSchema` derives.
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
 toml = { workspace = true }

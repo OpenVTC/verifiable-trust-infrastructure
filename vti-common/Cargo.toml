@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.10.3"
+version = "0.10.4"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -35,7 +35,7 @@ setup = ["dep:dialoguer"]
 # types the VTA + VTC services expose through their `OpenApiRouter` (the ACL
 # `Role`, session `SessionState`). Off by default and zero-cost when off —
 # only the services turn it on.
-openapi = ["dep:utoipa"]
+openapi = ["dep:utoipa", "dep:utoipa-axum"]
 
 [dependencies]
 # vta-sdk for the canonical auth wire shapes
@@ -93,6 +93,9 @@ libc = { workspace = true, optional = true }
 # OpenAPI: `#[derive(ToSchema)]` on shared wire types (`Role`, `SessionState`).
 # Optional + gated on the `openapi` feature so non-service consumers stay slim.
 utoipa = { workspace = true, optional = true }
+# utoipa-axum `UtoipaMethodRouter` layering for the OpenAPI-aware
+# Trust-Task route helpers (`trust_task::openapi`). Gated on `openapi`.
+utoipa-axum = { workspace = true, optional = true }
 
 # Passkey feature deps. `rand` / `uuid` / `hex` are non-optional and
 # live in the main dep block since audit + idempotency need them
