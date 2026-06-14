@@ -57,7 +57,7 @@ impl GuardState {
 }
 
 /// Response from a mnemonic export request.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MnemonicExportResponse {
     /// The BIP-39 mnemonic phrase (24 words).
     pub mnemonic: String,
@@ -66,7 +66,7 @@ pub struct MnemonicExportResponse {
 }
 
 /// Status of the mnemonic export guard.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MnemonicExportStatus {
     /// Whether the export window is currently active.
     pub window_active: bool,

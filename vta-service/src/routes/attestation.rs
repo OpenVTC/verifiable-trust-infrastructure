@@ -9,6 +9,13 @@ use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
 use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
 
 /// GET /attestation/status — TEE detection status (unauthenticated).
+#[utoipa::path(
+    get, path = "/attestation/status", tag = "attestation",
+    responses(
+        (status = 200, description = "TEE detection status", body = TeeStatus),
+        (status = 503, description = "TEE attestation not enabled"),
+    ),
+)]
 pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, AppError> {
     let tee_state = state
         .tee
@@ -20,6 +27,14 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, Ap
 }
 
 /// POST /attestation/report — Generate a fresh attestation report with a client nonce (unauthenticated).
+#[utoipa::path(
+    post, path = "/attestation/report", tag = "attestation",
+    request_body = AttestationRequest,
+    responses(
+        (status = 200, description = "Fresh attestation report", body = AttestationReport),
+        (status = 503, description = "TEE attestation not enabled"),
+    ),
+)]
 pub async fn generate_report(
     State(state): State<AppState>,
     Json(body): Json<AttestationRequest>,
@@ -38,6 +53,13 @@ pub async fn generate_report(
 }
 
 /// GET /attestation/report — Return a cached attestation report (unauthenticated).
+#[utoipa::path(
+    get, path = "/attestation/report", tag = "attestation",
+    responses(
+        (status = 200, description = "Cached attestation report", body = AttestationReport),
+        (status = 503, description = "TEE attestation not enabled"),
+    ),
+)]
 pub async fn cached_report(
     State(state): State<AppState>,
 ) -> Result<Json<AttestationReport>, AppError> {
@@ -56,6 +78,13 @@ pub async fn cached_report(
 ///
 /// The DID log is public data (it's published to a web server). This endpoint
 /// is only available when the VTA auto-generated a did:webvh identity on first boot.
+#[utoipa::path(
+    get, path = "/attestation/did-log", tag = "attestation",
+    responses(
+        (status = 200, description = "Auto-generated did.jsonl", content_type = "application/jsonl"),
+        (status = 404, description = "No auto-generated DID log"),
+    ),
+)]
 pub async fn did_log(State(state): State<AppState>) -> Result<String, AppError> {
     let log_bytes = state.keys_ks.get_raw("tee:did_log").await?.ok_or_else(|| {
         AppError::NotFound(
@@ -70,6 +99,16 @@ pub async fn did_log(State(state): State<AppState>) -> Result<String, AppError> 
 }
 
 /// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).
+#[utoipa::path(
+    get, path = "/attestation/mnemonic", tag = "attestation",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Mnemonic export window status", body = MnemonicExportStatus),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 503, description = "Mnemonic export not available"),
+    ),
+)]
 pub async fn mnemonic_status(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -94,6 +133,16 @@ pub async fn mnemonic_status(
 /// - Must be within the export window since boot
 /// - Caller must be a super admin (JWT-authenticated)
 /// - One-time operation: after successful export, the entropy is zeroed
+#[utoipa::path(
+    post, path = "/attestation/mnemonic", tag = "attestation",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Exported BIP-39 mnemonic (one-time)", body = MnemonicExportResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 503, description = "Mnemonic export not available or window closed"),
+    ),
+)]
 pub async fn mnemonic_export(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,

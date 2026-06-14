@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Supported TEE platform types.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(utoipa::ToSchema)]
 pub enum TeeType {
     SevSnp,
     Nitro,
@@ -20,7 +21,7 @@ impl std::fmt::Display for TeeType {
 }
 
 /// TEE detection result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct TeeStatus {
     pub tee_type: TeeType,
     pub detected: bool,
@@ -29,7 +30,7 @@ pub struct TeeStatus {
 }
 
 /// Hardware-signed attestation report.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AttestationReport {
     pub tee_type: TeeType,
     /// Base64-encoded platform-specific attestation evidence.
@@ -44,7 +45,7 @@ pub struct AttestationReport {
 }
 
 /// Request body for `POST /attestation/report`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct AttestationRequest {
     /// Client-provided nonce (hex, 32 bytes) to prevent replay.
     pub nonce: String,

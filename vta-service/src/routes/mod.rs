@@ -296,12 +296,12 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // router (JWT is their gate).
     #[cfg(feature = "tee")]
     let unauth = unauth
-        .route("/attestation/status", get(attestation::status))
-        .route(
-            "/attestation/report",
-            get(attestation::cached_report).post(attestation::generate_report),
-        )
-        .route("/attestation/did-log", get(attestation::did_log));
+        .routes(routes!(attestation::status))
+        .routes(routes!(
+            attestation::cached_report,
+            attestation::generate_report
+        ))
+        .routes(routes!(attestation::did_log));
     #[cfg(feature = "webvh")]
     let unauth = unauth
         // Public did.jsonl retrieval — matches webvh's world-readable
@@ -429,10 +429,10 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // the authed router (JWT is its gate, so it's intentionally off the
     // rate limiter like every other authed route).
     #[cfg(feature = "tee")]
-    let router = router.route(
-        "/attestation/mnemonic",
-        get(attestation::mnemonic_status).post(attestation::mnemonic_export),
-    );
+    let router = router.routes(routes!(
+        attestation::mnemonic_status,
+        attestation::mnemonic_export
+    ));
     // `GET /attestation/admin-credential` retired in Phase 3 —
     // sealed-bootstrap Mode B replaces it via `POST /bootstrap/request`.
 
