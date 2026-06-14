@@ -62,7 +62,7 @@ pub const DIRECTORY_FIELD_WHITELIST: [&str; 4] = ["did", "role", "joined_at", "s
 /// in. Advisory: the policy decides what it returns, and the PII
 /// boundary caps it. Recorded into the facts so a policy *may* honour
 /// it, but the default directory policy projects by viewer role.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct DirectoryQuery {
     #[serde(default)]
     pub fields: Option<String>,
@@ -71,6 +71,7 @@ pub struct DirectoryQuery {
 /// The projected subject record.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct DirectoryResponse {
     pub subject: String,
     pub fields: Map<String, JsonValue>,

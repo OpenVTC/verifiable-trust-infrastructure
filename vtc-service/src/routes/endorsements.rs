@@ -52,6 +52,7 @@ const CLAIM_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct IssueBody {
     pub subject_did: String,
     #[serde(rename = "type")]
@@ -64,6 +65,7 @@ pub struct IssueBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct IssueResponse {
     pub id: Uuid,
     pub vec_id: String,
@@ -243,6 +245,7 @@ pub async fn issue(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
@@ -305,6 +308,7 @@ pub async fn show(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeResponse {
     pub id: String,
 }

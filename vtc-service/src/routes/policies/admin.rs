@@ -59,6 +59,7 @@ static ACTIVATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct UploadBody {
     /// Wire-form camelCase purpose (`"join"`, `"removal"`,
     /// `"crossCommunityRoles"`, …). Validated by serde against
@@ -71,6 +72,7 @@ pub struct UploadBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct UploadResponse {
     pub id: Uuid,
     /// SHA-256 of the source bytes, lowercase hex. Matches what
@@ -83,6 +85,7 @@ pub struct UploadResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ActivateResponse {
     pub id: Uuid,
     pub purpose: PolicyPurpose,
@@ -94,6 +97,7 @@ pub struct ActivateResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct TestBody {
     /// Rego query to evaluate against the candidate policy
     /// (e.g. `"data.vtc.join.allow"`). Caller chooses the query so
@@ -107,6 +111,7 @@ pub struct TestBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct TestResponse {
     pub id: Uuid,
     pub purpose: PolicyPurpose,

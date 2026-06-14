@@ -27,6 +27,7 @@ use vti_common::audit::{AuditEvent, AuditWriter, RegistryStatusChangedData};
 /// /v1/community/profile` surfaces in `registryStatus`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
+#[derive(utoipa::ToSchema)]
 pub enum HealthStatus {
     /// Last probe succeeded — the registry is reachable.
     Active,

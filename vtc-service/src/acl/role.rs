@@ -55,7 +55,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use vti_common::error::AppError;
 
 /// The VTC's role taxonomy. See module docs for the wire shape.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, utoipa::ToSchema)]
 pub enum VtcRole {
     /// Full management access. Spec §5.3 default permission matrix.
     Admin,

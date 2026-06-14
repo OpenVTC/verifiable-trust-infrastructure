@@ -32,6 +32,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const EVENT_VERSION: u32 = 1;
 
 /// A persisted audit-log entry.
+//
+// Note: deliberately NOT `ToSchema`. The `AuditEvent` payload enum fans out
+// into a large tree of variant-specific shapes; the single `/audit` read
+// endpoint documents its response body as an opaque object rather than drag
+// that whole surface into the OpenAPI components.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditEnvelope {
     /// Stable identifier for this specific event. Becomes the

@@ -47,6 +47,7 @@ const LIST_MAX_LIMIT: usize = 200;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisterBody {
     pub type_uri: String,
     #[serde(default)]
@@ -115,6 +116,7 @@ pub async fn register(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListQuery {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
@@ -152,6 +154,7 @@ pub async fn list(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct DeleteResponse {
     pub type_uri: String,
 }

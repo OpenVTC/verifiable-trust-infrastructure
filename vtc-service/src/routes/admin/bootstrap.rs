@@ -35,13 +35,14 @@ use crate::community::{CommunityProfile, load_profile, store_profile};
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct BootstrapRequest {
     pub setup_session_token: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct BootstrapResponse {
     pub admin_did: String,
     /// `event_id` of the persisted `CommunityInstalled` audit

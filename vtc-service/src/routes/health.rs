@@ -9,7 +9,7 @@ use crate::auth::AdminAuth;
 use crate::registry::{HealthStatus, list_sync_jobs};
 use crate::server::AppState;
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct HealthResponse {
     status: &'static str,
     version: &'static str,

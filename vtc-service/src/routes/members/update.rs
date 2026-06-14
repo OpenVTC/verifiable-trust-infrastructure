@@ -39,6 +39,7 @@ use crate::server::AppState;
 /// with no fields is a no-op (200 with the current row).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct UpdateMemberRequest {
     pub role: Option<VtcRole>,
     pub publish_consent: Option<bool>,

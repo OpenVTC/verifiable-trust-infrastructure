@@ -46,6 +46,7 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CreateInviteRequest {
     /// Admin DID the install URL grants a passkey for.
     pub did: String,
@@ -63,6 +64,7 @@ pub struct CreateInviteRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CreateInviteResponse {
     /// `jti` of the minted install token — also the key the GET +
     /// DELETE surfaces use.
@@ -85,6 +87,7 @@ pub struct CreateInviteResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct InviteSummary {
     pub jti: String,
     pub status: InviteStatus,
@@ -105,6 +108,7 @@ pub struct InviteSummary {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(utoipa::ToSchema)]
 pub enum InviteStatus {
     Issued,
     Consumed,
@@ -113,12 +117,14 @@ pub enum InviteStatus {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListInvitesResponse {
     pub invites: Vec<InviteSummary>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeInviteResponse {
     pub jti: String,
 }

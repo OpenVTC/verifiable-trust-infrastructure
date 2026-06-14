@@ -15,6 +15,7 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListJoinRequestsQuery {
     /// Filter by status. Default `pending` — the operator-facing
     /// surface usually wants the work queue.

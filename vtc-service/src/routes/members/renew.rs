@@ -52,6 +52,7 @@ use crate::status_list;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RenewResponse {
     pub did: String,
     pub vmc: JsonValue,

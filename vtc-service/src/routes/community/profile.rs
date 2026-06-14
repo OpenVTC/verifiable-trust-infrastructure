@@ -35,6 +35,7 @@ use crate::server::AppState;
 /// not persisted on the profile row.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CommunityProfileResponse {
     /// The persisted profile fields. Flattened on the wire so
     /// existing consumers see no shape change.
@@ -57,6 +58,7 @@ pub struct CommunityProfileResponse {
 /// fetch.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PublicCommunityProfile {
     pub community_did: String,
     pub name: String,
@@ -121,6 +123,7 @@ pub async fn get_profile(
 /// audit event emitter that lands alongside this in a follow-up).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct UpdateProfileResponse {
     pub profile: CommunityProfile,
     pub fields_changed: Vec<String>,

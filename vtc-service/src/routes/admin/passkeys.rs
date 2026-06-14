@@ -67,26 +67,32 @@ static ADMIN_PASSKEY_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListResponse {
     pub passkeys: Vec<RegisteredPasskey>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisterStartResponse {
     /// Opaque id the operator passes back to `register/finish`.
     pub registration_id: String,
     /// `navigator.credentials.create()` options — EdDSA-restricted.
+    #[schema(value_type = Object)]
     pub register_options: CreationChallengeResponse,
     /// `navigator.credentials.get()` options for the step-up UV
     /// assertion against an existing passkey.
+    #[schema(value_type = Object)]
     pub uv_options: RequestChallengeResponse,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RegisterFinishRequest {
     pub registration_id: String,
+    #[schema(value_type = Object)]
     pub register_response: RegisterPublicKeyCredential,
+    #[schema(value_type = Object)]
     pub uv_response: PublicKeyCredential,
     /// Operator-supplied label (e.g. `"YubiKey 5C"`).
     pub label: String,
@@ -96,30 +102,35 @@ pub struct RegisterFinishRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisterFinishResponse {
     pub credential_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RevokeStartRequest {
     pub credential_id: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeStartResponse {
     pub revocation_id: String,
+    #[schema(value_type = Object)]
     pub uv_options: RequestChallengeResponse,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RevokeFinishRequest {
     pub revocation_id: String,
+    #[schema(value_type = Object)]
     pub uv_response: PublicKeyCredential,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeFinishResponse {
     pub credential_id: String,
 }

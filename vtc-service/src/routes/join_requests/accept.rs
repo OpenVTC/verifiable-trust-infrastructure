@@ -48,6 +48,7 @@ const RECIPROCAL_VC_TYPE: &str = "MembershipAcknowledgement";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AcceptRequestBody {
     pub member_did: String,
     pub vmc_id: String,
@@ -59,6 +60,7 @@ pub struct AcceptRequestBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AcceptResponse {
     pub request_id: Uuid,
     pub status: String,

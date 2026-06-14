@@ -155,6 +155,7 @@ pub async fn prepare_join_query(
 /// for `holderDid` from the named Accepts criterion.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SendQueryRequest {
     /// The holder the query is for (delivered to it over DIDComm by the VTC or a
     /// relayer — relayer ≠ holder is supported; the holder still proves binding).
@@ -167,6 +168,7 @@ pub struct SendQueryRequest {
 /// the thread the holder presents on.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SendQueryResponse {
     /// The DIDComm thread id the holder must reply on (the challenge is keyed by
     /// it; the `present` handler consumes it).
@@ -174,6 +176,7 @@ pub struct SendQueryResponse {
     /// Echoed for the caller's correlation.
     pub holder_did: String,
     /// The `credential-exchange/query` body to deliver to the holder.
+    #[schema(value_type = Object)]
     pub query: QueryBody,
     /// Whether the VTC pushed the query to the holder over DIDComm. `false` when
     /// no mediator is configured or the push failed — the caller can still relay

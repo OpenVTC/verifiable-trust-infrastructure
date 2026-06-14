@@ -15,12 +15,12 @@ use crate::server::AppState;
 
 // ---------- GET /acl ----------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AclListResponse {
     pub entries: Vec<AclEntryResponse>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AclEntryResponse {
     pub did: String,
     pub role: VtcRole,
@@ -46,7 +46,7 @@ impl From<VtcAclEntry> for AclEntryResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ListAclQuery {
     pub context: Option<String>,
 }
@@ -80,7 +80,7 @@ pub async fn list_acl(
 
 // ---------- POST /acl ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateAclRequest {
     pub did: String,
     pub role: VtcRole,
@@ -149,7 +149,7 @@ pub async fn get_acl(
 
 // ---------- PATCH /acl/{did} ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateAclRequest {
     pub role: Option<VtcRole>,
     pub label: Option<String>,

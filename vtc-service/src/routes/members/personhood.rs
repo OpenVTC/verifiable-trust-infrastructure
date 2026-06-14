@@ -134,6 +134,7 @@ async fn take_challenge(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ChallengeResponse {
     pub challenge_id: Uuid,
     pub expires_at: DateTime<Utc>,
@@ -178,7 +179,7 @@ pub async fn challenge(
 // Assert endpoint
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AssertBody {
     /// W3C Verifiable Presentation. `holder` must equal the
     /// path-DID; `proof.challenge` must equal a fresh challenge
@@ -188,6 +189,7 @@ pub struct AssertBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AssertResponse {
     pub did: String,
     pub personhood: bool,
@@ -372,6 +374,7 @@ pub async fn assert(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeResponse {
     pub did: String,
     pub personhood: bool,

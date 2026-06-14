@@ -122,6 +122,7 @@ impl PaginationParams {
 /// (`None` when the caller has reached the end), and an optional
 /// total-count estimate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Paginated<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,

@@ -73,7 +73,7 @@ use affinidi_vc::VerifiableCredential;
 /// plus this VTC's DID as the `domain`. The route verifies the holder proof,
 /// the embedded issuer proofs, the status list, and the registry recognition
 /// itself.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RecogniseRequest {
     /// A W3C Data-Integrity VP, holder-signed with
     /// `proofPurpose: authentication`.
@@ -83,6 +83,7 @@ pub struct RecogniseRequest {
 /// Response body for `POST /v1/auth/recognise/challenge`.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RecogniseChallengeResponse {
     /// Single-use nonce the holder must bind into the VP's top-level `nonce`.
     pub nonce: String,
@@ -92,6 +93,7 @@ pub struct RecogniseChallengeResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RecogniseResponse {
     pub session_id: String,
     pub data: RecogniseData,
@@ -99,6 +101,7 @@ pub struct RecogniseResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RecogniseData {
     /// Minted JWT. Carries the *mapped local* role, not the
     /// foreign one.

@@ -34,6 +34,7 @@ const REJECT_REASON_MAX: usize = 1024;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct DecideResponse {
     pub request_id: Uuid,
     pub status: String,
@@ -211,6 +212,7 @@ fn credential_issued_data(
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RejectBody {
     #[serde(default)]
     pub reason: Option<String>,

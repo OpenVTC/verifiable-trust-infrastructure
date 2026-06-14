@@ -43,6 +43,7 @@ use uuid::Uuid;
 /// upload supersedes them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct Policy {
     /// Server-allocated UUID. Stable across activations + renames.
     pub id: Uuid,
@@ -104,6 +105,7 @@ pub const POLICY_SOURCE_MAX_BYTES: usize = 64 * 1024;
 ///   [`Self::CrossCommunityRelationships`], [`Self::Relationships`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum PolicyPurpose {
     Join,
     Removal,

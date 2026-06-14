@@ -21,7 +21,7 @@ use serde_json::{Value as JsonValue, json};
 
 use crate::auth::AuthClaims;
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct FieldOption {
     pub value: &'static str,
     pub label: &'static str,
@@ -32,6 +32,7 @@ pub struct FieldOption {
 /// matches `truthy`).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ShowWhen {
     pub field: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,6 +43,7 @@ pub struct ShowWhen {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct FieldDef {
     pub key: &'static str,
     pub label: &'static str,
@@ -58,6 +60,7 @@ pub struct FieldDef {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CeremonyManifest {
     pub purpose: &'static str,
     pub pkg: &'static str,

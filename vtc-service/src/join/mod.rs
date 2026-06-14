@@ -31,6 +31,7 @@ pub use storage::{
 /// State of a join request through its lifecycle.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(utoipa::ToSchema)]
 pub enum JoinStatus {
     /// Submitted; awaiting admin / moderator decision.
     Pending,

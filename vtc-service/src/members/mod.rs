@@ -189,6 +189,7 @@ impl Member {
 /// the Member record + status-list slot on member departure.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(utoipa::ToSchema)]
 pub enum Disposition {
     /// Hard delete — Member row removed entirely. RTBF default.
     Purge,

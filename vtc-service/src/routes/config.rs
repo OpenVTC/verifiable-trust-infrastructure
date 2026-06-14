@@ -31,7 +31,7 @@ use crate::config_store::ConfigStore;
 use crate::error::AppError;
 use crate::server::AppState;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConfigResponse {
     pub vtc_did: Option<String>,
     pub vtc_name: Option<String>,
@@ -42,14 +42,14 @@ pub struct ConfigResponse {
 
 /// Response for `PATCH /v1/config`: the resolved view plus any boot-stable keys
 /// that were stored but need a restart to take effect.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct UpdateConfigResponse {
     #[serde(flatten)]
     pub config: ConfigResponse,
     pub pending_restart: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConfigRequest {
     pub vtc_did: Option<String>,
     /// Recovery-authority DID. Like `vtc_did`, set at setup and rejected here.

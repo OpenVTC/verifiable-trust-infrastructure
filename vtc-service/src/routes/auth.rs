@@ -332,6 +332,7 @@ pub async fn admin_login(
 /// Request body for [`admin_session`].
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AdminSessionRequest {
     /// A valid VTC access token the caller already holds — e.g. from the
     /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
@@ -412,8 +413,10 @@ pub async fn admin_session(
 /// proves possession of an enrolled credential, which is the auth.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PasskeyLoginStartResponse {
     pub auth_id: String,
+    #[schema(value_type = Object)]
     pub options: webauthn_rs::prelude::RequestChallengeResponse,
 }
 
@@ -464,9 +467,10 @@ pub async fn passkey_login_start(
 /// `admin_login` does for the DIDComm CLI path. Returns the bearer
 /// token in the body for clients that want to also use it
 /// programmatically.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PasskeyLoginFinishRequest {
     pub auth_id: String,
+    #[schema(value_type = Object)]
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
 }
 
@@ -744,6 +748,7 @@ pub async fn refresh(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SessionSummary {
     pub session_id: String,
     pub did: String,
@@ -772,6 +777,7 @@ impl From<Session> for SessionSummary {
 /// cookie is HttpOnly).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct WhoamiResponse {
     pub did: String,
     pub role: String,
@@ -891,12 +897,12 @@ pub async fn revoke_session(
 
 // ---------- DELETE /auth/sessions?did=X ----------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct RevokeByDidQuery {
     pub did: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RevokeByDidResponse {
     pub revoked: u64,
 }

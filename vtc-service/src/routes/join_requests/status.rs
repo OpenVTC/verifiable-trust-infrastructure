@@ -36,6 +36,7 @@ pub const JOIN_STATUS_DOMAIN_TAG: &[u8] = b"vtc-join-status/v1\0";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct StatusRequestBody {
     pub applicant_did: String,
     /// Hex-encoded Ed25519 signature over the canonical body.

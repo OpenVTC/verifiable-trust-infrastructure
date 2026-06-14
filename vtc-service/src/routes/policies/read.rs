@@ -47,6 +47,7 @@ use crate::server::AppState;
 /// callers don't need a second round-trip).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PolicyResponse {
     #[serde(flatten)]
     pub policy: Policy,
@@ -68,6 +69,7 @@ impl PolicyResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListPoliciesQuery {
     /// Filter by purpose (wire-form camelCase).
     pub purpose: Option<PolicyPurpose>,
@@ -83,6 +85,7 @@ pub struct ListPoliciesQuery {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(utoipa::ToSchema)]
 pub enum PolicyStatusFilter {
     Active,
     Archived,

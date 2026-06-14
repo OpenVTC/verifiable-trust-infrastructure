@@ -34,6 +34,7 @@ pub const MAX_EXTENSIONS_BYTES: usize = 16 * 1024;
 /// + the admin UX read this shape directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct CommunityProfile {
     /// Immutable — set at install time. PUT requests cannot change
     /// this; see [`CommunityProfileUpdate`].

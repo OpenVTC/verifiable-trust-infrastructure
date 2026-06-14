@@ -79,6 +79,7 @@ const JOIN_SUBMIT_FUTURE_SKEW_SECS: i64 = 60;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SubmitRequestBody {
     pub applicant_did: String,
     pub vp: JsonValue,
@@ -110,6 +111,7 @@ pub struct HolderBinding<'a> {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct SubmitResponse {
     pub request_id: Uuid,
     pub status: String,

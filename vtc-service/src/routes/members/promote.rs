@@ -49,8 +49,10 @@ static PROMOTE_LOCK: Mutex<()> = Mutex::const_new(());
 /// admin/passkeys/register/start uses for its UV phase.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PromoteStartResponse {
     pub registration_id: Uuid,
+    #[schema(value_type = Object)]
     pub options: RequestChallengeResponse,
 }
 
@@ -116,13 +118,16 @@ pub async fn promote_start(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PromoteFinishRequest {
     pub registration_id: Uuid,
+    #[schema(value_type = Object)]
     pub uv_response: PublicKeyCredential,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PromoteFinishResponse {
     pub did: String,
     pub event_id: Uuid,

@@ -48,6 +48,7 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RemoveBody {
     #[serde(default)]
     pub disposition: Option<Disposition>,
@@ -60,6 +61,7 @@ pub struct RemoveBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RemoveResponse {
     pub did: String,
     pub disposition: String,

@@ -47,6 +47,7 @@ pub const TYPE_URI_MAX_BYTES: usize = 512;
 /// **Issues** (mints) or **Accepts** (recognises as evidence).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum SchemaKind {
     /// The VTC mints this credential type.
     Issues,

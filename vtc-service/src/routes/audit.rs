@@ -29,6 +29,7 @@ use tracing::info;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct AuditQuery {
     /// Pagination cursor (returned by a previous call).
     pub cursor: Option<String>,

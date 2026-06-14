@@ -156,6 +156,7 @@ async fn take_challenge(state: &AppState, id: Uuid) -> Result<Option<RotationCha
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ChallengeResponse {
     pub rotation_id: Uuid,
     pub expires_at: DateTime<Utc>,
@@ -223,6 +224,7 @@ pub async fn challenge(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct FinishBody {
     pub rotation_id: Uuid,
     pub old_did: String,
@@ -235,6 +237,7 @@ pub struct FinishBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct FinishResponse {
     pub new_did: String,
     pub method: String,

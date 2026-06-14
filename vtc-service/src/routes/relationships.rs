@@ -52,7 +52,7 @@ use crate::server::AppState;
 
 // ─── Publish ─────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PublishBody {
     /// The self-issued VRC. Must be a JSON-LD VC body with
     /// `type` array including `VerifiableRecognitionCredential`,
@@ -64,6 +64,7 @@ pub struct PublishBody {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PublishResponse {
     pub id: Uuid,
     pub issuer_did: String,
@@ -210,6 +211,7 @@ pub async fn publish(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RevokeResponse {
     pub id: String,
 }

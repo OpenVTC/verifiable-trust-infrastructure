@@ -25,6 +25,7 @@ use crate::server::AppState;
 /// + `acl:<did>` so a caller doesn't need a second request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct MemberResponse {
     pub did: String,
     pub role: VtcRole,
@@ -80,6 +81,7 @@ impl MemberResponse {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ListMembersQuery {
     /// Filter by role, expressed in the same wire form
     /// [`VtcRole`] uses (`"admin"`, `"moderator"`,

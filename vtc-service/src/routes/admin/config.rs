@@ -44,7 +44,7 @@ use vti_common::audit::{
 /// PATCH request body: arbitrary `key → value` map. Keys not in
 /// [`crate::config_store::REGISTRY`] are reported back under
 /// `rejected` rather than silently dropped.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PatchRequest {
     #[serde(flatten)]
     pub overrides: HashMap<String, Value>,
@@ -54,6 +54,7 @@ pub struct PatchRequest {
 /// which await restart, and which were rejected.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct PatchResponse {
     pub applied: Vec<String>,
     pub pending_restart: Vec<String>,
@@ -62,7 +63,7 @@ pub struct PatchResponse {
 
 /// One rejected key + the reason. Surfaced to the caller so the
 /// admin UX can present a meaningful error inline.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RejectedKey {
     pub key: String,
     pub reason: String,
@@ -197,6 +198,7 @@ const DEFAULT_DRAIN_TIMEOUT_SECS: u64 = 30;
 /// the next restart.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ReloadResponse {
     pub keys_reloaded: Vec<String>,
 }
@@ -278,6 +280,7 @@ pub async fn reload_config(
 /// check passes.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RestartResponse {
     /// Which supervisor the daemon detected (so the operator's
     /// admin UX can echo it back).
@@ -403,6 +406,7 @@ pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 /// per-host and aren't portable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ConfigExport {
     pub schema_version: u32,
     pub exported_at: DateTime<Utc>,
@@ -433,7 +437,7 @@ pub async fn export_config(
 /// Query string for `POST /v1/admin/config/import`. Default is
 /// `confirm=false` (dry-run / diff). The operator UX shows the diff,
 /// then re-submits with `?confirm=true` to apply.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ImportQuery {
     #[serde(default)]
     pub confirm: bool,
@@ -446,6 +450,7 @@ pub struct ImportQuery {
 /// alone", not "clear it".
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct FieldDiff {
     pub key: String,
     pub old_value: Option<Value>,
@@ -457,6 +462,7 @@ pub struct FieldDiff {
 /// confirm it lists the keys that actually persisted.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ImportResponse {
     /// Was the request a dry-run? Mirrors the inbound `?confirm`
     /// flag so an admin UX caching the response can render the

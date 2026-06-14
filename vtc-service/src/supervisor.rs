@@ -36,6 +36,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub enum SupervisorKind {
     /// `VTC_SUPERVISED=1` env var present.
     Manual,

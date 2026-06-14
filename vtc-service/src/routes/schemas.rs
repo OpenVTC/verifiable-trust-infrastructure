@@ -34,6 +34,7 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisterSchemaBody {
     pub type_uri: String,
     #[serde(default)]
@@ -102,6 +103,7 @@ pub async fn get_one(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct DeleteResponse {
     pub id: String,
 }
@@ -124,6 +126,7 @@ pub async fn delete_one(
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisterAcceptsBody {
     pub id: String,
     pub query: JsonValue,

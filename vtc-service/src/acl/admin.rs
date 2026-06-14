@@ -31,6 +31,7 @@ use vti_common::store::KeyspaceHandle;
 /// `claim/finish` time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct RegisteredPasskey {
     /// Hex-encoded WebAuthn credential id. Matches the
     /// `CredentialMapping` key in the passkey store.

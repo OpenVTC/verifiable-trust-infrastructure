@@ -61,7 +61,7 @@ use crate::server::AppState;
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ClaimStartRequest {
     pub install_token: String,
     /// Out-of-band claim code the operator received alongside the
@@ -77,6 +77,7 @@ pub struct ClaimStartRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ClaimStartResponse {
     /// Echoes the install token's `jti`. Consumer must pass this
     /// back to `claim/finish` so the server can index the stored
@@ -84,18 +85,21 @@ pub struct ClaimStartResponse {
     pub registration_id: String,
     /// The WebAuthn `PublicKeyCredentialCreationOptions` payload —
     /// the operator's UA passes this to `navigator.credentials.create()`.
+    #[schema(value_type = Object)]
     pub options: CreationChallengeResponse,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ClaimFinishRequest {
     pub install_token: String,
     pub registration_id: String,
+    #[schema(value_type = Object)]
     pub webauthn_response: RegisterPublicKeyCredential,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
 pub struct ClaimFinishResponse {
     pub admin_did: String,
     pub setup_session_token: String,
