@@ -26,6 +26,8 @@
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+
+use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -307,9 +309,10 @@ fn extract_subject_id(vrc: &JsonValue) -> Result<String, AppError> {
         })
 }
 
-/// Verify a VC's data-integrity proof against the issuer's
-/// resolved `#key-0`. Mirrors the personhood + recognition
-/// verifiers; same upstream `get_public_key_bytes()` helper.
+/// Verify a VRC's data-integrity proof: bind the proof's `verificationMethod`
+/// to the issuer, then let the DI library resolve the key (via the shared
+/// [`DidVmResolver`]) and check the signature — the same path the
+/// credential-exchange + recognition verifiers take.
 async fn verify_vc_proof(
     vrc: &JsonValue,
     issuer_did: &str,
@@ -321,32 +324,21 @@ async fn verify_vc_proof(
     let proof: DataIntegrityProof =
         serde_json::from_value(proof_value.clone()).map_err(|e| format!("parse proof: {e}"))?;
 
+    let verification_method = proof_value
+        .get("verificationMethod")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "proof missing verificationMethod".to_string())?;
+    check_issuer_binding(verification_method, issuer_did).map_err(|e| e.to_string())?;
+
     let mut vrc_without_proof = vrc.clone();
     if let Some(obj) = vrc_without_proof.as_object_mut() {
         obj.remove("proof");
     }
 
-    let verification_method = proof_value
-        .get("verificationMethod")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "proof missing verificationMethod".to_string())?;
-
-    let resolved = resolver
-        .resolve(issuer_did)
-        .await
-        .map_err(|e| format!("resolve {issuer_did}: {e}"))?;
-    let vm = resolved
-        .doc
-        .verification_method
-        .iter()
-        .find(|m| m.id.as_str() == verification_method)
-        .ok_or_else(|| format!("verificationMethod {verification_method} not on {issuer_did}"))?;
-    let pubkey = vm
-        .get_public_key_bytes()
-        .map_err(|e| format!("extract pubkey: {e}"))?;
-
+    let vm_resolver = DidVmResolver::new(Some(resolver));
     proof
-        .verify_with_public_key(&vrc_without_proof, &pubkey, VerifyOptions::new())
+        .verify(&vrc_without_proof, &vm_resolver, VerifyOptions::new())
+        .await
         .map_err(|e| format!("verify: {e}"))?;
     Ok(())
 }

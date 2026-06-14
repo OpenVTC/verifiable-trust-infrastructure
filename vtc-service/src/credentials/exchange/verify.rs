@@ -14,6 +14,8 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde_json::Value;
 use vti_common::error::AppError;
 
+use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
+
 // ── Verifier side: verify a presented vp_token (Phase 3, task 3.4) ──
 //
 // The VTC verifier emits a `credential-exchange/query` and receives a
@@ -91,180 +93,6 @@ fn extract_credential_status(source: &Value) -> Option<Value> {
         .get("credentialStatus")
         .or_else(|| source.get("status"))
         .cloned()
-}
-
-/// A [`VerificationMethodResolver`] over the VTC's optional [`DIDCacheClient`].
-///
-/// `did:key` verification methods resolve locally (no I/O); `did:webvh` /
-/// `did:web` resolve through the cache (which must then be configured). Returns
-/// Ed25519 keys only — the credential-exchange formats verified here are all
-/// EdDSA. The DID-document JSON navigation mirrors
-/// `recognition::verify::DidResolverKeyResolver`.
-pub(crate) struct DidVmResolver<'a> {
-    resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
-}
-
-impl<'a> DidVmResolver<'a> {
-    pub(crate) fn new(
-        resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
-    ) -> Self {
-        Self { resolver }
-    }
-
-    /// Resolve a verification-method URI (or a bare `did:key`) to its Ed25519
-    /// public-key bytes. `did:key` is local; other methods use the cache.
-    pub(crate) async fn resolve_ed25519(&self, vm: &str) -> Result<Vec<u8>, AppError> {
-        let base_did = vm.split('#').next().unwrap_or(vm);
-        if base_did.starts_with("did:key:") {
-            return affinidi_crypto::did_key::did_key_to_ed25519_pub(base_did)
-                .map(|k| k.to_vec())
-                .map_err(|e| {
-                    AppError::Validation(format!("`{base_did}` is not a resolvable did:key: {e}"))
-                });
-        }
-        let resolver = self.resolver.ok_or_else(|| {
-            AppError::Validation(format!(
-                "resolving `{base_did}` needs a DID resolver, but none is configured — configure \
-                 the DID cache to verify did:webvh / did:web issuers + holders"
-            ))
-        })?;
-        let resolved = resolver
-            .resolve(base_did)
-            .await
-            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
-        let doc: Value = serde_json::to_value(&resolved.doc)
-            .map_err(|e| AppError::Internal(format!("DID document serialise failed: {e}")))?;
-        let vms = doc
-            .get("verificationMethod")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                AppError::Validation(format!("DID `{base_did}` has no verificationMethod array"))
-            })?;
-        let relative = vm
-            .split_once('#')
-            .map(|(_, f)| format!("#{f}"))
-            .unwrap_or_default();
-        let entry = vms
-            .iter()
-            .find(|e| {
-                let id = e.get("id").and_then(Value::as_str).unwrap_or("");
-                id == vm || id == relative
-            })
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` not found in DID `{base_did}`"
-                ))
-            })?;
-        let multibase = entry
-            .get("publicKeyMultibase")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` has no publicKeyMultibase (Multikey-encoded \
-                     Ed25519 only)"
-                ))
-            })?;
-        // A `z`-prefixed Ed25519 Multikey is exactly the `did:key` suffix.
-        affinidi_crypto::did_key::did_key_to_ed25519_pub(&format!("did:key:{multibase}"))
-            .map(|k| k.to_vec())
-            .map_err(|e| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` is not an Ed25519 Multikey: {e}"
-                ))
-            })
-    }
-
-    /// As [`Self::resolve_ed25519`] but returns a [`VerifyingKey`] for the
-    /// SD-JWT issuer-signature path.
-    pub(crate) async fn resolve_verifying_key(&self, vm: &str) -> Result<VerifyingKey, AppError> {
-        let bytes = self.resolve_ed25519(vm).await?;
-        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-            AppError::Validation(format!("verificationMethod `{vm}` key is not 32 bytes"))
-        })?;
-        VerifyingKey::from_bytes(&arr).map_err(|e| {
-            AppError::Validation(format!(
-                "verificationMethod `{vm}` is not a valid Ed25519 key: {e}"
-            ))
-        })
-    }
-
-    /// Resolve a verification-method URI (or a bare `did:key`) to its 96-byte
-    /// compressed BLS12-381 G2 public key — a BBS+ issuer key. Mirrors
-    /// [`Self::resolve_ed25519`] (a `z`-prefixed Multikey is exactly the
-    /// `did:key` suffix), decoding via the `0xeb` multicodec.
-    #[cfg(feature = "bbs")]
-    pub(crate) async fn resolve_bbs_g2(&self, vm: &str) -> Result<[u8; 96], AppError> {
-        let base_did = vm.split('#').next().unwrap_or(vm);
-        if base_did.starts_with("did:key:") {
-            return affinidi_crypto::bls12381::did_key_to_g2_pub(base_did).map_err(|e| {
-                AppError::Validation(format!("`{base_did}` is not a BBS did:key: {e}"))
-            });
-        }
-        let resolver = self.resolver.ok_or_else(|| {
-            AppError::Validation(format!(
-                "resolving `{base_did}` needs a DID resolver to verify did:webvh / did:web \
-                 BBS issuers"
-            ))
-        })?;
-        let resolved = resolver
-            .resolve(base_did)
-            .await
-            .map_err(|e| AppError::Validation(format!("DID `{base_did}` did not resolve: {e}")))?;
-        let doc: Value = serde_json::to_value(&resolved.doc)
-            .map_err(|e| AppError::Internal(format!("DID document serialise failed: {e}")))?;
-        let vms = doc
-            .get("verificationMethod")
-            .and_then(Value::as_array)
-            .ok_or_else(|| {
-                AppError::Validation(format!("DID `{base_did}` has no verificationMethod array"))
-            })?;
-        let relative = vm
-            .split_once('#')
-            .map(|(_, f)| format!("#{f}"))
-            .unwrap_or_default();
-        let entry = vms
-            .iter()
-            .find(|e| {
-                let id = e.get("id").and_then(Value::as_str).unwrap_or("");
-                id == vm || id == relative
-            })
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` not found in DID `{base_did}`"
-                ))
-            })?;
-        let multibase = entry
-            .get("publicKeyMultibase")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                AppError::Validation(format!(
-                    "verificationMethod `{vm}` has no publicKeyMultibase (BLS12-381 G2 Multikey)"
-                ))
-            })?;
-        affinidi_crypto::bls12381::did_key_to_g2_pub(&format!("did:key:{multibase}")).map_err(|e| {
-            AppError::Validation(format!(
-                "verificationMethod `{vm}` is not a BLS12-381 G2 Multikey: {e}"
-            ))
-        })
-    }
-}
-
-#[async_trait::async_trait]
-impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver<'_> {
-    async fn resolve_vm(
-        &self,
-        vm: &str,
-    ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
-    {
-        let bytes = self
-            .resolve_ed25519(vm)
-            .await
-            .map_err(|e| affinidi_data_integrity::DataIntegrityError::Resolver(e.to_string()))?;
-        Ok(affinidi_data_integrity::ResolvedKey::new(
-            affinidi_secrets_resolver::secrets::KeyType::Ed25519,
-            bytes,
-        ))
-    }
 }
 
 /// The structural, IO-free projection of an SD-JWT-VC presentation that
@@ -639,18 +467,7 @@ async fn verify_di_vp(
                 AppError::Validation(format!("DI VC proof is not a Data-Integrity proof: {e}"))
             })?;
         // Bind the signing key to the VC issuer.
-        if vc_proof
-            .verification_method
-            .split('#')
-            .next()
-            .unwrap_or_default()
-            != issuer_did
-        {
-            return Err(AppError::Validation(format!(
-                "DI VC proof verificationMethod `{}` is not under the issuer `{issuer_did}`",
-                vc_proof.verification_method
-            )));
-        }
+        check_issuer_binding(&vc_proof.verification_method, &issuer_did)?;
         let mut vc_unsigned = vc.clone();
         if let Some(obj) = vc_unsigned.as_object_mut() {
             obj.remove("proof");
@@ -828,11 +645,7 @@ async fn verify_bbs_presentation(
         .and_then(|p| p.get("verificationMethod"))
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
-    if vm.split('#').next().unwrap_or_default() != issuer_did {
-        return Err(AppError::Validation(format!(
-            "bbs-2023 proof verificationMethod `{vm}` is not under the issuer `{issuer_did}`"
-        )));
-    }
+    check_issuer_binding(vm, issuer_did)?;
     let g2 = DidVmResolver::new(did_resolver).resolve_bbs_g2(vm).await?;
     let pk = PublicKey::from_bytes(&g2)
         .map_err(|e| AppError::Validation(format!("bbs-2023 issuer key is invalid: {e}")))?;

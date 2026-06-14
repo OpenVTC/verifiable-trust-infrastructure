@@ -52,6 +52,7 @@ pub mod invitation;
 pub mod present_challenge;
 pub mod signer;
 pub mod vec;
+pub mod vm_resolver;
 pub mod vmc;
 
 pub use custom_endorsement::{CustomEndorsementParams, build_custom_endorsement};
