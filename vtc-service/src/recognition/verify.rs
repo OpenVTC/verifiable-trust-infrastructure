@@ -17,24 +17,28 @@
 //! pair — the route layer (`POST /v1/auth/recognise`) clamps
 //! the session TTL to that earliest expiry.
 //!
-//! ## Why traits for key resolution + status fetch
+//! ## Injectable resolver + status fetch
 //!
 //! Both surfaces are heavy: DID resolution can hit external
-//! HTTPS, status-list fetching is unconditionally HTTP. Hiding
-//! them behind small traits keeps `verify_foreign_vec` unit-
-//! testable without a live DID resolver or status-list host,
-//! and isolates the M3.9 logic from upstream API churn.
+//! HTTPS, status-list fetching is unconditionally HTTP. Key
+//! resolution goes through the DI library's
+//! `VerificationMethodResolver` (the shared
+//! [`crate::credentials::vm_resolver::DidVmResolver`]); status
+//! fetching is behind the small [`StatusListFetcher`] trait.
+//! Both are injected, so `verify_foreign_vec` is unit-testable
+//! without a live DID resolver or status-list host.
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
+use affinidi_data_integrity::{DataIntegrityProof, VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::VerifiableCredential;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
 
+use crate::credentials::vm_resolver::check_issuer_binding;
 use crate::registry::{RegistryError, TrustRegistryClient};
 
 /// Failure modes the verifier surfaces. Mapped to HTTP 403
@@ -95,24 +99,6 @@ impl RecognitionError {
     }
 }
 
-/// Resolves a foreign issuer's `#key-0` public bytes from
-/// their DID. The verifier consults this once per credential
-/// (VEC + VMC — usually the same issuer, so production wires
-/// a per-mint memoising layer in the route handler if needed).
-#[async_trait]
-pub trait ForeignIssuerKeyResolver: Send + Sync {
-    /// Resolve the issuer's `#key-0` Ed25519 public key bytes.
-    /// `verification_method` is the proof's
-    /// `verificationMethod` URI — typically `{issuer_did}#key-0`,
-    /// but the resolver decides which key to return based on
-    /// the URI fragment.
-    async fn resolve_key(
-        &self,
-        issuer_did: &str,
-        verification_method: &str,
-    ) -> Result<Vec<u8>, RecognitionError>;
-}
-
 /// Fetches + decodes a status-list credential. Production
 /// wires [`HttpStatusListFetcher`] (reqwest + JSON parse +
 /// bitstring decode); tests inject a stub returning a known
@@ -163,7 +149,7 @@ pub struct VerifiedForeignCredential {
 pub async fn verify_foreign_vec(
     vec: &VerifiableCredential,
     vmc: &VerifiableCredential,
-    key_resolver: &dyn ForeignIssuerKeyResolver,
+    resolver: &dyn VerificationMethodResolver,
     status_fetcher: &dyn StatusListFetcher,
     registry: Arc<dyn TrustRegistryClient>,
     now: DateTime<Utc>,
@@ -195,8 +181,8 @@ pub async fn verify_foreign_vec(
 
     // Step 1: proof verification. Cheap; runs first so a
     // malformed pair short-circuits before any network call.
-    verify_proof(vec, &issuer, key_resolver, "VEC").await?;
-    verify_proof(vmc, &issuer, key_resolver, "VMC").await?;
+    verify_proof(vec, &issuer, resolver, "VEC").await?;
+    verify_proof(vmc, &issuer, resolver, "VMC").await?;
 
     // Step 4 (early): validity windows. Cheap RFC3339 parse +
     // comparison. Bumped before the network calls so an
@@ -269,7 +255,7 @@ pub async fn verify_foreign_vec(
 async fn verify_proof(
     vc: &VerifiableCredential,
     issuer_did: &str,
-    key_resolver: &dyn ForeignIssuerKeyResolver,
+    resolver: &dyn VerificationMethodResolver,
     label: &str,
 ) -> Result<(), RecognitionError> {
     let proof_value = vc
@@ -285,16 +271,18 @@ async fn verify_proof(
         .ok_or_else(|| {
             RecognitionError::ProofInvalid(format!("{label} proof missing verificationMethod"))
         })?;
-
-    let pubkey = key_resolver
-        .resolve_key(issuer_did, verification_method)
-        .await?;
+    // The signing key must sit under the foreign issuer (a key controlled by
+    // some other DID must not sign this credential). The library `verify` then
+    // resolves it + checks the signature.
+    check_issuer_binding(verification_method, issuer_did)
+        .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
 
     let mut vc_without_proof = vc.clone();
     vc_without_proof.proof = None;
 
     proof
-        .verify_with_public_key(&vc_without_proof, &pubkey, VerifyOptions::new())
+        .verify(&vc_without_proof, resolver, VerifyOptions::new())
+        .await
         .map_err(|e| RecognitionError::ProofInvalid(format!("{label}: {e}")))?;
     Ok(())
 }
@@ -408,60 +396,6 @@ fn extract_role_claim(vec: &VerifiableCredential) -> Result<(String, String), Re
 // Production trait impls
 // ---------------------------------------------------------------------------
 
-/// `ForeignIssuerKeyResolver` backed by the workspace's
-/// [`affinidi_did_resolver_cache_sdk::DIDCacheClient`]. Walks
-/// the resolved DID Document's `verificationMethod` array for
-/// an entry matching the proof's verificationMethod URI and
-/// extracts the Ed25519 public bytes from
-/// `publicKeyMultibase`.
-///
-/// Production deployments inject this; tests stub
-/// [`ForeignIssuerKeyResolver`] directly.
-pub struct DidResolverKeyResolver {
-    resolver: affinidi_did_resolver_cache_sdk::DIDCacheClient,
-}
-
-impl DidResolverKeyResolver {
-    pub fn new(resolver: affinidi_did_resolver_cache_sdk::DIDCacheClient) -> Self {
-        Self { resolver }
-    }
-}
-
-#[async_trait]
-impl ForeignIssuerKeyResolver for DidResolverKeyResolver {
-    async fn resolve_key(
-        &self,
-        issuer_did: &str,
-        verification_method: &str,
-    ) -> Result<Vec<u8>, RecognitionError> {
-        let resolved = self
-            .resolver
-            .resolve(issuer_did)
-            .await
-            .map_err(|e| RecognitionError::IssuerKeyUnresolved(format!("{issuer_did}: {e}")))?;
-        // Match the verificationMethod URI exactly. The
-        // foreign issuer's proof references something like
-        // `did:webvh:peer.example#key-0`; the resolved doc's
-        // `verification_method` array carries entries with the
-        // same `id` field.
-        let vm = resolved
-            .doc
-            .verification_method
-            .iter()
-            .find(|m| m.id.as_str() == verification_method)
-            .ok_or_else(|| {
-                RecognitionError::IssuerKeyUnresolved(format!(
-                    "verificationMethod {verification_method} not present on {issuer_did}"
-                ))
-            })?;
-        // Use the upstream's built-in extractor — handles
-        // Multikey + Ed25519VerificationKey2020 + publicKeyJwk
-        // shapes uniformly.
-        vm.get_public_key_bytes()
-            .map_err(|e| RecognitionError::IssuerKeyUnresolved(format!("extract pubkey: {e}")))
-    }
-}
-
 /// HTTP `StatusListFetcher` — fetches a BitstringStatusList
 /// credential by URL, parses out the encoded list, and tests
 /// the bit at `index`. Used by production deployments; tests
@@ -478,7 +412,7 @@ pub struct HttpStatusListFetcher {
     client: reqwest::Client,
     /// Resolves the list credential's issuer key for the signature check. `None`
     /// → no verification (fetch + decode only).
-    key_resolver: Option<Arc<dyn ForeignIssuerKeyResolver>>,
+    key_resolver: Option<Arc<dyn VerificationMethodResolver>>,
 }
 
 impl HttpStatusListFetcher {
@@ -495,7 +429,7 @@ impl HttpStatusListFetcher {
     /// A fetcher that verifies each fetched list credential's `eddsa-jcs-2022`
     /// issuer signature via `key_resolver` before trusting it. Uses the shared
     /// hardened client ([`foreign_fetch_client`]).
-    pub fn with_issuer_verification(key_resolver: Arc<dyn ForeignIssuerKeyResolver>) -> Self {
+    pub fn with_issuer_verification(key_resolver: Arc<dyn VerificationMethodResolver>) -> Self {
         Self {
             client: foreign_fetch_client(),
             key_resolver: Some(key_resolver),
@@ -586,7 +520,7 @@ async fn read_body_capped(
 async fn verify_status_list_signature(
     list_credential: &JsonValue,
     expected_issuer: Option<&str>,
-    key_resolver: &dyn ForeignIssuerKeyResolver,
+    resolver: &dyn VerificationMethodResolver,
     url: &str,
 ) -> Result<(), RecognitionError> {
     let list_issuer = list_credential
@@ -624,13 +558,8 @@ async fn verify_status_list_signature(
             ))
         })?;
     // The signing key must belong to the list's own issuer.
-    if vm.split('#').next().unwrap_or_default() != list_issuer {
-        return Err(RecognitionError::StatusListFailed(format!(
-            "status list {url} proof verificationMethod {vm} is not under its issuer {list_issuer}"
-        )));
-    }
-
-    let pubkey = key_resolver.resolve_key(&list_issuer, vm).await?;
+    check_issuer_binding(vm, &list_issuer)
+        .map_err(|e| RecognitionError::StatusListFailed(format!("status list {url} {e}")))?;
 
     // JCS is presence-sensitive: strip `proof` exactly as signing did.
     let mut signing_doc = list_credential.clone();
@@ -638,7 +567,8 @@ async fn verify_status_list_signature(
         obj.remove("proof");
     }
     proof
-        .verify_with_public_key(&signing_doc, &pubkey, VerifyOptions::new())
+        .verify(&signing_doc, resolver, VerifyOptions::new())
+        .await
         .map_err(|e| {
             RecognitionError::StatusListFailed(format!(
                 "status list {url} issuer signature did not verify: {e}"
@@ -872,8 +802,9 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    /// In-memory key resolver. Tests seed the bytes they
-    /// expect the verifier to use.
+    /// In-memory `VerificationMethodResolver`. Tests seed the key bytes they
+    /// expect the verifier to use, keyed by issuer DID; `resolve_vm` looks them
+    /// up by the base DID of the verificationMethod URI.
     struct StubKeyResolver {
         keys: HashMap<String, Vec<u8>>,
     }
@@ -891,16 +822,22 @@ mod tests {
     }
 
     #[async_trait]
-    impl ForeignIssuerKeyResolver for StubKeyResolver {
-        async fn resolve_key(
+    impl VerificationMethodResolver for StubKeyResolver {
+        async fn resolve_vm(
             &self,
-            issuer_did: &str,
-            _verification_method: &str,
-        ) -> Result<Vec<u8>, RecognitionError> {
-            self.keys
-                .get(issuer_did)
-                .cloned()
-                .ok_or_else(|| RecognitionError::IssuerKeyUnresolved(issuer_did.into()))
+            vm: &str,
+        ) -> Result<affinidi_data_integrity::ResolvedKey, affinidi_data_integrity::DataIntegrityError>
+        {
+            let base = vm.split('#').next().unwrap_or(vm);
+            let bytes = self.keys.get(base).cloned().ok_or_else(|| {
+                affinidi_data_integrity::DataIntegrityError::Resolver(format!(
+                    "no test key for {base}"
+                ))
+            })?;
+            Ok(affinidi_data_integrity::ResolvedKey::new(
+                affinidi_secrets_resolver::secrets::KeyType::Ed25519,
+                bytes,
+            ))
         }
     }
 

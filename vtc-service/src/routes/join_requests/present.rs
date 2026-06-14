@@ -39,10 +39,11 @@ use vti_common::error::AppError;
 use crate::ceremony::{Credential, CredentialStatus, Presentation};
 use crate::credentials::present_challenge::{self, DEFAULT_CHALLENGE_TTL};
 use crate::credentials::{VerifiedPresentation, VerifiedPresentationSet, verify_vp_token};
+use affinidi_data_integrity::VerificationMethodResolver;
+
+use crate::credentials::vm_resolver::DidVmResolver;
 use crate::join::JoinTransport;
-use crate::recognition::{
-    DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, StatusListFetcher,
-};
+use crate::recognition::{HttpStatusListFetcher, StatusListFetcher};
 use crate::registry::TrustRegistryClient;
 use crate::schemas::accepts::get_accepts;
 use crate::server::AppState;
@@ -284,8 +285,8 @@ async fn presentation_from_verified_set(
     // hide a revocation. Built once for the whole set.
     let status_fetcher = match state.did_resolver.clone() {
         Some(resolver) => {
-            let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
-                Arc::new(DidResolverKeyResolver::new(resolver));
+            let key_resolver: Arc<dyn VerificationMethodResolver> =
+                Arc::new(DidVmResolver::new(Some(resolver)));
             HttpStatusListFetcher::with_issuer_verification(key_resolver)
         }
         None => HttpStatusListFetcher::new(),

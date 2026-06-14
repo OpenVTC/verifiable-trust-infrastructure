@@ -19,9 +19,11 @@
 //!
 //! 1. **Proof verification.** Both VEC + VMC carry
 //!    `DataIntegrityProof::eddsa-jcs-2022` signatures over the
-//!    foreign issuer's `#key-0`. Resolves via the workspace's
-//!    [`ForeignIssuerKeyResolver`] trait — production wires
-//!    `DIDCacheClient`, tests inject a stub.
+//!    foreign issuer's `#key-0`. Verified through the DI
+//!    library's `proof.verify` with the shared
+//!    `credentials::vm_resolver::DidVmResolver`
+//!    (`VerificationMethodResolver`) — production wires
+//!    `DIDCacheClient`, tests inject a stub resolver.
 //! 2. **StatusList revocation.** Fetches the credential's
 //!    `credentialStatus.statusListCredential` URL, decodes the
 //!    bitstring, and checks `statusListIndex`. A set bit
@@ -53,6 +55,6 @@ pub mod challenge;
 pub mod verify;
 
 pub use verify::{
-    DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, RecognitionError,
-    StatusListFetcher, VerifiedForeignCredential, verify_foreign_vec,
+    HttpStatusListFetcher, RecognitionError, StatusListFetcher, VerifiedForeignCredential,
+    verify_foreign_vec,
 };

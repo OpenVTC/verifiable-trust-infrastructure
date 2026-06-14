@@ -60,9 +60,12 @@ use crate::policy::{
     PolicyPurpose, compile as compile_policy, evaluate as evaluate_policy, get_active_policy_id,
     get_policy,
 };
+use affinidi_data_integrity::VerificationMethodResolver;
+
+use crate::credentials::vm_resolver::DidVmResolver;
 use crate::recognition::{
-    DidResolverKeyResolver, ForeignIssuerKeyResolver, HttpStatusListFetcher, RecognitionError,
-    VerifiedForeignCredential, challenge, verify_foreign_vec,
+    HttpStatusListFetcher, RecognitionError, VerifiedForeignCredential, challenge,
+    verify_foreign_vec,
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
@@ -235,8 +238,8 @@ pub async fn recognise(
     let registry = state.registry_client.as_ref().cloned().ok_or_else(|| {
         AppError::Validation("trust-registry client not configured on this VTC".into())
     })?;
-    let key_resolver: Arc<dyn ForeignIssuerKeyResolver> =
-        Arc::new(DidResolverKeyResolver::new(resolver));
+    let key_resolver: Arc<dyn VerificationMethodResolver> =
+        Arc::new(DidVmResolver::new(Some(resolver)));
     // Verify the foreign status list's own issuer signature (bound to the
     // VEC/VMC issuer) before trusting it — the same key resolver the proof check
     // uses.

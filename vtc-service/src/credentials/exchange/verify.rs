@@ -218,7 +218,7 @@ pub async fn verify_presentation(
     } = parse_sd_jwt_presentation(compact)?;
 
     let hasher = Sha256Hasher;
-    let resolver = DidVmResolver::new(did_resolver);
+    let resolver = DidVmResolver::new(did_resolver.cloned());
     let issuer_verifier = EdDsaJwtVerifier {
         key: resolver.resolve_verifying_key(&issuer_vm).await?,
     };
@@ -397,7 +397,7 @@ async fn verify_di_vp(
 ) -> Result<Vec<VerifiedPresentation>, AppError> {
     use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 
-    let resolver = DidVmResolver::new(did_resolver);
+    let resolver = DidVmResolver::new(did_resolver.cloned());
 
     // 1. Holder proof over the VP (minus its proof).
     let proof_val = vp
@@ -646,7 +646,9 @@ async fn verify_bbs_presentation(
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
     check_issuer_binding(vm, issuer_did)?;
-    let g2 = DidVmResolver::new(did_resolver).resolve_bbs_g2(vm).await?;
+    let g2 = DidVmResolver::new(did_resolver.cloned())
+        .resolve_bbs_g2(vm)
+        .await?;
     let pk = PublicKey::from_bytes(&g2)
         .map_err(|e| AppError::Validation(format!("bbs-2023 issuer key is invalid: {e}")))?;
 

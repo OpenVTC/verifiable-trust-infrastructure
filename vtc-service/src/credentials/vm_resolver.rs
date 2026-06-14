@@ -16,19 +16,23 @@
 //! [`VerificationMethod::get_public_key_bytes`] extractor, which handles
 //! Multikey + `Ed25519VerificationKey2020` + `publicKeyJwk` uniformly.
 
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use ed25519_dalek::VerifyingKey;
 use vti_common::error::AppError;
 
 /// A [`VerificationMethodResolver`](affinidi_data_integrity::VerificationMethodResolver)
-/// over the VTC's optional [`DIDCacheClient`](affinidi_did_resolver_cache_sdk::DIDCacheClient).
-pub(crate) struct DidVmResolver<'a> {
-    resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
+/// over the VTC's optional [`DIDCacheClient`].
+///
+/// Owns its [`DIDCacheClient`] (which is cheap to clone — Arc-backed) rather
+/// than borrowing it, so the same resolver can be used both inline (`&resolver`)
+/// and behind an `Arc<dyn VerificationMethodResolver>` (the status-list fetcher
+/// holds one for the credential-signature check).
+pub(crate) struct DidVmResolver {
+    resolver: Option<DIDCacheClient>,
 }
 
-impl<'a> DidVmResolver<'a> {
-    pub(crate) fn new(
-        resolver: Option<&'a affinidi_did_resolver_cache_sdk::DIDCacheClient>,
-    ) -> Self {
+impl DidVmResolver {
+    pub(crate) fn new(resolver: Option<DIDCacheClient>) -> Self {
         Self { resolver }
     }
 
@@ -44,7 +48,7 @@ impl<'a> DidVmResolver<'a> {
                     AppError::Validation(format!("`{base_did}` is not a resolvable did:key: {e}"))
                 });
         }
-        let resolver = self.resolver.ok_or_else(|| {
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
             AppError::Validation(format!(
                 "resolving `{base_did}` needs a DID resolver, but none is configured — configure \
                  the DID cache to verify did:webvh / did:web issuers + holders"
@@ -102,7 +106,7 @@ impl<'a> DidVmResolver<'a> {
                 AppError::Validation(format!("`{base_did}` is not a BBS did:key: {e}"))
             });
         }
-        let resolver = self.resolver.ok_or_else(|| {
+        let resolver = self.resolver.as_ref().ok_or_else(|| {
             AppError::Validation(format!(
                 "resolving `{base_did}` needs a DID resolver to verify did:webvh / did:web \
                  BBS issuers"
@@ -152,7 +156,7 @@ impl<'a> DidVmResolver<'a> {
 }
 
 #[async_trait::async_trait]
-impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver<'_> {
+impl affinidi_data_integrity::VerificationMethodResolver for DidVmResolver {
     async fn resolve_vm(
         &self,
         vm: &str,

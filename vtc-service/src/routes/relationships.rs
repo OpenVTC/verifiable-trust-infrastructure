@@ -335,7 +335,7 @@ async fn verify_vc_proof(
         obj.remove("proof");
     }
 
-    let vm_resolver = DidVmResolver::new(Some(resolver));
+    let vm_resolver = DidVmResolver::new(Some(resolver.clone()));
     proof
         .verify(&vrc_without_proof, &vm_resolver, VerifyOptions::new())
         .await
