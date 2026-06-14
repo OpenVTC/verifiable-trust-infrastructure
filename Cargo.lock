@@ -9973,7 +9973,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.9.2"
+version = "0.9.3"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9981,6 +9981,7 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
+ "affinidi-messaging-test-mediator",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
  "affinidi-sd-jwt",

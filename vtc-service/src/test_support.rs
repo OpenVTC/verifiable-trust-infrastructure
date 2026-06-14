@@ -78,6 +78,12 @@ pub struct TestVtcBuilder {
     install_signer: Option<Arc<InstallTokenSigner>>,
     public_url: Option<String>,
     supervisor: Option<SupervisorKind>,
+    /// Messaging (ATM) handle wired into `AppState.atm` — lets the DIDComm
+    /// credential-delivery push send over a (test) mediator.
+    atm: Option<affinidi_tdk::messaging::ATM>,
+    /// Mediator DID for `AppState.config.messaging` — paired with `atm` so the
+    /// delivery path knows which mediator to forward issued credentials through.
+    messaging_mediator: Option<String>,
 }
 
 impl Default for TestVtcBuilder {
@@ -91,6 +97,8 @@ impl Default for TestVtcBuilder {
             install_signer: None,
             public_url: None,
             supervisor: None,
+            atm: None,
+            messaging_mediator: None,
         }
     }
 }
@@ -158,6 +166,22 @@ impl TestVtcBuilder {
         self
     }
 
+    /// Wire a messaging (ATM) handle into `AppState.atm`, so the DIDComm
+    /// handlers and the credential-delivery push (`push_to_holder`) can send
+    /// over a mediator. Pair with [`messaging_mediator`](Self::messaging_mediator).
+    pub fn with_atm(mut self, atm: affinidi_tdk::messaging::ATM) -> Self {
+        self.atm = Some(atm);
+        self
+    }
+
+    /// Set the mediator DID in `AppState.config.messaging`, so credential
+    /// delivery knows which mediator the VTC forwards issued credentials
+    /// through. Pair with [`with_atm`](Self::with_atm).
+    pub fn messaging_mediator(mut self, mediator_did: impl Into<String>) -> Self {
+        self.messaging_mediator = Some(mediator_did.into());
+        self
+    }
+
     /// Build the tempdir-backed [`TestVtc`].
     pub async fn build(self) -> TestVtc {
         init_jwt_provider();
@@ -221,6 +245,13 @@ impl TestVtcBuilder {
         .expect("parse test config");
         if let Some(url) = &self.public_url {
             config.public_url = Some(url.clone());
+        }
+        if let Some(mediator_did) = &self.messaging_mediator {
+            config.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: mediator_did.clone(),
+                mediator_host: None,
+            });
         }
 
         let audit_writer = if self.with_audit {
@@ -304,7 +335,7 @@ impl TestVtcBuilder {
             did_resolver,
             secrets_resolver: None,
             jwt_keys: Some(jwt_keys.clone()),
-            atm: None,
+            atm: self.atm,
             webauthn,
             public_url: self.public_url,
             install_signer,
@@ -493,6 +524,488 @@ impl Drop for MockVtc {
         }
         if let Some(handle) = self.handle.take() {
             handle.abort();
+        }
+    }
+}
+
+#[cfg(feature = "didcomm-harness")]
+pub use didcomm_harness::{MockVtcDidcomm, TestJoinClient};
+
+/// In-process DIDComm join-requests harness (#436).
+///
+/// [`MockVtcDidcomm`] stands up an embedded `affinidi-messaging-test-mediator`,
+/// a VTC DIDComm responder bound to the **real** join-requests handlers, and a
+/// ready-connected [`TestJoinClient`] applicant — all sharing the one mediator,
+/// the way OpenVTC's e2e drives a community join. A test can then run a genuine
+/// `submit → receipt → manifest → status → (admin approve) → VMC-over-DIDComm`
+/// round-trip, exercising `submit_inner` / `manifest_inner` / `status_inner` and
+/// the credential-delivery push rather than canned responses.
+#[cfg(feature = "didcomm-harness")]
+mod didcomm_harness {
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use affinidi_messaging_test_mediator::{TestMediator, TestMediatorHandle};
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::didcomm::Message;
+    use affinidi_tdk::dids::{DID, KeyType, PeerKeyRole};
+    use affinidi_tdk::messaging::ATM;
+    use affinidi_tdk::messaging::config::ATMConfig;
+    use affinidi_tdk::messaging::profiles::ATMProfile;
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+    use affinidi_tdk::secrets_resolver::secrets::Secret;
+    use serde_json::{Value, json};
+    use tokio::sync::{Mutex, oneshot};
+    use uuid::Uuid;
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, JOIN_REQUEST_MANIFEST_TYPE,
+        JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_STATUS_TYPE,
+        JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestStatusBody,
+        JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
+    };
+
+    use crate::join::JoinTransport;
+    use crate::routes::join_requests::manifest::manifest_inner;
+    use crate::routes::join_requests::status::status_inner;
+    use crate::routes::join_requests::submit::submit_inner;
+    use crate::server::AppState;
+
+    use super::TestVtc;
+
+    /// Two DIDComm verification methods: an Ed25519 authentication key and an
+    /// X25519 key-agreement key — the shape an authcrypt counterparty needs.
+    fn peer_key_roles() -> Vec<(PeerKeyRole, KeyType)> {
+        vec![
+            (PeerKeyRole::Verification, KeyType::Ed25519),
+            (PeerKeyRole::Encryption, KeyType::X25519),
+        ]
+    }
+
+    /// Build an ATM whose secrets resolver holds `secrets` (a `did:peer`'s keys).
+    async fn build_atm(secrets: &[Secret]) -> ATM {
+        let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
+            .await
+            .expect("TDK shared state");
+        for s in secrets {
+            tdk.secrets_resolver().insert(s.clone()).await;
+        }
+        ATM::new(
+            ATMConfig::builder().build().expect("ATM config"),
+            Arc::new(tdk),
+        )
+        .await
+        .expect("ATM init")
+    }
+
+    const POLL: Duration = Duration::from_millis(300);
+
+    /// A message the client received but hasn't yet matched to a request.
+    struct Received {
+        thid: Option<String>,
+        typ: String,
+        body: Value,
+    }
+
+    /// A DIDComm join applicant connected to the harness mediator.
+    ///
+    /// Sends authcrypt requests to the VTC and awaits the threaded reply;
+    /// unsolicited inbound (e.g. a pushed credential) is buffered and drained via
+    /// [`next_pushed`](Self::next_pushed).
+    pub struct TestJoinClient {
+        atm: ATM,
+        profile: Arc<ATMProfile>,
+        did: String,
+        mediator_did: String,
+        /// A standalone holder signing key for building demo `vp_token`s via
+        /// `vta_sdk::vp` — its `id` is a `did:key`.
+        holder_secret: Secret,
+        inbox: Mutex<VecDeque<Received>>,
+    }
+
+    impl TestJoinClient {
+        async fn connect(
+            transport_secrets: &[Secret],
+            did: String,
+            mediator_did: String,
+            holder_secret: Secret,
+        ) -> Self {
+            let atm = build_atm(transport_secrets).await;
+            let profile = Arc::new(
+                ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.clone()))
+                    .await
+                    .expect("applicant ATM profile"),
+            );
+            atm.profile_enable_websocket(&profile)
+                .await
+                .expect("applicant websocket");
+            TestJoinClient {
+                atm,
+                profile,
+                did,
+                mediator_did,
+                holder_secret,
+                inbox: Mutex::new(VecDeque::new()),
+            }
+        }
+
+        /// The applicant's DIDComm (`did:peer`) identity — the authcrypt sender
+        /// the VTC sees as the join applicant.
+        pub fn did(&self) -> &str {
+            &self.did
+        }
+
+        /// A holder signing key (`did:key`) for assembling a `vp_token` from a
+        /// manifest's DCQL via `vta_sdk::vp::build_vp_token`.
+        pub fn holder_secret(&self) -> &Secret {
+            &self.holder_secret
+        }
+
+        /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
+        /// forwarded via the mediator) and return the threaded reply body.
+        /// Panics on timeout — this is a test harness.
+        pub async fn request(&self, vtc_did: &str, typ: &str, body: Value) -> Value {
+            let req_id = Uuid::new_v4().to_string();
+            let msg = Message::build(req_id.clone(), typ.to_string(), body)
+                .from(self.did.clone())
+                .to(vtc_did.to_string())
+                .finalize();
+            self.send(&msg, vtc_did).await;
+            self.recv_matching(
+                |r| r.thid.as_deref() == Some(req_id.as_str()),
+                Duration::from_secs(15),
+            )
+            .await
+            .unwrap_or_else(|| panic!("no reply to `{typ}` within timeout"))
+            .body
+        }
+
+        /// Await the next unsolicited inbound message (no thread correlation),
+        /// e.g. a pushed `credential-exchange/issue`. `None` on timeout.
+        pub async fn next_pushed(&self, timeout: Duration) -> Option<(String, Value)> {
+            self.recv_matching(|r| r.thid.is_none(), timeout)
+                .await
+                .map(|r| (r.typ, r.body))
+        }
+
+        async fn send(&self, msg: &Message, to: &str) {
+            let (jwe, _) = self
+                .atm
+                .pack_encrypted(msg, to, Some(&self.did), Some(&self.did))
+                .await
+                .expect("pack_encrypted");
+            self.atm
+                .forward_and_send_message(
+                    &self.profile,
+                    false,
+                    &jwe,
+                    Some(&msg.id),
+                    &self.mediator_did,
+                    to,
+                    None,
+                    None,
+                    false,
+                )
+                .await
+                .expect("forward_and_send_message");
+        }
+
+        /// Return the first message (buffered or freshly received) matching
+        /// `pred`, buffering non-matches; `None` once `timeout` elapses.
+        async fn recv_matching<F: Fn(&Received) -> bool>(
+            &self,
+            pred: F,
+            timeout: Duration,
+        ) -> Option<Received> {
+            if let Some(found) = self.take_buffered(&pred).await {
+                return Some(found);
+            }
+            let start = tokio::time::Instant::now();
+            while start.elapsed() < timeout {
+                let next = self
+                    .atm
+                    .message_pickup()
+                    .live_stream_next(&self.profile, Some(POLL), true)
+                    .await;
+                if let Ok(Some((msg, _meta))) = next {
+                    if msg.typ.contains("problem-report") {
+                        // Surface the problem rather than silently buffering it.
+                        panic!("applicant received problem-report: {}", msg.body);
+                    }
+                    let r = Received {
+                        thid: msg.thid.clone(),
+                        typ: msg.typ.clone(),
+                        body: msg.body.clone(),
+                    };
+                    if pred(&r) {
+                        return Some(r);
+                    }
+                    self.inbox.lock().await.push_back(r);
+                }
+            }
+            None
+        }
+
+        async fn take_buffered<F: Fn(&Received) -> bool>(&self, pred: &F) -> Option<Received> {
+            let mut inbox = self.inbox.lock().await;
+            let pos = inbox.iter().position(pred)?;
+            inbox.remove(pos)
+        }
+    }
+
+    /// A mock VTC serving the join-requests protocol over DIDComm, plus a
+    /// connected applicant client. See module docs.
+    pub struct MockVtcDidcomm {
+        mediator: TestMediatorHandle,
+        vtc_did: String,
+        /// The VTC under test (state + router): seed policies / status-lists /
+        /// Accepts criteria and drive admin actions (e.g. approve) over REST.
+        pub vtc: TestVtc,
+        /// The connected applicant.
+        pub client: TestJoinClient,
+        shutdown_tx: Option<oneshot::Sender<()>>,
+        loop_handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    impl MockVtcDidcomm {
+        /// Spin up the mediator, the DIDComm-listening VTC (signers + audit +
+        /// messaging wired), and a connected applicant. Returns once everything
+        /// is bound and the dispatch loop is running.
+        pub async fn start() -> MockVtcDidcomm {
+            // Transport identities. The applicant's is generated up front so it
+            // can be registered LOCAL on the mediator (needed to open inbound).
+            let (vtc_did, vtc_secrets) =
+                DID::generate_did_peer(peer_key_roles(), None).expect("VTC did:peer");
+            let (applicant_did, applicant_secrets) =
+                DID::generate_did_peer(peer_key_roles(), None).expect("applicant did:peer");
+
+            let mediator = TestMediator::builder()
+                .local_did(vtc_did.clone())
+                .local_did(applicant_did.clone())
+                .spawn()
+                .await
+                .expect("spawn test mediator");
+            let mediator_did = mediator.did().to_string();
+
+            // VTC messaging side: an ATM holding the VTC transport keys, a
+            // profile + inbound websocket on the shared mediator.
+            let vtc_atm = build_atm(&vtc_secrets).await;
+            let vtc_profile = Arc::new(
+                ATMProfile::new(&vtc_atm, None, vtc_did.clone(), Some(mediator_did.clone()))
+                    .await
+                    .expect("VTC ATM profile"),
+            );
+            vtc_atm
+                .profile_enable_websocket(&vtc_profile)
+                .await
+                .expect("VTC websocket");
+
+            // VTC state: the transport did:peer is also the configured `vtc_did`
+            // (so credential delivery packs from a resolvable sender), with the
+            // ATM + mediator wired so `push_to_holder` can forward issued VMCs.
+            let vtc = TestVtc::builder()
+                .vtc_did(vtc_did.clone())
+                .with_audit(true)
+                .with_signers(true)
+                .with_public_url("https://vtc.test")
+                .messaging_mediator(mediator_did.clone())
+                .with_atm(vtc_atm.clone())
+                .build()
+                .await;
+
+            // A standalone did:key holder key for the applicant's VP demos.
+            let holder_secret = generate_holder_secret();
+            let client = TestJoinClient::connect(
+                &applicant_secrets,
+                applicant_did,
+                mediator_did.clone(),
+                holder_secret,
+            )
+            .await;
+
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let state = vtc.state.clone();
+            let loop_did = vtc_did.clone();
+            let loop_handle = tokio::spawn(async move {
+                run_vtc_join_loop(
+                    vtc_atm,
+                    vtc_profile,
+                    mediator_did,
+                    loop_did,
+                    state,
+                    shutdown_rx,
+                )
+                .await;
+            });
+
+            MockVtcDidcomm {
+                mediator,
+                vtc_did,
+                vtc,
+                client,
+                shutdown_tx: Some(shutdown_tx),
+                loop_handle: Some(loop_handle),
+            }
+        }
+
+        /// The VTC's DIDComm identity — address join messages here.
+        pub fn vtc_did(&self) -> &str {
+            &self.vtc_did
+        }
+
+        /// The shared mediator's DID.
+        pub fn mediator_did(&self) -> &str {
+            self.mediator.did()
+        }
+
+        /// Stop the dispatch loop + mediator and wait for a clean wind-down.
+        pub async fn shutdown(mut self) {
+            if let Some(tx) = self.shutdown_tx.take() {
+                let _ = tx.send(());
+            }
+            if let Some(handle) = self.loop_handle.take() {
+                let _ = handle.await;
+            }
+            self.mediator.shutdown();
+            let _ = self.mediator.join().await;
+        }
+    }
+
+    /// A `did:key` Ed25519 signing `Secret` (id = `did:key:z..#z..`) for the
+    /// applicant to sign demo presentations with.
+    fn generate_holder_secret() -> Secret {
+        let mut secret = Secret::generate_ed25519(None, None);
+        let pub_mb = secret
+            .get_public_keymultibase()
+            .expect("holder pubkey multibase");
+        secret.id = format!("did:key:{pub_mb}#{pub_mb}");
+        secret
+    }
+
+    /// The VTC dispatch loop: receive → call the real handler → reply, until
+    /// shutdown. Mirrors the e2e responder's two-hop reply path (authcrypt the
+    /// inner reply to the applicant, forward through the mediator).
+    async fn run_vtc_join_loop(
+        atm: ATM,
+        profile: Arc<ATMProfile>,
+        mediator_did: String,
+        vtc_did: String,
+        state: AppState,
+        mut shutdown_rx: oneshot::Receiver<()>,
+    ) {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+            let next = atm
+                .message_pickup()
+                .live_stream_next(&profile, Some(POLL), true)
+                .await;
+            let Ok(Some((msg, _meta))) = next else {
+                continue;
+            };
+            if msg.typ.contains("problem-report")
+                || msg.typ == "https://didcomm.org/routing/2.0/forward"
+            {
+                continue;
+            }
+            let Some(sender) = msg.from.clone() else {
+                continue;
+            };
+
+            let (reply_type, reply_body) = match dispatch_join(&state, &sender, &msg).await {
+                Ok(Some(reply)) => reply,
+                Ok(None) => continue,
+                Err((code, comment)) => (
+                    "https://didcomm.org/report-problem/2.0/problem-report".to_string(),
+                    json!({ "code": code, "comment": comment }),
+                ),
+            };
+
+            let reply_id = Uuid::new_v4().to_string();
+            let reply_msg = Message::build(reply_id.clone(), reply_type, reply_body)
+                .from(vtc_did.clone())
+                .to(sender.clone())
+                .thid(msg.id.clone())
+                .finalize();
+            let Ok((inner_jwe, _)) = atm
+                .pack_encrypted(&reply_msg, &sender, Some(&vtc_did), Some(&vtc_did))
+                .await
+            else {
+                continue;
+            };
+            let _ = atm
+                .forward_and_send_message(
+                    &profile,
+                    false,
+                    &inner_jwe,
+                    Some(&reply_id),
+                    &mediator_did,
+                    &sender,
+                    None,
+                    None,
+                    false,
+                )
+                .await;
+        }
+        atm.graceful_shutdown().await;
+    }
+
+    /// Map an inbound join message to a `(reply_type, reply_body)` by calling the
+    /// real handler. `Ok(None)` = no reply for this type; `Err` = problem report.
+    async fn dispatch_join(
+        state: &AppState,
+        sender: &str,
+        msg: &Message,
+    ) -> Result<Option<(String, Value)>, (String, String)> {
+        let problem =
+            |e: vti_common::error::AppError| ("e.p.msg.internal-error".to_string(), e.to_string());
+        let bad = |e: serde_json::Error| ("e.p.msg.bad-request".to_string(), e.to_string());
+
+        match msg.typ.as_str() {
+            JOIN_REQUEST_SUBMIT_TYPE => {
+                let body: JoinRequestSubmitBody =
+                    serde_json::from_value(msg.body.clone()).map_err(bad)?;
+                let outcome = submit_inner(
+                    state,
+                    sender.to_string(),
+                    body.vp,
+                    body.registry_consent,
+                    body.extensions,
+                    None,
+                    JoinTransport::DIDComm,
+                )
+                .await
+                .map_err(problem)?;
+                let receipt = JoinRequestSubmitReceiptBody {
+                    request_id: outcome.request.id,
+                    status: outcome.request.status.to_string(),
+                };
+                Ok(Some((
+                    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
+                    serde_json::to_value(receipt).expect("serialise receipt"),
+                )))
+            }
+            JOIN_REQUEST_MANIFEST_TYPE => {
+                let manifest = manifest_inner(state).await.map_err(problem)?;
+                Ok(Some((
+                    JOIN_REQUEST_MANIFEST_RESPONSE_TYPE.to_string(),
+                    serde_json::to_value(manifest).expect("serialise manifest"),
+                )))
+            }
+            JOIN_REQUEST_STATUS_TYPE => {
+                let body: JoinRequestStatusBody =
+                    serde_json::from_value(msg.body.clone()).map_err(bad)?;
+                let resp = status_inner(state, body.request_id, sender.to_string(), None)
+                    .await
+                    .map_err(problem)?;
+                Ok(Some((
+                    JOIN_REQUEST_STATUS_RESPONSE_TYPE.to_string(),
+                    serde_json::to_value(resp).expect("serialise status"),
+                )))
+            }
+            _ => Ok(None),
         }
     }
 }

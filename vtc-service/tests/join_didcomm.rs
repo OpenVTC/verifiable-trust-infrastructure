@@ -1,0 +1,273 @@
+//! Worked example for the DIDComm join-requests harness (#436).
+//!
+//! Drives a genuine community-join round-trip against a **real** `vtc-service`
+//! over DIDComm — not canned responses — using [`MockVtcDidcomm`]: an embedded
+//! test mediator carrying both a `did:peer` applicant and the VTC, with the
+//! VTC's DIDComm responder bound to the production `submit_inner` /
+//! `manifest_inner` / `status_inner` handlers and the credential-delivery push.
+//!
+//! Round-trip exercised:
+//!   1. applicant `submit` over DIDComm                  → real `submit_inner`, pending receipt
+//!   2. applicant `manifest` over DIDComm               → real `manifest_inner`, DCQL criteria
+//!   3. manifest DCQL → `vp_token` via `vta_sdk::vp`     → the OpenVTC **D4** capability
+//!   4. applicant `status` over DIDComm                 → real `status_inner`, still pending
+//!   5. admin `approve` over REST                        → real ceremony issues the VMC + role VEC
+//!   6. VMC delivered to the applicant **over DIDComm**  → `credential-exchange/issue` lands
+//!
+//! This is the template a downstream consumer (OpenVTC) copies to test its join
+//! + activation path against a real VTC.
+
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
+use vtc_service::auth::session::now_epoch;
+use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
+use vtc_service::test_support::MockVtcDidcomm;
+
+use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
+use vta_sdk::protocols::join_requests::{
+    JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_TYPE,
+    JoinRequestManifestResponseBody, JoinRequestStatusBody, JoinRequestStatusResponseBody,
+    JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
+};
+use vta_sdk::vp::{HeldCredential, build_vp_token, select_credentials};
+
+const ADMIN_DID: &str = "did:key:z6MkJoinAdmin";
+const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
+
+/// Seed the join ceremony the same way `server::run` does at boot: default
+/// policies (so `join.rego` evaluates instead of failing closed), both status
+/// lists (so the approve handler can allocate a VMC revocation slot), an admin
+/// ACL entry, and one DCQL Accepts criterion (so the manifest advertises a
+/// `presentation_definition`). Returns an admin bearer token.
+async fn seed_join_ceremony(mock: &MockVtcDidcomm) -> String {
+    let state = &mock.vtc.state;
+
+    vtc_service::policy::default::install_defaults(&state.policies_ks, &state.active_policies_ks)
+        .await
+        .expect("install default policies");
+
+    for purpose in [
+        affinidi_status_list::StatusPurpose::Revocation,
+        affinidi_status_list::StatusPurpose::Suspension,
+    ] {
+        vtc_service::status_list::ensure_initial(
+            &state.status_lists_ks,
+            purpose,
+            format!("https://vtc.test/v1/status-lists/{purpose}"),
+        )
+        .await
+        .expect("ensure status list");
+    }
+
+    store_acl_entry(
+        &state.acl_ks,
+        &VtcAclEntry {
+            did: ADMIN_DID.into(),
+            role: VtcRole::Admin,
+            label: Some("join test admin".into()),
+            allowed_contexts: vec![],
+            created_at: now_epoch(),
+            created_by: "did:key:vtc-install".into(),
+            expires_at: None,
+        },
+    )
+    .await
+    .expect("store admin ACL");
+
+    // A DCQL Accepts criterion with no `meta.vct_values` — so it needs no
+    // schema-store registration — that the manifest surfaces as a
+    // `presentation_definition` for the applicant to satisfy.
+    store_accepts(
+        &state.schemas_ks,
+        &AcceptsCriterion {
+            id: "membership".into(),
+            query: json!({
+                "credentials": [{
+                    "id": "membership",
+                    "format": "ldp_vc",
+                    "claims": [ { "path": ["givenName"] } ]
+                }]
+            }),
+            description: Some("Join evidence".into()),
+            created_at: chrono::Utc::now(),
+            created_by_did: ADMIN_DID.into(),
+        },
+    )
+    .await
+    .expect("store Accepts criterion");
+
+    mock.vtc.token(ADMIN_DID, "admin", vec![]).await
+}
+
+/// `POST` a Trust-Task against the VTC's REST router (the admin surface).
+async fn rest_post(
+    mock: &MockVtcDidcomm,
+    uri: &str,
+    trust_task: &str,
+    token: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let res = mock
+        .vtc
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("Trust-Task", trust_task)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, json)
+}
+
+#[tokio::test]
+async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_delivery() {
+    let mock = MockVtcDidcomm::start().await;
+    let admin_token = seed_join_ceremony(&mock).await;
+    let vtc_did = mock.vtc_did().to_string();
+    let applicant_did = mock.client.did().to_string();
+
+    // 1. Submit a join request over DIDComm — the authcrypt sender is the
+    //    applicant DID, so no holder-binding signature is needed. Hits the real
+    //    `submit_inner`; the default policy defers to a pending decision.
+    let submit = JoinRequestSubmitBody {
+        vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        registry_consent: false,
+        extensions: json!({}),
+    };
+    let receipt: JoinRequestSubmitReceiptBody = serde_json::from_value(
+        mock.client
+            .request(
+                &vtc_did,
+                JOIN_REQUEST_SUBMIT_TYPE,
+                serde_json::to_value(submit).unwrap(),
+            )
+            .await,
+    )
+    .expect("submit receipt");
+    assert_eq!(
+        receipt.status, "pending",
+        "default policy defers to pending"
+    );
+    let request_id = receipt.request_id;
+
+    // 2. Discover the community's join evidence over DIDComm (real
+    //    `manifest_inner`) — the seeded DCQL Accepts criterion.
+    let manifest: JoinRequestManifestResponseBody = serde_json::from_value(
+        mock.client
+            .request(&vtc_did, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
+            .await,
+    )
+    .expect("manifest response");
+    assert_eq!(manifest.community_did, vtc_did);
+    let criterion = manifest
+        .criteria
+        .iter()
+        .find(|c| c.id == "membership")
+        .expect("manifest advertises the membership criterion");
+
+    // 3. OpenVTC D4: select a held credential against the manifest's DCQL and
+    //    assemble a holder-bound `vp_token` with the SDK helper — the exact
+    //    client-side construction the VTC verifies server-side.
+    let subject = json!({ "givenName": "Ada", "memberSince": "2024-01-01" });
+    let held = HeldCredential {
+        id: "vmc-held".into(),
+        format: "ldp_vc".into(),
+        claims: subject.clone(),
+        vct: None,
+        doctype: None,
+        supports_holder_binding: true,
+        vc: json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "credentialSubject": subject,
+        }),
+    };
+    let candidates = select_credentials(&criterion.presentation_definition, &[held])
+        .expect("held credential satisfies the manifest DCQL");
+    let vp_token = build_vp_token(
+        &candidates,
+        mock.client.holder_secret(),
+        "join-nonce",
+        &vtc_did,
+    )
+    .await
+    .expect("assemble vp_token");
+    assert!(
+        vp_token.get("membership").is_some(),
+        "vp_token is keyed by the credential-query id: {vp_token}"
+    );
+
+    // 4. Poll status over DIDComm (real `status_inner`) — still pending pre-approval.
+    let status: JoinRequestStatusResponseBody = serde_json::from_value(
+        mock.client
+            .request(
+                &vtc_did,
+                JOIN_REQUEST_STATUS_TYPE,
+                serde_json::to_value(JoinRequestStatusBody { request_id }).unwrap(),
+            )
+            .await,
+    )
+    .expect("status response");
+    assert_eq!(status.status, "pending");
+
+    // 5. Admin approves over REST — the real ceremony admits the applicant,
+    //    issues the VMC + role VEC, and pushes them to the applicant's wallet
+    //    over DIDComm (`deliver_membership_credentials`).
+    let (code, body) = rest_post(
+        &mock,
+        &format!("/v1/join-requests/{request_id}/approve"),
+        APPROVE_TASK,
+        &admin_token,
+        json!({}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "approve failed: {body}");
+    assert_eq!(body["status"], "approved");
+
+    // 6. The membership credential lands at the applicant over DIDComm — the
+    //    full push the activation path (T6) needs.
+    let (typ, issue_body) = mock
+        .client
+        .next_pushed(Duration::from_secs(20))
+        .await
+        .expect("VMC delivered over DIDComm");
+    assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);
+    let issue: IssueBody = serde_json::from_value(issue_body).expect("issue body");
+    let credential = issue
+        .credential_response
+        .expect("credential_response present")
+        .credential
+        .expect("credential present");
+    let types = credential["type"].as_array().expect("VC type array");
+    assert!(
+        types.iter().any(|t| t == "MembershipCredential"),
+        "delivered credential is a MembershipCredential: {credential}"
+    );
+    assert_eq!(
+        credential["credentialSubject"]["id"], applicant_did,
+        "VMC subject is the applicant"
+    );
+
+    mock.shutdown().await;
+}
