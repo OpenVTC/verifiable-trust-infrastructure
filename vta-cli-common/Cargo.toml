@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.9.1"
+version = "0.9.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -11,7 +11,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.12", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   "client",
   "sealed-transfer",
   "provision-integration",

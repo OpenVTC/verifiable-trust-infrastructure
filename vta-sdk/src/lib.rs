@@ -63,6 +63,7 @@
 //! | `provision-integration` | VP-framed bootstrap requests + VC-issued admin authorization |
 //! | `provision-client` | Higher-level orchestration over `provision-integration` (TUI-agnostic) |
 //! | `attest-verify` | Full AWS Nitro attestation verification (cert chain to AWS root) |
+//! | `vp` | DCQL credential selection + holder-bound OID4VP `vp_token` assembly ([`vp`]) |
 //! | `integration` | Pull-bundle service-startup pattern (combines `client` + `session`) |
 //! | `test-support` | In-memory mocks (`SessionBackend`, fixtures) for downstream tests |
 //!
@@ -128,6 +129,12 @@ pub mod session;
 /// Canonical Trust-Task URLs for VTA operations. Mirrors
 /// `did-hosting-common::did_hosting_tasks` for the webvh-service side.
 pub mod trust_tasks;
+// DCQL credential selection + holder-bound OID4VP `vp_token` assembly. The
+// client-side counterpart to the `join-requests` / `credential-exchange`
+// protocol types: turns a verifier's `presentation_definition` + held
+// credentials into a signed `vp_token` the VTC's join verifier accepts.
+#[cfg(feature = "vp")]
+pub mod vp;
 pub mod webvh;
 
 #[cfg(feature = "integration")]

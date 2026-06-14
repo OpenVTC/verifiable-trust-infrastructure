@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.9.1"
+version = "0.9.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -78,7 +78,7 @@ vti-common = { path = "../vti-common", version = "0.10", features = [
   # keyspaces (install, audit_key, passkey) — P0.7.
   "encryption",
 ] }
-vta-sdk = { path = "../vta-sdk", version = "0.12", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   "didcomm",
   "session",
   "config-session",
