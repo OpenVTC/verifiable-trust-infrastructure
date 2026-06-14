@@ -19,9 +19,6 @@
 //! - Local `did.jsonl` is the source of truth and is pushed
 //!   verbatim; the host's prior content (if any) is overwritten.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use chrono::Utc;
 use didwebvh_rs::url::WebVHURL;
 use thiserror::Error;
@@ -29,9 +26,7 @@ use tracing::info;
 
 use crate::audit;
 use crate::auth::AuthClaims;
-use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
-use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
 use super::{RaceDetected, RecordSnapshot};
@@ -119,19 +114,11 @@ impl From<AppError> for RegisterDidWithServerError {
 /// server and flip the local record's `server_id` so future
 /// `update_did_webvh` calls (and therefore future `services`
 /// mutations) auto-publish there.
-#[allow(clippy::too_many_arguments)]
 pub async fn register_did_with_server(
-    webvh_ks: &KeyspaceHandle,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    deps: &super::WebvhDeps<'_>,
     auth: &AuthClaims,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     params: RegisterDidWithServerParams,
     vta_did: Option<&str>,
-    auth_locks: &super::WebvhAuthLocks,
     channel: &str,
 ) -> Result<RegisterDidWithServerResult, RegisterDidWithServerError> {
     auth.require_super_admin()
@@ -146,7 +133,7 @@ pub async fn register_did_with_server(
     //    and the second `store_did` clobbers the first. The local
     //    record then points at one of two upstream hosts that each
     //    think they own the DID.
-    let mut record = webvh_store::get_did(webvh_ks, &params.did)
+    let mut record = webvh_store::get_did(deps.webvh_ks, &params.did)
         .await?
         .ok_or_else(|| RegisterDidWithServerError::DidNotFound(params.did.clone()))?;
     let snapshot = RecordSnapshot::capture(&record);
@@ -159,12 +146,12 @@ pub async fn register_did_with_server(
     }
 
     // 2. Look up the target server.
-    let server = webvh_store::get_server(webvh_ks, &params.server_id)
+    let server = webvh_store::get_server(deps.webvh_ks, &params.server_id)
         .await?
         .ok_or_else(|| RegisterDidWithServerError::ServerNotFound(params.server_id.clone()))?;
 
     // 3. Read the local did.jsonl. Source of truth for the push.
-    let did_log = webvh_store::get_did_log(webvh_ks, &params.did)
+    let did_log = webvh_store::get_did_log(deps.webvh_ks, &params.did)
         .await?
         .ok_or_else(|| RegisterDidWithServerError::LogMissing(params.did.clone()))?;
 
@@ -195,14 +182,14 @@ pub async fn register_did_with_server(
         )
     })?;
     let response = super::register_did_atomic_on_server(
-        keys_ks,
-        imported_ks,
-        audit_ks,
-        webvh_ks,
-        seed_store,
-        did_resolver,
-        didcomm_bridge,
-        auth_locks,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.audit_ks,
+        deps.webvh_ks,
+        deps.seed_store,
+        deps.did_resolver,
+        deps.didcomm_bridge,
+        deps.auth_locks,
         vta_did_value,
         &server,
         &request_path,
@@ -226,7 +213,7 @@ pub async fn register_did_with_server(
     //    this, the loser's `store_did` silently overwrites the
     //    winner's, and the local record points at the wrong upstream
     //    while the host actually owning the slot is left orphaned.
-    let current = webvh_store::get_did(webvh_ks, &params.did)
+    let current = webvh_store::get_did(deps.webvh_ks, &params.did)
         .await?
         .ok_or_else(|| RegisterDidWithServerError::DidNotFound(params.did.clone()))?;
     snapshot
@@ -242,12 +229,12 @@ pub async fn register_did_with_server(
     record.mnemonic = response.mnemonic;
     record.updated_at = Utc::now();
     let log_entry_count = record.log_entry_count;
-    webvh_store::store_did(webvh_ks, &record).await?;
+    webvh_store::store_did(deps.webvh_ks, &record).await?;
 
     // 6. Audit. Best-effort; log+swallow on error.
     let resource = format!("did:webvh:{}", record.scid);
     if let Err(e) = audit::record(
-        audit_ks,
+        deps.audit_ks,
         "did.register_server",
         &auth.did,
         Some(&resource),
@@ -277,8 +264,13 @@ pub async fn register_did_with_server(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+
     use super::*;
-    use crate::store::Store;
+    use crate::didcomm_bridge::DIDCommBridge;
+    use crate::store::{KeyspaceHandle, Store};
     use crate::test_support::test_app_config;
     use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
     use vti_common::config::StoreConfig as VtiStoreConfig;
@@ -361,6 +353,30 @@ mod tests {
         Arc::new(DIDCommBridge::placeholder())
     }
 
+    /// Build a [`WebvhDeps`] from the loose test parts. The preflight-path
+    /// tests bail before any real key op, so the same `webvh_ks` doubles for
+    /// keys / imported / contexts.
+    fn deps<'a>(
+        webvh_ks: &'a KeyspaceHandle,
+        audit_ks: &'a KeyspaceHandle,
+        seed: &'a dyn crate::keys::seed_store::SeedStore,
+        resolver: &'a DIDCacheClient,
+        bridge: &'a Arc<DIDCommBridge>,
+        locks: &'a super::super::WebvhAuthLocks,
+    ) -> super::super::WebvhDeps<'a> {
+        super::super::WebvhDeps {
+            keys_ks: webvh_ks,
+            imported_ks: webvh_ks,
+            contexts_ks: webvh_ks,
+            webvh_ks,
+            audit_ks,
+            seed_store: seed,
+            did_resolver: resolver,
+            didcomm_bridge: bridge,
+            auth_locks: locks,
+        }
+    }
+
     #[tokio::test]
     async fn rejects_non_super_admin() {
         let (_dir, webvh_ks, audit_ks) = setup().await;
@@ -368,15 +384,10 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
+        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
-            &webvh_ks,
-            &webvh_ks,
-            &webvh_ks,
-            &audit_ks,
-            &seed,
+            &deps,
             &other_user(),
-            &resolver,
-            &bridge,
             RegisterDidWithServerParams {
                 did: "did:webvh:scid:host:vta".into(),
                 server_id: "primary".into(),
@@ -384,7 +395,6 @@ mod tests {
                 domain: None,
             },
             None,
-            &auth_locks,
             "test",
         )
         .await
@@ -399,15 +409,10 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
+        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
-            &webvh_ks,
-            &webvh_ks,
-            &webvh_ks,
-            &audit_ks,
-            &seed,
+            &deps,
             &super_admin(),
-            &resolver,
-            &bridge,
             RegisterDidWithServerParams {
                 did: "did:webvh:nonexistent:host:vta".into(),
                 server_id: "primary".into(),
@@ -415,7 +420,6 @@ mod tests {
                 domain: None,
             },
             None,
-            &auth_locks,
             "test",
         )
         .await
@@ -435,15 +439,10 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
+        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
-            &webvh_ks,
-            &webvh_ks,
-            &webvh_ks,
-            &audit_ks,
-            &seed,
+            &deps,
             &super_admin(),
-            &resolver,
-            &bridge,
             RegisterDidWithServerParams {
                 did: did.into(),
                 server_id: "primary".into(),
@@ -451,7 +450,6 @@ mod tests {
                 domain: None,
             },
             None,
-            &auth_locks,
             "test",
         )
         .await
@@ -477,15 +475,10 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
+        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
-            &webvh_ks,
-            &webvh_ks,
-            &webvh_ks,
-            &audit_ks,
-            &seed,
+            &deps,
             &super_admin(),
-            &resolver,
-            &bridge,
             RegisterDidWithServerParams {
                 did: did.into(),
                 server_id: "missing-host".into(),
@@ -493,7 +486,6 @@ mod tests {
                 domain: None,
             },
             None,
-            &auth_locks,
             "test",
         )
         .await
@@ -517,15 +509,10 @@ mod tests {
         let seed = crate::keys::seed_store::PlaintextSeedStore::new(_dir.path());
         let auth_locks = super::super::WebvhAuthLocks::new();
         let bridge = bridge();
+        let deps = deps(&webvh_ks, &audit_ks, &seed, &resolver, &bridge, &auth_locks);
         let err = register_did_with_server(
-            &webvh_ks,
-            &webvh_ks,
-            &webvh_ks,
-            &audit_ks,
-            &seed,
+            &deps,
             &super_admin(),
-            &resolver,
-            &bridge,
             RegisterDidWithServerParams {
                 did: did.into(),
                 server_id: "primary".into(),
@@ -533,7 +520,6 @@ mod tests {
                 domain: None,
             },
             None,
-            &auth_locks,
             "test",
         )
         .await

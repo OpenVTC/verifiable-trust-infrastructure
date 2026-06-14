@@ -1081,20 +1081,24 @@ mod pre_rotation_e2e_tests {
         .await;
         sleep(VERSION_TIME_GAP).await;
 
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = crate::operations::did_webvh::WebvhDeps {
+            keys_ks: &ts.keys_ks,
+            imported_ks: &ts.imported_ks,
+            contexts_ks: &ts.contexts_ks,
+            webvh_ks: &ts.webvh_ks,
+            audit_ks: &ts.audit_ks,
+            seed_store: &seed_store,
+            did_resolver: &resolver,
+            didcomm_bridge: &bridge,
+            auth_locks: &auth_locks,
+        };
         let result = rotate_did_webvh_keys(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             RotateDidWebvhKeysOptions::default(),
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1524,23 +1528,27 @@ mod pre_rotation_e2e_tests {
 
         // And full rotate-keys still works on a fresh state — the
         // guard didn't accidentally fail-closed in the happy case.
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = crate::operations::did_webvh::WebvhDeps {
+            keys_ks: &ts.keys_ks,
+            imported_ks: &ts.imported_ks,
+            contexts_ks: &ts.contexts_ks,
+            webvh_ks: &ts.webvh_ks,
+            audit_ks: &ts.audit_ks,
+            seed_store: &seed_store,
+            did_resolver: &resolver,
+            didcomm_bridge: &bridge,
+            auth_locks: &auth_locks,
+        };
         let result = rotate_did_webvh_keys(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             RotateDidWebvhKeysOptions {
                 pre_rotation_count: None,
                 label: None,
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await

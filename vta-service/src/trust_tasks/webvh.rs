@@ -311,18 +311,12 @@ pub(super) async fn handle_dids_delete(
         }
     };
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::did_webvh::delete_did_webvh(
-        &state.webvh_ks,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         auth,
         &req.did,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -419,20 +413,13 @@ pub(super) async fn handle_dids_rotate_keys(
         pre_rotation_count: req.body.pre_rotation_count,
         label: req.body.label,
     };
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::did_webvh::rotate_did_webvh_keys(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         auth,
         &req.did,
         options,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -466,15 +453,10 @@ pub(super) async fn handle_dids_register_with_server(
         }
     };
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match register_did_with_server(
-        &state.webvh_ks,
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         auth,
-        did_resolver,
-        &state.didcomm_bridge,
         RegisterDidWithServerParams {
             did: req.did,
             server_id: req.server_id,
@@ -482,7 +464,6 @@ pub(super) async fn handle_dids_register_with_server(
             domain: req.domain.clone(),
         },
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         TRANSPORT_TRUST_TASK,
     )
     .await

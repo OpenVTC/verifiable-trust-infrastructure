@@ -77,6 +77,78 @@ use zeroize::Zeroize;
 
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 
+/// Shared dependency bundle for the WebVH DID-management operations
+/// (`delete_did_webvh`, `rotate_did_webvh_keys`, `register_did_with_server`,
+/// `list_webvh_server_domains`) — P2.5.
+///
+/// These ops each took the same 11–14 positional arguments: the five keyspaces
+/// the WebVH publish path touches (keys / imported / contexts / webvh / audit)
+/// plus `seed_store`, `did_resolver`, `didcomm_bridge`, and the per-server
+/// `auth_locks`. Bundling them into one borrowed struct — built once at the
+/// transport boundary via [`WebvhDeps::from_app_state`] /
+/// [`WebvhDeps::from_vta_state`] (or directly by the offline CLI / tests) and
+/// threaded through unchanged — drops every op to ≤6 args.
+///
+/// All fields are borrows. The per-op identity (`vta_did`, `scid`, the DID
+/// being operated on, the WebVH server target) stays a separate argument — it
+/// varies per call and isn't ambient state. `contexts_ks` is read only by
+/// `rotate_did_webvh_keys`; the other ops ignore it.
+pub struct WebvhDeps<'a> {
+    pub keys_ks: &'a KeyspaceHandle,
+    pub imported_ks: &'a KeyspaceHandle,
+    pub contexts_ks: &'a KeyspaceHandle,
+    pub webvh_ks: &'a KeyspaceHandle,
+    pub audit_ks: &'a KeyspaceHandle,
+    pub seed_store: &'a dyn SeedStore,
+    pub did_resolver: &'a DIDCacheClient,
+    pub didcomm_bridge: &'a Arc<DIDCommBridge>,
+    pub auth_locks: &'a WebvhAuthLocks,
+}
+
+impl<'a> WebvhDeps<'a> {
+    /// Borrow the WebVH op dependencies from an [`AppState`](crate::server::AppState)
+    /// (REST + trust-task transports). `did_resolver` is threaded separately
+    /// because `AppState` holds it as an `Option` — the caller unwraps it
+    /// (surfacing the typed "DID resolver not available" reject) first.
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_app_state(
+        s: &'a crate::server::AppState,
+        did_resolver: &'a DIDCacheClient,
+    ) -> Self {
+        Self {
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            audit_ks: &s.audit_ks,
+            seed_store: &*s.seed_store,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+            auth_locks: &s.webvh_auth_locks,
+        }
+    }
+
+    /// Borrow the WebVH op dependencies from a
+    /// [`VtaState`](crate::messaging::router::VtaState) (DIDComm transport).
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    pub fn from_vta_state(
+        s: &'a crate::messaging::router::VtaState,
+        did_resolver: &'a DIDCacheClient,
+    ) -> Self {
+        Self {
+            keys_ks: &s.keys_ks,
+            imported_ks: &s.imported_ks,
+            contexts_ks: &s.contexts_ks,
+            webvh_ks: &s.webvh_ks,
+            audit_ks: &s.audit_ks,
+            seed_store: &*s.seed_store,
+            did_resolver,
+            didcomm_bridge: &s.didcomm_bridge,
+            auth_locks: &s.webvh_auth_locks,
+        }
+    }
+}
+
 /// Resolve a DID template by name for use in a create-DID flow.
 ///
 /// Resolution order:
@@ -1038,24 +1110,16 @@ pub async fn create_did_webvh(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn delete_did_webvh(
-    webvh_ks: &KeyspaceHandle,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
+    deps: &WebvhDeps<'_>,
     auth: &AuthClaims,
     did: &str,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     vta_did: Option<&str>,
-    auth_locks: &WebvhAuthLocks,
     channel: &str,
 ) -> Result<DeleteDidWebvhResultBody, AppError> {
     auth.require_admin()?;
 
-    let record = webvh_store::get_did(webvh_ks, did)
+    let record = webvh_store::get_did(deps.webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
     // Mirror the context-scoping that create/get/get_log/list already
@@ -1070,19 +1134,19 @@ pub async fn delete_did_webvh(
     // local cleanup succeed silently. (Spec / audit H4: surface the
     // failure on the result body.)
     let mut daemon_cleanup_error: Option<String> = None;
-    let server = webvh_store::get_server(webvh_ks, &record.server_id).await?;
+    let server = webvh_store::get_server(deps.webvh_ks, &record.server_id).await?;
     if let Some(server) = server {
         match vta_did {
             Some(vta_did_value) => {
                 if let Err(e) = delete_log_on_server(
-                    keys_ks,
-                    imported_ks,
-                    audit_ks,
-                    webvh_ks,
-                    seed_store,
-                    did_resolver,
-                    didcomm_bridge,
-                    auth_locks,
+                    deps.keys_ks,
+                    deps.imported_ks,
+                    deps.audit_ks,
+                    deps.webvh_ks,
+                    deps.seed_store,
+                    deps.did_resolver,
+                    deps.didcomm_bridge,
+                    deps.auth_locks,
                     vta_did_value,
                     &server,
                     &record.mnemonic,
@@ -1116,11 +1180,11 @@ pub async fn delete_did_webvh(
     }
 
     // Remove local DID record and log
-    webvh_store::delete_did(webvh_ks, did).await?;
+    webvh_store::delete_did(deps.webvh_ks, did).await?;
 
     // Clean up associated key records (best-effort)
     for key_id in &[format!("{did}#key-0"), format!("{did}#key-1")] {
-        let _ = keys_ks.remove(keys::store_key(key_id)).await;
+        let _ = deps.keys_ks.remove(keys::store_key(key_id)).await;
     }
     // Clean up pre-rotation key records (M4: bound to the record's
     // declared count so a DID created with a high pre_rotation_count
@@ -1129,10 +1193,10 @@ pub async fn delete_did_webvh(
     for i in 0..pre_rotation_bound {
         let key_id = format!("{did}#pre-rotation-{i}");
         let store_key = keys::store_key(&key_id);
-        if keys_ks.get_raw(store_key.clone()).await?.is_none() {
+        if deps.keys_ks.get_raw(store_key.clone()).await?.is_none() {
             break;
         }
-        let _ = keys_ks.remove(store_key).await;
+        let _ = deps.keys_ks.remove(store_key).await;
     }
 
     info!(channel, did = %did, "webvh DID deleted");

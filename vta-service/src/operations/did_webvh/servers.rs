@@ -76,17 +76,9 @@ pub async fn list_webvh_servers(
 /// hosting server side. For DIDComm-only servers we return an
 /// empty list and a `None` default so the CLI falls back to the
 /// server-side resolution chain rather than blocking the user.
-#[allow(clippy::too_many_arguments)]
 pub async fn list_webvh_server_domains(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    seed_store: &dyn crate::keys::seed_store::SeedStore,
+    deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     auth: &AuthClaims,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &std::sync::Arc<crate::didcomm_bridge::DIDCommBridge>,
-    auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     vta_did: Option<&str>,
     server_id: &str,
 ) -> Result<vta_sdk::protocols::did_management::servers::ListWebvhServerDomainsResultBody, AppError>
@@ -97,7 +89,7 @@ pub async fn list_webvh_server_domains(
 
     // Any authenticated caller may discover hosting domains —
     // identical scope rule as `list_webvh_servers`.
-    let server = webvh_store::get_server(webvh_ks, server_id)
+    let server = webvh_store::get_server(deps.webvh_ks, server_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
@@ -109,23 +101,23 @@ pub async fn list_webvh_server_domains(
     })?;
 
     let identity = crate::operations::did_webvh::auth_cache::load_vta_webvh_signing_identity(
-        keys_ks,
-        imported_ks,
-        seed_store,
-        audit_ks,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
         vta_did_value,
     )
     .await?;
     let auth_ctx = crate::operations::did_webvh::auth_cache::AuthContext {
-        webvh_ks,
+        webvh_ks: deps.webvh_ks,
         identity: &identity,
-        locks: auth_locks,
+        locks: deps.auth_locks,
     };
 
     let transport = crate::operations::did_webvh::WebvhTransport::from_server_authenticated(
         &server,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         &auth_ctx,
     )
     .await?;

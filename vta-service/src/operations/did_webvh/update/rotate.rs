@@ -3,9 +3,6 @@
 //! record's `next_fragment_id` (under a CAS guard), then delegates to
 //! [`super::update_did_webvh`].
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use didwebvh_rs::log_entry::LogEntryMethods;
 use serde_json::Value;
 
@@ -15,34 +12,22 @@ use super::options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDid
 use super::orchestrator::update_did_webvh;
 use super::state::{find_record_by_scid, state_from_jsonl};
 use crate::auth::AuthClaims;
-use crate::didcomm_bridge::DIDCommBridge;
-use crate::keys::seed_store::SeedStore;
-use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
 /// Rotate every verificationMethod's keys (preserving role/type but
 /// minting fresh public-key bytes + bumping fragment ids), then drive
 /// the doc-bearing [`update_did_webvh`] path. Auth keys + pre-rotation
 /// rotate as a consequence of the document update.
-#[allow(clippy::too_many_arguments)]
 pub async fn rotate_did_webvh_keys(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
+    deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
     scid: &str,
     opts: RotateDidWebvhKeysOptions,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     vta_did: Option<&str>,
-    auth_locks: &super::super::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
     // 1. Load record + log.
-    let mut record = find_record_by_scid(webvh_ks, scid)
+    let mut record = find_record_by_scid(deps.webvh_ks, scid)
         .await?
         .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid} not found")))?;
     auth.require_admin()
@@ -54,7 +39,7 @@ pub async fn rotate_did_webvh_keys(
         ))
     })?;
 
-    let did_log = webvh_store::get_did_log(webvh_ks, &record.did)
+    let did_log = webvh_store::get_did_log(deps.webvh_ks, &record.did)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did_log: {e}")))?
         .ok_or_else(|| {
@@ -69,7 +54,7 @@ pub async fn rotate_did_webvh_keys(
     })?;
 
     // 2. Resolve context base path.
-    let context = crate::contexts::get_context(contexts_ks, &record.context_id)
+    let context = crate::contexts::get_context(deps.contexts_ks, &record.context_id)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_context: {e}")))?
         .ok_or_else(|| {
@@ -93,7 +78,8 @@ pub async fn rotate_did_webvh_keys(
         })?;
 
     let vm_count = vms.len() as u32;
-    let derived_vms = derive_webvh_keys(keys_ks, seed_store, &context.base_path, vm_count).await?;
+    let derived_vms =
+        derive_webvh_keys(deps.keys_ks, deps.seed_store, &context.base_path, vm_count).await?;
     let first_new_fragment_id = record.next_fragment_id;
     // Snapshot the version-vector fields so the next_fragment_id bump
     // (below) can detect a concurrent rotate that would have derived
@@ -152,7 +138,7 @@ pub async fn rotate_did_webvh_keys(
     //    the record between snapshot and now, refuse rather than
     //    blindly clobbering — the in-flight derived keys would
     //    overlap the winner's already-issued fragment ids.
-    let current = webvh_store::get_did(webvh_ks, &record.did)
+    let current = webvh_store::get_did(deps.webvh_ks, &record.did)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did (rotate CAS): {e}")))?
         .ok_or_else(|| {
@@ -162,7 +148,7 @@ pub async fn rotate_did_webvh_keys(
         .assert_unchanged(&current)
         .map_err(|race| UpdateDidWebvhError::Conflict(race.to_string()))?;
     record.next_fragment_id += vm_count;
-    webvh_store::store_did(webvh_ks, &record)
+    webvh_store::store_did(deps.webvh_ks, &record)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did (frag bump): {e}")))?;
 
@@ -172,12 +158,12 @@ pub async fn rotate_did_webvh_keys(
         .label
         .or_else(|| Some(format!("rotate-keys for {}", record.did)));
     let result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         scid,
         UpdateDidWebvhOptions {
@@ -192,10 +178,10 @@ pub async fn rotate_did_webvh_keys(
             // user-edited document flow), so pass None.
             expected_version_id: None,
         },
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         vta_did,
-        auth_locks,
+        deps.auth_locks,
         channel,
     )
     .await?;

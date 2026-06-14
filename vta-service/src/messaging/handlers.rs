@@ -902,21 +902,9 @@ didcomm_handler!(
     did_management::delete::DeleteDidWebvhBody,
     |s, auth, body, did_resolver| {
         let vta_did = s.config.read().await.vta_did.clone();
-        operations::did_webvh::delete_did_webvh(
-            &s.webvh_ks,
-            &s.keys_ks,
-            &s.imported_ks,
-            &s.audit_ks,
-            &*s.seed_store,
-            &auth,
-            &body.did,
-            did_resolver,
-            &s.didcomm_bridge,
-            vta_did.as_deref(),
-            &s.webvh_auth_locks,
-            "didcomm",
-        )
-        .await
+        let deps = operations::did_webvh::WebvhDeps::from_vta_state(s, did_resolver);
+        operations::did_webvh::delete_did_webvh(&deps, &auth, &body.did, vta_did.as_deref(), "didcomm")
+            .await
     }
 );
 
@@ -963,16 +951,10 @@ didcomm_handler!(
     did_management::servers::ListWebvhServerDomainsBody,
     |s, auth, body, did_resolver| {
         let vta_did = s.config.read().await.vta_did.clone();
+        let deps = operations::did_webvh::WebvhDeps::from_vta_state(s, did_resolver);
         operations::did_webvh::list_webvh_server_domains(
-            &s.keys_ks,
-            &s.imported_ks,
-            &s.audit_ks,
-            &s.webvh_ks,
-            &*s.seed_store,
+            &deps,
             &auth,
-            did_resolver,
-            &s.didcomm_bridge,
-            &s.webvh_auth_locks,
             vta_did.as_deref(),
             &body.server_id,
         )
@@ -1022,15 +1004,10 @@ didcomm_handler!(
     did_management::servers::RegisterDidWithServerBody,
     |s, auth, body, did_resolver| {
         let vta_did = s.config.read().await.vta_did.clone();
+        let deps = operations::did_webvh::WebvhDeps::from_vta_state(s, did_resolver);
         let result = operations::did_webvh::register_did_with_server(
-            &s.webvh_ks,
-            &s.keys_ks,
-            &s.imported_ks,
-            &s.audit_ks,
-            &*s.seed_store,
+            &deps,
             &auth,
-            did_resolver,
-            &s.didcomm_bridge,
             operations::did_webvh::RegisterDidWithServerParams {
                 did: body.did,
                 server_id: body.server_id,
@@ -1038,7 +1015,6 @@ didcomm_handler!(
                 domain: body.domain,
             },
             vta_did.as_deref(),
-            &s.webvh_auth_locks,
             "didcomm",
         )
         .await
@@ -1621,21 +1597,14 @@ pub async fn handle_rotate_did_webvh_keys(
     };
 
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_vta_state(&state, did_resolver);
     let result = app_try!(
         operations::did_webvh::rotate_did_webvh_keys(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.contexts_ks,
-            &state.webvh_ks,
-            &state.audit_ks,
-            &*state.seed_store,
+            &deps,
             &auth,
             &env.scid,
             opts,
-            did_resolver,
-            &state.didcomm_bridge,
             vta_did.as_deref(),
-            &state.webvh_auth_locks,
             "didcomm",
         )
         .await
