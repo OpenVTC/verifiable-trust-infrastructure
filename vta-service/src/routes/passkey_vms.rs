@@ -85,20 +85,13 @@ pub async fn enroll_submit_handler(
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
     let vta_did = state.config.read().await.vta_did.clone();
     let config = state.config.read().await.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
     let result = operations::passkey_vms::finish_enrollment(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
+        &deps,
         &state.passkey_vms_ks,
-        &*state.seed_store,
         &auth.0,
         body,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         &config,
         "rest",
     )
@@ -126,20 +119,13 @@ pub async fn revoke_passkey_handler(
         .as_ref()
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(&state, did_resolver);
     operations::passkey_vms::revoke_passkey(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         &auth.0,
         &q.did,
         &fragment,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         "rest",
     )
     .await?;

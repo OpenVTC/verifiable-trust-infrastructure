@@ -37,9 +37,6 @@
 //! routes use `AdminAuth`; this module asserts the per-DID context
 //! gate.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use base64::Engine;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -56,8 +53,6 @@ use vta_sdk::protocols::did_management::passkey_vms::{
 use vti_common::auth::passkey::build_webauthn;
 
 use crate::auth::AuthClaims;
-use crate::didcomm_bridge::DIDCommBridge;
-use crate::keys::seed_store::SeedStore;
 use crate::operations::did_webvh::{UpdateDidWebvhOptions, update_did_webvh};
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
@@ -163,7 +158,6 @@ fn fragment_for_credential(credential_id: &[u8]) -> String {
 
 /// Mint a WebAuthn registration challenge tied to `did`. Caller
 /// must have `admin` role on the DID's context.
-#[allow(clippy::too_many_arguments)]
 pub async fn start_enrollment(
     webvh_ks: &KeyspaceHandle,
     passkey_vms_ks: &KeyspaceHandle,
@@ -229,21 +223,12 @@ pub async fn start_enrollment(
 
 /// Verify the WebAuthn ceremony, build the passkey VM, append it
 /// to the DID document, and publish via WebVH.
-#[allow(clippy::too_many_arguments)]
 pub async fn finish_enrollment(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
+    deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     passkey_vms_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
     auth: &AuthClaims,
     body: EnrollPasskeySubmitBody,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     vta_did: Option<&str>,
-    auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     config: &crate::config::AppConfig,
     channel: &str,
 ) -> Result<EnrollPasskeySubmitResponse, PasskeyVmError> {
@@ -252,7 +237,7 @@ pub async fn finish_enrollment(
     let webauthn = build_webauthn(public_url)
         .map_err(|e| PasskeyVmError::NotAvailable(format!("webauthn builder: {e}")))?;
 
-    let record = webvh_store::get_did(webvh_ks, &body.did)
+    let record = webvh_store::get_did(deps.webvh_ks, &body.did)
         .await
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
@@ -312,7 +297,7 @@ pub async fn finish_enrollment(
 
     // 5. Read current document, append the VM, reference it from
     //    `authentication`.
-    let did_log = webvh_store::get_did_log(webvh_ks, &record.did)
+    let did_log = webvh_store::get_did_log(deps.webvh_ks, &record.did)
         .await
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did_log: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
@@ -331,19 +316,19 @@ pub async fn finish_enrollment(
         expected_version_id: None,
     };
     let result = update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         &record.scid,
         opts,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         vta_did,
-        auth_locks,
+        deps.auth_locks,
         channel,
     )
     .await?;
@@ -433,24 +418,15 @@ pub async fn list_passkeys(
 // revoke_passkey
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 pub async fn revoke_passkey(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
+    deps: &crate::operations::did_webvh::WebvhDeps<'_>,
     auth: &AuthClaims,
     did: &str,
     fragment: &str,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     vta_did: Option<&str>,
-    auth_locks: &crate::operations::did_webvh::WebvhAuthLocks,
     channel: &str,
 ) -> Result<(), PasskeyVmError> {
-    let record = webvh_store::get_did(webvh_ks, did)
+    let record = webvh_store::get_did(deps.webvh_ks, did)
         .await
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
@@ -464,7 +440,7 @@ pub async fn revoke_passkey(
     }
     let vm_id = format!("{did}#{fragment}");
 
-    let did_log = webvh_store::get_did_log(webvh_ks, did)
+    let did_log = webvh_store::get_did_log(deps.webvh_ks, did)
         .await
         .map_err(|e| PasskeyVmError::Persistence(format!("get_did_log: {e}")))?
         .ok_or(PasskeyVmError::DidNotFound)?;
@@ -481,19 +457,19 @@ pub async fn revoke_passkey(
         expected_version_id: None,
     };
     update_did_webvh(
-        keys_ks,
-        imported_ks,
-        contexts_ks,
-        webvh_ks,
-        audit_ks,
-        seed_store,
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.contexts_ks,
+        deps.webvh_ks,
+        deps.audit_ks,
+        deps.seed_store,
         auth,
         &record.scid,
         opts,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         vta_did,
-        auth_locks,
+        deps.auth_locks,
         channel,
     )
     .await?;

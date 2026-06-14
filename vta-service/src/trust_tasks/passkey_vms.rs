@@ -152,20 +152,13 @@ pub(super) async fn handle_enroll_submit(
     };
     let vta_did = state.config.read().await.vta_did.clone();
     let config = state.config.read().await.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::passkey_vms::finish_enrollment(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
+        &deps,
         &state.passkey_vms_ks,
-        &*state.seed_store,
         auth,
         req,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         &config,
         TRANSPORT_TRUST_TASK,
     )
@@ -215,20 +208,13 @@ pub(super) async fn handle_revoke(
         }
     };
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::passkey_vms::revoke_passkey(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         auth,
         &req.did,
         &req.fragment,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         TRANSPORT_TRUST_TASK,
     )
     .await
