@@ -182,14 +182,7 @@ pub async fn register_did_with_server(
         )
     })?;
     let response = super::register_did_atomic_on_server(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.audit_ks,
-        deps.webvh_ks,
-        deps.seed_store,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        deps.auth_locks,
+        deps,
         vta_did_value,
         &server,
         &request_path,

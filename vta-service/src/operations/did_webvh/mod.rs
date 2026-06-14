@@ -1138,21 +1138,8 @@ pub async fn delete_did_webvh(
     if let Some(server) = server {
         match vta_did {
             Some(vta_did_value) => {
-                if let Err(e) = delete_log_on_server(
-                    deps.keys_ks,
-                    deps.imported_ks,
-                    deps.audit_ks,
-                    deps.webvh_ks,
-                    deps.seed_store,
-                    deps.did_resolver,
-                    deps.didcomm_bridge,
-                    deps.auth_locks,
-                    vta_did_value,
-                    &server,
-                    &record.mnemonic,
-                    None,
-                )
-                .await
+                if let Err(e) =
+                    delete_log_on_server(deps, vta_did_value, &server, &record.mnemonic, None).await
                 {
                     tracing::warn!(
                         did = %did,

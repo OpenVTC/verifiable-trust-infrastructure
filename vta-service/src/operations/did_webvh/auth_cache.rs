@@ -212,34 +212,31 @@ async fn persist_tokens(
 /// For DIDComm transports, no auth handshake is performed (DIDComm
 /// authcrypt handles the equivalent at the envelope layer) — the
 /// helper falls through to the plain `publish_did` path.
-#[allow(clippy::too_many_arguments)]
 pub async fn publish_log_to_server(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
-    didcomm_bridge: &Arc<crate::didcomm_bridge::DIDCommBridge>,
-    auth_locks: &WebvhAuthLocks,
+    deps: &super::WebvhDeps<'_>,
     vta_did: &str,
     server: &WebvhServerRecord,
     mnemonic: &str,
     log_content: &str,
     domain: Option<&str>,
 ) -> Result<(), AppError> {
-    let identity =
-        load_vta_webvh_signing_identity(keys_ks, imported_ks, seed_store, audit_ks, vta_did)
-            .await?;
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
     let auth_ctx = AuthContext {
-        webvh_ks,
+        webvh_ks: deps.webvh_ks,
         identity: &identity,
-        locks: auth_locks,
+        locks: deps.auth_locks,
     };
     let mut transport = super::WebvhTransport::from_server_authenticated(
         server,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         &auth_ctx,
     )
     .await?;
@@ -250,33 +247,30 @@ pub async fn publish_log_to_server(
 
 /// Authenticate and delete a DID log on the hosting server. Same
 /// encapsulation as [`publish_log_to_server`].
-#[allow(clippy::too_many_arguments)]
 pub async fn delete_log_on_server(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
-    didcomm_bridge: &Arc<crate::didcomm_bridge::DIDCommBridge>,
-    auth_locks: &WebvhAuthLocks,
+    deps: &super::WebvhDeps<'_>,
     vta_did: &str,
     server: &WebvhServerRecord,
     mnemonic: &str,
     domain: Option<&str>,
 ) -> Result<(), AppError> {
-    let identity =
-        load_vta_webvh_signing_identity(keys_ks, imported_ks, seed_store, audit_ks, vta_did)
-            .await?;
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
     let auth_ctx = AuthContext {
-        webvh_ks,
+        webvh_ks: deps.webvh_ks,
         identity: &identity,
-        locks: auth_locks,
+        locks: deps.auth_locks,
     };
     let mut transport = super::WebvhTransport::from_server_authenticated(
         server,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         &auth_ctx,
     )
     .await?;
@@ -287,16 +281,8 @@ pub async fn delete_log_on_server(
 
 /// Authenticate and atomically claim + publish a DID slot on the
 /// hosting server. Same encapsulation as [`publish_log_to_server`].
-#[allow(clippy::too_many_arguments)]
 pub async fn register_did_atomic_on_server(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
-    did_resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
-    didcomm_bridge: &Arc<crate::didcomm_bridge::DIDCommBridge>,
-    auth_locks: &WebvhAuthLocks,
+    deps: &super::WebvhDeps<'_>,
     vta_did: &str,
     server: &WebvhServerRecord,
     path: &str,
@@ -304,18 +290,23 @@ pub async fn register_did_atomic_on_server(
     force: bool,
     domain: Option<&str>,
 ) -> Result<crate::webvh_client::RequestUriResponse, AppError> {
-    let identity =
-        load_vta_webvh_signing_identity(keys_ks, imported_ks, seed_store, audit_ks, vta_did)
-            .await?;
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
     let auth_ctx = AuthContext {
-        webvh_ks,
+        webvh_ks: deps.webvh_ks,
         identity: &identity,
-        locks: auth_locks,
+        locks: deps.auth_locks,
     };
     let mut transport = super::WebvhTransport::from_server_authenticated(
         server,
-        did_resolver,
-        didcomm_bridge,
+        deps.did_resolver,
+        deps.didcomm_bridge,
         &auth_ctx,
     )
     .await?;

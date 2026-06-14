@@ -401,15 +401,19 @@ pub async fn update_did_webvh(
                     .to_string(),
             )
         })?;
-        super::super::publish_log_to_server(
+        let deps = super::super::WebvhDeps {
             keys_ks,
             imported_ks,
-            audit_ks,
+            contexts_ks,
             webvh_ks,
+            audit_ks,
             seed_store,
             did_resolver,
             didcomm_bridge,
             auth_locks,
+        };
+        super::super::publish_log_to_server(
+            &deps,
             vta_did,
             &server,
             &record.mnemonic,
