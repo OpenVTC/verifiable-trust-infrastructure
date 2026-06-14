@@ -1529,21 +1529,14 @@ pub async fn handle_update_did_webvh(
     };
 
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_vta_state(&state, did_resolver);
     let result = app_try!(
         operations::did_webvh::update_did_webvh(
-            &state.keys_ks,
-            &state.imported_ks,
-            &state.contexts_ks,
-            &state.webvh_ks,
-            &state.audit_ks,
-            &*state.seed_store,
+            &deps,
             &auth,
             &env.scid,
             opts,
-            did_resolver,
-            &state.didcomm_bridge,
             vta_did.as_deref(),
-            &state.webvh_auth_locks,
             "didcomm",
         )
         .await

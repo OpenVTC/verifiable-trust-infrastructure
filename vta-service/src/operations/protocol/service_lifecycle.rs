@@ -148,22 +148,14 @@ pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
     channel: &str,
 ) -> Result<crate::operations::did_webvh::UpdateDidWebvhResult, E> {
     update_did_webvh(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.webvh_ks,
-        deps.audit_ks,
-        deps.seed_store,
+        &deps.webvh(),
         auth,
         scid,
         UpdateDidWebvhOptions {
             document: Some(patched),
             ..Default::default()
         },
-        deps.did_resolver,
-        deps.didcomm_bridge,
         Some(vta_did),
-        deps.webvh_auth_locks,
         channel,
     )
     .await

@@ -351,20 +351,13 @@ pub(super) async fn handle_dids_update(
         }
     };
     let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
     match operations::did_webvh::update_did_webvh(
-        &state.keys_ks,
-        &state.imported_ks,
-        &state.contexts_ks,
-        &state.webvh_ks,
-        &state.audit_ks,
-        &*state.seed_store,
+        &deps,
         auth,
         &did,
         options,
-        did_resolver,
-        &state.didcomm_bridge,
         vta_did.as_deref(),
-        &state.webvh_auth_locks,
         TRANSPORT_TRUST_TASK,
     )
     .await

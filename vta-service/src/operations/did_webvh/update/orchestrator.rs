@@ -5,9 +5,6 @@
 //! signing key (pre-rotation aware) → call `didwebvh_rs::update_did`
 //! → CAS check → persist log + handles → publish to host → audit.
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use chrono::Utc;
 use didwebvh_rs::log_entry::LogEntryMethods;
@@ -24,11 +21,8 @@ use super::state::{find_record_by_scid, state_from_jsonl, state_to_jsonl};
 use super::validate::{validate_document_for_update, validate_watchers, validate_witnesses};
 use crate::audit;
 use crate::auth::AuthClaims;
-use crate::didcomm_bridge::DIDCommBridge;
-use crate::keys::seed_store::SeedStore;
 use crate::operations::did_webvh::concurrency::RecordSnapshot;
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
-use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
 /// Drive a webvh DID update end-to-end. See module docs.
@@ -42,23 +36,27 @@ use crate::webvh_store;
 ///   with `Publish("…")` rather than silently 401.
 /// - `auth_locks` — per-server async mutex for serialising
 ///   auth-cache reads. Lives on `AppState`.
-#[allow(clippy::too_many_arguments)]
 pub async fn update_did_webvh(
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    audit_ks: &KeyspaceHandle,
-    seed_store: &dyn SeedStore,
+    deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
     scid: &str,
     opts: UpdateDidWebvhOptions,
-    did_resolver: &DIDCacheClient,
-    didcomm_bridge: &Arc<DIDCommBridge>,
     vta_did: Option<&str>,
-    auth_locks: &super::super::WebvhAuthLocks,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
+    // Re-bind the bundled deps to the historical local names so the (large) body
+    // below is unchanged. All fields are `Copy` references — this copies the
+    // borrows out of `*deps`; `deps` itself stays usable (the publish step below
+    // forwards it to `publish_log_to_server`).
+    let super::super::WebvhDeps {
+        keys_ks,
+        contexts_ks,
+        webvh_ks,
+        audit_ks,
+        seed_store,
+        did_resolver,
+        ..
+    } = *deps;
     // 1. Resolve SCID → record. Snapshot the version-vector fields
     //    immediately. The snapshot is consulted just before the
     //    final store (step 11) to catch any concurrent record
@@ -401,19 +399,8 @@ pub async fn update_did_webvh(
                     .to_string(),
             )
         })?;
-        let deps = super::super::WebvhDeps {
-            keys_ks,
-            imported_ks,
-            contexts_ks,
-            webvh_ks,
-            audit_ks,
-            seed_store,
-            did_resolver,
-            didcomm_bridge,
-            auth_locks,
-        };
         super::super::publish_log_to_server(
-            &deps,
+            deps,
             vta_did,
             &server,
             &record.mnemonic,

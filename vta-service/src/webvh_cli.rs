@@ -466,20 +466,23 @@ pub async fn run_edit_did(
     let auth = cli_super_admin();
     let vta_did = config.vta_did.clone();
     let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+    let deps = crate::operations::did_webvh::WebvhDeps {
+        keys_ks: &keys_ks,
+        imported_ks: &imported_ks,
+        contexts_ks: &contexts_ks,
+        webvh_ks: &webvh_ks,
+        audit_ks: &audit_ks,
+        seed_store: &*seed_store,
+        did_resolver: &did_resolver,
+        didcomm_bridge: &didcomm_bridge,
+        auth_locks: &auth_locks,
+    };
     let result = crate::operations::did_webvh::update_did_webvh(
-        &keys_ks,
-        &imported_ks,
-        &contexts_ks,
-        &webvh_ks,
-        &audit_ks,
-        &*seed_store,
+        &deps,
         &auth,
         &scid,
         opts,
-        &did_resolver,
-        &didcomm_bridge,
         vta_did.as_deref(),
-        &auth_locks,
         "vta-cli-offline",
     )
     .await?;

@@ -158,12 +158,7 @@ pub async fn rotate_did_webvh_keys(
         .label
         .or_else(|| Some(format!("rotate-keys for {}", record.did)));
     let result = update_did_webvh(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.webvh_ks,
-        deps.audit_ks,
-        deps.seed_store,
+        deps,
         auth,
         scid,
         UpdateDidWebvhOptions {
@@ -178,10 +173,7 @@ pub async fn rotate_did_webvh_keys(
             // user-edited document flow), so pass None.
             expected_version_id: None,
         },
-        deps.did_resolver,
-        deps.didcomm_bridge,
         vta_did,
-        deps.auth_locks,
         channel,
     )
     .await?;

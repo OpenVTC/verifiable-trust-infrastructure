@@ -173,22 +173,14 @@ pub async fn enable_didcomm(
     // LogEntry append. Rotates control keys; preserves
     // verificationMethod.
     let update_result = update_did_webvh(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.webvh_ks,
-        deps.audit_ks,
-        deps.seed_store,
+        &deps.webvh(),
         auth,
         &scid,
         UpdateDidWebvhOptions {
             document: Some(patched),
             ..Default::default()
         },
-        deps.did_resolver,
-        deps.didcomm_bridge,
         Some(vta_did.as_str()),
-        deps.webvh_auth_locks,
         channel,
     )
     .await?;

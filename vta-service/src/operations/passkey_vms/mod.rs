@@ -315,23 +315,7 @@ pub async fn finish_enrollment(
         label: Some(format!("enroll passkey VM {fragment}")),
         expected_version_id: None,
     };
-    let result = update_did_webvh(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.webvh_ks,
-        deps.audit_ks,
-        deps.seed_store,
-        auth,
-        &record.scid,
-        opts,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        vta_did,
-        deps.auth_locks,
-        channel,
-    )
-    .await?;
+    let result = update_did_webvh(deps, auth, &record.scid, opts, vta_did, channel).await?;
 
     Ok(EnrollPasskeySubmitResponse {
         verification_method: vm,
@@ -456,23 +440,7 @@ pub async fn revoke_passkey(
         label: Some(format!("revoke passkey VM {fragment}")),
         expected_version_id: None,
     };
-    update_did_webvh(
-        deps.keys_ks,
-        deps.imported_ks,
-        deps.contexts_ks,
-        deps.webvh_ks,
-        deps.audit_ks,
-        deps.seed_store,
-        auth,
-        &record.scid,
-        opts,
-        deps.did_resolver,
-        deps.didcomm_bridge,
-        vta_did,
-        deps.auth_locks,
-        channel,
-    )
-    .await?;
+    update_did_webvh(deps, auth, &record.scid, opts, vta_did, channel).await?;
     Ok(())
 }
 

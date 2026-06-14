@@ -123,23 +123,26 @@ pub async fn strip_all_passkey_vms(
             let cfg = config.read().await;
             cfg.vta_did.clone()
         };
-        let result = update_did_webvh(
+        let deps = crate::operations::did_webvh::WebvhDeps {
             keys_ks,
             imported_ks,
             contexts_ks,
             webvh_ks,
             audit_ks,
             seed_store,
+            did_resolver,
+            didcomm_bridge,
+            auth_locks: webvh_auth_locks,
+        };
+        let result = update_did_webvh(
+            &deps,
             auth,
             scid,
             UpdateDidWebvhOptions {
                 document: Some(patched_doc),
                 ..Default::default()
             },
-            did_resolver,
-            didcomm_bridge,
             vta_did.as_deref(),
-            webvh_auth_locks,
             channel,
         )
         .await;

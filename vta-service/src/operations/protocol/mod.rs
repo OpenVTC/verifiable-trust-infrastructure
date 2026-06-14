@@ -237,6 +237,24 @@ impl<'a> ServiceOpDeps<'a> {
             sweeper: &s.drain_sweeper,
         }
     }
+
+    /// Borrow the [`WebvhDeps`](crate::operations::did_webvh::WebvhDeps) subset —
+    /// the keyspaces + seed-store + resolver + bridge + auth-locks the WebVH
+    /// publish path (`update_did_webvh`) needs. Lets the protocol ops hand their
+    /// `update_did_webvh` call a `WebvhDeps` without re-listing every field.
+    pub fn webvh(&self) -> crate::operations::did_webvh::WebvhDeps<'a> {
+        crate::operations::did_webvh::WebvhDeps {
+            keys_ks: self.keys_ks,
+            imported_ks: self.imported_ks,
+            contexts_ks: self.contexts_ks,
+            webvh_ks: self.webvh_ks,
+            audit_ks: self.audit_ks,
+            seed_store: self.seed_store,
+            did_resolver: self.did_resolver,
+            didcomm_bridge: self.didcomm_bridge,
+            auth_locks: self.webvh_auth_locks,
+        }
+    }
 }
 
 #[cfg(test)]

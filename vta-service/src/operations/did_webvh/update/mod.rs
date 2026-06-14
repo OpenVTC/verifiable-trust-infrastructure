@@ -608,6 +608,28 @@ mod pre_rotation_e2e_tests {
         Arc::new(DIDCommBridge::placeholder())
     }
 
+    /// Build a [`WebvhDeps`](crate::operations::did_webvh::WebvhDeps) from the
+    /// loose test fixtures so the `update_did_webvh` calls below stay compact.
+    fn webvh_deps<'a>(
+        ts: &'a TestStore,
+        seed_store: &'a dyn crate::keys::seed_store::SeedStore,
+        resolver: &'a DIDCacheClient,
+        bridge: &'a Arc<DIDCommBridge>,
+        locks: &'a crate::operations::did_webvh::WebvhAuthLocks,
+    ) -> crate::operations::did_webvh::WebvhDeps<'a> {
+        crate::operations::did_webvh::WebvhDeps {
+            keys_ks: &ts.keys_ks,
+            imported_ks: &ts.imported_ks,
+            contexts_ks: &ts.contexts_ks,
+            webvh_ks: &ts.webvh_ks,
+            audit_ks: &ts.audit_ks,
+            seed_store,
+            did_resolver: resolver,
+            didcomm_bridge: bridge,
+            auth_locks: locks,
+        }
+    }
+
     fn ts_app_config(ts: &TestStore) -> AppConfig {
         test_app_config(ts.data_dir.clone())
     }
@@ -736,6 +758,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -751,22 +775,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         let result = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v2")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -791,6 +807,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -806,22 +824,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         let result = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v2")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -848,6 +858,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -863,22 +875,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v2")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -886,22 +890,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         let result2 = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v3")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -922,6 +918,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -937,22 +935,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v2")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -960,22 +950,14 @@ mod pre_rotation_e2e_tests {
         sleep(VERSION_TIME_GAP).await;
 
         update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v3")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -996,6 +978,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1012,12 +996,7 @@ mod pre_rotation_e2e_tests {
 
         // Update 1: turn off pre-rotation.
         let r1 = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1025,10 +1004,7 @@ mod pre_rotation_e2e_tests {
                 pre_rotation_count: Some(0),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1038,22 +1014,14 @@ mod pre_rotation_e2e_tests {
 
         // Update 2: ordinary non-pre-rotation update.
         let r2 = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v3")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1072,6 +1040,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1086,18 +1056,6 @@ mod pre_rotation_e2e_tests {
         .await;
         sleep(VERSION_TIME_GAP).await;
 
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = crate::operations::did_webvh::WebvhDeps {
-            keys_ks: &ts.keys_ks,
-            imported_ks: &ts.imported_ks,
-            contexts_ks: &ts.contexts_ks,
-            webvh_ks: &ts.webvh_ks,
-            audit_ks: &ts.audit_ks,
-            seed_store: &seed_store,
-            did_resolver: &resolver,
-            didcomm_bridge: &bridge,
-            auth_locks: &auth_locks,
-        };
         let result = rotate_did_webvh_keys(
             &deps,
             &auth,
@@ -1134,6 +1092,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1184,22 +1144,14 @@ mod pre_rotation_e2e_tests {
         // The update should succeed via the legacy fallback in
         // `load_pre_rotation_signing_key`.
         let result = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "v2")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1226,6 +1178,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1258,22 +1212,14 @@ mod pre_rotation_e2e_tests {
         // Concurrent update by "operator B" — bumps the chain to `2-…`.
         sleep(VERSION_TIME_GAP).await;
         update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
                 document: Some(doc_patch(&did, "by-b")),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1282,12 +1228,7 @@ mod pre_rotation_e2e_tests {
         // Operator A tries to save with the stale `1-…` precondition.
         sleep(VERSION_TIME_GAP).await;
         let err = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1295,10 +1236,7 @@ mod pre_rotation_e2e_tests {
                 expected_version_id: Some(genesis_version_id.clone()),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
@@ -1350,7 +1288,6 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
-
         let (did, scid) = create_did(
             &ts,
             &seed_store,
@@ -1469,6 +1406,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1533,18 +1472,6 @@ mod pre_rotation_e2e_tests {
 
         // And full rotate-keys still works on a fresh state — the
         // guard didn't accidentally fail-closed in the happy case.
-        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
-        let deps = crate::operations::did_webvh::WebvhDeps {
-            keys_ks: &ts.keys_ks,
-            imported_ks: &ts.imported_ks,
-            contexts_ks: &ts.contexts_ks,
-            webvh_ks: &ts.webvh_ks,
-            audit_ks: &ts.audit_ks,
-            seed_store: &seed_store,
-            did_resolver: &resolver,
-            didcomm_bridge: &bridge,
-            auth_locks: &auth_locks,
-        };
         let result = rotate_did_webvh_keys(
             &deps,
             &auth,
@@ -1572,6 +1499,8 @@ mod pre_rotation_e2e_tests {
         let auth = admin_auth();
         let resolver = build_resolver().await;
         let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
 
         let (did, scid) = create_did(
             &ts,
@@ -1601,12 +1530,7 @@ mod pre_rotation_e2e_tests {
 
         sleep(VERSION_TIME_GAP).await;
         let result = update_did_webvh(
-            &ts.keys_ks,
-            &ts.imported_ks,
-            &ts.contexts_ks,
-            &ts.webvh_ks,
-            &ts.audit_ks,
-            &seed_store,
+            &deps,
             &auth,
             &scid,
             UpdateDidWebvhOptions {
@@ -1614,10 +1538,7 @@ mod pre_rotation_e2e_tests {
                 expected_version_id: Some(current_version_id),
                 ..Default::default()
             },
-            &resolver,
-            &bridge,
             None,
-            &crate::operations::did_webvh::WebvhAuthLocks::new(),
             "test",
         )
         .await
