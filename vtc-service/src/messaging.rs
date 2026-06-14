@@ -28,6 +28,7 @@ use vta_sdk::protocols::join_requests::{
     SelfRemoveReceiptBody,
 };
 
+use crate::ceremony::remove_inner;
 use crate::config::AppConfig;
 use crate::join::JoinTransport;
 use crate::members::Disposition;
@@ -35,7 +36,6 @@ use crate::routes::join_requests::accept::accept_inner;
 use crate::routes::join_requests::manifest::manifest_inner;
 use crate::routes::join_requests::status::status_inner;
 use crate::routes::join_requests::submit::submit_inner;
-use crate::routes::members::remove::remove_inner;
 use crate::server::AppState;
 
 /// Start the DIDComm service and block until shutdown.

@@ -9,9 +9,11 @@
 //!
 //! Role-change is the first spine moved; leave + join follow.
 
+use affinidi_status_list::StatusPurpose;
 use serde_json::json;
-use tracing::warn;
+use tracing::{info, warn};
 
+use vti_common::audit::{AuditEvent, MemberRemovedData, StatusListFlippedData};
 use vti_common::error::AppError;
 
 use super::execute::{self, EffectOutcome};
@@ -19,7 +21,8 @@ use super::{
     Evidence, FactsInputs, Purpose, Verdict, VerifiedFacts, assemble_facts, decide,
     effects::EffectPlan, load_actor_role, member_state,
 };
-use crate::members::get_member;
+use crate::acl::get_acl_entry;
+use crate::members::{Disposition, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
 
@@ -157,6 +160,222 @@ async fn assemble_role_change_facts(
         },
     )
     .await
+}
+
+// ---------------------------------------------------------------------------
+// Leave ceremony
+// ---------------------------------------------------------------------------
+
+/// What a completed leave produced. The caller maps it to its wire response
+/// (the REST `RemoveResponse`, the DIDComm self-remove receipt).
+#[derive(Debug)]
+pub struct LeaveOutcome {
+    pub did: String,
+    pub disposition: String,
+    pub removed: bool,
+}
+
+/// The leave ceremony's decide → resolve → effect → audit spine. Returns
+/// `Ok(LeaveOutcome)` on departure, `Err(Forbidden)` when the policy denies, or
+/// `Err(Conflict)` for the executor's no-last-admin invariant.
+///
+/// `actor_did` is the initiator (self for self-leave, admin for admin-remove) —
+/// the policy distinguishes the two via `actor.did == subject.did`. `target_did`
+/// is the subject being removed.
+pub async fn remove_inner(
+    state: &AppState,
+    actor_did: &str,
+    target_did: &str,
+    disposition: Option<Disposition>,
+    reason: String,
+) -> Result<LeaveOutcome, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    let target_acl = get_acl_entry(&state.acl_ks, target_did)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("member not found: {target_did}")))?;
+
+    let target_member = get_member(&state.members_ks, target_did).await?;
+
+    // Decide. Assemble verified leave Facts and run the active removal-purpose
+    // decision policy. The no-last-admin invariant + the credential revocation
+    // are the *effect* (executor below), not the policy.
+    let facts = assemble_leave_facts(
+        state,
+        actor_did,
+        target_did,
+        &target_acl.role.to_string(),
+        target_member.as_ref(),
+        disposition,
+        &reason,
+    )
+    .await?;
+    let verified = VerifiedFacts::assemble(facts)?;
+    let policy = load_active_compiled(
+        &state.active_policies_ks,
+        &state.policies_ks,
+        PolicyPurpose::Removal,
+    )
+    .await?;
+    let allow = match decide(&verified, &policy)? {
+        Verdict::Allow(a) => a,
+        Verdict::Deny(d) => {
+            return Err(AppError::Forbidden(format!(
+                "removal denied by policy ({})",
+                d.code
+            )));
+        }
+        // Leave is synchronous — a refer / request_more verdict is a
+        // misconfigured policy for this purpose.
+        Verdict::Refer(_) | Verdict::RequestMore(_) => {
+            return Err(AppError::Internal(
+                "removal policy returned a non-terminal verdict; leave is synchronous".into(),
+            ));
+        }
+    };
+
+    // Resolve the final disposition: the caller's explicit request wins; then
+    // the member's `departure_preference`; then the policy's chosen disposition
+    // (`with.disposition`); then `Tombstone`.
+    let initial = disposition
+        .or_else(|| target_member.as_ref().map(|m| m.departure_preference))
+        .unwrap_or(Disposition::PolicyDefault);
+    let resolved = match initial {
+        Disposition::PolicyDefault => allow
+            .disposition
+            .as_deref()
+            .and_then(parse_disposition_opt)
+            .unwrap_or(Disposition::Tombstone),
+        other => other,
+    };
+
+    // Effect: the no-last-admin invariant + ACL/Member removal + credential
+    // revocation, via the ceremony effect executor (the single state-mutating
+    // seam). A last-admin removal surfaces as the executor's `Conflict` → 409,
+    // untouched state.
+    let plan = EffectPlan::Depart {
+        subject: target_did.to_string(),
+        disposition: Some(disposition_wire(resolved).to_string()),
+    };
+    let EffectOutcome::Departed(outcome) = execute::apply(state, plan, actor_did).await? else {
+        return Err(AppError::Internal(
+            "depart effect did not produce a departure outcome".into(),
+        ));
+    };
+    let disposition_str = disposition_wire(outcome.disposition);
+
+    audit_writer
+        .write(
+            actor_did,
+            Some(target_did),
+            AuditEvent::MemberRemoved(MemberRemovedData {
+                disposition: disposition_str.into(),
+                reason: reason.clone(),
+            }),
+        )
+        .await?;
+
+    // M2.14: the executor flipped the revocation bit (best-effort). Emit the
+    // audit event for the slot it reported.
+    if let Some(slot) = outcome.revoked_slot {
+        audit_writer
+            .write(
+                actor_did,
+                Some(target_did),
+                AuditEvent::StatusListFlipped(StatusListFlippedData {
+                    purpose: StatusPurpose::Revocation.to_string(),
+                    index: slot,
+                    revoked: true,
+                }),
+            )
+            .await?;
+    }
+
+    info!(
+        actor = actor_did,
+        target = target_did,
+        disposition = disposition_str,
+        reason_present = !reason.is_empty(),
+        "member removed"
+    );
+
+    Ok(LeaveOutcome {
+        did: target_did.to_string(),
+        disposition: disposition_str.into(),
+        removed: true,
+    })
+}
+
+/// Wire string for a resolved (concrete) disposition. Mirrors the `Disposition`
+/// serde representation; used for the outcome + audit + the `EffectPlan::Depart`
+/// payload.
+fn disposition_wire(d: Disposition) -> &'static str {
+    match d {
+        Disposition::Purge => "purge",
+        Disposition::Tombstone => "tombstone",
+        Disposition::Historical => "historical",
+        Disposition::PolicyDefault => "policydefault",
+    }
+}
+
+/// Read the actor's community role + the subject's member facts into a
+/// purpose-`leave` [`Facts`](super::Facts) for the decision policy.
+/// `subject_role` is the subject's ACL role (already fetched by the caller for
+/// the 404 gate); `subject_member` is their member row, if any.
+async fn assemble_leave_facts(
+    state: &AppState,
+    actor_did: &str,
+    subject_did: &str,
+    subject_role: &str,
+    subject_member: Option<&crate::members::Member>,
+    disposition: Option<Disposition>,
+    reason: &str,
+) -> Result<super::Facts, AppError> {
+    // Ceremony request params: the operator's requested disposition + the
+    // admin-supplied reason. Absent when neither is set.
+    let request = if disposition.is_some() || !reason.is_empty() {
+        let mut m = serde_json::Map::new();
+        if let Some(d) = disposition {
+            m.insert("disposition".into(), json!(disposition_wire(d)));
+        }
+        if !reason.is_empty() {
+            m.insert("reason".into(), json!(reason));
+        }
+        Some(serde_json::Value::Object(m))
+    } else {
+        None
+    };
+
+    assemble_facts(
+        state,
+        FactsInputs {
+            purpose: Purpose::Leave,
+            actor_did: actor_did.to_string(),
+            actor_role: load_actor_role(state, actor_did).await?,
+            subject_did: subject_did.to_string(),
+            subject_member: Some(member_state(subject_role.to_string(), subject_member)),
+            evidence: Evidence {
+                invitation: None,
+                presentation: None,
+                request,
+            },
+        },
+    )
+    .await
+}
+
+/// Parse a disposition wire string into a concrete `Disposition`. Unknown /
+/// `policydefault` → `None` (callers fall back to Tombstone).
+fn parse_disposition_opt(s: &str) -> Option<Disposition> {
+    match s {
+        "purge" => Some(Disposition::Purge),
+        "tombstone" => Some(Disposition::Tombstone),
+        "historical" => Some(Disposition::Historical),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

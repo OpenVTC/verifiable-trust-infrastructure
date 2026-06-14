@@ -75,7 +75,7 @@ pub use facts::{
     Presentation, Purpose, State, Subject,
 };
 pub use invariant::{Invariant, InvariantViolation};
-pub use orchestrate::{RoleChangeResult, role_change_via_pipeline};
+pub use orchestrate::{LeaveOutcome, RoleChangeResult, remove_inner, role_change_via_pipeline};
 pub use verdict::{Allow, Deny, Refer, RequestMore, Verdict};
 pub use verify::{VerifiedFacts, VerifyError};
 
