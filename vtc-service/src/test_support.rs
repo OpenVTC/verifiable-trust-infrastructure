@@ -307,6 +307,13 @@ impl TestVtcBuilder {
 
         let install_store = InstallTokenStore::new(install_ks.clone());
 
+        let member_count_cache = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::members::list_members(&members_ks)
+                .await
+                .expect("seed member count")
+                .len() as u64,
+        ));
+
         let state = AppState {
             sessions_ks,
             acl_ks,
@@ -315,6 +322,7 @@ impl TestVtcBuilder {
             passkey_ks,
             install_ks,
             members_ks,
+            member_count_cache,
             join_requests_ks,
             policies_ks,
             active_policies_ks,

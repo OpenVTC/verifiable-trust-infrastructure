@@ -44,7 +44,7 @@ use crate::ceremony::{
     Verdict, VerifiedFacts, effects::EffectPlan,
 };
 use crate::community::load_profile;
-use crate::members::{get_member, list_members};
+use crate::members::get_member;
 use crate::policy::load_active_compiled;
 use crate::policy::model::PolicyPurpose;
 use crate::server::AppState;
@@ -187,7 +187,7 @@ async fn assemble_directory_facts(
         .map(|p| p.community_did)
         .unwrap_or_default();
 
-    let member_count = list_members(&state.members_ks).await?.len() as u64;
+    let member_count = state.member_count();
 
     let request = fields_hint.map(|raw| {
         let fields: Vec<String> = raw

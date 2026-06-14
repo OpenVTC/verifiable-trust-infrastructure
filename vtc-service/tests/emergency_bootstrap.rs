@@ -293,6 +293,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         passkey_ks: passkey_ks.clone(),
         install_ks,
         members_ks: members_ks.clone(),
+        member_count_cache: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         join_requests_ks: join_requests_ks.clone(),
         policies_ks: policies_ks.clone(),
         active_policies_ks: active_policies_ks.clone(),

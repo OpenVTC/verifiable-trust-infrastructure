@@ -30,7 +30,7 @@ use crate::ceremony::{
 };
 use crate::community::load_profile;
 use crate::error::AppError;
-use crate::members::{Disposition, Member, get_member, list_members, store_member};
+use crate::members::{Disposition, Member, get_member, store_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::routes::members::read::MemberResponse;
 use crate::server::AppState;
@@ -290,7 +290,7 @@ async fn assemble_role_change_facts(
         .await?
         .map(|p| p.community_did)
         .unwrap_or_default();
-    let member_count = list_members(&state.members_ks).await?.len() as u64;
+    let member_count = state.member_count();
 
     Ok(Facts {
         purpose: Purpose::RoleChange,

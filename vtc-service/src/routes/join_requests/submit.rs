@@ -64,7 +64,6 @@ use crate::ceremony::{
 };
 use crate::community::load_profile;
 use crate::join::{JoinRequest, JoinStatus, JoinTransport, list_join_requests, store_join_request};
-use crate::members::list_members;
 use crate::policy::{PolicyPurpose, extract::extract_vp_claims, load_active_compiled};
 use crate::server::AppState;
 
@@ -435,7 +434,7 @@ async fn assemble_join_facts(
         .await?
         .map(|p| p.community_did)
         .unwrap_or_default();
-    let member_count = list_members(&state.members_ks).await?.len() as u64;
+    let member_count = state.member_count();
 
     Ok(Facts {
         purpose: Purpose::Join,

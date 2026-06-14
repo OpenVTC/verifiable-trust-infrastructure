@@ -1,5 +1,6 @@
 use crate::store::keyspaces;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
@@ -56,6 +57,16 @@ pub struct AppState {
     pub passkey_ks: KeyspaceHandle,
     pub install_ks: KeyspaceHandle,
     pub members_ks: KeyspaceHandle,
+    /// Cached count of member rows in [`Self::members_ks`] — kept equal to
+    /// `members::list_members(..).len()` so ceremony facts assembly (the
+    /// unauthenticated join-submit path included) reads it in O(1) instead of
+    /// walking the whole keyspace per request. Seeded once at boot, then
+    /// adjusted by the single member-mutation seam (`ceremony::execute`):
+    /// +1 on admit, −1 on a purge-departure. Tombstone/historical departures
+    /// and role-change re-mints keep the row, so they don't move it. Access via
+    /// [`Self::member_count`] / [`Self::member_count_inc`] /
+    /// [`Self::member_count_dec`].
+    pub member_count_cache: Arc<AtomicU64>,
     pub join_requests_ks: KeyspaceHandle,
     /// Uploaded Rego policies (M2.2). Holds every revision; the
     /// active pointer for each purpose lives in
@@ -148,6 +159,32 @@ pub struct AppState {
     /// `Some(Manual)` / `None` without racing other tests on the
     /// shared `std::env`.
     pub supervisor: Option<SupervisorKind>,
+}
+
+impl AppState {
+    /// Current cached member-row count (equal to
+    /// `members::list_members(..).len()`). O(1) — see
+    /// [`Self::member_count_cache`].
+    pub fn member_count(&self) -> u64 {
+        self.member_count_cache.load(Ordering::SeqCst)
+    }
+
+    /// Record a newly-admitted member. Call once per admit, under the same
+    /// guard that commits the member row.
+    pub fn member_count_inc(&self) {
+        self.member_count_cache.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Record a purged member. Saturating at zero so an unexpected
+    /// double-decrement can never wrap the count around to `u64::MAX` and
+    /// poison every size-gated policy.
+    pub fn member_count_dec(&self) {
+        let _ = self
+            .member_count_cache
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.saturating_sub(1))
+            });
+    }
 }
 
 impl AuthState for AppState {
@@ -428,6 +465,12 @@ pub async fn run(
     let storage_auth_config = config.auth.clone();
     let has_auth = jwt_keys.is_some();
 
+    // Seed the cached member counter with a single keyspace walk at boot; the
+    // ceremony executor keeps it in step with the row count thereafter.
+    let member_count_cache = Arc::new(AtomicU64::new(
+        crate::members::list_members(&members_ks).await?.len() as u64,
+    ));
+
     // Build AppState for the REST thread
     let state = AppState {
         sessions_ks,
@@ -437,6 +480,7 @@ pub async fn run(
         passkey_ks,
         install_ks,
         members_ks,
+        member_count_cache,
         join_requests_ks,
         policies_ks,
         active_policies_ks,

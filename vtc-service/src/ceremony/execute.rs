@@ -218,6 +218,10 @@ async fn admit(
     member.current_role_vec_id = top_level_id(&role_vec);
     store_member(&state.members_ks, &member).await?;
 
+    // A new member row exists; keep the cached count in step (still under
+    // LAST_ADMIN_LOCK, so it's serialised with the duplicate-admit guard).
+    state.member_count_inc();
+
     Ok(AdmitOutcome {
         vmc,
         role_vec,
@@ -432,8 +436,15 @@ async fn depart(
     delete_acl_entry(&state.acl_ks, subject_did).await?;
 
     match (disposition, member) {
-        (Disposition::Purge, _) => {
+        (Disposition::Purge, existed) => {
             delete_member(&state.members_ks, subject_did).await?;
+            // Only a purge removes the row; tombstone/historical keep it, so
+            // they leave `list_members().len()` (and the cache) unchanged. Guard
+            // on prior existence so a purge of an already-absent member doesn't
+            // under-count.
+            if existed.is_some() {
+                state.member_count_dec();
+            }
         }
         (Disposition::Tombstone, Some(mut m)) => {
             m.tombstone();

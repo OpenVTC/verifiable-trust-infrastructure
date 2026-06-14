@@ -72,6 +72,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         passkey_ks,
         install_ks: install_ks.clone(),
         members_ks: members_ks.clone(),
+        member_count_cache: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         join_requests_ks: join_requests_ks.clone(),
         policies_ks: policies_ks.clone(),
         active_policies_ks: active_policies_ks.clone(),

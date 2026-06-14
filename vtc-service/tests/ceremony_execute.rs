@@ -19,7 +19,7 @@ use affinidi_status_list::StatusPurpose;
 use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use vtc_service::ceremony::EffectPlan;
 use vtc_service::ceremony::execute::{self, EffectOutcome};
-use vtc_service::members::{Disposition, get_member};
+use vtc_service::members::{Disposition, get_member, list_members};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
@@ -388,4 +388,93 @@ async fn remint_refuses_demoting_the_last_admin() {
             .role,
         VtcRole::Admin
     );
+}
+
+/// The cached `member_count` must equal `list_members().len()` after every
+/// mutation the executor performs: +1 on admit, unchanged on a role-change
+/// re-mint and on a tombstone departure (the row is kept), −1 only on a purge.
+/// A drift here silently corrupts every size-gated policy decision, so assert
+/// the invariant after each step.
+#[tokio::test]
+async fn member_count_cache_tracks_list_members_len() {
+    let (state, _dir) = build_state().await;
+
+    async fn assert_consistent(state: &AppState) -> u64 {
+        let listed = list_members(&state.members_ks).await.unwrap().len() as u64;
+        assert_eq!(
+            state.member_count(),
+            listed,
+            "cached member_count drifted from list_members().len()"
+        );
+        listed
+    }
+
+    let admit = |did: &str, role: &str| EffectPlan::Admit {
+        subject: did.into(),
+        role: role.into(),
+        obligations: vec![],
+    };
+
+    assert_eq!(assert_consistent(&state).await, 0, "fresh community");
+
+    execute::apply(&state, admit("did:key:zA", "member"), ACTOR_DID)
+        .await
+        .expect("admit A");
+    assert_eq!(assert_consistent(&state).await, 1, "admit increments");
+
+    execute::apply(&state, admit("did:key:zB", "member"), ACTOR_DID)
+        .await
+        .expect("admit B");
+    assert_eq!(
+        assert_consistent(&state).await,
+        2,
+        "second admit increments"
+    );
+
+    // Role-change re-mint updates the existing row in place — no count change.
+    execute::apply(
+        &state,
+        EffectPlan::Remint {
+            subject: "did:key:zB".into(),
+            role: "moderator".into(),
+        },
+        ACTOR_DID,
+    )
+    .await
+    .expect("remint B");
+    assert_eq!(
+        assert_consistent(&state).await,
+        2,
+        "remint is count-neutral"
+    );
+
+    // Tombstone departure keeps the (now-removed-state) row, so the count holds.
+    execute::apply(
+        &state,
+        EffectPlan::Depart {
+            subject: "did:key:zA".into(),
+            disposition: Some("tombstone".into()),
+        },
+        ACTOR_DID,
+    )
+    .await
+    .expect("tombstone A");
+    assert_eq!(
+        assert_consistent(&state).await,
+        2,
+        "tombstone keeps the row, count unchanged"
+    );
+
+    // Purge removes the row — the one departure that decrements.
+    execute::apply(
+        &state,
+        EffectPlan::Depart {
+            subject: "did:key:zB".into(),
+            disposition: Some("purge".into()),
+        },
+        ACTOR_DID,
+    )
+    .await
+    .expect("purge B");
+    assert_eq!(assert_consistent(&state).await, 1, "purge decrements");
 }

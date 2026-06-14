@@ -42,7 +42,7 @@ use crate::ceremony::{
     State as FactsState, Subject, Verdict, VerifiedFacts,
 };
 use crate::community::load_profile;
-use crate::members::{Disposition, get_member, list_members};
+use crate::members::{Disposition, get_member};
 use crate::policy::{PolicyPurpose, load_active_compiled};
 use crate::server::AppState;
 
@@ -344,7 +344,7 @@ async fn assemble_leave_facts(
         .await?
         .map(|p| p.community_did)
         .unwrap_or_default();
-    let member_count = list_members(&state.members_ks).await?.len() as u64;
+    let member_count = state.member_count();
 
     // Ceremony request params: the operator's requested disposition +
     // the admin-supplied reason. Absent when neither is set.
