@@ -218,7 +218,7 @@ pub async fn promote_finish(
     // step-up" branch allows, while a tightened policy (quorum/tenure) denies
     // → 403 even after a valid UV. Remint re-mints the role VEC at `admin` and
     // delivers it to the member's wallet.
-    let granted = crate::routes::members::update::role_change_via_pipeline(
+    let granted = crate::ceremony::role_change_via_pipeline(
         &state,
         &auth.0.did,
         &target_did,

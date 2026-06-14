@@ -62,6 +62,7 @@ pub mod evaluate;
 pub mod execute;
 pub mod facts;
 pub mod invariant;
+pub mod orchestrate;
 pub mod verdict;
 pub mod verify;
 
@@ -74,6 +75,7 @@ pub use facts::{
     Presentation, Purpose, State, Subject,
 };
 pub use invariant::{Invariant, InvariantViolation};
+pub use orchestrate::{RoleChangeResult, role_change_via_pipeline};
 pub use verdict::{Allow, Deny, Refer, RequestMore, Verdict};
 pub use verify::{VerifiedFacts, VerifyError};
 
