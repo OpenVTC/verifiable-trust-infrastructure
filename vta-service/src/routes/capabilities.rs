@@ -13,6 +13,16 @@ use crate::server::AppState;
 ///
 /// Requires authentication — prevents leaking implementation details to
 /// unauthenticated callers. Any authenticated role (including Reader) can access.
+#[utoipa::path(
+    get,
+    path = "/capabilities",
+    tag = "discovery",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "VTA capabilities, features, and WebVH servers", body = CapabilitiesResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn capabilities(
     _auth: AuthClaims,
     State(state): State<AppState>,

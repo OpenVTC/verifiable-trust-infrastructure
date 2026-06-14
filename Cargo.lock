@@ -2365,7 +2365,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
 ]
 
 [[package]]
@@ -3145,7 +3145,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
 ]
 
 [[package]]
@@ -6527,7 +6527,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
 ]
 
 [[package]]
@@ -9655,6 +9655,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "utoipa"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-axum"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c25bae5bccc842449ec0c5ddc5cbb6a3a1eaeac4503895dc105a1138f8234a0"
+dependencies = [
+ "axum",
+ "paste",
+ "tower-layer",
+ "tower-service",
+ "utoipa",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.117",
+ "uuid",
+]
+
+[[package]]
 name = "uuid"
 version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9757,7 +9795,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
  "x25519-dalek",
 ]
 
@@ -9796,7 +9834,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
 ]
 
 [[package]]
@@ -9831,7 +9869,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -9872,6 +9910,7 @@ dependencies = [
  "tracing",
  "trust-tasks-rs",
  "url",
+ "utoipa",
  "uuid",
  "windows-native-keyring-store",
  "wiremock",
@@ -9881,7 +9920,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -9958,10 +9997,12 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "urlencoding",
+ "utoipa",
+ "utoipa-axum",
  "uuid",
  "vaultrs",
  "vta-cli-common",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
  "vta-service",
  "vti-common",
  "vti-webauthn",
@@ -10044,7 +10085,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
  "vtc-service",
  "vti-common",
  "webauthn-rs",
@@ -10089,7 +10130,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10116,7 +10157,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.13.0",
+ "vta-sdk 0.13.1",
  "vta-service",
  "vti-common",
 ]

@@ -34,8 +34,60 @@ use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::timeout::TimeoutLayer;
+use utoipa::OpenApi;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use crate::server::AppState;
+
+/// OpenAPI document root for the VTA REST surface.
+///
+/// The router is the single source of truth for *paths* — every handler
+/// annotated with `#[utoipa::path]` and registered via `routes!()` on the
+/// [`OpenApiRouter`] contributes its operation here, so the served
+/// `/openapi.json` cannot drift from the wired routes. This struct only seeds
+/// the document-level metadata (title/version) and the security scheme; it
+/// declares no `paths` of its own.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Verifiable Trust Agent (VTA) API",
+        description = "Key-management, DID-webvh, provisioning, and runtime \
+                       service-management REST surface of a Verifiable Trust Agent.",
+        version = env!("CARGO_PKG_VERSION"),
+    ),
+    modifiers(&SecurityAddon),
+)]
+pub struct ApiDoc;
+
+/// Registers the `bearer_jwt` HTTP-bearer security scheme referenced by
+/// authenticated operations' `security(("bearer_jwt" = []))`.
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearer_jwt",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .build(),
+            ),
+        );
+    }
+}
+
+/// Serve the assembled OpenAPI document as JSON at `GET /openapi.json`.
+///
+/// Unauthenticated by design — the document describes the API *shape*, not any
+/// secret, and black-box conformance/fuzz tooling (schemathesis, RESTler)
+/// fetches it before it holds a token.
+async fn serve_openapi(api: utoipa::openapi::OpenApi) -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(api)
+}
 
 /// Maximum request body size (1 MB). Protects against memory exhaustion,
 /// especially critical in TEE deployments where enclave memory is limited.
@@ -93,7 +145,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// `trust_xff`: `false` keys on the socket peer (`PeerIpKeyExtractor`,
 /// spoof-safe for direct binding); `true` honours `X-Forwarded-For`
 /// (`SmartIpKeyExtractor`, only safe behind a header-sanitising proxy).
-fn apply_unauth_governor(router: Router<AppState>, trust_xff: bool) -> Router<AppState> {
+fn apply_unauth_governor(
+    router: OpenApiRouter<AppState>,
+    trust_xff: bool,
+) -> OpenApiRouter<AppState> {
     if trust_xff {
         let cfg = Arc::new(
             GovernorConfigBuilder::default()
@@ -193,10 +248,12 @@ pub fn router() -> Router<AppState> {
     router_with_cors(&[], false)
 }
 
-/// Build the router and conditionally apply a CORS layer for the
-/// given list of allowed origins. Wraps [`router()`] for callers
-/// (production VTA front-ends) that already hold a config; empty
-/// list = no layer = legacy behaviour.
+/// Assemble the VTA REST surface as an [`OpenApiRouter`] — the single source
+/// of truth for both the wired routes and the served OpenAPI document. Routes
+/// registered via `routes!()` contribute their `#[utoipa::path]` operation;
+/// routes still on plain `.route(...)` are served but not yet described. Global
+/// layers (body cap, timeout, CORS) and the `/openapi.json` route are applied
+/// by [`router_with_cors`] after splitting.
 ///
 /// `trust_xff` selects the rate-limiter's IP-attribution
 /// strategy (L2 from the May 2026 security review):
@@ -208,7 +265,7 @@ pub fn router() -> Router<AppState> {
 ///   `Forwarded`. Only safe behind a trust-boundary reverse
 ///   proxy that overwrites or strips these headers from external
 ///   requests. Misconfiguring this is a silent rate-limit bypass.
-pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<AppState> {
+fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Per-IP rate-limit layer applied to every unauthenticated endpoint.
     // Authenticated routes stay unthrottled — JWT auth is itself a gate,
     // and legitimate operator traffic against the management plane
@@ -218,7 +275,7 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
     // extractors instantiate `GovernorConfig` at distinct generic
     // types — the layer itself is type-erased via the axum
     // dispatcher so the downstream router shape stays uniform.
-    let unauth = Router::new()
+    let unauth = OpenApiRouter::new()
         // Sealed-transfer bootstrap (token or attestation gated inside)
         .route("/bootstrap/request", post(bootstrap::request))
         // Passkey login (DID-VM-resolved WebAuthn assertions).
@@ -276,18 +333,19 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
     //    loaded directly into a popup window same-origin, not fetched
     //    cross-origin.
     // See `routes::auth_portal` for the full security model.
-    let auth_portal_router = Router::new().route("/auth/portal", get(auth_portal::portal_handler));
+    let auth_portal_router =
+        OpenApiRouter::new().route("/auth/portal", get(auth_portal::portal_handler));
 
     // Authenticated provision-integration (context-admin gated). Kept
     // separate from `unauth` so the rate-limiter doesn't apply — the
     // endpoint already hard-gates on `AdminAuth`.
     #[cfg(feature = "webvh")]
-    let auth_provision = Router::new().route(
+    let auth_provision = OpenApiRouter::new().route(
         "/bootstrap/provision-integration",
         post(bootstrap::provision_integration),
     );
 
-    let router = Router::new().merge(unauth);
+    let router = OpenApiRouter::with_openapi(ApiDoc::openapi()).merge(unauth);
     #[cfg(feature = "webvh")]
     let router = router.merge(auth_provision);
     let router = router.merge(auth_portal_router);
@@ -553,7 +611,7 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
     // Rate-limited like the unauth branch: the token gate is real, but
     // without throttling an attacker replaying/guessing bundle_ids gets
     // free 100 MB disk-write attempts and free SHA-256 over 100 MB bodies.
-    let backup_blob_router = Router::new()
+    let backup_blob_router = OpenApiRouter::new()
         .route(
             "/backup/blob/{bundle_id}",
             get(backup_blob::get_blob).post(backup_blob::post_blob),
@@ -563,9 +621,36 @@ pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<A
     let router = router.merge(backup_blob_router);
 
     // Authenticated health details and capabilities
-    let router = router
+    router
         .route("/health/details", get(health::health_details))
-        .route("/capabilities", get(capabilities::capabilities));
+        // First route migrated to the OpenAPI-aware registration: its
+        // `#[utoipa::path]` operation lands in the served `/openapi.json`.
+        .routes(routes!(capabilities::capabilities))
+}
+
+/// The assembled OpenAPI 3.1 document describing the VTA REST surface.
+///
+/// Built from the same [`build_api_router`] assembly that wires the live
+/// routes, so the document cannot drift from what the service actually serves.
+/// Exposed for tests and offline emission; the running service serves this at
+/// `GET /openapi.json`.
+pub fn openapi_spec() -> utoipa::openapi::OpenApi {
+    // CORS attribution doesn't affect the documented surface; build with the
+    // safe default.
+    build_api_router(false).split_for_parts().1
+}
+
+/// Build the router and conditionally apply a CORS layer for the given list of
+/// allowed origins. Wraps [`build_api_router`] for callers (production VTA
+/// front-ends) that already hold a config; empty list = no layer = legacy
+/// behaviour. See [`build_api_router`] for the `trust_xff` semantics.
+pub fn router_with_cors(allowed_origins: &[String], trust_xff: bool) -> Router<AppState> {
+    // Finalise the OpenAPI document from the assembled router (paths come from
+    // the `routes!()` registrations) and recover a plain axum `Router` to layer
+    // + serve. Splitting here, *before* the global layers, lets `/openapi.json`
+    // be added as a sibling that the same global layers then wrap.
+    let (router, api) = build_api_router(trust_xff).split_for_parts();
+    let router = router.route("/openapi.json", get(move || serve_openapi(api.clone())));
 
     // Apply global request body size limit to protect enclave memory,
     // plus the global request timeout backstop (no handler may hold a
@@ -646,6 +731,41 @@ mod cors_tests {
         // skipped, not turned into an empty header value.
         let layer = build_cors_layer(&["".to_string(), "http://x".to_string()]);
         assert!(layer.is_some());
+    }
+
+    #[test]
+    fn openapi_spec_describes_registered_routes() {
+        let spec = openapi_spec();
+        // The document-level metadata + security scheme are seeded by ApiDoc.
+        assert_eq!(spec.info.title, "Verifiable Trust Agent (VTA) API");
+        let schemes = &spec
+            .components
+            .as_ref()
+            .expect("components present once a route contributes a schema")
+            .security_schemes;
+        assert!(
+            schemes.contains_key("bearer_jwt"),
+            "bearer_jwt security scheme must be registered"
+        );
+        // The first migrated route's `#[utoipa::path]` operation is present,
+        // with its response schema referenced.
+        let cap = spec
+            .paths
+            .paths
+            .get("/capabilities")
+            .expect("/capabilities operation must be in the spec");
+        assert!(
+            cap.get.is_some(),
+            "/capabilities must document a GET operation"
+        );
+        assert!(
+            spec.components
+                .as_ref()
+                .unwrap()
+                .schemas
+                .contains_key("CapabilitiesResponse"),
+            "CapabilitiesResponse schema must be emitted"
+        );
     }
 
     #[test]

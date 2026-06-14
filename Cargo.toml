@@ -206,6 +206,14 @@ axum = "0.8"
 tower-http = "0.6"
 tokio-util = "0.7"
 
+# OpenAPI 3.1 generation. `utoipa` derives schemas (ToSchema) + per-handler
+# path metadata; `utoipa-axum` (`OpenApiRouter`) makes the router the single
+# source of truth so the served `/openapi.json` can't drift from the routes.
+# The SDK gates its `ToSchema` derives behind its own `openapi` feature so the
+# published artifact stays slim; the services depend on utoipa unconditionally.
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-axum = "0.2"
+
 # Used by every CLI (operator config) and both services (config-from-toml).
 toml = "1"
 dirs = "6"

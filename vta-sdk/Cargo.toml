@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.13.0"
+version = "0.13.1"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -118,6 +118,11 @@ test-support = ["session"]
 # directly instead of mutating armor-decode output. Off by default and
 # zero-cost when off — only a downstream `fuzz/` workspace turns it on.
 arbitrary = ["dep:arbitrary", "sealed-transfer"]
+# OpenAPI schema generation: derives `utoipa::ToSchema` on the protocol body
+# types (`protocols::*`, request/response/query shapes) the VTA + VTC services
+# expose, so their `OpenApiRouter` can emit a `/openapi.json` referencing them.
+# Off by default and zero-cost when off — only the services turn it on.
+openapi = ["dep:utoipa"]
 
 [dependencies]
 serde = { workspace = true }
@@ -177,6 +182,9 @@ zeroize = { version = "1", optional = true }
 # structs. Optional + gated on the `arbitrary` feature so the published
 # artifact stays slim for non-fuzzing consumers.
 arbitrary = { version = "1", optional = true, features = ["derive"] }
+# OpenAPI: `#[derive(ToSchema)]` on protocol body types. Optional + gated on the
+# `openapi` feature so the published artifact stays slim for non-service consumers.
+utoipa = { workspace = true, optional = true }
 
 # Per-target platform credential stores for keyring-core. Only one is
 # active per build; the install helper picks the matching one via cfg.

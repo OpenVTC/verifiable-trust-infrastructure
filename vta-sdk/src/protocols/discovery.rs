@@ -15,6 +15,7 @@ pub const DISCOVER_CAPABILITIES_RESULT: &str =
 
 /// Response describing the VTA's capabilities and enabled features.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CapabilitiesResponse {
     /// Crate version of the VTA service.
     pub version: String,
@@ -29,6 +30,7 @@ pub struct CapabilitiesResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct FeaturesInfo {
     pub webvh: bool,
     pub didcomm: bool,
@@ -37,12 +39,14 @@ pub struct FeaturesInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServicesInfo {
     pub rest: bool,
     pub didcomm: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct WebvhServerInfo {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
