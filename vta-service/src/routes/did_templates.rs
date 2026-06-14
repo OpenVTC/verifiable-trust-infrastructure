@@ -44,6 +44,14 @@ pub struct RenderDidTemplateRequest {
 }
 
 /// `GET /did-templates` — list all global templates. Any authenticated caller.
+#[utoipa::path(
+    get, path = "/did-templates", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "DID templates", body = ListDidTemplatesResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -54,6 +62,16 @@ pub async fn list_handler(
 }
 
 /// `POST /did-templates` — create a global template. Super admin only.
+#[utoipa::path(
+    post, path = "/did-templates", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    request_body = DidTemplate,
+    responses(
+        (status = 201, description = "DID template created", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super admin"),
+    ),
+)]
 pub async fn create_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -71,6 +89,16 @@ pub async fn create_handler(
 }
 
 /// `GET /did-templates/{name}` — fetch one global template. Any authed caller.
+#[utoipa::path(
+    get, path = "/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("name" = String, Path, description = "Template name")),
+    responses(
+        (status = 200, description = "DID template", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn get_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -83,6 +111,18 @@ pub async fn get_handler(
 }
 
 /// `PUT /did-templates/{name}` — replace a global template. Super admin only.
+#[utoipa::path(
+    put, path = "/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("name" = String, Path, description = "Template name")),
+    request_body = DidTemplate,
+    responses(
+        (status = 200, description = "DID template updated", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super admin"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn update_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -102,6 +142,17 @@ pub async fn update_handler(
 }
 
 /// `DELETE /did-templates/{name}` — delete a global template. Super admin only.
+#[utoipa::path(
+    delete, path = "/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("name" = String, Path, description = "Template name")),
+    responses(
+        (status = 204, description = "DID template deleted"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super admin"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn delete_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -120,6 +171,17 @@ pub async fn delete_handler(
 
 /// `POST /did-templates/{name}/render` — render a template with caller vars.
 /// Any authenticated caller. Server injects ambient variables.
+#[utoipa::path(
+    post, path = "/did-templates/{name}/render", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("name" = String, Path, description = "Template name")),
+    request_body = RenderDidTemplateRequest,
+    responses(
+        (status = 200, description = "Rendered DID document", body = RenderDidTemplateResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn render_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -151,6 +213,15 @@ pub async fn render_handler(
 // ── Context-scoped handlers ──────────────────────────────────────────
 
 /// `GET /contexts/{id}/did-templates` — list context-scoped templates.
+#[utoipa::path(
+    get, path = "/contexts/{id}/did-templates", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    responses(
+        (status = 200, description = "DID templates", body = ListDidTemplatesResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -167,6 +238,16 @@ pub async fn list_context_handler(
 }
 
 /// `POST /contexts/{id}/did-templates` — create a context-scoped template.
+#[utoipa::path(
+    post, path = "/contexts/{id}/did-templates", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    request_body = DidTemplate,
+    responses(
+        (status = 201, description = "DID template created", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn create_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -187,6 +268,19 @@ pub async fn create_context_handler(
 }
 
 /// `GET /contexts/{id}/did-templates/{name}` — fetch one context template.
+#[utoipa::path(
+    get, path = "/contexts/{id}/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(
+        ("id" = String, Path, description = "Context identifier"),
+        ("name" = String, Path, description = "Template name"),
+    ),
+    responses(
+        (status = 200, description = "DID template", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn get_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -204,6 +298,20 @@ pub async fn get_context_handler(
 }
 
 /// `PUT /contexts/{id}/did-templates/{name}` — replace a context template.
+#[utoipa::path(
+    put, path = "/contexts/{id}/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(
+        ("id" = String, Path, description = "Context identifier"),
+        ("name" = String, Path, description = "Template name"),
+    ),
+    request_body = DidTemplate,
+    responses(
+        (status = 200, description = "DID template updated", body = DidTemplateRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn update_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -224,6 +332,19 @@ pub async fn update_context_handler(
 }
 
 /// `DELETE /contexts/{id}/did-templates/{name}` — remove a context template.
+#[utoipa::path(
+    delete, path = "/contexts/{id}/did-templates/{name}", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(
+        ("id" = String, Path, description = "Context identifier"),
+        ("name" = String, Path, description = "Template name"),
+    ),
+    responses(
+        (status = 204, description = "DID template deleted"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn delete_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -242,6 +363,20 @@ pub async fn delete_context_handler(
 }
 
 /// `POST /contexts/{id}/did-templates/{name}/render` — render a context template.
+#[utoipa::path(
+    post, path = "/contexts/{id}/did-templates/{name}/render", tag = "did-templates",
+    security(("bearer_jwt" = [])),
+    params(
+        ("id" = String, Path, description = "Context identifier"),
+        ("name" = String, Path, description = "Template name"),
+    ),
+    request_body = RenderDidTemplateRequest,
+    responses(
+        (status = 200, description = "Rendered DID document", body = RenderDidTemplateResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Template not found"),
+    ),
+)]
 pub async fn render_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,

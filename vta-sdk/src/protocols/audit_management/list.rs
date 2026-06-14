@@ -19,7 +19,8 @@ pub struct AuditLogEntry {
 
 /// Request body for listing audit logs with filtering and pagination.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema, utoipa::IntoParams))]
+#[cfg_attr(feature = "openapi", into_params(parameter_in = Query))]
 pub struct ListAuditLogsBody {
     /// Start of time range (unix epoch seconds, inclusive).
     #[serde(default, skip_serializing_if = "Option::is_none")]

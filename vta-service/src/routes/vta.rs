@@ -16,6 +16,15 @@ pub struct RestartResponse {
 ///
 /// All service threads (REST, DIDComm, storage) are shut down and
 /// re-initialized with the current config and seed. Admin role required.
+#[utoipa::path(
+    post, path = "/vta/restart", tag = "vta",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Restart triggered", body = RestartResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn restart(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -42,6 +51,14 @@ pub async fn restart(
 }
 
 /// GET /metrics — Prometheus text format metrics. Auth: any role (including Monitor).
+#[utoipa::path(
+    get, path = "/metrics", tag = "vta",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Prometheus metrics text", content_type = "text/plain"),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn metrics(
     _auth: AuthClaims,
     State(state): State<AppState>,

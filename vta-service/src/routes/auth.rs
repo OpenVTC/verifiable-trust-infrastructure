@@ -34,6 +34,14 @@ use tracing::{info, warn};
 /// just JSON deserialisation and the audit-macro emission
 /// (vti-common's default `audit` hook uses `tracing::info!`
 /// without VTA's HMAC-actor-hash audit envelope).
+#[utoipa::path(
+    post, path = "/auth/challenge", tag = "auth",
+    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
+    responses(
+        (status = 200, description = "Challenge nonce (flat JSON or Trust-Task document)"),
+        (status = 401, description = "ACL gate rejected the subject DID"),
+    ),
+)]
 pub async fn challenge(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
     // Canonical path: an `auth/challenge/0.1` Trust Task → a TT `#response`
     // document (what `vta-mobile-core::build_auth_challenge` /
@@ -133,6 +141,14 @@ fn tokens_response_doc(request: &TrustTask<Value>, resp: &AuthenticateResponse) 
 /// sender's signature; the resulting `msg.from` is the proven
 /// signer DID), extract the challenge + session_id from the
 /// message body, hand off to the canonical handler.
+#[utoipa::path(
+    post, path = "/auth/", tag = "auth",
+    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
+    responses(
+        (status = 200, description = "Tokens (flat JSON or Trust-Task document)"),
+        (status = 401, description = "Authentication failed (bad proof, challenge mismatch, or replay)"),
+    ),
+)]
 pub async fn authenticate(
     State(state): State<AppState>,
     body: String,
@@ -300,6 +316,14 @@ async fn verify_authenticate_proof(doc: &TrustTask<Value>) -> Result<String, App
 /// Response shape is the same `AuthenticateResponse` returned by
 /// `POST /auth/`, so callers handle login and refresh with one
 /// deserialization path.
+#[utoipa::path(
+    post, path = "/auth/refresh", tag = "auth",
+    request_body(content = String, description = "Flat-JSON or Trust-Task auth document"),
+    responses(
+        (status = 200, description = "Rotated tokens (flat JSON or Trust-Task document)"),
+        (status = 401, description = "Refresh token not found, revoked, or already used"),
+    ),
+)]
 pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Response, AppError> {
     // Canonical REST path: an `auth/refresh/0.1` Trust Task. Refresh carries no
     // proof — the opaque refresh token in the payload *is* the credential
@@ -430,6 +454,15 @@ impl From<Session> for SessionSummary {
 }
 
 /// GET /auth/sessions — list all active sessions. Auth: Admin or Initiator.
+#[utoipa::path(
+    get, path = "/auth/sessions", tag = "auth",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Active sessions", body = [SessionSummary]),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin/initiator"),
+    ),
+)]
 pub async fn session_list(
     _auth: ManageAuth,
     State(state): State<AppState>,
@@ -443,6 +476,17 @@ pub async fn session_list(
 // ---------- DELETE /auth/sessions/{session_id} ----------
 
 /// DELETE /auth/sessions/{session_id} — revoke a single session (own or admin). Auth: any authenticated user.
+#[utoipa::path(
+    delete, path = "/auth/sessions/{session_id}", tag = "auth",
+    security(("bearer_jwt" = [])),
+    params(("session_id" = String, Path, description = "Session identifier")),
+    responses(
+        (status = 204, description = "Session revoked"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Cannot revoke another user's session"),
+        (status = 404, description = "Session not found"),
+    ),
+)]
 pub async fn revoke_session(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -472,7 +516,8 @@ pub async fn revoke_session(
 
 // ---------- DELETE /auth/sessions?did=X ----------
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct RevokeByDidQuery {
     pub did: String,
 }
@@ -483,6 +528,16 @@ pub struct RevokeByDidResponse {
 }
 
 /// DELETE /auth/sessions?did=X — revoke all sessions for a given DID. Auth: Admin only.
+#[utoipa::path(
+    delete, path = "/auth/sessions", tag = "auth",
+    security(("bearer_jwt" = [])),
+    params(RevokeByDidQuery),
+    responses(
+        (status = 200, description = "Sessions revoked", body = RevokeByDidResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn revoke_sessions_by_did(
     _auth: AdminAuth,
     State(state): State<AppState>,
@@ -530,6 +585,14 @@ use crate::operations::passkey_login::{
 };
 
 /// POST /auth/passkey-login/start — issue a passkey-bound challenge. Auth: unauthenticated.
+#[utoipa::path(
+    post, path = "/auth/passkey-login/start", tag = "auth",
+    request_body = PasskeyLoginStartRequest,
+    responses(
+        (status = 200, description = "Passkey login challenge", body = PasskeyLoginStartResponse),
+        (status = 403, description = "WebAuthn service disabled or DID not in ACL"),
+    ),
+)]
 pub async fn passkey_login_start(
     State(state): State<AppState>,
     Json(req): Json<PasskeyLoginStartRequest>,
@@ -606,6 +669,15 @@ pub async fn passkey_login_start(
 }
 
 /// POST /auth/passkey-login/finish — verify the WebAuthn assertion and issue tokens. Auth: unauthenticated.
+#[utoipa::path(
+    post, path = "/auth/passkey-login/finish", tag = "auth",
+    request_body = PasskeyLoginFinishRequest,
+    responses(
+        (status = 200, description = "Access + refresh tokens", body = AuthenticateResponse),
+        (status = 401, description = "Assertion verification failed, challenge expired, or replay"),
+        (status = 403, description = "WebAuthn service disabled"),
+    ),
+)]
 pub async fn passkey_login_finish(
     State(state): State<AppState>,
     Json(req): Json<PasskeyLoginFinishRequest>,

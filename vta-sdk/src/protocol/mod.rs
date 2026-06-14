@@ -79,6 +79,7 @@ pub struct EnableDidcommResponse {
 
 /// Response body for `GET /services/didcomm`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DidcommStatusResponse {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

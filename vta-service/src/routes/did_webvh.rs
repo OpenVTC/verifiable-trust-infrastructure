@@ -29,7 +29,8 @@ pub struct AddServerRequest {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListDidsQuery {
     pub context_id: Option<String>,
     pub server_id: Option<String>,
@@ -37,6 +38,17 @@ pub struct ListDidsQuery {
 
 // -- Server routes --
 
+/// POST /webvh/servers — register a webvh hosting server. Auth: super-admin.
+#[utoipa::path(
+    post, path = "/webvh/servers", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    request_body = AddServerRequest,
+    responses(
+        (status = 201, description = "Server registered", body = AddWebvhServerResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn add_server_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -59,6 +71,15 @@ pub async fn add_server_handler(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /webvh/servers — list registered webvh hosting servers. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/webvh/servers", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Registered servers", body = ListWebvhServersResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list_servers_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -72,6 +93,16 @@ pub async fn list_servers_handler(
 /// `pnm did-mgmt list-domains` and by the interactive `--domain`
 /// prompt in `pnm did-mgmt dids create` / `register`. Authentication
 /// to the hosting server uses the VTA's own credentials.
+#[utoipa::path(
+    get, path = "/webvh/servers/{id}/domains", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Server identifier")),
+    responses(
+        (status = 200, description = "Caller-scoped hosting domains", body = vta_sdk::protocols::did_management::servers::ListWebvhServerDomainsResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Server not found"),
+    ),
+)]
 pub async fn list_server_domains_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -101,6 +132,19 @@ pub struct UpdateServerRequest {
     pub label: Option<String>,
 }
 
+/// PATCH /webvh/servers/{id} — update a registered server's metadata. Auth: super-admin.
+#[utoipa::path(
+    patch, path = "/webvh/servers/{id}", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Server identifier")),
+    request_body = UpdateServerRequest,
+    responses(
+        (status = 200, description = "Server updated", body = UpdateWebvhServerResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 404, description = "Server not found"),
+    ),
+)]
 pub async fn update_server_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -118,6 +162,18 @@ pub async fn update_server_handler(
     Ok(Json(result))
 }
 
+/// DELETE /webvh/servers/{id} — remove a registered server. Auth: super-admin.
+#[utoipa::path(
+    delete, path = "/webvh/servers/{id}", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Server identifier")),
+    responses(
+        (status = 204, description = "Server removed"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 404, description = "Server not found"),
+    ),
+)]
 pub async fn remove_server_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -129,6 +185,17 @@ pub async fn remove_server_handler(
 
 // -- DID routes --
 
+/// POST /webvh/dids — create a new webvh DID. Auth: admin.
+#[utoipa::path(
+    post, path = "/webvh/dids", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    request_body = CreateDidWebvhBody,
+    responses(
+        (status = 201, description = "DID created", body = CreateDidWebvhResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn create_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -146,6 +213,16 @@ pub async fn create_did_handler(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
+/// GET /webvh/dids — list webvh DIDs with optional filters. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/webvh/dids", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(ListDidsQuery),
+    responses(
+        (status = 200, description = "DID records", body = ListDidsWebvhResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list_dids_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -162,6 +239,17 @@ pub async fn list_dids_handler(
     Ok(Json(result))
 }
 
+/// GET /webvh/dids/{did} — retrieve a single webvh DID record. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/webvh/dids/{did}", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "DID identifier")),
+    responses(
+        (status = 200, description = "DID record", body = WebvhDidRecord),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn get_did_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -171,6 +259,17 @@ pub async fn get_did_handler(
     Ok(Json(result))
 }
 
+/// GET /webvh/dids/{did}/log — retrieve the did.jsonl log for a DID. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/webvh/dids/{did}/log", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "DID identifier")),
+    responses(
+        (status = 200, description = "DID log", body = operations::did_webvh::GetDidWebvhLogResult),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn get_did_log_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -194,6 +293,14 @@ pub async fn get_did_log_handler(
 /// debugging, or republication fallback; not as a general DID
 /// resolver. See `docs/02-vta/provision-integration.md` §"did.jsonl
 /// retrieval" for the full semantics.
+#[utoipa::path(
+    get, path = "/did/{did}/log", tag = "did-webvh",
+    params(("did" = String, Path, description = "DID identifier")),
+    responses(
+        (status = 200, description = "did.jsonl log", content_type = "application/jsonl"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn get_did_log_public_handler(
     State(state): State<AppState>,
     Path(did): Path<String>,
@@ -211,6 +318,18 @@ pub async fn get_did_log_public_handler(
     Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
 }
 
+/// DELETE /webvh/dids/{did} — delete a webvh DID. Auth: admin.
+#[utoipa::path(
+    delete, path = "/webvh/dids/{did}", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "DID identifier")),
+    responses(
+        (status = 204, description = "DID deleted"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn delete_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -231,6 +350,21 @@ pub async fn delete_did_handler(
 /// update to an existing webvh DID. The `ctx_id` path component is
 /// validated against the DID's context inside the operation; mismatches
 /// surface as 404 to avoid cross-context existence leaks.
+#[utoipa::path(
+    post, path = "/contexts/{ctx_id}/dids/{scid}/update", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(
+        ("ctx_id" = String, Path, description = "Context identifier"),
+        ("scid" = String, Path, description = "DID SCID"),
+    ),
+    request_body = UpdateDidWebvhOptions,
+    responses(
+        (status = 200, description = "DID updated", body = UpdateDidWebvhResult),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn update_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -258,6 +392,21 @@ pub async fn update_did_handler(
 /// `POST /contexts/{ctx_id}/dids/{scid}/rotate-keys` — rotate every
 /// verificationMethod's keys + drive an update. Mirrors
 /// [`update_did_handler`].
+#[utoipa::path(
+    post, path = "/contexts/{ctx_id}/dids/{scid}/rotate-keys", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(
+        ("ctx_id" = String, Path, description = "Context identifier"),
+        ("scid" = String, Path, description = "DID SCID"),
+    ),
+    request_body = RotateDidWebvhKeysOptions,
+    responses(
+        (status = 200, description = "Keys rotated", body = UpdateDidWebvhResult),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "DID not found"),
+    ),
+)]
 pub async fn rotate_did_keys_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -286,6 +435,18 @@ pub async fn rotate_did_keys_handler(
 /// DID to a server-managed one. Auth: super-admin. The DID in the
 /// path must match the body's `did` field; the body's `server_id`
 /// must be a previously-registered server.
+#[utoipa::path(
+    post, path = "/webvh/dids/{did}/register-server", tag = "did-webvh",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "DID identifier")),
+    request_body = RegisterDidWithServerBody,
+    responses(
+        (status = 200, description = "DID registered with server", body = RegisterDidWithServerResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 404, description = "DID or server not found"),
+    ),
+)]
 pub async fn register_did_with_server_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

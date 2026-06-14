@@ -90,6 +90,7 @@ pub fn validate_service_url(url: &str) -> Result<url::Url, VtaError> {
 /// preserved by the operation layer (P1.3) for SDK-resolution
 /// compatibility (`vta-sdk/src/session.rs:1100`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct EnableRestRequest {
     pub url: String,
@@ -106,6 +107,7 @@ impl EnableRestRequest {
 /// Replaces the URL on the existing `#vta-rest` entry. Refused
 /// with `ServiceNotPresent` if REST is not currently advertised.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct UpdateRestRequest {
     pub url: String,
@@ -128,6 +130,7 @@ impl UpdateRestRequest {
 /// the type can grow optional fields later without a breaking
 /// change. Serializes as `{}`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct DisableRestRequest {}
 
@@ -140,6 +143,7 @@ pub struct DisableRestRequest {}
 /// rollback would brick the VTA. Like [`DisableRestRequest`],
 /// no fields today — serializes as `{}`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct RollbackRestRequest {}
 
@@ -156,6 +160,7 @@ pub struct RollbackRestRequest {}
 /// toggled independently of the general REST API and is the entry
 /// point browsers discover for the auth portal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct EnableWebauthnRequest {
     pub url: String,
@@ -173,6 +178,7 @@ impl EnableWebauthnRequest {
 /// with `ServiceNotPresent` if the WebAuthn surface is not currently
 /// advertised.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct UpdateWebauthnRequest {
     pub url: String,
@@ -198,12 +204,14 @@ impl UpdateWebauthnRequest {
 ///
 /// No fields today — serializes as `{}`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct DisableWebauthnRequest {}
 
 /// Request body for `POST /services/webauthn/rollback`. Symmetric
 /// with [`RollbackRestRequest`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[must_use]
 pub struct RollbackWebauthnRequest {}
 
@@ -235,11 +243,13 @@ impl RollbackDidcommRequest {
 /// Response body for `GET /services/didcomm/drain` — the list of
 /// mediators currently in drain state. Empty list is normal.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DrainListResponse {
     pub entries: Vec<DrainEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DrainEntry {
     pub mediator_did: String,
     pub endpoint: String,
@@ -255,6 +265,7 @@ pub struct DrainEntry {
 /// `log_entry_version_id` is the empty string when the rollback
 /// was a no-op (snapshot ≡ current state).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RollbackResponse {
     pub log_entry_version_id: String,
     pub effective_at: String,
@@ -296,6 +307,7 @@ pub struct RollbackResponse {
 /// advertised, matching the spec §3.3 ordering invariant
 /// enforced in `protocol::document::sort_services_canonical`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServicesListResponse {
     pub services: Vec<ServiceState>,
 }
@@ -306,6 +318,7 @@ pub struct ServicesListResponse {
 /// When `enabled` is `false`, the kind-specific config fields are
 /// absent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ServiceState {
     Rest {
@@ -349,6 +362,7 @@ pub enum ServiceState {
 /// All timestamps are RFC 3339 strings to match the existing wire
 /// convention from `DisableDidcommResponse::drains_until`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ServiceMutationResponse {
     /// Version-id of the new WebVH LogEntry produced by the
     /// mutation. Joins telemetry events to chain history.

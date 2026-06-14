@@ -11,6 +11,16 @@ use vta_sdk::protocols::backup_management::types::{
 };
 
 /// POST /backup/export — export VTA state to an encrypted backup. Auth: Super Admin.
+#[utoipa::path(
+    post, path = "/backup/export", tag = "backup",
+    security(("bearer_jwt" = [])),
+    request_body = ExportRequest,
+    responses(
+        (status = 200, description = "Encrypted backup envelope", body = BackupEnvelope),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn export(
     SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
@@ -43,6 +53,16 @@ pub async fn export(
 }
 
 /// POST /backup/import — import VTA state from an encrypted backup.
+#[utoipa::path(
+    post, path = "/backup/import", tag = "backup",
+    security(("bearer_jwt" = [])),
+    request_body = ImportRequest,
+    responses(
+        (status = 200, description = "Import result or preview summary", body = ImportResult),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn import(
     auth: AuthClaims,
     State(state): State<AppState>,

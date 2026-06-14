@@ -52,6 +52,20 @@ const TOKEN_HEADER: &str = "x-backup-token";
 ///   the same id, which can't actually happen — UUIDs collide
 ///   effectively never — but the response is consistent regardless)
 /// - Blob bytes missing on disk → 410 (already swept)
+#[utoipa::path(
+    get, path = "/backup/blob/{bundle_id}", tag = "backup",
+    params(
+        ("bundle_id" = String, Path, description = "Backup bundle id"),
+        ("x-backup-token" = String, Header, description = "One-shot backup descriptor token"),
+    ),
+    responses(
+        (status = 200, description = "Encrypted backup bytes (application/octet-stream)"),
+        (status = 401, description = "Missing or malformed x-backup-token header"),
+        (status = 403, description = "Token does not match"),
+        (status = 404, description = "Bundle not found"),
+        (status = 410, description = "Bundle expired or already downloaded"),
+    ),
+)]
 pub async fn get_blob(
     State(state): State<AppState>,
     Path(bundle_id_str): Path<String>,
@@ -86,6 +100,22 @@ pub async fn get_blob(
 /// - Body size doesn't match `expected_size_bytes` → 400
 /// - Body SHA-256 doesn't match `expected_sha256` → 400
 /// - I/O error writing to disk → 500
+#[utoipa::path(
+    post, path = "/backup/blob/{bundle_id}", tag = "backup",
+    request_body(content = inline(Vec<u8>), content_type = "application/octet-stream", description = "Encrypted backup bytes"),
+    params(
+        ("bundle_id" = String, Path, description = "Backup bundle id"),
+        ("x-backup-token" = String, Header, description = "One-shot backup descriptor token"),
+    ),
+    responses(
+        (status = 202, description = "Upload accepted and staged"),
+        (status = 400, description = "Body size or SHA-256 mismatch"),
+        (status = 401, description = "Missing or malformed x-backup-token header"),
+        (status = 403, description = "Token does not match"),
+        (status = 404, description = "Bundle not found"),
+        (status = 410, description = "Bundle expired or already received"),
+    ),
+)]
 pub async fn post_blob(
     State(state): State<AppState>,
     Path(bundle_id_str): Path<String>,

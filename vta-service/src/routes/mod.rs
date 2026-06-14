@@ -29,7 +29,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderName, HeaderValue, Method};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -277,20 +277,17 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // dispatcher so the downstream router shape stays uniform.
     let unauth = OpenApiRouter::new()
         // Sealed-transfer bootstrap (token or attestation gated inside)
-        .route("/bootstrap/request", post(bootstrap::request))
+        .routes(routes!(bootstrap::request))
         // Passkey login (DID-VM-resolved WebAuthn assertions).
         // Trust-task URIs: vta/auth/passkey-login-{start,finish}/1.0.
         // Unauthenticated — the user has no session before
         // passkey-login-finish issues the JWT.
-        .route("/auth/passkey-login/start", post(auth::passkey_login_start))
-        .route(
-            "/auth/passkey-login/finish",
-            post(auth::passkey_login_finish),
-        )
+        .routes(routes!(auth::passkey_login_start))
+        .routes(routes!(auth::passkey_login_finish))
         // Auth flow entry points
-        .route("/auth/challenge", post(auth::challenge))
-        .route("/auth/", post(auth::authenticate))
-        .route("/auth/refresh", post(auth::refresh));
+        .routes(routes!(auth::challenge))
+        .routes(routes!(auth::authenticate))
+        .routes(routes!(auth::refresh));
     // Public, unauthenticated TEE attestation endpoints. These take no
     // auth extractor and run crypto on caller input (report generation),
     // so they MUST sit on the rate-limited + body-capped unauth branch —
@@ -311,7 +308,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         // log model, security is cryptographic not access-gated. Rate-
         // limited via the same governor layer as the other unauth
         // endpoints.
-        .route("/did/{did}/log", get(did_webvh::get_did_log_public_handler));
+        .routes(routes!(did_webvh::get_did_log_public_handler));
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
     // Applied after ALL unauth routes (including the cfg-gated ones) are
     // registered so every POST on this branch (auth, attestation report)
@@ -340,10 +337,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // separate from `unauth` so the rate-limiter doesn't apply — the
     // endpoint already hard-gates on `AdminAuth`.
     #[cfg(feature = "webvh")]
-    let auth_provision = OpenApiRouter::new().route(
-        "/bootstrap/provision-integration",
-        post(bootstrap::provision_integration),
-    );
+    let auth_provision = OpenApiRouter::new().routes(routes!(bootstrap::provision_integration));
 
     let router = OpenApiRouter::with_openapi(ApiDoc::openapi()).merge(unauth);
     #[cfg(feature = "webvh")]
@@ -351,22 +345,17 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     let router = router.merge(auth_portal_router);
 
     let router = router
-        .route(
-            "/auth/sessions",
-            get(auth::session_list).delete(auth::revoke_sessions_by_did),
-        )
-        .route("/auth/sessions/{session_id}", delete(auth::revoke_session))
+        .routes(routes!(auth::session_list, auth::revoke_sessions_by_did))
+        .routes(routes!(auth::revoke_session))
         // Trust-task envelope dispatcher (per
         // docs/05-design-notes/trust-task-uri-registry.md). Phase 2
-        // scaffold; handlers register per Phase 3 slice.
+        // scaffold; handlers register per Phase 3 slice. Not yet documented
+        // in OpenAPI (dynamic envelope payload).
         .route(
             "/api/trust-tasks",
             post(crate::trust_tasks::dispatch_trust_task),
         )
-        .route(
-            "/config",
-            get(config::get_config).patch(config::update_config),
-        )
+        .routes(routes!(config::get_config, config::update_config))
         .routes(routes!(keys::list_keys, keys::create_key))
         .routes(routes!(
             keys::get_key,
@@ -380,83 +369,59 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         .routes(routes!(keys::list_seeds))
         .routes(routes!(keys::rotate_seed))
         // Context routes
-        .route(
-            "/contexts",
-            get(contexts::list_contexts_handler).post(contexts::create_context_handler),
-        )
-        .route(
-            "/contexts/{id}",
-            get(contexts::get_context_handler)
-                .patch(contexts::update_context_handler)
-                .delete(contexts::delete_context_handler),
-        )
-        .route(
-            "/contexts/{id}/did",
-            put(contexts::update_context_did_handler),
-        )
-        .route(
-            "/contexts/{id}/delete-preview",
-            get(contexts::preview_delete_context_handler),
-        )
+        .routes(routes!(
+            contexts::list_contexts_handler,
+            contexts::create_context_handler
+        ))
+        .routes(routes!(
+            contexts::get_context_handler,
+            contexts::update_context_handler,
+            contexts::delete_context_handler
+        ))
+        .routes(routes!(contexts::update_context_did_handler))
+        .routes(routes!(contexts::preview_delete_context_handler))
         // DID template routes (global scope — Phase 2)
-        .route(
-            "/did-templates",
-            get(did_templates::list_handler).post(did_templates::create_handler),
-        )
-        .route(
-            "/did-templates/{name}",
-            get(did_templates::get_handler)
-                .put(did_templates::update_handler)
-                .delete(did_templates::delete_handler),
-        )
-        .route(
-            "/did-templates/{name}/render",
-            post(did_templates::render_handler),
-        )
+        .routes(routes!(
+            did_templates::list_handler,
+            did_templates::create_handler
+        ))
+        .routes(routes!(
+            did_templates::get_handler,
+            did_templates::update_handler,
+            did_templates::delete_handler
+        ))
+        .routes(routes!(did_templates::render_handler))
         // DID templates — context scope (Phase 3)
-        .route(
-            "/contexts/{id}/did-templates",
-            get(did_templates::list_context_handler).post(did_templates::create_context_handler),
-        )
-        .route(
-            "/contexts/{id}/did-templates/{name}",
-            get(did_templates::get_context_handler)
-                .put(did_templates::update_context_handler)
-                .delete(did_templates::delete_context_handler),
-        )
-        .route(
-            "/contexts/{id}/did-templates/{name}/render",
-            post(did_templates::render_context_handler),
-        )
+        .routes(routes!(
+            did_templates::list_context_handler,
+            did_templates::create_context_handler
+        ))
+        .routes(routes!(
+            did_templates::get_context_handler,
+            did_templates::update_context_handler,
+            did_templates::delete_context_handler
+        ))
+        .routes(routes!(did_templates::render_context_handler))
         // Step-up policy management (read posture; super-admin set).
-        .route(
-            "/step-up/policy",
-            get(step_up::get_step_up_policy).put(step_up::put_step_up_policy),
-        )
+        .routes(routes!(
+            step_up::get_step_up_policy,
+            step_up::put_step_up_policy
+        ))
         // ACL routes (flattened for consistency)
-        .route("/acl", get(acl::list_acl).post(acl::create_acl))
+        .routes(routes!(acl::list_acl, acl::create_acl))
         // Static segment registered before `/acl/{did}` so it isn't captured
         // as a DID. Self-service key rotation (any authenticated caller).
-        .route("/acl/swap", post(acl::swap_acl))
-        .route(
-            "/acl/{did}",
-            get(acl::get_acl)
-                .patch(acl::update_acl)
-                .delete(acl::delete_acl),
-        )
+        .routes(routes!(acl::swap_acl))
+        .routes(routes!(acl::get_acl, acl::update_acl, acl::delete_acl))
         // Audit log routes
-        .route("/audit/logs", get(audit::list_audit_logs))
-        .route(
-            "/audit/retention",
-            get(audit::get_retention).patch(audit::update_retention),
-        )
+        .routes(routes!(audit::list_audit_logs))
+        .routes(routes!(audit::get_retention, audit::update_retention))
         // Cache routes (token caching / key-value store)
-        .route(
-            "/cache/{key}",
-            get(cache::get_cached)
-                .put(cache::put_cached)
-                .delete(cache::delete_cached),
-        );
+        .routes(routes!(
+            cache::get_cached,
+            cache::put_cached,
+            cache::delete_cached
+        ));
 
     // TEE attestation routes (feature-gated). The unauthenticated ones
     // (`status`, `report`, `did-log`) live on the rate-limited `unauth`
@@ -477,121 +442,76 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // docs/05-design-notes/runtime-service-management.md §3.4).
     #[cfg(feature = "webvh")]
     let router = router
-        .route(
-            "/services/didcomm/enable",
-            post(protocol::enable_didcomm_handler),
-        )
-        .route(
-            "/services/didcomm",
-            get(protocol::get_didcomm_status_handler),
-        )
-        .route(
-            "/services/didcomm/disable",
-            post(protocol::disable_didcomm_handler),
-        )
-        .route("/services/rest/enable", post(protocol::enable_rest_handler))
-        .route("/services/rest/update", post(protocol::update_rest_handler))
-        .route(
-            "/services/rest/disable",
-            post(protocol::disable_rest_handler),
-        )
-        .route(
-            "/services/rest/rollback",
-            post(protocol::rollback_rest_handler),
-        )
-        .route(
-            "/services/webauthn/enable",
-            post(protocol::enable_webauthn_handler),
-        )
-        .route(
-            "/services/webauthn/update",
-            post(protocol::update_webauthn_handler),
-        )
-        .route(
-            "/services/webauthn/disable",
-            post(protocol::disable_webauthn_handler),
-        )
-        .route(
-            "/services/webauthn/rollback",
-            post(protocol::rollback_webauthn_handler),
-        )
-        .route("/services", get(protocol::list_services_handler))
-        .route("/services/didcomm/drain", get(protocol::list_drain_handler))
-        .route(
-            "/services/didcomm/update",
-            post(protocol::update_didcomm_handler),
-        )
-        .route(
-            "/services/didcomm/rollback",
-            post(protocol::rollback_didcomm_handler),
-        )
+        .routes(routes!(protocol::enable_didcomm_handler))
+        .routes(routes!(protocol::get_didcomm_status_handler))
+        .routes(routes!(protocol::disable_didcomm_handler))
+        .routes(routes!(protocol::enable_rest_handler))
+        .routes(routes!(protocol::update_rest_handler))
+        .routes(routes!(protocol::disable_rest_handler))
+        .routes(routes!(protocol::rollback_rest_handler))
+        .routes(routes!(protocol::enable_webauthn_handler))
+        .routes(routes!(protocol::update_webauthn_handler))
+        .routes(routes!(protocol::disable_webauthn_handler))
+        .routes(routes!(protocol::rollback_webauthn_handler))
+        .routes(routes!(protocol::list_services_handler))
+        // GET list-drain + POST cancel share /services/didcomm/drain.
+        .routes(routes!(
+            protocol::list_drain_handler,
+            protocol::drain_cancel_handler
+        ))
+        .routes(routes!(protocol::update_didcomm_handler))
+        .routes(routes!(protocol::rollback_didcomm_handler))
+        // Alias mount of the drain-cancel handler; its #[utoipa::path] lives on
+        // the canonical /services/didcomm/drain entry above, so this stays a
+        // plain (undocumented) route to avoid a duplicate operation.
         .route(
             "/mediators/drain/cancel",
             post(protocol::drain_cancel_handler),
         )
-        .route("/mediators/report", get(protocol::mediator_report_handler));
+        .routes(routes!(protocol::mediator_report_handler));
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]
     let router = router
-        .route(
-            "/webvh/servers",
-            get(did_webvh::list_servers_handler).post(did_webvh::add_server_handler),
-        )
-        .route(
-            "/webvh/servers/{id}",
-            axum::routing::patch(did_webvh::update_server_handler)
-                .delete(did_webvh::remove_server_handler),
-        )
-        .route(
-            "/webvh/servers/{id}/domains",
-            get(did_webvh::list_server_domains_handler),
-        )
-        .route(
-            "/webvh/dids",
-            get(did_webvh::list_dids_handler).post(did_webvh::create_did_handler),
-        )
-        .route(
-            "/webvh/dids/{did}",
-            get(did_webvh::get_did_handler).delete(did_webvh::delete_did_handler),
-        )
-        .route("/webvh/dids/{did}/log", get(did_webvh::get_did_log_handler))
-        .route(
-            "/webvh/dids/{did}/register-server",
-            post(did_webvh::register_did_with_server_handler),
-        )
-        .route(
-            "/contexts/{ctx_id}/dids/{scid}/update",
-            post(did_webvh::update_did_handler),
-        )
-        .route(
-            "/contexts/{ctx_id}/dids/{scid}/rotate-keys",
-            post(did_webvh::rotate_did_keys_handler),
-        )
+        .routes(routes!(
+            did_webvh::list_servers_handler,
+            did_webvh::add_server_handler
+        ))
+        .routes(routes!(
+            did_webvh::update_server_handler,
+            did_webvh::remove_server_handler
+        ))
+        .routes(routes!(did_webvh::list_server_domains_handler))
+        .routes(routes!(
+            did_webvh::list_dids_handler,
+            did_webvh::create_did_handler
+        ))
+        .routes(routes!(
+            did_webvh::get_did_handler,
+            did_webvh::delete_did_handler
+        ))
+        .routes(routes!(did_webvh::get_did_log_handler))
+        .routes(routes!(did_webvh::register_did_with_server_handler))
+        .routes(routes!(did_webvh::update_did_handler))
+        .routes(routes!(did_webvh::rotate_did_keys_handler))
         // Passkey-as-verificationMethod enrolment. See
         // `docs/02-vta/passkey-verification-methods.md` (forthcoming).
         // First-time enrolment expects a short-lived enrolment-scope
         // JWT minted by `pnm passkey-enroll-token`; subsequent calls
         // use a passkey-derived session JWT.
-        .route(
-            "/did/verification-methods/passkey/challenge",
-            post(passkey_vms::enroll_challenge_handler),
-        )
-        .route(
-            "/did/verification-methods/passkey",
-            post(passkey_vms::enroll_submit_handler).get(passkey_vms::list_passkeys_handler),
-        )
-        .route(
-            "/did/verification-methods/passkey/{fragment}",
-            delete(passkey_vms::revoke_passkey_handler),
-        );
+        .routes(routes!(passkey_vms::enroll_challenge_handler))
+        .routes(routes!(
+            passkey_vms::enroll_submit_handler,
+            passkey_vms::list_passkeys_handler
+        ))
+        .routes(routes!(passkey_vms::revoke_passkey_handler));
 
     // VTA management routes
     let router = router
-        .route("/vta/restart", post(vta::restart))
-        .route("/metrics", get(vta::metrics))
-        .route("/backup/export", post(backup::export))
-        .route("/backup/import", post(backup::import));
+        .routes(routes!(vta::restart))
+        .routes(routes!(vta::metrics))
+        .routes(routes!(backup::export))
+        .routes(routes!(backup::import));
 
     // Backup-descriptor blob endpoints. NOT JWT-gated — the
     // `X-Backup-Token` header IS the credential (one-shot for
@@ -611,10 +531,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
     // without throttling an attacker replaying/guessing bundle_ids gets
     // free 100 MB disk-write attempts and free SHA-256 over 100 MB bodies.
     let backup_blob_router = OpenApiRouter::new()
-        .route(
-            "/backup/blob/{bundle_id}",
-            get(backup_blob::get_blob).post(backup_blob::post_blob),
-        )
+        .routes(routes!(backup_blob::get_blob, backup_blob::post_blob))
         .layer(DefaultBodyLimit::max(BACKUP_BLOB_BODY_SIZE));
     let backup_blob_router = apply_unauth_governor(backup_blob_router, trust_xff);
     let router = router.merge(backup_blob_router);
@@ -764,6 +681,45 @@ mod cors_tests {
                 .schemas
                 .contains_key("CapabilitiesResponse"),
             "CapabilitiesResponse schema must be emitted"
+        );
+    }
+
+    #[test]
+    fn openapi_spec_covers_the_route_groups() {
+        let spec = openapi_spec();
+        let paths = &spec.paths.paths;
+        // A representative path from each major route group must be documented.
+        for p in [
+            "/auth/challenge",
+            "/keys",
+            "/keys/{key_id}",
+            "/contexts",
+            "/acl",
+            "/acl/{did}",
+            "/did-templates",
+            "/audit/logs",
+            "/cache/{key}",
+            "/config",
+            "/step-up/policy",
+            "/capabilities",
+            "/vta/restart",
+            "/backup/export",
+            "/backup/blob/{bundle_id}",
+            // webvh (default feature) groups
+            "/services/didcomm/enable",
+            "/services",
+            "/webvh/dids",
+            "/webvh/servers",
+            "/did/verification-methods/passkey",
+        ] {
+            assert!(paths.contains_key(p), "spec missing documented path {p}");
+        }
+        // The full surface should be substantial — guard against a regression
+        // that silently drops the bulk of the routes.
+        assert!(
+            paths.len() >= 60,
+            "expected the documented surface to be >= 60 paths, got {}",
+            paths.len()
         );
     }
 

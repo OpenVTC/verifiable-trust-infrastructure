@@ -42,7 +42,8 @@ async fn ensure_webauthn_enabled(state: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PasskeyVmDidQuery {
     pub did: String,
 }
@@ -54,6 +55,17 @@ pub struct EnrollPasskeyChallengeBody {
     pub label: Option<String>,
 }
 
+/// POST /did/verification-methods/passkey/challenge — begin passkey-VM enrolment. Auth: admin.
+#[utoipa::path(
+    post, path = "/did/verification-methods/passkey/challenge", tag = "passkey-vms",
+    security(("bearer_jwt" = [])),
+    request_body = EnrollPasskeyChallengeBody,
+    responses(
+        (status = 200, description = "Enrolment challenge", body = EnrollPasskeyChallengeResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin, or WebAuthn is disabled"),
+    ),
+)]
 pub async fn enroll_challenge_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -73,6 +85,17 @@ pub async fn enroll_challenge_handler(
     Ok(Json(result))
 }
 
+/// POST /did/verification-methods/passkey — finish passkey-VM enrolment. Auth: admin.
+#[utoipa::path(
+    post, path = "/did/verification-methods/passkey", tag = "passkey-vms",
+    security(("bearer_jwt" = [])),
+    request_body = EnrollPasskeySubmitBody,
+    responses(
+        (status = 200, description = "Passkey enrolled", body = EnrollPasskeySubmitResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin, or WebAuthn is disabled"),
+    ),
+)]
 pub async fn enroll_submit_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -99,6 +122,17 @@ pub async fn enroll_submit_handler(
     Ok(Json(result))
 }
 
+/// GET /did/verification-methods/passkey — list a DID's passkey VMs. Auth: admin.
+#[utoipa::path(
+    get, path = "/did/verification-methods/passkey", tag = "passkey-vms",
+    security(("bearer_jwt" = [])),
+    params(PasskeyVmDidQuery),
+    responses(
+        (status = 200, description = "Passkey verification methods", body = ListPasskeyVmsResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn list_passkeys_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -108,6 +142,21 @@ pub async fn list_passkeys_handler(
     Ok(Json(result))
 }
 
+/// DELETE /did/verification-methods/passkey/{fragment} — revoke a passkey VM. Auth: admin.
+#[utoipa::path(
+    delete, path = "/did/verification-methods/passkey/{fragment}", tag = "passkey-vms",
+    security(("bearer_jwt" = [])),
+    params(
+        ("fragment" = String, Path, description = "Verification-method fragment"),
+        PasskeyVmDidQuery,
+    ),
+    responses(
+        (status = 204, description = "Passkey revoked"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Passkey VM not found"),
+    ),
+)]
 pub async fn revoke_passkey_handler(
     auth: AdminAuth,
     State(state): State<AppState>,

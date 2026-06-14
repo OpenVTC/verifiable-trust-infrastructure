@@ -17,6 +17,14 @@ pub struct UpdateConfigRequest {
 }
 
 /// GET /config — retrieve the current VTA configuration. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/config", tag = "config",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Current VTA configuration", body = GetConfigResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn get_config(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -26,6 +34,16 @@ pub async fn get_config(
 }
 
 /// PATCH /config — update VTA name, DID, or public URL. Auth: Super Admin only.
+#[utoipa::path(
+    patch, path = "/config", tag = "config",
+    security(("bearer_jwt" = [])),
+    request_body = UpdateConfigRequest,
+    responses(
+        (status = 200, description = "Updated VTA configuration", body = GetConfigResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn update_config(
     auth: SuperAdminAuth,
     State(state): State<AppState>,

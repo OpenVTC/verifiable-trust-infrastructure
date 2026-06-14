@@ -12,12 +12,23 @@ use crate::operations;
 use crate::server::AppState;
 use crate::trust_tasks::{AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp, RequireStepUp};
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListAclQuery {
     pub context: Option<String>,
 }
 
 /// GET /acl — list all ACL entries, optionally filtered by context. Auth: Admin or Initiator.
+#[utoipa::path(
+    get, path = "/acl", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(ListAclQuery),
+    responses(
+        (status = 200, description = "ACL entries", body = ListAclResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller cannot manage ACL entries"),
+    ),
+)]
 pub async fn list_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -50,6 +61,16 @@ pub struct CreateAclRequest {
 }
 
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
+#[utoipa::path(
+    post, path = "/acl", tag = "acl",
+    security(("bearer_jwt" = [])),
+    request_body = CreateAclRequest,
+    responses(
+        (status = 201, description = "ACL entry created", body = CreateAclResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller cannot manage ACL entries"),
+    ),
+)]
 pub async fn create_acl(
     auth: ManageAuth,
     // Role first, step-up second: a caller lacking the role gets a permission
@@ -78,6 +99,17 @@ pub async fn create_acl(
 }
 
 /// GET /acl/{did} — retrieve a single ACL entry by DID. Auth: Admin or Initiator.
+#[utoipa::path(
+    get, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    responses(
+        (status = 200, description = "ACL entry", body = CreateAclResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller cannot manage ACL entries"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
@@ -104,6 +136,18 @@ pub struct UpdateAclRequest {
 /// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry.
 /// Auth: Admin only (the operation layer also enforces this; gating at the
 /// extractor fails earlier with a clearer error).
+#[utoipa::path(
+    patch, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    request_body = UpdateAclRequest,
+    responses(
+        (status = 200, description = "ACL entry updated", body = CreateAclResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn update_acl(
     auth: AdminAuth,
     _step_up: RequireStepUp<AclChangeRoleOp>,
@@ -131,6 +175,17 @@ pub async fn update_acl(
 }
 
 /// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.
+#[utoipa::path(
+    delete, path = "/acl/{did}", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    responses(
+        (status = 204, description = "ACL entry removed"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller cannot manage ACL entries"),
+        (status = 404, description = "ACL entry not found"),
+    ),
+)]
 pub async fn delete_acl(
     auth: ManageAuth,
     _step_up: RequireStepUp<AclRevokeOp>,
@@ -182,6 +237,15 @@ pub enum SwapAclRequest {
 ///
 /// Accepts both the legacy `{ presentation }` body and the canonical Trust Task
 /// `acl/swap-key/0.1` body during the deprecation window.
+#[utoipa::path(
+    post, path = "/acl/swap", tag = "acl",
+    security(("bearer_jwt" = [])),
+    request_body = SwapAclRequest,
+    responses(
+        (status = 200, description = "ACL entry swapped onto the new DID", body = CreateAclResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn swap_acl(
     auth: AuthClaims,
     _step_up: RequireStepUp<AclSwapKeyOp>,

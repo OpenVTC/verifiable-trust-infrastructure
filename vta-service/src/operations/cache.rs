@@ -14,21 +14,21 @@ struct CacheEntry {
 }
 
 /// Response body for cache retrieval.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CacheGetResponse {
     pub key: String,
     pub value: String,
 }
 
 /// Request body for cache storage.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CachePutRequest {
     pub value: String,
     pub ttl_secs: u64,
 }
 
 /// Response body for cache storage.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct CachePutResponse {
     pub key: String,
     pub expires_at: i64,

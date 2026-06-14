@@ -32,7 +32,7 @@ pub struct ReportParams {
     pub until: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MediatorStats {
     pub mediator_did: String,
     pub inbound_count: u64,
@@ -40,14 +40,14 @@ pub struct MediatorStats {
     pub last_seen: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SenderLastSeen {
     pub sender_did: String,
     pub last_seen_mediator: String,
     pub last_seen_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct MediatorReport {
     pub since: Option<DateTime<Utc>>,
     pub until: DateTime<Utc>,

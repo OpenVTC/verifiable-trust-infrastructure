@@ -31,13 +31,22 @@ pub struct UpdateContextRequest {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DeleteContextQuery {
     #[serde(default)]
     pub force: bool,
 }
 
 /// GET /contexts — list all contexts visible to the caller. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/contexts", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Contexts visible to the caller", body = ListContextsResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn list_contexts_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -49,6 +58,16 @@ pub async fn list_contexts_handler(
 /// POST /contexts — create a context. Auth: **admin** (the operation enforces
 /// the finer gate — super-admin for a top-level context, admin-of-parent for a
 /// sub-context).
+#[utoipa::path(
+    post, path = "/contexts", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    request_body = CreateContextRequest,
+    responses(
+        (status = 201, description = "Context created", body = CreateContextResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
 pub async fn create_context_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -68,6 +87,16 @@ pub async fn create_context_handler(
 }
 
 /// GET /contexts/{id} — retrieve a single context by ID. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/contexts/{id}", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    responses(
+        (status = 200, description = "Context record", body = CreateContextResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Context not found"),
+    ),
+)]
 pub async fn get_context_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -79,6 +108,18 @@ pub async fn get_context_handler(
 }
 
 /// PATCH /contexts/{id} — update a context's name, DID, or description. Auth: Super Admin only.
+#[utoipa::path(
+    patch, path = "/contexts/{id}", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    request_body = UpdateContextRequest,
+    responses(
+        (status = 200, description = "Context updated", body = CreateContextResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 404, description = "Context not found"),
+    ),
+)]
 pub async fn update_context_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -106,6 +147,18 @@ pub struct UpdateDidRequest {
 }
 
 /// PUT /contexts/{id}/did — update the DID for a context. Auth: Admin with context access.
+#[utoipa::path(
+    put, path = "/contexts/{id}/did", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    request_body = UpdateDidRequest,
+    responses(
+        (status = 200, description = "Context DID updated", body = CreateContextResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Context not found"),
+    ),
+)]
 pub async fn update_context_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -121,6 +174,17 @@ pub async fn update_context_did_handler(
 /// GET /contexts/{id}/delete-preview — preview resources affected by deleting a
 /// context. Auth: **admin** (the operation enforces access to the context or an
 /// ancestor — folder authority).
+#[utoipa::path(
+    get, path = "/contexts/{id}/delete-preview", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    params(("id" = String, Path, description = "Context identifier")),
+    responses(
+        (status = 200, description = "Resources affected by deleting the context", body = DeleteContextPreviewResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Context not found"),
+    ),
+)]
 pub async fn preview_delete_context_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
@@ -144,6 +208,20 @@ pub async fn preview_delete_context_handler(
 /// DELETE /contexts/{id} — delete a context and its subtree + resources. Auth:
 /// **admin** (the operation enforces access to the context or an ancestor —
 /// folder authority); `force` cascades through sub-contexts.
+#[utoipa::path(
+    delete, path = "/contexts/{id}", tag = "contexts",
+    security(("bearer_jwt" = [])),
+    params(
+        ("id" = String, Path, description = "Context identifier"),
+        DeleteContextQuery,
+    ),
+    responses(
+        (status = 204, description = "Context deleted"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+        (status = 404, description = "Context not found"),
+    ),
+)]
 pub async fn delete_context_handler(
     auth: AdminAuth,
     // Deleting a context requires a stepped-up (AAL2) session when the

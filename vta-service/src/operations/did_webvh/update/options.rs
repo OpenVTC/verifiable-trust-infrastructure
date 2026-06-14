@@ -35,11 +35,12 @@ pub use vta_sdk::protocols::did_management::update::{
 /// struct at intake. Keeping the typed shape internal isolates
 /// `didwebvh-rs` as a dependency of the op layer rather than vta-sdk
 /// (a leaf crate).
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct UpdateDidWebvhOptions {
     /// New DID document. `None` = keep existing. When `Some`, forces a
     /// parallel rotation of `update_keys` + pre-rotation commitments.
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub document: Option<Value>,
     /// Override pre-rotation count. `None` = keep current. `Some(0)` =
     /// disable pre-rotation. `Some(n)` = use `n` keys.
@@ -47,6 +48,7 @@ pub struct UpdateDidWebvhOptions {
     pub pre_rotation_count: Option<u32>,
     /// New witness configuration. `None` = keep current.
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub witnesses: Option<Witnesses>,
     /// New watcher URLs. `None` = keep current. `Some(vec![])` disables.
     #[serde(default)]

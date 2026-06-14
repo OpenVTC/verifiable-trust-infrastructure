@@ -23,6 +23,15 @@ use crate::operations::step_up_policy::{
 use crate::server::AppState;
 
 /// GET /step-up/policy — read the current effective step-up policy.
+#[utoipa::path(
+    get, path = "/step-up/policy", tag = "step-up",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Current effective step-up policy", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller lacks manage-level access"),
+    ),
+)]
 pub async fn get_step_up_policy(
     _auth: ManageAuth,
     State(state): State<AppState>,
@@ -33,6 +42,16 @@ pub async fn get_step_up_policy(
 
 /// PUT /step-up/policy — set the step-up policy (super-admin). Body is the
 /// `0.2` policy payload shape (`{ enabled, floors: [...] }`).
+#[utoipa::path(
+    put, path = "/step-up/policy", tag = "step-up",
+    security(("bearer_jwt" = [])),
+    request_body = serde_json::Value,
+    responses(
+        (status = 200, description = "Updated effective step-up policy", body = serde_json::Value),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn put_step_up_policy(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,

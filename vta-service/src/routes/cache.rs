@@ -9,6 +9,16 @@ use crate::operations::cache::{CacheGetResponse, CachePutRequest, CachePutRespon
 use crate::server::AppState;
 
 /// GET /cache/{key} — retrieve a cached value by key. Auth: any authenticated user.
+#[utoipa::path(
+    get, path = "/cache/{key}", tag = "cache",
+    security(("bearer_jwt" = [])),
+    params(("key" = String, Path, description = "Cache key")),
+    responses(
+        (status = 200, description = "Cached value", body = CacheGetResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 404, description = "Cache key not found"),
+    ),
+)]
 pub async fn get_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -21,6 +31,16 @@ pub async fn get_cached(
 }
 
 /// PUT /cache/{key} — store or update a cached value. Auth: Application or higher.
+#[utoipa::path(
+    put, path = "/cache/{key}", tag = "cache",
+    security(("bearer_jwt" = [])),
+    params(("key" = String, Path, description = "Cache key")),
+    request_body = CachePutRequest,
+    responses(
+        (status = 200, description = "Cached value stored", body = CachePutResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn put_cached(
     auth: AuthClaims,
     State(state): State<AppState>,
@@ -33,6 +53,15 @@ pub async fn put_cached(
 }
 
 /// DELETE /cache/{key} — remove a cached value. Auth: Application or higher.
+#[utoipa::path(
+    delete, path = "/cache/{key}", tag = "cache",
+    security(("bearer_jwt" = [])),
+    params(("key" = String, Path, description = "Cache key")),
+    responses(
+        (status = 204, description = "Cache value removed"),
+        (status = 401, description = "Missing or invalid bearer token"),
+    ),
+)]
 pub async fn delete_cached(
     auth: AuthClaims,
     State(state): State<AppState>,

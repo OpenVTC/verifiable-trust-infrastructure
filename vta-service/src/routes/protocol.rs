@@ -103,6 +103,17 @@ pub struct EnableDidcommResponse {
 /// 2-5, then [`AlwaysOkProver`] inside the operation itself. The
 /// live-prover path through `update_didcomm` (where DIDComm is
 /// already running) covers the steady-state case.
+#[utoipa::path(
+    post, path = "/services/didcomm/enable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = EnableDidcommRequest,
+    responses(
+        (status = 200, description = "DIDComm enabled", body = EnableDidcommResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "DIDComm is already enabled"),
+    ),
+)]
 pub async fn enable_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -180,6 +191,15 @@ pub async fn enable_didcomm_handler(
 /// for parity with `GET /services` (`list_services`), which exposes the same
 /// `mediator_did`. Gating both the same way avoids a reader-role caller learning
 /// the mediator DID here that it cannot obtain from the sibling list endpoint.
+#[utoipa::path(
+    get, path = "/services/didcomm", tag = "services",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Current DIDComm status", body = DidcommStatusResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn get_didcomm_status_handler(
     _auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -480,6 +500,17 @@ pub struct DisableDidcommResponse {
 /// super-admin. The route uses `DisableTransport::Rest` since this
 /// handler IS the REST transport. The 1h-min-TTL guard applies only
 /// when called over the DIDComm transport (Phase 4.2 and beyond).
+#[utoipa::path(
+    post, path = "/services/didcomm/disable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = DisableDidcommRequest,
+    responses(
+        (status = 200, description = "DIDComm disabled", body = DisableDidcommResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "DIDComm not enabled, or last remaining service"),
+    ),
+)]
 pub async fn disable_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -746,6 +777,17 @@ pub struct UpdateDidcommResponse {
 /// falls back to [`AlwaysOkProver`]. The fallback path is hit
 /// when DIDComm hasn't started yet or when secrets aren't
 /// configured (e.g. mock test fixtures).
+#[utoipa::path(
+    post, path = "/services/didcomm/update", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = UpdateDidcommRequest,
+    responses(
+        (status = 200, description = "Active mediator changed", body = UpdateDidcommResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "DIDComm not enabled, or mediator already active/draining"),
+    ),
+)]
 pub async fn update_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1059,6 +1101,17 @@ pub struct DrainCancelResponse {
     pub mediator_did: String,
 }
 
+#[utoipa::path(
+    post, path = "/services/didcomm/drain", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = DrainCancelRequest,
+    responses(
+        (status = 200, description = "Drain cancelled", body = DrainCancelResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "Mediator not in drain state, or is the active mediator"),
+    ),
+)]
 pub async fn drain_cancel_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1146,7 +1199,8 @@ impl IntoResponse for DrainCancelHttpError {
 
 use axum::extract::Query;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct MediatorReportQuery {
     /// Lower bound (RFC 3339).
     #[serde(default)]
@@ -1156,6 +1210,16 @@ pub struct MediatorReportQuery {
     pub until: Option<String>,
 }
 
+#[utoipa::path(
+    get, path = "/mediators/report", tag = "services",
+    security(("bearer_jwt" = [])),
+    params(MediatorReportQuery),
+    responses(
+        (status = 200, description = "Per-mediator inbound report", body = crate::operations::protocol::report::MediatorReport),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn mediator_report_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1347,6 +1411,17 @@ async fn try_run_first_enable_handshake(
 /// `POST /services/rest/enable` — add a `#vta-rest` service entry
 /// to the VTA's DID document. Auth: super-admin. Refused with
 /// `ServiceAlreadyEnabled` if REST is already advertised.
+#[utoipa::path(
+    post, path = "/services/rest/enable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::EnableRestRequest,
+    responses(
+        (status = 200, description = "REST service enabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "REST is already enabled"),
+    ),
+)]
 pub async fn enable_rest_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1380,6 +1455,17 @@ pub async fn enable_rest_handler(
 /// `POST /services/rest/update` — replace the URL on the existing
 /// `#vta-rest` entry. Auth: super-admin. Refused with
 /// `ServiceNotPresent` if REST isn't currently advertised.
+#[utoipa::path(
+    post, path = "/services/rest/update", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::UpdateRestRequest,
+    responses(
+        (status = 200, description = "REST URL updated", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "REST is not currently enabled"),
+    ),
+)]
 pub async fn update_rest_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1413,6 +1499,17 @@ pub async fn update_rest_handler(
 /// `POST /services/rest/disable` — remove the `#vta-rest` entry.
 /// Auth: super-admin. Refused with `LastServiceRefused` when
 /// DIDComm is also disabled (spec §3.2 — no `--force` escape).
+#[utoipa::path(
+    post, path = "/services/rest/disable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::DisableRestRequest,
+    responses(
+        (status = 200, description = "REST service disabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "REST not present, or last remaining service"),
+    ),
+)]
 pub async fn disable_rest_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1665,6 +1762,17 @@ impl IntoResponse for RestServiceHttpError {
 /// `POST /services/rest/rollback` — fail-forward the most recent
 /// REST mutation. Auth: super-admin. Refused with `NoPriorMutation`
 /// when no snapshot is recorded.
+#[utoipa::path(
+    post, path = "/services/rest/rollback", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::RollbackRestRequest,
+    responses(
+        (status = 200, description = "REST mutation rolled back (fail-forward)", body = RollbackResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "No prior mutation, or last remaining service"),
+    ),
+)]
 pub async fn rollback_rest_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1693,6 +1801,17 @@ pub async fn rollback_rest_handler(
 /// `POST /services/didcomm/rollback` — fail-forward the most recent
 /// DIDComm mutation. Auth: super-admin. Threads drain_ttl through
 /// to the dispatched forward op for the disable / update arms.
+#[utoipa::path(
+    post, path = "/services/didcomm/rollback", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = RollbackDidcommHttpRequest,
+    responses(
+        (status = 200, description = "DIDComm mutation rolled back (fail-forward)", body = RollbackResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "No prior mutation, or last remaining service"),
+    ),
+)]
 pub async fn rollback_didcomm_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -1961,6 +2080,15 @@ impl IntoResponse for RollbackDidcommHttpError {
 
 use crate::operations::protocol::list::{ListServicesError, list_services};
 
+#[utoipa::path(
+    get, path = "/services", tag = "services",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Currently-advertised transport services", body = vta_sdk::protocol::services::ServicesListResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn list_services_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2022,6 +2150,15 @@ impl IntoResponse for ListServicesHttpError {
 
 use crate::operations::protocol::list_drain::{ListDrainError, list_drain};
 
+#[utoipa::path(
+    get, path = "/services/didcomm/drain", tag = "services",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Mediators currently in drain state", body = vta_sdk::protocol::services::DrainListResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+    ),
+)]
 pub async fn list_drain_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2073,6 +2210,17 @@ impl IntoResponse for ListDrainHttpError {
 
 /// `POST /services/webauthn/enable` — add a `#vta-webauthn` service
 /// entry to the VTA's DID document. Auth: super-admin.
+#[utoipa::path(
+    post, path = "/services/webauthn/enable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::EnableWebauthnRequest,
+    responses(
+        (status = 200, description = "WebAuthn service enabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "WebAuthn is already enabled"),
+    ),
+)]
 pub async fn enable_webauthn_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2102,6 +2250,17 @@ pub async fn enable_webauthn_handler(
 }
 
 /// `POST /services/webauthn/update` — replace the URL.
+#[utoipa::path(
+    post, path = "/services/webauthn/update", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::UpdateWebauthnRequest,
+    responses(
+        (status = 200, description = "WebAuthn URL updated", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "WebAuthn is not currently enabled"),
+    ),
+)]
 pub async fn update_webauthn_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2133,6 +2292,17 @@ pub async fn update_webauthn_handler(
 /// `POST /services/webauthn/disable` — remove the `#vta-webauthn`
 /// entry **and** strip passkey VMs from every DID this VTA
 /// controls. Auth: super-admin.
+#[utoipa::path(
+    post, path = "/services/webauthn/disable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::DisableWebauthnRequest,
+    responses(
+        (status = 200, description = "WebAuthn service disabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "WebAuthn not present, or last remaining service"),
+    ),
+)]
 pub async fn disable_webauthn_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
@@ -2162,6 +2332,17 @@ pub async fn disable_webauthn_handler(
 }
 
 /// `POST /services/webauthn/rollback` — fail-forward dispatch.
+#[utoipa::path(
+    post, path = "/services/webauthn/rollback", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::RollbackWebauthnRequest,
+    responses(
+        (status = 200, description = "WebAuthn mutation rolled back (fail-forward)", body = vta_sdk::protocol::services::RollbackResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "No prior mutation, or last remaining service"),
+    ),
+)]
 pub async fn rollback_webauthn_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
