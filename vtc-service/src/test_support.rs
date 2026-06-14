@@ -575,9 +575,9 @@ mod didcomm_harness {
     };
 
     use crate::join::JoinTransport;
+    use crate::join::submit_inner;
     use crate::routes::join_requests::manifest::manifest_inner;
     use crate::routes::join_requests::status::status_inner;
-    use crate::routes::join_requests::submit::submit_inner;
     use crate::server::AppState;
 
     use super::TestVtc;

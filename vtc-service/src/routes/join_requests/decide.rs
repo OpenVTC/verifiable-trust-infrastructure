@@ -135,7 +135,7 @@ pub async fn approve(
     // The MemberAdded + VmcIssued + VecIssued envelopes for the admit effect are
     // shared with the auto-admit path (see `super::audit`) so the two cannot
     // record divergent trails for the same effect.
-    super::audit::emit_admit_audit(
+    crate::join::emit_admit_audit(
         audit_writer,
         &admin.0.did,
         &req.applicant_did,

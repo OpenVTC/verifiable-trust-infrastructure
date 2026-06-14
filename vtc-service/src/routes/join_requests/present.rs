@@ -48,7 +48,7 @@ use crate::registry::TrustRegistryClient;
 use crate::schemas::accepts::get_accepts;
 use crate::server::AppState;
 
-use super::submit::{JoinSubmitOutcome, decide_join, realize_join_verdict};
+use crate::join::{JoinSubmitOutcome, decide_join, realize_join_verdict};
 
 /// Verify a presented OID4VP `vp_token`, run the join decision, and realize it.
 ///

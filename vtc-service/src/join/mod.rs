@@ -14,6 +14,7 @@
 //! - VMC + role VEC issuance via the VTA oracle on approve.
 //!   Phase 1's approve writes ACL + Member only.
 
+pub mod orchestrate;
 pub mod retention;
 pub mod storage;
 
@@ -22,6 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
+pub use orchestrate::{
+    HolderBinding, JOIN_REQUEST_SUBMIT_DOMAIN_TAG, JoinSubmitOutcome, decide_join,
+    emit_admit_audit, realize_join_verdict, submit_inner,
+};
 pub use retention::{JoinRequestsConfig, RetentionSweeper, default_retention_days};
 pub use storage::{
     JOIN_REQUEST_EXTENSIONS_MAX_BYTES, JOIN_REQUEST_VP_MAX_BYTES, delete_join_request,

@@ -7,7 +7,6 @@
 //! Phase 2's policy surface).
 
 pub mod accept;
-pub(crate) mod audit;
 pub mod decide;
 pub mod manifest;
 pub mod present;
