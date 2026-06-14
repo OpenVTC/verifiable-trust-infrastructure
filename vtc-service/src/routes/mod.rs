@@ -1296,4 +1296,130 @@ mod openapi_tests {
             paths.len()
         );
     }
+
+    // ── Route-posture backstop (P2.6) ──────────────────────────────────────
+    //
+    // The router is assembled across two chains (`build_api_chain`,
+    // `build_unauth_routes`) and auth posture is enforced by per-handler
+    // extractors, so whether a route is authenticated — and, if not, whether it
+    // sits behind the rate-limiter — isn't locally legible at any one site. That
+    // is exactly how the P0.5 misplacement slipped in (attacker-driven crypto
+    // POSTs left on the unauthenticated 1 MiB / no-limiter main chain).
+    //
+    // These tests turn the OpenAPI spec (the route inventory + each op's
+    // `security` requirement) into a posture assertion: **every** unauthenticated
+    // operation must be explicitly classified as either governed (the
+    // rate-limited, 64 KiB `build_unauth_routes` chain) or an approved public
+    // exception. A new unauthenticated route fails the suite until it is
+    // classified, and a route that flips its auth gate breaks the matching
+    // allowlist — making the P0.5 regression class impossible to land silently.
+
+    /// Unauthenticated operations that ride the governed chain
+    /// (`build_unauth_routes`): tower-governor rate limit + [`UNAUTH_BODY_SIZE`]
+    /// body cap. Attacker-driven crypto / IO belongs here.
+    const GOVERNED_UNAUTH: &[(&str, &str)] = &[
+        ("POST", "/v1/auth/challenge"),
+        ("POST", "/v1/auth/"),
+        ("POST", "/v1/auth/refresh"),
+        ("POST", "/v1/auth/admin-login"),
+        ("POST", "/v1/auth/admin-session"),
+        ("POST", "/v1/auth/passkey-login/start"),
+        ("POST", "/v1/auth/passkey-login/finish"),
+        ("POST", "/v1/auth/recognise/challenge"),
+        ("POST", "/v1/auth/recognise"),
+        ("POST", "/v1/install/claim/start"),
+        ("POST", "/v1/install/claim/finish"),
+        ("POST", "/v1/join-requests"),
+        ("POST", "/v1/join-requests/{id}/accept"),
+        ("POST", "/v1/join-requests/{id}/status"),
+    ];
+
+    /// Unauthenticated operations intentionally left OFF the governed chain
+    /// (public reads + the rate-limited-elsewhere bootstrap). Each is a
+    /// deliberate decision recorded here so a *new* unauthenticated route can't
+    /// quietly join this set.
+    const PUBLIC_UNGOVERNED: &[(&str, &str)] = &[
+        // Public, cacheable community metadata — no secrets, cheap to serve.
+        ("GET", "/v1/community/public-profile"),
+        // Public join manifest (what a community asks applicants to present).
+        ("GET", "/v1/join-requests/manifest"),
+        // Verifier-facing status list — public by the W3C BitstringStatusList model.
+        ("GET", "/v1/status-lists/{purpose}"),
+        // TEE/admin first-boot bootstrap — single-use, setup-JWT gated in-handler.
+        ("POST", "/v1/admin/bootstrap"),
+    ];
+
+    /// Collect every documented operation as `(METHOD, path, secured)` where
+    /// `secured` reflects the op's OpenAPI `security` requirement (bearer JWT).
+    fn documented_ops() -> Vec<(&'static str, String, bool)> {
+        let spec = openapi_spec();
+        let mut ops = Vec::new();
+        for (path, item) in &spec.paths.paths {
+            for (method, op) in [
+                ("GET", &item.get),
+                ("POST", &item.post),
+                ("PATCH", &item.patch),
+                ("DELETE", &item.delete),
+                ("PUT", &item.put),
+            ] {
+                if let Some(op) = op {
+                    let secured = op.security.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
+                    ops.push((method, path.clone(), secured));
+                }
+            }
+        }
+        ops
+    }
+
+    fn in_allowlist(list: &[(&str, &str)], method: &str, path: &str) -> bool {
+        list.iter().any(|(m, p)| *m == method && *p == path)
+    }
+
+    /// The core P0.5 backstop: every unauthenticated operation is classified,
+    /// and every authenticated operation stays off the governed unauth chain.
+    #[test]
+    fn every_unauthenticated_route_is_classified() {
+        for (method, path, secured) in documented_ops() {
+            let governed = in_allowlist(GOVERNED_UNAUTH, method, &path);
+            let public = in_allowlist(PUBLIC_UNGOVERNED, method, &path);
+            if secured {
+                assert!(
+                    !governed,
+                    "{method} {path} requires a bearer JWT but is listed on the unauthenticated \
+                     governed chain — an authenticated route must not sit in GOVERNED_UNAUTH"
+                );
+            } else {
+                assert!(
+                    governed || public,
+                    "{method} {path} is UNAUTHENTICATED but unclassified — add it to the governed \
+                     unauth chain (GOVERNED_UNAUTH) or, if it is a deliberate public endpoint, to \
+                     PUBLIC_UNGOVERNED. (This is the P0.5 backstop: an unauth route must never \
+                     silently land on the 1 MiB no-limiter main chain.)"
+                );
+                assert!(
+                    !(governed && public),
+                    "{method} {path} is in both GOVERNED_UNAUTH and PUBLIC_UNGOVERNED — pick one"
+                );
+            }
+        }
+    }
+
+    /// The allowlists can't drift: every entry must still be a documented,
+    /// unauthenticated operation (so a removed/renamed/now-authenticated route
+    /// can't leave a stale exception behind).
+    #[test]
+    fn posture_allowlists_have_no_stale_entries() {
+        let ops = documented_ops();
+        let is_unauth_op = |method: &str, path: &str| {
+            ops.iter()
+                .any(|(m, p, secured)| *m == method && p == path && !secured)
+        };
+        for (method, path) in GOVERNED_UNAUTH.iter().chain(PUBLIC_UNGOVERNED) {
+            assert!(
+                is_unauth_op(method, path),
+                "posture allowlist entry {method} {path} is not a documented unauthenticated \
+                 operation — remove it or fix the path/method"
+            );
+        }
+    }
 }
