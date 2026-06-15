@@ -170,11 +170,13 @@ the #457 posture backstop provides its regression guard.)
   `create_dir_all` — `canonical_within_root_for_create` (shared
   `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
   ancestor; no FS mutation before the check) — PR: #467
-- `[~]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
+- `[x]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
   read) — `validate_csp_override` refuses weakening script-src/object-src/base-uri;
-  `CspOverrideCache` (content-cache TTL) — PR: #469 (in review)
-- `[ ]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
-  `plugins.json` scan; implement `If-None-Match`→304 — PR: ____
+  `CspOverrideCache` (content-cache TTL) — PR: #469
+- `[~]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
+  `plugins.json` scan; implement `If-None-Match`→304 — `cache_control_for`
+  (shell no-cache, hashed assets keep TTL); `scan_plugin_dir_cached` (30s TTL);
+  `etag_matches`→304 in website serve — PR: #470 (in review)
 - `[ ]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
   boundaries — PR: ____
 - `[ ]` **P3.7** (S) Minimal unauth `/health`; gate DID/mediator detail; `nosniff`
