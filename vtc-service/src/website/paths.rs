@@ -53,6 +53,42 @@ pub fn canonical_within_root(
     request_path: &str,
     executable_blocklist: &[String],
 ) -> Result<PathBuf, PathError> {
+    // Steps 1–4 are the pure-string component checks (control chars,
+    // NFC, hidden, blocklist) shared with the create path.
+    let trimmed = validate_path_components(request_path, executable_blocklist)?;
+
+    // 5 — canonicalise against root_dir.
+    let candidate = root_dir.join(&trimmed);
+    let canonical = std::fs::canonicalize(&candidate).map_err(|_| PathError::NotFound)?;
+    let root_canonical = std::fs::canonicalize(root_dir).map_err(|_| PathError::NotFound)?;
+
+    if !canonical.starts_with(&root_canonical) {
+        return Err(PathError::Escape);
+    }
+
+    // 6 — exec bit on regular files (Unix only).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = canonical.metadata()
+            && meta.is_file()
+            && meta.permissions().mode() & 0o111 != 0
+        {
+            return Err(PathError::ExecBit);
+        }
+    }
+
+    Ok(canonical)
+}
+
+/// Steps 1–4 of the safety chain: the pure-string checks that don't
+/// touch the filesystem and so apply equally to a path whose target
+/// doesn't exist yet (a `PUT` creating a file). Returns the trimmed,
+/// NFC-normalised relative path (no leading `/`) on success.
+fn validate_path_components(
+    request_path: &str,
+    executable_blocklist: &[String],
+) -> Result<String, PathError> {
     // 1 — NUL / control char check. Decoded URL paths shouldn't
     //     carry control bytes; surface explicitly so the audit
     //     log records the rejection reason.
@@ -76,8 +112,9 @@ pub fn canonical_within_root(
 
     // 3 — hidden-file check. Any component starting with `.` is
     //     refused. `.` and `..` are path-traversal markers, not
-    //     hidden files; canonicalisation below will surface a
-    //     traversal as `Escape` / `NotFound` instead.
+    //     hidden files; canonicalisation surfaces a traversal as
+    //     `Escape` / `NotFound` instead (the create path rejects
+    //     `..` outright — see [`canonical_within_root_for_create`]).
     let trimmed = nfc.trim_start_matches('/');
     for segment in trimmed.split('/') {
         if segment == "." || segment == ".." || segment.is_empty() {
@@ -100,28 +137,69 @@ pub fn canonical_within_root(
         }
     }
 
-    // 5 — canonicalise against root_dir.
-    let candidate = root_dir.join(trimmed);
-    let canonical = std::fs::canonicalize(&candidate).map_err(|_| PathError::NotFound)?;
-    let root_canonical = std::fs::canonicalize(root_dir).map_err(|_| PathError::NotFound)?;
+    Ok(trimmed.to_string())
+}
 
-    if !canonical.starts_with(&root_canonical) {
-        return Err(PathError::Escape);
+/// Validate a `PUT` target path against the **full** safety chain
+/// *before* any filesystem mutation, returning the (non-canonical,
+/// possibly not-yet-existing) target path inside `root_dir`.
+///
+/// [`canonical_within_root`] requires the target to exist (it
+/// `canonicalize`s it), so it can't gate a create. This applies the
+/// same component checks (control / NFC / hidden / blocklist), then
+/// proves containment without the target existing:
+///
+/// - `.` / `..` segments are rejected outright (`Escape`) — a create
+///   never legitimately traverses.
+/// - the **nearest existing ancestor** of the target is canonicalised
+///   and must stay within the canonical root, so a symlinked ancestor
+///   pointing outside the root is caught before we write or `mkdir`.
+///
+/// The caller creates the parent and writes only after this returns
+/// `Ok`.
+pub fn canonical_within_root_for_create(
+    root_dir: &Path,
+    request_path: &str,
+    executable_blocklist: &[String],
+) -> Result<PathBuf, PathError> {
+    let trimmed = validate_path_components(request_path, executable_blocklist)?;
+
+    // Reject traversal + a directory-valued target (empty final
+    // segment). The create path must name a concrete file.
+    if trimmed.is_empty() || trimmed.ends_with('/') {
+        return Err(PathError::NotFound);
     }
-
-    // 6 — exec bit on regular files (Unix only).
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = canonical.metadata()
-            && meta.is_file()
-            && meta.permissions().mode() & 0o111 != 0
-        {
-            return Err(PathError::ExecBit);
+    for segment in trimmed.split('/') {
+        if segment == "." || segment == ".." {
+            return Err(PathError::Escape);
         }
     }
 
-    Ok(canonical)
+    let target = root_dir.join(&trimmed);
+    let root_canonical = std::fs::canonicalize(root_dir).map_err(|_| PathError::NotFound)?;
+
+    // Walk up from the target to the first ancestor that exists on
+    // disk and canonicalise it — that resolves any symlinks in the
+    // existing prefix. With no `..` in the path, an ancestor that
+    // canonicalises within root guarantees the target does too.
+    let mut existing = target.as_path();
+    let canonical_ancestor = loop {
+        match std::fs::canonicalize(existing) {
+            Ok(c) => break c,
+            Err(_) => match existing.parent() {
+                Some(p) => existing = p,
+                // Should be unreachable — root_dir always exists and
+                // is an ancestor — but fail closed.
+                None => return Err(PathError::Escape),
+            },
+        }
+    };
+
+    if !canonical_ancestor.starts_with(&root_canonical) {
+        return Err(PathError::Escape);
+    }
+
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -217,5 +295,104 @@ mod tests {
 
         let err = canonical_within_root(&root, "/script.bin", &block()).expect_err("must reject");
         assert_eq!(err, PathError::ExecBit);
+    }
+
+    // ── canonical_within_root_for_create (PUT path) ──────────────
+
+    #[test]
+    fn create_allows_new_file_in_existing_dir() {
+        let (_d, root) = setup_root();
+        let target = canonical_within_root_for_create(&root, "/assets/new.css", &block()).unwrap();
+        assert!(target.ends_with("assets/new.css"));
+        // Validation must not create anything.
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn create_allows_new_nested_dir() {
+        let (_d, root) = setup_root();
+        // The parent dir doesn't exist yet — the create validator must
+        // still accept it (the caller mkdirs after).
+        let target =
+            canonical_within_root_for_create(&root, "/blog/2026/post.html", &block()).unwrap();
+        assert!(target.ends_with("blog/2026/post.html"));
+        assert!(!root.join("blog").exists(), "validation must not mkdir");
+    }
+
+    #[test]
+    fn create_rejects_blocklisted_extension() {
+        let (_d, root) = setup_root();
+        let err = canonical_within_root_for_create(&root, "/evil.php", &block())
+            .expect_err("must reject");
+        assert_eq!(err, PathError::BlockedExtension(".php".into()));
+    }
+
+    #[test]
+    fn create_rejects_hidden_target() {
+        let (_d, root) = setup_root();
+        // `.htaccess`, `.git/config`, etc. — caught by the hidden check.
+        for p in ["/.htaccess", "/.git/config", "/assets/.secret"] {
+            let err = canonical_within_root_for_create(&root, p, &block()).unwrap_err();
+            assert_eq!(err, PathError::Hidden, "path {p}");
+        }
+    }
+
+    #[test]
+    fn create_rejects_control_and_non_nfc() {
+        let (_d, root) = setup_root();
+        assert_eq!(
+            canonical_within_root_for_create(&root, "/x\0.html", &block()).unwrap_err(),
+            PathError::ControlChars,
+        );
+        assert_eq!(
+            canonical_within_root_for_create(&root, "/cafe\u{0301}.html", &block()).unwrap_err(),
+            PathError::NonNfc,
+        );
+    }
+
+    #[test]
+    fn create_rejects_dotdot_and_creates_nothing() {
+        let (_d, root) = setup_root();
+        let err = canonical_within_root_for_create(&root, "/../escape/x.html", &block())
+            .expect_err("must reject");
+        assert_eq!(err, PathError::Escape);
+        // The pre-validation `create_dir_all` bug created directories
+        // outside the root before rejecting; the validator must touch
+        // nothing.
+        assert!(!root.parent().unwrap().join("escape").exists());
+    }
+
+    #[test]
+    fn create_rejects_empty_and_dir_target() {
+        let (_d, root) = setup_root();
+        assert_eq!(
+            canonical_within_root_for_create(&root, "/", &block()).unwrap_err(),
+            PathError::NotFound,
+        );
+        assert_eq!(
+            canonical_within_root_for_create(&root, "/assets/", &block()).unwrap_err(),
+            PathError::NotFound,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_rejects_symlinked_ancestor_escape() {
+        use std::os::unix::fs::symlink;
+
+        let (_d, root) = setup_root();
+        // An attacker-controlled symlink inside root pointing outside
+        // it: PUT through it must be rejected by the nearest-existing-
+        // ancestor canonicalisation, even though the target file
+        // doesn't exist yet.
+        let outside = _d.path().parent().unwrap().join("vtc-escape-target");
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("link")).unwrap();
+
+        let err = canonical_within_root_for_create(&root, "/link/pwned.html", &block())
+            .expect_err("symlinked ancestor must be rejected");
+        assert_eq!(err, PathError::Escape);
+        assert!(!outside.join("pwned.html").exists());
+        let _ = std::fs::remove_dir_all(&outside);
     }
 }

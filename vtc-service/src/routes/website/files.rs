@@ -21,7 +21,7 @@ use vti_common::auth::AdminAuth;
 
 use crate::error::AppError;
 use crate::server::AppState;
-use crate::website::paths::{PathError, canonical_within_root};
+use crate::website::paths::{PathError, canonical_within_root, canonical_within_root_for_create};
 
 use super::{WebsiteWriteResponse, require_website_config};
 
@@ -213,28 +213,23 @@ pub async fn write(
         ));
     }
 
-    let parent_for_path = root_dir.join(parent_dirs(&path));
-    if !parent_for_path.exists() {
-        std::fs::create_dir_all(&parent_for_path)
-            .map_err(|e| AppError::Internal(format!("mkdir -p {parent_for_path:?}: {e}")))?;
-    }
-
+    // Path safety FIRST — the target may not exist yet, so run the
+    // full safety chain (control/NFC, hidden, blocklist, contained-
+    // within-root) via the create-aware validator *before* touching
+    // the filesystem. Rejecting first, creating second, is what stops
+    // a PUT like `.../../foo/x` from `mkdir`-ing outside the root
+    // before the escape check, and stops `.htaccess` / `evil.php` /
+    // `.git/config` writes that `deploy` + `serve` already refuse.
     let req_path = format!("/{}", path.trim_start_matches('/'));
-    // Path safety: target file might not exist yet, so we use a
-    // shadow check against the parent + file name rather than
-    // calling `canonical_within_root` (which requires the file to
-    // exist). The parent must exist within root, and the file
-    // name must pass the same rules.
-    let _ = blocklist; // applied by listing; PUT validates via canonicalisation below
-    let target = root_dir.join(req_path.trim_start_matches('/'));
-    let canon_parent = std::fs::canonicalize(&parent_for_path)
-        .map_err(|e| AppError::Validation(format!("parent path not resolvable: {e}")))?;
-    let canon_root = std::fs::canonicalize(&root_dir)
-        .map_err(|e| AppError::Internal(format!("canonicalize root: {e}")))?;
-    if !canon_parent.starts_with(&canon_root) {
-        return Err(AppError::Validation(
-            "write target escapes website.root_dir".into(),
-        ));
+    let target = canonical_within_root_for_create(&root_dir, &req_path, &blocklist)
+        .map_err(|e| write_path_error(&path, e))?;
+
+    // Only now, after validation passed, create the parent dirs.
+    if let Some(parent) = target.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::Internal(format!("mkdir -p {parent:?}: {e}")))?;
     }
 
     // Optional If-Match optimistic concurrency.
@@ -323,10 +318,17 @@ pub async fn delete(
     Ok(StatusCode::OK)
 }
 
-fn parent_dirs(path: &str) -> &str {
-    path.rsplit_once('/')
-        .map(|(parent, _)| parent)
-        .unwrap_or("")
+/// Map a [`PathError`] from the create-path validator to the HTTP
+/// response for `PUT`. Mirrors [`resolve_or_400`]: a blocklisted
+/// extension is a 403, a hidden target a 404, everything else a 400.
+fn write_path_error(path: &str, err: PathError) -> AppError {
+    match err {
+        PathError::BlockedExtension(ext) => {
+            AppError::Forbidden(format!("extension {ext} is blocklisted"))
+        }
+        PathError::Hidden => AppError::NotFound(format!("no such file: {path}")),
+        _ => AppError::Validation(format!("path rejected by website path-safety: {path}")),
+    }
 }
 
 fn rand_suffix() -> String {
