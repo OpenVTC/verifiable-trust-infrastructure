@@ -161,9 +161,9 @@ the #457 posture backstop provides its regression guard.)
   - `[~]` **part 1** per-surface host gate in `host_dispatch::enforce` (recognised
     host serves only its bound surface; cross-surface → 404 `SurfaceNotOnHost`;
     infra routes bypass) — PR: #465 (in review)
-  - `[ ]` **part 2** force host separation when a filesystem website
+  - `[~]` **part 2** force host separation when a filesystem website
     (`website.root_dir`) is configured + honest docs (correct the stale
-    `Path=/admin` cookie-isolation claim) — PR: ____
+    `Path=/admin` cookie-isolation claim) — PR: #466 (in review, stacked on #465)
 - `[ ]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
   the test harness — PR: ____
 - `[ ]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
