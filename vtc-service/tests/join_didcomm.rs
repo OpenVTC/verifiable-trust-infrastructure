@@ -28,7 +28,7 @@ use tower::ServiceExt;
 use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::auth::session::now_epoch;
 use vtc_service::schemas::accepts::{AcceptsCriterion, store_accepts};
-use vtc_service::test_support::MockVtcDidcomm;
+use vtc_service::test_support::{MockVtcDidcomm, ReplyOutcome};
 
 use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody};
 use vta_sdk::protocols::join_requests::{
@@ -268,6 +268,66 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
         credential["credentialSubject"]["id"], applicant_did,
         "VMC subject is the applicant"
     );
+
+    mock.shutdown().await;
+}
+
+/// The negative-path counterpart that unblocks a cross-service fuzz campaign
+/// (#464): `try_request` must *classify* a rejection rather than abort. A
+/// malformed submit (missing the required `vp`) makes the real `submit_inner`
+/// reject; the VTC threads back a DIDComm problem-report, and the harness keeps
+/// going — exactly what a sustained negative campaign needs (reply = accepted,
+/// problem-report = clean reject, timeout = hang/crash).
+#[tokio::test]
+async fn didcomm_try_request_classifies_reject_and_keeps_going() {
+    let mock = MockVtcDidcomm::start().await;
+    let _admin_token = seed_join_ceremony(&mock).await;
+    let vtc_did = mock.vtc_did().to_string();
+
+    // A malformed submit body (no `vp`) fails to deserialize in the handler →
+    // the VTC replies with a problem-report instead of a receipt. The old
+    // `request` helper would panic here; `try_request` returns it classified.
+    let outcome = mock
+        .client
+        .try_request(
+            &vtc_did,
+            JOIN_REQUEST_SUBMIT_TYPE,
+            json!({ "registry_consent": false }),
+            Duration::from_secs(15),
+        )
+        .await;
+    match outcome {
+        ReplyOutcome::Problem(p) => {
+            assert!(!p.code.is_empty(), "problem-report carries a code: {:?}", p);
+        }
+        other => panic!("expected a clean problem-report rejection, got {other:?}"),
+    }
+
+    // The campaign keeps running on the same boot: a well-formed submit right
+    // after the rejection still round-trips to an accepted receipt.
+    let applicant_did = mock.client.did().to_string();
+    let good = JoinRequestSubmitBody {
+        vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        registry_consent: false,
+        extensions: json!({}),
+    };
+    let outcome = mock
+        .client
+        .try_request(
+            &vtc_did,
+            JOIN_REQUEST_SUBMIT_TYPE,
+            serde_json::to_value(good).unwrap(),
+            Duration::from_secs(15),
+        )
+        .await;
+    match outcome {
+        ReplyOutcome::Reply(body) => {
+            let receipt: JoinRequestSubmitReceiptBody =
+                serde_json::from_value(body).expect("submit receipt");
+            assert_eq!(receipt.status, "pending");
+        }
+        other => panic!("expected an accepted receipt after the reject, got {other:?}"),
+    }
 
     mock.shutdown().await;
 }

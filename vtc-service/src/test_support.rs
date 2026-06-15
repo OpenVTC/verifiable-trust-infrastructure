@@ -537,7 +537,7 @@ impl Drop for MockVtc {
 }
 
 #[cfg(feature = "didcomm-harness")]
-pub use didcomm_harness::{MockVtcDidcomm, TestJoinClient};
+pub use didcomm_harness::{MockVtcDidcomm, ProblemReport, ReplyOutcome, TestJoinClient};
 
 /// In-process DIDComm join-requests harness (#436).
 ///
@@ -552,6 +552,7 @@ pub use didcomm_harness::{MockVtcDidcomm, TestJoinClient};
 mod didcomm_harness {
     use std::collections::VecDeque;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use affinidi_messaging_test_mediator::{TestMediator, TestMediatorHandle};
@@ -567,6 +568,7 @@ mod didcomm_harness {
     use serde_json::{Value, json};
     use tokio::sync::{Mutex, oneshot};
     use uuid::Uuid;
+    use vta_sdk::protocols::extract_problem_report;
     use vta_sdk::protocols::join_requests::{
         JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, JOIN_REQUEST_MANIFEST_TYPE,
         JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_STATUS_TYPE,
@@ -616,6 +618,40 @@ mod didcomm_harness {
         body: Value,
     }
 
+    /// `true` if a DIDComm message type names the report-problem protocol.
+    fn is_problem_report(typ: &str) -> bool {
+        typ.contains("problem-report")
+    }
+
+    /// A DIDComm problem-report the VTC threaded back as a rejection, with its
+    /// `code`/`comment` already parsed via
+    /// [`vta_sdk::protocols::extract_problem_report`] plus the raw body for
+    /// finer assertions.
+    #[derive(Debug, Clone)]
+    pub struct ProblemReport {
+        /// The problem-report `code` (e.g. `e.p.msg.bad-request`).
+        pub code: String,
+        /// The human-readable `comment`.
+        pub comment: String,
+        /// The raw problem-report body.
+        pub body: Value,
+    }
+
+    /// The classified outcome of a [`TestJoinClient::try_request`] round trip —
+    /// the three buckets a negative/fuzz campaign tells apart.
+    #[derive(Debug, Clone)]
+    pub enum ReplyOutcome {
+        /// A threaded reply that is *not* a problem-report — the request was
+        /// accepted; carries the reply body.
+        Reply(Value),
+        /// A threaded DIDComm problem-report — the VTC rejected the request
+        /// cleanly (the expected, healthy behaviour for malformed input).
+        Problem(ProblemReport),
+        /// No threaded reply (nor problem-report) arrived within the timeout —
+        /// the signal a fuzzer treats as a potential hang/crash.
+        Timeout,
+    }
+
     /// A DIDComm join applicant connected to the harness mediator.
     ///
     /// Sends authcrypt requests to the VTC and awaits the threaded reply;
@@ -630,6 +666,13 @@ mod didcomm_harness {
         /// `vta_sdk::vp` — its `id` is a `did:key`.
         holder_secret: Secret,
         inbox: Mutex<VecDeque<Received>>,
+        /// When set (the default), [`recv_matching`](Self::recv_matching) panics
+        /// on any inbound problem-report — the right ergonomics for a happy-path
+        /// test, where an unexpected rejection should abort loudly. A
+        /// negative/fuzz campaign clears it for the duration of a
+        /// [`try_request`](Self::try_request) call so a clean rejection is
+        /// *returned* (classified) instead of aborting the run.
+        panic_on_problem_report: AtomicBool,
     }
 
     impl TestJoinClient {
@@ -655,6 +698,7 @@ mod didcomm_harness {
                 mediator_did,
                 holder_secret,
                 inbox: Mutex::new(VecDeque::new()),
+                panic_on_problem_report: AtomicBool::new(true),
             }
         }
 
@@ -672,21 +716,71 @@ mod didcomm_harness {
 
         /// Send `body` as a `typ` DIDComm message to `vtc_did` (authcrypt,
         /// forwarded via the mediator) and return the threaded reply body.
-        /// Panics on timeout — this is a test harness.
+        /// Panics on timeout *or* a problem-report — this is the happy-path
+        /// helper. Use [`try_request`](Self::try_request) for a negative/fuzz
+        /// campaign that needs to keep going past a (correct) rejection.
         pub async fn request(&self, vtc_did: &str, typ: &str, body: Value) -> Value {
+            match self
+                .try_request(vtc_did, typ, body, Duration::from_secs(15))
+                .await
+            {
+                ReplyOutcome::Reply(body) => body,
+                ReplyOutcome::Problem(p) => {
+                    panic!("applicant received problem-report: {}", p.body)
+                }
+                ReplyOutcome::Timeout => panic!("no reply to `{typ}` within timeout"),
+            }
+        }
+
+        /// Like [`request`](Self::request) but **non-panicking**: send `body` as
+        /// a `typ` message and *classify* the threaded outcome into the three
+        /// buckets a negative/fuzz campaign cares about — a clean accept
+        /// ([`ReplyOutcome::Reply`]), a clean DIDComm rejection
+        /// ([`ReplyOutcome::Problem`]), or no threaded reply within `timeout`
+        /// ([`ReplyOutcome::Timeout`], the signal for a hang/crash). This lets a
+        /// fuzzer run thousands of mutations per boot without aborting on the
+        /// first (correct) problem-report.
+        ///
+        /// Both a normal reply and a problem-report are threaded to this
+        /// request's id (the messaging framework's problem-report carries
+        /// `thid = <request id>`), so the same thread-correlation predicate
+        /// catches either; the reply `typ` is what distinguishes them.
+        pub async fn try_request(
+            &self,
+            vtc_did: &str,
+            typ: &str,
+            body: Value,
+            timeout: Duration,
+        ) -> ReplyOutcome {
             let req_id = Uuid::new_v4().to_string();
             let msg = Message::build(req_id.clone(), typ.to_string(), body)
                 .from(self.did.clone())
                 .to(vtc_did.to_string())
                 .finalize();
             self.send(&msg, vtc_did).await;
-            self.recv_matching(
-                |r| r.thid.as_deref() == Some(req_id.as_str()),
-                Duration::from_secs(15),
-            )
-            .await
-            .unwrap_or_else(|| panic!("no reply to `{typ}` within timeout"))
-            .body
+
+            // Suppress recv_matching's happy-path panic for this round trip so a
+            // problem-report is buffered/matched like any reply and classified
+            // below, then restore the prior setting for any later happy-path call
+            // on this client.
+            let prev = self.panic_on_problem_report.swap(false, Ordering::SeqCst);
+            let received = self
+                .recv_matching(|r| r.thid.as_deref() == Some(req_id.as_str()), timeout)
+                .await;
+            self.panic_on_problem_report.store(prev, Ordering::SeqCst);
+
+            match received {
+                Some(r) if is_problem_report(&r.typ) => {
+                    let (code, comment) = extract_problem_report(&r.body);
+                    ReplyOutcome::Problem(ProblemReport {
+                        code,
+                        comment,
+                        body: r.body,
+                    })
+                }
+                Some(r) => ReplyOutcome::Reply(r.body),
+                None => ReplyOutcome::Timeout,
+            }
         }
 
         /// Await the next unsolicited inbound message (no thread correlation),
@@ -737,8 +831,12 @@ mod didcomm_harness {
                     .live_stream_next(&self.profile, Some(POLL), true)
                     .await;
                 if let Ok(Some((msg, _meta))) = next {
-                    if msg.typ.contains("problem-report") {
-                        // Surface the problem rather than silently buffering it.
+                    if is_problem_report(&msg.typ)
+                        && self.panic_on_problem_report.load(Ordering::SeqCst)
+                    {
+                        // Happy-path ergonomics: surface the problem loudly rather
+                        // than silently buffering it. `try_request` clears the flag
+                        // so a negative/fuzz campaign classifies it instead.
                         panic!("applicant received problem-report: {}", msg.body);
                     }
                     let r = Received {
