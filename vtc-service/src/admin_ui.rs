@@ -79,6 +79,21 @@ pub fn lookup(rel_path: &str) -> Option<&'static [u8]> {
     ADMIN_UI_DIR.get_file(trimmed).map(|f| f.contents())
 }
 
+/// Cache-control for an admin-UX response. The SPA shell
+/// (`index.html`, served for `/admin`, `/admin/`, and every
+/// history-mode fallback) must be revalidated each load —
+/// otherwise after an upgrade a browser serves a stale shell
+/// pointing at asset hashes the new binary dropped, breaking the
+/// SPA for the TTL window. Only the content-hashed `/assets/*`
+/// bundles (immutable by construction) keep the long TTL.
+fn cache_control_for(rel: &str, served_shell: bool) -> &'static str {
+    if !served_shell && rel.starts_with("/assets/") {
+        "public, max-age=300"
+    } else {
+        "no-cache"
+    }
+}
+
 /// Axum handler for `GET /admin/*`. Walks the request path
 /// through the embedded directory; falls back to `index.html`
 /// for client-side routing (SPA history mode).
@@ -96,24 +111,27 @@ pub async fn serve(req: Request<Body>) -> Response {
     // must reflect the *served* bytes (`text/html`), not the
     // *requested* path — otherwise the browser sees
     // `application/octet-stream` and tries to download the page.
-    let (bytes, mime) = match lookup(rel) {
+    let (bytes, mime, served_shell) = match lookup(rel) {
         Some(b) => (
             b,
             mime_guess::from_path(rel)
                 .first_or_octet_stream()
                 .to_string(),
+            rel == "/index.html",
         ),
         None => match lookup("/index.html") {
-            Some(b) => (b, "text/html; charset=utf-8".to_string()),
+            // History-mode fallback — we served the SPA shell.
+            Some(b) => (b, "text/html; charset=utf-8".to_string(), true),
             None => {
                 return (StatusCode::NOT_FOUND, "admin UX not embedded").into_response();
             }
         },
     };
+
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, mime)
-        .header(header::CACHE_CONTROL, "public, max-age=300")
+        .header(header::CACHE_CONTROL, cache_control_for(rel, served_shell))
         .body(Body::from(bytes))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build").into_response())
 }
@@ -132,6 +150,23 @@ mod tests {
             ADMIN_UI_DIR.get_file("index.html").is_some(),
             "index.html missing from embedded admin-ui — did the source dir get deleted?"
         );
+    }
+
+    #[test]
+    fn cache_control_no_cache_for_shell_long_ttl_for_assets() {
+        // SPA shell (index + every history-mode fallback) → no-cache.
+        assert_eq!(cache_control_for("/index.html", true), "no-cache");
+        assert_eq!(cache_control_for("/install", true), "no-cache"); // fallback
+        // A non-asset root file is also revalidated.
+        assert_eq!(cache_control_for("/favicon.ico", false), "no-cache");
+        // Content-hashed bundles keep the long TTL.
+        assert_eq!(
+            cache_control_for("/assets/index-a1b2c3.js", false),
+            "public, max-age=300"
+        );
+        // An /assets/* path that fell back to the shell is still
+        // no-cache (we served index.html, not the bundle).
+        assert_eq!(cache_control_for("/assets/missing.js", true), "no-cache");
     }
 
     #[test]

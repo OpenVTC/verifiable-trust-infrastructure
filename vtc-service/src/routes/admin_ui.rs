@@ -13,6 +13,8 @@
 #![cfg(feature = "admin-ui")]
 
 use std::path::{Path as StdPath, PathBuf};
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::body::Body;
@@ -20,6 +22,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::admin_ui::AdminUiInfo;
@@ -65,7 +68,7 @@ pub async fn serve_spa(req: Request<Body>) -> Response {
 /// `icon` + `scopes`. The plugin's entry JS calls
 /// `window.VtcPluginApi.registerPlugin({...})` to wire its UI into
 /// the shell's router and nav.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginManifestEntry {
     pub id: String,
@@ -86,6 +89,22 @@ pub struct PluginsManifestResponse {
     pub plugins: Vec<PluginManifestEntry>,
 }
 
+/// Short-TTL cache of plugin-directory scans, keyed by the configured
+/// `plugin_dir` so a runtime config change rescans rather than serving
+/// a stale set. Keeps the **unauth** `/admin/plugins.json` route from
+/// doing a `readdir` + read-every-manifest on every request (a disk-
+/// amplification lever). The map holds one entry per distinct
+/// `plugin_dir` ever configured (≈1 for a running daemon).
+struct PluginScanEntry {
+    scanned_at: Instant,
+    plugins: Vec<PluginManifestEntry>,
+}
+
+static PLUGIN_SCAN_CACHE: LazyLock<RwLock<std::collections::HashMap<PathBuf, PluginScanEntry>>> =
+    LazyLock::new(|| RwLock::new(std::collections::HashMap::new()));
+
+const PLUGIN_SCAN_TTL: Duration = Duration::from_secs(30);
+
 /// `GET /admin/plugins.json` — third-party plugin manifest.
 ///
 /// Scans `admin_ui.plugin_dir` (if configured) for subdirectories;
@@ -94,7 +113,7 @@ pub struct PluginsManifestResponse {
 /// response. IDs that fail the regex, manifests that fail to parse,
 /// or paths that escape the plugin root are dropped silently (with
 /// a `warn!`) so one malformed plugin can't take down the manifest
-/// surface.
+/// surface. The scan result is cached for [`PLUGIN_SCAN_TTL`].
 ///
 /// Unauth on purpose: knowing which plugins are installed is not
 /// sensitive, and the shell fetches the manifest before login.
@@ -105,8 +124,26 @@ pub async fn plugins_manifest(State(state): State<AppState>) -> Json<PluginsMani
     };
 
     Json(PluginsManifestResponse {
-        plugins: scan_plugin_dir(&plugin_dir),
+        plugins: scan_plugin_dir_cached(&plugin_dir).await,
     })
+}
+
+/// [`scan_plugin_dir`] behind the [`PLUGIN_SCAN_CACHE`] TTL.
+async fn scan_plugin_dir_cached(plugin_dir: &StdPath) -> Vec<PluginManifestEntry> {
+    if let Some(entry) = PLUGIN_SCAN_CACHE.read().await.get(plugin_dir)
+        && entry.scanned_at.elapsed() < PLUGIN_SCAN_TTL
+    {
+        return entry.plugins.clone();
+    }
+    let plugins = scan_plugin_dir(plugin_dir);
+    PLUGIN_SCAN_CACHE.write().await.insert(
+        plugin_dir.to_path_buf(),
+        PluginScanEntry {
+            scanned_at: Instant::now(),
+            plugins: plugins.clone(),
+        },
+    );
+    plugins
 }
 
 fn scan_plugin_dir(plugin_dir: &StdPath) -> Vec<PluginManifestEntry> {
@@ -266,4 +303,52 @@ pub async fn plugin_asset(
         .header(header::CACHE_CONTROL, "public, max-age=300")
         .body(Body::from(bytes))
         .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response build").into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_plugin(dir: &StdPath, id: &str, entry: &str) {
+        let pdir = dir.join(id);
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(
+            pdir.join("manifest.json"),
+            format!(r#"{{"label":"{id}","path":"/{id}","entry":"{entry}"}}"#),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scan_skips_invalid_ids_and_traversal_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin(dir.path(), "good", "index.js");
+        write_plugin(dir.path(), "Bad_Id", "index.js"); // invalid id
+        write_plugin(dir.path(), "escape", "../../etc/passwd"); // traversal
+
+        let plugins = scan_plugin_dir(dir.path());
+        assert_eq!(plugins.len(), 1, "only the valid plugin survives");
+        assert_eq!(plugins[0].id, "good");
+        assert_eq!(plugins[0].entry, "/admin/plugins/good/index.js");
+    }
+
+    #[tokio::test]
+    async fn cached_scan_is_not_reread_within_ttl() {
+        let dir = tempfile::tempdir().unwrap();
+        write_plugin(dir.path(), "alpha", "index.js");
+
+        // First call populates the cache.
+        let first = scan_plugin_dir_cached(dir.path()).await;
+        assert_eq!(first.len(), 1);
+
+        // Add a second plugin; within the TTL the cached (single)
+        // result still stands, proving we don't readdir every request.
+        write_plugin(dir.path(), "beta", "index.js");
+        let second = scan_plugin_dir_cached(dir.path()).await;
+        assert_eq!(second.len(), 1, "scan must be cached within the TTL");
+
+        // A direct (uncached) scan sees both — confirms the cache, not
+        // the scanner, is what hid the new plugin.
+        assert_eq!(scan_plugin_dir(dir.path()).len(), 2);
+    }
 }

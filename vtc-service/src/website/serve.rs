@@ -115,13 +115,22 @@ impl CspOverrideCache {
 /// fallback (`/{*path}` semantics) so any unmatched request lands
 /// here.
 pub async fn serve(State(state): State<WebsiteState>, req: Request<Body>) -> Response {
-    match serve_inner(&state, req.uri()).await {
+    let if_none_match = req
+        .headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    match serve_inner(&state, req.uri(), if_none_match.as_deref()).await {
         Ok(resp) => resp,
         Err(err) => err.into_response(),
     }
 }
 
-async fn serve_inner(state: &WebsiteState, uri: &Uri) -> Result<Response, AppError> {
+async fn serve_inner(
+    state: &WebsiteState,
+    uri: &Uri,
+    if_none_match: Option<&str>,
+) -> Result<Response, AppError> {
     let raw_path = uri.path();
     // Default-document rule: a directory request maps to
     // `index.html`. The path-safety chain runs against the
@@ -177,6 +186,20 @@ async fn serve_inner(state: &WebsiteState, uri: &Uri) -> Result<Response, AppErr
 
     let etag = format!("\"{}\"", cached.digest_hex);
 
+    // Conditional GET: a matching `If-None-Match` short-circuits to
+    // 304 with no body (but still carries ETag + Cache-Control so the
+    // client can keep revalidating).
+    if let Some(inm) = if_none_match
+        && etag_matches(inm, &etag)
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, etag)
+            .header(header::CACHE_CONTROL, state.cache_control.clone())
+            .body(Body::empty())
+            .map_err(|e| AppError::Internal(format!("response build: {e}")));
+    }
+
     let mime = mime_guess::from_path(&resolved)
         .first_or_octet_stream()
         .to_string();
@@ -201,6 +224,17 @@ async fn serve_inner(state: &WebsiteState, uri: &Uri) -> Result<Response, AppErr
     builder
         .body(Body::from((*cached.body).clone()))
         .map_err(|e| AppError::Internal(format!("response build: {e}")))
+}
+
+/// Whether an `If-None-Match` header value matches `etag`. Handles a
+/// comma-separated list, the `*` any-match, and the `W/` weak prefix
+/// (our ETags are content digests, so weak/strong compare equal here).
+fn etag_matches(if_none_match: &str, etag: &str) -> bool {
+    if_none_match.split(',').any(|tok| {
+        let tok = tok.trim();
+        let tok = tok.strip_prefix("W/").unwrap_or(tok);
+        tok == "*" || tok == etag
+    })
 }
 
 async fn read_csp_override(serve_root: &Path, override_file: &str) -> Option<String> {
@@ -331,7 +365,7 @@ mod tests {
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/hello.html".parse().unwrap();
-        let resp = serve_inner(&state, &uri).await.expect("ok");
+        let resp = serve_inner(&state, &uri, None).await.expect("ok");
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().get(header::ETAG).is_some());
         assert_eq!(
@@ -345,13 +379,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn matching_if_none_match_returns_304() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("hello.html"), "<p>hi</p>").unwrap();
+        let state = make_state(dir.path()).await;
+        let uri: Uri = "/hello.html".parse().unwrap();
+
+        // First request to learn the ETag.
+        let resp = serve_inner(&state, &uri, None).await.expect("ok");
+        let etag = resp
+            .headers()
+            .get(header::ETAG)
+            .and_then(|h| h.to_str().ok())
+            .unwrap()
+            .to_string();
+
+        // Conditional GET with the matching ETag → 304, empty body,
+        // ETag still present.
+        let resp = serve_inner(&state, &uri, Some(&etag)).await.expect("ok");
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            resp.headers()
+                .get(header::ETAG)
+                .and_then(|h| h.to_str().ok()),
+            Some(etag.as_str()),
+        );
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        assert!(bytes.is_empty(), "304 must carry no body");
+
+        // A stale/non-matching ETag → full 200.
+        let resp = serve_inner(&state, &uri, Some("\"deadbeef\""))
+            .await
+            .expect("ok");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // `*` always matches (RFC 9110).
+        let resp = serve_inner(&state, &uri, Some("*")).await.expect("ok");
+        assert_eq!(resp.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[test]
+    fn etag_matches_handles_lists_weak_and_star() {
+        assert!(etag_matches("\"abc\"", "\"abc\""));
+        assert!(etag_matches("\"x\", \"abc\", \"y\"", "\"abc\""));
+        assert!(etag_matches("W/\"abc\"", "\"abc\""));
+        assert!(etag_matches("*", "\"abc\""));
+        assert!(!etag_matches("\"abc\"", "\"def\""));
+        assert!(!etag_matches("", "\"abc\""));
+    }
+
+    #[tokio::test]
     async fn serves_index_for_root_request() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("index.html"), "<title>home</title>").unwrap();
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/".parse().unwrap();
-        let resp = serve_inner(&state, &uri).await.expect("ok");
+        let resp = serve_inner(&state, &uri, None).await.expect("ok");
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(
             resp.headers()
@@ -371,7 +455,9 @@ mod tests {
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/.secrets".parse().unwrap();
-        let err = serve_inner(&state, &uri).await.expect_err("must reject");
+        let err = serve_inner(&state, &uri, None)
+            .await
+            .expect_err("must reject");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
 
@@ -382,7 +468,9 @@ mod tests {
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/evil.cgi".parse().unwrap();
-        let err = serve_inner(&state, &uri).await.expect_err("must reject");
+        let err = serve_inner(&state, &uri, None)
+            .await
+            .expect_err("must reject");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
     }
 
@@ -397,7 +485,9 @@ mod tests {
         // host platform's behaviour around non-existent paths can
         // pick either branch — accept both as "not served".
         let uri: Uri = "/../../etc/passwd".parse().unwrap();
-        let err = serve_inner(&state, &uri).await.expect_err("must reject");
+        let err = serve_inner(&state, &uri, None)
+            .await
+            .expect_err("must reject");
         assert!(
             matches!(err, AppError::NotFound(_) | AppError::Validation(_)),
             "got {err:?}"
@@ -414,7 +504,9 @@ mod tests {
         // the default-document rule only fires on trailing slash.
         // Must 404 — we don't auto-list directories.
         let uri: Uri = "/assets".parse().unwrap();
-        let err = serve_inner(&state, &uri).await.expect_err("must reject");
+        let err = serve_inner(&state, &uri, None)
+            .await
+            .expect_err("must reject");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
 
@@ -435,7 +527,7 @@ mod tests {
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/".parse().unwrap();
-        let resp = serve_inner(&state, &uri).await.expect("ok");
+        let resp = serve_inner(&state, &uri, None).await.expect("ok");
         let csp = resp
             .headers()
             .get(header::CONTENT_SECURITY_POLICY)
@@ -459,7 +551,7 @@ mod tests {
         let state = make_state(dir.path()).await;
 
         let uri: Uri = "/".parse().unwrap();
-        let resp = serve_inner(&state, &uri).await.expect("ok");
+        let resp = serve_inner(&state, &uri, None).await.expect("ok");
         assert!(
             resp.headers()
                 .get(header::CONTENT_SECURITY_POLICY)
