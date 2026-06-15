@@ -285,10 +285,12 @@ impl VtaMcp {
     }
 
     #[tool(
-        description = "List every VTA operation reachable via `vta_call` — the catalog of Trust Task URIs (contexts, keys, acl, did-management, webvh, did-templates, device, vault, seeds, audit, backup, discovery, …)."
+        description = "List every VTA operation reachable via `vta_call` — the catalog of dispatcher-routed Trust Task URIs (contexts, keys, acl, did-management, webvh, did-templates, device, vault, seeds, audit, backup, discovery, …). Pre-login auth and attestation are excluded (handled by the bridge itself / not vta_call-able)."
     )]
     async fn vta_list_operations(&self) -> Result<CallToolResult, McpError> {
-        let mut ops: Vec<&str> = vta_sdk::trust_tasks::ALL_URIS.to_vec();
+        // Exactly the set `vta_call` can invoke — ALL_URIS minus the REST-routed
+        // (pre-login auth + attestation) operations.
+        let mut ops = vta_sdk::trust_tasks::dispatch_routed_uris();
         ops.sort_unstable();
         ok_json(serde_json::json!({ "operations": ops }))
     }

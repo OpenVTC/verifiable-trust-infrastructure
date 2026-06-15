@@ -89,34 +89,14 @@ use trust_tasks_rs::RejectReason;
 /// URIs that the VTA exposes through dedicated unauth REST routes
 /// rather than the authenticated `/api/trust-tasks` dispatcher.
 ///
-/// Per the feature-gating convention in
-/// `docs/05-design-notes/trust-task-feature-gating.md`: the parity
-/// harness accepts these as "tracked" without requiring a dispatcher
-/// arm. The corresponding handlers live in `routes::auth` (passkey
-/// login, legacy challenge/authenticate/refresh) and
-/// `routes::attestation` (TEE status / report).
-// `#[allow(deprecated)]`: this intentionally names the deprecated passkey-login
-// 0.1 URIs — they remain REST-routed and dual-accepted during the migration.
-#[allow(dead_code, deprecated)] // consumed by the dispatcher's test-only parity harness
-const REST_ROUTED: &[&str] = &[
-    // Auth (pre-login — no session, can't pass AuthClaims)
-    vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1,
-    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
-    // Passkey-login 0.2: the only 0.1→0.2 delta in the spec is the `purpose`
-    // enum value (`step-up`→`stepUp`), and the VTA's flat-JSON request/response
-    // types (`PasskeyLoginStart/FinishRequest`, `…StartResponse`) don't carry
-    // `purpose` at all — so a 0.2 client sends structurally identical JSON to
-    // the same `/auth/passkey-login/*` handlers. Dual-accept is purely
-    // declarative here; no edge transform needed.
-    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2,
-    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
-    // Attestation (unauth — TEE proofs are publicly verifiable by design)
-    vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_1_0,
-    vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_1_0,
-];
+/// The canonical list lives in the SDK
+/// ([`vta_sdk::trust_tasks::REST_ROUTED_URIS`]) so the dispatcher's parity
+/// harness and any generic client catalog (e.g. the `vta-mcp` `vta_call`
+/// gateway, which advertises [`vta_sdk::trust_tasks::dispatch_routed_uris`])
+/// can't drift. Handlers live in `routes::auth` (passkey login, legacy
+/// challenge/authenticate/refresh) and `routes::attestation` (TEE status /
+/// report).
+const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 
 /// URIs that vta-sdk declares but the dispatcher may not wire in
 /// every build because they depend on `vta-service` feature flags

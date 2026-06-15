@@ -1147,9 +1147,65 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ATTESTATION_REPORT_1_0,
 ];
 
+/// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
+/// the `/api/trust-tasks` dispatcher: pre-login auth (challenge / authenticate /
+/// refresh), passkey-login, and TEE attestation.
+///
+/// These are **not** reachable through the generic dispatcher
+/// ([`crate::client::VtaClient::dispatch_trust_task`]) — pre-login auth has no
+/// session to carry, and attestation is unauthenticated/public. A generic
+/// "invoke any operation" surface (e.g. an MCP `vta_call` gateway) should
+/// exclude them; use [`dispatch_routed_uris`].
+///
+/// Canonical list: `vta-service`'s dispatcher consumes this as its `REST_ROUTED`
+/// allowlist, so the two can't drift.
+#[allow(deprecated)] // intentionally names the deprecated passkey-login 0.1 URIs
+pub const REST_ROUTED_URIS: &[&str] = &[
+    TASK_AUTH_CHALLENGE_0_1,
+    TASK_AUTH_AUTHENTICATE_0_1,
+    TASK_AUTH_REFRESH_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_START_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    TASK_AUTH_PASSKEY_LOGIN_START_0_2,
+    TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
+    TASK_ATTESTATION_STATUS_1_0,
+    TASK_ATTESTATION_REPORT_1_0,
+];
+
+/// The operations reachable through the generic `/api/trust-tasks` dispatcher —
+/// [`ALL_URIS`] minus [`REST_ROUTED_URIS`]. Use this to drive a generic
+/// "invoke any operation" surface so the advertised catalog matches what the
+/// dispatcher can actually route.
+pub fn dispatch_routed_uris() -> Vec<&'static str> {
+    ALL_URIS
+        .iter()
+        .copied()
+        .filter(|u| !REST_ROUTED_URIS.contains(u))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(deprecated)] // references the deprecated 0.1 URIs by const on purpose
+    fn rest_routed_uris_partition_all_uris() {
+        // Every REST-routed URI must be a real catalog entry, else the filter is
+        // a silent no-op against ALL_URIS.
+        for u in REST_ROUTED_URIS {
+            assert!(ALL_URIS.contains(u), "REST_ROUTED uri not in ALL_URIS: {u}");
+        }
+        let dispatch = dispatch_routed_uris();
+        // Pre-login auth + attestation are excluded …
+        assert!(!dispatch.contains(&TASK_AUTH_CHALLENGE_0_1));
+        assert!(!dispatch.contains(&TASK_ATTESTATION_STATUS_1_0));
+        // … but dispatched auth + management ops remain reachable.
+        assert!(dispatch.contains(&TASK_AUTH_WHOAMI_0_1));
+        assert!(dispatch.contains(&TASK_AUTH_SESSIONS_LIST_0_1));
+        assert!(dispatch.contains(&TASK_CONTEXTS_LIST_1_0));
+        assert_eq!(dispatch.len(), ALL_URIS.len() - REST_ROUTED_URIS.len());
+    }
 
     #[test]
     fn every_uri_in_canonical_namespace() {
