@@ -209,7 +209,7 @@ the #457 posture backstop provides its regression guard.)
   keyspaces partitioned 14 backed-up / 7 excluded with a census test; decisions
   locked — include the `VtcKeyBundle`, exclude passkeys, back up join_requests,
   409 on vtc_did mismatch, 64 MiB import cap. Implementation PR to follow. —
-  PR: ____ (design note)
+  PR: #492 (design note, in review)
 - `[x]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
   CLAUDE.md — Split `run_setup_wizard` into
   `collect_interactive() → apply(WizardPlan)`; new `setup/from_toml.rs` parses a
