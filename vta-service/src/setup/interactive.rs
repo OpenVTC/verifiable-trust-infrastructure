@@ -637,6 +637,17 @@ async fn configure_messaging(p: &dyn Prompter) -> Result<MessagingInput, DynErr>
             let url = p.text("Mediator URL", None, false, None)?;
             let ws_default = derive_ws_url(&url);
             let ws_url = p.text("Mediator WebSocket URL", ws_default.as_deref(), false, None)?;
+
+            // Hosting URL for the mediator's `did.jsonl` — separate knob from
+            // the DIDComm endpoint above. Defaults to the DIDComm URL for the
+            // common case where both live on the same host; operators with
+            // split hosts (DIDComm at e.g. `mediator.example.com/mediator/v1`,
+            // DID document at `dids.example.com/mediator`) override here.
+            // The engine reads this as `webvh_url` and falls back to `url`
+            // when None — we always send Some so the operator's choice is
+            // captured explicitly.
+            let webvh_url = prompt_webvh_url(p, &context, Some(&url))?;
+
             let mediator_host = prompt_optional_mediator_host(p)?;
 
             // Optional ROUTING_KEYS escape hatch (mediator chains). The
@@ -664,7 +675,7 @@ async fn configure_messaging(p: &dyn Prompter) -> Result<MessagingInput, DynErr>
                 context,
                 url,
                 ws_url: Some(ws_url),
-                webvh_url: None,
+                webvh_url: Some(webvh_url),
                 mediator_host,
                 template_vars,
             })
@@ -687,7 +698,7 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
 
     match choice {
         0 => {
-            let url = prompt_webvh_url(p, "VTA")?;
+            let url = prompt_webvh_url(p, "VTA", None)?;
 
             let mode_options = [
                 "Simple — VTA creates keys and document (recommended)",
@@ -776,7 +787,16 @@ fn create_vta_did(p: &dyn Prompter) -> Result<VtaDidInput, DynErr> {
 
 /// Prompt for a webvh hosting URL, returning the raw string the engine parses.
 /// Re-prompts (via the validator) until the URL parses as an `http(s)://` URL.
-fn prompt_webvh_url(p: &dyn Prompter, label: &str) -> Result<String, DynErr> {
+///
+/// `default` lets the caller offer a sensible default the operator can accept
+/// with Enter — used by the create-mediator path to pre-fill the DIDComm
+/// endpoint URL, so the common-case "DIDComm and DID hosting on the same host"
+/// stays one keystroke while operators with split hosts can override.
+fn prompt_webvh_url(
+    p: &dyn Prompter,
+    label: &str,
+    default: Option<&str>,
+) -> Result<String, DynErr> {
     eprintln!();
     eprintln!("  Enter the URL where the {label} DID document will be hosted.");
     eprintln!("  Examples:");
@@ -787,7 +807,7 @@ fn prompt_webvh_url(p: &dyn Prompter, label: &str) -> Result<String, DynErr> {
 
     let url = p.text(
         &format!("{label} DID URL"),
-        Some("http://localhost:8000/"),
+        default.or(Some("http://localhost:8000/")),
         false,
         Some(&|s: &str| {
             let parsed = url::Url::parse(s).map_err(|e| format!("invalid URL: {e}"))?;
@@ -1170,8 +1190,9 @@ mod tests {
             text("golden-keyring"),              // keyring service
             Answer::Index(1),                    // messaging = create mediator
             text("mediator"),                    // mediator context
-            text("https://mediator.example.com"), // mediator url
+            text("https://mediator.example.com"), // mediator DIDComm url
             text("wss://mediator.example.com/ws"), // mediator ws url
+            text("https://dids.example.com/mediator"), // mediator DID URL (split host)
             text(""),                            // mediator host (skip)
             text(""),                            // routing keys (skip)
             Answer::Index(1),                    // VTA DID = did:key
@@ -1211,10 +1232,11 @@ mod tests {
             service = "golden-keyring"
 
             [messaging]
-            kind    = "create_mediator"
-            context = "mediator"
-            url     = "https://mediator.example.com"
-            ws_url  = "wss://mediator.example.com/ws"
+            kind      = "create_mediator"
+            context   = "mediator"
+            url       = "https://mediator.example.com"
+            ws_url    = "wss://mediator.example.com/ws"
+            webvh_url = "https://dids.example.com/mediator"
 
             [vta_did]
             kind = "create_did_key"
