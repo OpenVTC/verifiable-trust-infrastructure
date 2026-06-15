@@ -215,7 +215,7 @@ the #457 posture backstop provides its regression guard.)
   `setup --from` prints a terse `key=value` block and never reveals the admin
   key. Example fixture `docs/03-vtc/examples/vtc-setup.example.toml` (+ a test
   that it parses); getting-started.md + vtc-service CLAUDE.md corrected. 8 unit
-  tests incl. headless parse→plan up to the VTA boundary. — PR: ____
+  tests incl. headless parse→plan up to the VTA boundary. — PR: #491 (in review)
 - `[x]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
   `persist()` (persist already done in P2.5) — PR: #475
 - `[x]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
