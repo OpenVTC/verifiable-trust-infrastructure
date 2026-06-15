@@ -241,10 +241,11 @@ the #457 posture backstop provides its regression guard.)
 **Checkpoint 3:** `[x]` **Phase 3 complete.** P3.1 (#465/#466), P3.2 (#490),
 P3.3 (#467), P3.4 (#469), P3.5 (#470), P3.6 (#473/#474), P3.7 (#472), P3.8
 (#487), P3.9 (#492 design + #494 impl), P3.10 (#491), P3.11 (#475), P3.12
-(#476), P3.13 (#478–#484) all merged; full suite green on each. Optional
-follow-on: a `cnm backup` CLI over the P3.9 REST surface (admin SPA + REST
-already cover the acceptance criteria). **The VTC architecture
-simplification & hardening todo is complete — all of Phase 0–3 merged.**
+(#476), P3.13 (#478–#484) all merged; full suite green on each. Follow-on
+shipped: `cnm backup export/import` over the P3.9 REST surface (raw authed
+REST + Trust-Task header, opaque-JSON envelope, preview→confirm). **The VTC
+architecture simplification & hardening todo is complete — all of Phase 0–3
+merged.**
 
 ---
 

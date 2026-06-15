@@ -1,4 +1,5 @@
 mod auth;
+mod backup;
 mod config;
 mod setup;
 
@@ -18,8 +19,10 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
     long_about = "Community Network Manager — community-admin-scoped CLI for the VTA.\n\
                   \n\
                   CNM is deliberately a reduced surface compared to `pnm`:\n\
-                  - No `webvh` / `audit` / `backup` / `keys import` — those are VTA-\n\
-                    operator concerns, not community-admin concerns, and live on pnm.\n\
+                  - No `webvh` / `audit` / `keys import` — those are VTA-operator\n\
+                    concerns, not community-admin concerns, and live on pnm.\n\
+                  - `backup` IS here: it backs up the *community's* state (the VTC),\n\
+                    a community-admin concern, distinct from pnm's VTA backup.\n\
                   - DID-template management is mirrored here because community admins\n\
                     own context-scoped templates.\n\
                   - Contexts + ACL + auth-credential generation are present because\n\
@@ -101,6 +104,12 @@ enum Commands {
     AuthCredential {
         #[command(subcommand)]
         command: AuthCredentialCommands,
+    },
+
+    /// Encrypted full-state backup / restore of the community.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommands,
     },
 
     /// Sealed-transfer bootstrap (consumer side).
@@ -230,6 +239,27 @@ fn is_online_template_cmd(cmd: &DidTemplateCommands) -> bool {
             | DidTemplateCommands::Init { .. }
             | DidTemplateCommands::ListBuiltins
     )
+}
+
+#[derive(Subcommand)]
+enum BackupCommands {
+    /// Export the community's state to an encrypted backup file.
+    Export {
+        /// Include the audit log (can be large; off by default).
+        #[arg(long)]
+        include_audit: bool,
+        /// Output file path (default: `vtc-backup-<slug>-<ts>.vtcbak`).
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+    },
+    /// Import the community's state from an encrypted backup file.
+    Import {
+        /// Path to the `.vtcbak` backup file.
+        file: std::path::PathBuf,
+        /// Preview only — show row counts without applying.
+        #[arg(long)]
+        preview: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1094,6 +1124,15 @@ async fn main() {
                 }
                 Err(e) => Err(e),
             },
+        },
+        Commands::Backup { command } => match command {
+            BackupCommands::Export {
+                include_audit,
+                output,
+            } => backup::cmd_export(&client, &keyring_key, include_audit, output).await,
+            BackupCommands::Import { file, preview } => {
+                backup::cmd_import(&client, &keyring_key, file, preview).await
+            }
         },
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::Request { out, label } => bootstrap_request(out, label),

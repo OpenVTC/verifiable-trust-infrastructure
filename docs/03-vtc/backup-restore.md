@@ -37,8 +37,18 @@ keyspace overlay (its meaningful values ride in the identity snapshot above).
 ## Export
 
 ```sh
+# Prompts for the encryption password (min 12 chars), writes
+# vtc-backup-<slug>-<timestamp>.vtcbak.
+cnm backup export [--include-audit] [--output FILE]
+```
+
+Under the hood this is `POST /v1/backup/export` (super-admin) — to script it
+directly:
+
+```sh
 curl -sS -X POST https://vtc.example.com/v1/backup/export \
   -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
+  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/export/1.0' \
   -H 'Content-Type: application/json' \
   -d '{"password":"correct-horse-battery-staple","include_audit":true}' \
   > vtc-backup.json
@@ -49,10 +59,19 @@ curl -sS -X POST https://vtc.example.com/v1/backup/export \
 Restore is a two-step **preview → confirm** to prevent fat-finger overwrites.
 
 ```sh
+# Shows the backup's metadata + per-keyspace row counts, then asks you to
+# type "yes" before applying. `--preview` stops after the counts.
+cnm backup import vtc-backup-<slug>-<timestamp>.vtcbak [--preview]
+```
+
+Equivalent REST (the CLI just drives these two calls):
+
+```sh
 # 1. Preview — decrypts, checks identity, returns per-keyspace row counts.
 #    Mutates nothing.
 curl -sS -X POST https://vtc.example.com/v1/backup/import \
   -H "Authorization: Bearer $SUPER_ADMIN_JWT" \
+  -H 'Trust-Task: https://trusttasks.org/openvtc/vtc/backup/import/1.0' \
   -H 'Content-Type: application/json' \
   -d "$(jq -n --slurpfile b vtc-backup.json \
         '{backup:$b[0], password:"correct-horse-battery-staple", confirm:false}')"
