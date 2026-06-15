@@ -57,6 +57,7 @@ pub async fn update_member(
     Path(did): Path<String>,
     Json(req): Json<UpdateMemberRequest>,
 ) -> Result<Json<MemberResponse>, AppError> {
+    vti_common::identifier::validate_did("did", &did)?;
     // Role=Admin is forbidden on this surface — it routes to the
     // separate promote-to-admin endpoint (spec §10.4), where the
     // role-change policy's step-up branch is reached. Catch it early so

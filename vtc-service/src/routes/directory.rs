@@ -96,6 +96,7 @@ pub async fn query(
     Path(subject_did): Path<String>,
     Query(q): Query<DirectoryQuery>,
 ) -> Result<Json<DirectoryResponse>, AppError> {
+    vti_common::identifier::validate_did("did", &subject_did)?;
     let facts = assemble_directory_facts(&state, &viewer, &subject_did, q.fields).await?;
     let verified = VerifiedFacts::assemble(facts)?;
 

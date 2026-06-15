@@ -55,6 +55,7 @@ pub async fn list(
     Path(did): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Paginated<Relationship>>, AppError> {
+    vti_common::identifier::validate_did("did", &did)?;
     let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
     let audit_key = state
         .audit_writer

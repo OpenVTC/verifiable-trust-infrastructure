@@ -130,6 +130,7 @@ pub async fn admin_remove(
     Path(target_did): Path<String>,
     body: Option<Json<RemoveBody>>,
 ) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
+    vti_common::identifier::validate_did("did", &target_did)?;
     if admin.0.did == target_did {
         return Err(AppError::Validation(
             "use DELETE /v1/members/me to remove yourself — \

@@ -24,6 +24,45 @@ pub fn validate_identifier(label: &str, value: &str) -> Result<(), AppError> {
     vta_sdk::identifier::validate_identifier(label, value).map_err(|e| AppError::Validation(e.0))
 }
 
+/// Maximum accepted DID length, in bytes. `did:webvh` / `did:web` DIDs
+/// can be long (SCID + host + path), but a multi-KB "DID" used as a
+/// store key is an abuse / DoS lever — cap it.
+pub const MAX_DID_LEN: usize = 1024;
+
+/// Validate a caller-supplied DID before it's used as a store key (or
+/// resolved). Unlike [`validate_identifier`] (slug rules), a DID
+/// legitimately contains `:` separators, so this accepts the DID-Core
+/// method-specific-id character class (`ALPHA / DIGIT / "." / "-" /
+/// "_" / pct-encoded / ":"`) and a `did:` prefix — but still rejects
+/// control characters, whitespace, NUL, `/`, and non-ASCII, any of
+/// which would let a caller inject into logs or traverse adjacent
+/// store-keyspace prefixes when the value lands as a key.
+pub fn validate_did(label: &str, value: &str) -> Result<(), AppError> {
+    if value.is_empty() {
+        return Err(AppError::Validation(format!("{label} must not be empty")));
+    }
+    if value.len() > MAX_DID_LEN {
+        return Err(AppError::Validation(format!(
+            "{label} is {} bytes; maximum is {MAX_DID_LEN}",
+            value.len()
+        )));
+    }
+    if !value.starts_with("did:") {
+        return Err(AppError::Validation(format!(
+            "{label} is not a DID (must start with 'did:')"
+        )));
+    }
+    for (i, ch) in value.chars().enumerate() {
+        let ok = ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ':' | '%');
+        if !ok {
+            return Err(AppError::Validation(format!(
+                "{label} contains an invalid character {ch:?} at position {i}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +130,35 @@ mod tests {
             msg.contains("context_id"),
             "error must name the field it is validating — got {msg}"
         );
+    }
+
+    #[test]
+    fn validate_did_accepts_real_dids() {
+        for ok in [
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+            "did:webvh:QmSCID:example.com",
+            "did:web:example.com:user:alice",
+            "did:peer:2.Ez6LS",
+        ] {
+            validate_did("did", ok).unwrap_or_else(|e| panic!("{ok:?} rejected: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn validate_did_rejects_malicious_or_malformed() {
+        for bad in [
+            "",                  // empty
+            "z6MkNotADid",       // missing did: prefix
+            "did:key:z\0null",   // NUL byte
+            "did:key:a/b",       // path separator
+            "did:key:a b",       // whitespace
+            "did:key:tab\there", // control char
+            "did:key:§§",        // non-ASCII
+        ] {
+            validate_did("did", bad).expect_err(&format!("{bad:?} must be rejected"));
+        }
+        // Over-cap.
+        let long = format!("did:key:{}", "a".repeat(MAX_DID_LEN));
+        validate_did("did", &long).expect_err("overlong must be rejected");
     }
 }

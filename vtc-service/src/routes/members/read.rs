@@ -188,6 +188,7 @@ pub async fn show_member(
     State(state): State<AppState>,
     Path(did): Path<String>,
 ) -> Result<Json<MemberResponse>, AppError> {
+    vti_common::identifier::validate_did("did", &did)?;
     let member = get_member(&state.members_ks, &did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;

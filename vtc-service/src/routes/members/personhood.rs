@@ -157,6 +157,7 @@ pub async fn challenge(
     State(state): State<AppState>,
     Path(member_did): Path<String>,
 ) -> Result<(StatusCode, Json<ChallengeResponse>), AppError> {
+    vti_common::identifier::validate_did("did", &member_did)?;
     // Member must exist — minting a challenge for a non-member
     // is operator-confusing and serves no purpose.
     let _ = get_acl_entry(&state.acl_ks, &member_did)
@@ -229,6 +230,7 @@ pub async fn assert(
     Path(member_did): Path<String>,
     Json(body): Json<AssertBody>,
 ) -> Result<(StatusCode, Json<AssertResponse>), AppError> {
+    vti_common::identifier::validate_did("did", &member_did)?;
     // Load Member row first — `404` for an unknown subject
     // is the most actionable failure mode.
     let mut member = get_member(&state.members_ks, &member_did)
@@ -427,6 +429,7 @@ pub async fn revoke(
     State(state): State<AppState>,
     Path(member_did): Path<String>,
 ) -> Result<(StatusCode, Json<RevokeResponse>), AppError> {
+    vti_common::identifier::validate_did("did", &member_did)?;
     // Auth: AdminAuth-equivalent (role == admin) OR self.
     let is_self = auth.did == member_did;
     let is_admin = auth.role == vti_common::acl::Role::Admin;

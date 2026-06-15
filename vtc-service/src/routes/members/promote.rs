@@ -74,6 +74,7 @@ pub async fn promote_start(
     State(state): State<AppState>,
     Path(target_did): Path<String>,
 ) -> Result<Json<PromoteStartResponse>, AppError> {
+    vti_common::identifier::validate_did("did", &target_did)?;
     if auth.0.did == target_did {
         return Err(AppError::Validation(
             "you cannot promote yourself; the promotion endpoint requires a separate admin caller"
@@ -166,6 +167,7 @@ pub async fn promote_finish(
     Path(target_did): Path<String>,
     Json(req): Json<PromoteFinishRequest>,
 ) -> Result<Json<PromoteFinishResponse>, AppError> {
+    vti_common::identifier::validate_did("did", &target_did)?;
     if auth.0.did == target_did {
         return Err(AppError::Validation("you cannot promote yourself".into()));
     }

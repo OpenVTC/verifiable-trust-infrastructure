@@ -273,6 +273,23 @@ async fn show_member_returns_joined_response() {
 }
 
 #[tokio::test]
+async fn show_member_rejects_malformed_did_path_param() {
+    // P3.13: a path-param that isn't a well-formed DID is rejected at
+    // the handler before it's ever used as a store key.
+    let fix = build_fixture().await;
+    let (status, _) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/not-a-did",
+        SHOW_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn show_member_returns_404_for_unknown_did() {
     let fix = build_fixture().await;
     let (status, _) = send(
