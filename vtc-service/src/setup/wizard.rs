@@ -62,7 +62,19 @@ use crate::setup::VtcKeyBundle;
 /// Entry point bound to `Commands::Setup` in `main.rs`.
 pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppError> {
     intro_banner();
+    let plan = collect_interactive(config_path).await?;
+    let outcome = apply(plan).await?;
+    print_setup_summary_interactive(&outcome)?;
+    Ok(())
+}
 
+/// Gather every operator decision interactively and assemble a
+/// fully-resolved [`WizardPlan`]. This is the TTY half — prompts plus
+/// the live VTA round-trips (DID resolution, the ACL-grant pause, the
+/// did-hosting picker). The non-interactive `setup --from <toml>` path
+/// builds the same plan from a file and feeds it to the same [`apply`],
+/// so the two never drift.
+async fn collect_interactive(config_path: Option<PathBuf>) -> Result<WizardPlan, AppError> {
     let config_path = prompt_config_path(config_path)?;
     refuse_if_already_set_up(&config_path)?;
 
@@ -122,10 +134,35 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     //    layer.
     let secrets = prompt_secrets_config()?;
 
-    // 6. Drive the provision-integration round-trip. Capture and
-    //    discard event traffic so the wizard's UX stays terse —
-    //    long-form progress UX is for `pnm`, not the daemon setup
-    //    flow.
+    Ok(WizardPlan {
+        config_path,
+        inputs,
+        webvh,
+        secrets,
+        messaging,
+        setup_key,
+    })
+}
+
+/// Provision the VTC against the VTA and write every piece of on-disk
+/// state (did.jsonl, config.toml, the sealed key bundle, the install
+/// token). Deliberately free of prompts — both the interactive wizard
+/// and `setup --from <toml>` drive this identical effect path, so the
+/// non-interactive flow can't diverge from the interactive one. Returns
+/// the facts the caller presents; it does not print.
+pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
+    let WizardPlan {
+        config_path,
+        inputs,
+        webvh,
+        secrets,
+        messaging,
+        setup_key,
+    } = plan;
+
+    // Drive the provision-integration round-trip. Capture and discard
+    // event traffic so the setup UX stays terse — long-form progress UX
+    // is for `pnm`, not the daemon setup flow.
     let provision = run_provision_quietly(&inputs, &webvh, &setup_key).await?;
     let integration_did = provision
         .integration_did()
@@ -225,15 +262,30 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
         .admin_key()
         .and_then(|k| serde_json::to_string_pretty(k).ok());
 
+    Ok(SetupOutcome {
+        vtc_did: integration_did,
+        admin_did,
+        config_path,
+        data_dir,
+        install_url,
+        claim_code,
+        admin_key_json: admin_key_summary,
+    })
+}
+
+/// Print the rich, interactive completion summary, gating the one-shot
+/// admin-key reveal behind an explicit confirm so the private key never
+/// spills into terminal scrollback unasked.
+fn print_setup_summary_interactive(outcome: &SetupOutcome) -> Result<(), AppError> {
     println!();
     println!("\x1b[1;32m✅ VTC setup complete.\x1b[0m");
     println!();
-    println!("VTC DID:       {integration_did}");
-    println!("Admin DID:     {admin_did}");
-    println!("Config:        {}", config_path.display());
-    println!("Data dir:      {}", data_dir.display());
+    println!("VTC DID:       {}", outcome.vtc_did);
+    println!("Admin DID:     {}", outcome.admin_did);
+    println!("Config:        {}", outcome.config_path.display());
+    println!("Data dir:      {}", outcome.data_dir.display());
     println!();
-    if let Some(key_json) = admin_key_summary.as_deref() {
+    if let Some(key_json) = outcome.admin_key_json.as_deref() {
         // The admin private key lands in the terminal scrollback / any
         // session recording the moment it's printed. Make the operator
         // consciously reveal it rather than spilling it by default.
@@ -257,10 +309,10 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
         println!();
     }
     println!("\x1b[1mInstall URL (one-shot, 15 min TTL):\x1b[0m");
-    println!("  {install_url}");
+    println!("  {}", outcome.install_url);
     println!();
     println!("\x1b[1mClaim code (required at claim time):\x1b[0m");
-    println!("  {claim_code}");
+    println!("  {}", outcome.claim_code);
     println!();
     println!("Both URL and code are needed to claim the passkey. The code is shown");
     println!("only once and not persisted — copy it before continuing.");
@@ -270,7 +322,6 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     println!("  2. Open the install URL in your browser.");
     println!("  3. Enter the claim code when prompted, then register your passkey.");
     println!();
-
     Ok(())
 }
 
@@ -278,15 +329,55 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
 // Input collection
 // ---------------------------------------------------------------------------
 
-struct WizardInputs {
+pub(crate) struct WizardInputs {
     /// Daemon's host base URL (e.g. `https://vtc.example.com`). The
     /// three surfaces — API, admin UX, public website — all mount
     /// under this in path mode (the default). Stored verbatim as
     /// `public_url` in the config and passed as the `vtc-host`
     /// template's `URL` var.
-    base_url: String,
-    vta_did: String,
-    context: String,
+    pub(crate) base_url: String,
+    pub(crate) vta_did: String,
+    pub(crate) context: String,
+}
+
+/// A fully-resolved setup plan: every operator decision gathered, no
+/// further prompts needed. Both front-ends produce one of these — the
+/// interactive [`collect_interactive`] (TTY prompts + the live VTA
+/// round-trips) and the non-interactive `from_toml::parse_from_toml`
+/// (`setup --from <toml>`) — and both feed it to the same [`apply`]
+/// effect driver. That shared seam is what keeps the two paths from
+/// drifting.
+pub(crate) struct WizardPlan {
+    pub(crate) config_path: PathBuf,
+    pub(crate) inputs: WizardInputs,
+    pub(crate) webvh: WebvhTarget,
+    pub(crate) secrets: SecretsConfig,
+    pub(crate) messaging: Option<MessagingConfig>,
+    /// The ephemeral `did:key` that authenticates the provision-
+    /// integration round-trip. Its DID must already be ACL-authorised
+    /// at the VTA: the interactive path generates it and pauses for the
+    /// operator to grant the ACL; the `--from` path loads a key the
+    /// operator persisted + granted out of band (the two-phase bridge
+    /// `EphemeralSetupKey::persist_to`/`load_from` exists for).
+    pub(crate) setup_key: EphemeralSetupKey,
+}
+
+/// The facts [`apply`] produces once the VTC is provisioned and all
+/// on-disk state is written. The caller decides how to present them
+/// (the interactive wizard prints a rich summary with a one-shot
+/// admin-key reveal; `setup --from` prints a terse, scrape-friendly
+/// block).
+pub(crate) struct SetupOutcome {
+    pub(crate) vtc_did: String,
+    pub(crate) admin_did: String,
+    pub(crate) config_path: PathBuf,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) install_url: String,
+    pub(crate) claim_code: String,
+    /// Pretty-printed JSON of the long-term admin key, when the VTA
+    /// returned one. Sensitive — the interactive path gates its display
+    /// behind a confirm; the non-interactive path never prints it.
+    pub(crate) admin_key_json: Option<String>,
 }
 
 /// Where the VTC's `did:webvh` is published, as chosen by the operator
@@ -294,18 +385,22 @@ struct WizardInputs {
 /// VTA and enumerate its did-hosting catalogue). All three fields are
 /// optional; a fully-`None` target reproduces the serverless default
 /// (self-hosted at the VTC base URL, server-assigned path).
-#[derive(Default)]
-struct WebvhTarget {
+#[derive(Default, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WebvhTarget {
     /// Registered did-hosting server id (the `WEBVH_SERVER` var).
     /// `None` → serverless: the VTC publishes its own `did.jsonl` at
     /// the base URL.
-    server_id: Option<String>,
+    #[serde(default)]
+    pub(crate) server_id: Option<String>,
     /// Tenant domain on a multi-domain hosting server (the
     /// `WEBVH_DOMAIN` var). `None` → the server resolves its default.
-    domain: Option<String>,
+    #[serde(default)]
+    pub(crate) domain: Option<String>,
     /// Path component of `did:webvh:<scid>:<host>:<path>` (the
     /// `WEBVH_PATH` var). `None` → the server auto-assigns.
-    path: Option<String>,
+    #[serde(default)]
+    pub(crate) path: Option<String>,
 }
 
 fn prompt_config_path(initial: Option<PathBuf>) -> Result<PathBuf, AppError> {
@@ -321,7 +416,7 @@ fn prompt_config_path(initial: Option<PathBuf>) -> Result<PathBuf, AppError> {
     Ok(PathBuf::from(path))
 }
 
-fn refuse_if_already_set_up(config_path: &std::path::Path) -> Result<(), AppError> {
+pub(crate) fn refuse_if_already_set_up(config_path: &std::path::Path) -> Result<(), AppError> {
     if !config_path.exists() {
         return Ok(());
     }

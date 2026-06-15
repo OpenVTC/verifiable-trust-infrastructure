@@ -26,8 +26,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run the interactive setup wizard
-    Setup,
+    /// Run the setup wizard.
+    ///
+    /// Without arguments, prompts interactively. With `--from <file>`,
+    /// reads a TOML setup-inputs file and provisions end-to-end without
+    /// prompts — suitable for CI, immutable images, or any unattended
+    /// bring-up. See `docs/03-vtc/examples/vtc-setup.example.toml` for
+    /// the worked schema.
+    Setup {
+        /// Path to a TOML setup-inputs file. When set, setup runs
+        /// non-interactively. The ephemeral setup key it references
+        /// (`setup_key_file`) must already be ACL-authorised at the VTA.
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
     /// Show VTC status and statistics
     Status,
     /// Create a did:key (offline, no server required)
@@ -141,16 +153,21 @@ async fn main() {
     print_banner();
 
     match cli.command {
-        Some(Commands::Setup) => {
+        Some(Commands::Setup { from }) => {
             #[cfg(feature = "setup")]
             {
-                if let Err(e) = setup::run_setup_wizard(cli.config).await {
+                let result = match from {
+                    Some(path) => setup::run_setup_from_file(path).await,
+                    None => setup::run_setup_wizard(cli.config).await,
+                };
+                if let Err(e) = result {
                     eprintln!("Setup failed: {e}");
                     std::process::exit(1);
                 }
             }
             #[cfg(not(feature = "setup"))]
             {
+                let _ = from;
                 eprintln!("Setup wizard not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }

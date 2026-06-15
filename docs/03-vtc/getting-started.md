@@ -142,6 +142,41 @@ opens the sealed bundle, and writes:
 
 The wizard prints a one-shot **install URL**. Save it.
 
+### Non-interactive setup (`setup --from <toml>`)
+
+For CI, immutable images, or any unattended bring-up, provision from a
+TOML file instead of the prompts:
+
+```sh
+cargo run --package vtc-service -- setup --from vtc-setup.toml
+```
+
+The file mirrors the wizard's decisions — see the fully-commented
+[`docs/03-vtc/examples/vtc-setup.example.toml`](examples/vtc-setup.example.toml)
+for the schema.
+
+There's one wrinkle: provisioning authenticates to the VTA with an
+ephemeral `did:key` that must be ACL-authorised *before* setup runs, and
+a non-interactive run can't pause to grant it (the interactive wizard's
+"press Enter once authorised" step). So it's a **two-phase** flow:
+
+1. Generate + persist an ephemeral setup key (the same JSON `pnm` writes)
+   and grant its `did:key` an admin ACL at the VTA:
+
+   ```sh
+   pnm contexts create --id mycommunity --name "VTC" \
+       --admin-did "did:key:z6Mk..." --admin-expires 1h
+   # (or `pnm acl create ...` if the context already exists)
+   ```
+
+2. Point `setup_key_file` in the TOML at that persisted key and run
+   `setup --from`. Setup loads the key (it does not generate a fresh
+   one), provisions against the VTA, writes the same `did.jsonl` /
+   `config.toml` / sealed bundle as the interactive path, and prints a
+   terse `key=value` block (including the install URL + claim code).
+   The admin private key is **never** printed in non-interactive mode —
+   re-run interactively if you need it.
+
 ## Step 2 — Start the daemon
 
 ```sh

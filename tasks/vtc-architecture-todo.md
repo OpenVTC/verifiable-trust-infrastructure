@@ -164,8 +164,8 @@ the #457 posture backstop provides its regression guard.)
   - `[x]` **part 2** force host separation when a filesystem website
     (`website.root_dir`) is configured + honest docs (correct the stale
     `Path=/admin` cookie-isolation claim) — PR: #466
-- `[~]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
-  the test harness — **done, PR pending.** Root-cause fix: CSRF only protects
+- `[x]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
+  the test harness — Root-cause fix: CSRF only protects
   *cookie-session* requests (ambient `vtc_admin_session` replay is the entire
   threat), so `enforce` now gates `method → bearer-skip → path-exempt →
   session-cookie gate → same-origin/double-submit`. `has_bearer_auth` skips
@@ -178,7 +178,7 @@ the #457 posture backstop provides its regression guard.)
   into `routes::with_csrf` (canonical router builder) so every integration test
   exercises it — wiring it in revealed (and fixed) the previously-invisible
   401-vs-403 breakage in recognise/renewal/removal/policies/join. 15 unit + 3
-  cookie_session integration tests; full suite 968 green. — PR: #490 (in review)
+  cookie_session integration tests; full suite 968 green. — PR: #490
 - `[x]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
   `create_dir_all` — `canonical_within_root_for_create` (shared
   `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
@@ -205,13 +205,22 @@ the #457 posture backstop provides its regression guard.)
   idempotent enqueue — PR: #487
 - `[ ]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
   compat check) — design note first — deps: P2.5 — PR: ____
-- `[ ]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
-  CLAUDE.md — PR: ____
-- `[~]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
-  `persist()` (persist already done in P2.5) — PR: #475 (in review)
-- `[~]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
+- `[~]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
+  CLAUDE.md — **done, PR pending.** Split `run_setup_wizard` into
+  `collect_interactive() → apply(WizardPlan)`; new `setup/from_toml.rs` parses a
+  `VtcWizardInputs` TOML (`deny_unknown_fields`) into the *same* `WizardPlan` and
+  feeds the *same* `apply`. The interactive ACL-grant pause is bridged in the
+  non-interactive path by a pre-persisted + pre-authorised `EphemeralSetupKey`
+  (`setup_key_file` → `load_from`), the two-phase pattern that type exists for.
+  `setup --from` prints a terse `key=value` block and never reveals the admin
+  key. Example fixture `docs/03-vtc/examples/vtc-setup.example.toml` (+ a test
+  that it parses); getting-started.md + vtc-service CLAUDE.md corrected. 8 unit
+  tests incl. headless parse→plan up to the VTA boundary. — PR: ____
+- `[x]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
+  `persist()` (persist already done in P2.5) — PR: #475
+- `[x]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
   `Consumed` row (re-mint from persisted admin DID; `start→finish→start` still
-  rejects) — PR: #476 (in review)
+  rejects) — PR: #476
 - `[ ]` **P3.13** (M, several small PRs) Hygiene: stale webauthn doc; dead `b64:`
   path; redact `Debug` on secret types + gate wizard key print; `vtcDid`/`vtcUrl`
   field rename; public-profile field caps; path-param DID validation; reject

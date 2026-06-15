@@ -1,0 +1,76 @@
+# vtc-setup.example.toml — full reference for `vtc setup --from <file>`.
+#
+# Non-interactive VTC provisioning for CI, immutable images, or any
+# unattended bring-up. Mirrors the decisions the interactive `vtc setup`
+# wizard collects via prompts. See docs/03-vtc/getting-started.md.
+#
+# IMPORTANT — the ephemeral setup key is a TWO-PHASE bridge.
+# Provisioning authenticates to the VTA with an ephemeral did:key whose
+# DID must already be ACL-authorised at the VTA. A non-interactive run
+# can't pause to grant it, so do this first, out of band:
+#
+#   1. Generate + persist an ephemeral setup key (the same JSON `pnm`
+#      writes via EphemeralSetupKey::persist_to), e.g. under
+#      ~/.config/vtc/setup-key.json (0600).
+#   2. Grant its did:key an admin ACL at the VTA:
+#        pnm contexts create --id <context> --name "VTC" \
+#          --admin-did <setup-did> --admin-expires 1h
+#      (or `pnm acl create ...` if the context already exists).
+#   3. Run: vtc setup --from vtc-setup.toml
+#      with `setup_key_file` below pointing at that persisted key.
+
+# ── Required ────────────────────────────────────────────────────────────
+config_path    = "/srv/vtc/config.toml"
+base_url       = "https://vtc.example.com"   # host base, no trailing slash, no /v1
+vta_did        = "did:webvh:vta.example.com:abc"
+setup_key_file = "/srv/vtc/setup-key.json"   # persisted + ACL-granted (see above)
+
+# ── Optional top-level ──────────────────────────────────────────────────
+context = "default"   # the VTA context this community provisions under
+
+# ── DID hosting (optional) ──────────────────────────────────────────────
+# Omit the whole [webvh] table for the serverless default: the VTC
+# self-hosts its did.jsonl at base_url with a server-assigned path.
+# [webvh]
+# server_id = "host-1"                 # a registered did-hosting server id
+# domain    = "tenant.example.com"     # tenant domain on a multi-domain host
+# path      = "communities/acme"       # path in did:webvh:<scid>:<host>:<path>
+
+# ── DIDComm messaging (optional) ────────────────────────────────────────
+# Omit for no messaging — the daemon stays healthy on REST and logs a
+# one-line "messaging not configured" warning at startup. When present,
+# `mediator_did` is required; the endpoint is resolved from its DID
+# document, so `mediator_url` is informational only.
+# [messaging]
+# mediator_did = "did:web:mediator.example.com"
+# mediator_url = "https://mediator.example.com"
+
+# ── Secret-store backend (required) ─────────────────────────────────────
+# Where the VTC's key bundle is stored. Same shape as the [secrets] block
+# in config.toml. The choice is security-sensitive — there is no implicit
+# default. Pick exactly one backend; the others are shown commented.
+[secrets]
+# OS keyring (default backend). Change `keyring_service` to run multiple
+# VTC instances on one machine.
+keyring_service = "vtc"
+
+# AWS Secrets Manager (aws-secrets feature)
+# aws_secret_name = "vtc/prod/key-bundle"
+# aws_region      = "us-east-1"
+
+# GCP Secret Manager (gcp-secrets feature)
+# gcp_project     = "my-project"
+# gcp_secret_name = "vtc-prod-key-bundle"
+
+# Azure Key Vault (azure-secrets feature)
+# azure_vault_url   = "https://my-vault.vault.azure.net"
+# azure_secret_name = "vtc-prod-key-bundle"
+
+# Kubernetes Secret (k8s-secrets feature)
+# k8s_secret_name = "vtc-key-bundle"
+# k8s_namespace   = "vtc"
+# k8s_secret_key  = "secret"
+
+# Inline config-secret (dev/test): the hex key bundle is written into
+# this file's [secrets] secret by setup. Read-only at runtime.
+# secret = ""
