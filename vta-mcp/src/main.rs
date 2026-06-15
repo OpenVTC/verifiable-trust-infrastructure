@@ -23,6 +23,7 @@ use std::sync::Arc;
 use clap::Parser;
 use rmcp::ServiceExt;
 use rmcp::transport::stdio;
+use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
 use vta_sdk::session::SessionStore;
 
@@ -51,6 +52,17 @@ struct Args {
     /// or required in token mode).
     #[arg(long, env = "VTA_URL")]
     url: Option<String>,
+
+    /// Register this bridge as an `ai-agent` device at startup, so it appears in
+    /// `pnm device list` and can be revoked with `pnm device {disable,wipe}`.
+    /// Only use this when vta-mcp runs as a *dedicated* agent identity — it
+    /// attaches a device binding to the authenticated DID's ACL entry. Idempotent.
+    #[arg(long, env = "VTA_MCP_ENROLL")]
+    enroll: bool,
+
+    /// Display name for the device binding when `--enroll` is set.
+    #[arg(long, env = "VTA_MCP_DEVICE_NAME", default_value = "vta-mcp")]
+    device_name: String,
 }
 
 #[tokio::main]
@@ -63,9 +75,18 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let client = build_client(&args).await?;
+
+    // Wrap the connected client in an AgentSession — the unified handle the MCP
+    // tools route through. Optionally enroll as a managed device first (one-shot,
+    // before serving — never concurrently with tool RPCs on a DIDComm session).
+    let agent = AgentSession::from_client(client, AgentConfig::for_attach(&args.device_name));
+    if args.enroll {
+        agent.ensure_enrolled().await?;
+        tracing::info!(device = %args.device_name, "vta-mcp enrolled as a managed device");
+    }
     tracing::info!("vta-mcp connected to VTA; serving MCP over stdio");
 
-    let service = VtaMcp::new(Arc::new(client)).serve(stdio()).await?;
+    let service = VtaMcp::new(Arc::new(agent)).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

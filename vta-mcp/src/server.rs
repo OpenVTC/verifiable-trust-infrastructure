@@ -17,7 +17,7 @@ use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use vta_sdk::client::VtaClient;
+use vta_sdk::agent_session::AgentSession;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 
@@ -94,23 +94,28 @@ pub struct DeviceHeartbeatParams {
     pub platform: Option<String>,
 }
 
-/// MCP server bridging to a single authenticated [`VtaClient`].
+/// MCP server bridging to a single authenticated agent session.
 #[derive(Clone)]
 pub struct VtaMcp {
-    client: Arc<VtaClient>,
+    agent: Arc<AgentSession>,
 }
 
 #[tool_router]
 impl VtaMcp {
-    pub fn new(client: Arc<VtaClient>) -> Self {
-        Self { client }
+    pub fn new(agent: Arc<AgentSession>) -> Self {
+        Self { agent }
+    }
+
+    /// The VTA client behind the session — every tool routes through this.
+    fn client(&self) -> &vta_sdk::client::VtaClient {
+        self.agent.client()
     }
 
     #[tool(
         description = "Discover the connected VTA's capabilities: enabled features, advertised services, WebVH servers, and supported DID-creation modes."
     )]
     async fn vta_capabilities(&self) -> Result<CallToolResult, McpError> {
-        let caps = self.client.capabilities().await.map_err(to_mcp)?;
+        let caps = self.client().capabilities().await.map_err(to_mcp)?;
         ok_json(caps)
     }
 
@@ -120,7 +125,7 @@ impl VtaMcp {
         Parameters(p): Parameters<ListKeysParams>,
     ) -> Result<CallToolResult, McpError> {
         let keys = self
-            .client
+            .client()
             .list_keys(
                 p.offset.unwrap_or(0),
                 p.limit.unwrap_or(50),
@@ -150,7 +155,7 @@ impl VtaMcp {
             }
         };
         let resp = self
-            .client
+            .client()
             .sign(&p.key_id, p.text.as_bytes(), algorithm)
             .await
             .map_err(to_mcp)?;
@@ -168,7 +173,7 @@ impl VtaMcp {
         Parameters(p): Parameters<VaultListParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = self
-            .client
+            .client()
             .vault_list(p.filters.unwrap_or_else(|| serde_json::json!({})))
             .await
             .map_err(to_mcp)?;
@@ -180,7 +185,7 @@ impl VtaMcp {
         &self,
         Parameters(p): Parameters<VaultGetParams>,
     ) -> Result<CallToolResult, McpError> {
-        let result = self.client.vault_get(&p.id).await.map_err(to_mcp)?;
+        let result = self.client().vault_get(&p.id).await.map_err(to_mcp)?;
         ok_json(result)
     }
 
@@ -195,14 +200,18 @@ impl VtaMcp {
         if let Some(t) = p.target {
             payload["target"] = t;
         }
-        let response = self.client.vault_release(payload).await.map_err(to_mcp)?;
+        let response = self.client().vault_release(payload).await.map_err(to_mcp)?;
         match response
             .get("sealedSecret")
             .and_then(|s| s.get("jwe"))
             .and_then(|j| j.as_str())
         {
             Some(jwe) => {
-                let secret = self.client.open_sealed_secret(jwe).await.map_err(to_mcp)?;
+                let secret = self
+                    .client()
+                    .open_sealed_secret(jwe)
+                    .await
+                    .map_err(to_mcp)?;
                 ok_json(secret)
             }
             // No openable envelope (e.g. an unsupported variant) — hand back the
@@ -219,7 +228,7 @@ impl VtaMcp {
         Parameters(p): Parameters<DeviceHeartbeatParams>,
     ) -> Result<CallToolResult, McpError> {
         let result = self
-            .client
+            .client()
             .device_heartbeat(p.platform.as_deref())
             .await
             .map_err(to_mcp)?;

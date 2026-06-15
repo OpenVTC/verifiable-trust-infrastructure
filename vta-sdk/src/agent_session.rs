@@ -131,6 +131,15 @@ impl AgentConfig {
         self.heartbeat_secs = secs.max(1);
         self
     }
+
+    /// Config for wrapping an **already-connected** client via
+    /// [`AgentSession::from_client`]. The connection fields (DID, key, mediator)
+    /// are left empty — they're unused once a client exists; only the enrolment
+    /// fields (`display_name`, `service_kind`, `platform`, `heartbeat_secs`)
+    /// apply. Chain the setters to customise.
+    pub fn for_attach(display_name: impl Into<String>) -> Self {
+        Self::new("", "", "", "").display_name(display_name)
+    }
 }
 
 /// Whether the agent event loop should keep running after a handler call.
@@ -203,27 +212,46 @@ impl AgentSession {
         )
         .await?;
 
-        let consumer_kind = json!({ "kind": "service", "serviceKind": config.service_kind });
-        match client
+        let session = Self::from_client(client, config);
+        if let Err(e) = session.ensure_enrolled().await {
+            session.client.shutdown().await;
+            return Err(e);
+        }
+        Ok(session)
+    }
+
+    /// Wrap an **already-connected** [`VtaClient`] (built however the caller
+    /// likes — `connect_didcomm`, a stored session, a bearer token) as an agent
+    /// session, without enrolling. Use this when the connection is established
+    /// elsewhere (e.g. a bridge that reuses an operator login) and you only want
+    /// the unified `client()` accessor + optional [`Self::ensure_enrolled`] /
+    /// [`Self::run`]. Pair with [`AgentConfig::for_attach`].
+    pub fn from_client(client: VtaClient, config: AgentConfig) -> Self {
+        Self { client, config }
+    }
+
+    /// Register this identity as a device, idempotently (an already-registered
+    /// device reuses its binding). Safe to call once at startup; do **not** call
+    /// it concurrently with in-flight RPCs on a DIDComm session.
+    pub async fn ensure_enrolled(&self) -> Result<(), VtaError> {
+        let consumer_kind = json!({ "kind": "service", "serviceKind": self.config.service_kind });
+        match self
+            .client
             .device_register(
                 consumer_kind,
-                &config.display_name,
-                config.platform.as_deref(),
-                config.hpke_public_key.as_deref(),
+                &self.config.display_name,
+                self.config.platform.as_deref(),
+                self.config.hpke_public_key.as_deref(),
             )
             .await
         {
-            Ok(_) => info!(did = %config.client_did, "agent device registered"),
+            Ok(_) => info!(name = %self.config.display_name, "agent device registered"),
             Err(e) if is_already_registered(&e) => {
-                debug!(did = %config.client_did, "agent already registered; reusing binding");
+                debug!(name = %self.config.display_name, "agent already registered; reusing binding");
             }
-            Err(e) => {
-                client.shutdown().await;
-                return Err(e);
-            }
+            Err(e) => return Err(e),
         }
-
-        Ok(Self { client, config })
+        Ok(())
     }
 
     /// The underlying authenticated client — use it for vault, signing, and any
@@ -331,6 +359,21 @@ mod tests {
         assert!(msg.id.is_empty());
         assert!(msg.from.is_none());
         assert!(msg.body.is_null());
+    }
+
+    #[test]
+    fn from_client_wraps_without_enrolling() {
+        // `from_client` is pure wiring — no network — so a REST client built
+        // offline is enough to exercise it.
+        let client = VtaClient::new("http://localhost:9999");
+        let session = AgentSession::from_client(
+            client,
+            AgentConfig::for_attach("vta-mcp").service_kind("ai-agent"),
+        );
+        assert_eq!(session.config.display_name, "vta-mcp");
+        assert_eq!(session.config.service_kind, "ai-agent");
+        // The unified accessor is available for callers that only need the client.
+        let _ = session.client();
     }
 
     #[test]

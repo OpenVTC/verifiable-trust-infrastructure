@@ -6,9 +6,10 @@ host (Claude Desktop, an agent framework, an IDE) can use a VTA — signing
 oracle, secrets vault, device check-in, discovery — with **no custom
 integration code**.
 
-It's a thin bridge: each tool maps one-to-one onto a `vta_sdk::VtaClient`
-method. Transport is **stdio** (the host spawns the binary and speaks JSON-RPC
-over stdin/stdout); all logging goes to stderr.
+It's a thin bridge built on `vta_sdk::agent_session::AgentSession`: each tool
+maps one-to-one onto the session's `VtaClient`. Transport is **stdio** (the host
+spawns the binary and speaks JSON-RPC over stdin/stdout); all logging goes to
+stderr.
 
 ## Tools
 
@@ -59,6 +60,19 @@ Add to the host's MCP server config:
   }
 }
 ```
+
+## Enrolling the bridge as a managed device
+
+Pass `--enroll` (or `VTA_MCP_ENROLL=1`) to register vta-mcp as an `ai-agent`
+device at startup, so it shows up in `pnm device list` and can be revoked with
+`pnm device disable` / `pnm device wipe` (the revocation is enforced at auth).
+Set the binding name with `--device-name` (default `vta-mcp`).
+
+Only use `--enroll` when vta-mcp runs as a **dedicated agent identity** — it
+attaches a device binding to the authenticated DID's ACL entry, so don't point it
+at an operator/admin login. Enrolment runs once before serving; the bridge does
+not run a concurrent heartbeat/wake loop (that would race the tool RPCs on the
+same DIDComm session).
 
 ## Notes
 
