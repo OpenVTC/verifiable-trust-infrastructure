@@ -173,14 +173,15 @@ the #457 posture backstop provides its regression guard.)
 - `[x]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
   read) — `validate_csp_override` refuses weakening script-src/object-src/base-uri;
   `CspOverrideCache` (content-cache TTL) — PR: #469
-- `[~]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
+- `[x]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
   `plugins.json` scan; implement `If-None-Match`→304 — `cache_control_for`
   (shell no-cache, hashed assets keep TTL); `scan_plugin_dir_cached` (30s TTL);
-  `etag_matches`→304 in website serve — PR: #470 (in review)
+  `etag_matches`→304 in website serve — PR: #470
 - `[ ]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
   boundaries — PR: ____
-- `[ ]` **P3.7** (S) Minimal unauth `/health`; gate DID/mediator detail; `nosniff`
-  on `did.jsonl` — PR: ____
+- `[~]` **P3.7** (S) Minimal unauth `/health` (`{status,version,vtc_did}`; mediator/
+  vta detail folded into admin-gated diagnostics); `nosniff` on `did.jsonl` —
+  PR: #472 (in review)
 - `[ ]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
   idempotent enqueue — PR: ____
 - `[ ]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
