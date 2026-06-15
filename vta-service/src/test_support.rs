@@ -382,6 +382,65 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     (vta_did, deps)
 }
 
+/// The context [`bootstrap_provisionable_test_vta`] registers and the one a
+/// well-formed request should target (`context_hint` + the `context` param).
+pub const PROVISIONABLE_CONTEXT: &str = "provisionable-ctx";
+
+/// Like [`bootstrap_test_vta`] but the returned VTA can actually *succeed*: it
+/// additionally registers a fresh target context ([`PROVISIONABLE_CONTEXT`]),
+/// so a well-formed request reaches the high-value render → seal → issue path
+/// instead of erroring at the context-existence precondition.
+///
+/// No template needs registering — the built-in `didcomm-mediator` /
+/// `vta-admin` templates resolve via the SDK's embedded loader, so a request
+/// naming one of those + a valid var set renders directly. Pair this with
+/// [`provisionable_mediator_vars`] for a known-`Ok` baseline that a fuzz
+/// campaign can mutate, e.g.:
+///
+/// ```ignore
+/// let ts = open_test_store().await;
+/// let (_vta_did, deps) = bootstrap_provisionable_test_vta(&ts).await;
+/// let request = signed_request_with_vars(
+///     "didcomm-mediator", PROVISIONABLE_CONTEXT, fuzzed_vars,
+/// ).await;
+/// let out = provision_integration(&deps, &super_admin_claims(), ProvisionIntegrationParams {
+///     request, context: PROVISIONABLE_CONTEXT.into(),
+///     assertion_mode: AssertionMode::PinnedOnly, vc_validity: None,
+/// }).await;
+/// ```
+///
+/// Both `AssertionMode::PinnedOnly` and `AssertionMode::DidSigned` return `Ok`
+/// for a well-formed request (the `#sealed-transfer-0` producer key is
+/// provisioned by [`bootstrap_test_vta`]); `Attested` needs Nitro material and
+/// is out of scope here.
+pub async fn bootstrap_provisionable_test_vta(
+    ts: &TestStore,
+) -> (String, ProvisionIntegrationDeps) {
+    let (vta_did, deps) = bootstrap_test_vta(ts).await;
+    crate::contexts::create_context(
+        &ts.contexts_ks,
+        PROVISIONABLE_CONTEXT,
+        "Provisionable Context",
+    )
+    .await
+    .expect("create provisionable context");
+    (vta_did, deps)
+}
+
+/// A baseline well-formed variable set for the built-in `didcomm-mediator`
+/// template — the known-`Ok` starting point a fuzz campaign mutates to drive
+/// hostile variables through the real renderer/sealer/issuer.
+pub fn provisionable_mediator_vars() -> BTreeMap<String, Value> {
+    let mut vars = BTreeMap::new();
+    vars.insert("URL".into(), Value::String("https://mediator.test".into()));
+    vars.insert(
+        "WS_URL".into(),
+        Value::String("wss://mediator.test/ws".into()),
+    );
+    vars.insert("ROUTING_KEYS".into(), Value::Array(vec![]));
+    vars
+}
+
 // ---------------------------------------------------------------------------
 // HTTP test scaffolding — shared by `tests/api_integration.rs` and any future
 // route-level test crate. The `TestApp` type returned here owns the axum
