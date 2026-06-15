@@ -39,6 +39,6 @@ pub mod serve;
 pub mod storage;
 
 #[cfg(feature = "website")]
-pub use serve::{WebsiteState, serve};
+pub use serve::{CspOverrideCache, WebsiteState, serve};
 #[cfg(feature = "website")]
 pub use storage::WebsiteRoot;

@@ -1496,6 +1496,7 @@ async fn build_website_state(
         executable_blocklist: cfg.website.executable_blocklist.clone(),
         cache_control: cfg.website.cache_control.clone(),
         csp_override_file: cfg.website.csp_override_file.clone(),
+        csp_cache: crate::website::CspOverrideCache::new(cfg.website.live_cache_ttl_seconds),
     })
 }
 
