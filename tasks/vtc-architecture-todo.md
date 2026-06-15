@@ -156,18 +156,20 @@ the #457 posture backstop provides its regression guard.)
 
 ## Phase 3 — Strategic convergence + hygiene (ongoing)
 
-- `[~]` **P3.1** (L) Real host-based surface isolation (or force host-separation
-  when a website is configured + honest docs)
-  - `[~]` **part 1** per-surface host gate in `host_dispatch::enforce` (recognised
+- `[x]` **P3.1** (L) Real host-based surface isolation (or force host-separation
+  when a website is configured + honest docs) — **done** (#465, #466)
+  - `[x]` **part 1** per-surface host gate in `host_dispatch::enforce` (recognised
     host serves only its bound surface; cross-surface → 404 `SurfaceNotOnHost`;
-    infra routes bypass) — PR: #465 (in review)
-  - `[~]` **part 2** force host separation when a filesystem website
+    infra routes bypass) — PR: #465
+  - `[x]` **part 2** force host separation when a filesystem website
     (`website.root_dir`) is configured + honest docs (correct the stale
-    `Path=/admin` cookie-isolation claim) — PR: #466 (in review, stacked on #465)
+    `Path=/admin` cookie-isolation claim) — PR: #466
 - `[ ]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
   the test harness — PR: ____
-- `[ ]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
-  `create_dir_all` — PR: ____
+- `[~]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
+  `create_dir_all` — `canonical_within_root_for_create` (shared
+  `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
+  ancestor; no FS mutation before the check) — PR: #467 (in review)
 - `[ ]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
   read) — PR: ____
 - `[ ]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
