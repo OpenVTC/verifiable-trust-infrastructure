@@ -46,6 +46,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+use vti_common::auth::session::{delete_session, list_sessions};
 use vti_common::config::StoreConfig;
 use vti_common::error::AppError;
 use vti_common::store::Store;
@@ -249,7 +250,24 @@ pub async fn run_emergency_bootstrap_with_store(
     let acl_ks = store.keyspace(keyspaces::ACL)?;
     let passkey_ks = store.keyspace(keyspaces::PASSKEY)?;
     let install_ks = store.keyspace(keyspaces::INSTALL)?;
+    let sessions_ks = store.keyspace(keyspaces::SESSIONS)?;
     let install_store = InstallTokenStore::new(install_ks);
+
+    // --- pending audit marker (BEFORE the wipe) ---------------------
+    //
+    // Stamp the marker first and flush it to disk so a crash mid-wipe
+    // still leaves a durable record that an emergency bootstrap was
+    // invoked (the marker is consumed-on-read at the next boot). If we
+    // stamped it after the deletes, a mid-loop crash would leave the
+    // wipe unaudited.
+    let operator_hostname = gethostname::gethostname().to_string_lossy().into_owned();
+    install_store
+        .mark_emergency_pending(PendingEmergencyBootstrap {
+            operator_hostname: operator_hostname.clone(),
+            invoked_at: Utc::now(),
+        })
+        .await?;
+    store.persist().await?;
 
     // --- destructive cleanup ----------------------------------------
     let mut admin_entries_cleared = 0;
@@ -283,6 +301,16 @@ pub async fn run_emergency_bootstrap_with_store(
                     .await?;
             }
         }
+    }
+
+    // Clear ALL sessions — refresh tokens for the presumed-compromised
+    // admins must not survive the wipe (without this, a stolen refresh
+    // token keeps minting access tokens after recovery). Break-glass
+    // recovery treats every live session as suspect.
+    let mut sessions_cleared = 0;
+    for session in list_sessions(&sessions_ks).await? {
+        delete_session(&sessions_ks, &session.session_id).await?;
+        sessions_cleared += 1;
     }
 
     // --- mint a fresh install token ---------------------------------
@@ -319,15 +347,6 @@ pub async fn run_emergency_bootstrap_with_store(
         )
         .await?;
 
-    // --- pending audit marker ---------------------------------------
-    let operator_hostname = gethostname::gethostname().to_string_lossy().into_owned();
-    install_store
-        .mark_emergency_pending(PendingEmergencyBootstrap {
-            operator_hostname: operator_hostname.clone(),
-            invoked_at: Utc::now(),
-        })
-        .await?;
-
     // --- install URL ------------------------------------------------
     // `/admin/install` so the embedded admin SPA picks the request
     // up and runs the install-claim ceremony in-browser. The bare
@@ -348,6 +367,7 @@ pub async fn run_emergency_bootstrap_with_store(
         operator_hostname = %operator_hostname,
         admin_entries_cleared,
         admin_records_cleared,
+        sessions_cleared,
         "emergency bootstrap completed; install URL minted"
     );
     if admin_entries_cleared == 0 {

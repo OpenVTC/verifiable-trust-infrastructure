@@ -38,6 +38,10 @@ use vti_common::acl::{AclEntry, Role, list_acl_entries, store_acl_entry};
 use vti_common::audit::{AuditKeyStore, AuditWriter};
 use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::passkey::build_webauthn;
+use vti_common::auth::session::{
+    Session, SessionState, get_session_by_refresh, list_sessions, store_refresh_index,
+    store_session,
+};
 use vti_common::config::StoreConfig;
 use vti_common::error::AppError;
 use vti_common::seed_store::SeedStore;
@@ -345,6 +349,66 @@ fn ephemeral_key() -> EphemeralSetupKey {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn emergency_bootstrap_clears_all_sessions_and_their_refresh_index() {
+    // P3.11: refresh tokens for the presumed-compromised admins must
+    // not survive the wipe — otherwise a stolen refresh token keeps
+    // minting access tokens after recovery.
+    let fix = build_fixture(Some(RP_ORIGIN)).await;
+    let sessions_ks = fix.store.keyspace("sessions").unwrap();
+
+    let session = Session {
+        session_id: "sess-old-admin".into(),
+        did: fix.admin_did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: 0,
+        refresh_token: Some("refresh-token-1".into()),
+        refresh_expires_at: Some(9_999_999_999),
+        tee_attested: false,
+        amr: vec![],
+        acr: String::new(),
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&sessions_ks, &session).await.unwrap();
+    store_refresh_index(&sessions_ks, "refresh-token-1", "sess-old-admin")
+        .await
+        .unwrap();
+    assert_eq!(list_sessions(&sessions_ks).await.unwrap().len(), 1);
+    assert!(
+        get_session_by_refresh(&sessions_ks, "refresh-token-1")
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    run_emergency_bootstrap_with_store(
+        &fix.config,
+        &fix.store,
+        fix.secret_store.as_ref(),
+        &ephemeral_key(),
+        &MockProver::accept(),
+        None,
+    )
+    .await
+    .expect("emergency-bootstrap accept");
+
+    // Session row gone, and the refresh reverse-index with it (so the
+    // refresh token is dead, not just orphaned).
+    assert!(
+        list_sessions(&sessions_ks).await.unwrap().is_empty(),
+        "all sessions must be cleared"
+    );
+    assert!(
+        get_session_by_refresh(&sessions_ks, "refresh-token-1")
+            .await
+            .unwrap()
+            .is_none(),
+        "refresh-token index must be cleared"
+    );
+}
 
 #[tokio::test]
 async fn happy_path_clears_admin_via_vta_and_audits_on_restart() {
