@@ -214,7 +214,7 @@ the #457 posture backstop provides its regression guard.)
   sessions/install/sync/registry/config excluded; vtc_did mismatch → 409.
   Operator doc `docs/03-vtc/backup-restore.md`. 8 unit + 4 integration tests
   (full-state round-trip, preview-no-mutate, foreign-did 409, wrong-password). —
-  PR: ____
+  PR: #494 (in review)
   - design note: PR #492
 - `[x]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
   CLAUDE.md — Split `run_setup_wizard` into
