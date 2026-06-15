@@ -1066,8 +1066,16 @@ mod didcomm_harness {
         sender: &str,
         msg: &Message,
     ) -> Result<Option<(String, Value)>, (String, String)> {
-        let problem =
-            |e: vti_common::error::AppError| ("e.p.msg.internal-error".to_string(), e.to_string());
+        // Map handler errors through the *same* taxonomy the production DIDComm
+        // responder uses (`messaging::app_error_code`) — a 409-style conflict
+        // (e.g. a duplicate open join request) must surface as `e.p.msg.conflict`,
+        // not collapse into the generic `internal-error` bucket. See #485.
+        let problem = |e: vti_common::error::AppError| {
+            (
+                crate::messaging::app_error_code(&e).to_string(),
+                e.to_string(),
+            )
+        };
         let bad = |e: serde_json::Error| ("e.p.msg.bad-request".to_string(), e.to_string());
 
         match msg.typ.as_str() {

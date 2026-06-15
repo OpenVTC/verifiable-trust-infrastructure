@@ -331,3 +331,80 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
 
     mock.shutdown().await;
 }
+
+/// Regression for #485 (cross-service join-ceremony fuzzer finding): a *duplicate*
+/// submit — same applicant DID resubmits while their first request is still open —
+/// is a normal 409-Conflict business-rule rejection, so the threaded DIDComm
+/// problem-report must carry the `conflict` code, **not** the generic
+/// `internal-error` bucket. `internal-error` would mislead clients into treating
+/// an expected condition as a server fault (and the fuzzer flags any
+/// `internal-error`-coded problem-report as a soft finding). The dedup guard in
+/// `submit_inner` returns `AppError::Conflict`; this pins that it surfaces as
+/// `e.p.msg.conflict` end-to-end through the real DIDComm handler.
+#[tokio::test]
+async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
+    use vta_sdk::protocols::problem_report_codes as codes;
+
+    let mock = MockVtcDidcomm::start().await;
+    let _admin_token = seed_join_ceremony(&mock).await;
+    let vtc_did = mock.vtc_did().to_string();
+    let applicant_did = mock.client.did().to_string();
+
+    let submit = JoinRequestSubmitBody {
+        vp: json!({ "type": "VerifiablePresentation", "holder": applicant_did }),
+        registry_consent: false,
+        extensions: json!({}),
+    };
+
+    // First submit → real `submit_inner`, default policy defers to pending so the
+    // request is left *open* (the precondition for the dedup guard to fire).
+    let outcome = mock
+        .client
+        .try_request(
+            &vtc_did,
+            JOIN_REQUEST_SUBMIT_TYPE,
+            serde_json::to_value(&submit).unwrap(),
+            Duration::from_secs(15),
+        )
+        .await;
+    match outcome {
+        ReplyOutcome::Reply(body) => {
+            let receipt: JoinRequestSubmitReceiptBody =
+                serde_json::from_value(body).expect("submit receipt");
+            assert_eq!(receipt.status, "pending");
+        }
+        other => panic!("expected a pending receipt for the first submit, got {other:?}"),
+    }
+
+    // Second submit from the same applicant DID before the first is decided or
+    // withdrawn → the dedup guard rejects it. It must be a *clean, classified*
+    // conflict, not a hang and not an `internal-error`.
+    let outcome = mock
+        .client
+        .try_request(
+            &vtc_did,
+            JOIN_REQUEST_SUBMIT_TYPE,
+            serde_json::to_value(&submit).unwrap(),
+            Duration::from_secs(15),
+        )
+        .await;
+    match outcome {
+        ReplyOutcome::Problem(p) => {
+            assert_eq!(
+                p.code,
+                codes::CONFLICT,
+                "duplicate open join request is a 409-style conflict, not `{}`: {p:?}",
+                codes::INTERNAL,
+            );
+            assert!(
+                p.comment.contains("already exists"),
+                "comment names the open-request conflict: {p:?}",
+            );
+        }
+        other => {
+            panic!("expected a conflict problem-report for the duplicate submit, got {other:?}")
+        }
+    }
+
+    mock.shutdown().await;
+}

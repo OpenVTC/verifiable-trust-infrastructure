@@ -239,7 +239,12 @@ fn problem_report_body(code: &str, comment: impl Into<String>) -> serde_json::Va
 /// does — instead of collapsing every outcome into `internal-error`,
 /// where the sender can't tell a permission failure from a real bug.
 /// Genuine infra faults keep the `internal-error` code.
-fn app_error_code(err: &AppError) -> &'static str {
+///
+/// `pub(crate)` so the DIDComm test harness (`test_support::dispatch_join`)
+/// maps handler errors through the *same* taxonomy the production responder
+/// uses — otherwise the harness (and the fuzzer driving it) would see a
+/// different, staler mapping than real callers. See #485.
+pub(crate) fn app_error_code(err: &AppError) -> &'static str {
     match err {
         AppError::Forbidden(_) | AppError::StepUpRequired(_) => codes::FORBIDDEN,
         AppError::Unauthorized(_) | AppError::Authentication(_) => codes::UNAUTHORIZED,
