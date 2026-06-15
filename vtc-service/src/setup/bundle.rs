@@ -32,8 +32,6 @@
 //!   deployment fails loud at the verification step rather than
 //!   silently accepting tokens minted under the old derivation.
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD_NO_PAD as B64;
 use multibase::Base;
 use serde::{Deserialize, Serialize};
 use vti_common::error::AppError;
@@ -46,7 +44,7 @@ use zeroize::Zeroizing;
 /// multibase-encoded strings at rest. Use the accessor methods
 /// instead of touching the raw fields if you need a `Zeroizing`
 /// buffer for the live key.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct VtcKeyBundle {
     /// The VTC's `did:webvh`. Matches [`crate::config::AppConfig::vtc_did`]
@@ -67,6 +65,23 @@ pub struct VtcKeyBundle {
     /// Multibase-encoded X25519 private key. Access via
     /// [`Self::x25519_private_zeroizing`].
     pub x25519_private_multibase: String,
+}
+
+// Manual Debug — the two `*_private_multibase` fields are live key
+// material; a derived `Debug` would print them on any `{:?}`. Redact the
+// private halves; DIDs + public keys are not secret.
+impl std::fmt::Debug for VtcKeyBundle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VtcKeyBundle")
+            .field("integration_did", &self.integration_did)
+            .field("ed25519_key_id", &self.ed25519_key_id)
+            .field("ed25519_public_multibase", &self.ed25519_public_multibase)
+            .field("ed25519_private_multibase", &"<redacted>")
+            .field("x25519_key_id", &self.x25519_key_id)
+            .field("x25519_public_multibase", &self.x25519_public_multibase)
+            .field("x25519_private_multibase", &"<redacted>")
+            .finish()
+    }
 }
 
 impl VtcKeyBundle {
@@ -225,28 +240,6 @@ fn encode_public_multibase(bytes: &[u8; 32], codec: [u8; 2]) -> String {
     multibase::encode(Base::Base58Btc, &buf)
 }
 
-/// Encode bytes for use as the `inline_secret` config field. The
-/// secret store may treat that field as either a hex string (legacy)
-/// or — when prefixed `b64:` — base64-no-pad. JSON bytes contain
-/// characters that aren't hex-safe, so we wrap them.
-pub fn inline_secret_for_bundle(bundle: &VtcKeyBundle) -> Result<String, AppError> {
-    let bytes = bundle.to_secret_store_bytes()?;
-    Ok(format!("b64:{}", B64.encode(&bytes)))
-}
-
-/// Inverse of [`inline_secret_for_bundle`].
-pub fn bundle_from_inline_secret(secret: &str) -> Result<VtcKeyBundle, AppError> {
-    let body = secret.strip_prefix("b64:").ok_or_else(|| {
-        AppError::Internal(
-            "inline_secret is not a VtcKeyBundle wrapper (expected 'b64:' prefix)".into(),
-        )
-    })?;
-    let bytes = B64
-        .decode(body)
-        .map_err(|e| AppError::Internal(format!("inline_secret base64 decode: {e}")))?;
-    VtcKeyBundle::from_secret_store_bytes(&bytes)
-}
-
 /// Decode whatever the secret store handed back into the VTC's
 /// `(ed25519, x25519)` private-scalar pair.
 ///
@@ -316,12 +309,21 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_inline_secret() {
+    fn debug_redacts_private_keys() {
         let b = fixture();
-        let s = inline_secret_for_bundle(&b).unwrap();
-        assert!(s.starts_with("b64:"));
-        let parsed = bundle_from_inline_secret(&s).unwrap();
-        assert_eq!(b, parsed);
+        let dbg = format!("{b:?}");
+        assert!(dbg.contains("<redacted>"), "got {dbg}");
+        // The actual private multibase strings must not appear.
+        assert!(
+            !dbg.contains(&b.ed25519_private_multibase),
+            "ed25519 private leaked: {dbg}"
+        );
+        assert!(
+            !dbg.contains(&b.x25519_private_multibase),
+            "x25519 private leaked: {dbg}"
+        );
+        // Public material stays visible for diagnostics.
+        assert!(dbg.contains(&b.integration_did));
     }
 
     #[test]

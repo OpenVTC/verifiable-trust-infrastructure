@@ -12,6 +12,6 @@ pub mod bundle;
 #[cfg(feature = "setup")]
 pub mod wizard;
 
-pub use bundle::{VtcKeyBundle, bundle_from_inline_secret, inline_secret_for_bundle};
+pub use bundle::VtcKeyBundle;
 #[cfg(feature = "setup")]
 pub use wizard::run_setup_wizard;

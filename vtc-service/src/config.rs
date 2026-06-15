@@ -429,7 +429,7 @@ pub struct ServerConfig {
 // (P0.8). Safe here — `SecretsConfig` carries no serde aliases; the
 // alias-bearing fields live on the parent `AppConfig`, which is intentionally
 // left lenient until the alias audit in the plan.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
     /// Hex-encoded VTC key material (config-secret feature)
@@ -454,6 +454,26 @@ pub struct SecretsConfig {
 
 fn default_keyring_service() -> String {
     "vtc".to_string()
+}
+
+// Manual Debug — `secret` is the hex-encoded VTC key material; leaking
+// it via a stray `{:?}` (e.g. a future `debug!(?config)`) would
+// compromise every key derived from it. Redact it; the other fields are
+// backend *names*, not secrets, so they print verbatim. Mirrors
+// `vti_common::config::SecretsConfig`'s impl.
+impl std::fmt::Debug for SecretsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretsConfig")
+            .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
+            .field("aws_secret_name", &self.aws_secret_name)
+            .field("aws_region", &self.aws_region)
+            .field("gcp_project", &self.gcp_project)
+            .field("gcp_secret_name", &self.gcp_secret_name)
+            .field("azure_vault_url", &self.azure_vault_url)
+            .field("azure_secret_name", &self.azure_secret_name)
+            .field("keyring_service", &self.keyring_service)
+            .finish()
+    }
 }
 
 impl Default for SecretsConfig {
@@ -835,6 +855,20 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secrets_config_debug_redacts_secret() {
+        let cfg = SecretsConfig {
+            secret: Some("deadbeefdeadbeef".into()),
+            keyring_service: "vtc".into(),
+            ..Default::default()
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(dbg.contains("<redacted>"), "got {dbg}");
+        assert!(!dbg.contains("deadbeef"), "secret leaked: {dbg}");
+        // Non-secret backend names still print.
+        assert!(dbg.contains("vtc"));
+    }
 
     // ── Parse contract ──────────────────────────────────────────────
     //

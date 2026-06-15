@@ -234,8 +234,26 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     println!("Data dir:      {}", data_dir.display());
     println!();
     if let Some(key_json) = admin_key_summary.as_deref() {
-        println!("\x1b[1;33mAdmin key (save this — needed for CLI access):\x1b[0m");
-        println!("{key_json}");
+        // The admin private key lands in the terminal scrollback / any
+        // session recording the moment it's printed. Make the operator
+        // consciously reveal it rather than spilling it by default.
+        // TODO(keyring): write this to the OS keyring instead of stdout.
+        let reveal = Confirm::new()
+            .with_prompt(
+                "Display the admin private key now? It's needed for CLI access and is shown only once",
+            )
+            .default(false)
+            .interact()
+            .map_err(prompt_err)?;
+        if reveal {
+            println!("\x1b[1;33mAdmin key (save this — needed for CLI access):\x1b[0m");
+            println!("{key_json}");
+        } else {
+            println!(
+                "\x1b[1;33mAdmin key not displayed.\x1b[0m Re-run setup if you need it; it is \
+                 not persisted."
+            );
+        }
         println!();
     }
     println!("\x1b[1mInstall URL (one-shot, 15 min TTL):\x1b[0m");
