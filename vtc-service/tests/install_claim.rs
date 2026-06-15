@@ -174,12 +174,16 @@ async fn full_ceremony_completes_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "finish: {body}");
-    let admin_did = body["adminDid"].as_str().unwrap();
+    let admin_did = body["adminDid"].as_str().unwrap().to_string();
     assert!(admin_did.starts_with("did:key:z"));
     assert!(!body["setupSessionToken"].as_str().unwrap().is_empty());
 
-    // -- replay finish: must fail (token is now Consumed) --------------
-    let (status, _body) = post_json(
+    // -- replay finish: idempotent (P3.12) -----------------------------
+    // A dropped response / crash between consume-and-return must not
+    // strand the operator. Replaying the same finish against the now-
+    // `Consumed` token re-issues a usable setup-session token for the
+    // same admin DID rather than hard-rejecting.
+    let (status, body) = post_json(
         &fix.router,
         "/v1/install/claim/finish",
         FINISH_TASK,
@@ -190,7 +194,25 @@ async fn full_ceremony_completes_end_to_end() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status, StatusCode::OK, "idempotent replay: {body}");
+    assert_eq!(body["adminDid"].as_str().unwrap(), admin_did);
+    assert!(!body["setupSessionToken"].as_str().unwrap().is_empty());
+
+    // -- start after finish: still rejected ----------------------------
+    // Idempotent finish must not reopen the ceremony: a fresh `start`
+    // against the consumed token requires `Issued` and is refused.
+    let (status, _body) = post_json(
+        &fix.router,
+        "/v1/install/claim/start",
+        START_TASK,
+        json!({ "install_token": token }),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "start after finish must be rejected"
+    );
 }
 
 // ---------------------------------------------------------------------------

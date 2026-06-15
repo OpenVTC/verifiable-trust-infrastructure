@@ -52,8 +52,8 @@ use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredentia
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
 use crate::install::{
-    INSTALL_SESSION_DEFAULT_TTL_SECS, InstallTokenSigner, claim_secret, mint_install_session_token,
-    parse_install_token,
+    INSTALL_SESSION_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, claim_secret,
+    mint_install_session_token, parse_install_token,
 };
 use crate::server::AppState;
 
@@ -235,6 +235,32 @@ pub async fn claim_finish(
         ));
     }
 
+    // Idempotent retry. Consume-first (below) is the security-correct
+    // direction, but it leaves an availability sharp edge: a crash —
+    // or a dropped response — between consuming the token and returning
+    // permanently spends it, stranding the operator without the
+    // `setup_session_token` `/admin/bootstrap` needs and with no way to
+    // re-run the WebAuthn ceremony (its registration state was already
+    // taken). So if the token is already `Consumed` *and* the ceremony
+    // actually persisted an admin record, re-derive + re-mint the
+    // setup-session token instead of hard-rejecting. The signed install
+    // token's own `exp` (validated by `parse_install_token` above) bounds
+    // the retry window; `start→finish→start` still rejects the second
+    // `start` (it requires `Issued`).
+    if let Some(InstallTokenState::Consumed { admin_did, .. }) = store.get_token(&jti).await? {
+        let admin_did = admin_did.unwrap_or_else(|| claims.admin_did.clone());
+        // Only re-issue if the first call got far enough to persist the
+        // admin — otherwise there's nothing to bootstrap against.
+        if get_admin_entry(&state.passkey_ks, &admin_did)
+            .await?
+            .is_some()
+        {
+            info!(jti = %jti, %admin_did, "install claim finish replayed; re-issuing setup token");
+            return issue_setup_session(&state, signer, admin_did, &jti).await;
+        }
+        return Err(AppError::Unauthorized("install token consumed".into()));
+    }
+
     let reg_state = take_registration_state(&state.passkey_ks, &jti.to_string())
         .await?
         .ok_or_else(|| {
@@ -310,6 +336,20 @@ pub async fn claim_finish(
     };
     store_admin_entry(&state.passkey_ks, &admin_entry).await?;
 
+    info!(jti = %jti, %admin_did, "install claim ceremony completed");
+
+    issue_setup_session(&state, signer, admin_did, &jti).await
+}
+
+/// Mint the `setup_session_token` for `admin_did` + build the
+/// `claim/finish` response. Shared by the first-completion path and the
+/// idempotent-replay path so a retry returns a usable token too.
+async fn issue_setup_session(
+    state: &AppState,
+    signer: &InstallTokenSigner,
+    admin_did: String,
+    jti: &Uuid,
+) -> Result<(StatusCode, Json<ClaimFinishResponse>), AppError> {
     let issuer_did = state
         .config
         .read()
@@ -325,8 +365,6 @@ pub async fn claim_finish(
         &jti.to_string(),
         INSTALL_SESSION_DEFAULT_TTL_SECS,
     )?;
-
-    info!(jti = %jti, %admin_did, "install claim ceremony completed");
 
     Ok((
         StatusCode::OK,
