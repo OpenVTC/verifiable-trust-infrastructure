@@ -183,14 +183,27 @@ async fn subdomain_mode_strict_404s_unknown_host() {
     }
 
     let map = HostMap::from_routing(&routing);
+    // Mount the three surface paths so the gate has something to route
+    // to once it passes.
     let app = Router::new()
+        .route("/v1/{*rest}", axum::routing::get(ok))
+        .route("/admin/{*rest}", axum::routing::get(ok))
         .route("/", axum::routing::get(ok))
         .layer(axum::middleware::from_fn_with_state(map, enforce));
 
-    // Known host → 200.
+    // Known host serving its own surface → 200.
+    let req = Request::builder()
+        .uri("/v1/acl")
+        .header("Host", "api.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = request(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Website host serving the website root → 200.
     let req = Request::builder()
         .uri("/")
-        .header("Host", "api.example.com")
+        .header("Host", "example.com")
         .body(Body::empty())
         .unwrap();
     let (status, _) = request(&app, req).await;
@@ -198,7 +211,7 @@ async fn subdomain_mode_strict_404s_unknown_host() {
 
     // Unknown host → 404 HostNotRecognised.
     let req = Request::builder()
-        .uri("/")
+        .uri("/v1/acl")
         .header("Host", "evil.example.com")
         .body(Body::empty())
         .unwrap();
@@ -206,6 +219,84 @@ async fn subdomain_mode_strict_404s_unknown_host() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["error"], "HostNotRecognised");
+}
+
+#[tokio::test]
+async fn subdomain_mode_isolates_surfaces_across_hosts() {
+    // Real surface isolation (P3.1): a recognised host serves only the
+    // surface bound to it. The API surface is not reachable on the
+    // admin or website host, and vice-versa — even though all three
+    // hosts are recognised.
+    let routing = RoutingConfig {
+        api: MountConfig {
+            mount: "/v1".into(),
+            host: Some("api.example.com".into()),
+        },
+        admin_ui: MountConfig {
+            mount: "/admin".into(),
+            host: Some("admin.example.com".into()),
+        },
+        website: MountConfig {
+            mount: "/".into(),
+            host: Some("example.com".into()),
+        },
+        subdomain_mode_strict: true,
+    };
+
+    async fn ok() -> &'static str {
+        "ok"
+    }
+
+    let map = HostMap::from_routing(&routing);
+    let app = Router::new()
+        .route("/health", axum::routing::get(ok))
+        .route("/v1/{*rest}", axum::routing::get(ok))
+        .route("/admin/{*rest}", axum::routing::get(ok))
+        .route("/", axum::routing::get(ok))
+        .route("/{*rest}", axum::routing::get(ok))
+        .layer(axum::middleware::from_fn_with_state(map, enforce));
+
+    // The API surface on the admin host → 404 SurfaceNotOnHost.
+    let req = Request::builder()
+        .uri("/v1/acl")
+        .header("Host", "admin.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = request(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["error"], "SurfaceNotOnHost");
+
+    // The admin surface on the api host → 404.
+    let req = Request::builder()
+        .uri("/admin/users")
+        .header("Host", "api.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = request(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Website content is not served on the api host → 404. This is the
+    // core isolation guarantee: deployed website JS can't ride the
+    // admin/API origin.
+    let req = Request::builder()
+        .uri("/marketing.js")
+        .header("Host", "api.example.com")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = request(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Infra routes answer on every recognised host.
+    for host in ["api.example.com", "admin.example.com", "example.com"] {
+        let req = Request::builder()
+            .uri("/health")
+            .header("Host", host)
+            .body(Body::empty())
+            .unwrap();
+        let (status, _) = request(&app, req).await;
+        assert_eq!(status, StatusCode::OK, "host {host}");
+    }
 }
 
 #[tokio::test]
