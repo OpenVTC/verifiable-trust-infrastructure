@@ -70,6 +70,20 @@ pub async fn cmd_device_disable(
     print_result("Result:", &result)
 }
 
+/// `device wipe` — remotely wipe a lost/compromised device. Marks it wiped +
+/// disabled and records the reason. `scope` is `cache`, `cache-and-keys`, or
+/// `full`.
+pub async fn cmd_device_wipe(
+    client: &VtaClient,
+    device_id: String,
+    reason: String,
+    scope: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client.device_wipe(&device_id, &reason, &scope).await?;
+    println!("{DIM}Device {device_id} wiped (scope: {scope}).{RESET}");
+    print_result("Result:", &result)
+}
+
 /// `device set-wake` — record the device's push `WakeHandle` (gateway DID/URL +
 /// opaque handle) and return the trigger allowlist.
 pub async fn cmd_device_set_wake(

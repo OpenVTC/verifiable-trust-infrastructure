@@ -140,19 +140,29 @@ same surface:
 # Enroll the agent as an ai-agent Service consumer (DID already in ACL):
 pnm device register --service-kind ai-agent --display-name "nano-claw" --platform linux
 pnm device list --service-kind ai-agent          # see it
-pnm device disable <device-id>                   # kill switch
+pnm device disable <device-id>                   # soft kill: blocks auth, keeps record
+pnm device wipe <device-id> --reason "stolen" --scope full   # remote wipe for a compromised agent
 
 # Store / read secrets the agent uses (sealed ops need DIDComm transport):
 pnm vault list
 pnm vault upsert --entry-file entry.json --secret-file secret.json   # secret sealed before send
 pnm vault release <entry-id>                     # opens the sealed reply, prints cleartext
 pnm vault sign-trust-task --file envelope.json   # sign as the entry's principal
+
+# What did the agent do? (the agent's DID is the audit actor)
+pnm audit --actor <agent-did>
 ```
 
 `vault upsert` and `vault release` seal/open `didcomm-authcrypt` envelopes with
 the caller's own keys, so they require the **DIDComm transport** (a REST-only
-client returns a clear `UnsupportedTransport` error). `device/wipe` is not yet
-exposed; `device disable` is the kill switch.
+client returns a clear `UnsupportedTransport` error).
+
+**Kill switches actually revoke access.** Both `device disable` and `device wipe`
+set state that the VTA's auth path enforces — a disabled or wiped device's DID is
+rejected at authentication (`check_acl`), not merely hidden from `device list`.
+`wipe` additionally records the reason and marks the binding wiped (`--scope`:
+`cache`, `cache-and-keys`, or `full`); a wiped device shows in `device list` only
+with `--include-wiped --include-disabled`.
 
 ## Step 4 — Wake / push (operator + agent)
 

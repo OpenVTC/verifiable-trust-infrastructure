@@ -14,6 +14,7 @@ use trust_tasks_rs::specs::device::heartbeat::v0_1 as heartbeat_spec;
 use trust_tasks_rs::specs::device::list::v0_1 as list_spec;
 use trust_tasks_rs::specs::device::register::v0_1 as register_spec;
 use trust_tasks_rs::specs::device::set_wake::v0_1 as set_wake_spec;
+use trust_tasks_rs::specs::device::wipe::v0_1 as wipe_spec;
 
 use crate::auth::AuthClaims;
 use crate::operations;
@@ -101,6 +102,35 @@ pub(super) async fn handle_disable(
     };
     let device_id = payload.device_id.to_string();
     match operations::device::disable_device(&state.acl_ks, &state.audit_ks, auth, &device_id).await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// `device/wipe/0.1` — issue a remote wipe for a device by `deviceId`. Marks the
+/// binding wiped + disabled and records the `reason`/`scope`.
+pub(super) async fn handle_wipe(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let payload: wipe_spec::Payload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let device_id = payload.device_id.to_string();
+    let reason = payload.reason.to_string();
+    let scope = payload.scope.to_string();
+    match operations::device::wipe_device(
+        &state.acl_ks,
+        &state.audit_ks,
+        auth,
+        &device_id,
+        &reason,
+        &scope,
+    )
+    .await
     {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),

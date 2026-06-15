@@ -112,6 +112,18 @@ impl AuthBackend for VtaAuthBackend {
     async fn check_acl(&self, did: &str) -> Result<RoleResolution<Self::Role>, Self::Error> {
         let (role, allowed_contexts) =
             vti_common::acl::check_acl_full(&self.state.acl_ks, did).await?;
+
+        // A disabled or wiped device must not authenticate. The device kill
+        // switch (`device/disable`, `device/wipe`) is only meaningful if it
+        // actually revokes access — without this gate it would merely hide the
+        // binding from `device/list`. Only Service/Companion consumers carry a
+        // `DeviceBinding`; ordinary DIDs have none and pass straight through.
+        if let Some(entry) = vti_common::acl::get_acl_entry(&self.state.acl_ks, did).await? {
+            device_access_gate(&entry).inspect_err(|e| {
+                tracing::warn!(%did, "auth rejected: {e}");
+            })?;
+        }
+
         Ok(RoleResolution::with_contexts(role, allowed_contexts))
     }
 
@@ -196,5 +208,70 @@ impl AuthBackend for VtaAuthBackend {
 
     fn refresh_token_ttl(&self) -> u64 {
         self.refresh_token_ttl
+    }
+}
+
+/// Reject authentication for a disabled or wiped device binding.
+///
+/// Entries without a `DeviceBinding` (ordinary DIDs) and entries whose device is
+/// active return `Ok(())`. This is what makes `device/disable` and `device/wipe`
+/// real kill switches rather than list-only cosmetics.
+fn device_access_gate(entry: &vti_common::acl::AclEntry) -> Result<(), AppError> {
+    if let Some(binding) = entry.device.as_ref() {
+        if binding.wiped_at.is_some() {
+            return Err(AppError::Forbidden("device has been wiped".into()));
+        }
+        if binding.disabled_at.is_some() {
+            return Err(AppError::Forbidden("device is disabled".into()));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_access_gate;
+    use crate::error::AppError;
+    use vti_common::acl::{AclEntry, DeviceBinding, Role};
+
+    fn entry_with_binding(binding_json: &str) -> AclEntry {
+        let binding: DeviceBinding = serde_json::from_str(binding_json).unwrap();
+        AclEntry::new("did:key:zAgent", Role::Reader, "test").with_device(Some(binding))
+    }
+
+    #[test]
+    fn gate_allows_entry_without_device() {
+        let entry = AclEntry::new("did:key:zAdmin", Role::Admin, "test");
+        assert!(device_access_gate(&entry).is_ok());
+    }
+
+    #[test]
+    fn gate_allows_active_device() {
+        let entry = entry_with_binding(
+            r#"{"deviceId":"d","displayName":"agent","registeredAt":"2026-01-01T00:00:00Z"}"#,
+        );
+        assert!(device_access_gate(&entry).is_ok());
+    }
+
+    #[test]
+    fn gate_rejects_disabled_device() {
+        let entry = entry_with_binding(
+            r#"{"deviceId":"d","displayName":"agent","registeredAt":"2026-01-01T00:00:00Z","disabledAt":"2026-06-01T00:00:00Z"}"#,
+        );
+        assert!(matches!(
+            device_access_gate(&entry),
+            Err(AppError::Forbidden(_))
+        ));
+    }
+
+    #[test]
+    fn gate_rejects_wiped_device() {
+        let entry = entry_with_binding(
+            r#"{"deviceId":"d","displayName":"agent","registeredAt":"2026-01-01T00:00:00Z","wipedAt":"2026-06-01T00:00:00Z"}"#,
+        );
+        assert!(matches!(
+            device_access_gate(&entry),
+            Err(AppError::Forbidden(_))
+        ));
     }
 }

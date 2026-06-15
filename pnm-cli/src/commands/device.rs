@@ -27,6 +27,11 @@ pub(crate) async fn run(
             .await
         }
         DeviceCommands::Disable { device_id } => dev::cmd_device_disable(client, device_id).await,
+        DeviceCommands::Wipe {
+            device_id,
+            reason,
+            scope,
+        } => dev::cmd_device_wipe(client, device_id, reason, scope).await,
         DeviceCommands::SetWake {
             gateway,
             handle,

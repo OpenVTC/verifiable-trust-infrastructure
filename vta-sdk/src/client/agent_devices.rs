@@ -95,6 +95,25 @@ impl VtaClient {
         .await
     }
 
+    /// `device/wipe/0.1` — issue a remote-wipe for a compromised/lost device.
+    /// Marks the binding wiped (and disabled, so it can no longer authenticate)
+    /// and records the `reason` in the audit log. `scope` is one of `cache`,
+    /// `cache-and-keys`, or `full` (how aggressively the device should wipe).
+    pub async fn device_wipe(
+        &self,
+        device_id: &str,
+        reason: &str,
+        scope: &str,
+    ) -> Result<Value, VtaError> {
+        let payload = json!({ "deviceId": device_id, "reason": reason, "scope": scope });
+        self.dispatch_trust_task(
+            trust_tasks::TASK_DEVICE_WIPE_0_1,
+            payload,
+            DEVICE_TT_TIMEOUT,
+        )
+        .await
+    }
+
     /// `device/set-wake/0.1` — convey the device's opaque push `WakeHandle`
     /// (`gateway` + `handle`). The VTA records it and returns the trigger
     /// allowlist; over DIDComm it provisions the allowlist to the gateway.

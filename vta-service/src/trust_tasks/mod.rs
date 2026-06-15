@@ -407,6 +407,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => device::handle_heartbeat,
     vta_sdk::trust_tasks::TASK_DEVICE_LIST_0_1 => device::handle_list,
     vta_sdk::trust_tasks::TASK_DEVICE_DISABLE_0_1 => device::handle_disable,
+    vta_sdk::trust_tasks::TASK_DEVICE_WIPE_0_1 => device::handle_wipe,
     vta_sdk::trust_tasks::TASK_DEVICE_SET_WAKE_0_1 => device::handle_set_wake,
     // ─── Contexts slice ──────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0 => contexts::handle_list,

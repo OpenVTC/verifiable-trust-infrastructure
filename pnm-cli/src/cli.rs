@@ -1695,6 +1695,17 @@ pub(crate) enum DeviceCommands {
         /// The `deviceId` to disable.
         device_id: String,
     },
+    /// Remotely wipe a lost/compromised device (marks it wiped + disabled).
+    Wipe {
+        /// The `deviceId` to wipe.
+        device_id: String,
+        /// Human-readable reason (recorded for the audit trail).
+        #[arg(long)]
+        reason: String,
+        /// How aggressively to wipe: cache, cache-and-keys, or full.
+        #[arg(long, default_value = "cache-and-keys")]
+        scope: String,
+    },
     /// Record a device's push WakeHandle and return the trigger allowlist.
     SetWake {
         /// Gateway DID (DIDComm) or URL (HTTPS).

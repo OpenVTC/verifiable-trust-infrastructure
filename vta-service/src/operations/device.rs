@@ -266,6 +266,69 @@ pub async fn disable_device(
     Ok(json!({ "deviceId": device_id, "disabledAt": disabled_at }))
 }
 
+/// `device/wipe/0.1` — issue a remote wipe for a lost/compromised device.
+///
+/// Marks the binding `wiped_at` **and** `disabled_at` (a wiped device must not
+/// be able to authenticate) and bumps the entry version. `reason` and `scope`
+/// (`cache` | `cache-and-keys` | `full`) are logged and echoed back; the device
+/// observes the wiped state on its next `device/list` / heartbeat. Idempotent:
+/// re-wiping a wiped device keeps the original `wiped_at`.
+pub async fn wipe_device(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    device_id: &str,
+    reason: &str,
+    scope: &str,
+) -> Result<Value, AppError> {
+    auth.require_manage()?;
+
+    let mut entry = list_acl_entries(acl_ks)
+        .await?
+        .into_iter()
+        .find(|e| e.device.as_ref().map(|b| b.device_id.as_str()) == Some(device_id))
+        .ok_or_else(|| {
+            AppError::NotFound(format!("device/wipe — no device with id {device_id}"))
+        })?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let binding = entry.device.as_mut().expect("matched entry has a binding");
+    if binding.wiped_at.is_none() {
+        binding.wiped_at = Some(now.clone());
+    }
+    // A wiped device must not authenticate — disable it too.
+    if binding.disabled_at.is_none() {
+        binding.disabled_at = Some(now.clone());
+    }
+    let wiped_at = binding.wiped_at.clone().expect("wiped_at set above");
+    let disabled_at = binding.disabled_at.clone().expect("disabled_at set above");
+    // Wiping changes authorization-relevant state — bump the version so a
+    // concurrent ACL edit guarded by If-Match conflicts rather than racing.
+    entry.version = entry.version.saturating_add(1);
+    let did = entry.did.clone();
+    store_acl_entry(acl_ks, &entry).await?;
+
+    info!(did = %did, device_id, reason, scope, "device wiped");
+    let _ = audit::record(
+        audit_ks,
+        "device.wipe",
+        &auth.did,
+        Some(&did),
+        "success",
+        None,
+        None,
+    )
+    .await;
+
+    Ok(json!({
+        "deviceId": device_id,
+        "wipedAt": wiped_at,
+        "disabledAt": disabled_at,
+        "scope": scope,
+        "reason": reason,
+    }))
+}
+
 /// Set (or clear) the caller device's push **wake channel** from a
 /// `device/set-wake/0.1`. The caller MUST be a registered device. The VTA
 /// **owns the trigger allowlist**: it computes `{ vta_did } ∪ suggested` (the
@@ -789,6 +852,56 @@ mod tests {
     async fn disable_unknown_device_is_not_found() {
         let (acl_ks, audit_ks, _dir) = fresh().await;
         let err = disable_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope")
+            .await
+            .expect_err("unknown deviceId must be NotFound");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn wipe_marks_wiped_and_disabled_then_hidden() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        seed_and_register(
+            &acl_ks,
+            &audit_ks,
+            "did:key:zLost",
+            CompanionFormFactor::Desktop,
+            "Laptop",
+        )
+        .await;
+        let all = list_devices(&acl_ks, &admin_auth(), &list_payload(json!({})))
+            .await
+            .unwrap();
+        let id = all["devices"][0]["deviceId"].as_str().unwrap().to_string();
+
+        let w = wipe_device(&acl_ks, &audit_ks, &admin_auth(), &id, "stolen", "full")
+            .await
+            .unwrap();
+        assert_eq!(w["deviceId"], id.as_str());
+        assert!(w["wipedAt"].is_string());
+        assert!(w["disabledAt"].is_string(), "wipe must also disable");
+        assert_eq!(w["scope"], "full");
+        assert_eq!(w["reason"], "stolen");
+
+        // Default list hides the wiped device; it returns only with both
+        // includeWiped + includeDisabled (a wiped device is also disabled).
+        let after = list_devices(&acl_ks, &admin_auth(), &list_payload(json!({})))
+            .await
+            .unwrap();
+        assert_eq!(after["devices"].as_array().unwrap().len(), 0);
+        let incl = list_devices(
+            &acl_ks,
+            &admin_auth(),
+            &list_payload(json!({ "includeWiped": true, "includeDisabled": true })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(incl["devices"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn wipe_unknown_device_is_not_found() {
+        let (acl_ks, audit_ks, _dir) = fresh().await;
+        let err = wipe_device(&acl_ks, &audit_ks, &admin_auth(), "dev-nope", "r", "full")
             .await
             .expect_err("unknown deviceId must be NotFound");
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
