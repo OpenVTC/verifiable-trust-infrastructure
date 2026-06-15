@@ -674,8 +674,15 @@ Route priority (highest first): `/health`, `/v1/*`,
 `/v1/website/*` (management API), `/admin/*`, `/*` (public site).
 
 **Subdomain mode**: per-surface `host` set; tower middleware routes
-by `Host`. Hosts not matching any surface return 404. Subdomain mode
-implies the operator handles per-surface TLS certs and DNS.
+by `Host`. Hosts not matching any surface return 404
+(`HostNotRecognised`). In strict mode it also enforces **surface
+isolation**: a recognised host serves only the surface bound to it —
+the path is routed to its owning surface (`/v1…`→api, `/admin…`→admin,
+else website) and 404s (`SurfaceNotOnHost`) unless that surface is on
+this host. So `admin.example.com/v1/*` and `api.example.com/admin`
+both 404; parent-root infra routes (`/health`, `/openapi.json`,
+`/.well-known/did.jsonl`) answer on every recognised host. Subdomain
+mode implies the operator handles per-surface TLS certs and DNS.
 
 The strictness of unknown-Host dispatch is configured by
 `routing.subdomain_mode_strict: bool` (default `true`). When `false`,
@@ -692,12 +699,22 @@ features and put a reverse proxy / CDN in front.
 
 `cors.allowed_origins` is a configured allowlist. Wildcards refused.
 
-**Isolation invariant.** When the public website (§12.1) and the
-admin UX (§12.2) are served on the same domain, they **must** be on
-different cookie scopes. Path-mode default achieves this by setting
-the admin session cookie with `Path=/admin; SameSite=Strict;
-Secure; HttpOnly`; the public website's origin gains no
-implicit access to admin session cookies.
+**Isolation invariant.** The admin session cookie is `Path=/`
+(`vtc_admin_session`, `SameSite=Strict; Secure; HttpOnly`) — the API
+lives at `/v1`, not under `/admin`, so the SPA→API call needs the
+cookie at root; an earlier `Path=/admin` design was reverted. The
+admin SPA and API therefore share one origin. `HttpOnly` + `SameSite`
++ CSRF keep that origin safe from *cross-site* attackers, but they do
+**not** isolate *same-origin* deployed website content: a filesystem
+website served on `/` runs same-origin with the admin SPA and can
+ride the cookie to call authenticated `/v1` endpoints. So the
+isolation invariant is enforced by **host separation**, not cookie
+path: when `website.root_dir` is configured, `routing.website.host`
+must be set and distinct from the api/admin host (which may be
+shared), and the §9.2 surface-isolation gate keeps `/v1`/`/admin` off
+the website host. The daemon refuses to start otherwise. The in-tree
+default landing page (no `root_dir`) is trusted code we ship and may
+stay co-resident.
 
 Admin UX in `embedded` mode: same-origin or near-origin; no CORS
 allowance for the admin UX itself.

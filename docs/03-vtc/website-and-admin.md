@@ -232,8 +232,15 @@ Three concurrent auth paths:
 - **Bearer JWT** — `Authorization: Bearer <jwt>`. Used by
   `cnm-cli`, DIDComm bridges, programmatic clients.
 - **Cookie session** — `Cookie: vtc_admin_session=<jwt>`. Used by
-  the admin SPA. Path-scoped to `/admin` so the public website
-  origin can't read it. HttpOnly + Secure + SameSite=Strict.
+  the admin SPA. Scoped `Path=/` (the API lives at `/v1`, not under
+  `/admin`, so the SPA→API call needs the cookie there — an earlier
+  `Path=/admin` design was reverted). HttpOnly keeps JS from reading
+  it on any path; Secure + SameSite=Strict prevent cross-site sends.
+  **Path mode does not isolate a deployed website on `/` from this
+  cookie** — same-origin website JS can still `fetch('/v1/...',
+  {credentials})` and ride it. The posture that *does* isolate is a
+  dedicated website host (see [Routing modes](#routing-modes)); a
+  filesystem website now requires one.
 - **CSRF double-submit** — `csrf=<random>` cookie (JS-readable) +
   `X-CSRF-Token` header. Required on every mutating call from the
   cookie session. Bearer-only callers don't carry CSRF.
@@ -276,9 +283,30 @@ graph TB
 
 Subdomain mode is enabled by setting per-surface `host = "..."` in
 the routing config. A tower middleware (`routing::host_dispatch`)
-short-circuits 404 when an unrecognised `Host` header arrives in
-strict mode (default). Set `routing.subdomain_mode_strict = false`
-to allow path-mode fallback for unknown hosts — debug aid only.
+enforces two things in strict mode (default):
+
+1. **Host membership** — an unrecognised `Host` header 404s
+   (`HostNotRecognised`). Set `routing.subdomain_mode_strict = false`
+   to fall back to path matching for unknown hosts — debug aid only,
+   and it disables (2).
+2. **Surface isolation** — a recognised host serves **only** the
+   surface bound to it. The request path is routed to its owning
+   surface (`/v1…`→api, `/admin…`→admin, else website) and 404s
+   (`SurfaceNotOnHost`) unless that surface is the one on this host.
+   So `admin.example.com/v1/acl` and `api.example.com/admin` both
+   404 — the API and SPA are reachable only on their own hosts.
+   (Parent-root infra routes — `/health`, `/openapi.json`,
+   `/.well-known/did.jsonl` — answer on every recognised host.)
+
+This is what actually isolates a deployed website origin from the
+admin session: on its own host the website has no `/v1`/`/admin`
+route to hit, and the admin cookie (host-only, `SameSite=Strict`) is
+never sent there. **Because path mode can't provide this, a
+filesystem website (`website.root_dir`) requires its own
+`routing.website.host`, distinct from the api/admin host — the
+daemon refuses to start otherwise.** The admin SPA and API may (and
+should) share a host. The in-tree default landing page (no
+`root_dir`) is trusted and may stay co-resident.
 
 **WebAuthn `RP ID`** must be set correctly per mode:
 
@@ -330,19 +358,30 @@ rp_id = "example.com"                      # WebAuthn RP ID
 [routing]
 subdomain_mode_strict = true
 
+# Host mode with an isolated filesystem website. The API + admin SPA
+# share one host (the Path=/ admin cookie needs them co-resident); the
+# website gets its own host so deployed content can't ride that cookie.
+# Required whenever website.root_dir is set.
 [routing.api]
 mount = "/v1"
-# host = "api.example.com"                 # uncomment for subdomain mode
+host = "app.example.com"
 
 [routing.admin_ui]
 mount = "/admin"
+host = "app.example.com"                    # same host as the API
 
 [routing.website]
 mount = "/"
+host = "www.example.com"                     # dedicated host (distinct)
 
 [cors]
 allowed_origins = []                       # add SPA origin for external mode
 ```
+
+In pure **path mode** (omit every `host`), all three surfaces share
+one origin. That's fine for the trusted built-in landing page, but
+`website.root_dir` is then refused at startup — point the website at
+its own host as above, or drop `root_dir` to serve the default page.
 
 ## See also
 

@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 use vti_common::config::StoreConfig;
 
-use vtc_service::config::{AppConfig, CorsConfig, MountConfig, RoutingConfig};
+use vtc_service::config::{AppConfig, CorsConfig, MountConfig, RoutingConfig, WebsiteConfig};
 use vtc_service::routes;
 use vtc_service::test_support::TestVtc;
 
@@ -49,10 +49,89 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
     }
 }
 
+/// Like [`cfg_with`] but lets a test set a filesystem website
+/// (`website.root_dir`) to exercise the host-separation guard.
+fn cfg_with_website(routing: RoutingConfig, website: WebsiteConfig) -> AppConfig {
+    AppConfig {
+        website,
+        ..cfg_with(routing, CorsConfig::default())
+    }
+}
+
+/// A three-host routing config where the website sits on its own host
+/// and the admin/API surface shares a host — the only posture that
+/// isolates a filesystem website.
+fn three_host_routing(website_host: Option<&str>) -> RoutingConfig {
+    RoutingConfig {
+        api: MountConfig {
+            mount: "/v1".into(),
+            host: Some("app.example.com".into()),
+        },
+        admin_ui: MountConfig {
+            mount: "/admin".into(),
+            host: Some("app.example.com".into()),
+        },
+        website: MountConfig {
+            mount: "/".into(),
+            host: website_host.map(String::from),
+        },
+        subdomain_mode_strict: true,
+    }
+}
+
 #[test]
 fn defaults_validate_clean() {
     let cfg = cfg_with(RoutingConfig::default(), CorsConfig::default());
     cfg.validate_routing_and_cors().expect("defaults are valid");
+}
+
+#[test]
+fn rejects_filesystem_website_sharing_admin_origin() {
+    // A filesystem website with no dedicated host shares the origin
+    // with the admin SPA + API, letting deployed content ride the
+    // admin session cookie. P3.1 refuses this posture.
+    let website = WebsiteConfig {
+        root_dir: Some(std::path::PathBuf::from("/srv/site")),
+        ..Default::default()
+    };
+    let err = cfg_with_website(RoutingConfig::default(), website)
+        .validate_routing_and_cors()
+        .expect_err("filesystem website on the shared origin must be rejected");
+    assert!(format!("{err}").contains("website.root_dir"), "got {err}");
+}
+
+#[test]
+fn rejects_filesystem_website_host_colliding_with_api() {
+    // website.host set, but equal to the api/admin host → still shares
+    // an origin. Rejected.
+    let website = WebsiteConfig {
+        root_dir: Some(std::path::PathBuf::from("/srv/site")),
+        ..Default::default()
+    };
+    let err = cfg_with_website(three_host_routing(Some("app.example.com")), website)
+        .validate_routing_and_cors()
+        .expect_err("colliding website host must be rejected");
+    assert!(format!("{err}").contains("collides"), "got {err}");
+}
+
+#[test]
+fn allows_filesystem_website_on_dedicated_host() {
+    let website = WebsiteConfig {
+        root_dir: Some(std::path::PathBuf::from("/srv/site")),
+        ..Default::default()
+    };
+    cfg_with_website(three_host_routing(Some("www.example.com")), website)
+        .validate_routing_and_cors()
+        .expect("a filesystem website on its own host is allowed");
+}
+
+#[test]
+fn allows_default_landing_page_on_shared_origin() {
+    // The in-tree default site (root_dir unset) is trusted code we
+    // ship, so the host-separation guard does not fire for it.
+    cfg_with(RoutingConfig::default(), CorsConfig::default())
+        .validate_routing_and_cors()
+        .expect("default landing page may stay co-resident");
 }
 
 #[test]

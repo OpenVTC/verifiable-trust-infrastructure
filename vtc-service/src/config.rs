@@ -576,6 +576,57 @@ fn validate_routing(routing: &RoutingConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Force host separation for an operator-deployed filesystem website.
+///
+/// The trust boundary is **deployed website content (untrusted) vs the
+/// admin SPA + API (trusted)** — not admin-vs-API. The admin session
+/// cookie is `Path=/` (the API lives at `/v1`, not under `/admin`, so
+/// the SPA→API call needs it; an earlier `Path=/admin` design was
+/// reverted), so in a shared origin operator-deployed website JS (or
+/// stored XSS in marketing content) runs same-origin with the admin
+/// SPA and can ride the cookie to call authenticated `/v1` endpoints.
+/// The only posture that actually isolates that content is to put the
+/// website on its **own host** (host-only cookies + `SameSite=Strict`
+/// then keep the admin cookie off the website origin, and the P3.1
+/// per-surface gate keeps `/v1` / `/admin` off the website host).
+///
+/// So when a *filesystem* website is configured (`website.root_dir`
+/// set), require `routing.website.host` to be set and distinct from
+/// the api and admin_ui hosts. The in-tree default landing page
+/// (`root_dir` unset) is code we ship and trust, so it may stay
+/// co-resident — this check does not fire for it.
+fn validate_website_isolation(
+    routing: &RoutingConfig,
+    website_on_filesystem: bool,
+) -> Result<(), AppError> {
+    if !website_on_filesystem {
+        return Ok(());
+    }
+
+    let website_host = routing.website.host.as_deref().map(str::to_ascii_lowercase);
+    let Some(website_host) = website_host else {
+        return Err(AppError::Config(
+            "a filesystem website (website.root_dir) would share an origin with the \
+             admin/API surface, letting deployed website content ride the admin session \
+             cookie; set routing.website.host to a dedicated host, or remove \
+             website.root_dir to serve the trusted built-in landing page"
+                .into(),
+        ));
+    };
+
+    for (name, surface) in [("api", &routing.api), ("admin_ui", &routing.admin_ui)] {
+        if surface.host.as_deref().map(str::to_ascii_lowercase) == Some(website_host.clone()) {
+            return Err(AppError::Config(format!(
+                "routing.website.host = '{website_host}' collides with routing.{name}.host; \
+                 a filesystem website must be on a host distinct from the admin/API surface \
+                 so deployed content can't ride the admin session cookie"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Refuse a CORS allowlist that includes `*` or empty / whitespace
 /// entries. Spec §9.3: "wildcards refused". An empty
 /// `allowed_origins` is valid — that's "no cross-origin requests
@@ -767,6 +818,7 @@ impl AppConfig {
     /// touching the filesystem.
     pub fn validate_routing_and_cors(&self) -> Result<(), AppError> {
         validate_routing(&self.routing)?;
+        validate_website_isolation(&self.routing, self.website.root_dir.is_some())?;
         validate_cors(&self.cors)?;
         Ok(())
     }
