@@ -166,12 +166,13 @@ the #457 posture backstop provides its regression guard.)
     `Path=/admin` cookie-isolation claim) — PR: #466
 - `[ ]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
   the test harness — PR: ____
-- `[~]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
+- `[x]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
   `create_dir_all` — `canonical_within_root_for_create` (shared
   `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
-  ancestor; no FS mutation before the check) — PR: #467 (in review)
-- `[ ]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
-  read) — PR: ____
+  ancestor; no FS mutation before the check) — PR: #467
+- `[~]` **P3.4** (S) Validate/clamp per-site CSP override; cache (stop per-request
+  read) — `validate_csp_override` refuses weakening script-src/object-src/base-uri;
+  `CspOverrideCache` (content-cache TTL) — PR: #469 (in review)
 - `[ ]` **P3.5** (S) `no-cache` on admin index/SPA-fallback; cache/gate
   `plugins.json` scan; implement `If-None-Match`→304 — PR: ____
 - `[ ]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
