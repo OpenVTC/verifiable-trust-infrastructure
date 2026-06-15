@@ -30,6 +30,29 @@ pub const PROFILE_STORAGE_KEY: &[u8] = b"community/profile";
 /// references the profile.
 pub const MAX_EXTENSIONS_BYTES: usize = 16 * 1024;
 
+/// Length caps (in Unicode scalar values) for the operator-set public
+/// profile text fields. Served on the unauth public-profile endpoint,
+/// so they're bounded to keep the response — and every audit/backup row
+/// that references the profile — from carrying unbounded content.
+const MAX_NAME_LEN: usize = 200;
+const MAX_DESCRIPTION_LEN: usize = 4_000;
+const MAX_LOGO_URL_LEN: usize = 2_048;
+const MAX_CONTACT_EMAIL_LEN: usize = 320;
+
+/// Reject a field whose char count exceeds `max`. No-op when the field
+/// is absent from the patch.
+fn cap_len(field: &str, value: Option<&str>, max: usize) -> Result<(), AppError> {
+    if let Some(v) = value
+        && v.chars().count() > max
+    {
+        return Err(AppError::Validation(format!(
+            "{field} exceeds {max} characters (got {})",
+            v.chars().count()
+        )));
+    }
+    Ok(())
+}
+
 /// The singleton record. Field names are wire contract — operators
 /// + the admin UX read this shape directly.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +133,33 @@ impl CommunityProfileUpdate {
                     "extensions blob exceeds {MAX_EXTENSIONS_BYTES} bytes (got {})",
                     bytes.len()
                 )));
+            }
+        }
+
+        // Cap the operator-set text fields — they're served on the
+        // unauth `/v1/community/public-profile`, so an unbounded value
+        // is a stored-payload lever. Validate BEFORE mutating anything
+        // so an over-cap field doesn't half-apply the patch.
+        cap_len("name", self.name.as_deref(), MAX_NAME_LEN)?;
+        cap_len(
+            "description",
+            self.description.as_deref(),
+            MAX_DESCRIPTION_LEN,
+        )?;
+        cap_len(
+            "contactEmail",
+            self.contact_email.as_ref().and_then(|v| v.as_deref()),
+            MAX_CONTACT_EMAIL_LEN,
+        )?;
+        if let Some(Some(logo)) = self.logo_url.as_ref() {
+            cap_len("logoUrl", Some(logo), MAX_LOGO_URL_LEN)?;
+            // A logo URL ends up in an <img src> on the public page;
+            // restrict it to http(s) so it can't carry a `javascript:`
+            // / `data:` payload.
+            if !(logo.is_empty() || logo.starts_with("https://") || logo.starts_with("http://")) {
+                return Err(AppError::Validation(
+                    "logoUrl must be an http(s) URL".into(),
+                ));
             }
         }
 
@@ -261,6 +311,56 @@ mod tests {
         let changed = update.apply(&mut p).unwrap();
         assert_eq!(changed, vec!["logoUrl"]);
         assert!(p.logo_url.is_none());
+    }
+
+    #[test]
+    fn rejects_oversized_text_fields() {
+        for (label, update) in [
+            (
+                "name",
+                CommunityProfileUpdate {
+                    name: Some("x".repeat(MAX_NAME_LEN + 1)),
+                    ..Default::default()
+                },
+            ),
+            (
+                "description",
+                CommunityProfileUpdate {
+                    description: Some("x".repeat(MAX_DESCRIPTION_LEN + 1)),
+                    ..Default::default()
+                },
+            ),
+            (
+                "contactEmail",
+                CommunityProfileUpdate {
+                    contact_email: Some(Some("x".repeat(MAX_CONTACT_EMAIL_LEN + 1))),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let mut p = sample();
+            let err = update
+                .apply(&mut p)
+                .expect_err("oversized must be rejected");
+            assert!(matches!(err, AppError::Validation(_)), "{label}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_non_http_logo_url_but_accepts_https() {
+        let mut p = sample();
+        let bad = CommunityProfileUpdate {
+            logo_url: Some(Some("javascript:alert(1)".into())),
+            ..Default::default()
+        };
+        assert!(bad.apply(&mut p).is_err());
+
+        let mut p = sample();
+        let ok = CommunityProfileUpdate {
+            logo_url: Some(Some("https://cdn.example.com/logo.png".into())),
+            ..Default::default()
+        };
+        assert_eq!(ok.apply(&mut p).unwrap(), vec!["logoUrl"]);
     }
 
     #[test]

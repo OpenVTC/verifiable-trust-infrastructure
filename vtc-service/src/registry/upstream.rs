@@ -90,6 +90,12 @@ impl UpstreamRegistryClient {
     /// reqwest fails to construct (typically a misconfigured
     /// TLS backend on this platform).
     pub fn new(cfg: UpstreamConfig) -> Result<Self, RegistryError> {
+        // Recognition answers are trusted; served over cleartext they're
+        // spoofable by an on-path attacker. Require https for any real
+        // (non-loopback) registry. Loopback http stays allowed for local
+        // dev / tests, where there's no on-path attacker — the same
+        // "localhost is a secure context" carve-out browsers make.
+        validate_registry_scheme(&cfg.base_url)?;
         let http = Client::builder()
             .timeout(cfg.http_timeout)
             // No retry middleware here — the syncer's
@@ -134,6 +140,25 @@ impl UpstreamRegistryClient {
             RegistryError::Transient(format!("http: {e}"))
         }
     }
+}
+
+/// Reject a registry `base_url` that isn't `https://`, except a
+/// loopback `http://` (local dev / tests). See [`UpstreamRegistryClient::new`].
+fn validate_registry_scheme(base_url: &str) -> Result<(), RegistryError> {
+    if base_url.starts_with("https://") {
+        return Ok(());
+    }
+    if let Some(rest) = base_url.strip_prefix("http://") {
+        // Host is the authority up to the first `/`, `:`, or `?`.
+        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
+        if host == "localhost" || host == "127.0.0.1" || rest.starts_with("[::1]") {
+            return Ok(());
+        }
+    }
+    Err(RegistryError::Permanent(format!(
+        "registry base_url must be https:// (got '{base_url}'); cleartext recognition is \
+         spoofable by an on-path attacker. http:// is allowed only to loopback for local dev."
+    )))
 }
 
 #[async_trait]
@@ -459,6 +484,23 @@ mod tests {
         };
         let c = UpstreamRegistryClient::new(cfg).unwrap();
         assert_eq!(c.base_url, "https://registry.example.com");
+    }
+
+    #[test]
+    fn rejects_cleartext_registry_url() {
+        // A public http:// registry is spoofable on-path — refuse at
+        // construction.
+        let err = UpstreamRegistryClient::new(config_for("http://registry.example.com"))
+            .expect_err("cleartext public registry must be rejected");
+        assert!(matches!(err, RegistryError::Permanent(_)), "got {err:?}");
+        // https is fine.
+        assert!(UpstreamRegistryClient::new(config_for("https://registry.example.com")).is_ok());
+        // Loopback http stays allowed for local dev.
+        assert!(UpstreamRegistryClient::new(config_for("http://127.0.0.1:8080")).is_ok());
+        assert!(UpstreamRegistryClient::new(config_for("http://localhost:8080")).is_ok());
+        assert!(UpstreamRegistryClient::new(config_for("http://[::1]:8080")).is_ok());
+        // A host that merely starts with "localhost" is not loopback.
+        assert!(UpstreamRegistryClient::new(config_for("http://localhost.evil.com")).is_err());
     }
 
     #[tokio::test]
