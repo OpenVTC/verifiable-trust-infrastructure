@@ -228,6 +228,9 @@ bip39 = "2"
 # code the invitee types alongside the install URL). Same pin as
 # `vta-service`'s backup-password KDF.
 argon2 = "0.5"
+# AES-256-GCM for the encrypted backup/restore payload (P3.9). Same
+# workspace pin as `vta-service`'s backup feature.
+aes-gcm = { workspace = true }
 # Hostname capture for the `EmergencyBootstrapInvoked` audit event.
 gethostname = "1"
 # WebAuthn — used by `crate::webauthn` for Ed25519-only registration

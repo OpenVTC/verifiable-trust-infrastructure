@@ -204,12 +204,18 @@ the #457 posture backstop provides its regression guard.)
 - `[x]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
   idempotent enqueue — PR: #487
 - `[~]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
-  compat check) — design note first — deps: P2.5 — **design note done**
-  (`docs/05-design-notes/vtc-backup-restore.md`): ports the VTA pattern; 21
-  keyspaces partitioned 14 backed-up / 7 excluded with a census test; decisions
-  locked — include the `VtcKeyBundle`, exclude passkeys, back up join_requests,
-  409 on vtc_did mismatch, 64 MiB import cap. Implementation PR to follow. —
-  PR: #492 (design note, in review)
+  compat check) — design note first — deps: P2.5 — **design note merged (#492);
+  implementation done, PR pending.** `src/backup.rs` (export/import/decrypt +
+  `check_vtc_did_compatibility`), `routes/backup.rs` (`POST /v1/backup/{export,
+  import}`, super-admin, preview/confirm, 64 MiB import cap), `store/keyspaces.rs`
+  `BACKED_UP`/`EXCLUDED_FROM_BACKUP` + `backup_partition_is_total` census test,
+  boot sentinel guard in `server.rs`. Crypto = VTA's verbatim (Argon2id +
+  AES-256-GCM); 14 keyspaces backed up + the signing key bundle; passkeys/
+  sessions/install/sync/registry/config excluded; vtc_did mismatch → 409.
+  Operator doc `docs/03-vtc/backup-restore.md`. 8 unit + 4 integration tests
+  (full-state round-trip, preview-no-mutate, foreign-did 409, wrong-password). —
+  PR: ____
+  - design note: PR #492
 - `[x]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
   CLAUDE.md — Split `run_setup_wizard` into
   `collect_interactive() → apply(WizardPlan)`; new `setup/from_toml.rs` parses a

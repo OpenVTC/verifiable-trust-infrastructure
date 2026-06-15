@@ -502,6 +502,16 @@ new flow, update both this section and the relevant `docs/*.md`.
   accepts any backup; a configured VTA rejects backups whose `vta_did`
   doesn't match. Tested at `backup.rs:867-911`.
 - **Code**: `vta-service/src/operations/backup.rs`.
+- **VTC counterpart** (P3.9): same shape for the VTC — `POST
+  /backup/{export,import}` (super-admin, preview/confirm), Argon2id +
+  AES-256-GCM, `check_vtc_did_compatibility` (mismatch → 409). Backs up
+  14 of 21 keyspaces (the community's social state, incl. `status_lists`)
+  **plus the signing key bundle** so a restore reconstitutes signing, not
+  just data; sessions/passkey/install/sync/registry/config are excluded.
+  The `keyspaces::BACKED_UP`/`EXCLUDED_FROM_BACKUP` partition is pinned by
+  a census test. Code: `vtc-service/src/backup.rs`,
+  `vtc-service/src/routes/backup.rs`. Docs:
+  `docs/03-vtc/backup-restore.md`, `docs/05-design-notes/vtc-backup-restore.md`.
 
 ### Promote a serverless DID to a server-managed one
 - **What**: An operator who set up the VTA serverless (no webvh

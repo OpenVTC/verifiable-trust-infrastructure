@@ -60,6 +60,47 @@ pub const ALL: &[&str] = &[
     AUDIT_KEY,
 ];
 
+/// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
+/// the community's durable, irreplaceable state. `audit` is included
+/// only when the caller passes `include_audit = true`; its HMAC key
+/// (`audit_key`) is always included so restored logs stay verifiable.
+///
+/// `BACKED_UP` and [`EXCLUDED_FROM_BACKUP`] must partition [`ALL`]
+/// exactly — enforced by `backup_partition_is_total`. The signing key
+/// bundle is NOT a keyspace (it lives in the `secrets` backend) and is
+/// captured separately by the backup payload.
+pub const BACKED_UP: &[&str] = &[
+    ACL,
+    COMMUNITY,
+    MEMBERS,
+    JOIN_REQUESTS,
+    POLICIES,
+    ACTIVE_POLICIES,
+    STATUS_LISTS,
+    RELATIONSHIPS,
+    RELATIONSHIPS_BY_DID,
+    ENDORSEMENT_TYPES,
+    SCHEMAS,
+    ENDORSEMENTS,
+    AUDIT,
+    AUDIT_KEY,
+];
+
+/// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
+/// one-shot ceremony state, re-syncable registry mirrors, and config
+/// (carried by the backup payload's config snapshot + re-applied on
+/// import). Restoring these would resurrect stale sessions or clobber
+/// runtime state. Partitions [`ALL`] with [`BACKED_UP`].
+pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
+    SESSIONS,
+    CONFIG,
+    PASSKEY,
+    INSTALL,
+    REGISTRY_RECORDS,
+    SYNC_QUEUE,
+    SYNC_CURSOR,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +111,26 @@ mod tests {
     #[test]
     fn all_matches_app_state_keyspace_count() {
         assert_eq!(ALL.len(), 21, "ALL must list every AppState keyspace");
+    }
+
+    /// The backup census (P3.9): every keyspace is either backed up or
+    /// explicitly excluded — none silently omitted — and the two sets
+    /// are disjoint. This is the guard the design note calls for.
+    #[test]
+    fn backup_partition_is_total() {
+        use std::collections::BTreeSet;
+        let all: BTreeSet<&str> = ALL.iter().copied().collect();
+        let backed: BTreeSet<&str> = BACKED_UP.iter().copied().collect();
+        let excluded: BTreeSet<&str> = EXCLUDED_FROM_BACKUP.iter().copied().collect();
+        assert!(
+            backed.is_disjoint(&excluded),
+            "a keyspace is both backed up and excluded"
+        );
+        let union: BTreeSet<&str> = backed.union(&excluded).copied().collect();
+        assert_eq!(
+            union, all,
+            "backup partition must cover every keyspace in ALL exactly once"
+        );
     }
 
     /// No accidental duplicate in `ALL` (a copy-paste slip would make

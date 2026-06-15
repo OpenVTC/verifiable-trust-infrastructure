@@ -250,6 +250,21 @@ pub async fn run(
     let community_ks = store.keyspace(keyspaces::COMMUNITY)?;
     let config_ks = store.keyspace(keyspaces::CONFIG)?;
 
+    // P3.9: refuse to boot on a half-applied backup import. The sentinel
+    // (in the `config` keyspace, which import never clears) is stamped
+    // before the destructive replay and removed only on success — its
+    // presence means a prior import crashed mid-flight and the keyspaces
+    // are in an indeterminate state. Serving that would surface partial
+    // community state; re-run the import to finish (or roll forward).
+    if crate::backup::import_in_progress(&config_ks).await? {
+        return Err(AppError::Config(
+            "a backup import was interrupted before it completed — the datastore is in a \
+             half-restored state. Re-run `POST /v1/backup/import` with the same backup to \
+             finish it; the daemon will not serve partial state."
+                .into(),
+        ));
+    }
+
     // P1.1: `config_store` (the db overlay) is canonical for the runtime
     // config keys — fold any operator PATCHes onto the in-memory config
     // *before* anything derives from it. The server bind address

@@ -4,6 +4,7 @@ mod admin;
 mod admin_ui;
 mod audit;
 mod auth;
+mod backup;
 mod ceremonies;
 mod community;
 mod config;
@@ -740,11 +741,34 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         )
     };
 
+    // P3.9 — encrypted backup / restore (super-admin). Import envelopes
+    // carry the whole community's state (+ optional audit log), so the
+    // import route overrides the 1 MiB global cap with 64 MiB — attached
+    // here, before the global layer below, so the route-specific cap
+    // wins (same mechanism as the website routes above). Export requests
+    // are tiny and keep the default.
+    const BACKUP_IMPORT_CAP: usize = 64 * 1024 * 1024;
+    let api = api
+        .route(
+            "/backup/export",
+            ttl(
+                post(backup::export),
+                "https://trusttasks.org/openvtc/vtc/backup/export/1.0",
+            ),
+        )
+        .route(
+            "/backup/import",
+            ttl(
+                post(backup::import).layer(DefaultBodyLimit::max(BACKUP_IMPORT_CAP)),
+                "https://trusttasks.org/openvtc/vtc/backup/import/1.0",
+            ),
+        );
+
     let api = api
         // §14.4 — every authenticated API route inherits the 1 MiB
         // global body cap. The per-route overrides above for
-        // `/v1/website/*` apply first; this layer is the default
-        // for everything else.
+        // `/v1/website/*` + `/v1/backup/import` apply first; this layer
+        // is the default for everything else.
         .layer(DefaultBodyLimit::max(MAX_BODY_SIZE));
 
     // Unauthenticated routes — tighter body cap + per-IP governor.
