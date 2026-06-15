@@ -552,10 +552,20 @@ async fn map_foreign_role(
 }
 
 fn map_recognition_error(e: RecognitionError) -> AppError {
+    use axum::http::StatusCode;
     match e {
-        RecognitionError::RegistryUnreachable(msg) => {
-            AppError::Internal(format!("trust registry unreachable: {msg}"))
-        }
+        // The registry is a downstream dependency, not the caller —
+        // its outages must not read as a 500 (our bug) or a 403
+        // (caller's fault). Unreachable/flaky → 503 (retry later);
+        // a reachable-but-rejecting registry → 502 (upstream fault).
+        RecognitionError::RegistryUnreachable(msg) => AppError::ServiceError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: format!("trust registry unavailable: {msg}"),
+        },
+        RecognitionError::RegistryRejected(msg) => AppError::ServiceError {
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("trust registry rejected the recognise query: {msg}"),
+        },
         // All other variants are caller-driven rejection
         // signals → 403 Forbidden.
         other => AppError::Forbidden(other.to_string()),
@@ -590,5 +600,44 @@ async fn emit_denied_audit(
         .await
     {
         warn!(error = %e, "failed to emit CrossCommunitySessionMinted (denied) envelope");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The registry is a downstream dependency, not the caller: its
+    /// outages must surface as 5xx, never a 500 (our bug) or a 403
+    /// (caller's fault). Pins the P3.6 boundary mapping.
+    #[test]
+    fn registry_failures_map_to_5xx_not_500_or_403() {
+        let status = |e: RecognitionError| match map_recognition_error(e) {
+            AppError::ServiceError { status, .. } => status,
+            other => panic!("expected ServiceError, got {other:?}"),
+        };
+        assert_eq!(
+            status(RecognitionError::RegistryUnreachable("dns".into())),
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
+        assert_eq!(
+            status(RecognitionError::RegistryRejected("bad query".into())),
+            StatusCode::BAD_GATEWAY,
+        );
+    }
+
+    /// Genuine caller-driven rejections stay 403 — a not-recognised
+    /// issuer is the operator's "forgot to add the peer" path.
+    #[test]
+    fn caller_rejections_stay_403() {
+        assert!(matches!(
+            map_recognition_error(RecognitionError::IssuerNotRecognised("did:x".into())),
+            AppError::Forbidden(_)
+        ));
+        assert!(matches!(
+            map_recognition_error(RecognitionError::ProofInvalid("bad sig".into())),
+            AppError::Forbidden(_)
+        ));
     }
 }

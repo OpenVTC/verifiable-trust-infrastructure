@@ -71,6 +71,14 @@ pub enum RecognitionError {
     /// route layer can map to 503 vs 403.
     #[error("trust registry unreachable: {0}")]
     RegistryUnreachable(String),
+    /// Trust-registry was reachable but rejected the recognise
+    /// query (a `RegistryError::Permanent` — bad request shape,
+    /// an upstream/workspace fault, **not** a holder-driven "not
+    /// recognised"). The route layer maps this to 502, not 403,
+    /// so an operator isn't misled into thinking they forgot to
+    /// add the peer community.
+    #[error("trust registry rejected the recognise query: {0}")]
+    RegistryRejected(String),
     /// `validFrom` is in the future or `validUntil` is in the
     /// past. Carries which credential failed for diagnostics.
     #[error("credential validity window: {0}")]
@@ -93,6 +101,7 @@ impl RecognitionError {
             Self::StatusListFailed(_) => "status-list-failed",
             Self::IssuerNotRecognised(_) => "issuer-not-recognised",
             Self::RegistryUnreachable(_) => "registry-unreachable",
+            Self::RegistryRejected(_) => "registry-rejected",
             Self::ValidityWindow(_) => "validity-window",
             Self::Malformed(_) => "malformed",
         }
@@ -233,9 +242,7 @@ pub async fn verify_foreign_vec(
         RegistryError::Unreachable(msg) | RegistryError::Transient(msg) => {
             RecognitionError::RegistryUnreachable(msg)
         }
-        RegistryError::Permanent(msg) => {
-            RecognitionError::IssuerNotRecognised(format!("registry rejected query: {msg}"))
-        }
+        RegistryError::Permanent(msg) => RecognitionError::RegistryRejected(msg),
     })?;
     if !recognised {
         return Err(RecognitionError::IssuerNotRecognised(issuer));

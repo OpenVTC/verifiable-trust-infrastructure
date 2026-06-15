@@ -61,6 +61,30 @@ impl RegistryError {
     }
 }
 
+impl From<RegistryError> for vti_common::error::AppError {
+    /// Preserve the retriable/permanent semantics at the HTTP
+    /// boundary instead of collapsing every registry failure into an
+    /// opaque 500 (house rule on typed errors). A reachable-but-flaky
+    /// or unreachable registry is **503** (try again later); a
+    /// registry that rejected the request shape is an upstream fault
+    /// surfaced as **502**.
+    fn from(e: RegistryError) -> Self {
+        use axum::http::StatusCode;
+        match e {
+            RegistryError::Transient(msg) | RegistryError::Unreachable(msg) => {
+                vti_common::error::AppError::ServiceError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: format!("trust registry unavailable: {msg}"),
+                }
+            }
+            RegistryError::Permanent(msg) => vti_common::error::AppError::ServiceError {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("trust registry rejected request: {msg}"),
+            },
+        }
+    }
+}
+
 /// Abstraction over the upstream trust-registry transport.
 /// Production binds [`UpstreamTrustRegistryClient`] (lands in
 /// M3.2 + M3.10); tests bind [`MockRegistryClient`].
@@ -357,5 +381,30 @@ mod tests {
         assert!(RegistryError::Transient("x".into()).is_retriable());
         assert!(RegistryError::Unreachable("x".into()).is_retriable());
         assert!(!RegistryError::Permanent("x".into()).is_retriable());
+    }
+
+    #[test]
+    fn registry_error_maps_to_typed_http_status() {
+        use axum::http::StatusCode;
+        use vti_common::error::AppError;
+
+        let status = |e: RegistryError| match AppError::from(e) {
+            AppError::ServiceError { status, .. } => status,
+            other => panic!("expected ServiceError, got {other:?}"),
+        };
+        // Retriable failures → 503 (try again later), never an opaque 500.
+        assert_eq!(
+            status(RegistryError::Transient("x".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status(RegistryError::Unreachable("x".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // A registry that rejected the request shape → 502 (upstream fault).
+        assert_eq!(
+            status(RegistryError::Permanent("x".into())),
+            StatusCode::BAD_GATEWAY
+        );
     }
 }
