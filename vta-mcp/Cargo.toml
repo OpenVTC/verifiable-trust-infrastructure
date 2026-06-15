@@ -1,0 +1,22 @@
+[package]
+name = "vta-mcp"
+description = "Model Context Protocol (MCP) server exposing a VTA's agent capabilities as tools"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+vta-sdk = { path = "../vta-sdk", version = "0.13", features = ["client", "session", "sealed-transfer"] }
+rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
+schemars = "1"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true, features = ["env"] }

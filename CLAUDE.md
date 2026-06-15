@@ -21,6 +21,7 @@ Leaf crates:
   vtc-service     → vti-common, vta-sdk
   pnm-cli         → vta-sdk, vta-cli-common
   cnm-cli         → vta-sdk, vta-cli-common
+  vta-mcp         → vta-sdk
   vta-enclave     → vta-service (consumed as a library)
 ```
 
@@ -34,6 +35,7 @@ Leaf crates:
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
 | `cnm-cli` | Community Network Manager (multi-community operator) |
+| `vta-mcp` | Model Context Protocol server bridging a VTA's agent capabilities (signing oracle, vault, device, discovery) to MCP tools over stdio, so any MCP host (Claude Desktop, agent frameworks) can use a VTA with no custom code. `publish = false` |
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
 Hot spots to know about (file size in source lines, sorted descending):
