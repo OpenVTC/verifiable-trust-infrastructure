@@ -70,6 +70,8 @@
 //! ## Module map
 //!
 //! * [`client`] — synchronous REST client + typed request/response shapes
+//! * `agent_session` (feature `session`) — high-level personal-AI-agent runtime:
+//!   enroll + heartbeat + inbound-wake loop on top of the DIDComm client
 //! * [`didcomm_session`] / [`didcomm_light`] — DIDComm transport
 //! * [`session`] — credential storage, login, refresh-token rotation
 //! * [`sealed_transfer`] — HPKE envelope (seal/open/armor/verify)
@@ -85,6 +87,8 @@ pub mod hex;
 pub mod context_path;
 pub mod identifier;
 
+#[cfg(feature = "session")]
+pub mod agent_session;
 #[cfg(feature = "attest-verify")]
 pub mod attestation;
 #[cfg(feature = "client")]

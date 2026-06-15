@@ -663,6 +663,24 @@ impl VtaClient {
         }
     }
 
+    /// Wait up to `timeout_secs` for the next **unsolicited** inbound DIDComm
+    /// message (e.g. a VTA-pushed wake / step-up request), returning the
+    /// serialized DIDComm `Message` JSON. `Ok(None)` on timeout with nothing
+    /// received. DIDComm-only — the inbound live stream needs the session.
+    ///
+    /// This is the receive half of an agent's event loop (see
+    /// `agent_session::AgentSession`).
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub async fn receive_next(&self, timeout_secs: u64) -> Result<Option<String>, VtaError> {
+        match &self.transport {
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => session.receive_next(timeout_secs).await,
+            Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
+                "receiving inbound messages requires the DIDComm transport".into(),
+            )),
+        }
+    }
+
     // ── Health ───────────────────────────────────────────────────────
 
     /// GET /health (always REST, unauthenticated)

@@ -164,6 +164,29 @@ rejected at authentication (`check_acl`), not merely hidden from `device list`.
 `cache`, `cache-and-keys`, or `full`); a wiped device shows in `device list` only
 with `--include-wiped --include-disabled`.
 
+### Building an agent runtime in Rust (`AgentSession`)
+
+An agent runtime (open-claw / nano-claw / hermes) doesn't need to hand-wire the
+connect → enroll → heartbeat → wake-loop plumbing. The SDK's
+`vta_sdk::agent_session::AgentSession` (feature `session`) does it in a few
+calls — `enroll` connects over DIDComm and registers the device (idempotent if
+already enrolled), `run` heartbeats on a cadence and dispatches inbound
+wake/step-up messages to a handler, and `client()` exposes the full VTA surface
+(sign, vault, …):
+
+```rust
+let cfg = AgentConfig::new(client_did, private_key_mb, vta_did, mediator_did)
+    .display_name("nano-claw").platform("linux");
+let agent = AgentSession::enroll(cfg).await?;
+agent.run(|msg| async move {
+    // route on msg.typ — e.g. a push/wake or an auth/step-up request
+    AgentControl::Continue
+}).await?;
+```
+
+The CLI path above and this Rust path are equivalent surfaces over the same
+`device/*` + `vault/*` trust tasks; use whichever fits how the agent is built.
+
 ## Step 4 — Wake / push (operator + agent)
 
 So the VTA can wake a sleeping personal agent when work or an inbound message
