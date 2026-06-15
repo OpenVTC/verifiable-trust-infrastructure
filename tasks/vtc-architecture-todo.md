@@ -203,10 +203,15 @@ the #457 posture backstop provides its regression guard.)
   PR: #472
 - `[x]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
   idempotent enqueue — PR: #487
-- `[ ]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
-  compat check) — design note first — deps: P2.5 — PR: ____
-- `[~]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
-  CLAUDE.md — **done, PR pending.** Split `run_setup_wizard` into
+- `[~]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
+  compat check) — design note first — deps: P2.5 — **design note done**
+  (`docs/05-design-notes/vtc-backup-restore.md`): ports the VTA pattern; 21
+  keyspaces partitioned 14 backed-up / 7 excluded with a census test; decisions
+  locked — include the `VtcKeyBundle`, exclude passkeys, back up join_requests,
+  409 on vtc_did mismatch, 64 MiB import cap. Implementation PR to follow. —
+  PR: ____ (design note)
+- `[x]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
+  CLAUDE.md — Split `run_setup_wizard` into
   `collect_interactive() → apply(WizardPlan)`; new `setup/from_toml.rs` parses a
   `VtcWizardInputs` TOML (`deny_unknown_fields`) into the *same* `WizardPlan` and
   feeds the *same* `apply`. The interactive ACL-grant pause is bridged in the
@@ -215,7 +220,7 @@ the #457 posture backstop provides its regression guard.)
   `setup --from` prints a terse `key=value` block and never reveals the admin
   key. Example fixture `docs/03-vtc/examples/vtc-setup.example.toml` (+ a test
   that it parses); getting-started.md + vtc-service CLAUDE.md corrected. 8 unit
-  tests incl. headless parse→plan up to the VTA boundary. — PR: #491 (in review)
+  tests incl. headless parse→plan up to the VTA boundary. — PR: #491
 - `[x]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
   `persist()` (persist already done in P2.5) — PR: #475
 - `[x]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
