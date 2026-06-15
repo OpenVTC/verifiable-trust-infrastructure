@@ -111,7 +111,20 @@ pub async fn walk(
     rtbf_batch_window_hours: u64,
     cursor: Option<DateTime<Utc>>,
 ) -> Result<WalkOutcome, AppError> {
-    let pairs = audit_ks.prefix_iter_raw(Vec::new()).await?;
+    // Seek past everything at-or-before the cursor instead of
+    // re-scanning the whole audit log every tick (P3.8). Audit keys are
+    // `<rfc3339-ts>:<event_id>`, which sort chronologically, so a
+    // `<cursor-ts>:` lower bound skips the already-processed prefix. The
+    // in-loop `timestamp <= cursor` filter below still handles the exact
+    // boundary (several events can share a timestamp). First boot
+    // (`cursor = None`) walks from the start.
+    let pairs = match cursor {
+        Some(c) => {
+            let lower = format!("{}:", c.to_rfc3339()).into_bytes();
+            audit_ks.range_from_raw(lower).await?
+        }
+        None => audit_ks.prefix_iter_raw(Vec::new()).await?,
+    };
     let mut jobs_enqueued = 0_usize;
     let mut latest_seen = cursor;
     let mut overrides: Vec<OverrideEvent> = Vec::new();
@@ -149,6 +162,13 @@ pub async fn walk(
             latest_seen = Some(envelope.timestamp);
         }
         if let Some((mut job, override_event)) = audit_to_sync_job(&envelope, floor.as_deref()) {
+            // Derive the job id from the audit `event_id` (P3.8) — one
+            // envelope maps to at most one job, so a re-walk after a
+            // mid-walk store failure (cursor didn't advance) **overwrites**
+            // the already-stored row at the same key instead of enqueuing
+            // a fresh-UUID duplicate. Idempotent: exactly one job per
+            // source envelope.
+            job.id = envelope.event_id;
             // M3.7: park RTBF DeleteMember jobs by the batch
             // window. A non-RTBF DeleteMember (admin force-
             // purge) dispatches immediately — only RTBF gets
@@ -524,6 +544,42 @@ mod tests {
         assert_eq!(third.jobs_enqueued, 1);
         let jobs = list_sync_jobs(&t.queue).await.unwrap();
         assert_eq!(jobs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn rewalk_without_cursor_advance_overwrites_not_duplicates() {
+        // P3.8: when a mid-walk store failure leaves the cursor unmoved,
+        // the next tick re-walks the same envelopes. Job ids are derived
+        // from the audit `event_id`, so the re-walk overwrites the same
+        // rows — exactly one job per source envelope, no fresh-UUID
+        // duplicates.
+        let t = temp_keyspaces().await;
+        write_member_added(&t.writer, "did:key:zA").await;
+        write_member_added(&t.writer, "did:key:zB").await;
+
+        let first = walk(&t.audit, &t.queue, &t.policies, &t.active_policies, 0, None)
+            .await
+            .unwrap();
+        assert_eq!(first.jobs_enqueued, 2);
+        let ids1: std::collections::BTreeSet<_> = list_sync_jobs(&t.queue)
+            .await
+            .unwrap()
+            .iter()
+            .map(|j| j.id)
+            .collect();
+        assert_eq!(ids1.len(), 2);
+
+        // Re-walk from the start (cursor never advanced).
+        walk(&t.audit, &t.queue, &t.policies, &t.active_policies, 0, None)
+            .await
+            .unwrap();
+        let jobs2 = list_sync_jobs(&t.queue).await.unwrap();
+        assert_eq!(jobs2.len(), 2, "re-walk must overwrite, not duplicate");
+        let ids2: std::collections::BTreeSet<_> = jobs2.iter().map(|j| j.id).collect();
+        assert_eq!(
+            ids1, ids2,
+            "job ids are stable across re-walks (event_id-derived)"
+        );
     }
 
     #[tokio::test]

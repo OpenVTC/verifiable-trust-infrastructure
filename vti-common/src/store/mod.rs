@@ -338,6 +338,25 @@ impl KeyspaceHandle {
         }
     }
 
+    /// Iterate key/value pairs whose key is `>= from` (inclusive lower
+    /// bound, unbounded above), in ascending key order. Unlike
+    /// [`Self::prefix_iter_raw`] this **seeks** to `from` rather than
+    /// scanning from the start of the keyspace — used by the registry
+    /// syncer's audit-tail walk to skip already-processed history
+    /// (audit keys are `<rfc3339-ts>:<event_id>`, which sort
+    /// chronologically), so per-tick cost is proportional to new rows
+    /// rather than the whole audit log.
+    pub async fn range_from_raw(
+        &self,
+        from: impl Into<Vec<u8>>,
+    ) -> Result<Vec<RawKvPair>, AppError> {
+        match self {
+            KeyspaceHandle::Local(h) => h.range_from_raw(from).await,
+            #[cfg(feature = "vsock-store")]
+            KeyspaceHandle::Vsock(h) => h.range_from_raw(from).await,
+        }
+    }
+
     pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         match self {
             KeyspaceHandle::Local(h) => h.prefix_keys(prefix).await,
@@ -630,6 +649,36 @@ impl LocalKeyspaceHandle {
         .await
     }
 
+    /// See [`KeyspaceHandle::range_from_raw`]. fjall's `range` seeks to
+    /// the lower bound, so this reads only keys `>= from`.
+    pub async fn range_from_raw(
+        &self,
+        from: impl Into<Vec<u8>>,
+    ) -> Result<Vec<RawKvPair>, AppError> {
+        let from = from.into();
+        let ks = self.keyspace.clone();
+        #[cfg(feature = "encryption")]
+        let enc_key = self.encryption_key.clone();
+        #[cfg(feature = "encryption")]
+        let name = self.name.clone();
+        blocking_with_timeout(move || {
+            let mut results = Vec::new();
+            for guard in ks.range(from..) {
+                let (key, value) = guard.into_inner()?;
+                #[cfg(feature = "encryption")]
+                let value = {
+                    let k = enc_key.as_ref().map(|arc| &***arc);
+                    encryption::maybe_decrypt_bytes(k, &name, &key, &value)?
+                };
+                #[cfg(not(feature = "encryption"))]
+                let value = value.to_vec();
+                results.push((key.to_vec(), value));
+            }
+            Ok(results)
+        })
+        .await
+    }
+
     pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         let prefix = prefix.into();
         let ks = self.keyspace.clone();
@@ -881,6 +930,38 @@ mod tests {
 
         let raw = ks.prefix_iter_raw("prefix:").await.unwrap();
         assert_eq!(raw.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_range_from_raw_seeks_to_lower_bound() {
+        let (store, _dir) = temp_store();
+        let ks = store.keyspace("test").unwrap();
+
+        // Timestamp-like keys (the audit-tail use case): lexical order
+        // == chronological order.
+        for k in ["2026-01:a", "2026-02:b", "2026-03:c", "2026-04:d"] {
+            ks.insert_raw(k.as_bytes().to_vec(), b"v".to_vec())
+                .await
+                .unwrap();
+        }
+
+        // Seek from "2026-03:" → only the rows at-or-after it.
+        let rows = ks.range_from_raw(b"2026-03:".to_vec()).await.unwrap();
+        let keys: Vec<String> = rows
+            .iter()
+            .map(|(k, _)| String::from_utf8(k.clone()).unwrap())
+            .collect();
+        assert_eq!(keys, vec!["2026-03:c", "2026-04:d"]);
+
+        // An empty lower bound returns everything (ascending).
+        assert_eq!(ks.range_from_raw(Vec::new()).await.unwrap().len(), 4);
+        // A bound past the end returns nothing.
+        assert!(
+            ks.range_from_raw(b"2026-99:".to_vec())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

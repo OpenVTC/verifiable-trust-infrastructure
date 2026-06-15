@@ -324,6 +324,24 @@ impl VsockKeyspaceHandle {
             .collect()
     }
 
+    /// See [`crate::store::KeyspaceHandle::range_from_raw`]. The vsock
+    /// proxy protocol has no native range op, and this backend is only
+    /// used by the enclave VTA (the registry syncer that calls
+    /// `range_from_raw` is VTC-only, never on vsock), so this falls back
+    /// to a full scan filtered to `key >= from` — correct, just not
+    /// seek-optimised.
+    pub async fn range_from_raw(
+        &self,
+        from: impl Into<Vec<u8>>,
+    ) -> Result<Vec<RawKvPair>, AppError> {
+        let from = from.into();
+        let all = self.prefix_iter_raw(Vec::<u8>::new()).await?;
+        Ok(all
+            .into_iter()
+            .filter(|(k, _)| k.as_slice() >= from.as_slice())
+            .collect())
+    }
+
     pub async fn prefix_keys(&self, prefix: impl Into<Vec<u8>>) -> Result<Vec<Vec<u8>>, AppError> {
         let prefix = prefix.into();
         let mut payload = vec![OP_PREFIX_KEYS];
