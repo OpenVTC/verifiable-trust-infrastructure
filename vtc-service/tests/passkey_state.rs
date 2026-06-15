@@ -87,6 +87,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         endorsements_ks: endorsements_ks.clone(),
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
+        syncer_health: vtc_service::registry::SyncerHealth::new(),
         credential_signer: None,
         config: Arc::new(RwLock::new(config)),
         did_resolver: None,

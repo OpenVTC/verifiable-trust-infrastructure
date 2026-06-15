@@ -312,6 +312,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         endorsements_ks: endorsements_ks.clone(),
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
+        syncer_health: vtc_service::registry::SyncerHealth::new(),
         credential_signer: None,
         audit_ks,
         audit_key_ks,

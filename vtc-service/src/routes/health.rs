@@ -95,6 +95,14 @@ pub struct DiagnosticsResponse {
     /// unauth `/v1/community/public-profile`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mediator_did: Option<String>,
+    /// Whether the `MembershipSyncer` task is enabled (a registry is
+    /// configured) and currently running (P3.13). `syncer_enabled &&
+    /// !syncer_running` means the syncer is spawned but dead — e.g.
+    /// mid-restart after a panic. `syncer_restarts` counts panic
+    /// restarts; a rising value is a "syncer keeps crashing" signal.
+    pub syncer_enabled: bool,
+    pub syncer_running: bool,
+    pub syncer_restarts: u64,
 }
 
 #[utoipa::path(
@@ -147,6 +155,8 @@ pub async fn diagnostics(
 
     // Identity / mediator detail — folded down from the unauth
     // `/health` payload (P3.7), now only readable by an admin.
+    let syncer = state.syncer_health.snapshot();
+
     let config = state.config.read().await;
     let vta_did = config.vta_did.clone();
     let (mediator_url, mediator_did) = config
@@ -176,5 +186,8 @@ pub async fn diagnostics(
         vta_did,
         mediator_url,
         mediator_did,
+        syncer_enabled: syncer.enabled,
+        syncer_running: syncer.running,
+        syncer_restarts: syncer.restarts,
     }))
 }

@@ -56,7 +56,7 @@ pub mod tail;
 pub mod upstream;
 
 pub use client::{MockRegistryClient, RegistryError, TrustRegistryClient};
-pub use health::{HealthStatus, RegistryHealth};
+pub use health::{HealthStatus, RegistryHealth, SyncerHealth, SyncerHealthSnapshot};
 pub use model::{
     DEFAULT_MAX_ATTEMPTS, MAX_BACKOFF_SECONDS, RegistryRecord, RegistryStatus, SyncJob,
     SyncJobKind, SyncJobState, exponential_backoff_seconds,

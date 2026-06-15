@@ -119,6 +119,10 @@ pub struct AppState {
     /// profile + diagnostics handlers read this; the
     /// boot/probe paths write it.
     pub registry_health: crate::registry::RegistryHealth,
+    /// Liveness of the `MembershipSyncer` task (P3.13). The
+    /// supervisor updates it on start / restart-after-panic; the
+    /// diagnostics handler reads it so a dead syncer is visible.
+    pub syncer_health: crate::registry::SyncerHealth,
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     pub secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
@@ -497,6 +501,7 @@ pub async fn run(
         audit_key_ks,
         registry_client: registry_client.clone(),
         registry_health: registry_health.clone(),
+        syncer_health: crate::registry::SyncerHealth::new(),
         config: Arc::new(RwLock::new(config)),
         did_resolver,
         secrets_resolver,
@@ -645,22 +650,71 @@ pub async fn run(
         (state.registry_client.clone(), syncer_actor_did_opt.clone())
     {
         let rtbf_batch_window_hours = boot_cfg.registry.rtbf_batch_window_hours;
-        let syncer = crate::registry::MembershipSyncer::new(
-            state.audit_ks.clone(),
-            state.sync_queue_ks.clone(),
-            state.sync_cursor_ks.clone(),
-            state.registry_records_ks.clone(),
-            state.policies_ks.clone(),
-            state.active_policies_ks.clone(),
-            client,
-            state.registry_health.clone(),
-            state.audit_writer.clone(),
-            actor_did,
-        )
-        .with_rtbf_batch_window_hours(rtbf_batch_window_hours);
-        let syncer_shutdown = shutdown_rx.clone();
+        // Supervisor: a bare `tokio::spawn` meant a panicking syncer
+        // loop died silently — the sync queue just stopped draining with
+        // no signal. Re-spawn the loop after a panic (with backoff) and
+        // surface liveness + restart count via `syncer_health`, which
+        // `/v1/health/diagnostics` reports (P3.13). `run(self)` consumes
+        // the syncer, so we reconstruct it from cloned handles each
+        // iteration (cheap — all inputs are `Arc`/handle clones).
+        let health = state.syncer_health.clone();
+        health.set_enabled();
+        let audit_ks = state.audit_ks.clone();
+        let sync_queue_ks = state.sync_queue_ks.clone();
+        let sync_cursor_ks = state.sync_cursor_ks.clone();
+        let registry_records_ks = state.registry_records_ks.clone();
+        let policies_ks = state.policies_ks.clone();
+        let active_policies_ks = state.active_policies_ks.clone();
+        let registry_health = state.registry_health.clone();
+        let audit_writer = state.audit_writer.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            syncer.run(syncer_shutdown).await;
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let syncer = crate::registry::MembershipSyncer::new(
+                    audit_ks.clone(),
+                    sync_queue_ks.clone(),
+                    sync_cursor_ks.clone(),
+                    registry_records_ks.clone(),
+                    policies_ks.clone(),
+                    active_policies_ks.clone(),
+                    client.clone(),
+                    registry_health.clone(),
+                    audit_writer.clone(),
+                    actor_did.clone(),
+                )
+                .with_rtbf_batch_window_hours(rtbf_batch_window_hours);
+                let run_shutdown = supervisor_shutdown.clone();
+                health.mark_running();
+                let child = tokio::spawn(async move { syncer.run(run_shutdown).await });
+                match child.await {
+                    // Clean return — the loop observed shutdown.
+                    Ok(()) => {
+                        health.mark_stopped();
+                        break;
+                    }
+                    Err(join_err) if join_err.is_panic() => {
+                        health.mark_stopped();
+                        health.record_restart();
+                        error!(
+                            error = %join_err,
+                            "MembershipSyncer task panicked — restarting after backoff"
+                        );
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    // Cancelled (shutdown aborted the child) — stop.
+                    Err(_) => {
+                        health.mark_stopped();
+                        break;
+                    }
+                }
+            }
+            health.mark_stopped();
         });
     }
 

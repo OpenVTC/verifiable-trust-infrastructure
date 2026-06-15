@@ -80,6 +80,11 @@ async fn diagnostics_empty_queue_reports_zero_counts() {
             .is_none_or(|x| x.is_null()),
         "empty queue → no oldest_pending_age"
     );
+    // Syncer liveness is surfaced (P3.13). The test daemon has no
+    // registry client, so the syncer was never spawned.
+    assert_eq!(v["syncer_enabled"], false);
+    assert_eq!(v["syncer_running"], false);
+    assert_eq!(v["syncer_restarts"], 0);
 }
 
 #[tokio::test]

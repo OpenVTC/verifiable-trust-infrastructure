@@ -339,6 +339,7 @@ impl TestVtcBuilder {
             audit_key_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
+            syncer_health: crate::registry::SyncerHealth::new(),
             config: Arc::new(RwLock::new(config)),
             did_resolver,
             secrets_resolver: None,

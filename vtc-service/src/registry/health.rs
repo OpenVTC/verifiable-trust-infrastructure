@@ -153,6 +153,71 @@ pub struct RegistryHealthSnapshot {
     pub last_error: Option<String>,
 }
 
+/// Liveness signal for the `MembershipSyncer` task, distinct from
+/// [`RegistryHealth`] (which tracks the *registry's* reachability, not
+/// the *syncer task's*). The supervisor that owns the syncer loop
+/// updates it; `/v1/health/diagnostics` reads it so a syncer that
+/// panicked — and the queue silently stopped draining — is visible to
+/// operators instead of a queue that just stops moving. Cheap to clone;
+/// lock-free.
+#[derive(Debug, Clone, Default)]
+pub struct SyncerHealth {
+    inner: Arc<SyncerHealthInner>,
+}
+
+#[derive(Debug, Default)]
+struct SyncerHealthInner {
+    /// The syncer was spawned at all (a registry is configured).
+    enabled: std::sync::atomic::AtomicBool,
+    /// The syncer loop is currently running (false once it returns or
+    /// while it's being restarted after a panic).
+    running: std::sync::atomic::AtomicBool,
+    /// Number of panic-triggered restarts the supervisor has performed.
+    restarts: std::sync::atomic::AtomicU64,
+}
+
+impl SyncerHealth {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn set_enabled(&self) {
+        self.inner
+            .enabled
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn mark_running(&self) {
+        self.inner
+            .running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn mark_stopped(&self) {
+        self.inner
+            .running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn record_restart(&self) {
+        self.inner
+            .restarts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub fn snapshot(&self) -> SyncerHealthSnapshot {
+        use std::sync::atomic::Ordering::Relaxed;
+        SyncerHealthSnapshot {
+            enabled: self.inner.enabled.load(Relaxed),
+            running: self.inner.running.load(Relaxed),
+            restarts: self.inner.restarts.load(Relaxed),
+        }
+    }
+}
+
+/// Snapshot of [`SyncerHealth`] for the diagnostics endpoint.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncerHealthSnapshot {
+    pub enabled: bool,
+    pub running: bool,
+    pub restarts: u64,
+}
+
 async fn emit_changed(
     audit_writer: Option<&AuditWriter>,
     actor_did: &str,
@@ -181,6 +246,27 @@ mod tests {
     async fn default_status_is_degraded() {
         let h = RegistryHealth::new();
         assert_eq!(h.status().await, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn syncer_health_tracks_enabled_running_restarts() {
+        let h = SyncerHealth::new();
+        let s = h.snapshot();
+        assert!(!s.enabled && !s.running && s.restarts == 0);
+
+        h.set_enabled();
+        h.mark_running();
+        let s = h.snapshot();
+        assert!(s.enabled && s.running && s.restarts == 0);
+
+        // A panic-restart: stopped, counter bumped, then running again.
+        h.mark_stopped();
+        h.record_restart();
+        let s = h.snapshot();
+        assert!(s.enabled && !s.running && s.restarts == 1);
+
+        h.mark_running();
+        assert!(h.snapshot().running);
     }
 
     #[tokio::test]
