@@ -164,8 +164,21 @@ the #457 posture backstop provides its regression guard.)
   - `[x]` **part 2** force host separation when a filesystem website
     (`website.root_dir`) is configured + honest docs (correct the stale
     `Path=/admin` cookie-isolation claim) — PR: #466
-- `[ ]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
-  the test harness — PR: ____
+- `[~]` **P3.2** (M) CSRF bearer exemption + tighten exempt list; wire CSRF into
+  the test harness — **done, PR pending.** Root-cause fix: CSRF only protects
+  *cookie-session* requests (ambient `vtc_admin_session` replay is the entire
+  threat), so `enforce` now gates `method → bearer-skip → path-exempt →
+  session-cookie gate → same-origin/double-submit`. `has_bearer_auth` skips
+  programmatic Bearer clients (checked first); `has_session_cookie` (pinned to
+  the extractor's `ADMIN_SESSION_COOKIE`) passes credential-less/unauth requests
+  through to the auth layer so they get a clean 401 instead of a misleading
+  `CsrfFailed`; `is_csrf_exempt` keeps the explicit bootstrap list + suffix-matches
+  the parametrised public holder endpoints (`/v1/join-requests/{id}/accept|status`)
+  while leaving admin `approve`/`reject` gated. CSRF layer moved out of `server.rs`
+  into `routes::with_csrf` (canonical router builder) so every integration test
+  exercises it — wiring it in revealed (and fixed) the previously-invisible
+  401-vs-403 breakage in recognise/renewal/removal/policies/join. 15 unit + 3
+  cookie_session integration tests; full suite 968 green. — PR: ____
 - `[x]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
   `create_dir_all` — `canonical_within_root_for_create` (shared
   `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
@@ -188,8 +201,8 @@ the #457 posture backstop provides its regression guard.)
 - `[x]` **P3.7** (S) Minimal unauth `/health` (`{status,version,vtc_did}`; mediator/
   vta detail folded into admin-gated diagnostics); `nosniff` on `did.jsonl` —
   PR: #472
-- `[ ]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
-  idempotent enqueue — PR: ____
+- `[x]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
+  idempotent enqueue — PR: #487
 - `[ ]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
   compat check) — design note first — deps: P2.5 — PR: ____
 - `[ ]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix

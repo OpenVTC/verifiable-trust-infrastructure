@@ -1113,10 +1113,9 @@ fn run_rest_thread(
             axum::middleware::from_fn_with_state(host_map, crate::routing::host_dispatch::enforce);
 
         // CSRF double-submit + Sec-Fetch-Site check (Phase 5
-        // M5.2.2). Bootstrapping flows + the public form-post
-        // target are path-exempt — see `routing::csrf` for the
-        // exemption list.
-        let csrf_layer = axum::middleware::from_fn(crate::routing::csrf::enforce);
+        // M5.2.2) is attached inside `routes::router_with_xff` (via
+        // `with_csrf`) so the integration harness exercises it exactly
+        // as production does (P3.2) — it is no longer layered here.
 
         // Public-website state (Phase 5 M5.4). `None` when the
         // operator hasn't set `website.root_dir` — the website
@@ -1130,7 +1129,6 @@ fn run_rest_thread(
         #[cfg(feature = "website")]
         let app = routes::router_with_xff(&routing, website_state, trust_xff)
             .with_state(state)
-            .layer(csrf_layer)
             .layer(host_layer)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
@@ -1138,7 +1136,6 @@ fn run_rest_thread(
         #[cfg(not(feature = "website"))]
         let app = routes::router_with_xff(&routing, trust_xff)
             .with_state(state)
-            .layer(csrf_layer)
             .layer(host_layer)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())

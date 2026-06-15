@@ -227,3 +227,81 @@ async fn foreign_audience_cookie_rejected() {
     let (status, _body) = request(&fix.router, req).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ─── CSRF enforcement through the real router (P3.2) ─────────
+//
+// These assert that the CSRF layer is actually wired into the
+// assembled router the harness builds (it used to be attached only in
+// `server.rs`, so CSRF was invisible to integration tests). They also
+// pin the cookie-session gate: a mutating *cookie-session* request is
+// gated, while bearer and no-cookie requests are not.
+
+#[tokio::test]
+async fn cookie_session_mutation_without_csrf_token_is_forbidden() {
+    // A cookie session POSTing with neither a same-origin stamp nor a
+    // matching csrf double-submit is the genuine CSRF-exposed case.
+    // The CSRF layer (now wired into the harness) must reject it with
+    // `CsrfFailed` *before* the handler runs.
+    let fix = build_fixture().await;
+    let jwt = mint_session(&fix, "VTC").await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/acl")
+        .header("Trust-Task", ACL_TRUST_TASK)
+        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = request(&fix.router, req).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "cookie-session POST: {body}");
+    assert!(
+        body.contains("CsrfFailed"),
+        "expected a CSRF rejection, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn cookie_session_mutation_with_same_origin_passes_csrf() {
+    // The same cookie session with a `Sec-Fetch-Site: same-origin`
+    // stamp clears CSRF and reaches the handler — so it is never the
+    // `CsrfFailed` rejection (the handler may still 4xx the body, but
+    // that's past CSRF).
+    let fix = build_fixture().await;
+    let jwt = mint_session(&fix, "VTC").await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/acl")
+        .header("Trust-Task", ACL_TRUST_TASK)
+        .header("Cookie", format!("{ADMIN_SESSION_COOKIE}={jwt}"))
+        .header("Sec-Fetch-Site", "same-origin")
+        .body(Body::empty())
+        .unwrap();
+    let (_status, body) = request(&fix.router, req).await;
+    assert!(
+        !body.contains("CsrfFailed"),
+        "same-origin cookie POST must clear CSRF, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn bearer_mutation_bypasses_csrf() {
+    // A bearer-authenticated POST carries no ambient cookie to forge,
+    // so it bypasses CSRF entirely even with no stamp / token — the
+    // programmatic-client case the P3.2 exemption fixes.
+    let fix = build_fixture().await;
+    let jwt = mint_session(&fix, "VTC").await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/acl")
+        .header("Trust-Task", ACL_TRUST_TASK)
+        .header("Authorization", format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_status, body) = request(&fix.router, req).await;
+    assert!(
+        !body.contains("CsrfFailed"),
+        "bearer POST must bypass CSRF, got: {body}"
+    );
+}

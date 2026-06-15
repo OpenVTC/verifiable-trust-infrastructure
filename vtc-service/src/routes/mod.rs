@@ -226,7 +226,7 @@ fn router_with_inner(routing: &RoutingConfig, trust_xff: bool) -> Router<AppStat
     // assembly by [`openapi_spec`] (which `assemble` serves), so the two cannot
     // drift.
     let api_chain = build_api_chain(routing, trust_xff).split_for_parts().0;
-    assemble(routing, api_chain)
+    with_csrf(assemble(routing, api_chain))
 }
 
 #[cfg(feature = "website")]
@@ -236,7 +236,20 @@ fn router_with_inner(
     trust_xff: bool,
 ) -> Router<AppState> {
     let api_chain = build_api_chain(routing, trust_xff).split_for_parts().0;
-    assemble_with_website(routing, api_chain, website_state)
+    with_csrf(assemble_with_website(routing, api_chain, website_state))
+}
+
+/// Attach the CSRF double-submit + `Sec-Fetch-Site` middleware
+/// (Phase 5 M5.2.2). Applied here in the canonical router builder
+/// — not in `server.rs` — so every integration test exercises CSRF
+/// exactly as production does (P3.2). The matcher in `routing::csrf`
+/// compares against the post-nest URI, so the layer must sit outside
+/// the `/v1` nest, which it does (the assembled router is the full
+/// path surface). `server.rs` wraps this with host-dispatch / CORS /
+/// trace / timeout, leaving the inner→outer ordering identical to the
+/// previous in-`server.rs` placement.
+fn with_csrf(app: Router<AppState>) -> Router<AppState> {
+    app.layer(axum::middleware::from_fn(crate::routing::csrf::enforce))
 }
 
 /// Build the merged API+unauth surface. Identical shape regardless
