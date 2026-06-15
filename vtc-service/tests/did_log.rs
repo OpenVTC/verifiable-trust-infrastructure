@@ -96,6 +96,35 @@ async fn serverless_dotted_host_did_resolves_as_jsonl() {
 }
 
 #[tokio::test]
+async fn did_log_response_carries_nosniff() {
+    // P3.7: the log is served at the parent root, outside the website
+    // sub-router's security-headers middleware — a browser must not
+    // content-sniff the jsonl into something executable.
+    let fix = build_fixture(VTC_DID).await;
+    seed_did_log(&fix.data_dir, VTC_LOG_LABEL, "{\"versionId\":\"1-abc\"}\n");
+
+    let res = fix
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/.well-known/did.jsonl")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff"),
+    );
+}
+
+#[tokio::test]
 async fn returns_404_when_only_a_foreign_label_log_exists() {
     // The VTC serves exactly its own DID's log. A stray log file under
     // some other label on disk must not be served — we read only the

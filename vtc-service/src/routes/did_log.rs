@@ -97,10 +97,20 @@ pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
 
     (
         StatusCode::OK,
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/jsonl"),
-        )],
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/jsonl"),
+            ),
+            // The log is served at the parent root, outside the
+            // website sub-router's security-headers middleware, so set
+            // nosniff here — a browser must not content-sniff the
+            // jsonl into something executable.
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+        ],
         body,
     )
         .into_response()

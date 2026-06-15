@@ -152,6 +152,51 @@ async fn diagnostics_requires_admin_role() {
 }
 
 #[tokio::test]
+async fn health_payload_is_minimal_and_unauth() {
+    // P3.7: `/health` is unauth + at the parent root, so it must not
+    // leak infrastructure topology. It carries only status, version,
+    // and the community's public DID.
+    let fix = build().await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .body(Body::empty())
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["status"], "ok");
+    assert!(v["version"].is_string());
+    assert!(v.get("vtc_did").is_some(), "community DID stays public");
+    // The recon-sensitive fields are gone from the unauth surface.
+    assert!(v.get("mediator_url").is_none(), "mediator_url leaked: {v}");
+    assert!(v.get("mediator_did").is_none(), "mediator_did leaked: {v}");
+    assert!(v.get("vta_did").is_none(), "vta_did leaked: {v}");
+}
+
+#[tokio::test]
+async fn diagnostics_surfaces_mediator_detail_to_admin() {
+    // The mediator detail dropped from `/health` is readable by an
+    // admin via the governed diagnostics route.
+    let vtc = TestVtc::builder()
+        .messaging_mediator("did:key:z6MkMediator")
+        .build()
+        .await;
+    let token = vtc.token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let resp = vtc
+        .router
+        .clone()
+        .oneshot(get("/v1/health/diagnostics", DIAGNOSTICS_TASK, &token))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["mediator_did"], "did:key:z6MkMediator");
+}
+
+#[tokio::test]
 async fn diagnostics_requires_trust_task_header() {
     let fix = build().await;
     let token = token_for(&fix, "admin").await;

@@ -13,40 +13,30 @@ use crate::server::AppState;
 pub struct HealthResponse {
     status: &'static str,
     version: &'static str,
-    /// The VTC's own did:webvh, set during `vtc setup`. Exposed
-    /// publicly because external verifiers, registries, and the
-    /// default website's landing page all need to display it —
-    /// it's the community's identity, not a secret.
+    /// The VTC's own did:webvh, set during `vtc setup`. Kept on the
+    /// unauth payload because it's the community's public identity —
+    /// already served at `/.well-known/did.jsonl` and rendered by the
+    /// default landing page. The `vta_did` / `mediator_url` /
+    /// `mediator_did` fields used to live here too, but they're
+    /// infrastructure detail (which VTA backs the community + the
+    /// mediator's location) and now require auth — see
+    /// [`DiagnosticsResponse`].
     #[serde(skip_serializing_if = "Option::is_none")]
     vtc_did: Option<String>,
-    /// DID of the VTA the VTC was provisioned against. Public for
-    /// the same reason `vtc_did` is — operators + verifiers need
-    /// to know which key-management agent backs this community.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    vta_did: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mediator_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    mediator_did: Option<String>,
 }
 
+/// `GET /health` — unauth, unthrottled liveness. Deliberately
+/// minimal: `{status, version, vtc_did}`. It sits at the parent root
+/// outside the governor, so it must not leak infrastructure topology
+/// (the mediator URL was a free recon oracle). The DID/mediator
+/// detail moved to the admin-gated [`diagnostics`] route.
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     debug!("health check");
-    let config = state.config.read().await;
-    let vtc_did = config.vtc_did.clone();
-    let vta_did = config.vta_did.clone();
-    let (mediator_url, mediator_did) = config
-        .messaging
-        .as_ref()
-        .map(|m| (Some(m.mediator_url.clone()), Some(m.mediator_did.clone())))
-        .unwrap_or((None, None));
+    let vtc_did = state.config.read().await.vtc_did.clone();
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         vtc_did,
-        vta_did,
-        mediator_url,
-        mediator_did,
     })
 }
 
@@ -93,6 +83,18 @@ pub struct DiagnosticsResponse {
     pub last_failure_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// DID of the VTA the VTC was provisioned against. Moved here
+    /// from the unauth `/health` payload (P3.7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vta_did: Option<String>,
+    /// The mediator's HTTPS endpoint. Infrastructure topology —
+    /// admin-gated so it's not a free unauth recon oracle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediator_url: Option<String>,
+    /// The mediator's DID. Also surfaced (post-bootstrap) on the
+    /// unauth `/v1/community/public-profile`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
 }
 
 #[utoipa::path(
@@ -143,6 +145,17 @@ pub async fn diagnostics(
     }
     .to_string();
 
+    // Identity / mediator detail — folded down from the unauth
+    // `/health` payload (P3.7), now only readable by an admin.
+    let config = state.config.read().await;
+    let vta_did = config.vta_did.clone();
+    let (mediator_url, mediator_did) = config
+        .messaging
+        .as_ref()
+        .map(|m| (Some(m.mediator_url.clone()), Some(m.mediator_did.clone())))
+        .unwrap_or((None, None));
+    drop(config);
+
     debug!(
         queue_depth,
         rtbf_batched_count,
@@ -160,5 +173,8 @@ pub async fn diagnostics(
         last_success_at: snapshot.last_success_at,
         last_failure_at: snapshot.last_failure_at,
         last_error: snapshot.last_error,
+        vta_did,
+        mediator_url,
+        mediator_did,
     }))
 }

@@ -139,9 +139,9 @@ async function refresh() {
     } else {
       setText("community-did", "(not yet provisioned — run `vtc setup`)");
     }
-    if (healthJson.mediator_did) {
-      showMediatorRow(healthJson.mediator_did);
-    }
+    // The mediator DID is sourced from `/v1/community/public-profile`
+    // below; `/health` no longer carries mediator detail (it's
+    // admin-gated infrastructure topology — see P3.7).
     const state = healthJson.status === "ok" ? "ok" : "warn";
     setStatus(state, state === "ok" ? "Service online" : "Degraded");
   } catch (err) {
