@@ -63,6 +63,21 @@ struct Args {
     /// Display name for the device binding when `--enroll` is set.
     #[arg(long, env = "VTA_MCP_DEVICE_NAME", default_value = "vta-mcp")]
     device_name: String,
+
+    /// Holder DID for the `issue_vp` tool (the agent's own presentation
+    /// identity). Together with `--holder-key`, enables VP issuance.
+    #[arg(long, env = "VTA_MCP_HOLDER_DID")]
+    holder_did: Option<String>,
+
+    /// Holder Ed25519 signing key (multibase) for `issue_vp`. Stays in this
+    /// process; never sent over MCP.
+    #[arg(long, env = "VTA_MCP_HOLDER_KEY")]
+    holder_key: Option<String>,
+
+    /// Verification-method fragment of the holder DID used as the VP proof's
+    /// `verificationMethod` (`{holder_did}#{fragment}`).
+    #[arg(long, env = "VTA_MCP_HOLDER_VM_FRAGMENT", default_value = "key-0")]
+    holder_vm_fragment: String,
 }
 
 #[tokio::main]
@@ -84,9 +99,23 @@ async fn main() -> anyhow::Result<()> {
         agent.ensure_enrolled().await?;
         tracing::info!(device = %args.device_name, "vta-mcp enrolled as a managed device");
     }
+    // Optional holder identity for the `issue_vp` tool (signs presentations
+    // locally; the key never crosses MCP).
+    let holder = match (&args.holder_did, &args.holder_key) {
+        (Some(did), Some(key)) => {
+            tracing::info!(%did, "issue_vp enabled with configured holder identity");
+            Some(Arc::new(server::HolderIdentity {
+                did: did.clone(),
+                vm_fragment: args.holder_vm_fragment.clone(),
+                key_multibase: key.clone(),
+            }))
+        }
+        _ => None,
+    };
+
     tracing::info!("vta-mcp connected to VTA; serving MCP over stdio");
 
-    let service = VtaMcp::new(Arc::new(agent)).serve(stdio()).await?;
+    let service = VtaMcp::new(Arc::new(agent), holder).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

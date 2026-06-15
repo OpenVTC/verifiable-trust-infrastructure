@@ -564,9 +564,11 @@ impl VtaClient {
     ///   as a rejection and surfaced as an error.
     ///
     /// Used by the `device/*` and `vault/*` client methods, which have no
-    /// dedicated REST route and are reachable only through the dispatcher.
+    /// dedicated REST route and are reachable only through the dispatcher; also
+    /// the generic escape hatch for invoking *any* of the VTA's trust-task
+    /// operations by URI (see `vta_sdk::trust_tasks::ALL_URIS` for the catalog).
     #[cfg_attr(not(feature = "session"), allow(unused_variables))]
-    pub(crate) async fn dispatch_trust_task(
+    pub async fn dispatch_trust_task(
         &self,
         type_uri: &str,
         payload: serde_json::Value,
@@ -679,6 +681,23 @@ impl VtaClient {
                 "receiving inbound messages requires the DIDComm transport".into(),
             )),
         }
+    }
+
+    /// Resolve an **arbitrary** DID to its DID document JSON, via the shared
+    /// DID-resolver cache (`affinidi-did-resolver-cache-sdk`). Independent of
+    /// this client's auth/transport — pure resolution. Requires the `didcomm`
+    /// feature (which pulls the resolver).
+    #[cfg(feature = "didcomm")]
+    pub async fn resolve_did(&self, did: &str) -> Result<serde_json::Value, VtaError> {
+        use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+        let resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+            .await
+            .map_err(|e| VtaError::Protocol(format!("resolver init: {e}")))?;
+        let resolved = resolver
+            .resolve(did)
+            .await
+            .map_err(|e| VtaError::Protocol(format!("resolve {did}: {e}")))?;
+        serde_json::to_value(resolved.doc).map_err(VtaError::from)
     }
 
     // ── Health ───────────────────────────────────────────────────────

@@ -13,6 +13,18 @@ stderr.
 
 ## Tools
 
+The **full** VTA management surface is reachable via two generic tools, plus
+convenience tools for the most common operations and the client-side bits.
+
+**Generic gateway (covers everything):**
+
+| Tool | What it does |
+|---|---|
+| `vta_list_operations` | The catalog of every Trust Task operation URI (contexts, keys, acl, did-management, webvh, did-templates, device, vault, seeds, audit, backup, discovery, …) |
+| `vta_call` | Invoke any operation by URI with a JSON payload — the gateway to the whole management surface |
+
+**Convenience tools (typed, for common ops):**
+
 | Tool | What it does | Capability required |
 |---|---|---|
 | `vta_capabilities` | Discover the VTA's features, services, WebVH servers, DID modes | any auth |
@@ -22,10 +34,21 @@ stderr.
 | `vault_get` | One entry's metadata by id (no secret) | `VaultRead` |
 | `vault_release` | Release a secret sealed to this client; returns cleartext | `FillRelease` (DIDComm only) |
 | `device_heartbeat` | Check the device in; returns queued operations | any auth |
+| `resolve_did` | Resolve any DID to its DID document (via the resolver cache) | any auth |
+| `issue_vp` | Build a holder-bound OID4VP `vp_token` from supplied held credentials, signed with the agent's holder key | holder identity configured |
+
+All access is bounded by the bridge identity's VTA **role / ACL** — scope that
+role to what the agent should be allowed to do (`vta_call` can reach destructive
+operations like `contexts/delete` if the role permits them).
 
 `vault_release` opens a `didcomm-authcrypt` envelope with the client's own keys,
 so it requires the **DIDComm transport** (session mode); on a REST/token client
 it returns a clear `UnsupportedTransport` error.
+
+`issue_vp` signs locally with the agent's holder key — set `VTA_MCP_HOLDER_DID` +
+`VTA_MCP_HOLDER_KEY` (multibase; optional `VTA_MCP_HOLDER_VM_FRAGMENT`, default
+`key-0`). The key stays in the process and is never sent over MCP; without it the
+tool returns a clear "not configured" error.
 
 ## Auth
 

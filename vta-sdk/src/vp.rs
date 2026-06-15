@@ -76,7 +76,8 @@ pub enum VpError {
 /// embedded verbatim into the presentation (it must already carry its issuer
 /// proof — the verifier re-checks it). Keeping the two separate lets the matcher
 /// read claims without the presentation layer having to parse a wire credential.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HeldCredential {
     /// Caller-chosen identifier, echoed back through the match. Unique within a
     /// `select_credentials` call.
@@ -87,15 +88,22 @@ pub struct HeldCredential {
     /// The credential's claims as a JSON object — the tree a claim `path` walks.
     pub claims: Value,
     /// SD-JWT-VC type, matched against a query's `meta.vct_values` when present.
+    #[serde(default)]
     pub vct: Option<String>,
     /// mdoc doctype, matched against a query's `meta.doctype_value` when present.
+    #[serde(default)]
     pub doctype: Option<String>,
     /// Whether this credential can prove cryptographic holder binding. A DCQL
     /// query that requires holder binding (the default) will not match a
-    /// candidate that cannot.
+    /// candidate that cannot. Defaults to `true` when omitted.
+    #[serde(default = "default_true")]
     pub supports_holder_binding: bool,
     /// The full signed credential, embedded verbatim into the VP.
     pub vc: Value,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl HeldCredential {
@@ -234,6 +242,30 @@ pub async fn build_vp_token(
     }
 
     Ok(Value::Object(vp_token))
+}
+
+/// One-shot: select the held credentials matching `presentation_definition`,
+/// then build + sign a holder-bound `vp_token` — using a holder key supplied as
+/// a multibase string. Convenience over [`select_credentials`] +
+/// [`build_vp_token`] for callers that hold the key as multibase (e.g. an MCP
+/// bridge configured with its agent identity) and don't want to construct a
+/// `Secret` themselves.
+///
+/// The proof's `verificationMethod` is `{holder_did}#{holder_vm_fragment}`.
+pub async fn issue_vp_token(
+    holder_did: &str,
+    holder_vm_fragment: &str,
+    holder_key_multibase: &str,
+    presentation_definition: &Value,
+    held: &[HeldCredential],
+    nonce: &str,
+    audience: &str,
+) -> Result<Value, VpError> {
+    let kid = format!("{holder_did}#{holder_vm_fragment}");
+    let secret = Secret::from_multibase(holder_key_multibase, Some(&kid))
+        .map_err(|e| VpError::Sign(format!("holder key: {e}")))?;
+    let candidates = select_credentials(presentation_definition, held)?;
+    build_vp_token(&candidates, &secret, nonce, audience).await
 }
 
 /// Build one holder-bound DI VP wrapping `vcs`, signed by `holder_signer`.
