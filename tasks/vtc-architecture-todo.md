@@ -177,11 +177,17 @@ the #457 posture backstop provides its regression guard.)
   `plugins.json` scan; implement `If-None-Match`→304 — `cache_control_for`
   (shell no-cache, hashed assets keep TTL); `scan_plugin_dir_cached` (30s TTL);
   `etag_matches`→304 in website serve — PR: #470
-- `[ ]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
-  boundaries — PR: ____
-- `[~]` **P3.7** (S) Minimal unauth `/health` (`{status,version,vtc_did}`; mediator/
+- `[~]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
+  boundaries
+  - `[~]` **part 1** (REST) `From<RegistryError> for AppError` (Transient/Unreachable
+    →503, Permanent→502); `map_recognition_error` →503/502 (new `RegistryRejected`)
+    — PR: #473 (in review)
+  - `[~]` **part 2** (DIDComm) five handlers reply with threaded problem-reports;
+    `app_error_code` maps `AppError`→`e.p.msg.*` (malformed body→bad-request) — PR:
+    #474 (in review, stacked on #473)
+- `[x]` **P3.7** (S) Minimal unauth `/health` (`{status,version,vtc_did}`; mediator/
   vta detail folded into admin-gated diagnostics); `nosniff` on `did.jsonl` —
-  PR: #472 (in review)
+  PR: #472
 - `[ ]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
   idempotent enqueue — PR: ____
 - `[ ]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
