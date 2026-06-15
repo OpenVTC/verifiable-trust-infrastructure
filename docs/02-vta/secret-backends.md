@@ -23,10 +23,15 @@ trade-offs rather than the cheat-sheet.
 ## How backend selection works
 
 `vti_common::seed_store::SeedStore` is a small async trait
-(`get` / `set` / `delete`). Every backend implements it. At startup
-`vta-service::keys::seed_store::create_seed_store(&config)` walks
-the configured backends in priority order and returns the first one
-whose feature is compiled in **and** whose config is populated:
+(`get` / `set` / `delete`). Every backend implements it. The concrete
+backends and the factory live in the shared **`vti-secrets`** crate
+(`vti_secrets::create_seed_store(&secrets, &data_dir)`), so any external
+VTI integration can reuse them without depending on `vta-service`.
+`vta-service` re-exports them from `keys::seed_store` and keeps a thin
+`create_seed_store(&config)` wrapper, so first-party call sites are
+unchanged. At startup that wrapper walks the configured backends in
+priority order and returns the first one whose feature is compiled in
+**and** whose config is populated:
 
 | Priority | Backend | Cargo feature | Activates when… |
 |---|---|---|---|
@@ -64,7 +69,7 @@ are otherwise wire-compatible.
 
 ### AWS Secrets Manager
 
-Cargo feature: `aws-secrets` · File: `vta-service/src/keys/seed_store/aws.rs`
+Cargo feature: `aws-secrets` · File: `vti-secrets/src/seed_store/aws.rs`
 
 Stores the seed in a named AWS Secrets Manager secret in the VTA's
 deployment region. AWS credentials resolve from the standard SDK
@@ -108,7 +113,7 @@ least privilege.
 
 ### GCP Secret Manager
 
-Cargo feature: `gcp-secrets` · File: `vta-service/src/keys/seed_store/gcp.rs`
+Cargo feature: `gcp-secrets` · File: `vti-secrets/src/seed_store/gcp.rs`
 
 Stores the seed as a Secret Manager secret version. Authentication
 uses Application Default Credentials — service-account JSON, GCE
@@ -133,7 +138,7 @@ covers reads + writes of new versions; downgrade to
 
 ### Azure Key Vault
 
-Cargo feature: `azure-secrets` · File: `vta-service/src/keys/seed_store/azure.rs`
+Cargo feature: `azure-secrets` · File: `vti-secrets/src/seed_store/azure.rs`
 
 Stores the seed as a Key Vault secret. Authentication uses the
 DefaultAzureCredential chain — Managed Identity, az CLI session,
@@ -157,7 +162,7 @@ target vault. After first-boot the `Set` permission can be revoked.
 
 ### HashiCorp Vault
 
-Cargo feature: `vault-secrets` · File: `vta-service/src/keys/seed_store/vault.rs`
+Cargo feature: `vault-secrets` · File: `vti-secrets/src/seed_store/vault.rs`
 
 Stores the seed as a field within a Vault KV v2 secret. Designed for
 in-cluster Kubernetes deployments but works anywhere. Three auth
@@ -288,7 +293,7 @@ uses the system trust store to validate.
 
 ### Kubernetes `Secret`
 
-Cargo feature: `k8s-secrets` · File: `vta-service/src/keys/seed_store/k8s.rs`
+Cargo feature: `k8s-secrets` · File: `vti-secrets/src/seed_store/k8s.rs`
 
 Stores the seed as a hex string inside a namespaced Kubernetes
 `Secret`. For in-cluster deployments that want to keep secret
@@ -392,7 +397,7 @@ server) and a `Secret` + RBAC is all you need.
 
 ### KMS-TEE (Nitro Enclave)
 
-Cargo feature: `tee` · File: `vta-service/src/keys/seed_store/kms_tee.rs`
+Cargo feature: `tee` · File: `vti-secrets/src/seed_store/kms_tee.rs`
 
 In `vta-enclave` deployments the seed never enters the file system.
 Instead, the enclave performs an **attested decryption** at boot:
@@ -416,7 +421,7 @@ for the full design.
 
 ### OS keyring
 
-Cargo feature: `keyring` (default) · File: `vta-service/src/keys/seed_store/keyring.rs`
+Cargo feature: `keyring` (default) · File: `vti-secrets/src/seed_store/keyring.rs`
 
 The default for local development. Stores the seed under
 `service = "vta"`, `username = "master_seed"` in the OS-native
@@ -437,7 +442,7 @@ session. CI / headless environments should use a different backend.
 
 ### Config-seed
 
-Cargo feature: `config-seed` · File: `vta-service/src/keys/seed_store/config.rs`
+Cargo feature: `config-seed` · File: `vti-secrets/src/seed_store/config.rs`
 
 Reads the hex-encoded seed directly from the config file:
 
@@ -457,7 +462,7 @@ cloud secret manager instead.
 
 ### Plaintext file (fallback only)
 
-File: `vta-service/src/keys/seed_store/plaintext.rs`
+File: `vti-secrets/src/seed_store/plaintext.rs`
 
 Always available, no Cargo feature required. Stores the seed as a
 hex string in `<data_dir>/seed.hex`. The service emits a `WARN` log

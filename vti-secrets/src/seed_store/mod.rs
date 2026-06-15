@@ -39,8 +39,10 @@ use std::future::Future;
 #[cfg(feature = "tee")]
 use std::pin::Pin;
 
-use crate::config::AppConfig;
-use crate::error::AppError;
+use std::path::Path;
+
+use crate::config::SecretsConfig;
+use vti_common::error::AppError;
 
 pub use vti_common::seed_store::SeedStore;
 
@@ -52,48 +54,54 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Create a seed store backend based on compiled features and configuration.
 ///
+/// `secrets` is the resolved [`SecretsConfig`] (which backend + its
+/// connection parameters); `data_dir` is only consulted by the plaintext
+/// fallback for the `seed.plaintext` location.
+///
 /// Priority:
-/// 1. AWS Secrets Manager (if `aws-secrets` compiled + `secrets.aws_secret_name` set)
-/// 2. GCP Secret Manager (if `gcp-secrets` compiled + `secrets.gcp_secret_name` set)
-/// 3. Azure Key Vault (if `azure-secrets` compiled + `secrets.azure_vault_url` set)
-/// 4. HashiCorp Vault (if `vault-secrets` compiled + `secrets.vault_addr` set)
-/// 5. Kubernetes Secret (if `k8s-secrets` compiled + `secrets.k8s_secret_name` set)
-/// 6. Config file seed (if `config-seed` compiled + `secrets.seed` set)
+/// 1. AWS Secrets Manager (if `aws-secrets` compiled + `aws_secret_name` set)
+/// 2. GCP Secret Manager (if `gcp-secrets` compiled + `gcp_secret_name` set)
+/// 3. Azure Key Vault (if `azure-secrets` compiled + `azure_vault_url` set)
+/// 4. HashiCorp Vault (if `vault-secrets` compiled + `vault_addr` set)
+/// 5. Kubernetes Secret (if `k8s-secrets` compiled + `k8s_secret_name` set)
+/// 6. Config file seed (if `config-seed` compiled + `seed` set)
 /// 7. OS keyring (if `keyring` compiled — the default)
 /// 8. Plaintext file (always available — NOT secure)
 ///
-/// `unused_variables` allowed: `config` is only read under specific
-/// feature flags; a build with none of the cloud/keyring/config-seed
-/// features compiled leaves it unused, which is fine — we fall through
+/// `unused_variables` allowed: `secrets` / `data_dir` are only read under
+/// specific feature flags; a build with none of the cloud/keyring/config-seed
+/// features compiled leaves them unused, which is fine — we fall through
 /// to the plaintext backend. rustc's dead-code lint can't see through
 /// the cfg-gated early returns.
 #[allow(unused_variables)]
-pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppError> {
+pub fn create_seed_store(
+    secrets: &SecretsConfig,
+    data_dir: &Path,
+) -> Result<Box<dyn SeedStore>, AppError> {
     #[cfg(feature = "aws-secrets")]
-    if config.secrets.aws_secret_name.is_some() {
+    if secrets.aws_secret_name.is_some() {
         let store = AwsSeedStore::new(
-            config.secrets.aws_secret_name.clone().unwrap(),
-            config.secrets.aws_region.clone(),
+            secrets.aws_secret_name.clone().unwrap(),
+            secrets.aws_region.clone(),
         );
         return Ok(Box::new(store));
     }
 
     #[cfg(feature = "gcp-secrets")]
-    if config.secrets.gcp_secret_name.is_some() {
-        let project = config.secrets.gcp_project.clone().ok_or_else(|| {
+    if secrets.gcp_secret_name.is_some() {
+        let project = secrets.gcp_project.clone().ok_or_else(|| {
             AppError::Config(
                 "secrets.gcp_project is required when secrets.gcp_secret_name is set".into(),
             )
         })?;
-        let store = GcpSeedStore::new(project, config.secrets.gcp_secret_name.clone().unwrap());
+        let store = GcpSeedStore::new(project, secrets.gcp_secret_name.clone().unwrap());
         return Ok(Box::new(store));
     }
 
     #[cfg(feature = "azure-secrets")]
-    if config.secrets.azure_vault_url.is_some() {
-        let vault_url = config.secrets.azure_vault_url.clone().unwrap();
-        let secret_name = config
-            .secrets
+    if secrets.azure_vault_url.is_some() {
+        let vault_url = secrets.azure_vault_url.clone().unwrap();
+        let secret_name = secrets
             .azure_secret_name
             .clone()
             .unwrap_or_else(|| "vta-master-seed".to_string());
@@ -102,26 +110,26 @@ pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppEr
     }
 
     #[cfg(feature = "vault-secrets")]
-    if config.secrets.vault_addr.is_some() {
-        let store = vault::from_config(&config.secrets)?;
+    if secrets.vault_addr.is_some() {
+        let store = vault::from_config(secrets)?;
         return Ok(Box::new(store));
     }
 
     #[cfg(feature = "k8s-secrets")]
-    if config.secrets.k8s_secret_name.is_some() {
-        let store = k8s::from_config(&config.secrets)?;
+    if secrets.k8s_secret_name.is_some() {
+        let store = k8s::from_config(secrets)?;
         return Ok(Box::new(store));
     }
 
     #[cfg(feature = "config-seed")]
-    if config.secrets.seed.is_some() {
-        let store = ConfigSeedStore::new(config.secrets.seed.clone().unwrap());
+    if secrets.seed.is_some() {
+        let store = ConfigSeedStore::new(secrets.seed.clone().unwrap());
         return Ok(Box::new(store));
     }
 
     #[cfg(feature = "keyring")]
     {
-        let store = KeyringSeedStore::new(&config.secrets.keyring_service, "master_seed");
+        let store = KeyringSeedStore::new(&secrets.keyring_service, "master_seed");
         return Ok(Box::new(store));
     }
 
@@ -136,7 +144,7 @@ pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppEr
         // BIP-32 master seed to a plaintext file is a real footgun (one
         // wrong/missing TOML key would silently do it), so require an
         // explicit opt-in rather than falling through silently (P0.9).
-        if !config.secrets.allow_plaintext {
+        if !secrets.allow_plaintext {
             return Err(AppError::Config(
                 "no secure seed-store backend is available (keyring/cloud/Vault/config-seed \
                  not compiled-in or not configured), and the plaintext file fallback is \
@@ -149,16 +157,7 @@ pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppEr
             "secrets.allow_plaintext = true — storing the BIP-32 master seed in a PLAINTEXT \
              file. This is NOT secure; use a keyring or cloud/Vault backend in production."
         );
-        let store = PlaintextSeedStore::new(&config.store.data_dir);
+        let store = PlaintextSeedStore::new(data_dir);
         Ok(Box::new(store))
     }
 }
-
-// NOTE: the plaintext-fallback opt-in above (`secrets.allow_plaintext`) is
-// not unit-tested. The fallthrough is only reachable when NO secure backend
-// is compiled-in, but the test harness can never produce that build: the
-// dev-dependency self-reference (`vta-service = { features = ["test-support"]
-// }`, no `default-features = false`) re-enables the default `keyring` feature
-// for every test target, so `create_seed_store` always takes the keyring
-// branch in tests. The opt-in guard is a simple `if !allow_plaintext { Err }`
-// on the otherwise-silent production fallthrough.

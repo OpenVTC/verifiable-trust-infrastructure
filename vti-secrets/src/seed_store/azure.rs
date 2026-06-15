@@ -5,7 +5,7 @@ use azure_identity::DeveloperToolsCredential;
 use azure_security_keyvault_secrets::SecretClient;
 use tracing::debug;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 /// Seed store backed by Azure Key Vault.
 ///

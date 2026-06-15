@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::error::AppError;
 use tracing::debug;
+use vti_common::error::AppError;
 
 /// Format an AWS SDK service error with its full source chain for troubleshooting.
 fn format_aws_error<E: std::error::Error>(context: &str, err: E) -> AppError {

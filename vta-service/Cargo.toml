@@ -30,20 +30,25 @@ cli-synthesis = ["vti-common/cli-synthesis"]
 # OS keyring backend for the VTA seed. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
-keyring = ["dep:keyring-core", "vta-sdk/keyring"]
-config-seed = []
-aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
+config-seed = ["vti-secrets/config-seed"]
+aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "vti-secrets/aws-secrets"]
 gcp-secrets = [
   "dep:google-cloud-secretmanager-v1",
   "dep:google-cloud-auth",
   "dep:bytes",
+  "vti-secrets/gcp-secrets",
 ]
-azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
-vault-secrets = ["dep:vaultrs"]
+azure-secrets = [
+  "dep:azure_security_keyvault_secrets",
+  "dep:azure_identity",
+  "vti-secrets/azure-secrets",
+]
+vault-secrets = ["dep:vaultrs", "vti-secrets/vault-secrets"]
 # Kubernetes Secret backend — stores the master seed in a namespaced
 # `Secret` resource. Off by default; deliberately enabled for in-cluster
 # deployments that prefer native k8s Secrets over a cloud secret manager.
-k8s-secrets = ["dep:kube", "dep:k8s-openapi"]
+k8s-secrets = ["dep:kube", "dep:k8s-openapi", "vti-secrets/k8s-secrets"]
 tee = [
   "webvh",
   "dep:libc",
@@ -54,6 +59,7 @@ tee = [
   "dep:didwebvh-rs",
   "dep:cbc",
   "dep:aes",
+  "vti-secrets/tee",
 ]
 vsock-store = ["vti-common/vsock-store"]
 # Exposes the test-harness helpers (in-memory keyspaces, VTA bootstrap
@@ -79,6 +85,10 @@ required-features = ["cli-synthesis"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.10", features = ["encryption", "passkey", "openapi"] }
+# Seed-store backends + `create_seed_store` factory + `SecretsConfig` (lifted
+# from this crate into a shared crate so external integrations can reuse them).
+# Per-backend features are activated by this crate's matching features below.
+vti-secrets = { path = "../vti-secrets", version = "0.1" }
 vta-sdk = { path = "../vta-sdk", version = "0.13", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.

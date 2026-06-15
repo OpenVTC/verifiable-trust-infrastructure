@@ -12,7 +12,7 @@ use vaultrs::client::{Client, VaultClient, VaultClientSettingsBuilder};
 use vaultrs::error::ClientError;
 use vaultrs::kv2;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 /// Vault recommends renewing well before expiry; renewing at half the
 /// lease keeps the token comfortably within its window even if a single

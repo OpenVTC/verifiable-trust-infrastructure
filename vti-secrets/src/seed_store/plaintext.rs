@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 use tracing::warn;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 /// Plaintext file-based seed store (NOT secure — use only for development).
 ///
@@ -91,7 +91,7 @@ impl super::SeedStore for PlaintextSeedStore {
             // a plain `OpenOptions::open` even with `mode(0o600)` set
             // (the mode hint only applies on creation). On Windows, this
             // is the primary mechanism (no `OpenOptions::mode` analogue).
-            vta_cli_common::secure_file::restrict_file_to_owner(&self.path).map_err(|e| {
+            vti_common::secure_file::restrict_file_to_owner(&self.path).map_err(|e| {
                 AppError::SecretStore(format!(
                     "failed to restrict plaintext seed file to owner: {e}"
                 ))

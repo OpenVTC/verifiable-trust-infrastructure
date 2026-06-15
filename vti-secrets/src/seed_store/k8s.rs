@@ -10,7 +10,7 @@ use kube::{Client, ResourceExt};
 use tracing::debug;
 
 use crate::config::SecretsConfig;
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 /// Format a `kube` error with its full source chain for troubleshooting —
 /// the top-level `Display` is usually a terse "ApiError"/"HyperError" that

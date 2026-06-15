@@ -7,7 +7,7 @@
 
 use std::sync::Mutex;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 use super::{BoxFuture, SeedStore};
 

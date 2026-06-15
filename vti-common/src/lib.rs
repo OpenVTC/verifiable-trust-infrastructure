@@ -8,6 +8,7 @@ pub mod idempotency;
 pub mod identifier;
 pub mod integrity;
 pub mod pagination;
+pub mod secure_file;
 pub mod seed_store;
 #[cfg(feature = "setup")]
 pub mod setup;

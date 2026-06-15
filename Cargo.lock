@@ -10030,6 +10030,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "vta-sdk 0.13.2",
+ "vti-common",
  "x25519-dalek",
 ]
 
@@ -10261,6 +10262,7 @@ dependencies = [
  "vta-sdk 0.13.2",
  "vta-service",
  "vti-common",
+ "vti-secrets",
  "vti-webauthn",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -10422,6 +10424,33 @@ dependencies = [
  "uuid",
  "vta-sdk 0.13.2",
  "vta-service",
+ "vti-common",
+]
+
+[[package]]
+name = "vti-secrets"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-secretsmanager",
+ "azure_identity",
+ "azure_security_keyvault_secrets",
+ "bytes",
+ "ed25519-dalek",
+ "google-cloud-auth",
+ "google-cloud-secretmanager-v1",
+ "hex",
+ "k8s-openapi",
+ "keyring-core",
+ "kube",
+ "multibase",
+ "rand 0.10.1",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vaultrs",
+ "vta-sdk 0.13.2",
  "vti-common",
 ]
 

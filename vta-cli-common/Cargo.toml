@@ -16,6 +16,8 @@ vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   "sealed-transfer",
   "provision-integration",
 ] }
+# Owner-only file-permission helper (`secure_file`), shared workspace-wide.
+vti-common = { path = "../vti-common", version = "0.10" }
 affinidi-crypto = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }

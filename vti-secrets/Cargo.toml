@@ -1,0 +1,87 @@
+[package]
+name = "vti-secrets"
+description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Hex-encoded seed read straight from the `[secrets]` config table.
+config-seed = []
+# OS keyring backend. The consuming binary must register a platform store
+# (e.g. via `vta_sdk::keyring_init::install_default_store()`) at startup.
+keyring = ["dep:keyring-core"]
+aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+gcp-secrets = [
+  "dep:google-cloud-secretmanager-v1",
+  "dep:google-cloud-auth",
+  "dep:bytes",
+]
+azure-secrets = ["dep:azure_security_keyvault_secrets", "dep:azure_identity"]
+vault-secrets = ["dep:vaultrs"]
+# Kubernetes Secret backend — stores the seed in a namespaced `Secret`
+# resource, usable in-cluster via the pod ServiceAccount.
+k8s-secrets = ["dep:kube", "dep:k8s-openapi"]
+# In-TEE-memory seed store (`kms_tee`). Pulls no extra deps — the KMS
+# bootstrap that fills it lives in the enclave front-end.
+tee = []
+# Integration cold-start onboarding helper (`onboarding::IntegrationOnboarding`):
+# ephemeral did:key mint → SeedStore persist → context-scoped ACL grant →
+# auto-rotate on first connect. Pulls in `vta-sdk`'s session machinery.
+onboarding = [
+  "dep:vta-sdk",
+  "dep:ed25519-dalek",
+  "dep:multibase",
+  "dep:rand",
+]
+
+[dependencies]
+vti-common = { path = "../vti-common", version = "0.10" }
+serde = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+# Onboarding feature: the SDK session/auth state machine + local did:key mint.
+vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
+  "session",
+], optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+multibase = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+
+# AWS Secrets Manager backend (aws-secrets feature).
+aws-sdk-secretsmanager = { version = "1", optional = true }
+aws-config = { version = "1", features = [
+  "behavior-version-latest",
+], optional = true }
+# GCP Secret Manager backend (gcp-secrets feature).
+google-cloud-secretmanager-v1 = { version = "1", optional = true }
+google-cloud-auth = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
+# Azure Key Vault backend (azure-secrets feature).
+azure_security_keyvault_secrets = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
+# HashiCorp Vault client (vault-secrets feature). KV v2 + Kubernetes /
+# token / AppRole auth methods. `rustls` is vaultrs's default TLS backend,
+# matching the rest of the workspace.
+vaultrs = { version = "0.8", optional = true }
+# Kubernetes Secret backend (k8s-secrets feature). Reads/writes the seed
+# from a namespaced `Secret` via the in-cluster ServiceAccount or a local
+# kubeconfig (`Client::try_default`).
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
+keyring-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }
+
+[lints]
+workspace = true

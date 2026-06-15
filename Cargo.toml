@@ -13,6 +13,7 @@ members = [
   "vta-enclave",
   "vtc-service",
   "vti-common",
+  "vti-secrets",
   "vti-webauthn",
 ]
 # `vta-mobile-core` is a UniFFI client crate that cross-compiles to Android/iOS.
@@ -31,6 +32,7 @@ default-members = [
   "vta-enclave",
   "vtc-service",
   "vti-common",
+  "vti-secrets",
   "vti-webauthn",
 ]
 exclude = ["deploy/nitro/enclave-proxy"]

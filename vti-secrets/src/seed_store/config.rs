@@ -1,8 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::error::AppError;
 use tracing::debug;
+use vti_common::error::AppError;
 
 /// Seed store that reads a hex-encoded seed from the config.
 ///
