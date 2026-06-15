@@ -253,6 +253,8 @@ async fn main() {
         Commands::Contexts { command } => commands::contexts::run(&client, command).await,
         Commands::Acl { command } => commands::acl::run(&client, command).await,
         Commands::StepUp { command } => commands::step_up::run(&client, command).await,
+        Commands::Device { command } => commands::device::run(&client, command).await,
+        Commands::Vault { command } => commands::vault::run(&client, command).await,
         Commands::AuthCredential { command } => {
             commands::auth_credential::run(&client, command).await
         }

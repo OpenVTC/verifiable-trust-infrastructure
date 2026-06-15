@@ -128,6 +128,18 @@ pub(crate) enum Commands {
         command: StepUpCommands,
     },
 
+    /// Device management for Service consumers (personal AI agents, companions)
+    Device {
+        #[command(subcommand)]
+        command: DeviceCommands,
+    },
+
+    /// Secrets vault for Service consumers (list, release, store secrets)
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommands,
+    },
+
     /// Generate auth credentials for applications and services
     AuthCredential {
         #[command(subcommand)]
@@ -1650,6 +1662,117 @@ pub(crate) enum PolicyCommands {
     },
     /// Disable enforcement — revert to AAL1 everywhere (the shipping default).
     Disable,
+}
+
+/// `pnm device …` — manage `DeviceBinding`s for Service consumers (personal AI
+/// agents, companions). See `docs/02-vta/personal-ai-agents.md`.
+#[derive(Subcommand)]
+pub(crate) enum DeviceCommands {
+    /// List registered devices. Optionally filter to one Service kind.
+    List {
+        /// Filter to a Service consumer kind, e.g. `ai-agent`.
+        #[arg(long)]
+        service_kind: Option<String>,
+    },
+    /// Register the authenticated DID as a device (its DID must already be in
+    /// the ACL). Defaults to a `service` consumer of kind `ai-agent`.
+    Register {
+        /// Service kind for `consumerKind` (default `ai-agent`).
+        #[arg(long, default_value = "ai-agent")]
+        service_kind: String,
+        /// Human-readable device/agent name.
+        #[arg(long)]
+        display_name: String,
+        /// Platform string (e.g. `linux`, `macos`).
+        #[arg(long)]
+        platform: Option<String>,
+        /// Optional HPKE public key (multibase) for sealed delivery.
+        #[arg(long)]
+        hpke_public_key: Option<String>,
+    },
+    /// Disable a device by id (kept on record; can no longer authenticate).
+    Disable {
+        /// The `deviceId` to disable.
+        device_id: String,
+    },
+    /// Record a device's push WakeHandle and return the trigger allowlist.
+    SetWake {
+        /// Gateway DID (DIDComm) or URL (HTTPS).
+        #[arg(long)]
+        gateway: String,
+        /// Opaque wake handle issued by the push gateway.
+        #[arg(long)]
+        handle: String,
+        /// Suggested trigger types (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        suggested_triggers: Vec<String>,
+    },
+    /// Refresh `lastSeenAt`; returns server time + any queued operations.
+    Heartbeat {
+        /// Updated platform string, if changed.
+        #[arg(long)]
+        platform: Option<String>,
+    },
+}
+
+/// `pnm vault …` — Service-consumer secrets vault. Secret-bearing operations
+/// (`upsert`, `release`) use `didcomm-authcrypt` and require DIDComm transport.
+#[derive(Subcommand)]
+pub(crate) enum VaultCommands {
+    /// List vault-entry metadata (no secrets). `VaultRead`.
+    List {
+        /// Path to a JSON filter object (or `-` for stdin). Omit for all.
+        #[arg(long)]
+        filters_file: Option<String>,
+    },
+    /// Show a single entry's metadata by id (no secret). `VaultRead`.
+    Get {
+        /// The vault entry id.
+        id: String,
+    },
+    /// Delete an entry by id, with optional optimistic-concurrency check.
+    /// `VaultWrite`.
+    Delete {
+        /// The vault entry id.
+        id: String,
+        /// Expected current version (reject on mismatch).
+        #[arg(long)]
+        expected_version: Option<u32>,
+    },
+    /// Create/update an entry. `VaultWrite`. `--entry-file` carries the entry
+    /// fields (`contextId`, `targets`, `label`, `secretKind`, …);
+    /// `--secret-file` (optional) is the cleartext secret, sealed before send.
+    Upsert {
+        /// Path to the entry-fields JSON (or `-` for stdin).
+        #[arg(long)]
+        entry_file: String,
+        /// Path to the cleartext `VaultSecret` JSON to seal (or `-` for stdin).
+        #[arg(long)]
+        secret_file: Option<String>,
+    },
+    /// Release a secret sealed to the caller and print the cleartext.
+    /// `FillRelease`. Requires DIDComm transport.
+    Release {
+        /// The vault entry id.
+        id: String,
+        /// Path to a JSON site-target object (or `-` for stdin).
+        #[arg(long)]
+        target_file: Option<String>,
+    },
+    /// Mint a session as the entry's principal. `ProxyLogin`. `--file` is the
+    /// full wire request JSON.
+    ProxyLogin {
+        /// Path to the request JSON (or `-` for stdin).
+        #[arg(long)]
+        file: String,
+    },
+    /// Sign a Trust Task envelope as the entry's principal. `SignTrustTask`.
+    /// `--file` is the full wire request JSON.
+    SignTrustTask {
+        /// Path to the request JSON (or `-` for stdin).
+        #[arg(long)]
+        file: String,
+    },
 }
 
 #[derive(Subcommand)]

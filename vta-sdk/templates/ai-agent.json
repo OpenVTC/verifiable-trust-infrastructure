@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "name": "ai-agent",
+  "kind": "ai-agent",
+  "description": "Personal AI agent identity (open-claw / nano-claw / hermes and the like). Mints an agent DID whose document carries a signing key (authentication + assertionMethod) and a key-agreement key (keyAgreement, for authcrypt + sealed-transfer), plus a single DIDCommMessaging service routing inbound traffic through the operator's shared mediator. This is the VTA-minted counterpart to a self-generated did:key + device/register: after provisioning, the agent is enrolled as a Service consumer (consumerKind serviceKind 'ai-agent') via the device/* trust tasks and granted a least-privilege capability set (typically sign-trust-task + vault-read/fill-release). URL or WEBVH_SERVER is required at provision time so the VTA can publish the did:webvh log, but neither appears in the rendered document.",
+  "methods": ["webvh", "web"],
+  "requiredVars": ["MEDIATOR_DID"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "ROUTING_KEYS": [],
+    "URL": null,
+    "WEBVH_SERVER": null,
+    "LABEL": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-0"],
+    "authentication": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      {
+        "id": "{DID}#vta-didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          {
+            "accept": "{ACCEPT}",
+            "routingKeys": "{ROUTING_KEYS}",
+            "uri": "{MEDIATOR_DID}"
+          }
+        ]
+      }
+    ]
+  }
+}

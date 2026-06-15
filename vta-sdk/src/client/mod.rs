@@ -98,6 +98,7 @@ pub use types::*;
 // ── Per-domain impl blocks ─────────────────────────────────────────
 
 mod acl;
+mod agent_devices;
 #[cfg(feature = "session")]
 mod auto_connect;
 mod backup;
@@ -107,6 +108,7 @@ mod contexts;
 mod did_templates;
 mod keys;
 mod secrets;
+mod vault;
 mod vta_management;
 mod webvh;
 
@@ -547,6 +549,120 @@ impl VtaClient {
         }
     }
 
+    // ── Trust-task dispatch (device/vault slices) ──────────────────────
+
+    /// Dispatch a Trust Task over whichever transport this client uses and
+    /// return the success response's `payload`.
+    ///
+    /// The wire envelope is identical on both transports — `{ id, type,
+    /// payload }`:
+    /// - **REST** → `POST /api/trust-tasks` with the envelope; the HTTP status
+    ///   signals success/failure and the response body's `payload` is returned.
+    /// - **DIDComm** → a message of type [`TRUST_TASK_ENVELOPE_TYPE`] carrying
+    ///   the envelope as its body; the reply is itself a trust-task document
+    ///   (HTTP status is dropped on the wire), so a missing `payload` is treated
+    ///   as a rejection and surfaced as an error.
+    ///
+    /// Used by the `device/*` and `vault/*` client methods, which have no
+    /// dedicated REST route and are reachable only through the dispatcher.
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub(crate) async fn dispatch_trust_task(
+        &self,
+        type_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+    ) -> Result<serde_json::Value, VtaError> {
+        let doc = serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": type_uri,
+            "payload": payload,
+        });
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client
+                    .post(format!("{base_url}/api/trust-tasks"))
+                    .json(&doc);
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(VtaError::from_http(status, body));
+                }
+                let response_doc: serde_json::Value = resp.json().await?;
+                Self::extract_trust_task_payload(response_doc)
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => {
+                const TRUST_TASK_ENVELOPE_TYPE: &str =
+                    "https://trusttasks.org/binding/didcomm/0.1/envelope";
+                let response_doc: serde_json::Value = session
+                    .send_and_wait(
+                        TRUST_TASK_ENVELOPE_TYPE,
+                        doc,
+                        TRUST_TASK_ENVELOPE_TYPE,
+                        timeout,
+                    )
+                    .await?;
+                Self::extract_trust_task_payload(response_doc)
+            }
+        }
+    }
+
+    /// Pull `payload` out of a framework trust-task response document. A success
+    /// document carries `payload`; a rejection does not — surface its
+    /// `reason`/`comment` (or the whole document) as a protocol error so the
+    /// DIDComm path (which drops the HTTP status) still fails loudly.
+    fn extract_trust_task_payload(doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
+        if let Some(payload) = doc.get("payload") {
+            return Ok(payload.clone());
+        }
+        let reason = doc
+            .get("reason")
+            .or_else(|| doc.get("comment"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| doc.to_string());
+        Err(VtaError::Protocol(format!("trust task rejected: {reason}")))
+    }
+
+    /// Seal a cleartext `VaultSecret` JSON for `vault/upsert`'s `sealedSecret`
+    /// field. Requires the DIDComm transport — the seal is a `didcomm-authcrypt`
+    /// JWE produced with this client's own keys, so a REST-only client (no key
+    /// material) cannot produce it and gets a clear `UnsupportedTransport`
+    /// error.
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub async fn seal_vault_secret(&self, secret: serde_json::Value) -> Result<String, VtaError> {
+        match &self.transport {
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => session.seal_to_vta(secret).await,
+            Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
+                "sealing a vault secret requires the DIDComm transport \
+                 (REST clients hold no key material to authcrypt with)"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Open a `didcomm-authcrypt` JWE the VTA sealed to this client (the
+    /// `sealedSecret` returned by `vault/release` / `vault/get`). DIDComm-only,
+    /// for the same reason as [`Self::seal_vault_secret`].
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub async fn open_sealed_secret(&self, jwe: &str) -> Result<serde_json::Value, VtaError> {
+        match &self.transport {
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => session.open_from_vta(jwe).await,
+            Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
+                "opening a sealed vault secret requires the DIDComm transport".into(),
+            )),
+        }
+    }
+
     // ── Health ───────────────────────────────────────────────────────
 
     /// GET /health (always REST, unauthenticated)
@@ -885,5 +1001,39 @@ mod tests {
         assert_eq!(resp.name, "Verified Trust Agent");
         assert!(resp.did.is_none());
         assert_eq!(resp.base_path, "m/26'/2'/0'");
+    }
+
+    // ── extract_trust_task_payload (device/vault dispatch) ───────────
+
+    #[test]
+    fn trust_task_payload_extracted_from_success_doc() {
+        // A framework success document carries `payload`; dispatch returns it.
+        let doc = serde_json::json!({
+            "id": "urn:uuid:abc",
+            "type": "https://trusttasks.org/spec/device/list/0.1#response",
+            "payload": { "devices": [], "truncated": false }
+        });
+        let out = VtaClient::extract_trust_task_payload(doc).unwrap();
+        assert_eq!(
+            out,
+            serde_json::json!({ "devices": [], "truncated": false })
+        );
+    }
+
+    #[test]
+    fn trust_task_reject_doc_surfaces_reason_as_error() {
+        // A reject document has no `payload`; over DIDComm the HTTP status is
+        // dropped, so a missing payload must become a loud error carrying the
+        // reject reason rather than a silent empty success.
+        let doc = serde_json::json!({
+            "id": "urn:uuid:def",
+            "type": "https://trusttasks.org/spec/vault/get/0.1#reject",
+            "reason": "vault/get:not_found — no such entry"
+        });
+        let err = VtaClient::extract_trust_task_payload(doc).unwrap_err();
+        match err {
+            VtaError::Protocol(msg) => assert!(msg.contains("not_found"), "got: {msg}"),
+            other => panic!("expected Protocol error, got {other:?}"),
+        }
     }
 }

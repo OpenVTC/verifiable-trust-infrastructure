@@ -226,6 +226,46 @@ impl DIDCommSession {
         })
     }
 
+    /// Seal a cleartext JSON value as a `didcomm-authcrypt` JWE addressed to
+    /// the VTA — the `sealedSecret` shape `vault/upsert/0.1` expects.
+    ///
+    /// `body` is the cleartext `VaultSecret` document. The VTA unpacks the JWE,
+    /// cross-checks the authcrypt sender DID against the authenticated caller,
+    /// and deserialises the body as a `VaultSecret`
+    /// (`operations::vault::upsert::unseal_secret`). Authcrypt with the session's
+    /// own keys, so the sender is provably this client's DID. The message `type`
+    /// is informational — the VTA reads only `from` + `body`.
+    pub(crate) async fn seal_to_vta(&self, body: serde_json::Value) -> Result<String, VtaError> {
+        const VAULT_SECRET_TYPE: &str =
+            "https://trusttasks.org/spec/vault/_shared/0.1/vault-secret";
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        let msg = Message::build(msg_id, VAULT_SECRET_TYPE.to_string(), body)
+            .from(self.client_did.clone())
+            .to(self.vta_did.clone())
+            .finalize();
+        let (packed, _) = self
+            .atm
+            .pack_encrypted(
+                &msg,
+                &self.vta_did,
+                Some(&self.client_did),
+                Some(&self.client_did),
+            )
+            .await
+            .map_err(|e| VtaError::DidcommTransport(format!("failed to seal vault secret: {e}")))?;
+        Ok(packed)
+    }
+
+    /// Open a `didcomm-authcrypt` JWE the VTA sealed to this client (the
+    /// `sealedSecret` / `sealedSessionBlob` returned by `vault/release` and
+    /// `vault/proxy-login`), recovering the cleartext body.
+    pub(crate) async fn open_from_vta(&self, jwe: &str) -> Result<serde_json::Value, VtaError> {
+        let (msg, _meta) = self.atm.unpack(jwe).await.map_err(|e| {
+            VtaError::DidcommTransport(format!("failed to open sealed secret: {e}"))
+        })?;
+        Ok(msg.body)
+    }
+
     /// Send a DIDComm message and wait for a matching response.
     ///
     /// Packs the message, sends it to the mediator, then uses the WebSocket

@@ -13,9 +13,9 @@ consumer gets the new shape on the next create. No redeploy.
 ## Why templates
 
 - **Data, not code.** An operator can ship a new agent kind by dropping a JSON
-  file, no recompile. The built-ins (`didcomm-mediator`, `push-gateway`,
-  `vta-admin`, `vtc-host`, `did-host-http-didcomm`, `did-host-http`,
-  `did-host-didcomm`)
+  file, no recompile. The built-ins (`ai-agent`, `didcomm-mediator`,
+  `push-gateway`, `vta-admin`, `vtc-host`, `did-host-http-didcomm`,
+  `did-host-http`, `did-host-didcomm`)
   are baseline shapes, not the only shapes.
 - **Method-agnostic.** Same format works for `did:webvh`, `did:web`, or
   `did:key` — the loader only knows about `{TOKEN}` placeholders. Method-
@@ -138,6 +138,12 @@ template without explicit scope is **context → global → builtin**:
 
 - **Built-in** — embedded in the SDK at compile time. Always available. Fork
   with `pnm did-templates init <kind>`. Current built-ins:
+  - `ai-agent` — personal AI agent identity (open-claw / nano-claw / hermes).
+    Signing + key-agreement methods and a single `DIDCommMessaging` service
+    routing inbound traffic through the operator's mediator, so the agent is
+    reachable over DIDComm as a Service consumer (`serviceKind: ai-agent`).
+    Requires `MEDIATOR_DID`. See `personal-ai-agents.md` for the full
+    enablement runbook.
   - `didcomm-mediator` — DIDComm v2 routing mediator with a URL-based service
     endpoint.
   - `push-gateway` — push wake-up gateway identity: signing + key-agreement

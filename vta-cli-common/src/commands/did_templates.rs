@@ -70,6 +70,7 @@ pub fn cmd_init(kind: String) -> Result<(), Box<dyn std::error::Error>> {
     // webvh-* name (resolved via the builtin loader's alias table).
     let builtin_name = match kind.as_str() {
         "mediator" => "didcomm-mediator",
+        "agent" => "ai-agent",
         "did-hosting" | "hosting" | "daemon" => "did-hosting-daemon",
         "control" => "did-hosting-control",
         "witness" | "watcher" | "server" => "did-hosting-server",

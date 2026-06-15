@@ -9,6 +9,7 @@ use super::{DidTemplate, TemplateError};
 /// Names of every built-in template, in alphabetical order. Surfaced in
 /// `BuiltinNotFound` errors so callers see what's available.
 pub const BUILTIN_NAMES: &[&str] = &[
+    "ai-agent",
     "did-host-didcomm",
     "did-host-http",
     "did-host-http-didcomm",
@@ -18,6 +19,7 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "vtc-host",
 ];
 
+const AI_AGENT: &str = include_str!("../../templates/ai-agent.json");
 const DIDCOMM_MEDIATOR: &str = include_str!("../../templates/didcomm-mediator.json");
 const PUSH_GATEWAY: &str = include_str!("../../templates/push-gateway.json");
 const VTA_ADMIN: &str = include_str!("../../templates/vta-admin.json");
@@ -32,6 +34,7 @@ const DID_HOST_DIDCOMM: &str = include_str!("../../templates/did-host-didcomm.js
 /// names.
 pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
     let raw = match name {
+        "ai-agent" => AI_AGENT,
         "didcomm-mediator" => DIDCOMM_MEDIATOR,
         "push-gateway" => PUSH_GATEWAY,
         "vta-admin" => VTA_ADMIN,

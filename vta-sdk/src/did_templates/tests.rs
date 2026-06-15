@@ -718,3 +718,85 @@ fn vtc_host_requires_url() {
         "got: {err}"
     );
 }
+
+// ─── ai-agent built-in ───────────────────────────────────────────────
+//
+// The VTA-minted personal-AI-agent identity (open-claw / nano-claw /
+// hermes). Same DIDComm-via-mediator shape as did-host-didcomm but with
+// kind `ai-agent`, so a consumer-side device/register can recognise it.
+
+fn ai_agent_fixture_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmAGENT:example.com:agents:nano-claw");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkAGENTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSAGENTka");
+    vars.insert_string(
+        "MEDIATOR_DID",
+        "did:webvh:QmMED:mediator.example.com:mediator",
+    );
+    vars
+}
+
+#[test]
+fn ai_agent_builtin_loads_and_validates() {
+    let tpl = load_embedded("ai-agent").expect("load_embedded");
+    assert_eq!(tpl.name, "ai-agent");
+    assert_eq!(tpl.kind, "ai-agent");
+    assert_eq!(tpl.methods, vec!["webvh", "web"]);
+    assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID"]);
+    tpl.validate().expect("validate after load");
+}
+
+#[test]
+fn ai_agent_builtin_has_key_agreement_for_authcrypt() {
+    // The agent receives authcrypt + sealed-transfer, so the rendered
+    // document must expose a keyAgreement method (key-1), not just a
+    // signing key. Guards against a future edit dropping it.
+    let tpl = load_embedded("ai-agent").unwrap();
+    let doc = tpl.render(&ai_agent_fixture_vars()).unwrap();
+    assert_eq!(
+        doc["keyAgreement"],
+        json!(["did:webvh:QmAGENT:example.com:agents:nano-claw#key-1"])
+    );
+    assert_eq!(
+        doc["authentication"],
+        json!(["did:webvh:QmAGENT:example.com:agents:nano-claw#key-0"])
+    );
+}
+
+#[test]
+fn ai_agent_builtin_has_exactly_one_didcomm_service_via_mediator() {
+    let tpl = load_embedded("ai-agent").unwrap();
+    let doc = tpl.render(&ai_agent_fixture_vars()).unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    assert_eq!(
+        services.len(),
+        1,
+        "expected one service entry: {services:?}"
+    );
+    assert_eq!(services[0]["type"], "DIDCommMessaging");
+    assert_eq!(
+        services[0]["serviceEndpoint"][0]["uri"], "did:webvh:QmMED:mediator.example.com:mediator",
+        "inbound traffic must route through the operator's mediator"
+    );
+    // Whole-string-placeholder contract: accept substitutes to an array.
+    assert!(services[0]["serviceEndpoint"][0]["accept"].is_array());
+}
+
+#[test]
+fn ai_agent_builtin_missing_mediator_did_errors() {
+    let tpl = load_embedded("ai-agent").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmAGENT:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkAGENTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSAGENTka");
+    // MEDIATOR_DID deliberately omitted.
+
+    let err = tpl
+        .render(&vars)
+        .expect_err("missing MEDIATOR_DID must error");
+    assert!(
+        matches!(&err, TemplateError::MissingVars(m) if m.contains("MEDIATOR_DID")),
+        "got: {err}"
+    );
+}
