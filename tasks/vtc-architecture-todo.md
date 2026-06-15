@@ -178,7 +178,7 @@ the #457 posture backstop provides its regression guard.)
   into `routes::with_csrf` (canonical router builder) so every integration test
   exercises it — wiring it in revealed (and fixed) the previously-invisible
   401-vs-403 breakage in recognise/renewal/removal/policies/join. 15 unit + 3
-  cookie_session integration tests; full suite 968 green. — PR: ____
+  cookie_session integration tests; full suite 968 green. — PR: #490 (in review)
 - `[x]` **P3.3** (M) Website `PUT` through the full safety chain; validate before
   `create_dir_all` — `canonical_within_root_for_create` (shared
   `validate_path_components`; rejects `..`/hidden/blocklist/control/NFC + symlinked
