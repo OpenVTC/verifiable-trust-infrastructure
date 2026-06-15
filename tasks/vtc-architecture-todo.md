@@ -203,9 +203,9 @@ the #457 posture backstop provides its regression guard.)
   PR: #472
 - `[x]` **P3.8** (M) Syncer: seek tail walk from cursor (range API); event_id-keyed
   idempotent enqueue — PR: #487
-- `[~]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
-  compat check) — design note first — deps: P2.5 — **design note merged (#492);
-  implementation done, PR pending.** `src/backup.rs` (export/import/decrypt +
+- `[x]` **P3.9** (XL) Backup/restore for all keyspaces (Argon2id+AES-GCM, vtc_did
+  compat check) — design note first — deps: P2.5 — design note (#492) +
+  implementation (#494). `src/backup.rs` (export/import/decrypt +
   `check_vtc_did_compatibility`), `routes/backup.rs` (`POST /v1/backup/{export,
   import}`, super-admin, preview/confirm, 64 MiB import cap), `store/keyspaces.rs`
   `BACKED_UP`/`EXCLUDED_FROM_BACKUP` + `backup_partition_is_total` census test,
@@ -214,8 +214,7 @@ the #457 posture backstop provides its regression guard.)
   sessions/install/sync/registry/config excluded; vtc_did mismatch → 409.
   Operator doc `docs/03-vtc/backup-restore.md`. 8 unit + 4 integration tests
   (full-state round-trip, preview-no-mutate, foreign-did 409, wrong-password). —
-  PR: #494 (in review)
-  - design note: PR #492
+  PR: #494 (impl), #492 (design note)
 - `[x]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
   CLAUDE.md — Split `run_setup_wizard` into
   `collect_interactive() → apply(WizardPlan)`; new `setup/from_toml.rs` parses a
@@ -232,10 +231,20 @@ the #457 posture backstop provides its regression guard.)
 - `[x]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
   `Consumed` row (re-mint from persisted admin DID; `start→finish→start` still
   rejects) — PR: #476
-- `[ ]` **P3.13** (M, several small PRs) Hygiene: stale webauthn doc; dead `b64:`
-  path; redact `Debug` on secret types + gate wizard key print; `vtcDid`/`vtcUrl`
-  field rename; public-profile field caps; path-param DID validation; reject
-  `http://` registry; supervisor restart-on-panic — PR(s): ____
+- `[x]` **P3.13** (M, several small PRs) Hygiene: stale webauthn doc (#481); dead
+  `b64:` path + redact `Debug` on secret types + gate wizard key print (#479);
+  `vtcDid`/`vtcUrl` field rename (#481, typed credential bundle); public-profile
+  field caps + reject `http://` registry (#478); path-param DID validation (#480);
+  supervisor restart-on-panic + MembershipSyncer liveness (#484) — PR(s): #478,
+  #479, #480, #481, #484
+
+**Checkpoint 3:** `[x]` **Phase 3 complete.** P3.1 (#465/#466), P3.2 (#490),
+P3.3 (#467), P3.4 (#469), P3.5 (#470), P3.6 (#473/#474), P3.7 (#472), P3.8
+(#487), P3.9 (#492 design + #494 impl), P3.10 (#491), P3.11 (#475), P3.12
+(#476), P3.13 (#478–#484) all merged; full suite green on each. Optional
+follow-on: a `cnm backup` CLI over the P3.9 REST surface (admin SPA + REST
+already cover the acceptance criteria). **The VTC architecture
+simplification & hardening todo is complete — all of Phase 0–3 merged.**
 
 ---
 
