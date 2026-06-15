@@ -177,14 +177,14 @@ the #457 posture backstop provides its regression guard.)
   `plugins.json` scan; implement `If-None-Match`→304 — `cache_control_for`
   (shell no-cache, hashed assets keep TTL); `scan_plugin_dir_cached` (30s TTL);
   `etag_matches`→304 in website serve — PR: #470
-- `[~]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
-  boundaries
-  - `[~]` **part 1** (REST) `From<RegistryError> for AppError` (Transient/Unreachable
+- `[x]` **P3.6** (S) Typed errors at registry (503/502) + DIDComm (problem-reports)
+  boundaries — **done** (#473, #474)
+  - `[x]` **part 1** (REST) `From<RegistryError> for AppError` (Transient/Unreachable
     →503, Permanent→502); `map_recognition_error` →503/502 (new `RegistryRejected`)
-    — PR: #473 (in review)
-  - `[~]` **part 2** (DIDComm) five handlers reply with threaded problem-reports;
+    — PR: #473
+  - `[x]` **part 2** (DIDComm) five handlers reply with threaded problem-reports;
     `app_error_code` maps `AppError`→`e.p.msg.*` (malformed body→bad-request) — PR:
-    #474 (in review, stacked on #473)
+    #474
 - `[x]` **P3.7** (S) Minimal unauth `/health` (`{status,version,vtc_did}`; mediator/
   vta detail folded into admin-gated diagnostics); `nosniff` on `did.jsonl` —
   PR: #472
@@ -194,10 +194,11 @@ the #457 posture backstop provides its regression guard.)
   compat check) — design note first — deps: P2.5 — PR: ____
 - `[ ]` **P3.10** (L) `vtc setup --from <toml>` (WizardPlan + apply engine); fix
   CLAUDE.md — PR: ____
-- `[ ]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
-  `persist()` — PR: ____
-- `[ ]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
-  `Consumed` row — PR: ____
+- `[~]` **P3.11** (S) Emergency bootstrap: marker-before-wipe, clear sessions,
+  `persist()` (persist already done in P2.5) — PR: #475 (in review)
+- `[~]` **P3.12** (S) Install `claim/finish` idempotent delivery against a
+  `Consumed` row (re-mint from persisted admin DID; `start→finish→start` still
+  rejects) — PR: #476 (in review)
 - `[ ]` **P3.13** (M, several small PRs) Hygiene: stale webauthn doc; dead `b64:`
   path; redact `Debug` on secret types + gate wizard key print; `vtcDid`/`vtcUrl`
   field rename; public-profile field caps; path-param DID validation; reject
