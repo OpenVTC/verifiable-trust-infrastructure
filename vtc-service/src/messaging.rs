@@ -13,6 +13,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use serde_json::json;
+use vti_common::error::AppError;
+
 use vta_sdk::protocols::credential_exchange::PRESENT as CREDENTIAL_PRESENT_TYPE;
 use vta_sdk::protocols::credential_exchange::REQUEST as CREDENTIAL_REQUEST_TYPE;
 use vta_sdk::protocols::credential_exchange::{
@@ -27,6 +30,7 @@ use vta_sdk::protocols::join_requests::{
     MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
     SelfRemoveReceiptBody,
 };
+use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
 use crate::ceremony::remove_inner;
 use crate::config::AppConfig;
@@ -216,6 +220,44 @@ pub async fn run_didcomm_service(
     info!("DIDComm service stopped");
 }
 
+/// Build a DIDComm problem-report reply, threaded to the request, so a
+/// sender gets a typed code + comment instead of a silent
+/// `DIDCommServiceError::Internal` (which often yields no reply at all).
+fn problem_report(thid: String, code: &str, comment: impl Into<String>) -> DIDCommResponse {
+    DIDCommResponse::new(PROBLEM_REPORT_TYPE, problem_report_body(code, comment)).thid(thid)
+}
+
+/// The problem-report body shape — `{code, comment}`, matching
+/// [`vta_sdk::protocols::extract_problem_report`] on the receiving side.
+fn problem_report_body(code: &str, comment: impl Into<String>) -> serde_json::Value {
+    json!({ "code": code, "comment": comment.into() })
+}
+
+/// The problem-report `code` for a business-logic [`AppError`],
+/// preserving the 4xx-equivalent distinction (forbidden / unauthorized
+/// / not-found / conflict / bad-request) the same way the REST boundary
+/// does — instead of collapsing every outcome into `internal-error`,
+/// where the sender can't tell a permission failure from a real bug.
+/// Genuine infra faults keep the `internal-error` code.
+fn app_error_code(err: &AppError) -> &'static str {
+    match err {
+        AppError::Forbidden(_) | AppError::StepUpRequired(_) => codes::FORBIDDEN,
+        AppError::Unauthorized(_) | AppError::Authentication(_) => codes::UNAUTHORIZED,
+        AppError::NotFound(_) => codes::NOT_FOUND,
+        AppError::Conflict(_) | AppError::IdempotencyKeyConflict => codes::CONFLICT,
+        AppError::Validation(_)
+        | AppError::TrustTaskMalformed(_)
+        | AppError::TrustTaskMissing
+        | AppError::InvalidCursor => codes::BAD_REQUEST,
+        _ => codes::INTERNAL,
+    }
+}
+
+/// Map a business-logic [`AppError`] to a threaded problem-report reply.
+fn app_error_report(thid: String, err: &AppError) -> DIDCommResponse {
+    problem_report(thid, app_error_code(err), err.to_string())
+}
+
 /// `join-requests/submit/1.0` over DIDComm (M1.8.2).
 ///
 /// The applicant DID is the DIDComm `from` field — the
@@ -227,11 +269,20 @@ async fn join_request_submit_handler(
     meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
-    let body: JoinRequestSubmitBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-request body: {e}")))?;
+    let body: JoinRequestSubmitBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed join-request body: {e}"),
+            )));
+        }
+    };
 
-    let outcome = submit_inner(
+    let outcome = match submit_inner(
         &state,
         applicant_did,
         body.vp,
@@ -241,7 +292,10 @@ async fn join_request_submit_handler(
         JoinTransport::DIDComm,
     )
     .await
-    .map_err(|e| DIDCommServiceError::Internal(format!("submit failed: {e}")))?;
+    {
+        Ok(o) => o,
+        Err(e) => return Ok(Some(app_error_report(thid, &e))),
+    };
 
     // The DIDComm receipt carries the request id + status; a sealed
     // credential bundle for an auto-admitted applicant lands in a
@@ -269,11 +323,20 @@ async fn join_request_accept_handler(
     meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let thid = message.id.clone();
     let member_did = authenticated_sender_did(&message, &meta)?;
-    let body: JoinRequestAcceptBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-accept body: {e}")))?;
+    let body: JoinRequestAcceptBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed join-accept body: {e}"),
+            )));
+        }
+    };
 
-    let outcome = accept_inner(
+    let outcome = match accept_inner(
         &state,
         body.request_id,
         member_did,
@@ -283,7 +346,10 @@ async fn join_request_accept_handler(
         JoinTransport::DIDComm,
     )
     .await
-    .map_err(|e| DIDCommServiceError::Internal(format!("accept failed: {e}")))?;
+    {
+        Ok(o) => o,
+        Err(e) => return Ok(Some(app_error_report(thid, &e))),
+    };
 
     let receipt = JoinRequestAcceptReceiptBody {
         request_id: outcome.request_id,
@@ -306,9 +372,10 @@ async fn join_request_manifest_handler(
     message: Message,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let manifest = manifest_inner(&state)
-        .await
-        .map_err(|e| DIDCommServiceError::Internal(format!("manifest failed: {e}")))?;
+    let manifest = match manifest_inner(&state).await {
+        Ok(m) => m,
+        Err(e) => return Ok(Some(app_error_report(message.id.clone(), &e))),
+    };
     let body = serde_json::to_value(&manifest)
         .map_err(|e| DIDCommServiceError::Internal(format!("manifest serialise: {e}")))?;
     Ok(Some(
@@ -326,13 +393,23 @@ async fn join_request_status_handler(
     meta: UnpackMetadata,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
-    let body: JoinRequestStatusBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed status body: {e}")))?;
+    let body: JoinRequestStatusBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed status body: {e}"),
+            )));
+        }
+    };
 
-    let resp = status_inner(&state, body.request_id, applicant_did, None)
-        .await
-        .map_err(|e| DIDCommServiceError::Internal(format!("status failed: {e}")))?;
+    let resp = match status_inner(&state, body.request_id, applicant_did, None).await {
+        Ok(r) => r,
+        Err(e) => return Ok(Some(app_error_report(thid, &e))),
+    };
     let body = serde_json::to_value(&resp)
         .map_err(|e| DIDCommServiceError::Internal(format!("status serialise: {e}")))?;
     Ok(Some(
@@ -353,24 +430,38 @@ async fn member_self_remove_handler(
     // The caller's DID is the *authcrypt-authenticated* sender, not the
     // plaintext `from` — otherwise a spoofed `from` would self-remove the
     // victim (`remove_inner(&caller, &caller, …)` with actor == subject).
+    let thid = message.id.clone();
     let caller_did = authenticated_sender_did(&message, &meta)?;
 
-    let body: SelfRemoveBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed self-remove body: {e}")))?;
+    let body: SelfRemoveBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed self-remove body: {e}"),
+            )));
+        }
+    };
 
-    let disposition = body
+    let disposition = match body
         .disposition
         .as_deref()
         .map(parse_disposition)
         .transpose()
-        .map_err(DIDCommServiceError::Internal)?;
+    {
+        Ok(d) => d,
+        Err(e) => return Ok(Some(problem_report(thid, codes::BAD_REQUEST, e))),
+    };
 
     // DIDComm self-leave — actor == subject. The leave decision policy
     // allows self-leave unconditionally (spec §10.2); the no-last-admin
     // invariant still applies in the effect stage.
-    let outcome = remove_inner(&state, &caller_did, &caller_did, disposition, String::new())
-        .await
-        .map_err(|e| DIDCommServiceError::Internal(format!("self-remove: {e}")))?;
+    let outcome =
+        match remove_inner(&state, &caller_did, &caller_did, disposition, String::new()).await {
+            Ok(o) => o,
+            Err(e) => return Ok(Some(app_error_report(thid, &e))),
+        };
 
     let receipt = SelfRemoveReceiptBody {
         did: outcome.did,
@@ -591,6 +682,46 @@ mod tests {
 
     const ALICE: &str = "did:key:z6MkAlice";
     const ALICE_SKID: &str = "did:key:z6MkAlice#z6MkAlice";
+
+    #[test]
+    fn app_error_maps_to_typed_problem_report_codes() {
+        // 4xx-equivalent business outcomes get distinct codes instead
+        // of collapsing into internal-error (P3.6 part 2).
+        assert_eq!(
+            app_error_code(&AppError::Forbidden("nope".into())),
+            codes::FORBIDDEN
+        );
+        assert_eq!(
+            app_error_code(&AppError::Unauthorized("nope".into())),
+            codes::UNAUTHORIZED
+        );
+        assert_eq!(
+            app_error_code(&AppError::NotFound("nope".into())),
+            codes::NOT_FOUND
+        );
+        assert_eq!(
+            app_error_code(&AppError::Conflict("dup".into())),
+            codes::CONFLICT
+        );
+        assert_eq!(
+            app_error_code(&AppError::Validation("bad".into())),
+            codes::BAD_REQUEST
+        );
+        // Genuine infra faults stay internal.
+        assert_eq!(
+            app_error_code(&AppError::Internal("boom".into())),
+            codes::INTERNAL
+        );
+    }
+
+    #[test]
+    fn problem_report_body_is_code_and_comment() {
+        // The body shape must match `vta_sdk::protocols::extract_problem_report`.
+        let body = problem_report_body(codes::BAD_REQUEST, "malformed body");
+        let (code, comment) = vta_sdk::protocols::extract_problem_report(&body);
+        assert_eq!(code, codes::BAD_REQUEST);
+        assert_eq!(comment, "malformed body");
+    }
 
     #[test]
     fn accepts_authenticated_sender_whose_from_matches_the_authcrypt_key() {
