@@ -1,5 +1,7 @@
-//! `POST /v1/join-requests` — REST submit (M1.8.1) + a shared
-//! inner `submit_inner` the DIDComm handler (M1.8.2) calls into.
+//! `POST /v1/join-requests` — the REST submit adapter (M1.8.1): wire
+//! body/response types + auth extraction. The shared orchestration spine
+//! ([`crate::join::submit_inner`], also driven by the DIDComm handler and the
+//! credential-exchange present path) lives in [`crate::join::orchestrate`].
 //!
 //! ## Holder binding
 //!
@@ -71,9 +73,10 @@ pub struct SubmitRequestBody {
     /// `vtc_did`. Bound into the holder signature so a body captured for one
     /// community can't be replayed against another (P0.13).
     pub audience: String,
-    /// Unix-seconds the applicant signed at. Must be within
-    /// [`JOIN_SUBMIT_FRESHNESS_SECS`] of now (small future skew allowed). Bound
-    /// into the signature so a stale captured body is rejected (P0.13).
+    /// Unix-seconds the applicant signed at. Must be within the join-submit
+    /// freshness window of now (small future skew allowed; enforced in
+    /// `crate::join::submit_inner`). Bound into the signature so a stale
+    /// captured body is rejected (P0.13).
     pub created: i64,
     /// Hex-encoded Ed25519 signature over the canonical payload (which now
     /// includes `audience` + `created`).

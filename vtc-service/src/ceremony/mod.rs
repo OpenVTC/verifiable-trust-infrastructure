@@ -36,25 +36,25 @@
 //!   (read-only) is fully realized; the write plans (admit / depart /
 //!   re-mint) are typed intents the executor applies.
 //! - [`execute`] — the async effect executor ([`execute::apply`]):
-//!   applies a plan against `AppState`. The **Admit** (join) write
-//!   path is wired and is the op the manual approve route now goes
-//!   through; **Depart** / **Remint** await their ceremonies.
-//!
-//! Still to land on top of this spine (pipeline §11): the Depart /
-//! Remint executor arms (with their leave / role-change ceremonies)
-//! and the remaining state-dependent invariant — no-last-admin (see
-//! [`invariant`]).
+//!   applies a plan against `AppState`. All three write arms —
+//!   **Admit** (join), **Depart** (leave), **Remint** (role change) —
+//!   are wired, with the no-last-admin invariant host-enforced here.
+//! - [`assemble`] — the one `Facts` builder every purpose's
+//!   orchestration uses (community context + cached member count +
+//!   actor/subject), replacing the four hand-rolled per-route copies.
+//! - [`orchestrate`] — the per-ceremony `decide → effect → audit`
+//!   spines that drive the pipeline, lifted out of the route layer:
+//!   `role_change_via_pipeline` and `remove_inner` (leave) live here;
+//!   the join spine is the sibling [`crate::join::orchestrate`].
 //!
 //! ## Relationship to the existing `policy` + `join` modules
 //!
-//! This is the greenfield pipeline; [`crate::policy`] (the regorus
-//! engine plus persistence) is **reused** underneath it — `Verdict`
-//! parses the decision object [`crate::policy::engine::evaluate`]
-//! returns.
-//! The MVP's bespoke [`crate::join`] flow and its `vp_claims`
-//! projection are what this pipeline supersedes; they remain in place
-//! until ceremonies are ported over (build-vs-reuse map, pipeline
-//! §10).
+//! This pipeline is **reused** by every community ceremony; [`crate::policy`]
+//! (the regorus engine plus persistence) sits underneath it — `Verdict`
+//! parses the decision object [`crate::policy::engine::evaluate`] returns.
+//! The join lifecycle ([`crate::join`]) persists the `JoinRequest` rows and
+//! hosts the join-submit orchestration ([`crate::join::orchestrate`]), which
+//! drives this same pipeline.
 
 pub mod assemble;
 pub mod effects;

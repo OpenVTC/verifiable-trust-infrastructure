@@ -32,12 +32,19 @@ src/
 ├── acl/                ACL storage + role types (VtcRole)
 ├── audit/              (re-exports from vti-common::audit)
 ├── auth/               session, AuthClaims/AdminAuth/SuperAdminAuth extractors
+├── ceremony/           Decision pipeline (facts → verify → decide → effect/audit);
+│                       `assemble` (one Facts builder for every purpose) +
+│                       `orchestrate` (role-change + leave spines, out of routes)
 ├── community/          CommunityProfile storage
-├── credentials/        LocalSigner, VMC + role VEC + status-list builders
+├── credentials/        LocalSigner + VMC/VEC/status-list builders; `exchange/`
+│                       (OID4VCI issuer + OID4VP/SD-JWT/DI/bbs verifier, split into
+│                       issue/verify/pending/jwt) + `vm_resolver` (the single shared
+│                       DID-VM → key resolver + `check_issuer_binding`)
 ├── endorsement_types/  Operator-registered endorsement-type registry
 ├── endorsements/       Custom VEC + status-list flip
 ├── install/            Install-token state machine + claim secret
-├── join/               Join-request lifecycle
+├── join/               Join-request lifecycle + `orchestrate` (submit spine:
+│                       holder-binding → decide → auto-admit → admit audit)
 ├── members/            Member storage + lifecycle helpers
 ├── policy/             regorus engine, default policy bundle, evaluators
 ├── recognition/        Foreign-VEC verification (Phase 3 cross-community)
