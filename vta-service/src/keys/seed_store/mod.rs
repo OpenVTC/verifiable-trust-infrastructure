@@ -6,6 +6,8 @@ mod azure;
 mod config;
 #[cfg(feature = "gcp-secrets")]
 mod gcp;
+#[cfg(feature = "k8s-secrets")]
+mod k8s;
 #[cfg(feature = "keyring")]
 mod keyring;
 #[cfg(feature = "tee")]
@@ -22,6 +24,8 @@ pub use azure::AzureSeedStore;
 pub use config::ConfigSeedStore;
 #[cfg(feature = "gcp-secrets")]
 pub use gcp::GcpSeedStore;
+#[cfg(feature = "k8s-secrets")]
+pub use k8s::{K8sSeedStore, from_config as k8s_from_config};
 #[cfg(feature = "keyring")]
 pub use keyring::KeyringSeedStore;
 #[cfg(feature = "tee")]
@@ -53,9 +57,10 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// 2. GCP Secret Manager (if `gcp-secrets` compiled + `secrets.gcp_secret_name` set)
 /// 3. Azure Key Vault (if `azure-secrets` compiled + `secrets.azure_vault_url` set)
 /// 4. HashiCorp Vault (if `vault-secrets` compiled + `secrets.vault_addr` set)
-/// 5. Config file seed (if `config-seed` compiled + `secrets.seed` set)
-/// 6. OS keyring (if `keyring` compiled — the default)
-/// 7. Plaintext file (always available — NOT secure)
+/// 5. Kubernetes Secret (if `k8s-secrets` compiled + `secrets.k8s_secret_name` set)
+/// 6. Config file seed (if `config-seed` compiled + `secrets.seed` set)
+/// 7. OS keyring (if `keyring` compiled — the default)
+/// 8. Plaintext file (always available — NOT secure)
 ///
 /// `unused_variables` allowed: `config` is only read under specific
 /// feature flags; a build with none of the cloud/keyring/config-seed
@@ -99,6 +104,12 @@ pub fn create_seed_store(config: &AppConfig) -> Result<Box<dyn SeedStore>, AppEr
     #[cfg(feature = "vault-secrets")]
     if config.secrets.vault_addr.is_some() {
         let store = vault::from_config(&config.secrets)?;
+        return Ok(Box::new(store));
+    }
+
+    #[cfg(feature = "k8s-secrets")]
+    if config.secrets.k8s_secret_name.is_some() {
+        let store = k8s::from_config(&config.secrets)?;
         return Ok(Box::new(store));
     }
 

@@ -127,12 +127,25 @@ summary.
 | `"aws"` | `secret_name`, optional `region` |
 | `"gcp"` | `project`, `secret_name` |
 | `"azure"` | `vault_url`, `secret_name` |
+| `"vault"` | `addr`, `secret_path`, optional `kv_mount`/`secret_key`/`namespace`/`auth_method`/auth fields |
+| `"kubernetes"` | `secret_name`, optional `namespace`, optional `secret_key` (default `"seed"`) |
 | `"config_seed"` | none — hex seed embedded in `config.toml`. **Not recommended.** |
 | `"plaintext"` | none — plaintext file under `data_dir`. **Dev only.** |
 
-Cloud backends require the matching feature at compile time
-(`aws-secrets`, `gcp-secrets`, `azure-secrets`) — the wizard refuses to
-proceed with a clear error if the feature isn't compiled in.
+Cloud / external backends require the matching feature at compile time
+(`aws-secrets`, `gcp-secrets`, `azure-secrets`, `vault-secrets`,
+`k8s-secrets`) — the wizard refuses to proceed with a clear error if the
+feature isn't compiled in.
+
+A Kubernetes `Secret` backend, for example:
+
+```toml
+[secrets]
+backend     = "kubernetes"
+secret_name = "vta-master-seed"
+namespace   = "vta-prod"   # optional; omit to use the pod's ServiceAccount namespace
+secret_key  = "seed"       # optional; default "seed"
+```
 
 ### Messaging
 

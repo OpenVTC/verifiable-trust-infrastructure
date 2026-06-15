@@ -6,6 +6,8 @@ mod azure;
 mod config;
 #[cfg(feature = "gcp-secrets")]
 mod gcp;
+#[cfg(feature = "k8s-secrets")]
+mod k8s;
 #[cfg(feature = "keyring")]
 mod keyring;
 mod plaintext;
@@ -18,6 +20,8 @@ pub use azure::AzureSecretStore;
 pub use config::ConfigSecretStore;
 #[cfg(feature = "gcp-secrets")]
 pub use gcp::GcpSecretStore;
+#[cfg(feature = "k8s-secrets")]
+pub use k8s::{K8sSecretStore, from_config as k8s_from_config};
 #[cfg(feature = "keyring")]
 pub use keyring::KeyringSecretStore;
 pub use plaintext::PlaintextSecretStore;
@@ -35,9 +39,10 @@ pub use vti_common::seed_store::SeedStore as SecretStore;
 /// 1. AWS Secrets Manager (if `aws-secrets` compiled + `secrets.aws_secret_name` set)
 /// 2. GCP Secret Manager (if `gcp-secrets` compiled + `secrets.gcp_secret_name` set)
 /// 3. Azure Key Vault (if `azure-secrets` compiled + `secrets.azure_vault_url` set)
-/// 4. Config file secret (if `config-secret` compiled + `secrets.secret` set)
-/// 5. OS keyring (if `keyring` compiled — the default)
-/// 6. Plaintext file (always available — NOT secure)
+/// 4. Kubernetes Secret (if `k8s-secrets` compiled + `secrets.k8s_secret_name` set)
+/// 5. Config file secret (if `config-secret` compiled + `secrets.secret` set)
+/// 6. OS keyring (if `keyring` compiled — the default)
+/// 7. Plaintext file (always available — NOT secure)
 #[allow(unused_variables)]
 pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, AppError> {
     // For every cloud/config backend, a set selector field on a binary that
@@ -98,6 +103,20 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         return Err(AppError::Config(
             "secrets.azure_vault_url is set but this binary was built without the \
              'azure-secrets' feature"
+                .into(),
+        ));
+    }
+
+    #[cfg(feature = "k8s-secrets")]
+    if config.secrets.k8s_secret_name.is_some() {
+        let store = k8s::from_config(&config.secrets)?;
+        return Ok(Box::new(store));
+    }
+    #[cfg(not(feature = "k8s-secrets"))]
+    if config.secrets.k8s_secret_name.is_some() {
+        return Err(AppError::Config(
+            "secrets.k8s_secret_name is set but this binary was built without the \
+             'k8s-secrets' feature"
                 .into(),
         ));
     }
@@ -187,6 +206,13 @@ mod tests {
         let mut config = base_config();
         config.secrets.secret = Some("ab".repeat(32));
         assert_config_err_mentions(&config, "config-secret");
+    }
+
+    #[test]
+    fn k8s_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.k8s_secret_name = Some("vtc-master-seed".into());
+        assert_config_err_mentions(&config, "k8s-secrets");
     }
 
     #[test]

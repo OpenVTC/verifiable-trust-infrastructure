@@ -130,6 +130,18 @@ pub struct SecretsConfig {
     /// (vault-secrets feature).
     #[serde(default)]
     pub vault_skip_verify: bool,
+    /// Kubernetes `Secret` name holding the hex-encoded seed
+    /// (k8s-secrets feature). Setting this activates the Kubernetes
+    /// backend.
+    pub k8s_secret_name: Option<String>,
+    /// Kubernetes namespace the `Secret` lives in (k8s-secrets feature).
+    /// When unset, the in-cluster ServiceAccount namespace (or the
+    /// kubeconfig context namespace) is used, falling back to `default`.
+    pub k8s_namespace: Option<String>,
+    /// Key within the `Secret`'s `data` map that holds the hex-encoded
+    /// seed (k8s-secrets feature). Default `seed`.
+    #[serde(default = "default_k8s_secret_key")]
+    pub k8s_secret_key: String,
     /// Opt in to the **plaintext file** seed-store fallback. Off by
     /// default: when no secure backend (keyring / cloud / Vault /
     /// config-seed) is compiled-in *and* configured, `create_seed_store`
@@ -165,6 +177,10 @@ fn default_vault_k8s_jwt_path() -> String {
     "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
 }
 
+fn default_k8s_secret_key() -> String {
+    "seed".to_string()
+}
+
 fn default_vault_approle_mount() -> String {
     "approle".to_string()
 }
@@ -194,6 +210,9 @@ impl Default for SecretsConfig {
             vault_approle_secret_id: None,
             vault_approle_mount: default_vault_approle_mount(),
             vault_skip_verify: false,
+            k8s_secret_name: None,
+            k8s_namespace: None,
+            k8s_secret_key: default_k8s_secret_key(),
             allow_plaintext: false,
         }
     }
@@ -592,6 +611,9 @@ impl AppConfig {
                 "VTA_SECRETS_AZURE_VAULT_URL",
                 "VTA_SECRETS_AZURE_SECRET_NAME",
                 "VTA_SECRETS_KEYRING_SERVICE",
+                "VTA_SECRETS_K8S_SECRET_NAME",
+                "VTA_SECRETS_K8S_NAMESPACE",
+                "VTA_SECRETS_K8S_SECRET_KEY",
                 "VTA_AUTH_ACCESS_EXPIRY",
                 "VTA_AUTH_REFRESH_EXPIRY",
                 "VTA_AUTH_CHALLENGE_TTL",
@@ -763,6 +785,19 @@ impl AppConfig {
         {
             config.secrets.vault_skip_verify =
                 matches!(skip.to_ascii_lowercase().as_str(), "1" | "true" | "yes");
+        }
+
+        // Kubernetes Secret backend. K8s deployments commonly inject the
+        // namespace from the pod's own metadata via the Downward API, so an
+        // env override is the natural way to set it.
+        if let Ok(name) = std::env::var("VTA_SECRETS_K8S_SECRET_NAME") {
+            config.secrets.k8s_secret_name = Some(name);
+        }
+        if let Ok(ns) = std::env::var("VTA_SECRETS_K8S_NAMESPACE") {
+            config.secrets.k8s_namespace = Some(ns);
+        }
+        if let Ok(key) = std::env::var("VTA_SECRETS_K8S_SECRET_KEY") {
+            config.secrets.k8s_secret_key = key;
         }
 
         // Auth

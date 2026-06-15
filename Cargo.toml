@@ -240,6 +240,19 @@ libc = "0.2"
 azure_security_keyvault_secrets = "0.14"
 azure_identity = "0.35"
 
+# Kubernetes secret-store backend (feature `k8s-secrets`, off by default) for
+# both services. The seed/key material is stored as a hex string inside a
+# namespaced `Secret` resource. `Client::try_default()` auto-detects the
+# in-cluster ServiceAccount or a local kubeconfig, so no auth knobs are needed.
+# `default-features = false` + `rustls-tls` keeps OpenSSL out of the tree (the
+# rest of the workspace is rustls). `k8s-openapi`'s `latest` feature floats the
+# generated API version — fine here, the core/v1 `Secret` shape is long-stable.
+kube = { version = "3.1", default-features = false, features = [
+  "client",
+  "rustls-tls",
+] }
+k8s-openapi = { version = "0.27", features = ["latest"] }
+
 # Hoist DID-resolver-cache feature drift: every crate uses 0.8 but a few
 # omit the `network` feature. The default here turns it on; dependents
 # that want the offline-only cache can opt out via `default-features = false`.

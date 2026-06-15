@@ -450,10 +450,26 @@ pub struct SecretsConfig {
     /// Change this to run multiple VTC instances on the same machine.
     #[serde(default = "default_keyring_service")]
     pub keyring_service: String,
+    /// Kubernetes `Secret` name holding the hex-encoded VTC key material
+    /// (k8s-secrets feature). Setting this activates the Kubernetes
+    /// backend.
+    pub k8s_secret_name: Option<String>,
+    /// Kubernetes namespace the `Secret` lives in (k8s-secrets feature).
+    /// When unset, the in-cluster ServiceAccount namespace (or the
+    /// kubeconfig context namespace) is used, falling back to `default`.
+    pub k8s_namespace: Option<String>,
+    /// Key within the `Secret`'s `data` map that holds the hex-encoded
+    /// key material (k8s-secrets feature). Default `secret`.
+    #[serde(default = "default_k8s_secret_key")]
+    pub k8s_secret_key: String,
 }
 
 fn default_keyring_service() -> String {
     "vtc".to_string()
+}
+
+fn default_k8s_secret_key() -> String {
+    "secret".to_string()
 }
 
 // Manual Debug — `secret` is the hex-encoded VTC key material; leaking
@@ -472,6 +488,9 @@ impl std::fmt::Debug for SecretsConfig {
             .field("azure_vault_url", &self.azure_vault_url)
             .field("azure_secret_name", &self.azure_secret_name)
             .field("keyring_service", &self.keyring_service)
+            .field("k8s_secret_name", &self.k8s_secret_name)
+            .field("k8s_namespace", &self.k8s_namespace)
+            .field("k8s_secret_key", &self.k8s_secret_key)
             .finish()
     }
 }
@@ -487,6 +506,9 @@ impl Default for SecretsConfig {
             azure_vault_url: None,
             azure_secret_name: None,
             keyring_service: default_keyring_service(),
+            k8s_secret_name: None,
+            k8s_namespace: None,
+            k8s_secret_key: default_k8s_secret_key(),
         }
     }
 }
@@ -801,6 +823,18 @@ impl AppConfig {
         }
         if let Ok(service) = std::env::var("VTC_SECRETS_KEYRING_SERVICE") {
             config.secrets.keyring_service = service;
+        }
+        // Kubernetes Secret backend. The namespace is commonly injected from
+        // the pod's own metadata via the Downward API, so an env override is
+        // the natural way to set it.
+        if let Ok(name) = std::env::var("VTC_SECRETS_K8S_SECRET_NAME") {
+            config.secrets.k8s_secret_name = Some(name);
+        }
+        if let Ok(ns) = std::env::var("VTC_SECRETS_K8S_NAMESPACE") {
+            config.secrets.k8s_namespace = Some(ns);
+        }
+        if let Ok(key) = std::env::var("VTC_SECRETS_K8S_SECRET_KEY") {
+            config.secrets.k8s_secret_key = key;
         }
 
         // Auth env var overrides

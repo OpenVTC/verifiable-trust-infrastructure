@@ -10,7 +10,8 @@ If you just want to get going, the answer for most cases is:
 |---|---|
 | Local development on a workstation | OS keyring (default) |
 | AWS Nitro Enclave | KMS-TEE (automatic via `vta-enclave`) |
-| EKS / GKE / AKS / on-prem Kubernetes | HashiCorp Vault with Kubernetes auth |
+| EKS / GKE / AKS / on-prem Kubernetes, Vault available | HashiCorp Vault with Kubernetes auth |
+| EKS / GKE / AKS / on-prem Kubernetes, no Vault | Kubernetes `Secret` (native, no extra infra) |
 | Single EC2 / GCE / Azure VM, no TEE | AWS Secrets Manager / GCP Secret Manager / Azure Key Vault |
 | CI / sealed images / unattended bootstrap | Config-seed (with the seed coming in via a sealed channel) |
 
@@ -33,9 +34,10 @@ whose feature is compiled in **and** whose config is populated:
 | 2 | GCP Secret Manager | `gcp-secrets` | `secrets.gcp_secret_name` is set |
 | 3 | Azure Key Vault | `azure-secrets` | `secrets.azure_vault_url` is set |
 | 4 | HashiCorp Vault | `vault-secrets` | `secrets.vault_addr` is set |
-| 5 | Config-seed | `config-seed` | `secrets.seed` is set |
-| 6 | OS keyring | `keyring` | always (the default) |
-| 7 | Plaintext file | always available | unconditional fallback |
+| 5 | Kubernetes `Secret` | `k8s-secrets` | `secrets.k8s_secret_name` is set |
+| 6 | Config-seed | `config-seed` | `secrets.seed` is set |
+| 7 | OS keyring | `keyring` | always (the default) |
+| 8 | Plaintext file | always available | unconditional fallback |
 
 If no secure-backend feature is compiled and no config is set, the
 service falls back to a plaintext file in the data directory and
@@ -52,7 +54,7 @@ bypassed entirely. See
 Every backend stores the master seed as a **hex-encoded string** of
 the BIP-39 entropy bytes (32 bytes for 24-word mnemonics, 16 for
 12-word). This is consistent across AWS / GCP / Azure / Vault /
-keyring / config-seed / plaintext. Mismatched encodings are the
+Kubernetes / keyring / config-seed / plaintext. Mismatched encodings are the
 single most common foot-gun when migrating between backends — they
 are otherwise wire-compatible.
 
@@ -284,6 +286,110 @@ uses the system trust store to validate.
   Vault role's `bound_service_account_*` lists. Run
   `vault read auth/kubernetes/role/vta` and double-check.
 
+### Kubernetes `Secret`
+
+Cargo feature: `k8s-secrets` · File: `vta-service/src/keys/seed_store/k8s.rs`
+
+Stores the seed as a hex string inside a namespaced Kubernetes
+`Secret`. For in-cluster deployments that want to keep secret
+material native to Kubernetes without standing up HashiCorp Vault or
+reaching out to a cloud secret manager. Credentials are resolved by
+`kube`'s `Client::try_default()`: the pod's mounted ServiceAccount
+token in-cluster, or your local kubeconfig (`~/.kube/config` /
+`$KUBECONFIG`) when running `vta` outside the cluster (e.g. during
+`vta setup`).
+
+```toml
+[secrets]
+k8s_secret_name = "vta-master-seed"
+k8s_namespace   = "vta-prod"   # optional; see below
+k8s_secret_key  = "seed"       # optional; default "seed"
+```
+
+Equivalent env vars:
+
+```bash
+VTA_SECRETS_K8S_SECRET_NAME=vta-master-seed
+VTA_SECRETS_K8S_NAMESPACE=vta-prod
+VTA_SECRETS_K8S_SECRET_KEY=seed
+```
+
+**Namespace resolution.** If `k8s_namespace` is omitted, the
+backend uses the client's default namespace — the pod's own
+namespace in-cluster (from the mounted ServiceAccount), or the
+current kubeconfig context's namespace out-of-cluster — falling back
+to `default`. The most common in-cluster pattern is to inject the
+pod's namespace via the Downward API so you don't hard-code it:
+
+```yaml
+env:
+  - name: VTA_SECRETS_K8S_SECRET_NAME
+    value: vta-master-seed
+  - name: VTA_SECRETS_K8S_NAMESPACE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace
+```
+
+**RBAC.** The pod's ServiceAccount needs `get` on the Secret, plus
+`create` (first `vta setup`, when the Secret doesn't exist yet) and
+`update` (re-keying / writes). After first-boot you can drop down to
+`get` only if the seed never rotates.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vta-seed-secret
+  namespace: vta-prod
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update"]
+    # Optionally scope to the single Secret by name:
+    resourceNames: ["vta-master-seed"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vta-seed-secret
+  namespace: vta-prod
+subjects:
+  - kind: ServiceAccount
+    name: vta
+roleRef:
+  kind: Role
+  name: vta-seed-secret
+  apiGroup: rbac.authorization.k8s.io
+```
+
+#### Vault vs native Kubernetes `Secret`
+
+Both target in-cluster deployments. Reach for **Vault** when you
+already run it, want envelope encryption / dynamic secrets / a full
+audit trail, or your security posture requires secrets never to sit
+in `etcd` in (only base64-encoded) plaintext. Reach for the
+**native `Secret`** backend when you want zero extra
+infrastructure — particularly when etcd encryption-at-rest is already
+enabled on the cluster (so the Secret is encrypted at rest by the API
+server) and a `Secret` + RBAC is all you need.
+
+#### Common pitfalls
+
+- **etcd plaintext.** A bare Kubernetes `Secret` is only
+  base64-encoded in etcd, not encrypted, unless the cluster has
+  [encryption at rest](https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/)
+  configured. Enable it (or use Vault / a cloud secret manager) before
+  treating this as production-grade.
+- **Wrong namespace.** A `get` returning "not found" when the Secret
+  clearly exists almost always means the resolved namespace differs
+  from where the Secret lives. Set `k8s_namespace` explicitly to rule
+  it out.
+- **Key name mismatch.** The seed lives under `data.seed` by default.
+  If your Secret stores it under a different key, set `k8s_secret_key`
+  to match — the backend fails loudly (rather than minting a new seed)
+  when the Secret exists but the configured key is absent.
+
 ### KMS-TEE (Nitro Enclave)
 
 Cargo feature: `tee` · File: `vta-service/src/keys/seed_store/kms_tee.rs`
@@ -377,7 +483,8 @@ Are you running inside an AWS Nitro Enclave?
 └── No  ↓
 
 Are you running inside a Kubernetes cluster?
-├── Yes → HashiCorp Vault, kubernetes auth
+├── Yes, and you run HashiCorp Vault → Vault, kubernetes auth
+├── Yes, no Vault                     → Kubernetes Secret (k8s-secrets)
 └── No  ↓
 
 Do you have a managed cloud secret store you already trust?
@@ -398,14 +505,15 @@ Is this a developer workstation?
 
 ### Trade-offs
 
-| | AWS SM | GCP SM | Azure KV | Vault | KMS-TEE | Keyring | Config | Plaintext |
-|---|---|---|---|---|---|---|---|---|
-| Encrypted at rest | ✅ | ✅ | ✅ | ✅ (Vault internal) | ✅ (KMS) | ✅ (OS) | ❌ | ❌ |
-| Auto rotation friendly | ✅ | ✅ | ✅ | ✅ | n/a | ❌ | ❌ | ❌ |
-| Works in TEE | via parent | via parent | via parent | via parent | ✅ native | ❌ | ❌ | ❌ |
-| Works headless / CI | ✅ | ✅ | ✅ | ✅ | n/a | ⚠️ macOS prompts | ✅ | ✅ |
-| In-process auto-renewal | implicit (IAM) | implicit (ADC) | implicit (MI) | ✅ explicit | implicit (KMS) | n/a | n/a | n/a |
-| Production-ready | ✅ | ✅ | ✅ | ✅ | ✅ | dev only | dev only | never |
+| | AWS SM | GCP SM | Azure KV | Vault | K8s Secret | KMS-TEE | Keyring | Config | Plaintext |
+|---|---|---|---|---|---|---|---|---|---|
+| Encrypted at rest | ✅ | ✅ | ✅ | ✅ (Vault internal) | ⚠️ only if etcd encryption on | ✅ (KMS) | ✅ (OS) | ❌ | ❌ |
+| Auto rotation friendly | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ❌ | ❌ | ❌ |
+| Works in TEE | via parent | via parent | via parent | via parent | via parent | ✅ native | ❌ | ❌ | ❌ |
+| Works headless / CI | ✅ | ✅ | ✅ | ✅ | ✅ | n/a | ⚠️ macOS prompts | ✅ | ✅ |
+| In-process auto-renewal | implicit (IAM) | implicit (ADC) | implicit (MI) | ✅ explicit | implicit (SA token) | implicit (KMS) | n/a | n/a | n/a |
+| Extra infra required | cloud SM | cloud SM | cloud KV | Vault | none (in-cluster) | KMS | none | none | none |
+| Production-ready | ✅ | ✅ | ✅ | ✅ | ✅ (with etcd enc.) | ✅ | dev only | dev only | never |
 
 ## Migrating between backends
 
@@ -436,6 +544,7 @@ migrating is a copy operation between two trusted CLIs.
    | GCP Secret Manager | `gcloud secrets versions access latest --secret=vta-master-seed` |
    | Azure Key Vault | `az keyvault secret show --vault-name my-vault --name vta-master-seed --query value -o tsv` |
    | HashiCorp Vault | `vault kv get -field=seed secret/vta/master-seed` |
+   | Kubernetes Secret | `kubectl -n vta-prod get secret vta-master-seed -o jsonpath='{.data.seed}' \| base64 -d` |
    | Config-seed | `awk '/^seed/ {print $3}' config.toml` (already plaintext) |
    | Plaintext file | `cat <data_dir>/seed.hex` |
 
@@ -453,6 +562,7 @@ migrating is a copy operation between two trusted CLIs.
    | GCP Secret Manager | `printf %s '<hex>' \| gcloud secrets versions add vta-master-seed --data-file=-` |
    | Azure Key Vault | `az keyvault secret set --vault-name my-vault --name vta-master-seed --value '<hex>'` |
    | HashiCorp Vault | `vault kv put secret/vta/master-seed seed='<hex>'` |
+   | Kubernetes Secret | `kubectl -n vta-prod create secret generic vta-master-seed --from-literal=seed='<hex>'` |
 
    Pass the hex via env var or stdin where possible; argv exposes
    it to `ps`. For example:

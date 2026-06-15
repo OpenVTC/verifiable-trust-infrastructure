@@ -50,6 +50,15 @@ pub enum SecretsBackendChoice {
         vault_url: String,
         secret_name: String,
     },
+    /// Kubernetes `Secret`. `namespace` is `None` when the operator
+    /// wants the in-cluster ServiceAccount namespace; `secret_key` is
+    /// the key within the Secret's `data` map (the caller substitutes
+    /// its own default when the operator leaves it blank).
+    Kubernetes {
+        secret_name: String,
+        namespace: Option<String>,
+        secret_key: String,
+    },
     /// Hex-encoded seed embedded directly in `config.toml`. The
     /// wizard fills the value in after key derivation; this variant
     /// just signals the choice.
@@ -68,6 +77,7 @@ pub struct AvailableBackends {
     pub aws: bool,
     pub gcp: bool,
     pub azure: bool,
+    pub k8s: bool,
     pub inline_config: bool,
     /// Plaintext is always available as a fallback; the field is
     /// here so a service that strictly disallows it (e.g. a TEE
@@ -77,7 +87,13 @@ pub struct AvailableBackends {
 
 impl AvailableBackends {
     fn any(&self) -> bool {
-        self.keyring || self.aws || self.gcp || self.azure || self.inline_config || self.plaintext
+        self.keyring
+            || self.aws
+            || self.gcp
+            || self.azure
+            || self.k8s
+            || self.inline_config
+            || self.plaintext
     }
 }
 
@@ -147,6 +163,10 @@ pub fn configure_secrets(
         labels.push("Azure Key Vault");
         tags.push("azure");
     }
+    if available.k8s {
+        labels.push("Kubernetes Secret");
+        tags.push("k8s");
+    }
     if available.inline_config {
         labels.push("Config file (hex-encoded seed in config.toml)");
         tags.push("inline-config");
@@ -193,6 +213,7 @@ pub fn configure_secrets(
             }),
             None => prompt_azure_fallback(),
         },
+        "k8s" => prompt_k8s(),
         "inline-config" => Ok(SecretsBackendChoice::InlineConfig),
         "plaintext" => {
             print_plaintext_warning();
@@ -255,6 +276,35 @@ fn prompt_azure_fallback() -> Result<SecretsBackendChoice, SecretsPromptError> {
     Ok(SecretsBackendChoice::Azure {
         vault_url,
         secret_name,
+    })
+}
+
+/// Prompt for the Kubernetes Secret backend. No cluster calls happen here —
+/// the connection is made at first secret-store access. A blank namespace
+/// means "use the in-cluster ServiceAccount namespace"; a blank data key
+/// means "use the caller's default" (`secret_key` comes back empty and the
+/// caller substitutes its own default when materialising its config).
+fn prompt_k8s() -> Result<SecretsBackendChoice, SecretsPromptError> {
+    let secret_name: String = Input::new()
+        .with_prompt("Kubernetes Secret name")
+        .interact_text()?;
+    let namespace: String = Input::new()
+        .with_prompt("Namespace (leave empty for the pod's ServiceAccount namespace)")
+        .allow_empty(true)
+        .interact_text()?;
+    let namespace = if namespace.is_empty() {
+        None
+    } else {
+        Some(namespace)
+    };
+    let secret_key: String = Input::new()
+        .with_prompt("Key within the Secret's data map (leave empty for the default)")
+        .allow_empty(true)
+        .interact_text()?;
+    Ok(SecretsBackendChoice::Kubernetes {
+        secret_name,
+        namespace,
+        secret_key,
     })
 }
 

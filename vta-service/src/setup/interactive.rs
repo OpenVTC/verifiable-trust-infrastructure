@@ -225,6 +225,11 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
         labels.push("HashiCorp Vault");
         tags.push("vault");
     }
+    #[cfg(feature = "k8s-secrets")]
+    {
+        labels.push("Kubernetes Secret");
+        tags.push("k8s");
+    }
     #[cfg(feature = "config-seed")]
     {
         labels.push("Config file (hex-encoded seed in config.toml)");
@@ -261,6 +266,10 @@ async fn configure_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynE
     #[cfg(feature = "vault-secrets")]
     if tag == "vault" {
         return prompt_vault_secrets(p);
+    }
+    #[cfg(feature = "k8s-secrets")]
+    if tag == "k8s" {
+        return prompt_k8s_secrets(p);
     }
     #[cfg(feature = "config-seed")]
     if tag == "config" {
@@ -529,6 +538,48 @@ fn prompt_vault_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr>
         approle_secret_id,
         approle_mount: default_vault_approle_mount(),
         skip_verify: false,
+    })
+}
+
+/// Prompt for Kubernetes Secret backend settings. Synchronous — the actual
+/// cluster connection happens at first seed-store call.
+#[cfg(feature = "k8s-secrets")]
+fn prompt_k8s_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
+    use super::from_toml::default_k8s_secret_key;
+
+    let secret_name = p.text(
+        "Kubernetes Secret name",
+        Some("vta-master-seed"),
+        false,
+        None,
+    )?;
+    let namespace = p.text(
+        "Namespace (leave empty to use the pod's ServiceAccount namespace)",
+        None,
+        true,
+        None,
+    )?;
+    let namespace = if namespace.is_empty() {
+        None
+    } else {
+        Some(namespace)
+    };
+    let secret_key = p.text(
+        "Key within the Secret's data map holding the hex seed",
+        Some("seed"),
+        false,
+        None,
+    )?;
+    let secret_key = if secret_key.is_empty() {
+        default_k8s_secret_key()
+    } else {
+        secret_key
+    };
+
+    Ok(SecretsBackendInput::Kubernetes {
+        secret_name,
+        namespace,
+        secret_key,
     })
 }
 

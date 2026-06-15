@@ -755,6 +755,7 @@ fn prompt_secrets_config() -> Result<SecretsConfig, AppError> {
             aws: cfg!(feature = "aws-secrets"),
             gcp: cfg!(feature = "gcp-secrets"),
             azure: cfg!(feature = "azure-secrets"),
+            k8s: cfg!(feature = "k8s-secrets"),
             inline_config: cfg!(feature = "config-secret"),
             plaintext: true,
         },
@@ -1074,6 +1075,20 @@ fn secrets_choice_to_config(choice: SecretsBackendChoice) -> SecretsConfig {
         } => {
             config.azure_vault_url = Some(vault_url);
             config.azure_secret_name = Some(secret_name);
+        }
+        SecretsBackendChoice::Kubernetes {
+            secret_name,
+            namespace,
+            secret_key,
+        } => {
+            config.k8s_secret_name = Some(secret_name);
+            config.k8s_namespace = namespace;
+            // A blank key from the prompt means "use the default" — keep the
+            // `SecretsConfig::default()` value rather than overwriting it with
+            // an empty string.
+            if !secret_key.is_empty() {
+                config.k8s_secret_key = secret_key;
+            }
         }
         SecretsBackendChoice::InlineConfig => {
             // The bundle bytes go into `secret` via the

@@ -29,6 +29,7 @@ binaries (`vta-enclave`, etc.) forward relevant flags to
 | `gcp-secrets` | GCP Secret Manager seed storage | `google-cloud-secretmanager`, `google-cloud-auth`, `bytes` |
 | `azure-secrets` | Azure Key Vault seed storage | `azure_security_keyvault_secrets`, `azure_identity` |
 | `vault-secrets` | HashiCorp Vault seed storage (KV v2; Kubernetes / token / AppRole auth) | `vaultrs` |
+| `k8s-secrets` | Kubernetes `Secret` seed storage (in-cluster SA or kubeconfig) | `kube`, `k8s-openapi` |
 | `vsock-store` | Vsock-proxied persistent storage (for enclaves) | `vti-common/vsock-store` |
 | `vsock-log` | Vsock-proxied log forwarding (for enclaves) | `vti-common/vsock-log` |
 
@@ -88,7 +89,8 @@ the dependency: `features = ["tee"]`). No need to specify it.
 | Cloud (no TEE), AWS | `rest,didcomm,aws-secrets` | N/A |
 | Cloud (no TEE), GCP | `rest,didcomm,gcp-secrets` | N/A |
 | Cloud (no TEE), Azure | `rest,didcomm,azure-secrets` | N/A |
-| Kubernetes (any cloud) | `rest,didcomm,vault-secrets` | N/A |
+| Kubernetes (Vault available) | `rest,didcomm,vault-secrets` | N/A |
+| Kubernetes (native Secret) | `rest,didcomm,k8s-secrets` | N/A |
 
 For the runtime configuration that pairs with each backend feature
 (TOML keys, env vars, IAM/Vault setup), see

@@ -73,6 +73,10 @@ azure-secrets = [
   # can consume it.
   "dep:futures-util",
 ]
+# Kubernetes Secret backend — stores the VTC key bundle in a namespaced
+# `Secret` resource. Off by default; for in-cluster deployments that prefer
+# native k8s Secrets over a cloud secret manager.
+k8s-secrets = ["dep:kube", "dep:k8s-openapi"]
 
 [[bin]]
 name = "vtc"
@@ -199,6 +203,11 @@ dialoguer = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }
 futures-util = { version = "0.3", optional = true }
+# Kubernetes secret-store backend (k8s-secrets feature). Reads/writes the VTC
+# key bundle from a namespaced `Secret` via the in-cluster ServiceAccount or a
+# local kubeconfig (`Client::try_default`).
+kube = { workspace = true, optional = true }
+k8s-openapi = { workspace = true, optional = true }
 sha2 = { workspace = true }
 hkdf = { workspace = true }
 x25519-dalek = { workspace = true }

@@ -250,6 +250,23 @@ pub enum SecretsBackendInput {
         #[serde(default)]
         skip_verify: bool,
     },
+    /// Kubernetes `Secret`. The seed is stored hex-encoded under
+    /// `secret_key` (default `seed`) in a namespaced `Secret`.
+    /// Credentials come from the in-cluster ServiceAccount or a local
+    /// kubeconfig. Compiled in only when the `k8s-secrets` feature is
+    /// enabled.
+    Kubernetes {
+        /// Name of the `Secret` resource.
+        secret_name: String,
+        /// Namespace the `Secret` lives in. When omitted, the
+        /// in-cluster ServiceAccount namespace (or kubeconfig context
+        /// namespace) is used, falling back to `default`.
+        #[serde(default)]
+        namespace: Option<String>,
+        /// Key within the `Secret`'s `data` map. Defaults to `seed`.
+        #[serde(default = "default_k8s_secret_key")]
+        secret_key: String,
+    },
     /// Plaintext file under `data_dir`. **Not recommended** — for dev only.
     Plaintext,
 }
@@ -276,6 +293,10 @@ pub(crate) fn default_vault_k8s_mount() -> String {
 
 pub(crate) fn default_vault_k8s_jwt_path() -> String {
     "/var/run/secrets/kubernetes.io/serviceaccount/token".into()
+}
+
+pub(crate) fn default_k8s_secret_key() -> String {
+    "seed".into()
 }
 
 pub(crate) fn default_vault_approle_mount() -> String {
@@ -1109,6 +1130,29 @@ fn secrets_config_from_input(
                     vault_approle_secret_id: approle_secret_id.clone(),
                     vault_approle_mount: approle_mount.clone(),
                     vault_skip_verify: *skip_verify,
+                    ..SecretsConfig::default()
+                }
+            }
+        }
+        SecretsBackendInput::Kubernetes {
+            secret_name,
+            namespace,
+            secret_key,
+        } => {
+            #[cfg(not(feature = "k8s-secrets"))]
+            {
+                let _ = (secret_name, namespace, secret_key);
+                return Err(
+                    "kubernetes backend requested but vta-service was built without the `k8s-secrets` feature"
+                        .into(),
+                );
+            }
+            #[cfg(feature = "k8s-secrets")]
+            {
+                SecretsConfig {
+                    k8s_secret_name: Some(secret_name.clone()),
+                    k8s_namespace: namespace.clone(),
+                    k8s_secret_key: secret_key.clone(),
                     ..SecretsConfig::default()
                 }
             }

@@ -16,6 +16,7 @@ side.
 | `aws-secrets` | – | AWS Secrets Manager secret backend | `aws-sdk-secretsmanager`, `aws-config` |
 | `gcp-secrets` | – | GCP Secret Manager secret backend | `google-cloud-secretmanager-v1`, `google-cloud-auth`, `bytes` |
 | `azure-secrets` | – | Azure Key Vault secret backend | `azure_security_keyvault_secrets`, `azure_identity` |
+| `k8s-secrets` | – | Kubernetes `Secret` secret backend (in-cluster SA or kubeconfig) | `kube`, `k8s-openapi` |
 
 ## Deployment profiles
 
@@ -44,6 +45,20 @@ Use a cloud secret manager instead of the OS keyring. See the
 [VTA secret backends doc](../02-vta/secret-backends.md) for the
 backend selection logic — it applies identically to the VTC.
 
+### In-cluster Kubernetes `Secret`
+
+`cargo build --release --package vtc-service --features k8s-secrets`
+
+Store the VTC key bundle in a native Kubernetes `Secret` instead of
+a cloud secret manager — no extra infrastructure beyond a `Secret` +
+RBAC. Configured via the `[secrets]` `k8s_secret_name` /
+`k8s_namespace` / `k8s_secret_key` keys (or the matching
+`VTC_SECRETS_K8S_*` env vars). The mechanics mirror the VTA's
+Kubernetes backend — see the
+[VTA secret backends doc](../02-vta/secret-backends.md#kubernetes-secret)
+(substitute `VTC_` for `VTA_` env-var prefixes and `secret` for the
+default data key).
+
 ## Dependency graph
 
 ```mermaid
@@ -62,11 +77,13 @@ graph TB
     aws --> awsconfig[aws-config]
     gcp[gcp-secrets] --> gcpsm[google-cloud-secretmanager-v1]
     azure[azure-secrets] --> azurekv[azure_security_keyvault_secrets]
+    k8s[k8s-secrets] --> kube
+    k8s --> k8sopenapi[k8s-openapi]
 
     classDef on fill:#e8f5e9,stroke:#3e8e41,color:#1b3a1f
     classDef off fill:#fff3e0,stroke:#c77a00,color:#5a3b00
     class setup,keyring,website,adminui on
-    class aws,gcp,azure,config-secret off
+    class aws,gcp,azure,k8s,config-secret off
 ```
 
 Default-on features are green; opt-in features are amber.
