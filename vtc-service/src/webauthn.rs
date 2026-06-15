@@ -1,46 +1,46 @@
-//! VTC WebAuthn helpers — Ed25519-only registration enforcement.
+//! VTC WebAuthn helpers — broaden the accepted algorithm set to
+//! include EdDSA.
 //!
 //! Implements **M0.5.1** of the VTC MVP Phase 0 plan. Wraps
-//! `vti_common::auth::passkey::build_webauthn` with the VTC-specific
-//! invariant that **only Ed25519 (`COSEAlgorithm::EDDSA`,
-//! `COSEAlgorithmIdentifier = -8`) registrations are accepted**.
-//! The candidate admin DID is a `did:key` projected directly from the
-//! passkey's COSE public key — every other COSE curve breaks that
-//! projection (spec §4.2 second bullet).
+//! `vti_common::auth::passkey::build_webauthn`. There is **no**
+//! algorithm restriction: the admin `did:key` is carried in the
+//! install token, *not* projected from the passkey's COSE key, so the
+//! credential's algorithm is purely an auth-factor choice. Any
+//! algorithm the ceremony advertises — **ES256, RS256, and EdDSA** —
+//! is accepted at finish-time.
 //!
 //! ## Why a wrapper
 //!
 //! `webauthn-rs` 0.5 builds its safe `Webauthn` instance with
-//! `COSEAlgorithm::secure_algs()`, which today returns
-//! `[ES256, RS256]` — `EDDSA` is commented out in the upstream
-//! `secure_algs` constructor. The high-level builder exposes no
-//! `algorithms(…)` setter, so the only way to advertise EdDSA on the
-//! wire **and** accept it at finish-time is to post-process the
-//! ceremony state.
+//! `COSEAlgorithm::secure_algs()`, which today returns `[ES256, RS256]`
+//! — `EDDSA` is commented out in the upstream `secure_algs`
+//! constructor, and the high-level builder exposes no `algorithms(…)`
+//! setter. So to let Ed25519-capable hardware keys (YubiKey 5+, the
+//! soft test authenticator) register **alongside** the platform
+//! authenticators, this module *adds* EdDSA to the ceremony — it does
+//! not remove anything.
 //!
-//! This module provides two helpers that callers must use instead of
-//! `Webauthn::start_passkey_registration` /
-//! `Webauthn::finish_passkey_registration` directly:
+//! Two helpers, used instead of `Webauthn::{start,finish}_passkey_registration`
+//! directly:
 //!
-//! - [`start_passkey_registration`] — runs the upstream start,
-//!   then rewrites `CreationChallengeResponse.public_key.pub_key_cred_params`
-//!   and `PasskeyRegistration.rs.credential_algorithms` to contain
-//!   **only** EDDSA. The rewrite uses the `danger-allow-state-serialisation`
-//!   feature (enabled workspace-wide) to round-trip the state through
-//!   JSON — there is no other public path into the private
-//!   `credential_algorithms` field.
-//! - [`finish_passkey_registration`] — runs the upstream finish,
-//!   then rejects any returned `Passkey` whose `cred_algorithm()` is
-//!   not `EDDSA` (defence-in-depth: upstream's own check already
-//!   asserts the credential matches `credential_algorithms`, but we
-//!   double-check before the caller derives a `did:key`).
+//! - [`start_passkey_registration`] — runs the upstream start, then
+//!   **appends** EdDSA to
+//!   `CreationChallengeResponse.public_key.pub_key_cred_params` and to
+//!   `PasskeyRegistration.rs.credential_algorithms`, leaving the
+//!   default ES256 + RS256 in place. The state rewrite uses the
+//!   `danger-allow-state-serialisation` feature (enabled
+//!   workspace-wide) to round-trip through JSON — there is no other
+//!   public path into the private `credential_algorithms` field.
+//! - [`finish_passkey_registration`] — a thin pass-through to the
+//!   upstream finish. It does **not** filter by algorithm; upstream's
+//!   own check already asserts the returned credential matches the
+//!   ceremony's `credential_algorithms` (which now includes all three).
 //!
 //! ## When upstream gains an `algorithms` setter
 //!
-//! Replace the JSON-rewrite path with the setter and keep the
-//! finish-time check (it's cheap). Until then this is the only safe
-//! way to honour the spec's "Ed25519-only" invariant without forking
-//! `webauthn-rs` or dropping to `webauthn-rs-core::WebauthnCore::new_unsafe_experts_only`.
+//! Replace the JSON-rewrite in [`start_passkey_registration`] with the
+//! setter. Nothing else changes — there is no finish-time algorithm
+//! gate to keep.
 
 use webauthn_rs::prelude::{
     CreationChallengeResponse, Passkey, PasskeyRegistration, RegisterPublicKeyCredential, Webauthn,

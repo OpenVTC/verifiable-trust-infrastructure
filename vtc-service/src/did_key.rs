@@ -45,16 +45,25 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
 
     eprintln!("DID: {did}");
 
-    // When --admin is set, print a credential bundle to stdout
+    // When --admin is set, print a credential bundle to stdout.
+    //
+    // This is the canonical `vta_sdk::CredentialBundle` shape — the same
+    // envelope a VTA emits — so the CLI importer parses VTC- and
+    // VTA-issued admin credentials with one type. The bundle's
+    // `vtaDid` / `vtaUrl` fields name the *issuing authority*; for a
+    // VTC-issued credential that authority is this VTC, so we pass the
+    // VTC's own DID / URL. (Not a copy-paste bug — building via the
+    // typed bundle keeps it from drifting out of the shared contract,
+    // whose `deny_unknown_fields` would reject a renamed key.)
     if args.admin {
         let vtc_did = config.vtc_did.unwrap_or_default();
-        let mut bundle = serde_json::json!({
-            "did": did,
-            "privateKeyMultibase": private_key_multibase,
-            "vtaDid": vtc_did,
-        });
+        let mut bundle = vta_sdk::credentials::CredentialBundle::new(
+            did.clone(),
+            private_key_multibase,
+            vtc_did,
+        );
         if let Some(url) = &config.public_url {
-            bundle["vtaUrl"] = serde_json::json!(url);
+            bundle = bundle.vta_url(url.clone());
         }
         let bundle_json = serde_json::to_string(&bundle)?;
         let credential = BASE64.encode(bundle_json.as_bytes());
