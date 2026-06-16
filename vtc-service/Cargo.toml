@@ -56,13 +56,18 @@ admin-ui = ["website"]
 # OS keyring backend for the VTC secret. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
-keyring = ["dep:keyring-core", "vta-sdk/keyring"]
-config-secret = []
-aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config"]
+# The secret-store backend features activate the matching `vti-secrets`
+# feature (the shared backend implementations) and keep the VTC's own direct
+# cloud-SDK deps — the setup wizard still calls those SDKs directly to
+# enumerate existing secrets for its prompts.
+keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
+config-secret = ["vti-secrets/config-seed"]
+aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "vti-secrets/aws-secrets"]
 gcp-secrets = [
   "dep:google-cloud-secretmanager-v1",
   "dep:google-cloud-auth",
   "dep:bytes",
+  "vti-secrets/gcp-secrets",
 ]
 azure-secrets = [
   "dep:azure_security_keyvault_secrets",
@@ -72,11 +77,12 @@ azure-secrets = [
   # a transitive workspace dep — naming it direct just so the wizard
   # can consume it.
   "dep:futures-util",
+  "vti-secrets/azure-secrets",
 ]
 # Kubernetes Secret backend — stores the VTC key bundle in a namespaced
 # `Secret` resource. Off by default; for in-cluster deployments that prefer
 # native k8s Secrets over a cloud secret manager.
-k8s-secrets = ["dep:kube", "dep:k8s-openapi"]
+k8s-secrets = ["dep:kube", "dep:k8s-openapi", "vti-secrets/k8s-secrets"]
 
 [[bin]]
 name = "vtc"
@@ -96,6 +102,10 @@ vti-common = { path = "../vti-common", version = "0.10", features = [
   # the OpenAPI-aware Trust-Task route helpers (`task_routes`/`task_layer`).
   "openapi",
 ] }
+# Shared secret-store backend implementations (the VTC's `create_secret_store`
+# factory + `*SecretStore` names are a thin facade over these). Per-backend
+# features are activated by this crate's matching features above.
+vti-secrets = { path = "../vti-secrets", version = "0.1" }
 vta-sdk = { path = "../vta-sdk", version = "0.13", features = [
   "didcomm",
   "session",

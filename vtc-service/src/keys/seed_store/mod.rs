@@ -1,37 +1,52 @@
-#[cfg(feature = "aws-secrets")]
-mod aws;
-#[cfg(feature = "azure-secrets")]
-mod azure;
-#[cfg(feature = "config-secret")]
-mod config;
-#[cfg(feature = "gcp-secrets")]
-mod gcp;
-#[cfg(feature = "k8s-secrets")]
-mod k8s;
-#[cfg(feature = "keyring")]
-mod keyring;
-mod plaintext;
-
-#[cfg(feature = "aws-secrets")]
-pub use aws::AwsSecretStore;
-#[cfg(feature = "azure-secrets")]
-pub use azure::AzureSecretStore;
-#[cfg(feature = "config-secret")]
-pub use config::ConfigSecretStore;
-#[cfg(feature = "gcp-secrets")]
-pub use gcp::GcpSecretStore;
-#[cfg(feature = "k8s-secrets")]
-pub use k8s::{K8sSecretStore, from_config as k8s_from_config};
-#[cfg(feature = "keyring")]
-pub use keyring::KeyringSecretStore;
-pub use plaintext::PlaintextSecretStore;
+//! VTC secret-store facade.
+//!
+//! The concrete backend implementations are shared with the VTA: they live in
+//! the `vti-secrets` crate (issue #504 — dedup of the per-service copies that
+//! had drifted). This module re-exports them under the VTC's `*SecretStore`
+//! names and keeps the VTC-specific `create_secret_store` factory, which
+//! preserves the VTC's own storage locations and fail-closed semantics:
+//!
+//! - keyring item name `vtc_secret` (not the VTA's `master_seed`);
+//! - plaintext file `secret.plaintext` (not the VTA's `seed.plaintext`);
+//! - Azure default secret name `vtc-secret`;
+//! - `config-secret` / `secrets.secret` naming (not the VTA's `config-seed` /
+//!   `secrets.seed`);
+//! - a *set-but-not-compiled* backend selector is a hard `Config` error (P0.8),
+//!   never a silent fall-through to keyring/plaintext;
+//! - the plaintext fallback is the unconditional last resort with a warning
+//!   (the VTA additionally gates it behind `allow_plaintext`).
+//!
+//! Reusing the implementations means a backend fix / new backend lands once and
+//! both services benefit; keeping the factory here means the VTC's on-disk /
+//! in-keyring locations are byte-for-byte unchanged for existing deployments.
 
 use crate::config::AppConfig;
 use crate::error::AppError;
 
+// Backend implementations, shared with the VTA via `vti-secrets`, re-exported
+// under the VTC's historical `*SecretStore` names.
+#[cfg(feature = "aws-secrets")]
+pub use vti_secrets::seed_store::AwsSeedStore as AwsSecretStore;
+#[cfg(feature = "azure-secrets")]
+pub use vti_secrets::seed_store::AzureSeedStore as AzureSecretStore;
+#[cfg(feature = "config-secret")]
+pub use vti_secrets::seed_store::ConfigSeedStore as ConfigSecretStore;
+#[cfg(feature = "gcp-secrets")]
+pub use vti_secrets::seed_store::GcpSeedStore as GcpSecretStore;
+#[cfg(feature = "k8s-secrets")]
+pub use vti_secrets::seed_store::K8sSeedStore as K8sSecretStore;
+#[cfg(feature = "keyring")]
+pub use vti_secrets::seed_store::KeyringSeedStore as KeyringSecretStore;
+pub use vti_secrets::seed_store::PlaintextSeedStore as PlaintextSecretStore;
+
 /// Store for VTC key material (64 bytes: 32 Ed25519 + 32 X25519).
 /// Re-exports the shared SeedStore trait as SecretStore for VTC naming.
 pub use vti_common::seed_store::SeedStore as SecretStore;
+
+/// Filename the VTC plaintext backend uses under the data dir. Distinct from
+/// the VTA's `seed.plaintext` so the two never collide and so existing VTC
+/// deployments keep finding their secret.
+const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 
 /// Create a secret store backend based on compiled features and configuration.
 ///
@@ -109,7 +124,11 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
 
     #[cfg(feature = "k8s-secrets")]
     if config.secrets.k8s_secret_name.is_some() {
-        let store = k8s::from_config(&config.secrets)?;
+        let store = K8sSecretStore::new(
+            config.secrets.k8s_secret_name.clone().unwrap(),
+            config.secrets.k8s_namespace.clone(),
+            config.secrets.k8s_secret_key.clone(),
+        );
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "k8s-secrets"))]
@@ -146,7 +165,8 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         tracing::warn!(
             "no secure secret store backend available — falling back to plaintext file storage"
         );
-        let store = PlaintextSecretStore::new(&config.store.data_dir);
+        let store =
+            PlaintextSecretStore::with_filename(&config.store.data_dir, VTC_PLAINTEXT_FILENAME);
         Ok(Box::new(store))
     }
 }

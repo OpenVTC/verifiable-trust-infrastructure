@@ -20,9 +20,17 @@ pub struct PlaintextSeedStore {
 }
 
 impl PlaintextSeedStore {
+    /// Store at `<data_dir>/seed.plaintext` (the VTA default).
     pub fn new(data_dir: &std::path::Path) -> Self {
+        Self::with_filename(data_dir, "seed.plaintext")
+    }
+
+    /// Store at `<data_dir>/<filename>`. Lets a consumer pin a
+    /// backend-specific filename (e.g. the VTC uses `secret.plaintext`)
+    /// while sharing this implementation.
+    pub fn with_filename(data_dir: &std::path::Path, filename: &str) -> Self {
         Self {
-            path: data_dir.join("seed.plaintext"),
+            path: data_dir.join(filename),
         }
     }
 }

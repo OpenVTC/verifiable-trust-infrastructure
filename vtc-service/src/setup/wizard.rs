@@ -1063,7 +1063,7 @@ async fn list_gcp_secrets(
 /// let the operator pick one or type a name. Credentials come from
 /// `DeveloperToolsCredential` (Azure CLI / Developer CLI / VS Code),
 /// mirroring the runtime credential resolution used by
-/// [`crate::keys::seed_store::azure::AzureSecretStore`].
+/// [`crate::keys::seed_store::AzureSecretStore`].
 ///
 /// Note: vta-service's wizard does not currently have an Azure picker
 /// (it falls back to a plain input). vtc-service is intentionally

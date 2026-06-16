@@ -19,7 +19,7 @@ Leaf crates:
   vti-secrets     → vti-common (+ vta-sdk under the `onboarding` feature)
   vta-cli-common  → vta-sdk, vti-common
   vta-service     → vti-common, vti-secrets, vta-sdk, vta-cli-common
-  vtc-service     → vti-common, vta-sdk
+  vtc-service     → vti-common, vti-secrets, vta-sdk
   pnm-cli         → vta-sdk, vta-cli-common
   cnm-cli         → vta-sdk, vta-cli-common
   vta-mcp         → vta-sdk
@@ -30,7 +30,7 @@ Leaf crates:
 |---|---|
 | `vti-common` | Shared foundation: JWT auth, ACL, `Store`/`KeyspaceHandle` enum (local fjall + vsock), `AppError`, config types, identifier validation (`identifier.rs`), `secure_file` (owner-only file hardening), pluggable telemetry sink (`telemetry::TelemetrySink`, default ring buffer), the `SeedStore` trait |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
-| `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags. Plus (feature `onboarding`) `IntegrationOnboarding` — the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper. Lets external VTI integrations onboard + store secrets exactly like first-party ones without depending on `vta-service` |
+| `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags. Plus (feature `onboarding`) `IntegrationOnboarding` — the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper. Lets external VTI integrations onboard + store secrets exactly like first-party ones without depending on `vta-service`. The backend implementations are shared by **both** the VTA (`vta-service::keys::seed_store`) and the VTC (`vtc-service::keys::seed_store`, which keeps its own factory for VTC-specific storage locations / `*SecretStore` naming) |
 | `vta-service` | VTA logic (library) + local/dev binary. Routes, operations (provision-integration, did-webvh, contexts, backup, **protocol management**), setup wizards (interactive + `--from <toml>`), DIDComm bridge + `messaging::*` (registry, drain store/sweeper, handshake, live prover, transient handshake) |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
 | `vtc-service` | Verifiable Trust Community service (community lifecycle, separate JWT audience) |
