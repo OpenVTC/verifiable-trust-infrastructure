@@ -39,6 +39,9 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
+    // tonic 0.12.x forces `ring` on tokio-rustls; without this, rustls 0.23 panics on backend auto-detection.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     eprintln!("VTA enclave binary starting...");
 
     let cli = Cli::parse();

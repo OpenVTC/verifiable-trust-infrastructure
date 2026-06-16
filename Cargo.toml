@@ -189,6 +189,9 @@ base64 = "0.22"
 # HTTP client
 reqwest = { version = "0.13", features = ["json"] }
 
+# tonic 0.12.x forces `ring` on tokio-rustls; explicit dep lets main() install aws-lc-rs as the default provider.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "logging", "std", "tls12"] }
+
 # Interactive prompts
 dialoguer = "0.12"
 

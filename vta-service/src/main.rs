@@ -1283,6 +1283,9 @@ enum DrainCommands {
 
 #[tokio::main]
 async fn main() {
+    // tonic 0.12.x forces `ring` on tokio-rustls; without this, rustls 0.23 panics on backend auto-detection.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli = Cli::parse();
 
     #[cfg(feature = "keyring")]
