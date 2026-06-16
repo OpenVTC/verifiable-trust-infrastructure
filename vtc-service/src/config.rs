@@ -450,6 +450,51 @@ pub struct SecretsConfig {
     /// Change this to run multiple VTC instances on the same machine.
     #[serde(default = "default_keyring_service")]
     pub keyring_service: String,
+    /// HashiCorp Vault server URL (vault-secrets feature). Setting this
+    /// activates the Vault backend. Field names mirror the VTA's
+    /// (`vti_secrets::SecretsConfig`) so the shared Vault builder is reused.
+    pub vault_addr: Option<String>,
+    /// KV v2 mount path (vault-secrets feature). Default `secret`.
+    #[serde(default = "default_vault_kv_mount")]
+    pub vault_kv_mount: String,
+    /// KV v2 secret path under the mount, e.g. `vtc/key-bundle`
+    /// (vault-secrets feature).
+    pub vault_secret_path: Option<String>,
+    /// Field name within the KV v2 secret that holds the hex-encoded key
+    /// material (vault-secrets feature). Default `seed`.
+    #[serde(default = "default_vault_secret_key")]
+    pub vault_secret_key: String,
+    /// Vault Enterprise namespace, if any (vault-secrets feature).
+    pub vault_namespace: Option<String>,
+    /// Auth method: `kubernetes` (default), `token`, or `approle`
+    /// (vault-secrets feature).
+    #[serde(default = "default_vault_auth_method")]
+    pub vault_auth_method: String,
+    /// Kubernetes auth role name (vault-secrets feature, kubernetes auth).
+    pub vault_k8s_role: Option<String>,
+    /// Kubernetes auth mount path (vault-secrets feature). Default
+    /// `kubernetes`.
+    #[serde(default = "default_vault_k8s_mount")]
+    pub vault_k8s_mount: String,
+    /// File holding the ServiceAccount JWT presented to Vault
+    /// (vault-secrets feature, kubernetes auth). Default is the
+    /// kubelet-mounted projected volume path.
+    #[serde(default = "default_vault_k8s_jwt_path")]
+    pub vault_k8s_jwt_path: String,
+    /// Static token (vault-secrets feature, token auth). Prefer the
+    /// `VAULT_TOKEN` env var over hard-coding here.
+    pub vault_token: Option<String>,
+    /// AppRole role_id (vault-secrets feature, approle auth).
+    pub vault_approle_role_id: Option<String>,
+    /// AppRole secret_id (vault-secrets feature, approle auth).
+    pub vault_approle_secret_id: Option<String>,
+    /// AppRole mount path (vault-secrets feature). Default `approle`.
+    #[serde(default = "default_vault_approle_mount")]
+    pub vault_approle_mount: String,
+    /// Skip TLS certificate verification — dev/test only
+    /// (vault-secrets feature).
+    #[serde(default)]
+    pub vault_skip_verify: bool,
     /// Kubernetes `Secret` name holding the hex-encoded VTC key material
     /// (k8s-secrets feature). Setting this activates the Kubernetes
     /// backend.
@@ -472,11 +517,34 @@ fn default_k8s_secret_key() -> String {
     "secret".to_string()
 }
 
+fn default_vault_kv_mount() -> String {
+    "secret".to_string()
+}
+
+fn default_vault_secret_key() -> String {
+    "seed".to_string()
+}
+
+fn default_vault_auth_method() -> String {
+    "kubernetes".to_string()
+}
+
+fn default_vault_k8s_mount() -> String {
+    "kubernetes".to_string()
+}
+
+fn default_vault_k8s_jwt_path() -> String {
+    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
+}
+
+fn default_vault_approle_mount() -> String {
+    "approle".to_string()
+}
+
 // Manual Debug — `secret` is the hex-encoded VTC key material; leaking
 // it via a stray `{:?}` (e.g. a future `debug!(?config)`) would
 // compromise every key derived from it. Redact it; the other fields are
-// backend *names*, not secrets, so they print verbatim. Mirrors
-// `vti_common::config::SecretsConfig`'s impl.
+// backend *names*, not secrets, so they print verbatim.
 impl std::fmt::Debug for SecretsConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretsConfig")
@@ -488,6 +556,27 @@ impl std::fmt::Debug for SecretsConfig {
             .field("azure_vault_url", &self.azure_vault_url)
             .field("azure_secret_name", &self.azure_secret_name)
             .field("keyring_service", &self.keyring_service)
+            .field("vault_addr", &self.vault_addr)
+            .field("vault_kv_mount", &self.vault_kv_mount)
+            .field("vault_secret_path", &self.vault_secret_path)
+            .field("vault_secret_key", &self.vault_secret_key)
+            .field("vault_namespace", &self.vault_namespace)
+            .field("vault_auth_method", &self.vault_auth_method)
+            .field("vault_k8s_role", &self.vault_k8s_role)
+            .field("vault_k8s_mount", &self.vault_k8s_mount)
+            .field("vault_k8s_jwt_path", &self.vault_k8s_jwt_path)
+            // Secret-bearing: redact (token / approle secret_id are bearer creds).
+            .field(
+                "vault_token",
+                &self.vault_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("vault_approle_role_id", &self.vault_approle_role_id)
+            .field(
+                "vault_approle_secret_id",
+                &self.vault_approle_secret_id.as_ref().map(|_| "<redacted>"),
+            )
+            .field("vault_approle_mount", &self.vault_approle_mount)
+            .field("vault_skip_verify", &self.vault_skip_verify)
             .field("k8s_secret_name", &self.k8s_secret_name)
             .field("k8s_namespace", &self.k8s_namespace)
             .field("k8s_secret_key", &self.k8s_secret_key)
@@ -506,6 +595,20 @@ impl Default for SecretsConfig {
             azure_vault_url: None,
             azure_secret_name: None,
             keyring_service: default_keyring_service(),
+            vault_addr: None,
+            vault_kv_mount: default_vault_kv_mount(),
+            vault_secret_path: None,
+            vault_secret_key: default_vault_secret_key(),
+            vault_namespace: None,
+            vault_auth_method: default_vault_auth_method(),
+            vault_k8s_role: None,
+            vault_k8s_mount: default_vault_k8s_mount(),
+            vault_k8s_jwt_path: default_vault_k8s_jwt_path(),
+            vault_token: None,
+            vault_approle_role_id: None,
+            vault_approle_secret_id: None,
+            vault_approle_mount: default_vault_approle_mount(),
+            vault_skip_verify: false,
             k8s_secret_name: None,
             k8s_namespace: None,
             k8s_secret_key: default_k8s_secret_key(),
@@ -895,11 +998,22 @@ mod tests {
         let cfg = SecretsConfig {
             secret: Some("deadbeefdeadbeef".into()),
             keyring_service: "vtc".into(),
+            // Vault bearer creds are also secret-bearing — must not leak.
+            vault_token: Some("hvs.SUPERSECRETTOKEN".into()),
+            vault_approle_secret_id: Some("APPROLE_SECRET_ID_XYZ".into()),
             ..Default::default()
         };
         let dbg = format!("{cfg:?}");
         assert!(dbg.contains("<redacted>"), "got {dbg}");
         assert!(!dbg.contains("deadbeef"), "secret leaked: {dbg}");
+        assert!(
+            !dbg.contains("SUPERSECRETTOKEN"),
+            "vault_token leaked: {dbg}"
+        );
+        assert!(
+            !dbg.contains("APPROLE_SECRET_ID_XYZ"),
+            "vault_approle_secret_id leaked: {dbg}"
+        );
         // Non-secret backend names still print.
         assert!(dbg.contains("vtc"));
     }

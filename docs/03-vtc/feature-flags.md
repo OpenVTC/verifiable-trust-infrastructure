@@ -16,6 +16,7 @@ side.
 | `aws-secrets` | – | AWS Secrets Manager secret backend | `aws-sdk-secretsmanager`, `aws-config` |
 | `gcp-secrets` | – | GCP Secret Manager secret backend | `google-cloud-secretmanager-v1`, `google-cloud-auth`, `bytes` |
 | `azure-secrets` | – | Azure Key Vault secret backend | `azure_security_keyvault_secrets`, `azure_identity` |
+| `vault-secrets` | – | HashiCorp Vault (KV v2; kubernetes/token/approle auth). Configure via the `[secrets]` table (`vault_addr`, …) — no setup-wizard picker | *(shared via `vti-secrets`)* |
 | `k8s-secrets` | – | Kubernetes `Secret` secret backend (in-cluster SA or kubeconfig) | `kube`, `k8s-openapi` |
 
 ## Deployment profiles
@@ -97,10 +98,12 @@ Default-on features are green; opt-in features are amber.
   daemon expects a pre-populated config + secret store on first
   boot.
 - Exactly **one** secret backend should be enabled at a time. The
-  workspace picks the first one in priority order:
-  `keyring` > `aws-secrets` > `gcp-secrets` > `azure-secrets` >
-  `config-secret`. When in doubt, build with explicit `--no-default-features
-  --features <one-backend>,setup`.
+  runtime picks by which selector field is set, in priority order:
+  `aws-secrets` > `gcp-secrets` > `azure-secrets` > `vault-secrets` >
+  `k8s-secrets` > `config-secret` > `keyring` (default). A selector
+  set for a backend that wasn't compiled in is a hard error, not a
+  silent fall-through. When in doubt, build with explicit
+  `--no-default-features --features <one-backend>,setup`.
 
 ## See also
 

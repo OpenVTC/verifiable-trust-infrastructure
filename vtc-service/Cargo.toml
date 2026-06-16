@@ -83,6 +83,11 @@ azure-secrets = [
 # `Secret` resource. Off by default; for in-cluster deployments that prefer
 # native k8s Secrets over a cloud secret manager.
 k8s-secrets = ["dep:kube", "dep:k8s-openapi", "vti-secrets/k8s-secrets"]
+# HashiCorp Vault backend (KV v2 + kubernetes/token/approle auth). Reuses
+# the shared `vti-secrets` Vault implementation. No direct dep: the VTC
+# setup wizard has no Vault picker, so operators configure it via the
+# `[secrets]` table (`vault_addr`, …) or `setup --from <toml>`.
+vault-secrets = ["vti-secrets/vault-secrets"]
 
 [[bin]]
 name = "vtc"

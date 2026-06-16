@@ -32,7 +32,9 @@ pub use keyring::KeyringSeedStore;
 pub use kms_tee::KmsTeeSeedStore;
 pub use plaintext::PlaintextSeedStore;
 #[cfg(feature = "vault-secrets")]
-pub use vault::{VaultSeedStore, from_config as vault_from_config};
+pub use vault::{
+    VaultParams, VaultSeedStore, from_config as vault_from_config, from_params as vault_from_params,
+};
 
 #[cfg(feature = "tee")]
 use std::future::Future;

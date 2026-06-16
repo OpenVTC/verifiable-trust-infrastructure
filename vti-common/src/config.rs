@@ -80,50 +80,6 @@ pub struct MessagingConfig {
     pub mediator_host: Option<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct SecretsConfig {
-    /// Hex-encoded key material (seed for VTA, secret for VTC).
-    /// Uses serde aliases so both `seed` and `secret` are accepted in config files.
-    #[serde(alias = "seed", alias = "secret")]
-    pub inline_secret: Option<String>,
-    /// AWS Secrets Manager secret name (aws-secrets feature)
-    pub aws_secret_name: Option<String>,
-    /// AWS region override (aws-secrets feature)
-    pub aws_region: Option<String>,
-    /// GCP project ID (gcp-secrets feature)
-    pub gcp_project: Option<String>,
-    /// GCP secret name (gcp-secrets feature)
-    pub gcp_secret_name: Option<String>,
-    /// Azure Key Vault URL (azure-secrets feature)
-    pub azure_vault_url: Option<String>,
-    /// Azure Key Vault secret name (azure-secrets feature)
-    pub azure_secret_name: Option<String>,
-    /// OS keyring service name (keyring feature).
-    /// No default — each service provides its own ("vta" or "vtc").
-    pub keyring_service: String,
-}
-
-// Manual Debug — see `AuthConfig` impl for rationale. `inline_secret`
-// is the master seed (VTA) or HMAC secret (VTC); leaking it via a
-// stray `{:?}` would compromise every key derived from it.
-impl std::fmt::Debug for SecretsConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretsConfig")
-            .field(
-                "inline_secret",
-                &self.inline_secret.as_ref().map(|_| "<redacted>"),
-            )
-            .field("aws_secret_name", &self.aws_secret_name)
-            .field("aws_region", &self.aws_region)
-            .field("gcp_project", &self.gcp_project)
-            .field("gcp_secret_name", &self.gcp_secret_name)
-            .field("azure_vault_url", &self.azure_vault_url)
-            .field("azure_secret_name", &self.azure_secret_name)
-            .field("keyring_service", &self.keyring_service)
-            .finish()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditConfig {
     /// Number of days to retain audit logs (default 28).
@@ -237,37 +193,6 @@ mod tests {
         let dbg = format!("{cfg:?}");
         // `Option<&str>` Debug prints `None` for the absent case.
         assert!(dbg.contains("jwt_signing_key: None"), "got: {dbg}");
-    }
-
-    /// `SecretsConfig.inline_secret` is the master seed (VTA) or HMAC
-    /// secret (VTC). Same redaction discipline as `AuthConfig`.
-    #[test]
-    fn secrets_config_debug_redacts_inline_secret() {
-        let cfg = SecretsConfig {
-            inline_secret: Some("MASTER_SEED_HEX_MUST_NOT_LEAK".into()),
-            aws_secret_name: None,
-            aws_region: None,
-            gcp_project: None,
-            gcp_secret_name: None,
-            azure_vault_url: None,
-            azure_secret_name: None,
-            keyring_service: "vta".into(),
-        };
-        let dbg = format!("{cfg:?}");
-        assert!(
-            !dbg.contains("MASTER_SEED_HEX"),
-            "SecretsConfig Debug leaked inline_secret contents: {dbg}"
-        );
-        assert!(
-            dbg.contains("<redacted>"),
-            "expected redaction marker in Debug, got: {dbg}"
-        );
-        // Non-secret routing fields stay visible so the operator can
-        // tell which backend is configured.
-        assert!(
-            dbg.contains("vta"),
-            "keyring_service must be visible: {dbg}"
-        );
     }
 
     /// Serialize must remain unaffected — these structs round-trip to

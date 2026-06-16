@@ -329,37 +329,68 @@ impl super::SeedStore for VaultSeedStore {
     }
 }
 
-/// Build a [`VaultSeedStore`] from the workspace [`SecretsConfig`].
+/// Config-agnostic inputs for [`from_params`]. Mirrors the `vault_*`
+/// config fields so any service can build a Vault backend from its own
+/// config shape without depending on a specific `SecretsConfig` type —
+/// the VTA builds these from [`crate::SecretsConfig`] via [`from_config`];
+/// the VTC builds them from its own config. Fields are borrowed (the
+/// builder owns only what it keeps), and the string-defaulted fields
+/// (`secret_key`, `kv_mount`, the `*_mount`s, `auth_method`) are the
+/// caller's already-resolved values.
+pub struct VaultParams<'a> {
+    pub addr: Option<&'a str>,
+    pub namespace: Option<&'a str>,
+    pub skip_verify: bool,
+    pub secret_path: Option<&'a str>,
+    pub secret_key: &'a str,
+    pub kv_mount: &'a str,
+    pub auth_method: &'a str,
+    pub k8s_role: Option<&'a str>,
+    pub k8s_mount: &'a str,
+    pub k8s_jwt_path: &'a str,
+    pub token: Option<&'a str>,
+    pub approle_role_id: Option<&'a str>,
+    pub approle_secret_id: Option<&'a str>,
+    pub approle_mount: &'a str,
+}
+
+/// Build a [`VaultSeedStore`] from config-agnostic [`VaultParams`].
 /// Validates the auth-method-specific fields and surfaces actionable
 /// errors when something required is missing.
-pub fn from_config(secrets: &crate::config::SecretsConfig) -> Result<VaultSeedStore, AppError> {
-    let addr = secrets
-        .vault_addr
-        .clone()
-        .ok_or_else(|| AppError::Config("secrets.vault_addr is required".into()))?;
-    let path = secrets.vault_secret_path.clone().ok_or_else(|| {
-        AppError::Config(
-            "secrets.vault_secret_path is required when secrets.vault_addr is set".into(),
-        )
-    })?;
+pub fn from_params(p: &VaultParams<'_>) -> Result<VaultSeedStore, AppError> {
+    let addr = p
+        .addr
+        .ok_or_else(|| AppError::Config("secrets.vault_addr is required".into()))?
+        .to_string();
+    let path = p
+        .secret_path
+        .ok_or_else(|| {
+            AppError::Config(
+                "secrets.vault_secret_path is required when secrets.vault_addr is set".into(),
+            )
+        })?
+        .to_string();
 
-    let auth = match secrets.vault_auth_method.as_str() {
+    let auth = match p.auth_method {
         "kubernetes" => {
-            let role = secrets.vault_k8s_role.clone().ok_or_else(|| {
-                AppError::Config(
-                    "secrets.vault_k8s_role is required for kubernetes auth method".into(),
-                )
-            })?;
+            let role = p
+                .k8s_role
+                .ok_or_else(|| {
+                    AppError::Config(
+                        "secrets.vault_k8s_role is required for kubernetes auth method".into(),
+                    )
+                })?
+                .to_string();
             VaultAuth::Kubernetes {
-                mount: secrets.vault_k8s_mount.clone(),
+                mount: p.k8s_mount.to_string(),
                 role,
-                jwt_path: secrets.vault_k8s_jwt_path.clone(),
+                jwt_path: p.k8s_jwt_path.to_string(),
             }
         }
         "token" => {
-            let token = secrets
-                .vault_token
-                .clone()
+            let token = p
+                .token
+                .map(str::to_string)
                 .or_else(|| std::env::var("VAULT_TOKEN").ok())
                 .ok_or_else(|| {
                     AppError::Config(
@@ -369,14 +400,22 @@ pub fn from_config(secrets: &crate::config::SecretsConfig) -> Result<VaultSeedSt
             VaultAuth::Token { token }
         }
         "approle" => {
-            let role_id = secrets.vault_approle_role_id.clone().ok_or_else(|| {
-                AppError::Config("secrets.vault_approle_role_id is required for approle".into())
-            })?;
-            let secret_id = secrets.vault_approle_secret_id.clone().ok_or_else(|| {
-                AppError::Config("secrets.vault_approle_secret_id is required for approle".into())
-            })?;
+            let role_id = p
+                .approle_role_id
+                .ok_or_else(|| {
+                    AppError::Config("secrets.vault_approle_role_id is required for approle".into())
+                })?
+                .to_string();
+            let secret_id = p
+                .approle_secret_id
+                .ok_or_else(|| {
+                    AppError::Config(
+                        "secrets.vault_approle_secret_id is required for approle".into(),
+                    )
+                })?
+                .to_string();
             VaultAuth::AppRole {
-                mount: secrets.vault_approle_mount.clone(),
+                mount: p.approle_mount.to_string(),
                 role_id,
                 secret_id,
             }
@@ -390,11 +429,32 @@ pub fn from_config(secrets: &crate::config::SecretsConfig) -> Result<VaultSeedSt
 
     Ok(VaultSeedStore::new(
         addr,
-        secrets.vault_namespace.clone(),
-        secrets.vault_skip_verify,
+        p.namespace.map(str::to_string),
+        p.skip_verify,
         path,
-        secrets.vault_secret_key.clone(),
-        secrets.vault_kv_mount.clone(),
+        p.secret_key.to_string(),
+        p.kv_mount.to_string(),
         auth,
     ))
+}
+
+/// Build a [`VaultSeedStore`] from the workspace [`SecretsConfig`]. Thin
+/// adapter over [`from_params`].
+pub fn from_config(secrets: &crate::config::SecretsConfig) -> Result<VaultSeedStore, AppError> {
+    from_params(&VaultParams {
+        addr: secrets.vault_addr.as_deref(),
+        namespace: secrets.vault_namespace.as_deref(),
+        skip_verify: secrets.vault_skip_verify,
+        secret_path: secrets.vault_secret_path.as_deref(),
+        secret_key: &secrets.vault_secret_key,
+        kv_mount: &secrets.vault_kv_mount,
+        auth_method: &secrets.vault_auth_method,
+        k8s_role: secrets.vault_k8s_role.as_deref(),
+        k8s_mount: &secrets.vault_k8s_mount,
+        k8s_jwt_path: &secrets.vault_k8s_jwt_path,
+        token: secrets.vault_token.as_deref(),
+        approle_role_id: secrets.vault_approle_role_id.as_deref(),
+        approle_secret_id: secrets.vault_approle_secret_id.as_deref(),
+        approle_mount: &secrets.vault_approle_mount,
+    })
 }

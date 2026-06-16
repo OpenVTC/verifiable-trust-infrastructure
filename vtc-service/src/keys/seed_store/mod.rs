@@ -54,10 +54,11 @@ const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 /// 1. AWS Secrets Manager (if `aws-secrets` compiled + `secrets.aws_secret_name` set)
 /// 2. GCP Secret Manager (if `gcp-secrets` compiled + `secrets.gcp_secret_name` set)
 /// 3. Azure Key Vault (if `azure-secrets` compiled + `secrets.azure_vault_url` set)
-/// 4. Kubernetes Secret (if `k8s-secrets` compiled + `secrets.k8s_secret_name` set)
-/// 5. Config file secret (if `config-secret` compiled + `secrets.secret` set)
-/// 6. OS keyring (if `keyring` compiled — the default)
-/// 7. Plaintext file (always available — NOT secure)
+/// 4. HashiCorp Vault (if `vault-secrets` compiled + `secrets.vault_addr` set)
+/// 5. Kubernetes Secret (if `k8s-secrets` compiled + `secrets.k8s_secret_name` set)
+/// 6. Config file secret (if `config-secret` compiled + `secrets.secret` set)
+/// 7. OS keyring (if `keyring` compiled — the default)
+/// 8. Plaintext file (always available — NOT secure)
 #[allow(unused_variables)]
 pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, AppError> {
     // For every cloud/config backend, a set selector field on a binary that
@@ -118,6 +119,40 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         return Err(AppError::Config(
             "secrets.azure_vault_url is set but this binary was built without the \
              'azure-secrets' feature"
+                .into(),
+        ));
+    }
+
+    // HashiCorp Vault — reuses the shared `vti-secrets` Vault builder. The
+    // VTC's `vault_*` config fields mirror the VTA's, so the auth-method
+    // parsing is not duplicated here.
+    #[cfg(feature = "vault-secrets")]
+    if config.secrets.vault_addr.is_some() {
+        let s = &config.secrets;
+        let store =
+            vti_secrets::seed_store::vault_from_params(&vti_secrets::seed_store::VaultParams {
+                addr: s.vault_addr.as_deref(),
+                namespace: s.vault_namespace.as_deref(),
+                skip_verify: s.vault_skip_verify,
+                secret_path: s.vault_secret_path.as_deref(),
+                secret_key: &s.vault_secret_key,
+                kv_mount: &s.vault_kv_mount,
+                auth_method: &s.vault_auth_method,
+                k8s_role: s.vault_k8s_role.as_deref(),
+                k8s_mount: &s.vault_k8s_mount,
+                k8s_jwt_path: &s.vault_k8s_jwt_path,
+                token: s.vault_token.as_deref(),
+                approle_role_id: s.vault_approle_role_id.as_deref(),
+                approle_secret_id: s.vault_approle_secret_id.as_deref(),
+                approle_mount: &s.vault_approle_mount,
+            })?;
+        return Ok(Box::new(store));
+    }
+    #[cfg(not(feature = "vault-secrets"))]
+    if config.secrets.vault_addr.is_some() {
+        return Err(AppError::Config(
+            "secrets.vault_addr is set but this binary was built without the \
+             'vault-secrets' feature"
                 .into(),
         ));
     }
@@ -233,6 +268,13 @@ mod tests {
         let mut config = base_config();
         config.secrets.k8s_secret_name = Some("vtc-master-seed".into());
         assert_config_err_mentions(&config, "k8s-secrets");
+    }
+
+    #[test]
+    fn vault_set_without_feature_is_config_error() {
+        let mut config = base_config();
+        config.secrets.vault_addr = Some("https://vault.internal:8200".into());
+        assert_config_err_mentions(&config, "vault-secrets");
     }
 
     #[test]
