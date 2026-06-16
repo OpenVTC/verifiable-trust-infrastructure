@@ -1115,22 +1115,29 @@ mod tests {
             text("https://trust.example.com"),   // REST URL
             text("info"),                        // log level
             Answer::Index(0),                    // log format = text
-            text("90"),                          // audit retention
-            text("/tmp/vta-golden/data"),        // data dir (doesn't exist)
-            Answer::Bool(true),                  // configure advanced server opts?
-            text("https://app.example.com"),     // cors origins
-            Answer::Bool(true),                  // trust_xff
-            Answer::Bool(true),                  // webauthn
-            Answer::Index(0),                    // secrets backend = keyring
-            text("golden-keyring"),              // keyring service
-            Answer::Index(1),                    // messaging = create mediator
-            text("mediator"),                    // mediator context
-            text("https://mediator.example.com"), // mediator DIDComm url
-            text("wss://mediator.example.com/ws"), // mediator ws url
+            // TEE builds add an extra "Remote DID resolver WebSocket URL"
+            // prompt here (vsock-bridged resolution); empty = skip. Only
+            // scripted when `tee` is active so the answer sequence stays
+            // aligned under both feature sets (CI's `--workspace` build
+            // unifies `tee` onto this binary via vta-enclave).
+            #[cfg(feature = "tee")]
+            text(""), // TEE-only: remote DID resolver URL (skip)
+            text("90"),                                // audit retention
+            text("/tmp/vta-golden/data"),              // data dir (doesn't exist)
+            Answer::Bool(true),                        // configure advanced server opts?
+            text("https://app.example.com"),           // cors origins
+            Answer::Bool(true),                        // trust_xff
+            Answer::Bool(true),                        // webauthn
+            Answer::Index(0),                          // secrets backend = keyring
+            text("golden-keyring"),                    // keyring service
+            Answer::Index(1),                          // messaging = create mediator
+            text("mediator"),                          // mediator context
+            text("https://mediator.example.com"),      // mediator DIDComm url
+            text("wss://mediator.example.com/ws"),     // mediator ws url
             text("https://dids.example.com/mediator"), // mediator DID URL (split host)
-            text(""),                            // mediator host (skip)
-            text(""),                            // routing keys (skip)
-            Answer::Index(1),                    // VTA DID = did:key
+            text(""),                                  // mediator host (skip)
+            text(""),                                  // routing keys (skip)
+            Answer::Index(1),                          // VTA DID = did:key
         ];
         let p = ScriptedPrompter::new(answers);
         let gathered = gather_inputs(&p, None)
@@ -1200,6 +1207,10 @@ mod tests {
             text("https://t.example.com"), // REST URL
             text("info"),                  // log level
             Answer::Index(0),              // log format
+            // TEE-only "Remote DID resolver WebSocket URL" prompt; empty =
+            // skip. See the note in `interactive_matches_equivalent_toml`.
+            #[cfg(feature = "tee")]
+            text(""), // TEE-only: remote DID resolver URL (skip)
             text("28"),                    // audit retention
             text("/tmp/vta-golden2/data"), // data dir
             Answer::Bool(false),           // advanced server opts? no
