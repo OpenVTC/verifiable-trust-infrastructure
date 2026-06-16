@@ -15,6 +15,7 @@ pub struct DeleteDidTemplateBody {
 /// admin-with-context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DeleteContextDidTemplateBody {
     pub context_id: String,
     pub name: String,

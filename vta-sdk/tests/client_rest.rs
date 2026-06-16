@@ -1169,9 +1169,9 @@ fn template_record_json(name: &str) -> Value {
         "defaults": {},
         "document": {"id": "{DID}"},
         "scope": {"type": "global"},
-        "created_at": 1_700_000_000_u64,
-        "updated_at": 1_700_000_000_u64,
-        "created_by": "did:web:vta"
+        "createdAt": 1_700_000_000_u64,
+        "updatedAt": 1_700_000_000_u64,
+        "createdBy": "did:web:vta"
     })
 }
 

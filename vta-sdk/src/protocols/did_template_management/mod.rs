@@ -6,7 +6,9 @@
 //! body types when relevant: a **global**-scope variant
 //! (`*DidTemplateBody`) and a **context**-scope variant
 //! (`*ContextDidTemplateBody`). The context-scope variant carries
-//! a required `context_id: String`; the global variant doesn't.
+//! a required `context_id` field (serialized as `contextId` on the
+//! wire, lowerCamelCase per the Trust Task framework); the global
+//! variant doesn't.
 //!
 //! The split is deliberate. Global and context templates are not
 //! the same resource filtered differently — they have different
@@ -22,9 +24,14 @@
 //! [`crate::trust_tasks`] under the `TASK_DID_TEMPLATES_*` and
 //! `TASK_CONTEXTS_DID_TEMPLATES_*` prefixes.
 //!
-//! Legacy DIDComm protocol constants are also reused over REST
-//! today; they're kept here in case a DIDComm transport for
-//! template management ships later.
+//! Template management over DIDComm ships as a **Trust Task**: the
+//! `VtaClient` dispatches the
+//! `trusttasks.org/spec/vta/(contexts/)did-templates/*` tasks through
+//! the binding envelope, and the VTA serves them via its trust-task
+//! dispatcher. The `firstperson.network/protocols/did-template-management/1.0`
+//! message-type constants below are **deprecated** — they were the
+//! never-routed raw-protocol scheme and are retained only for
+//! backward compatibility; no current code path emits them.
 
 pub mod create;
 pub mod delete;

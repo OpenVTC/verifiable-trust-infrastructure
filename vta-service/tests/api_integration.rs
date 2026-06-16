@@ -2192,7 +2192,7 @@ async fn did_templates_create_get_delete_roundtrip() {
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["name"], "rt");
     assert_eq!(body["scope"]["type"], "global");
-    assert_eq!(body["created_by"], "did:key:z6MkSuper");
+    assert_eq!(body["createdBy"], "did:key:z6MkSuper");
 
     // Duplicate rejected
     let (status, _) = app
@@ -2242,7 +2242,7 @@ async fn did_templates_update_replaces_body_preserves_created_at() {
         ))
         .await;
     assert_eq!(status, StatusCode::CREATED);
-    let created_at_original = original["created_at"].clone();
+    let created_at_original = original["createdAt"].clone();
 
     // Update with a tweaked description.
     let mut updated = sample_template("evolving");
@@ -2252,9 +2252,9 @@ async fn did_templates_update_replaces_body_preserves_created_at() {
         .await;
     assert_eq!(status, StatusCode::OK, "body: {body}");
     assert_eq!(body["description"], "new description");
-    // created_at preserved, updated_at advances (can't assert >, but must exist).
-    assert_eq!(body["created_at"], created_at_original);
-    assert!(body["updated_at"].is_u64());
+    // createdAt preserved, updatedAt advances (can't assert >, but must exist).
+    assert_eq!(body["createdAt"], created_at_original);
+    assert!(body["updatedAt"].is_u64());
 }
 
 #[tokio::test]

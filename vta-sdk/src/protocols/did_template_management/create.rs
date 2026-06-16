@@ -21,6 +21,7 @@ pub struct CreateDidTemplateBody {
 /// context-scoped template. Auth: super-admin OR admin-with-context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct CreateContextDidTemplateBody {
     pub context_id: String,
     pub template: DidTemplate,

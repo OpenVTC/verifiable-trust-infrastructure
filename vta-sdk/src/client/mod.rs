@@ -549,6 +549,73 @@ impl VtaClient {
         }
     }
 
+    /// Like [`rpc`](Self::rpc), but the **DIDComm leg dispatches a Trust Task**
+    /// (binding envelope, `tt_uri`) instead of a raw protocol message, while the
+    /// **REST leg keeps using the dedicated route** built by `build_rest`.
+    ///
+    /// This is the bridge for surfaces (e.g. DID templates) that expose
+    /// dedicated REST endpoints but are only reachable over DIDComm through the
+    /// VTA's Trust-Task dispatcher (`trusttasks.org/spec/...`). The DIDComm
+    /// reply is a trust-task document whose `payload` is the result body.
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub(crate) async fn rpc_tt<T: serde::de::DeserializeOwned>(
+        &self,
+        tt_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
+    ) -> Result<T, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = build_rest(client, base_url);
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => {
+                let payload = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                serde_json::from_value(payload)
+                    .map_err(|e| VtaError::Protocol(format!("trust-task response decode: {e}")))
+            }
+        }
+    }
+
+    /// [`rpc_tt`](Self::rpc_tt) for operations that return `()` (e.g. DELETE).
+    /// The DIDComm leg still requires a non-rejection trust-task reply.
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub(crate) async fn rpc_tt_void(
+        &self,
+        tt_uri: &str,
+        payload: serde_json::Value,
+        timeout: u64,
+        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
+    ) -> Result<(), VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = build_rest(client, base_url);
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_delete_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => {
+                let _ = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                Ok(())
+            }
+        }
+    }
+
     // ── Trust-task dispatch (device/vault slices) ──────────────────────
 
     /// Dispatch a Trust Task over whichever transport this client uses and

@@ -16,8 +16,9 @@ use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
 use vta_sdk::protocols::{
     acl_management, audit_management, backup_management, context_management, did_management,
-    did_template_management, discovery, key_management, seed_management, vta_management,
+    discovery, key_management, seed_management, vta_management,
 };
+use vta_sdk::trust_tasks;
 
 mod common;
 use common::test_vta_responder::{ResponderReply, TestVtaResponder};
@@ -621,19 +622,30 @@ fn template_record_json(name: &str) -> Value {
         "defaults": {},
         "document": {"id": "{DID}"},
         "scope": {"type": "global"},
-        "created_at": 1_700_000_000_u64,
-        "updated_at": 1_700_000_000_u64,
-        "created_by": "did:web:vta"
+        "createdAt": 1_700_000_000_u64,
+        "updatedAt": 1_700_000_000_u64,
+        "createdBy": "did:web:vta"
     })
 }
 
+/// DIDComm template management is dispatched as a Trust Task: the SDK sends the
+/// binding-envelope type carrying `{type: vta/did-templates/list/1.0, payload}`,
+/// and the VTA replies with a trust-task document whose `payload` is the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_did_templates_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == did_template_management::LIST_TEMPLATES {
+    const TT_ENVELOPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if msg_type == TT_ENVELOPE
+            && body.get("type").and_then(|v| v.as_str())
+                == Some(trust_tasks::TASK_DID_TEMPLATES_LIST_1_0)
+        {
             ResponderReply::ok(
-                did_template_management::LIST_TEMPLATES_RESULT,
-                json!({"templates": [template_record_json("custom-1")]}),
+                TT_ENVELOPE,
+                json!({
+                    "id": "urn:uuid:resp-1",
+                    "type": format!("{}#response", trust_tasks::TASK_DID_TEMPLATES_LIST_1_0),
+                    "payload": {"templates": [template_record_json("custom-1")]}
+                }),
             )
         } else {
             ResponderReply::problem_report("e.p.msg.not-found", "no handler")

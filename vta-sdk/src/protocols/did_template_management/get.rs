@@ -18,6 +18,7 @@ pub struct GetDidTemplateBody {
 /// the context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct GetContextDidTemplateBody {
     pub context_id: String,
     pub name: String,

@@ -25,6 +25,7 @@ pub struct RenderDidTemplateBody {
 /// authed with access to the context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct RenderContextDidTemplateBody {
     pub context_id: String,
     pub name: String,

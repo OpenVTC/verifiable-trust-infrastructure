@@ -213,6 +213,7 @@ impl TemplateVars {
 /// maintains (scope, timestamps, author DID).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct DidTemplateRecord {
     #[serde(flatten)]
     pub template: DidTemplate,

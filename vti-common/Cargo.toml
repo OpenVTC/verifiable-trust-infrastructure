@@ -2,7 +2,7 @@
 name = "vti-common"
 description = "Shared server-side infrastructure for VTA and VTC services"
 readme = "README.md"
-version = "0.10.4"
+version = "0.10.5"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -48,7 +48,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum"]
 # `default-features = false` skips the optional client transports
 # (didcomm, sealed-transfer, etc.); we only consume the type
 # definitions in the default feature set.
-vta-sdk = { path = "../vta-sdk", version = "0.13", default-features = false }
+vta-sdk = { path = "../vta-sdk", version = "0.14", default-features = false }
 async-trait = "0.1"
 axum = { workspace = true }
 axum-extra = { workspace = true }

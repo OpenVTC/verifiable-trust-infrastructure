@@ -14,6 +14,7 @@ pub struct ListDidTemplatesBody {}
 /// templates scoped to a specific context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
 pub struct ListContextDidTemplatesBody {
     pub context_id: String,
 }
