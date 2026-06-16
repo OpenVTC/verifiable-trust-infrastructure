@@ -1163,7 +1163,17 @@ fn secrets_config_from_input(
                 "\x1b[1;33mWARNING: plaintext seed storage selected. NOT for production.\x1b[0m"
             );
             eprintln!();
-            SecretsConfig::default()
+            // The plaintext fallback in `create_seed_store` is an explicit
+            // opt-in (P0.9) — without `allow_plaintext = true` it errors
+            // rather than silently writing the master seed in clear. Since
+            // the operator deliberately chose plaintext here, set the flag so
+            // the seed store can be created during setup *and* the booted VTA
+            // can re-open it. The flag is serialized into `[secrets]` in the
+            // generated config.toml, so plaintext deployments stay runnable.
+            SecretsConfig {
+                allow_plaintext: true,
+                ..SecretsConfig::default()
+            }
         }
     })
 }
@@ -1452,6 +1462,27 @@ mod tests {
         assert!(matches!(inputs.messaging, MessagingInput::Skip));
         assert!(matches!(inputs.vta_did, VtaDidInput::Skip));
         assert!(inputs.admin_did.is_none());
+    }
+
+    #[test]
+    fn plaintext_backend_sets_allow_plaintext() {
+        // Selecting the plaintext backend must opt in to the plaintext
+        // seed-store fallback (P0.9). Otherwise `create_seed_store` errors
+        // during setup and the booted VTA can't re-open the seed. The flag
+        // is serialized into `[secrets]` in the generated config.toml.
+        let secrets = secrets_config_from_input(&SecretsBackendInput::Plaintext)
+            .expect("plaintext backend should convert");
+        assert!(
+            secrets.allow_plaintext,
+            "plaintext backend must set allow_plaintext = true"
+        );
+
+        // And it round-trips into the written config as `allow_plaintext = true`.
+        let toml_out = toml::to_string(&secrets).expect("secrets config serializes");
+        assert!(
+            toml_out.contains("allow_plaintext = true"),
+            "generated config must carry the flag, got:\n{toml_out}"
+        );
     }
 
     #[test]
