@@ -169,6 +169,7 @@ fn seed_record_backup_debug_redacts_seed_hex() {
     let s = SeedRecordBackup {
         id: 1,
         seed_hex: Some(MARKER.into()),
+        seed_enc: None,
         created_at: Utc::now(),
         retired_at: None,
     };
