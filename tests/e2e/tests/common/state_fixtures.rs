@@ -48,11 +48,19 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use vta_service::config::{AppConfig, ServicesConfig};
+use vta_service::didcomm_bridge::DIDCommBridge;
+use vta_service::keys::seed_store::PlaintextSeedStore;
+use vta_service::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
+use vta_service::messaging::registry::MediatorListenerRegistry;
+use vta_service::operations::did_webvh::WebvhAuthLocks;
+use vta_service::operations::protocol::ServiceOpDeps;
 use vta_service::operations::protocol::snapshot::{
     self, DidcommSnapshot, RestSnapshot, ServiceConfigSnapshot,
 };
 use vta_service::test_support::{TestStore, open_test_store, test_app_config};
+use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
 
 /// Spec §7a.1 valid states. `S0` (off, off) is invariant-violating
 /// and intentionally absent — runtime commands can never reach it.
@@ -181,6 +189,79 @@ impl StateFixture {
     pub async fn with_didcomm_snapshot_disabled(self) -> Self {
         self.with_snapshot(ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Disabled))
             .await
+    }
+}
+
+/// Owns the per-test infrastructure a runtime-service operation needs that
+/// isn't part of the persisted [`StateFixture`] — seed store, DID resolver,
+/// DIDComm bridge, telemetry sink, mediator registry, drain sweeper, and the
+/// webvh auth locks. The protocol ops were consolidated onto a single borrowed
+/// [`ServiceOpDeps`] bundle ([`mod@vta_service::operations::protocol`]), so a
+/// caller builds this once and hands out [`OpInfra::deps`] per invocation.
+///
+/// Split from `StateFixture` because these are owned values the borrowed
+/// `ServiceOpDeps` points at: keep both alive for the test body, then build
+/// the bundle on demand. The registry/sweeper are only read by the DIDComm
+/// family; REST ops ignore them but the shared bundle still carries them.
+pub struct OpInfra {
+    seed: PlaintextSeedStore,
+    resolver: DIDCacheClient,
+    bridge: Arc<DIDCommBridge>,
+    telemetry: SharedTelemetrySink,
+    registry: Arc<MediatorListenerRegistry>,
+    sweeper: Arc<DrainSweeper>,
+    locks: WebvhAuthLocks,
+}
+
+impl OpInfra {
+    /// Build the infra against a fixture's drain keyspace (the sweeper needs
+    /// it). The teardown receiver is dropped immediately — refusal-path tests
+    /// bail before any drain is swept, so nothing is ever sent on it.
+    pub async fn new(fx: &StateFixture) -> Self {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("DID resolver");
+        let telemetry: SharedTelemetrySink = Arc::new(RingBufferTelemetry::new());
+        let registry = Arc::new(MediatorListenerRegistry::new(Arc::clone(&telemetry)));
+        let (tx, _rx) = teardown_channel(8);
+        let sweeper = Arc::new(DrainSweeper::new(
+            Arc::clone(&registry),
+            fx.store.drains_ks.clone(),
+            tx,
+        ));
+        Self {
+            seed: PlaintextSeedStore::new(&fx.store.data_dir),
+            resolver,
+            bridge: Arc::new(DIDCommBridge::placeholder()),
+            telemetry,
+            registry,
+            sweeper,
+            locks: WebvhAuthLocks::new(),
+        }
+    }
+
+    /// Borrow a [`ServiceOpDeps`] bundle pointing at the fixture's keyspaces +
+    /// config and this infra's owned values. Both `self` and `fx` must outlive
+    /// the returned bundle.
+    pub fn deps<'a>(&'a self, fx: &'a StateFixture) -> ServiceOpDeps<'a> {
+        ServiceOpDeps {
+            config: &fx.config,
+            keys_ks: &fx.store.keys_ks,
+            imported_ks: &fx.store.imported_ks,
+            contexts_ks: &fx.store.contexts_ks,
+            webvh_ks: &fx.store.webvh_ks,
+            audit_ks: &fx.store.audit_ks,
+            snapshot_ks: &fx.store.snapshot_ks,
+            service_state_ks: &fx.store.service_state_ks,
+            drains_ks: &fx.store.drains_ks,
+            seed_store: &self.seed,
+            did_resolver: &self.resolver,
+            didcomm_bridge: &self.bridge,
+            telemetry: &self.telemetry,
+            webvh_auth_locks: &self.locks,
+            registry: &self.registry,
+            sweeper: &self.sweeper,
+        }
     }
 }
 

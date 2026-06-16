@@ -1147,14 +1147,20 @@ fn run_rest_thread(
             .layer(host_layer)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
-            .layer(TimeoutLayer::new(REST_REQUEST_TIMEOUT));
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                REST_REQUEST_TIMEOUT,
+            ));
         #[cfg(not(feature = "website"))]
         let app = routes::router_with_xff(&routing, trust_xff)
             .with_state(state)
             .layer(host_layer)
             .layer(cors_layer)
             .layer(TraceLayer::new_for_http())
-            .layer(TimeoutLayer::new(REST_REQUEST_TIMEOUT));
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                REST_REQUEST_TIMEOUT,
+            ));
 
         let shutdown_rx = shutdown_rx.clone();
         // `into_make_service_with_connect_info` is required for the
@@ -1614,7 +1620,10 @@ mod p0_10_timeout_tests {
         let app = axum::Router::new()
             .route("/slow", get(slow))
             .route("/fast", get(fast))
-            .layer(TimeoutLayer::new(std::time::Duration::from_millis(50)));
+            .layer(TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                std::time::Duration::from_millis(50),
+            ));
 
         let slow_res = app
             .clone()

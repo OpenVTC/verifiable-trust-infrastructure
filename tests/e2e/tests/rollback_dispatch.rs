@@ -27,12 +27,7 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use vta_service::auth::AuthClaims;
-use vta_service::didcomm_bridge::DIDCommBridge;
-use vta_service::keys::seed_store::PlaintextSeedStore;
 use vta_service::messaging::handshake::AlwaysOkProver;
 use vta_service::operations::protocol::disable_didcomm::DisableTransport;
 use vta_service::operations::protocol::rollback_didcomm::{
@@ -42,24 +37,10 @@ use vta_service::operations::protocol::rollback_rest::{
     RollbackKind as RestRollbackKind, RollbackRestParams, rollback_rest,
 };
 
-use crate::common::state_fixtures::{ServiceState, StateFixture, setup_vta_in_state};
-
-async fn build_resolver() -> DIDCacheClient {
-    DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
-        .await
-        .expect("DID resolver")
-}
+use crate::common::state_fixtures::{OpInfra, ServiceState, setup_vta_in_state};
 
 fn super_admin() -> AuthClaims {
     AuthClaims::unsafe_local_cli_super_admin("e2e-rollback")
-}
-
-fn dummy_bridge() -> Arc<DIDCommBridge> {
-    Arc::new(DIDCommBridge::placeholder())
-}
-
-fn dummy_seed_store(fx: &StateFixture) -> PlaintextSeedStore {
-    PlaintextSeedStore::new(&fx.store.data_dir)
 }
 
 /// Rolling back a `services rest enable` while DIDComm is also
@@ -84,32 +65,11 @@ async fn rollback_rest_brick_attempt_surfaces_last_service_refused() {
         .await
         .with_rest_snapshot_disabled()
         .await;
-    let resolver = build_resolver().await;
-    let seed_store = dummy_seed_store(&fx);
-    let locks = vta_service::operations::did_webvh::WebvhAuthLocks::new();
-    let bridge = dummy_bridge();
+    let infra = OpInfra::new(&fx).await;
 
-    let err = rollback_rest(
-        &fx.config,
-        &fx.store.keys_ks,
-        &fx.store.imported_ks,
-        &fx.store.contexts_ks,
-        &fx.store.webvh_ks,
-        &fx.store.audit_ks,
-        &fx.store.snapshot_ks,
-        &fx.store.service_state_ks,
-        &seed_store,
-        &resolver,
-        &bridge,
-        &(Arc::new(vti_common::telemetry::RingBufferTelemetry::new())
-            as vti_common::telemetry::SharedTelemetrySink),
-        &super_admin(),
-        RollbackRestParams,
-        &locks,
-        "test",
-    )
-    .await
-    .unwrap_err();
+    let err = rollback_rest(&infra.deps(&fx), &super_admin(), RollbackRestParams, "test")
+        .await
+        .unwrap_err();
 
     use vta_service::operations::protocol::disable_rest::DisableRestError;
     use vta_service::operations::protocol::rollback_rest::RollbackRestError;
@@ -152,46 +112,17 @@ async fn rollback_didcomm_brick_attempt_surfaces_last_service_refused() {
         .await
         .with_didcomm_snapshot_disabled()
         .await;
-    let resolver = build_resolver().await;
-    let seed_store = dummy_seed_store(&fx);
-    let locks = vta_service::operations::did_webvh::WebvhAuthLocks::new();
-    let bridge = dummy_bridge();
-    let telemetry: vti_common::telemetry::SharedTelemetrySink =
-        Arc::new(vti_common::telemetry::RingBufferTelemetry::new());
-    let registry = Arc::new(
-        vta_service::messaging::registry::MediatorListenerRegistry::new(Arc::clone(&telemetry)),
-    );
-    let (tx, _rx) = vta_service::messaging::drain_sweeper::teardown_channel(8);
-    let sweeper = Arc::new(vta_service::messaging::drain_sweeper::DrainSweeper::new(
-        Arc::clone(&registry),
-        fx.store.drains_ks.clone(),
-        tx,
-    ));
+    let infra = OpInfra::new(&fx).await;
     let prover = AlwaysOkProver;
 
     let err = rollback_didcomm(
-        &fx.config,
-        &fx.store.keys_ks,
-        &fx.store.imported_ks,
-        &fx.store.contexts_ks,
-        &fx.store.webvh_ks,
-        &fx.store.audit_ks,
-        &fx.store.drains_ks,
-        &fx.store.snapshot_ks,
-        &fx.store.service_state_ks,
-        &seed_store,
-        &resolver,
-        &bridge,
-        &registry,
-        &sweeper,
-        &telemetry,
+        &infra.deps(&fx),
         &prover,
         &super_admin(),
         RollbackDidcommParams {
             drain_ttl: std::time::Duration::from_secs(86_400),
             transport: DisableTransport::Rest,
         },
-        &locks,
         "test",
     )
     .await

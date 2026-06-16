@@ -96,6 +96,7 @@ use trust_tasks_rs::RejectReason;
 /// can't drift. Handlers live in `routes::auth` (passkey login, legacy
 /// challenge/authenticate/refresh) and `routes::attestation` (TEE status /
 /// report).
+#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const REST_ROUTED: &[&str] = vta_sdk::trust_tasks::REST_ROUTED_URIS;
 
 /// URIs that vta-sdk declares but the dispatcher may not wire in
