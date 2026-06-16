@@ -308,98 +308,33 @@ async fn prompt_aws_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, Dyn
         Some(region)
     };
 
-    let secret_name = pick_or_enter_secret(p, list_aws_secrets(region.as_deref()).await).await?;
+    let secret_name = pick_or_enter_secret(
+        p,
+        vti_secrets::discovery::list_aws_secrets(region.as_deref())
+            .await
+            .map_err(Into::into),
+    )
+    .await?;
     Ok(SecretsBackendInput::Aws {
         region,
         secret_name,
     })
 }
 
-/// List all secret names from AWS Secrets Manager, paginating through every
-/// page. Caps at 10k secrets to bound memory + the operator picker.
-#[cfg(feature = "aws-secrets")]
-async fn list_aws_secrets(region: Option<&str>) -> Result<Vec<String>, DynErr> {
-    const MAX_SECRETS: usize = 10_000;
-
-    let mut config_loader = aws_config::from_env();
-    if let Some(region) = region {
-        config_loader = config_loader.region(aws_config::Region::new(region.to_owned()));
-    }
-    let sdk_config = config_loader.load().await;
-    let client = aws_sdk_secretsmanager::Client::new(&sdk_config);
-
-    let mut names: Vec<String> = Vec::new();
-    let mut next_token: Option<String> = None;
-    loop {
-        let mut req = client.list_secrets();
-        if let Some(token) = next_token.as_ref() {
-            req = req.next_token(token.clone());
-        }
-        let output = req.send().await?;
-        names.extend(
-            output
-                .secret_list()
-                .iter()
-                .filter_map(|entry| entry.name().map(String::from)),
-        );
-        if names.len() >= MAX_SECRETS {
-            names.truncate(MAX_SECRETS);
-            break;
-        }
-        match output.next_token() {
-            Some(t) if !t.is_empty() => next_token = Some(t.to_string()),
-            _ => break,
-        }
-    }
-    Ok(names)
-}
-
 #[cfg(feature = "gcp-secrets")]
 async fn prompt_gcp_secrets(p: &dyn Prompter) -> Result<SecretsBackendInput, DynErr> {
     let project = p.text("GCP project ID", None, false, None)?;
-    let secret_name = pick_or_enter_secret(p, list_gcp_secrets(&project).await).await?;
+    let secret_name = pick_or_enter_secret(
+        p,
+        vti_secrets::discovery::list_gcp_secrets(&project)
+            .await
+            .map_err(Into::into),
+    )
+    .await?;
     Ok(SecretsBackendInput::Gcp {
         project,
         secret_name,
     })
-}
-
-/// List all secret names from GCP Secret Manager. Capped at 10k.
-#[cfg(feature = "gcp-secrets")]
-async fn list_gcp_secrets(project: &str) -> Result<Vec<String>, DynErr> {
-    const MAX_SECRETS: usize = 10_000;
-
-    let client = google_cloud_secretmanager_v1::client::SecretManagerService::builder()
-        .build()
-        .await?;
-    let prefix = format!("projects/{project}/secrets/");
-
-    let mut names: Vec<String> = Vec::new();
-    let mut page_token: Option<String> = None;
-    loop {
-        let mut req = client
-            .list_secrets()
-            .set_parent(format!("projects/{project}"));
-        if let Some(token) = page_token.as_ref() {
-            req = req.set_page_token(token.clone());
-        }
-        let response = req.send().await?;
-        names.extend(
-            response
-                .secrets
-                .iter()
-                .map(|s| s.name.strip_prefix(&prefix).unwrap_or(&s.name).to_owned()),
-        );
-        if names.len() >= MAX_SECRETS {
-            names.truncate(MAX_SECRETS);
-            break;
-        }
-        if response.next_page_token.is_empty() {
-            break;
-        }
-        page_token = Some(response.next_page_token);
-    }
-    Ok(names)
 }
 
 /// Shared "pick from a listed set or type a new name" flow for the cloud

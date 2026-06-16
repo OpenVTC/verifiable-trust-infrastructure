@@ -32,23 +32,19 @@ cli-synthesis = ["vti-common/cli-synthesis"]
 # `vta_sdk::keyring_init::install_default_store()` at startup.
 keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
 config-seed = ["vti-secrets/config-seed"]
-aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "vti-secrets/aws-secrets"]
-gcp-secrets = [
-  "dep:google-cloud-secretmanager-v1",
-  "dep:google-cloud-auth",
-  "dep:bytes",
-  "vti-secrets/gcp-secrets",
-]
-azure-secrets = [
-  "dep:azure_security_keyvault_secrets",
-  "dep:azure_identity",
-  "vti-secrets/azure-secrets",
-]
-vault-secrets = ["dep:vaultrs", "vti-secrets/vault-secrets"]
+# The backend implementations + the setup wizard's secret-enumeration
+# (`vti_secrets::discovery`) both live in `vti-secrets` now, so these features
+# just activate the matching `vti-secrets/<feature>` — vta-service no longer
+# carries the cloud SDKs / Vault / kube clients directly. (`aws-config` stays
+# below: the TEE feature uses it for KMS bootstrap.)
+aws-secrets = ["vti-secrets/aws-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets"]
+vault-secrets = ["vti-secrets/vault-secrets"]
 # Kubernetes Secret backend — stores the master seed in a namespaced
 # `Secret` resource. Off by default; deliberately enabled for in-cluster
 # deployments that prefer native k8s Secrets over a cloud secret manager.
-k8s-secrets = ["dep:kube", "dep:k8s-openapi", "vti-secrets/k8s-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets"]
 tee = [
   "webvh",
   "dep:libc",
@@ -172,13 +168,12 @@ ed25519-dalek = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
-aws-sdk-secretsmanager = { version = "1", optional = true }
+# `aws-config` stays for the TEE feature (KMS bootstrap). The secret-store
+# AWS / GCP / Azure SDKs + the Vault & kube clients moved to `vti-secrets`
+# (backends in #503, the setup wizard's secret enumeration in #504 Phase 3).
 aws-config = { version = "1", features = [
   "behavior-version-latest",
 ], optional = true }
-google-cloud-secretmanager-v1 = { version = "1", optional = true }
-google-cloud-auth = { version = "1", optional = true }
-bytes = { version = "1", optional = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -189,17 +184,6 @@ dialoguer = { workspace = true }
 # open` consumer-side seed cache. Default seed dir only — operators can
 # override with `--seed-dir`.
 dirs = { workspace = true }
-azure_security_keyvault_secrets = { workspace = true, optional = true }
-azure_identity = { workspace = true, optional = true }
-# HashiCorp Vault client (vault-secrets feature). Supports KV v2 + the
-# Kubernetes / token / AppRole auth methods we expose. `rustls` is
-# vaultrs's default TLS backend, matching the rest of the workspace.
-vaultrs = { version = "0.8", optional = true }
-# Kubernetes secret-store backend (k8s-secrets feature). Reads/writes the
-# master seed from a namespaced `Secret` via the in-cluster ServiceAccount or
-# a local kubeconfig (`Client::try_default`).
-kube = { workspace = true, optional = true }
-k8s-openapi = { workspace = true, optional = true }
 sha2 = { workspace = true }
 # Constant-time byte equality. Used by `backup_bundle_store` to
 # verify backup-bundle bearer tokens against their stored

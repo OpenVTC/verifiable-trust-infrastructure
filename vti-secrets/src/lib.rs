@@ -30,6 +30,7 @@
 //! extraction with no behavioural change.
 
 pub mod config;
+pub mod discovery;
 pub mod seed_store;
 
 #[cfg(feature = "onboarding")]

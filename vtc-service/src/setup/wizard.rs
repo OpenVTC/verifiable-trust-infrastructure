@@ -881,7 +881,9 @@ fn aws_resolver() -> Result<(String, Option<String>), SecretsPromptError> {
     };
 
     let listing = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(list_aws_secrets(region_opt.as_deref()))
+        tokio::runtime::Handle::current().block_on(vti_secrets::discovery::list_aws_secrets(
+            region_opt.as_deref(),
+        ))
     });
 
     let default_name = "vtc-master-seed";
@@ -923,48 +925,6 @@ fn aws_resolver() -> Result<(String, Option<String>), SecretsPromptError> {
     Ok((secret_name, region_opt))
 }
 
-/// Paginate through every Secrets Manager secret in the configured
-/// region and return the names. Caps at 10k to bound memory + keep
-/// the operator picker usable. Mirrors `vta-service::setup::interactive::list_aws_secrets`.
-#[cfg(feature = "aws-secrets")]
-async fn list_aws_secrets(
-    region: Option<&str>,
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    const MAX_SECRETS: usize = 10_000;
-
-    let mut loader = aws_config::from_env();
-    if let Some(r) = region {
-        loader = loader.region(aws_config::Region::new(r.to_owned()));
-    }
-    let sdk_config = loader.load().await;
-    let client = aws_sdk_secretsmanager::Client::new(&sdk_config);
-
-    let mut names: Vec<String> = Vec::new();
-    let mut next_token: Option<String> = None;
-    loop {
-        let mut req = client.list_secrets();
-        if let Some(token) = next_token.as_ref() {
-            req = req.next_token(token.clone());
-        }
-        let output = req.send().await?;
-        names.extend(
-            output
-                .secret_list()
-                .iter()
-                .filter_map(|entry| entry.name().map(String::from)),
-        );
-        if names.len() >= MAX_SECRETS {
-            names.truncate(MAX_SECRETS);
-            break;
-        }
-        match output.next_token() {
-            Some(t) if !t.is_empty() => next_token = Some(t.to_string()),
-            _ => break,
-        }
-    }
-    Ok(names)
-}
-
 /// GCP Secret Manager: prompt for project, list existing secrets,
 /// let the operator pick one or type a name. Same async-from-sync
 /// bridging as [`aws_resolver`]; same pagination cap.
@@ -975,7 +935,8 @@ fn gcp_resolver() -> Result<(String, String), SecretsPromptError> {
         .interact_text()?;
 
     let listing = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(list_gcp_secrets(&project))
+        tokio::runtime::Handle::current()
+            .block_on(vti_secrets::discovery::list_gcp_secrets(&project))
     });
 
     let default_name = "vtc-master-seed";
@@ -1017,48 +978,6 @@ fn gcp_resolver() -> Result<(String, String), SecretsPromptError> {
     Ok((project, secret_name))
 }
 
-/// Paginate every Secret Manager secret in `project` via the response's
-/// `next_page_token`. Strips the `projects/<id>/secrets/` prefix so the
-/// picker shows bare names. Mirrors `vta-service::setup::interactive::list_gcp_secrets`.
-#[cfg(feature = "gcp-secrets")]
-async fn list_gcp_secrets(
-    project: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    const MAX_SECRETS: usize = 10_000;
-
-    let client = google_cloud_secretmanager_v1::client::SecretManagerService::builder()
-        .build()
-        .await?;
-    let prefix = format!("projects/{project}/secrets/");
-
-    let mut names: Vec<String> = Vec::new();
-    let mut page_token: Option<String> = None;
-    loop {
-        let mut req = client
-            .list_secrets()
-            .set_parent(format!("projects/{project}"));
-        if let Some(token) = page_token.as_ref() {
-            req = req.set_page_token(token.clone());
-        }
-        let response = req.send().await?;
-        names.extend(
-            response
-                .secrets
-                .iter()
-                .map(|s| s.name.strip_prefix(&prefix).unwrap_or(&s.name).to_owned()),
-        );
-        if names.len() >= MAX_SECRETS {
-            names.truncate(MAX_SECRETS);
-            break;
-        }
-        if response.next_page_token.is_empty() {
-            break;
-        }
-        page_token = Some(response.next_page_token);
-    }
-    Ok(names)
-}
-
 /// Azure Key Vault: prompt for vault URL, list existing secrets,
 /// let the operator pick one or type a name. Credentials come from
 /// `DeveloperToolsCredential` (Azure CLI / Developer CLI / VS Code),
@@ -1076,7 +995,8 @@ fn azure_resolver() -> Result<(String, String), SecretsPromptError> {
         .interact_text()?;
 
     let listing = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(list_azure_secrets(&vault_url))
+        tokio::runtime::Handle::current()
+            .block_on(vti_secrets::discovery::list_azure_secrets(&vault_url))
     });
 
     let default_name = "vtc-master-seed";
@@ -1116,34 +1036,6 @@ fn azure_resolver() -> Result<(String, String), SecretsPromptError> {
     };
 
     Ok((vault_url, secret_name))
-}
-
-/// Drain the `list_secret_properties` pager and return the bare
-/// secret names. The Azure SDK's `ResourceExt::resource_id()` parses
-/// the secret URL — `https://<vault>.vault.azure.net/secrets/<name>`
-/// — and returns the trailing `name`. Capped at 10k for the same
-/// reasons as [`list_aws_secrets`].
-#[cfg(feature = "azure-secrets")]
-async fn list_azure_secrets(
-    vault_url: &str,
-) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-    use azure_security_keyvault_secrets::{ResourceExt, SecretClient};
-    use futures_util::TryStreamExt;
-
-    const MAX_SECRETS: usize = 10_000;
-
-    let credential = azure_identity::DeveloperToolsCredential::new(None)?;
-    let client = SecretClient::new(vault_url, credential, None)?;
-
-    let mut names: Vec<String> = Vec::new();
-    let mut pager = client.list_secret_properties(None)?;
-    while let Some(secret) = pager.try_next().await? {
-        names.push(secret.resource_id()?.name);
-        if names.len() >= MAX_SECRETS {
-            break;
-        }
-    }
-    Ok(names)
 }
 
 fn secrets_choice_to_config(choice: SecretsBackendChoice) -> SecretsConfig {

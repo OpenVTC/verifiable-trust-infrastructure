@@ -56,33 +56,19 @@ admin-ui = ["website"]
 # OS keyring backend for the VTC secret. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
-# The secret-store backend features activate the matching `vti-secrets`
-# feature (the shared backend implementations) and keep the VTC's own direct
-# cloud-SDK deps — the setup wizard still calls those SDKs directly to
-# enumerate existing secrets for its prompts.
+# The secret-store backend implementations + the setup wizard's secret
+# enumeration (`vti_secrets::discovery`) both live in `vti-secrets` now, so
+# these features just activate the matching `vti-secrets/<feature>` — the VTC
+# no longer carries the cloud SDKs / kube client directly.
 keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
 config-secret = ["vti-secrets/config-seed"]
-aws-secrets = ["dep:aws-sdk-secretsmanager", "dep:aws-config", "vti-secrets/aws-secrets"]
-gcp-secrets = [
-  "dep:google-cloud-secretmanager-v1",
-  "dep:google-cloud-auth",
-  "dep:bytes",
-  "vti-secrets/gcp-secrets",
-]
-azure-secrets = [
-  "dep:azure_security_keyvault_secrets",
-  "dep:azure_identity",
-  # `TryStreamExt::try_next` is the idiomatic way to drain the
-  # azure-core pager that `list_secret_properties` returns. Already
-  # a transitive workspace dep — naming it direct just so the wizard
-  # can consume it.
-  "dep:futures-util",
-  "vti-secrets/azure-secrets",
-]
+aws-secrets = ["vti-secrets/aws-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets"]
 # Kubernetes Secret backend — stores the VTC key bundle in a namespaced
 # `Secret` resource. Off by default; for in-cluster deployments that prefer
 # native k8s Secrets over a cloud secret manager.
-k8s-secrets = ["dep:kube", "dep:k8s-openapi", "vti-secrets/k8s-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets"]
 # HashiCorp Vault backend (KV v2 + kubernetes/token/approle auth). Reuses
 # the shared `vti-secrets` Vault implementation. No direct dep: the VTC
 # setup wizard has no Vault picker, so operators configure it via the
@@ -202,27 +188,12 @@ tracing-subscriber = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 keyring-core = { workspace = true, optional = true }
-aws-sdk-secretsmanager = { version = "1", optional = true }
-aws-config = { version = "1", features = [
-  "behavior-version-latest",
-], optional = true }
-google-cloud-secretmanager-v1 = { version = "1", optional = true }
-google-cloud-auth = { version = "1", optional = true }
-bytes = { version = "1", optional = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
 dialoguer = { workspace = true, optional = true }
-azure_security_keyvault_secrets = { workspace = true, optional = true }
-azure_identity = { workspace = true, optional = true }
-futures-util = { version = "0.3", optional = true }
-# Kubernetes secret-store backend (k8s-secrets feature). Reads/writes the VTC
-# key bundle from a namespaced `Secret` via the in-cluster ServiceAccount or a
-# local kubeconfig (`Client::try_default`).
-kube = { workspace = true, optional = true }
-k8s-openapi = { workspace = true, optional = true }
 sha2 = { workspace = true }
 hkdf = { workspace = true }
 x25519-dalek = { workspace = true }
