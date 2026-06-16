@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 
 import { CopyButton } from "@/components/CopyButton";
-import { fetchHealth, fetchBuildInfo } from "@/lib/api";
+import { fetchHealth, fetchBuildInfo, fetchDiagnostics } from "@/lib/api";
 
 export function Dashboard() {
   const health = useQuery({ queryKey: ["health"], queryFn: fetchHealth });
@@ -10,10 +10,17 @@ export function Dashboard() {
     queryKey: ["build-info"],
     queryFn: fetchBuildInfo,
   });
+  // VTA + mediator identity moved off the unauth `/health` payload to
+  // the admin-gated diagnostics endpoint (P3.7); the SPA is already
+  // authenticated as admin, so it can read them there.
+  const diagnostics = useQuery({
+    queryKey: ["diagnostics"],
+    queryFn: fetchDiagnostics,
+  });
 
   const status = health.data?.status;
-  const mediatorDid = health.data?.mediator_did;
-  const vtaDid = health.data?.vta_did;
+  const mediatorDid = diagnostics.data?.mediator_did;
+  const vtaDid = diagnostics.data?.vta_did;
 
   return (
     <section className="page">
@@ -72,20 +79,18 @@ export function Dashboard() {
           </dd>
           <dt>VTA DID</dt>
           <dd>
-            <code>{health.data?.vta_did ?? "(not configured)"}</code>
+            <code>{vtaDid ?? "(not configured)"}</code>
             <CopyButton
-              value={health.data?.vta_did}
+              value={vtaDid}
               label="Copy VTA DID"
               successMessage="VTA DID copied"
             />
           </dd>
           <dt>Mediator DID</dt>
           <dd>
-            <code>
-              {health.data?.mediator_did ?? "(none configured)"}
-            </code>
+            <code>{mediatorDid ?? "(none configured)"}</code>
             <CopyButton
-              value={health.data?.mediator_did}
+              value={mediatorDid}
               label="Copy mediator DID"
               successMessage="Mediator DID copied"
             />
@@ -100,11 +105,14 @@ export function Dashboard() {
         </dl>
       </section>
 
-      {(health.error || build.error) && (
+      {(health.error || build.error || diagnostics.error) && (
         <section className="card error">
           <h3>Errors</h3>
           {health.error && <p>health: {String(health.error)}</p>}
           {build.error && <p>build-info: {String(build.error)}</p>}
+          {diagnostics.error && (
+            <p>diagnostics: {String(diagnostics.error)}</p>
+          )}
         </section>
       )}
     </section>

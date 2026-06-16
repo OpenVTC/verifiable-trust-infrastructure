@@ -5,13 +5,36 @@
 // `csrf` cookie's value into the `X-CSRF-Token` header for the
 // double-submit check in `routing::csrf`.
 
+// `GET /health` is unauth and deliberately minimal: it carries only
+// `{status, version, vtc_did}`. The `vta_did` / `mediator_url` /
+// `mediator_did` infrastructure detail moved to the admin-gated
+// `/v1/health/diagnostics` (P3.7) so it isn't a free unauth recon
+// oracle — read those from `DiagnosticsResponse` instead.
 export interface HealthResponse {
   status: string;
   version: string;
   vtc_did?: string;
+}
+
+// `GET /v1/health/diagnostics` — admin-gated. Surfaces the
+// trust-registry reconciler state plus the identity/mediator detail
+// that used to live on `/health`. The dashboard only needs the
+// identity fields; the rest are typed for future diagnostics views.
+export interface DiagnosticsResponse {
+  registry_status: string;
+  queue_depth: number;
+  rtbf_batched_count: number;
+  failed_count: number;
+  oldest_pending_age_seconds?: number;
+  last_success_at?: string;
+  last_failure_at?: string;
+  last_error?: string;
   vta_did?: string;
   mediator_url?: string;
   mediator_did?: string;
+  syncer_enabled: boolean;
+  syncer_running: boolean;
+  syncer_restarts: number;
 }
 
 export interface BuildInfo {
@@ -177,6 +200,17 @@ export const fetchHealth = (): Promise<HealthResponse> =>
 
 export const fetchBuildInfo = (): Promise<BuildInfo> =>
   getJsonExempt<BuildInfo>("/admin/build-info.json");
+
+const DIAGNOSTICS_TASK =
+  "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0";
+
+// Admin-gated identity + reconciler diagnostics. The dashboard reads
+// `vta_did` / `mediator_did` from here since P3.7 stripped them off
+// the unauth `/health` payload.
+export const fetchDiagnostics = (): Promise<DiagnosticsResponse> =>
+  getJson<DiagnosticsResponse>("/v1/health/diagnostics", {
+    trustTask: DIAGNOSTICS_TASK,
+  });
 
 /** Shape returned by `GET /v1/auth/whoami`. */
 export interface WhoamiResponse {
