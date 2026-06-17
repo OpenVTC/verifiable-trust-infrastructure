@@ -553,11 +553,21 @@ pub fn build_handler(
     }
 
     // Step-up approval — the VTA vouches (signs as itself) that a holder
-    // may step up their session at a relying party. Always available.
-    router = router.route(
-        handlers::STEP_UP_APPROVE_REQUEST_TYPE,
-        handler_fn(handlers::handle_step_up_approve),
-    )?;
+    // may step up their session at a relying party. Always available. Both
+    // the legacy `vta/step-up/approve-request/1.0` and the canonical
+    // `spec/auth/step-up/approve-request/0.1` registry URIs route to the same
+    // handler, which echoes the request's version family in its response
+    // (issue #517). Registering the canonical URI is additive — the legacy
+    // plugin is unaffected.
+    router = router
+        .route(
+            handlers::STEP_UP_APPROVE_REQUEST_TYPE,
+            handler_fn(handlers::handle_step_up_approve),
+        )?
+        .route(
+            handlers::STEP_UP_APPROVE_REQUEST_CANONICAL,
+            handler_fn(handlers::handle_step_up_approve),
+        )?;
 
     // TEE attestation handlers (feature-gated)
     #[cfg(feature = "tee")]

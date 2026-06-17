@@ -1620,9 +1620,26 @@ pub(crate) const STEP_UP_APPROVE_REQUEST_TYPE: &str =
 pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
     "https://trusttasks.org/vta/step-up/approve-response/1.0";
 
-/// Request body for [`handle_step_up_approve`].
+/// Canonical Trust Task **registry** URI for the step-up approval request,
+/// registered on the DIDComm router alongside the legacy `vta/step-up/*` URI
+/// (issue #517). A spec-conformant caller that targets the canonical
+/// `spec/auth/step-up/approve-request/0.1` is now handled too; the response
+/// echoes the request's version family (canonical request → canonical
+/// response), so neither the legacy plugin nor a spec-0.2 caller breaks.
+pub(crate) const STEP_UP_APPROVE_REQUEST_CANONICAL: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
+
+/// Canonical Trust Task registry URI for the step-up approval response,
+/// emitted when the request arrived on [`STEP_UP_APPROVE_REQUEST_CANONICAL`].
+pub(crate) const STEP_UP_APPROVE_RESPONSE_CANONICAL: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
+
+/// Request body for [`handle_step_up_approve`]. The `rpDid` alias accepts a
+/// spec-conformant (lowerCamelCase) producer; the legacy `rp_did` keeps the
+/// existing plugin working (issue #517).
 #[derive(serde::Deserialize)]
 struct StepUpApproveRequestBody {
+    #[serde(alias = "rpDid")]
     rp_did: String,
     nonce: String,
 }
@@ -1659,6 +1676,15 @@ pub async fn handle_step_up_approve(
                 "step-up approve request has no authenticated sender".into(),
             ))));
         }
+    };
+
+    // Echo the version family of the inbound request so a canonical
+    // (`spec/auth/step-up/…`) caller gets a canonical response and the legacy
+    // (`vta/step-up/…/1.0`) plugin gets the legacy response.
+    let response_type = if message.typ == STEP_UP_APPROVE_REQUEST_CANONICAL {
+        STEP_UP_APPROVE_RESPONSE_CANONICAL
+    } else {
+        STEP_UP_APPROVE_RESPONSE_TYPE
     };
 
     let body: StepUpApproveRequestBody =
@@ -1713,10 +1739,7 @@ pub async fn handle_step_up_approve(
         "issued VTA step-up approval token via DIDComm"
     );
 
-    response(
-        STEP_UP_APPROVE_RESPONSE_TYPE,
-        &StepUpApproveResponseBody { approval_token },
-    )
+    response(response_type, &StepUpApproveResponseBody { approval_token })
 }
 
 /// Holder-side receive of a credential delivered over DIDComm

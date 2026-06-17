@@ -135,17 +135,27 @@ pub enum SiteTarget {
     },
 }
 
-/// Discriminator for the kind of secret stored. Wire values are kebab-case
-/// (`oauth-tokens`, `did-self-issued`, etc.) per the canonical schema.
+/// Discriminator for the kind of secret stored. Emitted as kebab-case
+/// (`oauth-tokens`, `did-self-issued`, …) for the 0.1 wire form; the
+/// `vault/*/0.2` edge transform up-converts these to the canonical
+/// lowerCamelCase 0.2 values. To stay backwards-compatible while also
+/// accepting a spec-0.2 producer that sends camelCase directly, each
+/// multi-word value carries a camelCase `alias` (Postel's law: liberal in
+/// what we accept, conservative in what we emit). See issue #517.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SecretKind {
     Password,
     Passkey,
+    #[serde(alias = "oauthTokens")]
     OauthTokens,
+    #[serde(alias = "didSelfIssued")]
     DidSelfIssued,
+    #[serde(alias = "didcommPeer")]
     DidcommPeer,
+    #[serde(alias = "bearerToken")]
     BearerToken,
+    #[serde(alias = "sshKey")]
     SshKey,
     Custom,
 }
@@ -207,10 +217,17 @@ pub struct StoredVaultEntry {
 }
 
 /// Cleartext secret material. Field-for-field mirror of
-/// [`vault/_shared/0.1/vault-secret#/$defs/VaultSecret`](https://trusttasks.org/spec/vault/_shared/0.1/vault-secret).
-/// Discriminated by `kind`; wire values are kebab-case per the canonical
-/// schema (`oauth-tokens`, `did-self-issued`, `didcomm-peer`,
-/// `bearer-token`, `ssh-key`).
+/// [`vault/_shared/0.2/vault-secret#/$defs/VaultSecret`](https://trusttasks.org/spec/vault/_shared/0.2/vault-secret).
+/// Discriminated by `kind`. This secret rides **inside** the opaque
+/// authcrypt JWE (`vault/upsert`'s `sealedSecret`), so the `vault/*/0.2`
+/// edge transform cannot reach it — the discriminator is parsed verbatim
+/// here. To accept both a 0.1 producer (kebab `did-self-issued`) and a
+/// spec-0.2 producer (camelCase `didSelfIssued`) without a breaking wire
+/// change, each multi-word variant carries a camelCase `alias`; the
+/// emitted form stays kebab for backwards compatibility (Postel's law).
+/// This is the fix for the half-completed migration in issue #517 — the
+/// variant *fields* were camelCased in `76287a5`, the *discriminator* was
+/// not.
 ///
 /// Sensitive fields (`password`, `private_key`, `refresh_token`,
 /// `secure_notes`, `token`, etc.) MUST be zeroised by handlers as soon as
@@ -262,7 +279,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", alias = "oauthTokens")]
     OauthTokens {
         provider: String,
         refresh_token: String,
@@ -275,21 +292,21 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", alias = "didSelfIssued")]
     DidSelfIssued {
         did: String,
         signing_key_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", alias = "didcommPeer")]
     DidcommPeer {
         peer_did: String,
         signing_key_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", alias = "bearerToken")]
     BearerToken {
         token: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,7 +316,7 @@ pub enum VaultSecret {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         secure_notes: Option<String>,
     },
-    #[serde(rename_all = "camelCase")]
+    #[serde(rename_all = "camelCase", alias = "sshKey")]
     SshKey {
         private_key: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,11 +450,16 @@ impl PasswordLoginConfig {
     }
 }
 
+/// Emitted kebab-case for the 0.1 wire form; accepts the spec-0.2
+/// camelCase `formUrlencoded` via alias. Rides inside the JWE, so the 0.2
+/// edge transform can't reach it — dual-accept here keeps it
+/// backwards-compatible (issue #517).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PasswordLoginFormat {
     #[default]
     Json,
+    #[serde(alias = "formUrlencoded")]
     FormUrlencoded,
 }
 
@@ -566,14 +588,22 @@ pub struct SessionBlob {
     pub refresh_hint: Option<RefreshHint>,
 }
 
+/// Emitted kebab-case for the 0.1 wire form; accepts the spec-0.2
+/// camelCase variants (`maintainerOnly`/`on401`/`beforeExpiry`) via alias.
+/// Inside the sealed session blob, so the 0.2 edge transform can't reach
+/// it — dual-accept keeps it backwards-compatible (issue #517).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefreshHint {
     /// Don't refresh on your own; the maintainer drives renewal.
+    #[serde(alias = "maintainerOnly")]
     MaintainerOnly,
     /// Call back to vault/proxy-login when the third party returns 401.
+    /// (kebab-case renders this `on401` — already equal to the spec-0.2
+    /// camelCase form, so no alias is needed.)
     On401,
     /// Pre-emptively refresh shortly before `expiresAt`.
+    #[serde(alias = "beforeExpiry")]
     BeforeExpiry,
 }
 
@@ -809,6 +839,24 @@ mod tests {
     }
 
     #[test]
+    fn secret_kind_also_accepts_spec_0_2_camel_case() {
+        // Backwards-compat dual-accept (issue #517): the 0.2 spec uses
+        // lowerCamelCase discriminator values. Emission stays kebab (above),
+        // but every multi-word camelCase form must deserialize too.
+        let cases = vec![
+            ("\"oauthTokens\"", SecretKind::OauthTokens),
+            ("\"didSelfIssued\"", SecretKind::DidSelfIssued),
+            ("\"didcommPeer\"", SecretKind::DidcommPeer),
+            ("\"bearerToken\"", SecretKind::BearerToken),
+            ("\"sshKey\"", SecretKind::SshKey),
+        ];
+        for (camel, expected) in cases {
+            let back: SecretKind = serde_json::from_str(camel).expect(camel);
+            assert_eq!(back, expected, "camelCase {camel}");
+        }
+    }
+
+    #[test]
     fn filter_matches_intersection_of_criteria() {
         let entry = sample("v1", "ctx_a", Some("2026-05-20T00:00:00Z"));
 
@@ -919,6 +967,98 @@ mod tests {
         assert!(
             re.contains("\"signingKeyId\":\"did:webvh:foo#key-0\""),
             "re-emitted JSON must use camelCase signingKeyId; got {re}"
+        );
+    }
+
+    #[test]
+    fn vault_secret_discriminator_accepts_both_casings() {
+        // Regression for issue #517: the inner sealed `VaultSecret` rides in
+        // the opaque authcrypt JWE, so the 0.2 edge transform can't camelCase
+        // its `kind`. A spec-0.2 producer (e.g. the browser plugin) seals
+        // `{"kind":"didSelfIssued", …}`; before the alias fix this was
+        // rejected with `unknown variant didSelfIssued`. Both the legacy
+        // kebab and the spec-0.2 camelCase discriminator must parse, for every
+        // multi-word kind.
+        let cases: Vec<(&str, &str, SecretKind)> = vec![
+            (
+                r#"{"kind":"oauth-tokens","provider":"google","refreshToken":"r"}"#,
+                r#"{"kind":"oauthTokens","provider":"google","refreshToken":"r"}"#,
+                SecretKind::OauthTokens,
+            ),
+            (
+                r#"{"kind":"did-self-issued","did":"did:webvh:x","signingKeyId":"did:webvh:x#k"}"#,
+                r#"{"kind":"didSelfIssued","did":"did:webvh:x","signingKeyId":"did:webvh:x#k"}"#,
+                SecretKind::DidSelfIssued,
+            ),
+            (
+                r#"{"kind":"didcomm-peer","peerDid":"did:peer:2","signingKeyId":"did:peer:2#k"}"#,
+                r#"{"kind":"didcommPeer","peerDid":"did:peer:2","signingKeyId":"did:peer:2#k"}"#,
+                SecretKind::DidcommPeer,
+            ),
+            (
+                r#"{"kind":"bearer-token","token":"t"}"#,
+                r#"{"kind":"bearerToken","token":"t"}"#,
+                SecretKind::BearerToken,
+            ),
+            (
+                r#"{"kind":"ssh-key","privateKey":"p"}"#,
+                r#"{"kind":"sshKey","privateKey":"p"}"#,
+                SecretKind::SshKey,
+            ),
+        ];
+        for (kebab, camel, expected) in cases {
+            let from_kebab: VaultSecret = serde_json::from_str(kebab).expect(kebab);
+            assert_eq!(from_kebab.kind(), expected, "kebab {kebab}");
+            let from_camel: VaultSecret = serde_json::from_str(camel).expect(camel);
+            assert_eq!(from_camel.kind(), expected, "camel {camel}");
+            // Conservative emission: we still serialize the legacy kebab form
+            // so existing 0.1 openers keep working.
+            let re = serde_json::to_string(&from_camel).unwrap();
+            let kebab_kind = serde_json::to_string(&expected).unwrap();
+            assert!(
+                re.contains(&format!("\"kind\":{kebab_kind}")),
+                "emitted form must keep kebab kind {kebab_kind}; got {re}"
+            );
+        }
+    }
+
+    #[test]
+    fn password_login_format_and_refresh_hint_accept_both_casings() {
+        // Both ride inside the JWE / sealed session blob (issue #517).
+        assert_eq!(
+            serde_json::from_str::<PasswordLoginFormat>("\"form-urlencoded\"").unwrap(),
+            PasswordLoginFormat::FormUrlencoded
+        );
+        assert_eq!(
+            serde_json::from_str::<PasswordLoginFormat>("\"formUrlencoded\"").unwrap(),
+            PasswordLoginFormat::FormUrlencoded
+        );
+        // Emission stays kebab.
+        assert_eq!(
+            serde_json::to_string(&PasswordLoginFormat::FormUrlencoded).unwrap(),
+            "\"form-urlencoded\""
+        );
+
+        for (kebab, camel, val) in [
+            (
+                "\"maintainer-only\"",
+                "\"maintainerOnly\"",
+                RefreshHint::MaintainerOnly,
+            ),
+            // kebab-case of `On401` is `on401` — already the spec-0.2 form.
+            ("\"on401\"", "\"on401\"", RefreshHint::On401),
+            (
+                "\"before-expiry\"",
+                "\"beforeExpiry\"",
+                RefreshHint::BeforeExpiry,
+            ),
+        ] {
+            assert_eq!(serde_json::from_str::<RefreshHint>(kebab).unwrap(), val);
+            assert_eq!(serde_json::from_str::<RefreshHint>(camel).unwrap(), val);
+        }
+        assert_eq!(
+            serde_json::to_string(&RefreshHint::On401).unwrap(),
+            "\"on401\""
         );
     }
 

@@ -138,17 +138,25 @@ struct VaultUpsertResponseBody {
     created: bool,
 }
 
-/// Wire form of `vault/_shared/0.1/sealed-envelope#/$defs/SealedEnvelope`
+/// Wire form of `vault/_shared/0.2/sealed-envelope#/$defs/SealedEnvelope`
 /// — the pluggable cipher envelope. M2A implements only the
 /// `didcomm-authcrypt` variant; `hpke-armored` and `tsp-message` are
 /// recognised on the wire (so the consumer gets a clean
 /// `envelope_unsupported` reject) but not unsealable here yet.
+///
+/// The `sealedSecret` / `sealedSessionBlob` envelope tag is deliberately
+/// excluded from the `vault/*/0.2` edge transform (it sits next to the
+/// opaque JWE), so this type parses the tag verbatim. The 0.2 spec renamed
+/// the tag values to lowerCamelCase (`didcommAuthcrypt` / `hpkeArmored` /
+/// `tspMessage`); to accept a spec-0.2 producer without a breaking change
+/// we keep emitting kebab (see [`SealedEnvelopeWire`]) but dual-accept both
+/// casings here via `alias` (Postel's law, issue #517).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "envelope", rename_all = "kebab-case")]
 enum SealedEnvelope {
-    DidcommAuthcrypt {
-        jwe: String,
-    },
+    #[serde(alias = "didcommAuthcrypt")]
+    DidcommAuthcrypt { jwe: String },
+    #[serde(alias = "hpkeArmored")]
     HpkeArmored {
         #[serde(default)]
         #[allow(dead_code)]
@@ -157,6 +165,7 @@ enum SealedEnvelope {
         #[allow(dead_code)]
         recipient_key_id: String,
     },
+    #[serde(alias = "tspMessage")]
     TspMessage {
         #[serde(default)]
         #[allow(dead_code)]
@@ -1450,5 +1459,28 @@ fn password_post_error_to_reject(
         PasswordPostError::ResponseParse(msg) => RejectReason::InternalError {
             reason: format!("vault/proxy-login: response parse failure — {msg}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod sealed_envelope_tests {
+    use super::SealedEnvelope;
+
+    /// The `sealedSecret.envelope` tag is excluded from the 0.2 edge
+    /// transform, so this type must natively accept both the legacy kebab tag
+    /// (0.1) and the spec-0.2 lowerCamelCase tag (issue #517). Backwards-compat
+    /// dual-accept — emission stays kebab via `SealedEnvelopeWire`.
+    #[test]
+    fn sealed_envelope_accepts_both_tag_casings() {
+        let kebab: SealedEnvelope =
+            serde_json::from_str(r#"{"envelope":"didcomm-authcrypt","jwe":"x"}"#).unwrap();
+        assert_eq!(kebab.kind_name(), "didcomm-authcrypt");
+        let camel: SealedEnvelope =
+            serde_json::from_str(r#"{"envelope":"didcommAuthcrypt","jwe":"x"}"#).unwrap();
+        assert_eq!(camel.kind_name(), "didcomm-authcrypt");
+
+        // The recognised-but-unsupported variants dual-accept too.
+        assert!(serde_json::from_str::<SealedEnvelope>(r#"{"envelope":"hpkeArmored"}"#).is_ok());
+        assert!(serde_json::from_str::<SealedEnvelope>(r#"{"envelope":"tspMessage"}"#).is_ok());
     }
 }
