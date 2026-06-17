@@ -49,6 +49,9 @@ pub const DRAINS: &str = "drains";
 pub const SNAPSHOT: &str = "service_prev_config";
 /// KMS-protected, unencrypted boot keyspace (TEE integrity manifest, etc.).
 pub const BOOTSTRAP: &str = "bootstrap";
+/// Inbound-messaging consent: durable grants + TTL'd pending requests
+/// (`vti_common::consent`). The VTA is the first gate for bridged conversations.
+pub const CONSENT: &str = "consent";
 
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
@@ -72,11 +75,12 @@ pub const ALL: &[&str] = &[
     DRAINS,
     SNAPSHOT,
     BOOTSTRAP,
+    CONSENT,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
 /// collections — see `operations::backup`).
-pub const BACKED_UP: &[&str] = &[KEYS, ACL, CONTEXTS, AUDIT, IMPORTED_SECRETS, WEBVH];
+pub const BACKED_UP: &[&str] = &[KEYS, ACL, CONTEXTS, AUDIT, IMPORTED_SECRETS, WEBVH, CONSENT];
 
 /// Keyspaces deliberately **not** in a backup.
 ///

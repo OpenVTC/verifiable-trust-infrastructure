@@ -773,6 +773,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         imported_ks,
         cache_ks,
         vault_ks,
+        consent_ks: store.keyspace(crate::keyspaces::CONSENT).unwrap(),
         service_state_ks,
         sealed_nonces_ks,
         backup_bundles_ks: backup_bundles_ks.clone(),

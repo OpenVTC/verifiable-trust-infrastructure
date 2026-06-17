@@ -49,6 +49,7 @@ mod audit;
 mod auth;
 mod backup;
 mod config;
+mod consent;
 mod contexts;
 mod credential_exchange;
 mod device;
@@ -387,6 +388,11 @@ dispatch_table! {
         | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
         => step_up::handle_approve_response,
     vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_POLICY_0_2 => step_up_policy::handle_set_step_up_policy,
+    // ─── Consent slice ────────────────────────────────────────────
+    vta_sdk::trust_tasks::TASK_CONSENT_REQUEST_1_0 => consent::handle_request,
+    vta_sdk::trust_tasks::TASK_CONSENT_DECISION_1_0 => consent::handle_decision,
+    vta_sdk::trust_tasks::TASK_CONSENT_REVOKE_1_0 => consent::handle_revoke,
+    vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_0 => consent::handle_list,
     // ─── ACL slice ────────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list,
     vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => acl::handle_create,
