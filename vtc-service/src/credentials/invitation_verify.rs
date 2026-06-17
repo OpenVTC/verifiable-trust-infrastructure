@@ -157,6 +157,22 @@ pub async fn verify_presented_invitation(
         None => HttpStatusListFetcher::new(),
     };
 
+    // Subject-linkage (#1b): when the presenter is not the DID the VIC was
+    // minted for, the VP must carry a `subjectLinkage` proof in which the VIC
+    // subject authorizes this presenter. Verified here (where the concrete
+    // resolver lives) and the verdict threaded into the binding check.
+    let subject = vic_json
+        .pointer("/credentialSubject/id")
+        .and_then(JsonValue::as_str);
+    let vic_id = vic_json.get("id").and_then(JsonValue::as_str);
+    let linkage_authorized = match (subject, vic_id) {
+        (Some(subject), Some(vic_id)) if subject != applicant_did => {
+            verify_subject_linkage(vp, subject, vic_id, applicant_did, &resolver).await?;
+            true
+        }
+        _ => false,
+    };
+
     let verified = verify_invitation_inner(
         &vic_json,
         applicant_did,
@@ -165,9 +181,80 @@ pub async fn verify_presented_invitation(
         &resolver,
         &fetcher,
         Utc::now(),
+        linkage_authorized,
     )
     .await?;
     Ok(Some(verified))
+}
+
+/// Domain tag the VIC subject signs over for a subject-linkage proof — binds
+/// the proof to this protocol so it can't be cross-protocol replayed.
+pub const SUBJECT_LINKAGE_DOMAIN_TAG: &[u8] = b"vtc-invitation-subject-linkage/v1\0";
+
+/// Verify a **subject-linkage proof**: the VIC subject (`subject`) signed
+/// `TAG || vic_id || presenter` with a key under their DID, authorizing
+/// `presenter` to redeem this specific invitation. Lets a holder redeem under a
+/// different / freshly-minted DID without re-issuing the VIC (#1b), at the cost
+/// of linking the two DIDs at this community.
+///
+/// The proof rides in the VP as
+/// `subjectLinkage: { verificationMethod, signature }` (hex Ed25519).
+async fn verify_subject_linkage(
+    vp: &JsonValue,
+    subject: &str,
+    vic_id: &str,
+    presenter: &str,
+    resolver: &DidVmResolver,
+) -> Result<(), AppError> {
+    let linkage = vp
+        .get("subjectLinkage")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| {
+            forbidden(format!(
+                "invitation subject `{subject}` differs from the presenter `{presenter}` \
+             and the VP carries no `subjectLinkage` proof"
+            ))
+        })?;
+    let vm = linkage
+        .get("verificationMethod")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| forbidden("subjectLinkage is missing `verificationMethod`".into()))?;
+    let signature_hex = linkage
+        .get("signature")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| forbidden("subjectLinkage is missing `signature`".into()))?;
+
+    // The linkage MUST be signed by a key under the VIC subject — a key
+    // controlled by some other DID cannot authorize a presenter.
+    if vm.split('#').next().unwrap_or(vm) != subject {
+        return Err(forbidden(format!(
+            "subjectLinkage verificationMethod `{vm}` is not under the invitation subject `{subject}`"
+        )));
+    }
+
+    let key = resolver.resolve_ed25519(vm).await?;
+    let key: [u8; 32] = key
+        .as_slice()
+        .try_into()
+        .map_err(|_| forbidden("subject-linkage key is not a 32-byte Ed25519 key".into()))?;
+    let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&key)
+        .map_err(|e| forbidden(format!("subject-linkage key is invalid: {e}")))?;
+    let sig_bytes = hex::decode(signature_hex)
+        .map_err(|e| forbidden(format!("subjectLinkage signature is not hex: {e}")))?;
+    let signature = ed25519_dalek::Signature::from_slice(&sig_bytes)
+        .map_err(|e| forbidden(format!("subjectLinkage signature is malformed: {e}")))?;
+
+    // Signed payload: TAG || vic_id || NUL || presenter — binds the proof to
+    // this exact invitation and presenter.
+    let mut signed = SUBJECT_LINKAGE_DOMAIN_TAG.to_vec();
+    signed.extend_from_slice(vic_id.as_bytes());
+    signed.push(0);
+    signed.extend_from_slice(presenter.as_bytes());
+
+    use ed25519_dalek::Verifier;
+    verifying_key
+        .verify(&signed, &signature)
+        .map_err(|_| forbidden("subjectLinkage signature did not verify".into()))
 }
 
 /// Pull the first `InvitationCredential` out of a VP's `verifiableCredential`
@@ -201,6 +288,9 @@ async fn verify_invitation_inner(
     resolver: &dyn VerificationMethodResolver,
     fetcher: &dyn StatusListFetcher,
     now: DateTime<Utc>,
+    // True when the presenter is not the VIC subject but a verified subject
+    // linkage proof authorized them (the dual-control / fresh-DID path, #1b).
+    linkage_authorized: bool,
 ) -> Result<VerifiedInvitation, AppError> {
     let vic: VerifiableCredential = serde_json::from_value(vic_json.clone())
         .map_err(|e| forbidden(format!("invitation is not a Verifiable Credential: {e}")))?;
@@ -220,10 +310,13 @@ async fn verify_invitation_inner(
     let issuer = vic.issuer.id().to_string();
     let subject = subject_id(&vic)?;
 
-    // 1. Holder-binding: the presenter must be the DID the VIC was minted for.
-    if subject != applicant_did {
+    // 1. Holder-binding: the presenter must be the DID the VIC was minted for,
+    // OR a verified subject-linkage proof authorized this presenter (#1b — the
+    // invited DID consented to a different/fresh presenting DID).
+    if subject != applicant_did && !linkage_authorized {
         return Err(forbidden(format!(
-            "invitation is bound to `{subject}`, not the applicant `{applicant_did}`"
+            "invitation is bound to `{subject}`, not the applicant `{applicant_did}` \
+             (and no valid subject-linkage proof was provided)"
         )));
     }
 
@@ -461,6 +554,7 @@ mod tests {
             Some(&format!("urn:uuid:{}", uuid::Uuid::new_v4())),
             status,
             validity,
+            &[],
         )
         .await
         .expect("issue VIC")
@@ -534,6 +628,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now(),
+            false,
         )
         .await
         .expect("self-issued VIC verifies");
@@ -562,6 +657,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now(),
+            false,
         )
         .await
         .expect("verifies cryptographically");
@@ -594,6 +690,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now(),
+            false,
         )
         .await
         .expect("verifies cryptographically");
@@ -616,6 +713,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now(),
+            false,
         )
         .await
         .expect_err("wrong subject must fail");
@@ -636,6 +734,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now() + Duration::days(8),
+            false,
         )
         .await
         .expect_err("expired VIC must fail");
@@ -658,6 +757,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: false },
             Utc::now(),
+            false,
         )
         .await
         .expect_err("tampered VIC must fail");
@@ -678,6 +778,7 @@ mod tests {
             &resolver(),
             &StubFetcher { revoked: true },
             Utc::now(),
+            false,
         )
         .await
         .expect_err("revoked VIC must fail");
@@ -698,9 +799,73 @@ mod tests {
             &resolver(),
             &ErrFetcher,
             Utc::now(),
+            false,
         )
         .await
         .expect_err("unresolvable status must fail closed");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    // ── #1b subject-linkage proof ─────────────────────────────────────────
+
+    /// Build a `subjectLinkage` proof: the VIC subject (`a_seed`) signs
+    /// `TAG || vic_id || NUL || presenter`. Returns `(subject_did, vp)`.
+    fn linkage_vp(a_seed: &[u8; 32], vic_id: &str, presenter: &str) -> (String, JsonValue) {
+        use ed25519_dalek::{Signer, SigningKey};
+        let sk = SigningKey::from_bytes(a_seed);
+        let a_did =
+            affinidi_crypto::did_key::ed25519_pub_to_did_key(&sk.verifying_key().to_bytes());
+        let mut signed = SUBJECT_LINKAGE_DOMAIN_TAG.to_vec();
+        signed.extend_from_slice(vic_id.as_bytes());
+        signed.push(0);
+        signed.extend_from_slice(presenter.as_bytes());
+        let sig = sk.sign(&signed);
+        let vp = serde_json::json!({
+            "subjectLinkage": {
+                "verificationMethod": a_did,
+                "signature": hex::encode(sig.to_bytes()),
+            }
+        });
+        (a_did, vp)
+    }
+
+    #[tokio::test]
+    async fn subject_linkage_authorizes_a_different_presenter() {
+        let presenter = did_key(&OTHER_SEED);
+        let (a_did, vp) = linkage_vp(&APPLICANT_SEED, "urn:uuid:vic-1", &presenter);
+        verify_subject_linkage(&vp, &a_did, "urn:uuid:vic-1", &presenter, &resolver())
+            .await
+            .expect("a valid subject-linkage proof authorizes the presenter");
+    }
+
+    #[tokio::test]
+    async fn subject_linkage_rejects_a_different_presenter_than_signed() {
+        // The proof binds OUTSIDER, but someone else tries to use it.
+        let signed_presenter = did_key(&OTHER_SEED);
+        let (a_did, vp) = linkage_vp(&APPLICANT_SEED, "urn:uuid:vic-1", &signed_presenter);
+        let err = verify_subject_linkage(
+            &vp,
+            &a_did,
+            "urn:uuid:vic-1",
+            "did:key:zSomeoneElse",
+            &resolver(),
+        )
+        .await
+        .expect_err("a linkage bound to another presenter must not verify");
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn subject_linkage_absent_is_rejected() {
+        let err = verify_subject_linkage(
+            &serde_json::json!({}),
+            "did:key:zSubject",
+            "urn:uuid:vic-1",
+            "did:key:zPresenter",
+            &resolver(),
+        )
+        .await
+        .expect_err("missing subjectLinkage must fail");
         assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
     }
 }

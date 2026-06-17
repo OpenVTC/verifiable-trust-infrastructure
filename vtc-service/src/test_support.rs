@@ -229,6 +229,7 @@ impl TestVtcBuilder {
         let consumed_invitations_ks = store
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
+        let invitations_ks = store.keyspace("invitations").expect("invitations ks");
 
         let jwt_keys =
             Arc::new(JwtKeys::from_ed25519_bytes(&JWT_SEED, "VTC").expect("build VTC JWT keys"));
@@ -341,6 +342,7 @@ impl TestVtcBuilder {
             audit_ks,
             audit_key_ks,
             consumed_invitations_ks,
+            invitations_ks,
             registry_client: None,
             registry_health: crate::registry::RegistryHealth::new(),
             syncer_health: crate::registry::SyncerHealth::new(),

@@ -49,6 +49,7 @@ pub mod delivery;
 pub mod dtg;
 pub mod exchange;
 pub mod invitation;
+pub mod invitation_registry;
 pub mod invitation_verify;
 pub mod present_challenge;
 pub mod signer;

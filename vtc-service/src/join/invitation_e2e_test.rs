@@ -76,7 +76,7 @@ async fn vtc_with_signer(signer: &LocalSigner) -> TestVtc {
 /// check is a no-op) bound to `subject`, returning `(vp, vic_id)`.
 async fn issue_vic_vp(signer: &LocalSigner, subject: &str) -> (serde_json::Value, String) {
     let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-    let vic = dtg::issue_invitation(signer, subject, Some(&id), None, Duration::days(7))
+    let vic = dtg::issue_invitation(signer, subject, Some(&id), None, Duration::days(7), &[])
         .await
         .expect("issue VIC");
     let vp = json!({

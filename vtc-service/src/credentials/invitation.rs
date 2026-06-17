@@ -39,6 +39,7 @@ pub async fn issue_invitation(
     schemas_ks: &KeyspaceHandle,
     subject_did: &str,
     validity: Duration,
+    role: Option<&str>,
 ) -> Result<Value, AppError> {
     // Hold the status-list write lock across allocate → build → store
     // (P0.1). The raw guard (not `with_locked`) is needed because the VIC
@@ -64,9 +65,21 @@ pub async fn issue_invitation(
     let status_ref = CredentialStatusRef::revocation(row.list_credential_id.clone(), slot);
     let id = format!("urn:uuid:{}", Uuid::new_v4());
 
+    // An optional role grant rides in `credentialSubject.scopes` as
+    // `role:<name>` — the join policy reads it to admit the invitee at that
+    // role (bounded by the host's no-admin-via-join privilege ceiling).
+    let scopes: Vec<String> = role.map(|r| vec![format!("role:{r}")]).unwrap_or_default();
+
     // Build first; persist the burned slot only on success.
-    let vic =
-        dtg::issue_invitation(signer, subject_did, Some(&id), Some(&status_ref), validity).await?;
+    let vic = dtg::issue_invitation(
+        signer,
+        subject_did,
+        Some(&id),
+        Some(&status_ref),
+        validity,
+        &scopes,
+    )
+    .await?;
 
     // Issue-time schema validation (task 2.3): if an InvitationCredential schema
     // is registered in the schema store, the VIC must conform before the slot is
@@ -123,9 +136,16 @@ mod tests {
             .unwrap()
             .count_assigned();
 
-        let vic = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
-            .await
-            .expect("issue VIC");
+        let vic = issue_invitation(
+            &s,
+            &ks,
+            &schemas_ks,
+            "did:key:zInvitee",
+            Duration::days(7),
+            None,
+        )
+        .await
+        .expect("issue VIC");
 
         // Catalog Invitation type + revocable + subject is the invitee.
         let types: Vec<String> = serde_json::from_value(vic["type"].clone()).unwrap();
@@ -164,9 +184,16 @@ mod tests {
         let ks = store.keyspace("status_lists").unwrap();
         let schemas_ks = store.keyspace("schemas").unwrap();
         let s = signer();
-        let err = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
-            .await
-            .expect_err("must refuse without a provisioned list");
+        let err = issue_invitation(
+            &s,
+            &ks,
+            &schemas_ks,
+            "did:key:zInvitee",
+            Duration::days(7),
+            None,
+        )
+        .await
+        .expect_err("must refuse without a provisioned list");
         assert!(matches!(err, AppError::Internal(_)), "{err:?}");
     }
 
@@ -204,9 +231,16 @@ mod tests {
             .unwrap()
             .count_assigned();
 
-        let err = issue_invitation(&s, &ks, &schemas_ks, "did:key:zInvitee", Duration::days(7))
-            .await
-            .expect_err("non-conforming VIC must be refused");
+        let err = issue_invitation(
+            &s,
+            &ks,
+            &schemas_ks,
+            "did:key:zInvitee",
+            Duration::days(7),
+            None,
+        )
+        .await
+        .expect_err("non-conforming VIC must be refused");
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
 
         let after = get_state(&ks, StatusPurpose::Revocation)

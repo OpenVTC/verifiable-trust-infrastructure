@@ -565,6 +565,58 @@ mod tests {
     }
 
     #[test]
+    fn join_default_grants_invited_role() {
+        // A VIC carrying a `role:moderator` scope auto-admits at that role.
+        let c = compile_default(PolicyPurpose::Join);
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "invitation": {
+                        "verified": true,
+                        "issuer": "did:webvh:acme.example",
+                        "issuer_trusted": true,
+                        "consumed": false,
+                        "scopes": ["role:moderator"]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "moderator" } })),
+        );
+    }
+
+    #[test]
+    fn join_default_invitation_without_role_scope_grants_member() {
+        // A non-role scope (or no scopes) defaults to member.
+        let c = compile_default(PolicyPurpose::Join);
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "invitation": {
+                        "verified": true,
+                        "issuer": "did:webvh:acme.example",
+                        "issuer_trusted": true,
+                        "consumed": false,
+                        "scopes": ["single-context"]
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
+        );
+    }
+
+    #[test]
     fn join_default_refers_on_consumed_invitation() {
         // A single-use invitation already redeemed is not a valid admit signal
         // → falls through to moderator review.

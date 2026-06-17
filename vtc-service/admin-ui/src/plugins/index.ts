@@ -16,6 +16,7 @@ import {
   Inbox,
   KeyRound,
   LayoutDashboard,
+  Network,
   ShieldCheck,
   Smartphone,
   Tag,
@@ -34,6 +35,7 @@ import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Profile } from "@/plugins/profile";
+import { Recognition } from "@/plugins/recognition";
 import { Sessions } from "@/plugins/sessions";
 
 export function registerBuiltinPlugins(): void {
@@ -67,6 +69,14 @@ export function registerBuiltinPlugins(): void {
     path: "/invitations",
     iconComponent: Ticket,
     reactComponent: Invitations,
+  });
+
+  registerPlugin({
+    id: "recognition",
+    label: "Recognition",
+    path: "/recognition",
+    iconComponent: Network,
+    reactComponent: Recognition,
   });
 
   registerPlugin({

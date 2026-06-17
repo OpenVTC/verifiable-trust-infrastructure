@@ -23,6 +23,8 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const ISSUE_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
+const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
+const REVOKE_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0";
 const ADMIN_DID: &str = "did:key:zInvAdmin";
 const MEMBER_DID: &str = "did:key:zInvMember";
 const INVITEE_DID: &str = "did:key:zInvitee";
@@ -192,4 +194,108 @@ async fn inviting_an_existing_member_is_a_conflict() {
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _) = body_value(resp).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn invite_can_grant_a_role_via_scopes() {
+    let fix = build().await;
+    let req = issue_req(
+        &fix.admin_token,
+        json!({ "subjectDid": INVITEE_DID, "role": "moderator" }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let scopes = v["vic"]["credentialSubject"]["scopes"]
+        .as_array()
+        .expect("VIC carries credentialSubject.scopes");
+    assert!(
+        scopes.iter().any(|s| s == "role:moderator"),
+        "role rides in scopes: {scopes:?}"
+    );
+}
+
+#[tokio::test]
+async fn issue_list_revoke_round_trip() {
+    let fix = build().await;
+
+    // Issue → the registry lists it as live.
+    let req = issue_req(&fix.admin_token, json!({ "subjectDid": INVITEE_DID }));
+    let (status, v) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::CREATED, "{v}");
+    let vic_id = v["vic"]["id"].as_str().expect("vic id").to_string();
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/v1/invitations")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", LIST_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, v) = body_value(fix.router.clone().oneshot(list_req).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let row = v["invitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == json!(vic_id))
+        .expect("issued invitation is listed");
+    assert!(
+        row.get("revokedAt").is_none(),
+        "live invite has no revokedAt"
+    );
+
+    // Revoke → 200, newlyRevoked.
+    let del = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/invitations/{vic_id}"))
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", REVOKE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, v) = body_value(fix.router.clone().oneshot(del).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["newlyRevoked"], json!(true));
+
+    // Revoking again is idempotent (newlyRevoked = false).
+    let del2 = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/invitations/{vic_id}"))
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", REVOKE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, v) = body_value(fix.router.clone().oneshot(del2).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["newlyRevoked"], json!(false));
+}
+
+#[tokio::test]
+async fn revoke_unknown_invitation_is_404() {
+    let fix = build().await;
+    let del = Request::builder()
+        .method("DELETE")
+        .uri("/v1/invitations/urn:uuid:does-not-exist")
+        .header("authorization", format!("Bearer {}", fix.admin_token))
+        .header("trust-task", REVOKE_TASK)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = body_value(fix.router.clone().oneshot(del).await.unwrap()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn invite_refuses_admin_role() {
+    let fix = build().await;
+    let req = issue_req(
+        &fix.admin_token,
+        json!({ "subjectDid": INVITEE_DID, "role": "admin" }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _) = body_value(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an invite may not grant admin"
+    );
 }

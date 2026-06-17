@@ -7,10 +7,16 @@
 // trusted, unconsumed invitation → allow). See `routes/invitations.rs`.
 
 import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Download, Ticket } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Download, Ticket, Trash2 } from "lucide-react";
 
-import { issueInvitation, type IssueInvitationResponse } from "@/lib/api";
+import {
+  issueInvitation,
+  listInvitations,
+  revokeInvitation,
+  type InvitationListItem,
+  type IssueInvitationResponse,
+} from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
 import { useToast } from "@/lib/toast";
 
@@ -21,8 +27,24 @@ const QR_MAX_CHARS = 1200;
 
 export function Invitations() {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [did, setDid] = useState("");
   const [validityDays, setValidityDays] = useState("");
+  const [role, setRole] = useState("member");
+
+  const invitations = useQuery({
+    queryKey: ["invitations"],
+    queryFn: async () => (await listInvitations()).invitations,
+  });
+
+  const revoke = useMutation<unknown, Error, string>({
+    mutationFn: (id: string) => revokeInvitation(id),
+    onSuccess: () => {
+      toast.push("success", "Invitation revoked");
+      void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+    },
+    onError: (e) => toast.pushFromError(e),
+  });
 
   const mutation = useMutation<IssueInvitationResponse, Error, void>({
     mutationFn: () => {
@@ -30,9 +52,13 @@ export function Invitations() {
       if (days !== undefined && (!Number.isInteger(days) || days < 1)) {
         return Promise.reject(new Error("Validity must be a whole number of days ≥ 1"));
       }
-      return issueInvitation(did.trim(), days);
+      // "member" is the server default — send a role only when it differs.
+      return issueInvitation(did.trim(), days, role === "member" ? undefined : role);
     },
-    onSuccess: () => toast.push("success", "Invitation issued"),
+    onSuccess: () => {
+      toast.push("success", "Invitation issued");
+      void queryClient.invalidateQueries({ queryKey: ["invitations"] });
+    },
     onError: (e) => toast.pushFromError(e),
   });
 
@@ -81,6 +107,14 @@ export function Invitations() {
               placeholder="7"
             />
           </label>
+          <label className="field">
+            <span className="field-label">Role on join</span>
+            <select value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="member">member</option>
+              <option value="moderator">moderator</option>
+              <option value="issuer">issuer</option>
+            </select>
+          </label>
           <button
             type="submit"
             className="btn primary"
@@ -117,6 +151,61 @@ export function Invitations() {
           />
         </section>
       )}
+
+      <section className="card">
+        <h3>Issued invitations</h3>
+        {invitations.isPending && <p className="muted">Loading…</p>}
+        {invitations.isError && (
+          <p className="muted">Could not load invitations.</p>
+        )}
+        {invitations.data && invitations.data.length === 0 && (
+          <p className="muted">No invitations issued yet.</p>
+        )}
+        {invitations.data && invitations.data.length > 0 && (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Invitee</th>
+                <th>Role</th>
+                <th>Issued</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {invitations.data.map((inv: InvitationListItem) => (
+                <tr key={inv.id}>
+                  <td>
+                    <code className="truncate">{inv.subjectDid}</code>
+                  </td>
+                  <td>{inv.role ?? "member"}</td>
+                  <td>{inv.issuedAt.slice(0, 10)}</td>
+                  <td>
+                    {inv.revokedAt ? (
+                      <span className="muted">revoked</span>
+                    ) : (
+                      "live"
+                    )}
+                  </td>
+                  <td>
+                    {!inv.revokedAt && (
+                      <button
+                        type="button"
+                        className="btn"
+                        disabled={revoke.isPending}
+                        onClick={() => revoke.mutate(inv.id)}
+                        title="Revoke this invitation"
+                      >
+                        <Trash2 size={16} strokeWidth={1.75} /> Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
     </div>
   );
 }

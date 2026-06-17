@@ -60,6 +60,7 @@ async fn finalize(
     dtg: DTGCredential,
     id: Option<&str>,
     status_ref: Option<&CredentialStatusRef>,
+    subject_scopes: &[String],
 ) -> Result<Value, AppError> {
     // The wire VC is the catalog's `DTGCommon` body; the `DTGCredential`
     // wrapper's `type_`/`version` helpers are not part of the credential.
@@ -77,8 +78,21 @@ async fn finalize(
             .map_err(|e| AppError::Internal(format!("credentialStatus -> value: {e}")))?;
         obj.insert("credentialStatus".into(), status);
     }
+    // Splice `scopes` into credentialSubject (covered by the signature). The
+    // catalog subject is `{ id }`; this is additive — used by invitations to
+    // carry an authorized role (`role:<name>`).
+    if !subject_scopes.is_empty()
+        && let Some(subject) = obj
+            .get_mut("credentialSubject")
+            .and_then(Value::as_object_mut)
+    {
+        subject.insert(
+            "scopes".into(),
+            Value::Array(subject_scopes.iter().cloned().map(Value::String).collect()),
+        );
+    }
 
-    // Sign the full document (covers id + credentialStatus).
+    // Sign the full document (covers id + credentialStatus + subject scopes).
     signer.sign_doc(&mut doc).await?;
     Ok(doc)
 }
@@ -103,7 +117,7 @@ pub async fn issue_membership(
         Some(valid_until),
         personhood,
     );
-    finalize(signer, dtg, id, status_ref).await
+    finalize(signer, dtg, id, status_ref, &[]).await
 }
 
 /// Issue a signed **role-grant** Endorsement credential (VEC) as JSON.
@@ -147,7 +161,7 @@ pub async fn issue_endorsement(
         Some(valid_until),
         endorsement,
     );
-    finalize(signer, dtg, id, status_ref).await
+    finalize(signer, dtg, id, status_ref, &[]).await
 }
 
 /// Issue a signed **Invitation** credential (VIC) as JSON to a `subject_did`
@@ -160,6 +174,7 @@ pub async fn issue_invitation(
     id: Option<&str>,
     status_ref: Option<&CredentialStatusRef>,
     validity: Duration,
+    subject_scopes: &[String],
 ) -> Result<Value, AppError> {
     let (valid_from, valid_until) = window(validity);
     let dtg = DTGCredential::new_vic(
@@ -168,7 +183,7 @@ pub async fn issue_invitation(
         valid_from,
         Some(valid_until),
     );
-    finalize(signer, dtg, id, status_ref).await
+    finalize(signer, dtg, id, status_ref, subject_scopes).await
 }
 
 #[cfg(test)]
@@ -292,6 +307,7 @@ mod tests {
             Some("urn:uuid:vic-1"),
             Some(&status),
             Duration::days(7),
+            &[],
         )
         .await
         .expect("issue VIC");

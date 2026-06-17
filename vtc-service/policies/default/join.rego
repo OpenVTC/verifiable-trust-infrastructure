@@ -34,14 +34,15 @@ import rego.v1
 # structural totality — unmatched submissions go to moderator review
 default decision := {"effect": "refer", "with": {"queue": "moderator"}}
 
-# A valid, trusted, unconsumed invitation (VIC) auto-admits as a member —
-# the community (or a trusted third party) explicitly invited this DID.
-# `verified` / `issuer_trusted` / `consumed` are host-resolved facts:
-# `verified` = signature + holder-binding + validity + revocation all
+# A valid, trusted, unconsumed invitation (VIC) auto-admits at the role the
+# invitation grants — the community (or a trusted third party) explicitly
+# invited this DID. `verified` / `issuer_trusted` / `consumed` are host-resolved
+# facts: `verified` = signature + holder-binding + validity + revocation all
 # checked; `issuer_trusted` = the issuer is the community itself or a
 # registry-recognised peer; `consumed` = the single-use VIC was already
-# redeemed.
-decision := {"effect": "allow", "with": {"role": "member"}} if {
+# redeemed. The granted role comes from the VIC's `scopes` (`role:<name>`,
+# default `member`); the host's privilege ceiling still forbids `admin` on join.
+decision := {"effect": "allow", "with": {"role": invited_role}} if {
 	has_valid_invitation
 }
 
@@ -56,4 +57,14 @@ has_valid_invitation if {
 	input.evidence.invitation.verified
 	input.evidence.invitation.issuer_trusted
 	not input.evidence.invitation.consumed
+}
+
+# The role an invitation grants: the first `role:<name>` scope it carries,
+# else `member`.
+default invited_role := "member"
+
+invited_role := role if {
+	some s in input.evidence.invitation.scopes
+	startswith(s, "role:")
+	role := substring(s, 5, -1)
 }

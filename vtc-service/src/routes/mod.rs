@@ -19,6 +19,7 @@ pub mod join_requests;
 pub(crate) mod members;
 pub(crate) mod policies;
 pub mod recognise;
+mod recognition_admin;
 mod relationships;
 mod schemas;
 pub(crate) mod status_lists;
@@ -597,11 +598,23 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             // `list/1.0` exists on disk + in index.json.
             "https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0",
         ))
-        // Invitation Credential (VIC) issuance — the operator side of the
-        // VIC auto-join ceremony. Admin / Moderator / Issuer.
+        // Invitation Credential (VIC) issuance + listing — the operator side of
+        // the VIC auto-join ceremony. Admin / Moderator / Issuer. POST + GET on
+        // /invitations share the `issue/1.0` mount; the standalone `list/1.0`
+        // task is declared on disk for the soft-gate surface.
         .routes(tt(
-            routes!(invitations::issue),
+            routes!(invitations::issue, invitations::list),
             "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0",
+        ))
+        // Revoke an outstanding invitation (flips its revocation bit).
+        .routes(tt(
+            routes!(invitations::revoke),
+            "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0",
+        ))
+        // Recognition (trust-graph) lookup — admin window into TRQP recognise.
+        .routes(tt(
+            routes!(recognition_admin::check),
+            "https://trusttasks.org/openvtc/vtc/recognition/check/1.0",
         ))
         .routes(tt(
             routes!(endorsements::show, endorsements::revoke), // GET + DELETE share `show/1.0` at the router

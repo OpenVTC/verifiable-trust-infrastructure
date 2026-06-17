@@ -247,15 +247,66 @@ export interface IssueInvitationResponse {
   vic: unknown;
 }
 
-/** Issue an Invitation Credential bound to `subjectDid`. */
+/** Issue an Invitation Credential bound to `subjectDid`, optionally granting a
+ * role (`member` / `moderator` / `issuer`; `admin` is refused server-side). */
 export const issueInvitation = (
   subjectDid: string,
   validityDays?: number,
-): Promise<IssueInvitationResponse> =>
-  postJson<IssueInvitationResponse>(
-    "/v1/invitations",
-    validityDays === undefined ? { subjectDid } : { subjectDid, validityDays },
-    { trustTask: ISSUE_INVITATION_TASK },
+  role?: string,
+): Promise<IssueInvitationResponse> => {
+  const body: Record<string, unknown> = { subjectDid };
+  if (validityDays !== undefined) body.validityDays = validityDays;
+  if (role) body.role = role;
+  return postJson<IssueInvitationResponse>("/v1/invitations", body, {
+    trustTask: ISSUE_INVITATION_TASK,
+  });
+};
+
+const REVOKE_INVITATION_TASK =
+  "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0";
+
+export interface InvitationListItem {
+  id: string;
+  subjectDid: string;
+  role?: string;
+  issuedBy: string;
+  issuedAt: string;
+  validUntil?: string;
+  revokedAt?: string;
+}
+
+/** List issued invitations (newest first). Reuses the issue Trust Task (GET +
+ * POST share the /invitations mount). */
+export const listInvitations = (): Promise<{ invitations: InvitationListItem[] }> =>
+  getJson<{ invitations: InvitationListItem[] }>("/v1/invitations", {
+    trustTask: ISSUE_INVITATION_TASK,
+  });
+
+/** Revoke an outstanding invitation by VIC id (flips its revocation bit). */
+export const revokeInvitation = (
+  id: string,
+): Promise<{ id: string; revokedAt: string; newlyRevoked: boolean }> =>
+  deleteJson<{ id: string; revokedAt: string; newlyRevoked: boolean }>(
+    `/v1/invitations/${encodeURIComponent(id)}`,
+    { trustTask: REVOKE_INVITATION_TASK },
+  );
+
+const RECOGNITION_CHECK_TASK =
+  "https://trusttasks.org/openvtc/vtc/recognition/check/1.0";
+
+export interface RecognitionCheck {
+  did: string;
+  recognised: boolean;
+  registryConfigured: boolean;
+  error?: string;
+}
+
+/** Ask whether this community recognises (trusts) a foreign issuer/community
+ * DID — the operator's per-DID window into the recognition graph. */
+export const checkRecognition = (did: string): Promise<RecognitionCheck> =>
+  getJson<RecognitionCheck>(
+    `/v1/recognition/check?did=${encodeURIComponent(did)}`,
+    { trustTask: RECOGNITION_CHECK_TASK },
   );
 
 /** Probe: returns the whoami response when signed in, null when not. */
