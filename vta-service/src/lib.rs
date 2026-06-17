@@ -18,6 +18,7 @@ pub mod auth;
 pub mod backup_bundle_store;
 pub mod backup_bundle_sweeper;
 pub mod config;
+pub mod consent_sweeper;
 pub mod contexts;
 pub mod did_templates;
 pub mod didcomm_bridge;

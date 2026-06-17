@@ -389,3 +389,67 @@ pub(super) async fn handle_list(
         .collect();
     success_response(&doc, ListResponse { grants: wire })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_subject_parses_camelcase_and_maps() {
+        let v = serde_json::json!({
+            "platform": "signal",
+            "conversationRef": "sig-1a2b3c4d",
+            "kind": "group",
+            "agent": "did:key:zA",
+        });
+        let s: ConsentSubject = serde_json::from_value::<WireSubject>(v).unwrap().into();
+        assert_eq!(s.conversation_ref, "sig-1a2b3c4d");
+        assert_eq!(s.kind, ConsentKind::Group);
+    }
+
+    #[test]
+    fn request_payload_parses_full_wire() {
+        let v = serde_json::json!({
+            "subject": {"platform":"signal","conversationRef":"sig-1","kind":"dm","agent":"did:key:zA"},
+            "scope": "converse",
+            "challenge": "Q29uc2VudENoYWxsZW5nZQ",
+            "displayHint": "Signal DM",
+            "contextHint": "ctx",
+        });
+        let p: RequestPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(p.scope, ConsentScope::Converse);
+        assert_eq!(p.context_hint.as_deref(), Some("ctx"));
+    }
+
+    #[test]
+    fn wire_grant_serializes_camelcase() {
+        let g = ConsentGrant {
+            subject: ConsentSubject {
+                platform: "signal".into(),
+                conversation_ref: "sig-1".into(),
+                kind: ConsentKind::Dm,
+                agent: "did:key:zA".into(),
+            },
+            effect: ConsentEffect::Allow,
+            scope: Some(ConsentScope::Converse),
+            granted_by: "did:web:op".into(),
+            granted_at: 1_700_000_000, // 2023-11-14
+            expires_at: None,
+            evidence: "did-signed".into(),
+        };
+        let v = serde_json::to_value(WireGrant::from(g)).unwrap();
+        assert_eq!(v["subject"]["conversationRef"], "sig-1");
+        assert_eq!(v["effect"], "allow");
+        assert_eq!(v["scope"], "converse");
+        assert_eq!(v["grantedBy"], "did:web:op");
+        assert!(v["grantedAt"].as_str().unwrap().starts_with("2023-11"));
+        assert!(v.get("expiresAt").is_none());
+    }
+
+    #[test]
+    fn epoch_rfc3339_round_trips() {
+        let s = epoch_to_rfc3339(1_700_000_000);
+        assert_eq!(rfc3339_to_epoch(&s), Some(1_700_000_000));
+        assert_eq!(rfc3339_to_epoch("not-a-date"), None);
+    }
+}

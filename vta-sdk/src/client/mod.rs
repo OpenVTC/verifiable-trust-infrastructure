@@ -104,6 +104,7 @@ mod auto_connect;
 mod backup;
 mod backup_descriptors;
 mod bootstrap;
+mod consent;
 mod contexts;
 mod did_templates;
 mod keys;

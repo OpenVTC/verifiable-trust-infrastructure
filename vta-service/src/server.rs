@@ -634,6 +634,7 @@ pub async fn run(
         let sessions_ks = apply_encryption(store.keyspace(crate::keyspaces::SESSIONS)?);
         let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
         let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
+        let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
         let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
         let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
         let backup_blob_dir = config.store.data_dir.join("backups");
@@ -714,6 +715,7 @@ pub async fn run(
         let storage_sessions_ks = sessions_ks.clone();
         let storage_audit_ks = audit_ks.clone();
         let storage_acl_ks = acl_ks.clone();
+        let storage_consent_ks = consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
         let storage_backup_blob_dir = backup_blob_dir.clone();
@@ -1017,6 +1019,7 @@ pub async fn run(
                     storage_sessions_ks,
                     storage_audit_ks,
                     storage_acl_ks,
+                    storage_consent_ks,
                     storage_vault_ks,
                     storage_backup_bundles_ks,
                     storage_backup_blob_dir,
@@ -1114,6 +1117,7 @@ fn run_storage_thread(
     sessions_ks: KeyspaceHandle,
     audit_ks: KeyspaceHandle,
     acl_ks: KeyspaceHandle,
+    consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     backup_bundles_ks_storage: KeyspaceHandle,
     backup_blob_dir_storage: std::path::PathBuf,
@@ -1157,6 +1161,14 @@ fn run_storage_thread(
                             crate::acl_sweeper::sweep_expired(&acl_ks, &audit_ks).await
                         {
                             warn!("acl sweeper error: {e}");
+                        }
+                        // Prune expired pending consents (never answered) and
+                        // lapsed grants, so the consent keyspace can't grow
+                        // unbounded at inbound-message rate.
+                        if let Err(e) =
+                            crate::consent_sweeper::sweep_expired(&consent_ks, &audit_ks).await
+                        {
+                            warn!("consent sweeper error: {e}");
                         }
                         // Expire & retention-prune in-flight backup
                         // bundles (descriptor-pattern slice). TTL

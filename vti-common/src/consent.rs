@@ -206,6 +206,8 @@ pub fn new_pending_consent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::StoreConfig;
+    use crate::store::Store;
 
     fn subject() -> ConsentSubject {
         ConsentSubject {
@@ -214,6 +216,99 @@ mod tests {
             kind: ConsentKind::Group,
             agent: "did:key:z6MkAgent".into(),
         }
+    }
+
+    async fn ks() -> KeyspaceHandle {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = Box::leak(Box::new(dir)); // outlive the test
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        store.keyspace("consent").expect("keyspace")
+    }
+
+    fn grant(effect: ConsentEffect) -> ConsentGrant {
+        ConsentGrant {
+            subject: subject(),
+            effect,
+            scope: matches!(effect, ConsentEffect::Allow).then_some(ConsentScope::Converse),
+            granted_by: "did:web:operator".into(),
+            granted_at: 1_000,
+            expires_at: None,
+            evidence: "bridge-attested".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn grant_store_get_delete_round_trip() {
+        let ks = ks().await;
+        // Default-deny: nothing stored yet.
+        assert!(get_consent_grant(&ks, &subject()).await.unwrap().is_none());
+
+        let g = grant(ConsentEffect::Allow);
+        store_consent_grant(&ks, &g).await.unwrap();
+        assert_eq!(get_consent_grant(&ks, &subject()).await.unwrap(), Some(g));
+
+        delete_consent_grant(&ks, &subject()).await.unwrap();
+        assert!(get_consent_grant(&ks, &subject()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_grants() {
+        let ks = ks().await;
+        store_consent_grant(&ks, &grant(ConsentEffect::Allow))
+            .await
+            .unwrap();
+        let mut other = grant(ConsentEffect::Deny);
+        other.subject.conversation_ref = "sig-99999999".into();
+        store_consent_grant(&ks, &other).await.unwrap();
+        assert_eq!(list_consent_grants(&ks).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pending_consume_is_single_use_and_ttl_aware() {
+        let ks = ks().await;
+        let p = new_pending_consent(
+            subject(),
+            ConsentScope::Converse,
+            "chal-1",
+            "did:webvh:bridge",
+            None,
+            300,
+        );
+        store_pending_consent(&ks, &p).await.unwrap();
+
+        // Live match → Found, and consumed (single-use).
+        match consume_pending_consent(&ks, "chal-1", p.created_at + 1)
+            .await
+            .unwrap()
+        {
+            ConsumeConsent::Found(found) => assert_eq!(found.subject, subject()),
+            other => panic!("expected Found, got {other:?}"),
+        }
+        assert_eq!(
+            consume_pending_consent(&ks, "chal-1", p.created_at + 1)
+                .await
+                .unwrap(),
+            ConsumeConsent::NotFound,
+        );
+
+        // Expired match → Expired (and still removed).
+        let p2 = new_pending_consent(subject(), ConsentScope::Receive, "chal-2", "b", None, 10);
+        store_pending_consent(&ks, &p2).await.unwrap();
+        assert_eq!(
+            consume_pending_consent(&ks, "chal-2", p2.expires_at + 1)
+                .await
+                .unwrap(),
+            ConsumeConsent::Expired,
+        );
+        assert_eq!(
+            consume_pending_consent(&ks, "chal-2", p2.expires_at + 1)
+                .await
+                .unwrap(),
+            ConsumeConsent::NotFound,
+        );
     }
 
     #[test]
