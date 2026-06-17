@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 
 use vti_common::error::AppError;
 
-use crate::auth::{AdminAuth, AuthClaims};
-use crate::ceremony::{LeaveOutcome, remove_inner};
+use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
+use crate::ceremony::{LeaveOutcome, purge_member, remove_inner};
 use crate::members::Disposition;
 use crate::server::AppState;
 
@@ -147,5 +147,34 @@ pub async fn admin_remove(
         )));
     }
     let outcome = remove_inner(&state, &admin.0.did, &target_did, body.disposition, reason).await?;
+    Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /v1/members/{did}/purge — forceful cleanup (super-admin)
+// ---------------------------------------------------------------------------
+
+/// DELETE /members/{did}/purge — permanently delete a member row, including a
+/// lingering **tombstone** (a departed member whose row was kept after its ACL
+/// was removed). Hard-deletes the ACL (if any) + Member row, decrements the
+/// count, and flips the revocation bit. Auth: **Super-admin** (forceful, skips
+/// the removal policy). Refuses the sole admin (no-last-admin invariant).
+#[utoipa::path(
+    delete, path = "/members/{did}/purge", tag = "members",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Member DID")),
+    responses(
+        (status = 200, description = "Member purged", body = RemoveResponse),
+        (status = 403, description = "Caller is not a super-admin / would orphan the last admin"),
+        (status = 404, description = "No member or tombstone to purge"),
+    ),
+)]
+pub async fn purge(
+    super_admin: SuperAdminAuth,
+    State(state): State<AppState>,
+    Path(target_did): Path<String>,
+) -> Result<(StatusCode, Json<RemoveResponse>), AppError> {
+    vti_common::identifier::validate_did("did", &target_did)?;
+    let outcome = purge_member(&state, &super_admin.0.did, &target_did).await?;
     Ok((StatusCode::OK, Json(RemoveResponse::from(outcome))))
 }

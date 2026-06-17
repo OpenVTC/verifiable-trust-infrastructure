@@ -504,6 +504,17 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(members::read::list_members),
             "https://trusttasks.org/openvtc/vtc/members/list/1.0",
         ))
+        // Departed (tombstoned/historical) members + forceful purge. The
+        // literal `/removed` must precede the `/{did}` catchall so axum's
+        // path-trie doesn't route "removed" as a DID (same reason as `/me`).
+        .routes(tt(
+            routes!(members::read::list_removed),
+            "https://trusttasks.org/openvtc/vtc/members/removed/1.0",
+        ))
+        .routes(tt(
+            routes!(members::remove::purge),
+            "https://trusttasks.org/openvtc/vtc/members/purge/1.0",
+        ))
         // `/v1/members/me` for self-remove (M1.11.1). Must be
         // declared BEFORE the `/v1/members/{did}` mount otherwise
         // axum's path-trie picks the parameterised route first

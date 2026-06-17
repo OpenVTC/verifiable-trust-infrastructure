@@ -175,6 +175,83 @@ pub struct LeaveOutcome {
     pub removed: bool,
 }
 
+/// Forcefully **purge** a member row — operator cleanup for a lingering
+/// tombstone (a Tombstone/Historical departure left the Member row after its
+/// ACL was deleted), or a hard delete of a live member. Hard-deletes the ACL
+/// (if any) + Member row, decrements the row count, and best-effort flips the
+/// revocation bit. Super-admin only at the route layer.
+///
+/// Unlike [`remove_inner`], this does **not** require an existing ACL (so it can
+/// clean up tombstones) and does **not** run the removal policy — it's a
+/// forceful admin op. The executor's no-last-admin invariant still applies, so
+/// purging the sole admin is refused (`Conflict`).
+pub async fn purge_member(
+    state: &AppState,
+    actor_did: &str,
+    target_did: &str,
+) -> Result<LeaveOutcome, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
+    // Must have *something* to purge — a Member row and/or an ACL entry.
+    let has_member = get_member(&state.members_ks, target_did).await?.is_some();
+    let has_acl = get_acl_entry(&state.acl_ks, target_did).await?.is_some();
+    if !has_member && !has_acl {
+        return Err(AppError::NotFound(format!(
+            "no member or tombstone to purge: {target_did}"
+        )));
+    }
+
+    // Reuse the single state-mutating seam with a forced Purge disposition.
+    let EffectOutcome::Departed(outcome) = execute::apply(
+        state,
+        EffectPlan::Depart {
+            subject: target_did.to_string(),
+            disposition: Some("purge".to_string()),
+        },
+        actor_did,
+    )
+    .await?
+    else {
+        return Err(AppError::Internal(
+            "purge effect did not produce a departure outcome".into(),
+        ));
+    };
+
+    audit_writer
+        .write(
+            actor_did,
+            Some(target_did),
+            AuditEvent::MemberRemoved(MemberRemovedData {
+                disposition: "purge".into(),
+                reason: "operator purge".into(),
+            }),
+        )
+        .await?;
+    if let Some(slot) = outcome.revoked_slot {
+        audit_writer
+            .write(
+                actor_did,
+                Some(target_did),
+                AuditEvent::StatusListFlipped(StatusListFlippedData {
+                    purpose: StatusPurpose::Revocation.to_string(),
+                    index: slot,
+                    revoked: true,
+                }),
+            )
+            .await?;
+    }
+
+    info!(actor = actor_did, target = target_did, "member purged");
+    Ok(LeaveOutcome {
+        did: target_did.to_string(),
+        disposition: "purge".into(),
+        removed: true,
+    })
+}
+
 /// The leave ceremony's decide → resolve → effect → audit spine. Returns
 /// `Ok(LeaveOutcome)` on departure, `Err(Forbidden)` when the policy denies, or
 /// `Err(Conflict)` for the executor's no-last-admin invariant.

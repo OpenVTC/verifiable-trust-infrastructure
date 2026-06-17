@@ -29,7 +29,6 @@ use crate::credentials::invitation::{DEFAULT_INVITATION_VALIDITY, issue_invitati
 use crate::credentials::invitation_registry::{
     InvitationRecord, get_invitation, list_invitations, store_invitation,
 };
-use crate::members::get_member;
 use crate::server::AppState;
 use crate::status_list;
 
@@ -105,12 +104,16 @@ pub async fn issue(
     if !body.subject_did.starts_with("did:") {
         return Err(AppError::Validation("subjectDid must be a DID".into()));
     }
-    if get_member(&state.members_ks, &body.subject_did)
+    // "Already a member" means a *current* (ACL-present) member — not a departed
+    // one whose tombstone Member row lingers after a Tombstone/Historical
+    // removal. A departed member can be re-invited (re-join overwrites the
+    // tombstone with a fresh membership), so gate on the ACL, not the Member row.
+    if get_acl_entry(&state.acl_ks, &body.subject_did)
         .await?
         .is_some()
     {
         return Err(AppError::Conflict(format!(
-            "{} is already a member — no invitation needed",
+            "{} is already a current member — no invitation needed",
             body.subject_did
         )));
     }

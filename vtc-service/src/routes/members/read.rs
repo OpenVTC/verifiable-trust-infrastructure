@@ -184,6 +184,56 @@ pub async fn list_members(
 }
 
 // ---------------------------------------------------------------------------
+// GET /v1/members/removed
+// ---------------------------------------------------------------------------
+
+/// A departed member whose Member row was retained (Tombstone / Historical
+/// disposition) after its ACL was deleted. Surfaced so operators can see who
+/// left and purge the lingering rows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovedMember {
+    pub did: String,
+    /// When the member departed.
+    pub removed_at: DateTime<Utc>,
+    /// Revocation slot the member held (for audit / re-flip), if any.
+    pub status_list_index: Option<u32>,
+    /// Always `"removed"` — present so the UI can render a uniform status.
+    pub status: String,
+}
+
+/// GET /members/removed — members whose row was kept as a tombstone after
+/// departure (no ACL). Auth: Admin. Full scan (departed members are few and
+/// this is an operator view), newest-departed first.
+#[utoipa::path(
+    get, path = "/members/removed", tag = "members",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Departed (tombstoned/historical) members", body = [RemovedMember]),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn list_removed(
+    _auth: AdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<RemovedMember>>, AppError> {
+    let mut removed: Vec<RemovedMember> = crate::members::list_members(&state.members_ks)
+        .await?
+        .into_iter()
+        .filter_map(|m| {
+            m.removed_at.map(|removed_at| RemovedMember {
+                did: m.did,
+                removed_at,
+                status_list_index: m.status_list_index,
+                status: "removed".to_string(),
+            })
+        })
+        .collect();
+    removed.sort_by(|a, b| b.removed_at.cmp(&a.removed_at));
+    Ok(Json(removed))
+}
+
+// ---------------------------------------------------------------------------
 // GET /v1/members/{did}
 // ---------------------------------------------------------------------------
 

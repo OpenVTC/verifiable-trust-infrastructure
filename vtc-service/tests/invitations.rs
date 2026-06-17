@@ -197,6 +197,29 @@ async fn inviting_an_existing_member_is_a_conflict() {
 }
 
 #[tokio::test]
+async fn inviting_a_departed_tombstoned_did_is_allowed() {
+    let fix = build().await;
+    // A departed member: a tombstone Member row (removed_at set) with NO ACL —
+    // the ACL was deleted on a Tombstone/Historical departure. Re-inviting them
+    // must succeed (re-join overwrites the tombstone), not 409.
+    let departed = "did:key:z6MkDeparted000000000000000000000000000000000";
+    let mut gone = Member::fresh(departed);
+    gone.tombstone();
+    store_member(&fix._vtc.state.members_ks, &gone)
+        .await
+        .unwrap();
+
+    let req = issue_req(&fix.admin_token, json!({ "subjectDid": departed }));
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a departed (tombstoned) DID can be re-invited: {v}"
+    );
+}
+
+#[tokio::test]
 async fn invite_can_grant_a_role_via_scopes() {
     let fix = build().await;
     let req = issue_req(

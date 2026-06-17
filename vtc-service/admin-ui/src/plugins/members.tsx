@@ -18,6 +18,7 @@ import {
   Check,
   Minus,
   Ticket,
+  Trash2,
   Users as UsersIcon,
 } from "lucide-react";
 
@@ -40,6 +41,10 @@ const TRUST_TASK_SHOW =
   "https://trusttasks.org/openvtc/vtc/members/show/1.0";
 const TRUST_TASK_PROMOTE =
   "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
+const TRUST_TASK_REMOVED =
+  "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
+const TRUST_TASK_PURGE =
+  "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
 
 interface MemberRow {
   did: string;
@@ -132,6 +137,107 @@ async function adminRemove(args: {
     trustTask: TRUST_TASK_SHOW,
     body: { reason: args.reason || null },
   });
+}
+
+interface RemovedMemberRow {
+  did: string;
+  removedAt: string;
+  statusListIndex: number | null;
+  status: string;
+}
+
+async function fetchRemovedMembers(): Promise<RemovedMemberRow[]> {
+  return getJson<RemovedMemberRow[]>("/v1/members/removed", {
+    trustTask: TRUST_TASK_REMOVED,
+  });
+}
+
+async function purgeMember(did: string): Promise<void> {
+  await deleteJson<unknown>(
+    `/v1/members/${encodeURIComponent(did)}/purge`,
+    { trustTask: TRUST_TASK_PURGE },
+  );
+}
+
+/// Departed members whose Member row was kept as a tombstone (Tombstone /
+/// Historical disposition). They have no ACL, so they don't show in the active
+/// list — surfaced here so operators can see who left and permanently purge the
+/// lingering rows. Purge is super-admin only (the button 403s otherwise).
+function RemovedMembers() {
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const query = useQuery({
+    queryKey: ["members-removed"],
+    queryFn: fetchRemovedMembers,
+  });
+
+  const purgeMutation = useMutation({
+    mutationFn: purgeMember,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["members-removed"] });
+      void queryClient.invalidateQueries({ queryKey: ["members"] });
+    },
+  });
+
+  const rows = query.data ?? [];
+  if (query.isPending || rows.length === 0) {
+    // Hide the section entirely when there are no departed members.
+    return null;
+  }
+
+  return (
+    <section className="card">
+      <h3>Removed members</h3>
+      <p className="muted">
+        Departed members whose record was retained (tombstone). They are no
+        longer members; permanently delete the row to clean up.
+      </p>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>DID</th>
+            <th>Removed</th>
+            <th>Revocation slot</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => (
+            <tr key={m.did}>
+              <td>
+                <code>{m.did}</code>
+              </td>
+              <td>{formatDate(m.removedAt)}</td>
+              <td>{m.statusListIndex ?? "—"}</td>
+              <td>
+                <button
+                  type="button"
+                  className="secondary destructive"
+                  disabled={purgeMutation.isPending}
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Permanently delete member?",
+                      message: `This removes the retained record for ${m.did}. This cannot be undone.`,
+                      confirmLabel: "Delete permanently",
+                      destructive: true,
+                    });
+                    if (ok) purgeMutation.mutate(m.did);
+                  }}
+                >
+                  <Trash2 size={16} strokeWidth={1.75} /> Delete permanently
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {purgeMutation.error && (
+        <p className="error">
+          {(purgeMutation.error as Error).message}
+        </p>
+      )}
+    </section>
+  );
 }
 
 
@@ -288,6 +394,8 @@ function MembersList() {
           )}
         </div>
       </section>
+
+      <RemovedMembers />
     </section>
   );
 }

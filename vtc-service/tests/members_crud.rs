@@ -21,6 +21,8 @@ use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/list/1.0";
+const REMOVED_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
+const PURGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
 const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/show/1.0";
 const PROMOTE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
 
@@ -247,6 +249,56 @@ async fn list_members_skips_tombstoned_member_with_no_acl() {
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "tombstoned member is skipped");
     assert_eq!(items[0]["did"], "did:key:zLive");
+}
+
+#[tokio::test]
+async fn list_removed_returns_tombstoned_members_and_purge_deletes_them() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zLive", VtcRole::Member).await;
+    // A tombstone: Member row only (no ACL), removed_at set.
+    let mut gone = Member::fresh("did:key:zGone");
+    gone.tombstone();
+    store_member(&fix.members_ks, &gone).await.unwrap();
+
+    // The removed list surfaces the tombstone (and only it).
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/removed",
+        REMOVED_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let removed = body.as_array().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0]["did"], "did:key:zGone");
+    assert_eq!(removed[0]["status"], "removed");
+
+    // Purge it (admin token is super-admin: Admin role + no contexts).
+    let (status, _) = send(
+        &fix.router,
+        "DELETE",
+        "/v1/members/did:key:zGone/purge",
+        PURGE_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Now the removed list is empty — the row is gone for good.
+    let (_, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members/removed",
+        REMOVED_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert!(body.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
