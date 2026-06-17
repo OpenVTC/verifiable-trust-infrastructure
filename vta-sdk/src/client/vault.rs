@@ -124,4 +124,58 @@ impl VtaClient {
         )
         .await
     }
+
+    // ── Credential vault (the holder's held W3C credentials) ──────────────
+    //
+    // Distinct from the password-manager vault methods above: these drive the
+    // `vault/credentials/*` slice that stores + retrieves credentials a holder
+    // *holds* (invitations, memberships, …). A credential body is a presentable
+    // VC, not a raw secret, so these carry plain JSON — no sealed envelope.
+
+    /// `vault/credentials/receive/0.1` — verify + store a received credential
+    /// (e.g. an invitation). Requires `VaultWrite`. `credential` is the VC JSON;
+    /// `id` overrides the storage id (defaults to the VC's `id`). Returns the
+    /// stored credential's descriptor (`{ id, types, purpose, status }`).
+    pub async fn cred_vault_receive(
+        &self,
+        credential: Value,
+        id: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "credential": credential });
+        if let Some(id) = id
+            && let Some(obj) = payload.as_object_mut()
+        {
+            obj.insert("id".to_string(), json!(id));
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VAULT_CREDENTIALS_RECEIVE_0_1,
+            payload,
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vault/credentials/query/0.1` — filtered search over held credentials.
+    /// Requires `VaultRead`. `filter` is a DCQL-shaped object (at least one of
+    /// `type`, `communityDid`, `issuerDid`, `purpose`, `status`); an unfiltered
+    /// query is refused. Returns `{ credentials: [descriptor] }`.
+    pub async fn cred_vault_query(&self, filter: Value) -> Result<Value, VtaError> {
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1,
+            filter,
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `vault/credentials/get/0.1` — fetch one held credential's full body by
+    /// id, for presentation. Requires `VaultRead`. Returns `{ credential }`.
+    pub async fn cred_vault_get(&self, id: &str) -> Result<Value, VtaError> {
+        self.dispatch_trust_task(
+            trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1,
+            json!({ "id": id }),
+            VAULT_TT_TIMEOUT,
+        )
+        .await
+    }
 }

@@ -102,12 +102,20 @@ OpenVTC (`vic-join` worktree):
 - `--invitation <file>` CLI arg → threaded into the join flow, replacing the VP
   stub; entry-page indicator + submit-time progress message.
 
+## VTA credential vault (the VIC can live in the VTA)
+
+The holder's VIC can be stored in and retrieved from the VTA credential vault via
+a Trust-Task slice (`vault/credentials/{receive,query,get}/0.1`):
+- `vta-service/src/trust_tasks/cred_vault.rs` — receive (verify + store, resolving
+  the issuer key), query (DCQL-shaped, no-enumeration), get (full body).
+- `vta-sdk` client: `cred_vault_receive` / `cred_vault_query` / `cred_vault_get`.
+- A stored VIC is findable by `purpose = invite` (inferred from its type).
+
+OpenVTC could store a received VIC here and load it at join time instead of the
+`--invitation <file>` path (a follow-up wiring on the OpenVTC side).
+
 ## Not done (deliberately deferred)
 
-- **#8 VTA credential-vault route + SDK** — so the holder's VIC lives in the VTA
-  vault (`vta-service/src/vault/`, `CredentialPurpose::Invite`) instead of a file.
-  The vault data plane exists; only the route + `vta-sdk` method are missing.
-  Optional for this demo (the `--invitation` file path covers it).
 - **M2 third-party trusted issuer** — the trust-resolution layer is already
   wired (`invitation_issuer_trusted` consults the registry); M2 just needs the
   operator-facing trusted-invitation-issuer config surfaced.

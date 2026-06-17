@@ -50,6 +50,7 @@ mod auth;
 mod backup;
 mod config;
 mod contexts;
+mod cred_vault;
 mod credential_exchange;
 mod device;
 mod did_templates;
@@ -437,6 +438,10 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => vault::handle_release,
     vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => vault::handle_proxy_login,
     vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => vault::handle_sign_trust_task,
+
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_RECEIVE_0_1 => cred_vault::handle_receive,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1 => cred_vault::handle_query,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get,
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get,
     vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update,

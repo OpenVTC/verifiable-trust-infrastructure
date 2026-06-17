@@ -439,6 +439,29 @@ pub const TASK_VAULT_SIGN_TRUST_TASK_0_1: &str =
 pub const TASK_VAULT_SIGN_TRUST_TASK_0_2: &str =
     "https://trusttasks.org/spec/vault/sign-trust-task/0.2";
 
+// ─── Credential-vault slice (spec/vault/credentials/*) ───────────────────
+//
+// The VTA's *credential* vault — the W3C / SD-JWT-VC credentials a holder
+// holds (invitations, memberships, roles, …), distinct from the
+// password-manager vault above (same keyspace, disjoint `cred:` namespace).
+// Receive verifies + stores; query is a DCQL-shaped filtered search
+// (no-enumeration); get fetches one credential's body for presentation.
+
+/// `spec/vault/credentials/receive/0.1` — verify + store a received credential
+/// (requires `VaultWrite`).
+pub const TASK_VAULT_CREDENTIALS_RECEIVE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/receive/0.1";
+
+/// `spec/vault/credentials/query/0.1` — filtered (DCQL-shaped) search returning
+/// body-free descriptors (requires `VaultRead`).
+pub const TASK_VAULT_CREDENTIALS_QUERY_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/query/0.1";
+
+/// `spec/vault/credentials/get/0.1` — fetch one stored credential's full body by
+/// id, for presentation (requires `VaultRead`).
+pub const TASK_VAULT_CREDENTIALS_GET_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/get/0.1";
+
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
 // Canonical Trust Tasks for DID + domain + server + registry management
