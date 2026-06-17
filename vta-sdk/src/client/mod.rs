@@ -750,6 +750,41 @@ impl VtaClient {
         }
     }
 
+    /// Send a one-way (fire-and-forget) DIDComm message of `msg_type` to
+    /// `recipient_did` and return as soon as the mediator accepts it — no
+    /// response is awaited and the body is **not** wrapped in a trust-task
+    /// envelope.
+    ///
+    /// This is the send-side counterpart to [`Self::receive_next`], for
+    /// asynchronous peer-to-peer data planes (e.g. `vti-message-bridge`'s
+    /// agent ⇄ bridge chat messages) where the traffic is one-way, not RPC.
+    /// The message is authcrypt-packed with this client's own keys, so the
+    /// recipient unpacks a cryptographically-authenticated sender DID. Safe to
+    /// call concurrently with a `receive_next` loop — it never touches the
+    /// inbound live stream. See issue #502.
+    ///
+    /// DIDComm-only — a REST client holds no key material to authcrypt with and
+    /// gets a clear [`VtaError::UnsupportedTransport`].
+    #[cfg_attr(not(feature = "session"), allow(unused_variables))]
+    pub async fn send_message(
+        &self,
+        recipient_did: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+    ) -> Result<(), VtaError> {
+        match &self.transport {
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => {
+                session.send_one_way(recipient_did, msg_type, body).await
+            }
+            Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
+                "one-way DIDComm send requires the DIDComm transport \
+                 (REST clients hold no key material to authcrypt with)"
+                    .into(),
+            )),
+        }
+    }
+
     /// Resolve an **arbitrary** DID to its DID document JSON, via the shared
     /// DID-resolver cache (`affinidi-did-resolver-cache-sdk`). Independent of
     /// this client's auth/transport — pure resolution. Requires the `didcomm`

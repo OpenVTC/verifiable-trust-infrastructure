@@ -266,6 +266,97 @@ impl DIDCommSession {
         Ok(msg.body)
     }
 
+    /// Pack `body` as an authcrypt DIDComm message of `msg_type` from this
+    /// session to `recipient_did`, wrap it in a `routing/2.0/forward` envelope,
+    /// and ship it through the mediator. Returns once the mediator has accepted
+    /// the forward — it does **not** consume the inbound live stream, so it is
+    /// safe to call concurrently with [`receive_next`](Self::receive_next) /
+    /// [`send_and_wait`](Self::send_and_wait) without racing on inbound
+    /// messages.
+    ///
+    /// Shared by [`send_and_wait`](Self::send_and_wait) (which then waits on the
+    /// live stream for `msg_id`'s response) and
+    /// [`send_one_way`](Self::send_one_way) (which returns immediately). Strict
+    /// mediators (`local_direct_delivery_allowed: false`) refuse direct
+    /// delivery — this is the same `forward_and_send_message` path the
+    /// production VTA-side `affinidi-messaging-didcomm-service` takes.
+    async fn pack_and_forward(
+        &self,
+        recipient_did: &str,
+        msg_id: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+    ) -> Result<(), VtaError> {
+        let msg = Message::build(msg_id.to_string(), msg_type.to_string(), body)
+            .from(self.client_did.clone())
+            .to(recipient_did.to_string())
+            .finalize();
+
+        // Pack encrypted (signed + encrypted to recipient)
+        let (packed, _) = self
+            .atm
+            .pack_encrypted(
+                &msg,
+                recipient_did,
+                Some(&self.client_did),
+                Some(&self.client_did),
+            )
+            .await
+            .map_err(|e| VtaError::DidcommTransport(format!("failed to pack message: {e}")))?;
+
+        debug!(msg_type, msg_id, recipient_did, "sending via DIDComm");
+
+        let mediator_did = self
+            .profile
+            .inner
+            .mediator
+            .as_ref()
+            .as_ref()
+            .map(|m| m.did.clone())
+            .ok_or_else(|| {
+                VtaError::DidcommTransport("no mediator configured on profile".into())
+            })?;
+
+        self.atm
+            .forward_and_send_message(
+                &self.profile,
+                false, // authcrypt the forward envelope (mediator policy)
+                &packed,
+                Some(msg_id),
+                &mediator_did,
+                recipient_did,
+                None,
+                None,
+                false,
+            )
+            .await
+            .map_err(|e| VtaError::DidcommTransport(format!("failed to send message: {e}")))?;
+        Ok(())
+    }
+
+    /// Send a one-way (fire-and-forget) DIDComm message to `recipient_did` and
+    /// return as soon as the mediator accepts it — **no** response is awaited.
+    ///
+    /// This is the unsolicited-send counterpart to
+    /// [`receive_next`](Self::receive_next): the message is authcrypt-packed
+    /// with this session's own keys (so the recipient unpacks a
+    /// cryptographically-authenticated sender DID) and forwarded via the
+    /// mediator, exactly as [`send_and_wait`](Self::send_and_wait) does, minus
+    /// the response wait and minus the trust-task envelope. Because it never
+    /// touches the inbound live stream it is safe to call concurrently with a
+    /// `receive_next` loop (e.g. an async peer-to-peer data plane). See
+    /// issue #502.
+    pub async fn send_one_way(
+        &self,
+        recipient_did: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+    ) -> Result<(), VtaError> {
+        let msg_id = uuid::Uuid::new_v4().to_string();
+        self.pack_and_forward(recipient_did, &msg_id, msg_type, body)
+            .await
+    }
+
     /// Send a DIDComm message and wait for a matching response.
     ///
     /// Packs the message, sends it to the mediator, then uses the WebSocket
@@ -283,55 +374,10 @@ impl DIDCommSession {
         timeout_secs: u64,
     ) -> Result<T, VtaError> {
         let msg_id = uuid::Uuid::new_v4().to_string();
-        let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
-            .from(self.client_did.clone())
-            .to(self.vta_did.clone())
-            .finalize();
-
-        // Pack encrypted (signed + encrypted to recipient)
-        let (packed, _) = self
-            .atm
-            .pack_encrypted(
-                &msg,
-                &self.vta_did,
-                Some(&self.client_did),
-                Some(&self.client_did),
-            )
-            .await
-            .map_err(|e| VtaError::DidcommTransport(format!("failed to pack message: {e}")))?;
-
-        debug!(msg_type, msg_id, "sending via DIDComm");
-
-        // Wrap the inner JWE in a `routing/2.0/forward` envelope addressed
-        // to the mediator and ship it. Strict mediators
-        // (`local_direct_delivery_allowed: false`) refuse direct delivery
-        // — same path the production VTA-side `affinidi-messaging-didcomm-service`
-        // takes via `forward_and_send_message`.
-        let mediator_did = self
-            .profile
-            .inner
-            .mediator
-            .as_ref()
-            .as_ref()
-            .map(|m| m.did.clone())
-            .ok_or_else(|| {
-                VtaError::DidcommTransport("no mediator configured on profile".into())
-            })?;
-
-        self.atm
-            .forward_and_send_message(
-                &self.profile,
-                false, // authcrypt the forward envelope (mediator policy)
-                &packed,
-                Some(&msg_id),
-                &mediator_did,
-                &self.vta_did,
-                None,
-                None,
-                false,
-            )
-            .await
-            .map_err(|e| VtaError::DidcommTransport(format!("failed to send message: {e}")))?;
+        // Pack + forward through the mediator (to the VTA). The reply is
+        // matched on the live stream below by `thid == msg_id`.
+        self.pack_and_forward(&self.vta_did, &msg_id, msg_type, body)
+            .await?;
 
         // Wait for the response via WebSocket live stream
         let timeout = std::time::Duration::from_secs(timeout_secs);
