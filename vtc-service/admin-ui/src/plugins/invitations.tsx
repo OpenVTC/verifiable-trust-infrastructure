@@ -20,10 +20,11 @@ import {
 import { CopyButton } from "@/components/CopyButton";
 import { useToast } from "@/lib/toast";
 
-/// Above this size a QR code becomes unscannable in practice; a full signed VC
-/// usually exceeds it, so we render the QR only when it fits and always offer
-/// copy + download.
-const QR_MAX_CHARS = 1200;
+/// QR capacity ceiling: a version-40 QR at error-correction level L holds
+/// ~2,953 bytes. A signed VIC is typically ~1.5–2.5 KB, so it usually fits; we
+/// still offer copy + download, and fall back to those for the rare VIC that
+/// exceeds the QR limit.
+const QR_MAX_CHARS = 2900;
 
 export function Invitations() {
   const toast = useToast();
@@ -241,11 +242,20 @@ function VicQr({ text }: { text: string }) {
       return;
     }
     import("qrcode")
-      .then((qr) => qr.toDataURL(text, { margin: 1, width: 240 }))
+      // Level L (lowest EC) maximises payload capacity so a full VIC fits; the
+      // larger render size keeps the denser code scannable.
+      .then((qr) =>
+        qr.toDataURL(text, {
+          margin: 1,
+          width: 360,
+          errorCorrectionLevel: "L",
+        }),
+      )
       .then((url) => {
         if (!cancelled) setDataUrl(url);
       })
       .catch(() => {
+        // Exceeds even a version-40 QR — fall back to copy / download.
         if (!cancelled) setDataUrl(null);
       });
     return () => {
