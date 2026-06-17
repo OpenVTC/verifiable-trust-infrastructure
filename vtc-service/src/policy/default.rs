@@ -539,6 +539,84 @@ mod tests {
     }
 
     #[test]
+    fn join_default_admits_on_valid_invitation() {
+        // A verified, trusted, unconsumed invitation (VIC) auto-admits as a
+        // member — no presented credential needed.
+        let c = compile_default(PolicyPurpose::Join);
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "invitation": {
+                        "verified": true,
+                        "issuer": "did:webvh:acme.example",
+                        "issuer_trusted": true,
+                        "consumed": false
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "allow", "with": { "role": "member" } })),
+        );
+    }
+
+    #[test]
+    fn join_default_refers_on_consumed_invitation() {
+        // A single-use invitation already redeemed is not a valid admit signal
+        // → falls through to moderator review.
+        let c = compile_default(PolicyPurpose::Join);
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "invitation": {
+                        "verified": true,
+                        "issuer": "did:webvh:acme.example",
+                        "issuer_trusted": true,
+                        "consumed": true
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
+        );
+    }
+
+    #[test]
+    fn join_default_refers_on_untrusted_invitation_issuer() {
+        // A genuinely-verified invitation from an untrusted issuer does not
+        // auto-admit — it is referred for human review.
+        let c = compile_default(PolicyPurpose::Join);
+        let r = evaluate(
+            &c,
+            "data.vtc.join.decision",
+            json!({
+                "evidence": {
+                    "invitation": {
+                        "verified": true,
+                        "issuer": "did:key:zStranger",
+                        "issuer_trusted": false,
+                        "consumed": false
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            r.pointer("/result/0/expressions/0/value"),
+            Some(&json!({ "effect": "refer", "with": { "queue": "moderator" } })),
+        );
+    }
+
+    #[test]
     fn join_default_refers_without_trusted_credential() {
         // No trusted credential → referred to the moderator queue
         // (the request lands Pending for admin review).

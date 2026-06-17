@@ -203,6 +203,7 @@ mod tests {
             personhood_asserted_at: None,
             reciprocal_vc_id: None,
             accepted_at: None,
+            joined_via_invitation: false,
         };
         let json = serde_json::to_value(&m).unwrap();
         assert!(json["joinedAt"].is_string());
@@ -234,6 +235,7 @@ mod tests {
             personhood_asserted_at: Some(now),
             reciprocal_vc_id: None,
             accepted_at: None,
+            joined_via_invitation: false,
         };
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(json["personhood"], true);

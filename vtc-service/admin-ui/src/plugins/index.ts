@@ -19,6 +19,7 @@ import {
   ShieldCheck,
   Smartphone,
   Tag,
+  Ticket,
   Users,
   Workflow,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import { Acl } from "@/plugins/acl";
 import { Audit } from "@/plugins/audit";
 import { Ceremonies } from "@/plugins/ceremonies";
 import { Dashboard } from "@/plugins/dashboard";
+import { Invitations } from "@/plugins/invitations";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
@@ -57,6 +59,14 @@ export function registerBuiltinPlugins(): void {
     path: "/join-requests",
     iconComponent: Inbox,
     reactComponent: JoinRequests,
+  });
+
+  registerPlugin({
+    id: "invitations",
+    label: "Invitations",
+    path: "/invitations",
+    iconComponent: Ticket,
+    reactComponent: Invitations,
   });
 
   registerPlugin({

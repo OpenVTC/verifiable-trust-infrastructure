@@ -53,6 +53,7 @@ endorsement_count := count([c |
 
 has_valid_invitation if {
 	input.evidence.invitation.verified
+	input.evidence.invitation.issuer_trusted
 	not input.evidence.invitation.consumed
 }
 

@@ -50,6 +50,11 @@ pub struct MemberResponse {
     /// `personhood` flag.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub personhood_asserted_at: Option<DateTime<Utc>>,
+    /// Whether the member auto-joined by presenting a verified
+    /// Invitation Credential (VIC). Surfaced so the admin UI can
+    /// badge invitation-joined members.
+    #[serde(default)]
+    pub joined_via_invitation: bool,
 }
 
 impl MemberResponse {
@@ -71,6 +76,7 @@ impl MemberResponse {
             extensions: member.extensions,
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,
+            joined_via_invitation: member.joined_via_invitation,
         }
     }
 }

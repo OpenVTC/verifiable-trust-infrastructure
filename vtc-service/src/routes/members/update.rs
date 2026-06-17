@@ -182,6 +182,7 @@ impl MemberResponse {
             extensions: member.extensions,
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,
+            joined_via_invitation: member.joined_via_invitation,
         }
     }
 }

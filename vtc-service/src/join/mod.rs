@@ -18,6 +18,9 @@ pub mod orchestrate;
 pub mod retention;
 pub mod storage;
 
+#[cfg(test)]
+mod invitation_e2e_test;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;

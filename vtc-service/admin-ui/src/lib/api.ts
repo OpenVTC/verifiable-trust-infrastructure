@@ -232,6 +232,32 @@ export const fetchWhoami = (): Promise<WhoamiResponse> =>
 export const signOut = (): Promise<void> =>
   postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
 
+// ---------------------------------------------------------------------------
+// Invitations — issue a VIC for a prospective member (operator side of the
+// VIC auto-join ceremony).
+// ---------------------------------------------------------------------------
+
+const ISSUE_INVITATION_TASK =
+  "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
+
+export interface IssueInvitationResponse {
+  subjectDid: string;
+  validUntil?: string;
+  /** The signed Invitation Credential — handed to the invitee out-of-band. */
+  vic: unknown;
+}
+
+/** Issue an Invitation Credential bound to `subjectDid`. */
+export const issueInvitation = (
+  subjectDid: string,
+  validityDays?: number,
+): Promise<IssueInvitationResponse> =>
+  postJson<IssueInvitationResponse>(
+    "/v1/invitations",
+    validityDays === undefined ? { subjectDid } : { subjectDid, validityDays },
+    { trustTask: ISSUE_INVITATION_TASK },
+  );
+
 /** Probe: returns the whoami response when signed in, null when not. */
 export async function probeSession(): Promise<WhoamiResponse | null> {
   try {

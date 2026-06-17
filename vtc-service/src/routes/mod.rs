@@ -14,6 +14,7 @@ mod endorsement_types;
 mod endorsements;
 mod health;
 pub(crate) mod install;
+mod invitations;
 pub mod join_requests;
 pub(crate) mod members;
 pub(crate) mod policies;
@@ -595,6 +596,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             // layer pending per-method selectors; standalone
             // `list/1.0` exists on disk + in index.json.
             "https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0",
+        ))
+        // Invitation Credential (VIC) issuance — the operator side of the
+        // VIC auto-join ceremony. Admin / Moderator / Issuer.
+        .routes(tt(
+            routes!(invitations::issue),
+            "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0",
         ))
         .routes(tt(
             routes!(endorsements::show, endorsements::revoke), // GET + DELETE share `show/1.0` at the router

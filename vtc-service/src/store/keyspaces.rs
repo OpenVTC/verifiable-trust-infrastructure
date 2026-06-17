@@ -32,6 +32,10 @@ pub const SCHEMAS: &str = "schemas";
 pub const ENDORSEMENTS: &str = "endorsements";
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
+/// Single-use ledger for redeemed Invitation Credentials (VICs): one
+/// row per consumed VIC `id`, written when a VIC-driven join is
+/// admitted. Read at verify time to set `Invitation.consumed`.
+pub const CONSUMED_INVITATIONS: &str = "consumed_invitations";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -58,6 +62,7 @@ pub const ALL: &[&str] = &[
     ENDORSEMENTS,
     AUDIT,
     AUDIT_KEY,
+    CONSUMED_INVITATIONS,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -84,6 +89,9 @@ pub const BACKED_UP: &[&str] = &[
     ENDORSEMENTS,
     AUDIT,
     AUDIT_KEY,
+    // A consumed VIC must stay consumed across a restore, else a
+    // restored community could re-redeem a single-use invitation.
+    CONSUMED_INVITATIONS,
 ];
 
 /// Keyspaces deliberately omitted from backup (P3.9): ephemeral auth,
@@ -110,7 +118,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 21, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 22, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

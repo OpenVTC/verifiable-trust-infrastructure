@@ -17,6 +17,7 @@ import {
   ArrowRight,
   Check,
   Minus,
+  Ticket,
   Users as UsersIcon,
 } from "lucide-react";
 
@@ -53,6 +54,7 @@ interface MemberRow {
   extensions: unknown;
   personhood: boolean;
   personhoodAssertedAt: string | null;
+  joinedViaInvitation: boolean;
 }
 
 interface MembersPage {
@@ -225,6 +227,15 @@ function MembersList() {
                   <Link to={encodeURIComponent(m.did)}>
                     <code className="truncate">{m.did}</code>
                   </Link>
+                  {m.joinedViaInvitation && (
+                    <Ticket
+                      size={14}
+                      strokeWidth={1.75}
+                      aria-label="Joined via invitation"
+                      className="status-icon ok"
+                      style={{ marginLeft: 6, verticalAlign: "middle" }}
+                    />
+                  )}
                 </td>
                 <td>
                   <code>{m.role}</code>

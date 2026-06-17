@@ -109,6 +109,14 @@ pub struct Member {
     /// [`Self::reciprocal_vc_id`]; `None` until accept.
     #[serde(default)]
     pub accepted_at: Option<DateTime<Utc>>,
+    /// Whether this member auto-joined by presenting a verified
+    /// Invitation Credential (VIC). Set at admit time on the
+    /// invitation path; surfaced in the admin UI as a "joined via
+    /// invitation" badge. `#[serde(default)]` keeps pre-existing
+    /// member rows (written before this field) deserialising as
+    /// `false`.
+    #[serde(default)]
+    pub joined_via_invitation: bool,
 }
 
 impl Member {
@@ -135,6 +143,7 @@ impl Member {
             personhood_asserted_at: None,
             reciprocal_vc_id: None,
             accepted_at: None,
+            joined_via_invitation: false,
         }
     }
 

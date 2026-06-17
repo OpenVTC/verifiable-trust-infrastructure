@@ -23,9 +23,13 @@ use vti_common::audit::{
 use vti_common::error::AppError;
 
 use crate::ceremony::execute::{self, AdmitOutcome, top_level_id};
+use crate::ceremony::facts::Invitation;
 use crate::ceremony::{
     Credential, CredentialStatus, EffectOutcome, EffectPlan, Evidence, Facts, FactsInputs,
     Presentation, Purpose, Verdict, VerifiedFacts, assemble_facts,
+};
+use crate::credentials::invitation_verify::{
+    ConsumedInvitation, mark_consumed, verify_presented_invitation,
 };
 use crate::credentials::vec::VEC_TYPE;
 use crate::credentials::vmc::VMC_TYPE;
@@ -135,12 +139,33 @@ pub async fn submit_inner(
     // reads structured Facts instead (assembled below).
     let vp_claims = extract_vp_claims(&vp);
 
-    // 4. Decide: assemble verified Facts (the route-layer holder-binding
+    // 4. Invitation (VIC): if the VP carries an InvitationCredential, verify it
+    // (proof + holder-binding + validity + revocation). A present-but-invalid
+    // invitation is a hard Forbidden here, before policy. A verified invitation
+    // becomes a policy fact, with `consumed` resolved from the single-use ledger
+    // so the policy (`has_valid_invitation`) can reject a redeemed invite. The
+    // VIC `id` is kept so an auto-admit can burn it (step 6).
+    let invitation_fact = match verify_presented_invitation(state, &applicant_did, &vp).await? {
+        Some(vi) => {
+            let consumed = crate::credentials::invitation_verify::is_consumed(
+                &state.consumed_invitations_ks,
+                &vi.id,
+            )
+            .await?;
+            Some((vi.id.clone(), vi.to_fact(consumed)))
+        }
+        None => None,
+    };
+    let consume_invitation_id = invitation_fact.as_ref().map(|(id, _)| id.clone());
+    let invitation = invitation_fact.map(|(_, fact)| fact);
+
+    // 5. Decide: assemble verified Facts (the route-layer holder-binding
     // makes this presentation `verified`) and run the active join policy.
     let presentation = presentation_from_vp(&applicant_did, &vp);
-    let verdict = decide_join(state, &applicant_did, presentation).await?;
+    let verdict = decide_join(state, &applicant_did, presentation, invitation).await?;
 
-    // 5. Realize the verdict (store + audit + auto-admit on allow).
+    // 6. Realize the verdict (store + audit + auto-admit on allow). On an
+    // invitation-driven admit the VIC is burned in the single-use ledger.
     realize_join_verdict(
         state,
         &applicant_did,
@@ -150,6 +175,7 @@ pub async fn submit_inner(
         extensions,
         verdict,
         transport,
+        consume_invitation_id,
     )
     .await
 }
@@ -163,8 +189,9 @@ pub async fn decide_join(
     state: &AppState,
     applicant_did: &str,
     presentation: Presentation,
+    invitation: Option<Invitation>,
 ) -> Result<Verdict, AppError> {
-    let facts = assemble_join_facts(state, applicant_did, presentation).await?;
+    let facts = assemble_join_facts(state, applicant_did, presentation, invitation).await?;
     let verified = VerifiedFacts::assemble(facts)?;
     let policy = load_active_compiled(
         &state.active_policies_ks,
@@ -188,6 +215,7 @@ pub async fn realize_join_verdict(
     extensions: JsonValue,
     verdict: Verdict,
     transport: JoinTransport,
+    consume_invitation_id: Option<String>,
 ) -> Result<JoinSubmitOutcome, AppError> {
     let audit_writer = state
         .audit_writer
@@ -251,6 +279,58 @@ pub async fn realize_join_verdict(
                 )
                 .await?;
                 admit = Some(creds);
+
+                // Burn a single-use invitation now that the admit succeeded. The
+                // `consumed` ledger row blocks a later re-redeem (e.g. re-join
+                // after leaving); best-effort — the member is already admitted,
+                // so a ledger write failure is logged, not fatal.
+                if let Some(vic_id) = consume_invitation_id.as_deref() {
+                    let record = ConsumedInvitation {
+                        applicant: applicant_did.to_string(),
+                        consumed_at: chrono::Utc::now(),
+                        via_join_request_id: request.id.to_string(),
+                    };
+                    match mark_consumed(&state.consumed_invitations_ks, vic_id, &record).await {
+                        Ok(true) => {}
+                        Ok(false) => warn!(
+                            vic_id = %vic_id,
+                            applicant = %applicant_did,
+                            "invitation was already consumed at admit time (concurrent redeem)",
+                        ),
+                        Err(e) => warn!(
+                            vic_id = %vic_id,
+                            error = %e,
+                            "failed to record invitation consumption; member admitted",
+                        ),
+                    }
+
+                    // Flag the freshly-admitted member as invitation-joined so
+                    // the admin UI can badge them. Best-effort metadata patch —
+                    // the member + credentials already exist.
+                    match crate::members::get_member(&state.members_ks, applicant_did).await {
+                        Ok(Some(mut m)) => {
+                            m.joined_via_invitation = true;
+                            if let Err(e) =
+                                crate::members::store_member(&state.members_ks, &m).await
+                            {
+                                warn!(
+                                    applicant = %applicant_did,
+                                    error = %e,
+                                    "failed to flag member joined_via_invitation",
+                                );
+                            }
+                        }
+                        Ok(None) => warn!(
+                            applicant = %applicant_did,
+                            "admitted member row missing when flagging joined_via_invitation",
+                        ),
+                        Err(e) => warn!(
+                            applicant = %applicant_did,
+                            error = %e,
+                            "failed to load member to flag joined_via_invitation",
+                        ),
+                    }
+                }
             }
             request.status = JoinStatus::Approved;
         }
@@ -312,10 +392,13 @@ async fn assemble_join_facts(
     state: &AppState,
     applicant_did: &str,
     presentation: Presentation,
+    invitation: Option<Invitation>,
 ) -> Result<Facts, AppError> {
     // The applicant proved holder-binding (route-layer for the VP path,
     // cryptographic kb-jwt for the credential-exchange path) but is not (yet) a
-    // member, so they carry no community role and no subject member-state.
+    // member, so they carry no community role and no subject member-state. The
+    // `invitation` slot is populated when the applicant presented a verified VIC
+    // (see `verify_presented_invitation`); the policy decides over it.
     assemble_facts(
         state,
         FactsInputs {
@@ -325,7 +408,7 @@ async fn assemble_join_facts(
             subject_did: applicant_did.to_string(),
             subject_member: None,
             evidence: Evidence {
-                invitation: None,
+                invitation,
                 presentation: Some(presentation),
                 request: None,
             },

@@ -82,8 +82,10 @@ pub async fn present_and_decide_join(
     //    each issuer's trust via TRQP against the community's recognition graph.
     let presentation = presentation_from_verified_set(state, &set).await;
 
-    // 3 + 4. Decide under the active join policy, then realize the verdict.
-    let verdict = decide_join(state, &applicant_did, presentation).await?;
+    // 3 + 4. Decide under the active join policy, then realize the verdict. The
+    // credential-exchange path carries no VIC (invitations ride the VP-submit
+    // path), so no invitation fact and nothing to consume.
+    let verdict = decide_join(state, &applicant_did, presentation, None).await?;
     let vp_claims = vp_claims_from_set(&set);
     realize_join_verdict(
         state,
@@ -94,6 +96,7 @@ pub async fn present_and_decide_join(
         JsonValue::Null,
         verdict,
         transport,
+        None,
     )
     .await
 }

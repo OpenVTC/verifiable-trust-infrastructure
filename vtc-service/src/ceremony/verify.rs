@@ -240,6 +240,7 @@ mod tests {
             verified: false,
             issuer: "did:webvh:acme.example".into(),
             issuer_role: Some("admin".into()),
+            issuer_trusted: true,
             scopes: vec![],
             consumed: false,
         });

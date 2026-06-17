@@ -216,6 +216,15 @@ pub struct Invitation {
     /// delegation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer_role: Option<String>,
+    /// Host verdict: does the community trust this issuer to issue
+    /// invitations. `true` when the issuer is the community itself
+    /// (self-issued) or a registry-recognised third party. The
+    /// compiled `has_valid_invitation` helper requires this, so a
+    /// genuinely-signed invite from an untrusted issuer is refused.
+    /// `#[serde(default)]` keeps pre-existing facts JSON (no
+    /// `issuer_trusted` key) deserialising as `false`.
+    #[serde(default)]
+    pub issuer_trusted: bool,
     /// Scopes the invitation authorizes (e.g. role bounds,
     /// single-context).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

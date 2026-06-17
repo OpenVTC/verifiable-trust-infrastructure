@@ -109,6 +109,10 @@ pub struct AppState {
     pub endorsements_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
+    /// Single-use ledger for redeemed Invitation Credentials (VICs).
+    /// Written when a VIC-driven join is admitted; read at verify
+    /// time so a consumed invite can't be replayed.
+    pub consumed_invitations_ks: KeyspaceHandle,
     /// Trust-registry client (Phase 3 M3.2). `None` when
     /// `config.registry.url` is unset — the daemon runs in
     /// "no-registry" mode and `registry_health.status()` stays
@@ -300,6 +304,7 @@ pub async fn run(
     let endorsements_ks = store.keyspace(keyspaces::ENDORSEMENTS)?;
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
+    let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
 
     // M2.5: install the workspace-shipped default policies for any
     // PolicyPurpose that lacks an active row. Idempotent — operator
@@ -514,6 +519,7 @@ pub async fn run(
         endorsements_ks,
         audit_ks,
         audit_key_ks,
+        consumed_invitations_ks,
         registry_client: registry_client.clone(),
         registry_health: registry_health.clone(),
         syncer_health: crate::registry::SyncerHealth::new(),
