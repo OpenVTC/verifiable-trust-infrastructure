@@ -2,6 +2,7 @@ pub mod acl;
 pub mod audit;
 pub mod auth;
 pub mod config;
+pub mod consent;
 pub mod context_path;
 pub mod error;
 pub mod idempotency;
