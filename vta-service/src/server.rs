@@ -118,6 +118,8 @@ pub struct AppState {
     pub passkey_vms_ks: KeyspaceHandle,
     /// Inbound-messaging consent store (grants + pending requests).
     pub consent_ks: KeyspaceHandle,
+    /// Per-(platform, context) approver bindings for consent routing.
+    pub consent_approvers_ks: KeyspaceHandle,
     /// Persisted drain set for the protocol-management feature
     /// (`docs/05-design-notes/didcomm-protocol-management.md`).
     /// Keyed by mediator DID; replayed at boot.
@@ -298,6 +300,8 @@ pub async fn build_app_state(
     #[cfg(feature = "webvh")]
     let passkey_vms_ks = apply_encryption(store.keyspace(crate::keyspaces::PASSKEY_VMS)?);
     let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
+    let consent_approvers_ks =
+        apply_encryption(store.keyspace(crate::keyspaces::CONSENT_APPROVERS)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -352,6 +356,7 @@ pub async fn build_app_state(
         #[cfg(feature = "webvh")]
         passkey_vms_ks,
         consent_ks,
+        consent_approvers_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
         #[cfg(feature = "webvh")]

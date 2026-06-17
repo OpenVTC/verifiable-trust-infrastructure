@@ -126,4 +126,56 @@ impl VtaClient {
         )
         .await
     }
+
+    /// `consent/approver-set/1.0` — bind the operator who approves consent for
+    /// `platform` within `context`, and how the prompt routes (`route` is
+    /// `"wake"` or `"bridge-relay"`). Admin-gated.
+    pub async fn consent_approver_set(
+        &self,
+        platform: &str,
+        context: &str,
+        approver: &str,
+        route: Option<&str>,
+        route_hint: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({
+            "platform": platform,
+            "context": context,
+            "approver": approver,
+        });
+        if let Some(r) = route {
+            payload["route"] = json!(r);
+        }
+        if let Some(h) = route_hint {
+            payload["routeHint"] = json!(h);
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_CONSENT_APPROVER_SET_1_0,
+            payload,
+            CONSENT_TT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// `consent/approver-list/1.0` — read the approver bindings, optionally
+    /// filtered by `platform` / `context`.
+    pub async fn consent_approver_list(
+        &self,
+        platform: Option<&str>,
+        context: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({});
+        if let Some(p) = platform {
+            payload["platform"] = json!(p);
+        }
+        if let Some(c) = context {
+            payload["context"] = json!(c);
+        }
+        self.dispatch_trust_task(
+            trust_tasks::TASK_CONSENT_APPROVER_LIST_1_0,
+            payload,
+            CONSENT_TT_TIMEOUT,
+        )
+        .await
+    }
 }

@@ -394,6 +394,8 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_CONSENT_DECISION_1_0 => consent::handle_decision,
     vta_sdk::trust_tasks::TASK_CONSENT_REVOKE_1_0 => consent::handle_revoke,
     vta_sdk::trust_tasks::TASK_CONSENT_LIST_1_0 => consent::handle_list,
+    vta_sdk::trust_tasks::TASK_CONSENT_APPROVER_SET_1_0 => consent::handle_approver_set,
+    vta_sdk::trust_tasks::TASK_CONSENT_APPROVER_LIST_1_0 => consent::handle_approver_list,
     // ─── ACL slice ────────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list,
     vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => acl::handle_create,

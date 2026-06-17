@@ -7,9 +7,11 @@
 //! (`consent/revoke`). See the `consent/*` family in the dtgwg registry and
 //! `vti_common::consent`.
 //!
-//! Auth (approach A): the approver is a **context admin** (the operator), or the
-//! **enrolled bridge** relaying the operator's out-of-band choice
-//! (bridge-attested). A per-platform approver registry is a follow-up.
+//! Auth: the approver is the operator **bound for the (platform, context)** in
+//! the approver registry (`consent/approver-set`), or the **enrolled bridge**
+//! relaying the operator's out-of-band choice (bridge-attested). With no binding
+//! configured, `consent/request` is default-denied (`noApprover`) and a context
+//! admin is the fallback decider.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,9 +20,10 @@ use uuid::Uuid;
 
 use vti_common::auth::session::now_epoch;
 use vti_common::consent::{
-    ConsentEffect, ConsentGrant, ConsentKind, ConsentScope, ConsentSubject, ConsumeConsent,
-    consume_pending_consent, delete_consent_grant, get_consent_grant, list_consent_grants,
-    new_pending_consent, store_consent_grant, store_pending_consent,
+    ApproverBinding, ConsentEffect, ConsentGrant, ConsentKind, ConsentRoute, ConsentScope,
+    ConsentSubject, ConsumeConsent, consume_pending_consent, delete_consent_grant, get_approver,
+    get_consent_grant, list_approvers, list_consent_grants, new_pending_consent, store_approver,
+    store_consent_grant, store_pending_consent,
 };
 use vti_common::error::AppError;
 
@@ -136,6 +139,65 @@ struct ListResponse {
     grants: Vec<WireGrant>,
 }
 
+// Approver registry (Track A) wire shapes.
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproverSetPayload {
+    platform: String,
+    context: String,
+    approver: String,
+    #[serde(default)]
+    route: Option<ConsentRoute>,
+    #[serde(default)]
+    route_hint: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproverListPayload {
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireApprover {
+    platform: String,
+    context: String,
+    approver: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route: Option<ConsentRoute>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_hint: Option<String>,
+}
+
+impl From<ApproverBinding> for WireApprover {
+    fn from(b: ApproverBinding) -> Self {
+        WireApprover {
+            platform: b.platform,
+            context: b.context,
+            approver: b.approver,
+            route: b.route,
+            route_hint: b.route_hint,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproverSetResponse {
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproverListResponse {
+    approvers: Vec<WireApprover>,
+}
+
 fn epoch_to_rfc3339(secs: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
         .unwrap_or_default()
@@ -201,6 +263,34 @@ pub(super) async fn handle_request(
     let context = payload
         .context_hint
         .or_else(|| auth.default_context().map(str::to_string));
+
+    // Resolve the approver for (platform, context). Default-deny: with no
+    // approver bound, there is no one to route consent to → noApprover. Operators
+    // bind one via consent/approver-set.
+    match &context {
+        Some(ctx) => {
+            match get_approver(&state.consent_approvers_ks, &subject.platform, ctx).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return app_error_to_reject(
+                        &doc,
+                        AppError::Forbidden(
+                            "consent/request: no approver configured for this platform/context"
+                                .into(),
+                        ),
+                    );
+                }
+                Err(e) => return app_error_to_reject(&doc, e),
+            }
+        }
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Forbidden("consent/request: no context to resolve an approver".into()),
+            );
+        }
+    }
+
     let pending = new_pending_consent(
         subject,
         payload.scope,
@@ -212,8 +302,6 @@ pub(super) async fn handle_request(
     if let Err(e) = store_pending_consent(&state.consent_ks, &pending).await {
         return app_error_to_reject(&doc, e);
     }
-    // NB (approach A): a context admin issues `consent/decision`; explicit
-    // operator-notification routing is a follow-up.
     success_response(
         &doc,
         AckResponse {
@@ -253,13 +341,31 @@ pub(super) async fn handle_decision(
                 }
                 let is_bridge = auth.did == p.requested_by;
                 if !is_bridge {
-                    if let Err(e) = auth.require_admin() {
-                        return app_error_to_reject(&doc, e);
-                    }
-                    if let Some(ctx) = &p.context
-                        && let Err(e) = auth.require_context(ctx)
-                    {
-                        return app_error_to_reject(&doc, e);
+                    // The issuer must be the approver bound for this
+                    // (platform, context); fall back to a context admin only
+                    // when no approver is configured.
+                    let ctx = p.context.clone().unwrap_or_default();
+                    match get_approver(&state.consent_approvers_ks, &subject.platform, &ctx).await {
+                        Ok(Some(b)) if b.approver == auth.did => {}
+                        Ok(Some(_)) => {
+                            return app_error_to_reject(
+                                &doc,
+                                AppError::Forbidden(
+                                    "consent/decision: issuer is not the bound approver".into(),
+                                ),
+                            );
+                        }
+                        Ok(None) => {
+                            if let Err(e) = auth.require_admin() {
+                                return app_error_to_reject(&doc, e);
+                            }
+                            if !ctx.is_empty()
+                                && let Err(e) = auth.require_context(&ctx)
+                            {
+                                return app_error_to_reject(&doc, e);
+                            }
+                        }
+                        Err(e) => return app_error_to_reject(&doc, e),
                     }
                 }
                 let evidence = if is_bridge {
@@ -390,6 +496,62 @@ pub(super) async fn handle_list(
     success_response(&doc, ListResponse { grants: wire })
 }
 
+/// `consent/approver-set/1.0` — an admin binds the approver for a
+/// (platform, context). Auth: admin of the context.
+pub(super) async fn handle_approver_set(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let payload: ApproverSetPayload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    if let Err(e) = auth.require_context(&payload.context) {
+        return app_error_to_reject(&doc, e);
+    }
+    let binding = ApproverBinding {
+        platform: payload.platform,
+        context: payload.context,
+        approver: payload.approver,
+        route: payload.route,
+        route_hint: payload.route_hint,
+    };
+    if let Err(e) = store_approver(&state.consent_approvers_ks, &binding).await {
+        return app_error_to_reject(&doc, e);
+    }
+    success_response(&doc, ApproverSetResponse { status: "set" })
+}
+
+/// `consent/approver-list/1.0` — read the approver bindings. Auth: read.
+pub(super) async fn handle_approver_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_read() {
+        return app_error_to_reject(&doc, e);
+    }
+    let payload: ApproverListPayload = match parse_payload(&doc) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let all = match list_approvers(&state.consent_approvers_ks).await {
+        Ok(v) => v,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    let approvers: Vec<WireApprover> = all
+        .into_iter()
+        .filter(|b| payload.platform.as_ref().is_none_or(|p| &b.platform == p))
+        .filter(|b| payload.context.as_ref().is_none_or(|c| &b.context == c))
+        .map(WireApprover::from)
+        .collect();
+    success_response(&doc, ApproverListResponse { approvers })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,5 +613,35 @@ mod tests {
         let s = epoch_to_rfc3339(1_700_000_000);
         assert_eq!(rfc3339_to_epoch(&s), Some(1_700_000_000));
         assert_eq!(rfc3339_to_epoch("not-a-date"), None);
+    }
+
+    #[test]
+    fn approver_set_payload_parses_wire_route() {
+        let v = serde_json::json!({
+            "platform": "signal",
+            "context": "ctx",
+            "approver": "did:web:op",
+            "route": "bridge-relay",
+            "routeHint": "sig-0a1b",
+        });
+        let p: ApproverSetPayload = serde_json::from_value(v).unwrap();
+        assert_eq!(p.route, Some(ConsentRoute::BridgeRelay));
+        assert_eq!(p.route_hint.as_deref(), Some("sig-0a1b"));
+    }
+
+    #[test]
+    fn wire_approver_serializes_camelcase_and_route() {
+        let b = ApproverBinding {
+            platform: "signal".into(),
+            context: "ctx".into(),
+            approver: "did:web:op".into(),
+            route: Some(ConsentRoute::Wake),
+            route_hint: None,
+        };
+        let v = serde_json::to_value(WireApprover::from(b)).unwrap();
+        assert_eq!(v["route"], "wake");
+        assert!(v.get("routeHint").is_none());
+        let list = serde_json::to_value(ApproverListResponse { approvers: vec![] }).unwrap();
+        assert_eq!(list["approvers"], serde_json::json!([]));
     }
 }

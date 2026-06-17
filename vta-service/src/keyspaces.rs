@@ -52,6 +52,9 @@ pub const BOOTSTRAP: &str = "bootstrap";
 /// Inbound-messaging consent: durable grants + TTL'd pending requests
 /// (`vti_common::consent`). The VTA is the first gate for bridged conversations.
 pub const CONSENT: &str = "consent";
+/// Per-(platform, context) approver bindings — who decides consent and how the
+/// prompt routes (`vti_common::consent::ApproverBinding`).
+pub const CONSENT_APPROVERS: &str = "consent_approvers";
 
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
@@ -76,11 +79,21 @@ pub const ALL: &[&str] = &[
     SNAPSHOT,
     BOOTSTRAP,
     CONSENT,
+    CONSENT_APPROVERS,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
 /// collections — see `operations::backup`).
-pub const BACKED_UP: &[&str] = &[KEYS, ACL, CONTEXTS, AUDIT, IMPORTED_SECRETS, WEBVH, CONSENT];
+pub const BACKED_UP: &[&str] = &[
+    KEYS,
+    ACL,
+    CONTEXTS,
+    AUDIT,
+    IMPORTED_SECRETS,
+    WEBVH,
+    CONSENT,
+    CONSENT_APPROVERS,
+];
 
 /// Keyspaces deliberately **not** in a backup.
 ///

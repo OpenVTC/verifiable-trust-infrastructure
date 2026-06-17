@@ -203,6 +203,84 @@ pub fn new_pending_consent(
     }
 }
 
+// ── Approver registry (Track A) ──────────────────────────────────────────────
+
+/// How a consent prompt reaches the approver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsentRoute {
+    /// Push to the approver's device for a DID-signed decision.
+    Wake,
+    /// Render through an enrolled bridge (e.g. a card in the operator's app) for
+    /// a bridge-attested decision.
+    BridgeRelay,
+}
+
+/// Who approves inbound-messaging consent for a platform within a context, and
+/// how the prompt reaches them. Keyed by `(platform, context)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApproverBinding {
+    pub platform: String,
+    pub context: String,
+    /// VID of the operator authorized to decide consent.
+    pub approver: String,
+    /// How to deliver the prompt; treated as `bridge-relay` when absent.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub route: Option<ConsentRoute>,
+    /// Optional routing detail — e.g. the operator's opaque conversationRef.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub route_hint: Option<String>,
+}
+
+impl ApproverBinding {
+    fn key(platform: &str, context: &str) -> String {
+        format!("approver:{platform}\u{1f}{context}")
+    }
+}
+
+/// Store (upsert) an approver binding keyed by `(platform, context)`.
+pub async fn store_approver(
+    ks: &KeyspaceHandle,
+    binding: &ApproverBinding,
+) -> Result<(), AppError> {
+    ks.insert(
+        ApproverBinding::key(&binding.platform, &binding.context),
+        binding,
+    )
+    .await
+}
+
+/// Resolve the approver bound for `(platform, context)`, if any.
+pub async fn get_approver(
+    ks: &KeyspaceHandle,
+    platform: &str,
+    context: &str,
+) -> Result<Option<ApproverBinding>, AppError> {
+    ks.get(ApproverBinding::key(platform, context)).await
+}
+
+/// Delete the binding for `(platform, context)`.
+pub async fn delete_approver(
+    ks: &KeyspaceHandle,
+    platform: &str,
+    context: &str,
+) -> Result<(), AppError> {
+    ks.remove(ApproverBinding::key(platform, context)).await
+}
+
+/// All approver bindings. Callers filter by platform / context in memory.
+pub async fn list_approvers(ks: &KeyspaceHandle) -> Result<Vec<ApproverBinding>, AppError> {
+    let rows = ks.prefix_iter_raw("approver:").await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (_key, value) in rows {
+        match serde_json::from_slice::<ApproverBinding>(&value) {
+            Ok(b) => out.push(b),
+            Err(e) => tracing::warn!(error = %e, "skipping undeserializable approver binding"),
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +436,46 @@ mod tests {
         };
         let s = serde_json::to_string(&g).unwrap();
         assert_eq!(serde_json::from_str::<ConsentGrant>(&s).unwrap(), g);
+    }
+
+    #[tokio::test]
+    async fn approver_store_get_list_delete_round_trip() {
+        let ks = ks().await;
+        assert!(get_approver(&ks, "signal", "ctx").await.unwrap().is_none());
+
+        let b = ApproverBinding {
+            platform: "signal".into(),
+            context: "ctx".into(),
+            approver: "did:web:operator".into(),
+            route: Some(ConsentRoute::BridgeRelay),
+            route_hint: Some("sig-0a1b".into()),
+        };
+        store_approver(&ks, &b).await.unwrap();
+        assert_eq!(
+            get_approver(&ks, "signal", "ctx").await.unwrap(),
+            Some(b.clone())
+        );
+
+        // A second platform in the same context is independent.
+        let mut other = b.clone();
+        other.platform = "slack".into();
+        store_approver(&ks, &other).await.unwrap();
+        assert_eq!(list_approvers(&ks).await.unwrap().len(), 2);
+
+        delete_approver(&ks, "signal", "ctx").await.unwrap();
+        assert!(get_approver(&ks, "signal", "ctx").await.unwrap().is_none());
+        assert_eq!(list_approvers(&ks).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn route_serializes_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&ConsentRoute::BridgeRelay).unwrap(),
+            "\"bridge-relay\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ConsentRoute::Wake).unwrap(),
+            "\"wake\""
+        );
     }
 }

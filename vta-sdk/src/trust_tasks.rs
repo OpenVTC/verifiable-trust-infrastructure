@@ -1031,6 +1031,15 @@ pub const TASK_CONSENT_REVOKE_1_0: &str = "https://trusttasks.org/spec/consent/r
 /// so steady-state inbound is a local Allow/Deny lookup. Read-only.
 pub const TASK_CONSENT_LIST_1_0: &str = "https://trusttasks.org/spec/consent/list/1.0";
 
+/// `consent/approver-set/1.0` — an admin binds the operator who approves consent
+/// for a platform within a context (and how the prompt routes). Admin-gated.
+pub const TASK_CONSENT_APPROVER_SET_1_0: &str =
+    "https://trusttasks.org/spec/consent/approver-set/1.0";
+
+/// `consent/approver-list/1.0` — read the approver bindings (optionally filtered).
+pub const TASK_CONSENT_APPROVER_LIST_1_0: &str =
+    "https://trusttasks.org/spec/consent/approver-list/1.0";
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
 // attestation, services, webvh, did-templates, passkey-vms, backup,
@@ -1200,6 +1209,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONSENT_DECISION_1_0,
     TASK_CONSENT_REVOKE_1_0,
     TASK_CONSENT_LIST_1_0,
+    TASK_CONSENT_APPROVER_SET_1_0,
+    TASK_CONSENT_APPROVER_LIST_1_0,
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
