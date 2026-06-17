@@ -291,6 +291,30 @@ export const revokeInvitation = (
     { trustTask: REVOKE_INVITATION_TASK },
   );
 
+const RELATIONSHIPS_GRAPH_TASK =
+  "https://trusttasks.org/openvtc/vtc/relationships/graph/1.0";
+
+export interface GraphNode {
+  did: string;
+}
+export interface GraphEdge {
+  id: string;
+  issuerDid: string;
+  subjectDid: string;
+  createdAt: string;
+}
+export interface RelationshipsGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+
+/** The community's member-relationship (VRC) graph — every trust edge between
+ * members, for the connections-graph view. Admin-gated. */
+export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
+  getJson<RelationshipsGraph>("/v1/relationships/graph", {
+    trustTask: RELATIONSHIPS_GRAPH_TASK,
+  });
+
 const RECOGNITION_CHECK_TASK =
   "https://trusttasks.org/openvtc/vtc/recognition/check/1.0";
 

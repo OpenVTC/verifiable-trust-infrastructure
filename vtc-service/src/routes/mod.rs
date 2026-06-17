@@ -556,6 +556,11 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(members::relationships::list),
             "https://trusttasks.org/openvtc/vtc/relationships/list/1.0",
         ))
+        // Admin connections-graph view — the member-relationship (VRC) graph.
+        .routes(tt(
+            routes!(relationships::graph),
+            "https://trusttasks.org/openvtc/vtc/relationships/graph/1.0",
+        ))
         .routes(tt(
             routes!(relationships::publish),
             "https://trusttasks.org/openvtc/vtc/relationships/publish/1.0",

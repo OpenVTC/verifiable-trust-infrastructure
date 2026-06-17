@@ -136,6 +136,24 @@ pub async fn find_by_hash(
     Ok(None)
 }
 
+/// List **every** relationship (full primary-keyspace scan). For the admin
+/// connections-graph view, which needs the whole edge set at once. Communities
+/// are small enough (and the graph view is admin-only) that an unpaginated scan
+/// is acceptable here; the per-DID [`list_for_did`] stays the paginated path.
+pub async fn list_all(primary: &KeyspaceHandle) -> Result<Vec<Relationship>, AppError> {
+    let pairs = primary
+        .prefix_iter_raw(RELATIONSHIPS_PREFIX.to_vec())
+        .await?;
+    let mut out = Vec::with_capacity(pairs.len());
+    for (_k, v) in pairs {
+        match decode(&v) {
+            Ok(rel) => out.push(rel),
+            Err(e) => tracing::warn!(error = %e, "skipping unparseable relationship row"),
+        }
+    }
+    Ok(out)
+}
+
 /// Paginated list of relationships where `did` is either
 /// issuer or subject. Walks the secondary index, then loads
 /// the primary rows lazily — orphan index entries (where the
@@ -246,6 +264,20 @@ mod tests {
         store_relationship(&primary, &index, &rel).await.unwrap();
         let got = get_relationship(&primary, rel.id).await.unwrap().unwrap();
         assert_eq!(got, rel);
+    }
+
+    #[tokio::test]
+    async fn list_all_returns_every_edge() {
+        let (primary, index, _audit, _dir) = temp_kss().await;
+        let r1 = fresh("did:key:zA", "did:key:zB");
+        let r2 = fresh("did:key:zB", "did:key:zC");
+        store_relationship(&primary, &index, &r1).await.unwrap();
+        store_relationship(&primary, &index, &r2).await.unwrap();
+
+        let all = list_all(&primary).await.unwrap();
+        assert_eq!(all.len(), 2);
+        let ids: std::collections::HashSet<_> = all.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&r1.id) && ids.contains(&r2.id));
     }
 
     #[tokio::test]

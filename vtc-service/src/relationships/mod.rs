@@ -51,7 +51,7 @@ use uuid::Uuid;
 
 pub use storage::{
     RELATIONSHIPS_BY_DID_PREFIX, RELATIONSHIPS_PREFIX, delete_relationship, find_by_hash,
-    get_relationship, list_for_did, store_relationship,
+    get_relationship, list_all, list_for_did, store_relationship,
 };
 
 /// A stored, verified VRC. Field order matches the spec §5.4

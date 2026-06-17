@@ -401,6 +401,71 @@ fn canonicalise(v: &JsonValue) -> String {
     serde_json::to_string(&into_sorted(v.clone())).unwrap_or_else(|_| "{}".into())
 }
 
+// ── Connections graph (admin) ──────────────────────────────────────────────
+
+/// One node in the connections graph — a member that is an endpoint of at least
+/// one relationship (VRC). Isolated members (no VRCs) are not surfaced.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNode {
+    pub did: String,
+}
+
+/// One directed edge — a published VRC from `issuerDid` (the asserting member)
+/// to `subjectDid`. Body-free (no VRC JSON-LD): the graph shows the shape, not
+/// the credential contents.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphEdge {
+    pub id: String,
+    pub issuer_did: String,
+    pub subject_did: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationshipsGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+/// `GET /v1/relationships/graph` — the community's member-relationship (VRC)
+/// graph: every published trust edge between members, for the admin-UI
+/// connections view. Admin-gated; a full scan of the relationships keyspace
+/// (communities are small and this is operator-only). Edge-derived nodes —
+/// members with no VRCs don't appear.
+#[utoipa::path(
+    get, path = "/relationships/graph", tag = "relationships",
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Member-relationship graph", body = RelationshipsGraph),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn graph(
+    _auth: crate::auth::AdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<RelationshipsGraph>, AppError> {
+    let rels = crate::relationships::list_all(&state.relationships_ks).await?;
+    let mut nodes = std::collections::BTreeSet::new();
+    let mut edges = Vec::with_capacity(rels.len());
+    for r in rels {
+        nodes.insert(r.issuer_did.clone());
+        nodes.insert(r.subject_did.clone());
+        edges.push(GraphEdge {
+            id: r.id.to_string(),
+            issuer_did: r.issuer_did,
+            subject_did: r.subject_did,
+            created_at: r.created_at.to_rfc3339(),
+        });
+    }
+    Ok(Json(RelationshipsGraph {
+        nodes: nodes.into_iter().map(|did| GraphNode { did }).collect(),
+        edges,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Network,
+  Share2,
   ShieldCheck,
   Smartphone,
   Tag,
@@ -36,6 +37,7 @@ import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Profile } from "@/plugins/profile";
 import { Recognition } from "@/plugins/recognition";
+import { Relationships } from "@/plugins/relationshipsGraph";
 import { Sessions } from "@/plugins/sessions";
 
 export function registerBuiltinPlugins(): void {
@@ -77,6 +79,14 @@ export function registerBuiltinPlugins(): void {
     path: "/recognition",
     iconComponent: Network,
     reactComponent: Recognition,
+  });
+
+  registerPlugin({
+    id: "relationships",
+    label: "Relationships",
+    path: "/relationships",
+    iconComponent: Share2,
+    reactComponent: Relationships,
   });
 
   registerPlugin({
