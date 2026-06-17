@@ -995,7 +995,10 @@ pub(super) async fn handle_release(
         }
     };
 
-    // Seal the secret to the holder (operations layer; P2.4).
+    // Seal the secret to the holder (operations layer; P2.4). The negotiated
+    // wire version decides whether the `VaultSecret.kind` sealed inside the JWE
+    // is emitted kebab (0.1) or camelCase (0.2) — the edge transform can't
+    // reach ciphertext, so the seal step does it.
     match crate::operations::vault::release::release_secret(
         atm,
         &state.vault_ks,
@@ -1003,6 +1006,7 @@ pub(super) async fn handle_release(
         &auth.did,
         stored,
         req.ttl_seconds_hint,
+        super::wire_v0_2::current_wire_version(),
     )
     .await
     {
@@ -1142,6 +1146,7 @@ pub(super) async fn handle_proxy_login(
         req.target,
         req.nonce,
         req.ttl_seconds_hint,
+        super::wire_v0_2::current_wire_version(),
     )
     .await
     {

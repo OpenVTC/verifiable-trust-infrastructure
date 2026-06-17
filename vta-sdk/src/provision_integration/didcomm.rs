@@ -30,7 +30,7 @@
 use crate::didcomm_session::DIDCommSession;
 use crate::error::VtaError;
 use crate::protocols::provision_integration_management::{
-    CANONICAL_PROVISION_INTEGRATION, CANONICAL_PROVISION_INTEGRATION_RESULT,
+    ProvisionSpecVersion, request_body_for_version, result_uri_for,
 };
 
 use super::BootstrapRequest;
@@ -69,6 +69,13 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// don't track the maintainer's context layout. See
 /// [`crate::provision_integration::http::ProvisionIntegrationRequest::context`]
 /// for the full inference rules + error semantics.
+///
+/// `spec_version` selects the Trust Task wire version. [`ProvisionSpecVersion::V0_1`]
+/// emits the legacy snake_case option fields + kebab `assertion` under the
+/// `provision/integration/0.1` URI; [`ProvisionSpecVersion::V0_2`] emits
+/// lowerCamelCase (`vcValiditySeconds` / `createContext` / `didSigned`) under
+/// the `0.2` URI. The signed VP carried in `request` is left byte-identical
+/// either way — its casing is the holder's, and the VTA dual-accepts both.
 pub async fn provision_integration_didcomm(
     session: &DIDCommSession,
     request: BootstrapRequest,
@@ -76,6 +83,7 @@ pub async fn provision_integration_didcomm(
     assertion: Option<AssertionMode>,
     vc_validity_seconds: Option<i64>,
     create_context: bool,
+    spec_version: ProvisionSpecVersion,
 ) -> Result<ProvisionIntegrationResponse, VtaError> {
     // No "session DID must equal VP holder" pre-check. The flow is
     // intentionally layered (outer authcrypt = relayer, inner VP =
@@ -87,13 +95,14 @@ pub async fn provision_integration_didcomm(
         vc_validity_seconds,
         create_context,
     };
-    let body = serde_json::to_value(&body_struct).map_err(VtaError::from)?;
+    let request_uri = spec_version.request_uri();
+    let body = request_body_for_version(&body_struct, request_uri).map_err(VtaError::from)?;
 
     session
         .send_and_wait::<ProvisionIntegrationResponse>(
-            CANONICAL_PROVISION_INTEGRATION,
+            request_uri,
             body,
-            CANONICAL_PROVISION_INTEGRATION_RESULT,
+            result_uri_for(request_uri),
             DEFAULT_TIMEOUT_SECS,
         )
         .await

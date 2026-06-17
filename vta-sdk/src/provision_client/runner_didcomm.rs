@@ -15,6 +15,7 @@ use crate::did_key::decode_private_key_multibase;
 use crate::didcomm_session::DIDCommSession;
 use crate::protocols::did_management::servers::ListWebvhServersResultBody;
 use crate::protocols::did_management::{LIST_WEBVH_SERVERS, LIST_WEBVH_SERVERS_RESULT};
+use crate::protocols::provision_integration_management::ProvisionSpecVersion;
 use crate::provision_integration::didcomm::provision_integration_didcomm;
 
 use super::ask::ProvisionAsk;
@@ -65,6 +66,7 @@ pub async fn provision_via_didcomm(
             None,
             None,
             false,
+            ProvisionSpecVersion::V0_1,
         )
         .await?;
         response_to_result(&seed, nonce, response)
@@ -393,6 +395,7 @@ pub async fn provision_admin_rotation_via_didcomm(
             None,
             None,
             false,
+            ProvisionSpecVersion::V0_1,
         )
         .await?;
         crate::provision_client::result::admin_rotation_response_to_reply(&seed, nonce, response)

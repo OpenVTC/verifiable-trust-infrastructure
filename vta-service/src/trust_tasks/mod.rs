@@ -75,7 +75,7 @@ pub(crate) use step_up::{
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;
-mod wire_v0_2;
+pub(crate) mod wire_v0_2;
 
 /// The transport-neutral dispatch result — see [`helpers::TrustTaskOutcome`].
 /// Re-exported so both transports (`routes`-mounted REST handler + DIDComm
@@ -328,6 +328,12 @@ pub(crate) async fn dispatch_trust_task_core(
     // dispatched through the existing 0.1 handler, and the response
     // up-converted back to 0.2 (see `wire_v0_2`). Signed-payload specs are NOT
     // routed here — they have typed 0.2 arms in `dispatch_typed`.
+    // The negotiated wire version is scoped around `dispatch_typed` via a
+    // `task_local` so the two JWE-sealing handlers (`vault/release`,
+    // `vault/proxy-login`) can serialise the *sealed* cleartext in the right
+    // casing — the edge transform can't reach inside ciphertext. Every other
+    // handler ignores it.
+    use wire_v0_2::{WIRE_VERSION, WireVersion};
     let type_uri = doc.type_uri.to_string();
     if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
         let mut doc = doc;
@@ -335,10 +341,14 @@ pub(crate) async fn dispatch_trust_task_core(
         if let Ok(uri_0_1) = spec.uri_0_1.parse() {
             doc.type_uri = uri_0_1;
         }
-        let outcome = dispatch_typed(state, auth, doc).await;
+        let outcome = WIRE_VERSION
+            .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
+            .await;
         return wire_v0_2::upconvert_response(outcome, spec);
     }
-    dispatch_typed(state, auth, doc).await
+    WIRE_VERSION
+        .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
+        .await
 }
 
 /// Build a Trust-Task rejection `Response` for a request whose envelope

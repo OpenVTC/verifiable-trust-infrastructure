@@ -13,6 +13,7 @@
 //! reject mapping; the driver dispatch + sealing live here.
 
 use affinidi_tdk::messaging::ATM;
+use serde_json::Value;
 
 use vti_common::vault::{
     RequestHeader, SessionBlob, SiteTarget, StoredVaultEntry, VaultSecret, put_stored_vault_entry,
@@ -21,6 +22,7 @@ use vti_common::vault::{
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
+use crate::trust_tasks::wire_v0_2::{WireVersion, camelize_paths};
 
 /// Password-POST session TTL ceiling (seconds). The caller's `ttlSecondsHint`
 /// is honoured up to this and silently truncated above it.
@@ -65,7 +67,7 @@ impl From<AppError> for ProxyLoginError {
 /// The caller has already gated capability + context scope + step-up,
 /// bounds-checked `nonce`, and resolved `atm` / `vta_did`.
 #[allow(clippy::too_many_arguments)]
-pub async fn proxy_login(
+pub(crate) async fn proxy_login(
     atm: &ATM,
     vault_ks: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
@@ -78,6 +80,7 @@ pub async fn proxy_login(
     target: Option<SiteTarget>,
     nonce: Option<String>,
     ttl_hint: Option<u32>,
+    wire: WireVersion,
 ) -> Result<ProxyLoginOutput, ProxyLoginError> {
     // Driver dispatch. Each arm produces a `SessionBlob` (+ session_id +
     // expires_at); the shared tail below authcrypts + persists.
@@ -162,11 +165,10 @@ pub async fn proxy_login(
         }
     };
 
-    let session_body = serde_json::to_value(&session_blob).map_err(|e| {
-        ProxyLoginError::App(AppError::Internal(format!(
-            "vault/proxy-login: failed to serialise SessionBlob: {e}"
-        )))
-    })?;
+    // The SessionBlob rides inside the opaque JWE, so the edge transform can't
+    // reach its `refreshHint`; emit the version-appropriate casing here.
+    let session_body =
+        session_blob_cleartext_for_wire(&session_blob, wire).map_err(ProxyLoginError::App)?;
 
     let jwe = super::authcrypt_to_holder(
         atm,
@@ -292,9 +294,84 @@ fn resolve_siop_audience(
     entry_origin.clone().map(|o| (o, entry_origin))
 }
 
+/// Serialise a `SessionBlob` into the JWE cleartext JSON in the casing the
+/// negotiated wire version requires. `SessionBlob` always serialises its 0.1
+/// (kebab) `refreshHint` value; for a 0.2 session we up-convert it (the field
+/// name `refreshHint` is already camelCase via the struct's `rename_all`).
+/// Pure + synchronous so the casing is unit-testable without an ATM/JWE.
+fn session_blob_cleartext_for_wire(
+    blob: &SessionBlob,
+    wire: WireVersion,
+) -> Result<Value, AppError> {
+    let mut body = serde_json::to_value(blob).map_err(|e| {
+        AppError::Internal(format!(
+            "vault/proxy-login: failed to serialise SessionBlob: {e}"
+        ))
+    })?;
+    if wire == WireVersion::V0_2 {
+        camelize_paths(&mut body, &["refreshHint"]);
+    }
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vti_common::vault::RefreshHint;
+
+    fn blob_with_hint(hint: Option<RefreshHint>) -> SessionBlob {
+        SessionBlob {
+            session_id: "s1".into(),
+            expires_at: "2026-06-17T00:00:00Z".into(),
+            cookies: vec![],
+            headers: vec![],
+            local_storage: vec![],
+            session_storage: vec![],
+            bind_origin: None,
+            refresh_hint: hint,
+        }
+    }
+
+    #[test]
+    fn v0_1_session_blob_keeps_kebab_refresh_hint() {
+        let body = session_blob_cleartext_for_wire(
+            &blob_with_hint(Some(RefreshHint::BeforeExpiry)),
+            WireVersion::V0_1,
+        )
+        .unwrap();
+        assert_eq!(body["refreshHint"], "before-expiry");
+    }
+
+    #[test]
+    fn v0_2_session_blob_camelizes_refresh_hint() {
+        let body = session_blob_cleartext_for_wire(
+            &blob_with_hint(Some(RefreshHint::BeforeExpiry)),
+            WireVersion::V0_2,
+        )
+        .unwrap();
+        assert_eq!(body["refreshHint"], "beforeExpiry");
+        // `on401` is identical in both casings; `maintainer-only` → `maintainerOnly`.
+        let on401 = session_blob_cleartext_for_wire(
+            &blob_with_hint(Some(RefreshHint::On401)),
+            WireVersion::V0_2,
+        )
+        .unwrap();
+        assert_eq!(on401["refreshHint"], "on401");
+        let maint = session_blob_cleartext_for_wire(
+            &blob_with_hint(Some(RefreshHint::MaintainerOnly)),
+            WireVersion::V0_2,
+        )
+        .unwrap();
+        assert_eq!(maint["refreshHint"], "maintainerOnly");
+    }
+
+    #[test]
+    fn session_blob_without_hint_is_unaffected() {
+        // `refresh_hint: None` is skipped on the wire — camelize is a safe no-op.
+        let body =
+            session_blob_cleartext_for_wire(&blob_with_hint(None), WireVersion::V0_2).unwrap();
+        assert!(body.get("refreshHint").is_none());
+    }
 
     fn web(o: &str) -> SiteTarget {
         SiteTarget::WebOrigin {

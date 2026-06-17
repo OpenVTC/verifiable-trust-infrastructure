@@ -36,6 +36,36 @@ use serde_json::Value;
 
 use super::TrustTaskOutcome;
 
+/// The Trust-Task wire version a request was received under. Threaded to the
+/// two vault handlers that seal values *inside* a JWE (`vault/release`,
+/// `vault/proxy-login`): the edge transform can rewrite plaintext enum paths
+/// but not ciphertext, so those handlers serialise the sealed cleartext in a
+/// version-aware way — kebab for 0.1, camelCase for 0.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WireVersion {
+    V0_1,
+    V0_2,
+}
+
+tokio::task_local! {
+    /// Request-scoped negotiated wire version. Set by the dispatcher
+    /// ([`super::dispatch_trust_task_core`]) around each `dispatch_typed`
+    /// call and read by the JWE-sealing handlers via [`current_wire_version`].
+    ///
+    /// A `task_local` rather than a threaded parameter because only two of the
+    /// ~25 dispatch handlers need it; plumbing an unused `WireVersion` through
+    /// every handler signature (or pulling these two out of the `dispatch_table!`
+    /// macro, which would desync the `dispatched_uris()` parity harness) would
+    /// be far more invasive than this one contained read.
+    pub(crate) static WIRE_VERSION: WireVersion;
+}
+
+/// The wire version for the in-flight request, defaulting to [`WireVersion::V0_1`]
+/// when read outside a [`WIRE_VERSION`] scope (e.g. a direct unit test).
+pub(crate) fn current_wire_version() -> WireVersion {
+    WIRE_VERSION.try_with(|v| *v).unwrap_or(WireVersion::V0_1)
+}
+
 /// One spec's 0.1 ⇄ 0.2 mapping. Paths are `.`-separated and relative to the
 /// document `payload`; a `*` segment fans out over every array element or
 /// object value.
@@ -90,10 +120,18 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     // ── vault slice ─────────────────────────────────────────────────
     // SecretKind (`oauth-tokens`, `did-self-issued`, …) and the SiteTarget
     // `kind` discriminator (`web-origin`, `ios-app`, `android-app`) carry the
-    // renamed values. `sealedSecret`/`sealedSessionBlob` envelope tags
-    // (`didcomm-authcrypt`, …) are NOT renamed in 0.2, and the JWE / step-up
-    // proof / signed-envelope payloads are opaque — none are on enum paths, so
-    // they pass through byte-exact.
+    // renamed values. The `sealedSecret`/`sealedSessionBlob` envelope tag
+    // (`didcomm-authcrypt`, …) IS renamed in 0.2 (the canonical 0.2
+    // `sealed-envelope.schema.json` declares `didcommAuthcrypt`/`hpkeArmored`/
+    // `tspMessage`) — it sits next to the opaque JWE as a plaintext object key,
+    // so it's reachable on an enum path (`sealedSecret.envelope`) and handled
+    // by this transform. What the transform CANNOT reach are the values sealed
+    // *inside* the JWE ciphertext (the released `VaultSecret.kind`, the
+    // `SessionBlob.refreshHint`, `PasswordLoginConfig.format`); those get
+    // version-aware serialisation at seal time (see [`WireVersion`] +
+    // `operations::vault::{release,proxy_login}`). The step-up proof / signed-
+    // envelope payloads are opaque and on no enum path, so they pass through
+    // byte-exact.
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/list/0.1",
         uri_0_2: "https://trusttasks.org/spec/vault/list/0.2",
@@ -109,20 +147,25 @@ pub(super) const WIRE_SPECS_V0_2: &[WireSpecV02] = &[
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/upsert/0.1",
         uri_0_2: "https://trusttasks.org/spec/vault/upsert/0.2",
-        request_paths: &["secretKind", "targets.*.kind"],
+        request_paths: &["secretKind", "targets.*.kind", "sealedSecret.envelope"],
         response_paths: &["entry.secretKind", "entry.targets.*.kind"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/release/0.1",
         uri_0_2: "https://trusttasks.org/spec/vault/release/0.2",
         request_paths: &["target.kind"],
-        response_paths: &["secretKind"],
+        // `secretKind` is the outer echo; `sealedSecret.envelope` is the
+        // pluggable-cipher tag wrapping the JWE. The `VaultSecret.kind` *inside*
+        // the JWE is camelCased at seal time, not here (it's ciphertext).
+        response_paths: &["secretKind", "sealedSecret.envelope"],
     },
     WireSpecV02 {
         uri_0_1: "https://trusttasks.org/spec/vault/proxy-login/0.1",
         uri_0_2: "https://trusttasks.org/spec/vault/proxy-login/0.2",
         request_paths: &["target.kind"],
-        response_paths: &[],
+        // The `sealedSessionBlob.envelope` tag wraps the JWE; the
+        // `SessionBlob.refreshHint` inside it is camelCased at seal time.
+        response_paths: &["sealedSessionBlob.envelope"],
     },
     WireSpecV02 {
         // Request/response carry the unsigned/signed Trust-Task envelope verbatim
@@ -243,6 +286,18 @@ pub(super) fn downconvert_request(payload: &mut Value, spec: &WireSpecV02) {
 /// original 0.2 document.
 pub(super) fn kebabize_paths(payload: &mut Value, paths: &[&str]) {
     apply_paths(payload, paths, kebabize);
+}
+
+/// Up-convert (kebab→camel) the enum values at `paths` in `payload`.
+///
+/// Exposed for the JWE-sealing operations (`vault/release`, `vault/proxy-login`):
+/// the released `VaultSecret` / `SessionBlob` cleartext rides inside ciphertext
+/// the edge transform can't reach, so the seal step camelizes the relevant
+/// enum paths itself when emitting a 0.2 response. Reuses the same
+/// path-targeted [`camelize`] the response up-converter uses, so a 0.1 seal is
+/// a no-op (kebab is left intact).
+pub(crate) fn camelize_paths(payload: &mut Value, paths: &[&str]) {
+    apply_paths(payload, paths, camelize);
 }
 
 /// Up-convert a dispatch outcome: retype `…/0.1#response` → `…/0.2#response`
@@ -488,6 +543,110 @@ mod tests {
         assert_eq!(v["payload"]["entries"][0]["targets"][0]["kind"], "iosApp");
         // Free-text label coinciding with a token stays put.
         assert_eq!(v["payload"]["entries"][0]["label"], "oauth-tokens");
+    }
+
+    #[tokio::test]
+    async fn vault_release_response_camelizes_sealed_secret_envelope_tag() {
+        // The `sealedSecret.envelope` tag sits next to the JWE as a plaintext
+        // key, so the edge transform must up-convert it to the canonical 0.2
+        // `didcommAuthcrypt`. (The `VaultSecret.kind` inside the JWE is opaque
+        // here — it's camelCased at seal time, exercised in the ops tests.)
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/release/0.2").unwrap();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:7",
+            "type": "https://trusttasks.org/spec/vault/release/0.1#response",
+            "payload": {
+                "sealedSecret": { "envelope": "didcomm-authcrypt", "jwe": "opaque.jwe.bytes" },
+                "secretKind": "oauth-tokens",
+                "ttlSeconds": 60
+            }
+        });
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::to_vec(&doc).unwrap(),
+        };
+        let out = upconvert_response(outcome, spec);
+        let v: Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            v["type"],
+            "https://trusttasks.org/spec/vault/release/0.2#response"
+        );
+        assert_eq!(
+            v["payload"]["sealedSecret"]["envelope"], "didcommAuthcrypt",
+            "envelope tag up-converted"
+        );
+        assert_eq!(v["payload"]["secretKind"], "oauthTokens");
+        // The opaque JWE bytes are NOT a string on any enum path beyond the
+        // `envelope` key, so they pass through verbatim.
+        assert_eq!(v["payload"]["sealedSecret"]["jwe"], "opaque.jwe.bytes");
+    }
+
+    #[tokio::test]
+    async fn vault_proxy_login_response_camelizes_sealed_session_blob_envelope_tag() {
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/proxy-login/0.2").unwrap();
+        let doc = serde_json::json!({
+            "id": "urn:uuid:8",
+            "type": "https://trusttasks.org/spec/vault/proxy-login/0.1#response",
+            "payload": {
+                "sealedSessionBlob": { "envelope": "didcomm-authcrypt", "jwe": "opaque" },
+                "sessionId": "s1",
+                "expiresAt": "2026-06-17T00:00:00Z"
+            }
+        });
+        let outcome = TrustTaskOutcome {
+            status: axum::http::StatusCode::OK,
+            body: serde_json::to_vec(&doc).unwrap(),
+        };
+        let out = upconvert_response(outcome, spec);
+        let v: Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            v["payload"]["sealedSessionBlob"]["envelope"],
+            "didcommAuthcrypt"
+        );
+    }
+
+    #[test]
+    fn vault_upsert_request_downconverts_sealed_secret_envelope_tag() {
+        // A 0.2 producer sends `sealedSecret.envelope: "didcommAuthcrypt"`;
+        // down-convert hands the existing 0.1 handler the kebab tag it parses.
+        let spec = lookup_0_2("https://trusttasks.org/spec/vault/upsert/0.2").unwrap();
+        let mut payload = serde_json::json!({
+            "contextId": "personal",
+            "secretKind": "oauthTokens",
+            "targets": [],
+            "label": "x",
+            "sealedSecret": { "envelope": "didcommAuthcrypt", "jwe": "opaque" }
+        });
+        downconvert_request(&mut payload, spec);
+        assert_eq!(payload["sealedSecret"]["envelope"], "didcomm-authcrypt");
+        assert_eq!(payload["secretKind"], "oauth-tokens");
+    }
+
+    #[test]
+    fn camelize_paths_is_a_noop_on_kebab_for_v0_1_seal() {
+        // The seal path calls `camelize_paths` only for 0.2; on a 0.1 secret
+        // body the values are already kebab and untouched.
+        let mut secret = serde_json::json!({
+            "kind": "oauth-tokens",
+            "loginConfig": { "format": "form-urlencoded" }
+        });
+        camelize_paths(&mut secret, &["kind", "loginConfig.format"]);
+        assert_eq!(secret["kind"], "oauthTokens");
+        assert_eq!(secret["loginConfig"]["format"], "formUrlencoded");
+    }
+
+    #[tokio::test]
+    async fn current_wire_version_reads_scoped_value_and_defaults_to_v0_1() {
+        assert_eq!(
+            current_wire_version(),
+            WireVersion::V0_1,
+            "default outside scope"
+        );
+        WIRE_VERSION
+            .scope(WireVersion::V0_2, async {
+                assert_eq!(current_wire_version(), WireVersion::V0_2);
+            })
+            .await;
     }
 
     #[test]

@@ -52,6 +52,7 @@ impl VtaClient {
                     req.assertion,
                     req.vc_validity_seconds,
                     req.create_context,
+                    crate::protocols::provision_integration_management::ProvisionSpecVersion::V0_1,
                 )
                 .await
             }

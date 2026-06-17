@@ -1481,7 +1481,15 @@ pub async fn handle_provision_integration(
         "provision-integration completed via DIDComm"
     );
 
-    response(result_uri, &result)
+    // Emit the body in the casing the request version requires: a 0.2 request
+    // (`…/provision/integration/0.2`) gets a lowerCamelCase `summary`; a 0.1
+    // request keeps the snake_case form. The REST endpoint stays 0.1/snake_case.
+    let body = vta_sdk::protocols::provision_integration_management::response_body_for_version(
+        &result,
+        &message.typ,
+    )
+    .map_err(handler_err)?;
+    response(result_uri, &body)
 }
 
 /// Envelope used by the DIDComm update + rotate-keys messages.
