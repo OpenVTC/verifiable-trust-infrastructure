@@ -572,6 +572,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn third_party_issuer_trusted_via_registry() {
+        // M2: a VIC from a third-party issuer the community recognises (in its
+        // trust registry / recognition graph) is trusted — so the default policy
+        // auto-admits exactly as for a self-issued invite.
+        use crate::registry::{MockRegistryClient, TrustRegistryClient};
+
+        let issuer = signer(&ISSUER_SEED);
+        let applicant = did_key(&APPLICANT_SEED);
+        let vic = issue_vic(&issuer, &applicant, None, Duration::days(7)).await;
+
+        let registry = MockRegistryClient::new();
+        registry.set_recognised(issuer.issuer_did()).await;
+        let registry: &dyn TrustRegistryClient = &registry;
+
+        let v = verify_invitation_inner(
+            &vic,
+            &applicant,
+            Some(&did_key(&OTHER_SEED)), // own_did != issuer (a genuine third party)
+            Some(registry),              // …but the registry recognises the issuer
+            &resolver(),
+            &StubFetcher { revoked: false },
+            Utc::now(),
+        )
+        .await
+        .expect("verifies cryptographically");
+        assert!(
+            v.issuer_trusted,
+            "a registry-recognised 3rd-party issuer is trusted (M2)"
+        );
+    }
+
+    #[tokio::test]
     async fn rejects_wrong_subject_binding() {
         let issuer = signer(&ISSUER_SEED);
         let vic = issue_vic(&issuer, &did_key(&APPLICANT_SEED), None, Duration::days(7)).await;

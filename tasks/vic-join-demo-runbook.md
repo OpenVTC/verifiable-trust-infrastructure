@@ -114,9 +114,28 @@ a Trust-Task slice (`vault/credentials/{receive,query,get}/0.1`):
 OpenVTC could store a received VIC here and load it at join time instead of the
 `--invitation <file>` path (a follow-up wiring on the OpenVTC side).
 
+## Third-party issuers (M2) — "and/or a 3rd party"
+
+A VIC issued by a **third party** (not the VTC itself) auto-admits when the
+community **trusts that issuer**. Trust is resolved per-verify by
+`invitation_issuer_trusted`:
+- issuer == the community's own DID → trusted (M1, self-issued); else
+- `registry.recognise(issuer)` → trusted iff the issuer is in the community's
+  **trust registry / recognition graph** (M2).
+
+So the operator path for M2 is the *existing* recognition mechanism: add the
+third-party issuer's DID to the community's trust registry (the same surface used
+for cross-community credential trust). No bespoke trusted-invitation-issuer
+config — the recognition graph *is* the config. Proven by
+`invitation_verify::tests::third_party_issuer_trusted_via_registry`.
+
+Demo variant: issue the VIC from a standalone issuer (its own `did:key` +
+`dtg-credentials::new_vic`), register that issuer DID as recognised, then join —
+the applicant is auto-admitted exactly as in the self-issued flow.
+
 ## Not done (deliberately deferred)
 
-- **M2 third-party trusted issuer** — the trust-resolution layer is already
-  wired (`invitation_issuer_trusted` consults the registry); M2 just needs the
-  operator-facing trusted-invitation-issuer config surfaced.
-- Pre-binding a *mint-fresh* persona to the VIC subject (see §0).
+- Pre-binding a *mint-fresh* persona to the VIC subject (see §0) — for now use
+  the reuse-persona path so the presented DID matches the VIC subject.
+- Wiring OpenVTC to load the VIC from the VTA credential vault (above) instead of
+  the `--invitation <file>` path.
