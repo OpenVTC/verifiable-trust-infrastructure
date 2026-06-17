@@ -353,6 +353,11 @@ fn print_opened(
             };
             println!("  Format:     {kind}");
         }
+        SealedPayloadV1::MessagingBridgeCredentials(b) => {
+            println!("Payload: MessagingBridgeCredentials");
+            println!("  Platform:   {}", b.platform);
+            println!("  Fields:     {}", b.fields.len());
+        }
     }
     Ok(())
 }

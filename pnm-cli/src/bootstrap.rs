@@ -245,6 +245,15 @@ pub async fn run_open(
                 "Receive this credential into the holder vault via the credential-exchange flow."
             );
         }
+        SealedPayloadV1::MessagingBridgeCredentials(b) => {
+            println!("Payload: MessagingBridgeCredentials");
+            println!("  Platform:   {}", b.platform);
+            println!("  Fields:     {}", b.fields.len());
+            println!();
+            println!(
+                "Load these platform secrets into the messaging-bridge connector's secret store."
+            );
+        }
     }
 
     Ok(())
@@ -576,6 +585,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::TemplateBootstrap(_) => "TemplateBootstrap",
         SealedPayloadV1::AdminRotation(_) => "AdminRotation",
         SealedPayloadV1::IssuedCredential(_) => "IssuedCredential",
+        SealedPayloadV1::MessagingBridgeCredentials(_) => "MessagingBridgeCredentials",
     }
 }
 

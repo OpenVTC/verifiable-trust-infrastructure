@@ -61,6 +61,36 @@ pub enum SealedPayloadV1 {
     /// known `did:key`; the holder opens it and receives it into its vault. See
     /// [`IssuedCredentialBundle`].
     IssuedCredential(Box<IssuedCredentialBundle>),
+    /// Platform credentials for a `vti-message-bridge` connector — Signal
+    /// registration, bot tokens, SMTP creds, Matrix access tokens, etc.
+    ///
+    /// Per the bridge's design (§10.1) platform secrets never ride in the DID
+    /// template; they normally live in the connector's local `SeedStore`. When
+    /// a connector is provisioned **remotely**, the secrets are delivered
+    /// sealed via sealed-transfer instead — this variant is that payload,
+    /// sealed to the connector's X25519 key-agreement derivation. Additive
+    /// variant — no existing variant changes (issue #512). See
+    /// [`MessagingBridgeCredentialsBundle`].
+    MessagingBridgeCredentials(Box<MessagingBridgeCredentialsBundle>),
+}
+
+/// Platform credentials for a single `vti-message-bridge` connector. Mirrors
+/// the bridge's `provisioning::PlatformCredentials`: `platform` is the
+/// platform key (`signal`, `telegram`, `whatsapp`, `email`, `matrix`, …) and
+/// `fields` carries the platform-specific secret name/value pairs. Sealed to
+/// the connector's key-agreement DID derivation via sealed-transfer.
+///
+/// No `arbitrary` derive (it carries a `serde_json::Map`, same as
+/// [`IssuedCredentialBundle`]); the fuzz harness covers the framing layer, not
+/// this leaf payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessagingBridgeCredentialsBundle {
+    /// Platform key — `signal`, `telegram`, `whatsapp`, `email`, `matrix`, …
+    pub platform: String,
+    /// Platform-specific secret fields (the bridge interprets these per
+    /// `platform`). Free-form so new platforms need no new variant.
+    pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
 /// An issued credential sealed for delivery to a holder the issuer cannot yet

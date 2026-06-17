@@ -22,8 +22,8 @@ pub mod verify;
 
 pub use bundle::{
     ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion,
-    IssuedCredentialBundle, LabeledKey, ProducerAssertion, RawPrivateKey, SealedBundle,
-    SealedPayloadV1,
+    IssuedCredentialBundle, LabeledKey, MessagingBridgeCredentialsBundle, ProducerAssertion,
+    RawPrivateKey, SealedBundle, SealedPayloadV1,
 };
 pub use chunk::{ChunkPlaintext, MAX_PAYLOAD_FRAGMENT, VERSION};
 pub use error::SealedTransferError;
@@ -402,6 +402,45 @@ mod tests {
         match opened.payload {
             SealedPayloadV1::AdminKeySet(keys) => assert_eq!(keys.len(), 2048),
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn round_trip_messaging_bridge_credentials() {
+        // Issue #512: a connector's platform secrets seal/open through the
+        // additive `MessagingBridgeCredentials` variant with no change to the
+        // framing or existing variants.
+        let (recip_sk, recip_pk) = generate_keypair();
+        let (_prod_sk, prod_pk) = generate_ed25519_keypair();
+        let assertion =
+            sample_assertion(affinidi_crypto::did_key::ed25519_pub_to_did_key(&prod_pk));
+        let store = InMemoryNonceStore::new();
+        let bundle_id = [12u8; 16];
+
+        let mut fields = serde_json::Map::new();
+        fields.insert("botToken".into(), serde_json::json!("123:abc"));
+        fields.insert(
+            "registration".into(),
+            serde_json::json!({ "number": "+15551234", "captcha": "tok" }),
+        );
+        let payload = SealedPayloadV1::MessagingBridgeCredentials(Box::new(
+            MessagingBridgeCredentialsBundle {
+                platform: "telegram".to_string(),
+                fields: fields.clone(),
+            },
+        ));
+
+        let bundle = seal_payload(&recip_pk, bundle_id, assertion, &payload, &store)
+            .await
+            .unwrap();
+        let digest = bundle_digest(&bundle);
+        let opened = open_bundle(&recip_sk, &bundle, Some(&digest)).unwrap();
+        match opened.payload {
+            SealedPayloadV1::MessagingBridgeCredentials(b) => {
+                assert_eq!(b.platform, "telegram");
+                assert_eq!(b.fields, fields);
+            }
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 

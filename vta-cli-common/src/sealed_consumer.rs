@@ -341,6 +341,12 @@ pub fn extract_admin_credential(
              — receive it into the holder vault via the credential-exchange flow"
                 .into(),
         ),
+        SealedPayloadV1::MessagingBridgeCredentials(_) => Err(
+            "MessagingBridgeCredentials payloads carry a connector's platform secrets, not an \
+             admin CredentialBundle — open via `pnm bootstrap open` and load them into the \
+             connector's secret store"
+                .into(),
+        ),
     }
 }
 
