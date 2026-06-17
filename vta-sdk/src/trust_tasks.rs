@@ -981,6 +981,33 @@ pub const TASK_ATTESTATION_STATUS_1_0: &str =
 pub const TASK_ATTESTATION_REPORT_1_0: &str =
     "https://trusttasks.org/spec/vta/attestation/report/1.0";
 
+// ─── Consent slice (spec/consent/*) ──────────────────────────────────────
+//
+// Generic, platform-agnostic consent gating for inbound messaging: a bridge
+// asks the VTA whether an inbound conversation (DM / group / channel, on any
+// platform) may reach an AI agent — default-deny, with operator consent on
+// first contact. The decision is recorded as a grant the bridge enforces.
+// Canonical specs: the `consent/*` family in the dtgwg-trust-tasks-tf registry.
+
+/// `consent/request/1.0` — a bridge asks the VTA to gate an inbound
+/// conversation; the message is held until an operator decision lands.
+/// Auth: an enrolled bridge permitted to gate the named agent.
+pub const TASK_CONSENT_REQUEST_1_0: &str = "https://trusttasks.org/spec/consent/request/1.0";
+
+/// `consent/decision/1.0` — an approver allows/denies a conversation; the VTA
+/// records a [`ConsentGrant`](https://trusttasks.org/spec/consent/_shared).
+/// Auth: an approver for the subject's platform/context (operator-signed, or
+/// bridge-attested).
+pub const TASK_CONSENT_DECISION_1_0: &str = "https://trusttasks.org/spec/consent/decision/1.0";
+
+/// `consent/revoke/1.0` — an operator withdraws a standing grant, reverting the
+/// conversation to default-deny.
+pub const TASK_CONSENT_REVOKE_1_0: &str = "https://trusttasks.org/spec/consent/revoke/1.0";
+
+/// `consent/list/1.0` — a bridge syncs / point-checks the grants it enforces,
+/// so steady-state inbound is a local Allow/Deny lookup. Read-only.
+pub const TASK_CONSENT_LIST_1_0: &str = "https://trusttasks.org/spec/consent/list/1.0";
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
 // attestation, services, webvh, did-templates, passkey-vms, backup,
@@ -1145,6 +1172,11 @@ pub const ALL_URIS: &[&str] = &[
     // Attestation slice (REST-routed, unauthenticated)
     TASK_ATTESTATION_STATUS_1_0,
     TASK_ATTESTATION_REPORT_1_0,
+    // Consent slice
+    TASK_CONSENT_REQUEST_1_0,
+    TASK_CONSENT_DECISION_1_0,
+    TASK_CONSENT_REVOKE_1_0,
+    TASK_CONSENT_LIST_1_0,
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than
@@ -1231,6 +1263,7 @@ mod tests {
             "https://trusttasks.org/spec/did-management/",
             "https://trusttasks.org/spec/vault/",
             "https://trusttasks.org/spec/webvh/",
+            "https://trusttasks.org/spec/consent/",
         ];
         for uri in ALL_URIS {
             assert!(
