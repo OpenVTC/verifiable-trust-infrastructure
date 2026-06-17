@@ -154,10 +154,20 @@ pub async fn list_members(
                 }
                 items.push(MemberResponse::from_pair(acl, member));
             }
+            None if member.removed_at.is_some() => {
+                // Expected: a Tombstone / Historical departure deletes the ACL
+                // row but retains the Member row (PII cleared, `removed_at`
+                // set) as a "who was a member" record. It legitimately has no
+                // ACL — skip it from the active-member list without alarming.
+                tracing::debug!(
+                    did = %member.did,
+                    "skipping tombstoned/historical member (no ACL) in list response"
+                );
+            }
             None => {
-                // Member row without an ACL row would mean an
-                // out-of-band corruption. Log + skip rather than
-                // 500 — the page should still be returnable.
+                // A *live* member row with no ACL row is genuine out-of-band
+                // corruption (e.g. an interrupted purge). Log + skip rather
+                // than 500 — the page should still be returnable.
                 tracing::warn!(
                     did = %member.did,
                     "member row has no matching ACL entry; skipping in list response"

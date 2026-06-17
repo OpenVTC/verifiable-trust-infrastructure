@@ -223,6 +223,33 @@ async fn list_members_returns_seeded_members() {
 }
 
 #[tokio::test]
+async fn list_members_skips_tombstoned_member_with_no_acl() {
+    // A Tombstone/Historical departure deletes the ACL row but keeps the Member
+    // row (`removed_at` set). The list join must skip it cleanly (not 500, not
+    // surface it) — and, per the read path, without a corruption warning.
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zLive", VtcRole::Member).await;
+    // A tombstoned member: Member row only (no ACL entry), `removed_at` set.
+    let mut gone = Member::fresh("did:key:zGone");
+    gone.tombstone();
+    store_member(&fix.members_ks, &gone).await.unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/members",
+        LIST_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "tombstoned member is skipped");
+    assert_eq!(items[0]["did"], "did:key:zLive");
+}
+
+#[tokio::test]
 async fn list_members_filter_by_role_drops_non_matching() {
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zMember1", VtcRole::Member).await;
