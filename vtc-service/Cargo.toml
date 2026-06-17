@@ -110,6 +110,8 @@ vta-sdk = { path = "../vta-sdk", version = "0.14", features = [
   # `openapi` gates ToSchema on the vta-sdk protocol wire types the VTC
   # surface references (credential-exchange, discovery, etc.).
   "openapi",
+  # Lets `main()` install the rustls aws-lc-rs CryptoProvider at startup.
+  "crypto-provider",
 ] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm-service = { workspace = true }

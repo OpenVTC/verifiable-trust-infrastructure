@@ -49,6 +49,15 @@ keyring = [
   "dep:windows-native-keyring-store",
   "dep:dbus-secret-service-keyring-store",
 ]
+# Install the rustls `aws-lc-rs` `CryptoProvider` as the process default.
+# Required by every *binary* that performs TLS: `tonic 0.12.x` (via
+# `affinidi-did-resolver-cache-sdk`) forces the `ring` backend on
+# `rustls 0.23`, so with `aws_lc_rs` also compiled in rustls cannot
+# auto-select and panics. Each binary that enables this feature must call
+# `vta_sdk::crypto_init::install_default_crypto_provider()` once at startup,
+# before any TLS object is built. Off by default and zero-cost when off, so
+# library/mobile consumers that pick their own rustls backend skip it.
+crypto-provider = ["dep:rustls"]
 config-session = []
 azure-secrets = [
   "dep:azure_security_keyvault_secrets",
@@ -145,6 +154,8 @@ thiserror = { workspace = true }
 url = { workspace = true }
 affinidi-tdk = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+# Only for `crypto_init` (the aws-lc-rs CryptoProvider installer).
+rustls = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }

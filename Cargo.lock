@@ -10040,7 +10040,6 @@ version = "0.7.4"
 dependencies = [
  "base64 0.22.1",
  "clap",
- "rustls 0.23.40",
  "serde_json",
  "tokio",
  "tokio-vsock",
@@ -10155,6 +10154,7 @@ dependencies = [
  "nitro_attest",
  "reqwest 0.13.4",
  "ring",
+ "rustls 0.23.40",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -10227,7 +10227,6 @@ dependencies = [
  "p256",
  "rand 0.10.1",
  "reqwest 0.13.4",
- "rustls 0.23.40",
  "serde",
  "serde_ignored",
  "serde_json",

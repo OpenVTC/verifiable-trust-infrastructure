@@ -6,6 +6,11 @@
 //! Front-end binaries import this library and call `server::run()`
 //! with the appropriate store backend and TEE context.
 
+// Re-exported so front-end binaries (e.g. `vta-enclave`, which only depends
+// on this crate) can install the rustls aws-lc-rs CryptoProvider at startup
+// without taking a direct `vta-sdk` dependency.
+pub use vta_sdk::crypto_init;
+
 pub mod acl;
 pub mod acl_sweeper;
 pub mod audit;

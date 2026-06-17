@@ -33,6 +33,11 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() {
+    // Pin rustls to the aws-lc-rs backend before any TLS object is built;
+    // see `vta_sdk::crypto_init`. Without this, rustls 0.23 panics on
+    // backend auto-detection when both backends are compiled in.
+    vta_sdk::crypto_init::install_default_crypto_provider();
+
     install_force_exit_handler();
 
     // Migration cue: the `pnm mediator …` subcommand surface was

@@ -82,6 +82,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Pin rustls to the aws-lc-rs backend before any TLS object is built;
+    // see `vta_sdk::crypto_init`. Without this, rustls 0.23 panics on
+    // backend auto-detection when both backends are compiled in.
+    vta_sdk::crypto_init::install_default_crypto_provider();
+
     // stdout is the MCP JSON-RPC channel — logs MUST go to stderr.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

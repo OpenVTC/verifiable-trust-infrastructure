@@ -21,7 +21,7 @@ config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.14", features = ["session", "sealed-transfer", "attest-verify", "provision-integration"] }
+vta-sdk = { path = "../vta-sdk", version = "0.14", features = ["session", "sealed-transfer", "attest-verify", "provision-integration", "crypto-provider"] }
 affinidi-crypto = { workspace = true }
 base64 = { workspace = true }
 reqwest = { workspace = true }

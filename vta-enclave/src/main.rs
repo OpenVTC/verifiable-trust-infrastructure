@@ -39,8 +39,11 @@ struct Cli {
 
 #[tokio::main]
 async fn main() {
-    // tonic 0.12.x forces `ring` on tokio-rustls; without this, rustls 0.23 panics on backend auto-detection.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Pin rustls to the aws-lc-rs backend before any TLS object is built;
+    // see `vta_sdk::crypto_init` (re-exported by vta-service). Without this,
+    // rustls 0.23 panics on backend auto-detection when both backends are
+    // compiled in.
+    vta_service::crypto_init::install_default_crypto_provider();
 
     eprintln!("VTA enclave binary starting...");
 

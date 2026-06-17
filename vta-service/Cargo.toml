@@ -85,7 +85,7 @@ vti-common = { path = "../vti-common", version = "0.10", features = ["encryption
 # from this crate into a shared crate so external integrations can reuse them).
 # Per-backend features are activated by this crate's matching features below.
 vti-secrets = { path = "../vti-secrets", version = "0.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.14", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi"] }
+vta-sdk = { path = "../vta-sdk", version = "0.14", features = ["didcomm", "sealed-transfer", "provision-integration", "openapi", "crypto-provider"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -228,7 +228,6 @@ aws-sdk-dynamodb = { version = "1", optional = true }
 # didn't map directly to exploitation, but dropping the dep frees us
 # from the RustCrypto 0.11 ecosystem HOLD above.
 aws-lc-rs = { version = "1", optional = true }
-rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
