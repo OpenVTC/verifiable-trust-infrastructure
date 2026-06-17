@@ -54,7 +54,7 @@ repository = "https://github.com/OpenVTC/verifiable-trust-infrastructure"
 uniffi = "0.28"
 
 # Affinidi Trust Development Kit
-affinidi-tdk = "0.7"
+affinidi-tdk = "0.8"
 # Raw crypto primitives (ed25519↔x25519 conversion, did:key helpers). Pulled
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
@@ -62,7 +62,7 @@ affinidi-crypto = "0.2"
 # W3C VC Data Model 2.0 + Data Integrity proofs. Used by the
 # provision-integration flow (VP-framed bootstrap request, VC-issued
 # admin authorization). See CLAUDE.md "Authorization claims" principle.
-affinidi-vc = "0.1"
+affinidi-vc = "0.2"
 affinidi-data-integrity = "0.7"
 affinidi-status-list = "0.1.3"
 
@@ -82,11 +82,11 @@ affinidi-status-list = "0.1.3"
 # BBS proof path is wired. If you path-override these to the local TDK for an
 # unreleased change (e.g. DCQL), override the whole interdependent set together
 # to avoid a duplicate-version split.
-affinidi-sd-jwt-vc = "0.1.1"
+affinidi-sd-jwt-vc = "0.2"
 affinidi-sd-jwt = "0.1.2"
 affinidi-bbs = "0.3"
 affinidi-openid4vp = "0.1.2"
-affinidi-openid4vci = "0.1.2"
+affinidi-openid4vci = "0.2"
 affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.3"
 
