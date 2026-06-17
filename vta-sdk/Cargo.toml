@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.16.0"
+version = "0.16.1"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -197,9 +197,9 @@ getrandom = { version = "0.4", optional = true }
 # on them directly so the parse step is a standalone, fuzzable entry point and
 # the cert-chain walk takes an injectable trust anchor + clock (#449). `ring` is
 # a crypto dep, so pin a minimum patch per the workspace versioning policy.
-coset = { version = "0.3", optional = true, features = ["std"] }
-aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true, default-features = false }
-x509-parser = { version = "0.17", optional = true, features = ["verify", "validate"] }
+coset = { version = "0.4", optional = true, features = ["std"] }
+aws-nitro-enclaves-nsm-api = { version = "0.5", optional = true, default-features = false }
+x509-parser = { version = "0.18", optional = true, features = ["verify", "validate"] }
 ring = { version = "0.17.14", optional = true }
 time = { version = "0.3", optional = true, features = ["macros"] }
 # Scrub secret byte buffers on drop (sealed-transfer, key derivation).

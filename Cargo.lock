@@ -324,9 +324,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator"
-version = "0.16.2"
+version = "0.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3bfbb6e7615d05d557b4d9e7b3e18d5f5e462880decb035f6ebec7ec3b9a487"
+checksum = "42bf9a9bb2346c6cd28ee0a3519753825a8ff92258084b951356852f64cd372b"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-common",
@@ -381,7 +381,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.13.2",
+ "vta-sdk 0.16.0",
 ]
 
 [[package]]
@@ -1168,6 +1168,19 @@ name = "aws-nitro-enclaves-nsm-api"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92c1f4471b33f6a7af9ea421b249ed18a11c71156564baf6293148fa6ad1b09"
+dependencies = [
+ "libc",
+ "log",
+ "serde",
+ "serde_bytes",
+ "serde_cbor",
+]
+
+[[package]]
+name = "aws-nitro-enclaves-nsm-api"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "973aa18816fcc09c669dfc311362028f63f6f7b4142ef4e98461078d91ef46b7"
 dependencies = [
  "libc",
  "log",
@@ -2414,7 +2427,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
 ]
 
 [[package]]
@@ -2580,6 +2593,16 @@ name = "coset"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f4c8cc80f631f8307b887faca24dcc3abc427cd0367f6eb6188f6e8f5b7ad8fb"
+dependencies = [
+ "ciborium",
+ "ciborium-io",
+]
+
+[[package]]
+name = "coset"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1eb98d5e9155e2cf7cd942c8b3033097d4563b6fb0a00b9caecb74669555c058"
 dependencies = [
  "ciborium",
  "ciborium-io",
@@ -3174,7 +3197,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
 ]
 
 [[package]]
@@ -5928,8 +5951,8 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e20bcc68142b3690ee13e163ae3a131d8aefd84bed74ea63a303e736100c4c4"
 dependencies = [
- "aws-nitro-enclaves-nsm-api",
- "coset",
+ "aws-nitro-enclaves-nsm-api 0.4.0",
+ "coset 0.3.8",
  "hex",
  "rcgen",
  "ring",
@@ -6661,7 +6684,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
 ]
 
 [[package]]
@@ -9416,9 +9439,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17672c4815d70f475fe38cd4b25e2f0f68b52e8945f20ddbee977f904da7cd68"
+checksum = "4a85927618441eae15a2ef20da38cc939c940bc05ac6089b2f0e32de54b3ab82"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9927,7 +9950,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "vti-common",
  "x25519-dalek",
 ]
@@ -9960,7 +9983,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
 ]
 
 [[package]]
@@ -9983,14 +10006,14 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
 ]
 
 [[package]]
 name = "vta-sdk"
-version = "0.13.2"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d026cf4855d906e634970714983057edd900de360f7d00300305202fb38e5681"
+checksum = "fe8737bd8a3ca5a38deb81b687a28e05a1c10efac144dbd7494901aac8491ab7"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10018,7 +10041,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10034,13 +10057,13 @@ dependencies = [
  "affinidi-vc",
  "apple-native-keyring-store",
  "arbitrary",
- "aws-nitro-enclaves-nsm-api",
+ "aws-nitro-enclaves-nsm-api 0.5.1",
  "azure_identity",
  "azure_security_keyvault_secrets",
  "base64 0.22.1",
  "chrono",
  "ciborium",
- "coset",
+ "coset 0.4.2",
  "curve25519-dalek",
  "dbus-secret-service-keyring-store",
  "didwebvh-rs",
@@ -10068,7 +10091,7 @@ dependencies = [
  "windows-native-keyring-store",
  "wiremock",
  "x25519-dalek",
- "x509-parser 0.17.0",
+ "x509-parser 0.18.1",
  "zeroize",
 ]
 
@@ -10149,7 +10172,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10228,7 +10251,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10276,7 +10299,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10303,7 +10326,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "vta-service",
  "vti-common",
 ]
@@ -10332,7 +10355,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.16.0",
+ "vta-sdk 0.16.1",
  "vti-common",
 ]
 
@@ -11233,6 +11256,24 @@ name = "x509-parser"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4569f339c0c402346d4a75a9e39cf8dad310e287eef1ff56d4c68e5067f53460"
+dependencies = [
+ "asn1-rs 0.7.2",
+ "data-encoding",
+ "der-parser 10.0.0",
+ "lazy_static",
+ "nom",
+ "oid-registry 0.8.1",
+ "ring",
+ "rusticata-macros",
+ "thiserror 2.0.18",
+ "time",
+]
+
+[[package]]
+name = "x509-parser"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d43b0f71ce057da06bc0851b23ee24f3f86190b07203dd8f567d0b706a185202"
 dependencies = [
  "asn1-rs 0.7.2",
  "data-encoding",
