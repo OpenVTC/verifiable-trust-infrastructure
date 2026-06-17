@@ -625,7 +625,7 @@ const STEP_UP_APPROVE_REQUEST_TYPE: &str =
 /// same mediator and picks the message up there. Future `did:peer` / `did:webvh`
 /// approvers advertise their own mediator service and route there instead (not
 /// yet wired → `None`, so the relay fallback applies).
-fn approver_mediator(approver_did: &str, configured: Option<&str>) -> Option<String> {
+pub(super) fn approver_mediator(approver_did: &str, configured: Option<&str>) -> Option<String> {
     if !approver_did.starts_with("did:key:") {
         return None;
     }
@@ -698,7 +698,11 @@ async fn maybe_push_step_up(
 /// a DID. The VTA authenticates to the gateway as the authcrypt sender (it is on
 /// the handle's allowlist, provisioned at set-wake).
 #[cfg(feature = "didcomm")]
-async fn trigger_gateway_wake(state: &AppState, recipient: &str, approver_mediator: &str) {
+pub(super) async fn trigger_gateway_wake(
+    state: &AppState,
+    recipient: &str,
+    approver_mediator: &str,
+) {
     /// DIDComm message type that carries a Trust Task envelope in its body.
     const TRUST_TASK_ENVELOPE_TYPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
 

@@ -267,29 +267,27 @@ pub(super) async fn handle_request(
     // Resolve the approver for (platform, context). Default-deny: with no
     // approver bound, there is no one to route consent to → noApprover. Operators
     // bind one via consent/approver-set.
-    match &context {
-        Some(ctx) => {
-            match get_approver(&state.consent_approvers_ks, &subject.platform, ctx).await {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    return app_error_to_reject(
-                        &doc,
-                        AppError::Forbidden(
-                            "consent/request: no approver configured for this platform/context"
-                                .into(),
-                        ),
-                    );
-                }
-                Err(e) => return app_error_to_reject(&doc, e),
-            }
-        }
-        None => {
+    let Some(ctx) = context.clone() else {
+        return app_error_to_reject(
+            &doc,
+            AppError::Forbidden("consent/request: no context to resolve an approver".into()),
+        );
+    };
+    let binding = match get_approver(&state.consent_approvers_ks, &subject.platform, &ctx).await {
+        Ok(Some(b)) => b,
+        Ok(None) => {
             return app_error_to_reject(
                 &doc,
-                AppError::Forbidden("consent/request: no context to resolve an approver".into()),
+                AppError::Forbidden(
+                    "consent/request: no approver configured for this platform/context".into(),
+                ),
             );
         }
-    }
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
+    // Snapshot the prompt subject (camelCase) before `subject` is moved.
+    let wire_subject = serde_json::to_value(WireSubject::from(&subject)).unwrap_or_default();
 
     let pending = new_pending_consent(
         subject,
@@ -302,6 +300,21 @@ pub(super) async fn handle_request(
     if let Err(e) = store_pending_consent(&state.consent_ks, &pending).await {
         return app_error_to_reject(&doc, e);
     }
+
+    // Track B: a `wake`-routed approver is roused on their device with the prompt
+    // to sign a did-signed `consent/decision`. Best-effort — the mediator queue
+    // and the bridge-relay card remain fallbacks.
+    if binding.route == Some(ConsentRoute::Wake) {
+        maybe_wake_consent_approver(
+            state,
+            &binding.approver,
+            wire_subject,
+            payload.scope,
+            &payload.challenge,
+        )
+        .await;
+    }
+
     success_response(
         &doc,
         AckResponse {
@@ -310,6 +323,74 @@ pub(super) async fn handle_request(
             grant_id: None,
         },
     )
+}
+
+/// DIDComm message type carrying a consent prompt to a `wake`-routed approver's
+/// device, which renders it and replies with a signed `consent/decision`.
+#[cfg(feature = "didcomm")]
+const CONSENT_APPROVE_REQUEST_TYPE: &str =
+    "https://trusttasks.org/spec/consent/approve-request/0.1";
+
+/// Rouse a `wake`-routed approver: buffer the consent prompt to their mediator
+/// and ring the push-gateway doorbell. Best-effort; mirrors the step-up wake
+/// path (`maybe_push_step_up` + `trigger_gateway_wake`).
+#[cfg(feature = "didcomm")]
+async fn maybe_wake_consent_approver(
+    state: &AppState,
+    approver: &str,
+    subject: Value,
+    scope: ConsentScope,
+    challenge: &str,
+) {
+    let mediator_did = {
+        let cfg = state.config.read().await;
+        super::step_up::approver_mediator(
+            approver,
+            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
+        )
+    };
+    let Some(mediator_did) = mediator_did else {
+        tracing::debug!(
+            approver = %approver,
+            "no mediator route for wake approver; mediator pickup / relay fallback applies"
+        );
+        return;
+    };
+    let approve_request = serde_json::json!({
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "type": CONSENT_APPROVE_REQUEST_TYPE,
+        "payload": { "subject": subject, "scope": scope, "challenge": challenge },
+    });
+    let pending = crate::messaging::registry::PendingResponse {
+        recipient_did: approver.to_string(),
+        message_type: CONSENT_APPROVE_REQUEST_TYPE.to_string(),
+        body: approve_request.clone(),
+        thread_id: approve_request
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    if let Err(e) = state
+        .mediator_registry
+        .buffer_outbound(&mediator_did, pending)
+        .await
+    {
+        tracing::warn!(
+            error = %e, approver = %approver, mediator = %mediator_did,
+            "failed to buffer consent approve-request; mediator pickup applies"
+        );
+    }
+    super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+}
+
+#[cfg(not(feature = "didcomm"))]
+async fn maybe_wake_consent_approver(
+    _state: &AppState,
+    _approver: &str,
+    _subject: Value,
+    _scope: ConsentScope,
+    _challenge: &str,
+) {
 }
 
 /// `consent/decision/1.0` — an approver allows/denies; records a grant.
