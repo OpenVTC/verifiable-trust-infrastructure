@@ -232,11 +232,7 @@ fn tampered_issuer_signature_is_rejected() {
     let swapped = if last == 'A' { 'B' } else { 'A' };
     jws.push(swapped);
 
-    let forged = SdJwt {
-        jws,
-        disclosures: vc.sd_jwt.disclosures.clone(),
-        kb_jwt: vc.sd_jwt.kb_jwt.clone(),
-    };
+    let forged = SdJwt::new(jws, vc.sd_jwt.disclosures.clone(), vc.sd_jwt.kb_jwt.clone());
 
     let opts = VerificationOptions::default();
     let err = verify(&forged, &verifier, &hasher, &opts, None)

@@ -82,17 +82,16 @@ fn signed_authenticate_doc(
         "payload": { "challenge": challenge, "sessionId": session_id },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
-    let mut di = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm.to_string(),
+        "authentication".to_string(),
+        None,
         // Safely in the past — DI verify rejects future-dated proofs, and the
         // wall clock sits right on the 2026-06-01 boundary.
-        created: Some("2026-05-31T12:00:00Z".to_string()),
-        verification_method: vm.to_string(),
-        proof_purpose: "authentication".to_string(),
-        proof_value: None,
-        context: None,
-    };
+        Some("2026-05-31T12:00:00Z".to_string()),
+        None,
+    );
     let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
     di.proof_value = Some(multibase::encode(
         Base::Base58Btc,

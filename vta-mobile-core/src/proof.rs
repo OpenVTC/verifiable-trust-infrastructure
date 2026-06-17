@@ -22,15 +22,18 @@ pub(crate) fn attach_did_signed_proof<P: Serialize>(
     signer: &dyn Signer,
     created: &str,
 ) -> Result<(), FfiError> {
-    let mut proof_config = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some(created.to_string()),
-        verification_method: did_key_vm(&signer.did())?,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
+    // `DataIntegrityProof` is `#[non_exhaustive]` as of affinidi-data-integrity
+    // 0.7.6 — build via `new` (the in-process `sign` would require the holder
+    // key in Rust, which this flow deliberately avoids). `proof_value` is filled
+    // in below after the native signer produces the signature.
+    let mut proof_config = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        did_key_vm(&signer.did())?,
+        "assertionMethod".to_string(),
+        None,
+        Some(created.to_string()),
+        None,
+    );
 
     // Library does eddsa-jcs-2022 canonicalization + hashing of (document, proof
     // config); the native enclave signs the result.

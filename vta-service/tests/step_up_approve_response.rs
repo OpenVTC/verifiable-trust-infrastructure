@@ -100,15 +100,14 @@ async fn did_signed_approve_response_elevates_session_to_aal2() {
         },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
-    let mut di = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some("2026-05-31T00:00:00Z".to_string()),
-        verification_method: vm,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm,
+        "assertionMethod".to_string(),
+        None,
+        Some("2026-05-31T00:00:00Z".to_string()),
+        None,
+    );
     let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
     di.proof_value = Some(multibase::encode(
         Base::Base58Btc,
@@ -231,15 +230,14 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
         },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
-    let mut di = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some("2026-05-31T00:00:00Z".to_string()),
-        verification_method: vm,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm,
+        "assertionMethod".to_string(),
+        None,
+        Some("2026-05-31T00:00:00Z".to_string()),
+        None,
+    );
     let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
     di.proof_value = Some(multibase::encode(
         Base::Base58Btc,
@@ -468,15 +466,14 @@ async fn delegated_approve_response_elevates_the_subjects_session() {
         },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
-    let mut di = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some("2026-05-31T00:00:00Z".to_string()),
-        verification_method: approver_vm,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        approver_vm,
+        "assertionMethod".to_string(),
+        None,
+        Some("2026-05-31T00:00:00Z".to_string()),
+        None,
+    );
     let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
     di.proof_value = Some(multibase::encode(
         Base::Base58Btc,
@@ -607,15 +604,14 @@ async fn unauthorized_approver_cannot_elevate() {
         },
     });
     let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
-    let mut di = DataIntegrityProof {
-        type_: "DataIntegrityProof".to_string(),
-        cryptosuite: CryptoSuite::EddsaJcs2022,
-        created: Some("2026-05-31T00:00:00Z".to_string()),
-        verification_method: rogue_vm,
-        proof_purpose: "assertionMethod".to_string(),
-        proof_value: None,
-        context: None,
-    };
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        rogue_vm,
+        "assertionMethod".to_string(),
+        None,
+        Some("2026-05-31T00:00:00Z".to_string()),
+        None,
+    );
     let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
     di.proof_value = Some(multibase::encode(
         Base::Base58Btc,

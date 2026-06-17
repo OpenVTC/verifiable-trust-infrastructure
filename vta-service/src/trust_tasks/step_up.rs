@@ -1055,15 +1055,14 @@ mod tests {
         });
         let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
 
-        let mut di = DataIntegrityProof {
-            type_: "DataIntegrityProof".to_string(),
-            cryptosuite: CryptoSuite::EddsaJcs2022,
-            created: Some("2026-05-31T00:00:00Z".to_string()),
-            verification_method: vm.to_string(),
-            proof_purpose: "assertionMethod".to_string(),
-            proof_value: None,
-            context: None,
-        };
+        let mut di = DataIntegrityProof::new(
+            CryptoSuite::EddsaJcs2022,
+            vm.to_string(),
+            "assertionMethod".to_string(),
+            None,
+            Some("2026-05-31T00:00:00Z".to_string()),
+            None,
+        );
         let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
         let sig = sk.sign(&input);
         di.proof_value = Some(multibase::encode(Base::Base58Btc, sig.to_bytes()));
