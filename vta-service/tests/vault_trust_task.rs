@@ -31,7 +31,8 @@ use tower::ServiceExt;
 use vta_service::test_support::{TestAppContext, build_test_app};
 use vti_common::auth::session::{Session, SessionState, now_epoch, store_session};
 use vti_common::vault::{
-    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, put_stored_vault_entry,
+    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, VaultStatus,
+    put_stored_vault_entry,
 };
 
 // URIs (kept as literals so a constant rename in the SDK surfaces here too).
@@ -39,6 +40,10 @@ const LIST: &str = "https://trusttasks.org/spec/vault/list/0.1";
 const GET: &str = "https://trusttasks.org/spec/vault/get/0.1";
 const UPSERT: &str = "https://trusttasks.org/spec/vault/upsert/0.1";
 const DELETE: &str = "https://trusttasks.org/spec/vault/delete/0.1";
+const ARCHIVE: &str = "https://trusttasks.org/spec/vault/archive/0.1";
+const UNARCHIVE: &str = "https://trusttasks.org/spec/vault/unarchive/0.1";
+const RESTORE: &str = "https://trusttasks.org/spec/vault/restore/0.1";
+const PURGE: &str = "https://trusttasks.org/spec/vault/purge/0.1";
 const RELEASE: &str = "https://trusttasks.org/spec/vault/release/0.1";
 const PROXY_LOGIN: &str = "https://trusttasks.org/spec/vault/proxy-login/0.1";
 const SIGN_TT: &str = "https://trusttasks.org/spec/vault/sign-trust-task/0.1";
@@ -135,6 +140,10 @@ async fn seed_entry(ctx: &TestAppContext, id: &str, context_id: &str) {
             last_used_at: None,
             version: 1,
             principal_did: None,
+            status: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         },
         secret: VaultSecret::Password {
             username: Some("alice".to_string()),
@@ -165,6 +174,10 @@ async fn every_vault_uri_denied_without_capability() {
             json!({ "contextId": "ctx1", "targets": [], "label": "x", "secretKind": "password" }),
         ),
         (DELETE, json!({ "id": "entry-1" })),
+        (ARCHIVE, json!({ "id": "entry-1" })),
+        (UNARCHIVE, json!({ "id": "entry-1" })),
+        (RESTORE, json!({ "id": "entry-1" })),
+        (PURGE, json!({ "id": "entry-1" })),
         (RELEASE, json!({ "entryId": "entry-1" })),
         (PROXY_LOGIN, json!({ "entryId": "entry-1" })),
         (
@@ -209,6 +222,10 @@ async fn reader_passes_read_gates_but_not_the_others() {
             json!({ "contextId": "ctx1", "targets": [], "label": "x", "secretKind": "password" }),
         ),
         (DELETE, json!({ "id": "entry-1" })),
+        (ARCHIVE, json!({ "id": "entry-1" })),
+        (UNARCHIVE, json!({ "id": "entry-1" })),
+        (RESTORE, json!({ "id": "entry-1" })),
+        (PURGE, json!({ "id": "entry-1" })),
         (RELEASE, json!({ "entryId": "entry-1" })),
         (PROXY_LOGIN, json!({ "entryId": "entry-1" })),
         (
@@ -255,21 +272,154 @@ async fn get_happy_path_returns_entry_metadata() {
 }
 
 #[tokio::test]
-async fn delete_happy_path_removes_entry() {
+async fn delete_is_recoverable_soft_delete() {
     let (router, ctx) = build_test_app().await;
     seed_entry(&ctx, "entry-c", "ctx1").await;
     let token = authed(&ctx, "admin", &[]).await;
 
+    // Soft delete → tombstone with a real grace window (graceUntil > deletedAt).
     let (status, body) = post_vault(&router, &token, DELETE, json!({ "id": "entry-c" })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    let deleted_at = v["payload"]["deletedAt"].as_str().unwrap();
+    let grace_until = v["payload"]["graceUntil"].as_str().unwrap();
+    assert!(
+        grace_until > deleted_at,
+        "soft delete has a real grace window: {body}"
+    );
 
-    // A subsequent get is now not-found (conflated with permission-denied).
-    let (get_status, _) = post_vault(&router, &token, GET, json!({ "id": "entry-c" })).await;
-    assert_ne!(
+    // The entry is still retrievable (status=deleted), restorable...
+    let (get_status, get_body) = post_vault(&router, &token, GET, json!({ "id": "entry-c" })).await;
+    assert_eq!(
         get_status,
         StatusCode::OK,
-        "entry should be gone after delete"
+        "tombstone is still gettable: {get_body}"
     );
+    let g: Value = serde_json::from_str(&get_body).unwrap();
+    assert_eq!(g["payload"]["entry"]["status"], "deleted", "{get_body}");
+
+    // ...but excluded from the default (active-only) list.
+    let (_, list_body) = post_vault(&router, &token, LIST, json!({})).await;
+    assert!(
+        !list_body.contains("entry-c"),
+        "default list hides tombstones: {list_body}"
+    );
+    // ...and visible under the trash view.
+    let (_, trash_body) = post_vault(&router, &token, LIST, json!({ "status": "deleted" })).await;
+    assert!(
+        trash_body.contains("entry-c"),
+        "trash view shows tombstones: {trash_body}"
+    );
+
+    // Restore brings it back to active.
+    let (rs, rb) = post_vault(&router, &token, RESTORE, json!({ "id": "entry-c" })).await;
+    assert_eq!(rs, StatusCode::OK, "{rb}");
+    let (_, list2) = post_vault(&router, &token, LIST, json!({})).await;
+    assert!(
+        list2.contains("entry-c"),
+        "restored entry is active again: {list2}"
+    );
+}
+
+#[tokio::test]
+async fn delete_force_hard_deletes_immediately() {
+    let (router, ctx) = build_test_app().await;
+    seed_entry(&ctx, "entry-f", "ctx1").await;
+    let token = authed(&ctx, "admin", &[]).await;
+
+    let (status, body) = post_vault(
+        &router,
+        &token,
+        DELETE,
+        json!({ "id": "entry-f", "force": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Forced delete is gone for good — no grace window, not gettable.
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["payload"]["graceUntil"], v["payload"]["deletedAt"],
+        "forced → no grace window"
+    );
+    let (get_status, _) = post_vault(&router, &token, GET, json!({ "id": "entry-f" })).await;
+    assert_ne!(get_status, StatusCode::OK, "force-deleted entry is gone");
+}
+
+#[tokio::test]
+async fn archive_hides_and_blocks_then_unarchive_restores() {
+    let (router, ctx) = build_test_app().await;
+    seed_entry(&ctx, "entry-a", "ctx1").await;
+    let token = authed(&ctx, "admin", &[]).await;
+
+    // Archive → dropped from default list, refused for release.
+    let (status, body) = post_vault(&router, &token, ARCHIVE, json!({ "id": "entry-a" })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list_body) = post_vault(&router, &token, LIST, json!({})).await;
+    assert!(
+        !list_body.contains("entry-a"),
+        "archived entry hidden from default list"
+    );
+    let (rel_status, _) =
+        post_vault(&router, &token, RELEASE, json!({ "entryId": "entry-a" })).await;
+    assert_ne!(
+        rel_status,
+        StatusCode::OK,
+        "archived entry refuses release (not_found)"
+    );
+
+    // Double-archive is rejected.
+    let (again, again_body) =
+        post_vault(&router, &token, ARCHIVE, json!({ "id": "entry-a" })).await;
+    assert_ne!(
+        again,
+        StatusCode::OK,
+        "double-archive rejected: {again_body}"
+    );
+
+    // Unarchive returns it to active + listable.
+    let (us, ub) = post_vault(&router, &token, UNARCHIVE, json!({ "id": "entry-a" })).await;
+    assert_eq!(us, StatusCode::OK, "{ub}");
+    let (_, list2) = post_vault(&router, &token, LIST, json!({})).await;
+    assert!(
+        list2.contains("entry-a"),
+        "unarchived entry is active again"
+    );
+}
+
+#[tokio::test]
+async fn purge_is_irreversible() {
+    let (router, ctx) = build_test_app().await;
+    seed_entry(&ctx, "entry-p", "ctx1").await;
+    let token = authed(&ctx, "admin", &[]).await;
+
+    // Soft-delete then purge the tombstone.
+    let (_, _) = post_vault(&router, &token, DELETE, json!({ "id": "entry-p" })).await;
+    let (ps, pb) = post_vault(&router, &token, PURGE, json!({ "id": "entry-p" })).await;
+    assert_eq!(ps, StatusCode::OK, "{pb}");
+    // Gone from every view.
+    let (get_status, _) = post_vault(&router, &token, GET, json!({ "id": "entry-p" })).await;
+    assert_ne!(get_status, StatusCode::OK, "purged entry is gone");
+    let (_, trash_body) = post_vault(&router, &token, LIST, json!({ "status": "deleted" })).await;
+    assert!(
+        !trash_body.contains("entry-p"),
+        "purged entry gone from trash too"
+    );
+}
+
+#[tokio::test]
+async fn restore_of_active_entry_is_rejected() {
+    let (router, ctx) = build_test_app().await;
+    seed_entry(&ctx, "entry-r", "ctx1").await;
+    let token = authed(&ctx, "admin", &[]).await;
+
+    // Restoring an entry that was never deleted is a no-op error.
+    let (status, body) = post_vault(&router, &token, RESTORE, json!({ "id": "entry-r" })).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "restore of an active entry is rejected: {body}"
+    );
+    assert!(body.contains("not_deleted"), "{body}");
 }
 
 // ── cross-context-denied ──

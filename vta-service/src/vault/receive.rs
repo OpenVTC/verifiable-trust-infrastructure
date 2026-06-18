@@ -247,6 +247,10 @@ pub async fn receive_sd_jwt_vc(
         // Store the credential verbatim as the holder received it, so a later
         // present/refresh re-parses the exact bytes. Opaque to the store.
         body: compact.as_bytes().to_vec(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
     };
 
     // Single, final side effect. Reached only after both checks passed, so
@@ -362,6 +366,10 @@ pub async fn receive_di_vc(
         source,
         tags: std::collections::BTreeMap::new(),
         body: vc_json.to_vec(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
     };
 
     storage::put(vault, &cred).await?;

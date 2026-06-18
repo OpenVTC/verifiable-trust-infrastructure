@@ -4,9 +4,9 @@ use std::time::Duration;
 use affinidi_messaging_didcomm::{Message, UnpackMetadata};
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
-    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RequestLogging,
-    RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
-    trust_ping_handler,
+    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, MiddlewareResult,
+    Next, RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
+    middleware_fn, trust_ping_handler,
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
@@ -158,7 +158,7 @@ pub async fn run_didcomm_service(
     // default `debug!`, catching a protocol-type drift between client and VTC
     // (a message arrives, matches no handler, and is silently dropped).
     let router = router
-        .layer(RequestLogging)
+        .layer(middleware_fn(log_request_middleware))
         .fallback(handler_fn(unhandled_message_handler));
 
     info!(
@@ -237,6 +237,43 @@ pub async fn run_didcomm_service(
     service.shutdown().await;
     event_task.abort();
     info!("DIDComm service stopped");
+}
+
+/// Per-message request logger (replaces the library's `RequestLogging`) — logs
+/// every inbound message that is unpacked + dispatched (type, sender, outcome,
+/// latency) at `info!`, EXCEPT the high-frequency message-pickup status poll,
+/// which is a no-op (`ignore_handler`) and just floods the log.
+async fn log_request_middleware(
+    ctx: HandlerContext,
+    message: Message,
+    meta: UnpackMetadata,
+    next: Next,
+) -> MiddlewareResult {
+    if message.typ == MESSAGE_PICKUP_STATUS_TYPE {
+        // Dispatch silently — no log line for the pickup-status heartbeat.
+        return next.run(ctx, message, meta).await;
+    }
+    let start = std::time::Instant::now();
+    let message_type = message.typ.clone();
+    let sender = ctx
+        .sender_did
+        .clone()
+        .unwrap_or_else(|| "<anon>".to_string());
+    let result = next.run(ctx, message, meta).await;
+    let status = match &result {
+        Ok(Some(_)) => "ok(response)",
+        Ok(None) => "ok(empty)",
+        Err(_) => "error",
+    };
+    info!(
+        target: "didcomm_server::request",
+        message_type = %message_type,
+        sender = %sender,
+        status,
+        latency = ?start.elapsed(),
+        "Request processed"
+    );
+    result
 }
 
 /// Build a DIDComm problem-report reply, threaded to the request, so a
@@ -342,7 +379,8 @@ async fn join_request_submit_handler(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
-    // Entry log: `RequestLogging` only fires once the handler *returns*, so an
+    let applicant_log = applicant_did.clone();
+    // Entry log: the request logger only fires once the handler *returns*, so an
     // explicit log here distinguishes "join received + processing started" from
     // a handler that received the request but then stalled (no completion log).
     info!(
@@ -357,6 +395,20 @@ async fn join_request_submit_handler(
     let body = inbound_doc_bytes(&message)?;
     let ctx = JoinAuthCtx::didcomm(applicant_did);
     let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    // Outcome observability (preserved from #539): a refused join must be loud —
+    // it replies with a `trust-task-error` and stores nothing, so without this
+    // it would look like it "silently went nowhere"; a processed one logs at
+    // info. The reply document carries the typed reject code.
+    if outcome.status.is_success() {
+        info!(applicant = %applicant_log, thid = %thid, "join-request processed");
+    } else {
+        warn!(
+            applicant = %applicant_log,
+            thid = %thid,
+            status = outcome.status.as_u16(),
+            "join-request refused — trust-task-error returned, no member or pending request created"
+        );
+    }
     tt_didcomm_reply(outcome, thid)
 }
 

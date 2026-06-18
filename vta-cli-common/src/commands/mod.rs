@@ -2,6 +2,7 @@ pub mod acl;
 pub mod audit;
 pub mod config;
 pub mod contexts;
+pub mod cred_vault;
 pub mod credentials;
 pub mod device;
 pub mod did_templates;

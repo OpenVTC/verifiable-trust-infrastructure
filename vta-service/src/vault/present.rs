@@ -263,6 +263,14 @@ pub(super) async fn gate_present(
         cred
     };
 
+    // Archived / soft-deleted credentials are not presentable — archival
+    // lifecycle is orthogonal to validity but equally disqualifying.
+    if !cred.is_active() {
+        return Err(AppError::Forbidden(format!(
+            "credential `{credential_id}` is archived or deleted; cannot present"
+        )));
+    }
+
     // Never present a revoked / temporally-invalid credential (§14.5).
     if cred.status != CredentialStatus::Valid {
         return Err(AppError::Forbidden(format!(
@@ -578,6 +586,10 @@ mod tests {
             source: None,
             tags: Default::default(),
             body: compact.into_bytes(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         };
         storage::put(vault, &cred).await.expect("put");
     }
@@ -1633,6 +1645,10 @@ mod tests {
             source: None,
             tags: Default::default(),
             body: serde_json::to_vec(&vc).unwrap(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         };
         storage::put(vault, &cred).await.expect("put DI VC");
     }
@@ -1669,6 +1685,10 @@ mod tests {
             source: None,
             tags: Default::default(),
             body: serde_json::to_vec(&vc).unwrap(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         };
         storage::put(vault, &cred).await.expect("put DI VC");
     }

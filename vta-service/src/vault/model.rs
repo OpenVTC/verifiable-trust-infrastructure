@@ -23,6 +23,7 @@
 //!   primitives to build on.
 
 use serde::{Deserialize, Serialize};
+use vti_common::vault::{LifecycleError, VaultStatus, default_active};
 
 /// Reserved [`StoredCredential::tags`] key holding the BBS pseudonym holder
 /// link secret (`prover_nym`), base64url-no-pad. See [`StoredCredential::tags`].
@@ -189,6 +190,87 @@ pub struct StoredCredential {
     /// byte vector; the format-agnostic store makes no assumption about
     /// whether it is a UTF-8 JWT, CBOR, or anything else.
     pub body: Vec<u8>,
+    /// **Archival** lifecycle state — orthogonal to `status` (which is
+    /// *validity*, status-list driven and overwritten by
+    /// [`crate::vault::status::refresh_status`]). Reuses the password-vault
+    /// [`VaultStatus`]. `Active` by default (and for records stored before
+    /// the lifecycle existed). `Archived`/`Deleted` credentials are excluded
+    /// from query/present; a `Deleted` credential is a recoverable tombstone
+    /// the sweeper hard-purges (index rows and all) at `grace_until`.
+    #[serde(
+        default = "default_active",
+        skip_serializing_if = "VaultStatus::is_active"
+    )]
+    pub lifecycle: VaultStatus,
+    /// RFC 3339 — set iff `lifecycle == Archived`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// RFC 3339 — set iff `lifecycle == Deleted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    /// RFC 3339 purge deadline — recoverable via restore while `now <
+    /// grace_until`. Set iff `lifecycle == Deleted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_until: Option<String>,
+}
+
+impl StoredCredential {
+    /// `true` when the credential is in normal use (not archived/deleted) —
+    /// the only state from which it may be presented.
+    pub fn is_active(&self) -> bool {
+        self.lifecycle.is_active()
+    }
+
+    /// `Active → Archived`. Refused (`NotActive`) otherwise.
+    pub fn archive(&mut self, now: &str) -> Result<(), LifecycleError> {
+        if self.lifecycle != VaultStatus::Active {
+            return Err(LifecycleError::NotActive);
+        }
+        self.lifecycle = VaultStatus::Archived;
+        self.archived_at = Some(now.to_string());
+        Ok(())
+    }
+
+    /// `Archived → Active`. Refused (`NotArchived`) otherwise.
+    pub fn unarchive(&mut self) -> Result<(), LifecycleError> {
+        if self.lifecycle != VaultStatus::Archived {
+            return Err(LifecycleError::NotArchived);
+        }
+        self.lifecycle = VaultStatus::Active;
+        self.archived_at = None;
+        Ok(())
+    }
+
+    /// `Active|Archived → Deleted` (recoverable tombstone). Refused
+    /// (`AlreadyDeleted`) if already a tombstone — restore or purge instead.
+    pub fn soft_delete(&mut self, now: &str, grace_until: &str) -> Result<(), LifecycleError> {
+        if self.lifecycle == VaultStatus::Deleted {
+            return Err(LifecycleError::AlreadyDeleted);
+        }
+        self.lifecycle = VaultStatus::Deleted;
+        self.archived_at = None;
+        self.deleted_at = Some(now.to_string());
+        self.grace_until = Some(grace_until.to_string());
+        Ok(())
+    }
+
+    /// `Deleted → Active`, only while still inside the grace window. Refused
+    /// `NotDeleted` if not a tombstone, or `GraceExpired` if `now >=
+    /// grace_until`. Lexical RFC 3339 comparison (house style).
+    pub fn restore(&mut self, now: &str) -> Result<(), LifecycleError> {
+        if self.lifecycle != VaultStatus::Deleted {
+            return Err(LifecycleError::NotDeleted);
+        }
+        if let Some(grace) = self.grace_until.as_deref()
+            && now >= grace
+        {
+            return Err(LifecycleError::GraceExpired);
+        }
+        self.lifecycle = VaultStatus::Active;
+        self.deleted_at = None;
+        self.grace_until = None;
+        Ok(())
+    }
 }
 
 impl StoredCredential {
@@ -242,5 +324,95 @@ impl IndexField {
             IndexField::Purpose => "purpose",
             IndexField::Status => "status",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> StoredCredential {
+        StoredCredential {
+            id: "cred-1".into(),
+            format: CredentialFormat::SdJwtVc,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: Some("did:web:acme".into()),
+            subject_did: None,
+            issuer_did: Some("did:web:issuer".into()),
+            purpose: Some(CredentialPurpose::Membership),
+            status: CredentialStatus::Valid,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-06-03T00:00:00Z".into(),
+            source: None,
+            tags: std::collections::BTreeMap::new(),
+            body: b"opaque".to_vec(),
+            lifecycle: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        }
+    }
+
+    #[test]
+    fn legacy_credential_without_lifecycle_defaults_active() {
+        // A record persisted before the lifecycle existed lacks the new keys.
+        let legacy = r#"{
+            "id":"c","format":"sd-jwt-vc","types":[],"status":"valid",
+            "receivedAt":"2026-01-01T00:00:00Z","body":[1,2,3]
+        }"#;
+        let cred: StoredCredential = serde_json::from_str(legacy).expect("parse legacy");
+        assert_eq!(cred.lifecycle, VaultStatus::Active);
+        assert!(cred.is_active());
+        // Active credentials re-emit without the lifecycle key (wire stays clean).
+        let re = serde_json::to_string(&cred).unwrap();
+        assert!(
+            !re.contains("lifecycle"),
+            "active cred omits lifecycle: {re}"
+        );
+    }
+
+    #[test]
+    fn credential_lifecycle_transitions() {
+        let t0 = "2026-06-18T10:00:00+00:00";
+        let grace = "2026-07-18T10:00:00+00:00";
+
+        // archive / unarchive.
+        let mut c = sample();
+        c.archive(t0).unwrap();
+        assert_eq!(c.lifecycle, VaultStatus::Archived);
+        assert_eq!(c.archived_at.as_deref(), Some(t0));
+        assert!(!c.is_active());
+        assert_eq!(c.archive(t0), Err(LifecycleError::NotActive));
+        c.unarchive().unwrap();
+        assert!(c.is_active() && c.archived_at.is_none());
+        assert_eq!(c.unarchive(), Err(LifecycleError::NotArchived));
+
+        // soft delete / restore inside the window.
+        let mut c = sample();
+        c.soft_delete(t0, grace).unwrap();
+        assert_eq!(c.lifecycle, VaultStatus::Deleted);
+        assert_eq!(c.grace_until.as_deref(), Some(grace));
+        assert_eq!(
+            c.soft_delete(t0, grace),
+            Err(LifecycleError::AlreadyDeleted)
+        );
+        c.restore(t0).unwrap();
+        assert!(c.is_active());
+        assert_eq!(c.restore(t0), Err(LifecycleError::NotDeleted));
+
+        // restore after grace is refused (sweeper owns it).
+        let mut c = sample();
+        c.soft_delete(t0, grace).unwrap();
+        assert_eq!(
+            c.restore("2026-08-01T00:00:00+00:00"),
+            Err(LifecycleError::GraceExpired)
+        );
+        assert_eq!(
+            c.lifecycle,
+            VaultStatus::Deleted,
+            "failed restore is a no-op"
+        );
     }
 }

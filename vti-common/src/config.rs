@@ -99,6 +99,31 @@ impl Default for AuditConfig {
     }
 }
 
+/// Vault lifecycle tuning. Shared shape so both the VTA password vault and
+/// the VTA credential store read the same grace window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultConfig {
+    /// Days a soft-deleted (tombstoned) vault entry or credential remains
+    /// recoverable before the sweeper hard-purges it. Applied at delete time
+    /// (`grace_until = now + grace_days`); the sweeper only compares against
+    /// the stored `grace_until`. Default 30. A `delete --force` / `purge`
+    /// bypasses the window entirely.
+    #[serde(default = "default_vault_grace_days")]
+    pub grace_days: u32,
+}
+
+fn default_vault_grace_days() -> u32 {
+    30
+}
+
+impl Default for VaultConfig {
+    fn default() -> Self {
+        Self {
+            grace_days: default_vault_grace_days(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {

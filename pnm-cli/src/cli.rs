@@ -140,6 +140,15 @@ pub(crate) enum Commands {
         command: VaultCommands,
     },
 
+    /// Credential store — the W3C credentials the holder *holds*
+    /// (invitations, memberships, roles). Distinct from `vault` (secrets):
+    /// receive/query/get plus the archival lifecycle
+    /// (archive/delete/restore/purge).
+    CredVault {
+        #[command(subcommand)]
+        command: CredVaultCommands,
+    },
+
     /// Generate auth credentials for applications and services
     AuthCredential {
         #[command(subcommand)]
@@ -1730,25 +1739,83 @@ pub(crate) enum DeviceCommands {
 /// (`upsert`, `release`) use `didcomm-authcrypt` and require DIDComm transport.
 #[derive(Subcommand)]
 pub(crate) enum VaultCommands {
-    /// List vault-entry metadata (no secrets). `VaultRead`.
+    /// List vault-entry metadata (no secrets). `VaultRead`. By default only
+    /// active entries are shown — use `--status` for the archive/trash views.
     List {
         /// Path to a JSON filter object (or `-` for stdin). Omit for all.
         #[arg(long)]
         filters_file: Option<String>,
+        /// Lifecycle view: `active` (default), `archived`, `deleted`, or `all`.
+        #[arg(long)]
+        status: Option<String>,
     },
     /// Show a single entry's metadata by id (no secret). `VaultRead`.
     Get {
         /// The vault entry id.
         id: String,
     },
-    /// Delete an entry by id, with optional optimistic-concurrency check.
-    /// `VaultWrite`.
+    /// Delete an entry by id. Default is a RECOVERABLE soft delete (restore
+    /// with `vault restore` until the grace window lapses); `--force` makes it
+    /// an immediate, irreversible hard delete. `VaultWrite`.
     Delete {
         /// The vault entry id.
         id: String,
         /// Expected current version (reject on mismatch).
         #[arg(long)]
         expected_version: Option<u32>,
+        /// Skip the grace window and hard-delete immediately (NO recovery).
+        #[arg(long)]
+        force: bool,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Archive an entry: hide it from the default list and refuse it for use,
+    /// while keeping it restorable with `vault unarchive`. `VaultWrite`.
+    Archive {
+        /// The vault entry id.
+        id: String,
+        /// Expected current version (reject on mismatch).
+        #[arg(long)]
+        expected_version: Option<u32>,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Return an archived entry to active. `VaultWrite`.
+    Unarchive {
+        /// The vault entry id.
+        id: String,
+        /// Expected current version (reject on mismatch).
+        #[arg(long)]
+        expected_version: Option<u32>,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Restore (undelete) a soft-deleted entry — only works inside the grace
+    /// window before the sweeper purges it. `VaultWrite`.
+    Restore {
+        /// The vault entry id.
+        id: String,
+        /// Expected current version (reject on mismatch).
+        #[arg(long)]
+        expected_version: Option<u32>,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Permanently purge an entry, skipping any grace window. IRREVERSIBLE.
+    /// `VaultWrite`.
+    Purge {
+        /// The vault entry id.
+        id: String,
+        /// Expected current version (reject on mismatch).
+        #[arg(long)]
+        expected_version: Option<u32>,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// Create/update an entry. `VaultWrite`. `--entry-file` carries the entry
     /// fields (`contextId`, `targets`, `label`, `secretKind`, …);
@@ -1783,6 +1850,86 @@ pub(crate) enum VaultCommands {
         /// Path to the request JSON (or `-` for stdin).
         #[arg(long)]
         file: String,
+    },
+}
+
+/// Credential-store subcommands (`pnm cred-vault …`). The store holds the
+/// W3C credentials the holder *holds*; bodies are presentable VCs (plain
+/// JSON, no sealed envelope). Read paths gate on `VaultRead`, `receive` on
+/// `VaultWrite`, and the archival lifecycle on the new `CredentialWrite`.
+#[derive(Subcommand)]
+pub(crate) enum CredVaultCommands {
+    /// Verify + store a received credential (e.g. an invitation). `VaultWrite`.
+    Receive {
+        /// Path to the credential VC JSON (or `-` for stdin).
+        #[arg(long)]
+        credential_file: String,
+        /// Storage id override (defaults to the VC's own `id`).
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Filtered (DCQL-shaped) search over held credentials → body-free
+    /// descriptors. At least one filter field is required. `VaultRead`.
+    Query {
+        /// Path to a JSON filter object (or `-` for stdin): any of `type`,
+        /// `communityDid`, `issuerDid`, `purpose`, `status`.
+        #[arg(long)]
+        filter_file: String,
+    },
+    /// Fetch one held credential's full body by id, for presentation.
+    /// `VaultRead`.
+    Get {
+        /// The credential id.
+        id: String,
+    },
+    /// Archive a credential: hide it from query and refuse presentation,
+    /// while keeping it restorable with `cred-vault unarchive`.
+    /// `CredentialWrite`.
+    Archive {
+        /// The credential id.
+        id: String,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Return an archived credential to active. `CredentialWrite`.
+    Unarchive {
+        /// The credential id.
+        id: String,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Delete a credential. Default is a RECOVERABLE soft delete (restore
+    /// with `cred-vault restore` until the grace window lapses); `--force`
+    /// hard-deletes immediately (no recovery). `CredentialWrite`.
+    Delete {
+        /// The credential id.
+        id: String,
+        /// Skip the grace window and hard-delete immediately (NO recovery).
+        #[arg(long)]
+        force: bool,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Restore (undelete) a soft-deleted credential — only inside the grace
+    /// window before the sweeper purges it. `CredentialWrite`.
+    Restore {
+        /// The credential id.
+        id: String,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Permanently purge a credential (and its index rows), skipping any
+    /// grace window. IRREVERSIBLE. `CredentialWrite`.
+    Purge {
+        /// The credential id.
+        id: String,
+        /// Rationale recorded in the audit trail.
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 

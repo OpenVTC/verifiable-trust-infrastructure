@@ -17,15 +17,40 @@ pub(crate) async fn run(
     command: VaultCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        VaultCommands::List { filters_file } => {
+        VaultCommands::List {
+            filters_file,
+            status,
+        } => {
             let filters = filters_file.as_deref().map(read_json).transpose()?;
-            v::cmd_vault_list(client, filters).await
+            v::cmd_vault_list(client, filters, status).await
         }
         VaultCommands::Get { id } => v::cmd_vault_get(client, id).await,
         VaultCommands::Delete {
             id,
             expected_version,
-        } => v::cmd_vault_delete(client, id, expected_version).await,
+            force,
+            reason,
+        } => v::cmd_vault_delete(client, id, expected_version, force, reason).await,
+        VaultCommands::Archive {
+            id,
+            expected_version,
+            reason,
+        } => v::cmd_vault_archive(client, id, expected_version, reason).await,
+        VaultCommands::Unarchive {
+            id,
+            expected_version,
+            reason,
+        } => v::cmd_vault_unarchive(client, id, expected_version, reason).await,
+        VaultCommands::Restore {
+            id,
+            expected_version,
+            reason,
+        } => v::cmd_vault_restore(client, id, expected_version, reason).await,
+        VaultCommands::Purge {
+            id,
+            expected_version,
+            reason,
+        } => v::cmd_vault_purge(client, id, expected_version, reason).await,
         VaultCommands::Upsert {
             entry_file,
             secret_file,

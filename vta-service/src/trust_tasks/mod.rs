@@ -337,7 +337,30 @@ pub(crate) async fn dispatch_trust_task_core(
     // handler ignores it.
     use wire_v0_2::{WIRE_VERSION, WireVersion};
     let type_uri = doc.type_uri.to_string();
-    if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
+
+    // Blanket vault audit: capture the audit context BEFORE `doc` is moved
+    // into dispatch. Every password-vault and credential-vault task — read or
+    // write, success or denied — produces exactly one persisted audit row here
+    // (the one place that sees the type URI, the authenticated actor, and the
+    // final outcome). Non-vault tasks audit through their own handlers/ops.
+    let vault_audit = vault_audit_action(&type_uri).map(|action| {
+        let resource = vault_audit_resource(&doc.payload);
+        let context_id = doc
+            .payload
+            .get("contextId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        // Operator-supplied rationale (the `reason` field that delete/archive/
+        // restore/purge carry) — persisted so "audit the reason" is satisfied.
+        let detail = doc
+            .payload
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        (action, resource, context_id, detail)
+    });
+
+    let outcome = if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
         let mut doc = doc;
         wire_v0_2::downconvert_request(&mut doc.payload, spec);
         if let Ok(uri_0_1) = spec.uri_0_1.parse() {
@@ -346,11 +369,80 @@ pub(crate) async fn dispatch_trust_task_core(
         let outcome = WIRE_VERSION
             .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
             .await;
-        return wire_v0_2::upconvert_response(outcome, spec);
-    }
-    WIRE_VERSION
-        .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
+        wire_v0_2::upconvert_response(outcome, spec)
+    } else {
+        WIRE_VERSION
+            .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
+            .await
+    };
+
+    if let Some((action, resource, context_id, detail)) = vault_audit {
+        let label = vault_audit_outcome_label(&outcome);
+        if let Err(e) = crate::audit::record_with_detail(
+            &state.audit_ks,
+            &action,
+            &auth.did,
+            resource.as_deref(),
+            &label,
+            Some(helpers::TRANSPORT_TRUST_TASK),
+            context_id.as_deref(),
+            detail.as_deref(),
+        )
         .await
+        {
+            // Audit is best-effort: a failed write must never fail the op.
+            tracing::warn!(error = %e, action = %action, "vault audit record failed");
+        }
+    }
+
+    outcome
+}
+
+/// Audit action string for a vault-family Trust Task, or `None` for any task
+/// outside the vault family (those audit through their own handlers/ops).
+///
+/// `…/spec/vault/<verb>/<ver>` → `vault.<verb>` (e.g. `vault.delete`);
+/// `…/spec/vault/credentials/<verb>/<ver>` → `vault.cred.<verb>`. Version is
+/// ignored, so a 0.2 password-vault URI and its 0.1 form audit identically.
+fn vault_audit_action(type_uri: &str) -> Option<String> {
+    let rest = type_uri.split("/spec/vault/").nth(1)?;
+    let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+    match segs.as_slice() {
+        ["credentials", verb, ..] => Some(format!("vault.cred.{verb}")),
+        [verb, ..] => Some(format!("vault.{verb}")),
+        _ => None,
+    }
+}
+
+/// Best-effort resource id for the audit row, pulled generically from the
+/// request payload (`id` / `entryId` / `credentialId`). `None` for list/query
+/// tasks that carry no single-entry id.
+fn vault_audit_resource(payload: &Value) -> Option<String> {
+    for key in ["id", "entryId", "credentialId"] {
+        if let Some(v) = payload.get(key).and_then(Value::as_str) {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// Map a dispatch outcome to an audit outcome label: `"success"` on a 2xx,
+/// otherwise `"denied:<code>"` with the framework reject code lifted from the
+/// error document (falling back to `"denied"` if it can't be read). The audit
+/// sink keys INFO vs ERROR on the `"success"` prefix.
+fn vault_audit_outcome_label(outcome: &TrustTaskOutcome) -> String {
+    if outcome.status.is_success() {
+        return "success".to_string();
+    }
+    if let Ok(v) = serde_json::from_slice::<Value>(&outcome.body)
+        && let Some(code) = v
+            .get("payload")
+            .and_then(|p| p.get("code"))
+            .and_then(Value::as_str)
+    {
+        return format!("denied:{code}");
+    }
+    "denied".to_string()
 }
 
 /// Build a Trust-Task rejection `Response` for a request whose envelope
@@ -456,10 +548,21 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VAULT_RELEASE_0_1 => vault::handle_release,
     vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1 => vault::handle_proxy_login,
     vta_sdk::trust_tasks::TASK_VAULT_SIGN_TRUST_TASK_0_1 => vault::handle_sign_trust_task,
+    // Vault archival lifecycle (openvtc extension). `delete` above is now soft.
+    vta_sdk::trust_tasks::TASK_VAULT_ARCHIVE_0_1 => vault::handle_archive,
+    vta_sdk::trust_tasks::TASK_VAULT_UNARCHIVE_0_1 => vault::handle_unarchive,
+    vta_sdk::trust_tasks::TASK_VAULT_RESTORE_0_1 => vault::handle_restore,
+    vta_sdk::trust_tasks::TASK_VAULT_PURGE_0_1 => vault::handle_purge,
 
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_RECEIVE_0_1 => cred_vault::handle_receive,
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1 => cred_vault::handle_query,
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1 => cred_vault::handle_get,
+    // Credential archival lifecycle (openvtc extension; CredentialWrite-gated).
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1 => cred_vault::handle_archive,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_UNARCHIVE_0_1 => cred_vault::handle_unarchive,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_DELETE_0_1 => cred_vault::handle_delete,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_RESTORE_0_1 => cred_vault::handle_restore,
+    vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PURGE_0_1 => cred_vault::handle_purge,
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get,
     vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update,

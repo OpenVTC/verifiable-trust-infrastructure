@@ -16,6 +16,7 @@ pub(crate) mod backup;
 pub(crate) mod bootstrap;
 pub(crate) mod config;
 pub(crate) mod contexts;
+pub(crate) mod cred_vault;
 pub(crate) mod device;
 pub(crate) mod did_templates;
 pub(crate) mod health;

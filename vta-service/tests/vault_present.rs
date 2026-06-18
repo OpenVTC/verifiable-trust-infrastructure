@@ -171,6 +171,10 @@ async fn mint_and_put(
         source: None,
         tags: Default::default(),
         body: compact.into_bytes(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
     };
     storage::put(vault, &cred).await.expect("put");
 }

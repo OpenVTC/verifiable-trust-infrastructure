@@ -134,6 +134,14 @@ pub enum Capability {
     /// operators grant proxy-login without sign-trust-task to limit
     /// blast radius on Service consumers (AI agents, etc.).
     SignTrustTask,
+    /// Mutating the **archival lifecycle** of a stored credential — the
+    /// `vault/credentials/{archive,unarchive,delete,restore,purge}/0.1`
+    /// tasks. Distinct from `VaultWrite` (which gates `vault/credentials/
+    /// receive` and the password-vault writes) so an operator can grant a
+    /// consumer the ability to *receive* credentials without the ability to
+    /// *remove* them — removal of a holder's credentials is a higher-trust
+    /// action. Granted to the same roles that hold `VaultWrite`.
+    CredentialWrite,
 }
 
 /// Returns true if `role` is granted `cap` by the default capability
@@ -153,6 +161,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
         Role::Admin => vec![
             Capability::VaultRead,
             Capability::VaultWrite,
+            Capability::CredentialWrite,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::PolicyAdmin,
@@ -164,6 +173,7 @@ pub fn derived_capabilities_for_role(role: &Role) -> Vec<Capability> {
         Role::Initiator => vec![
             Capability::VaultRead,
             Capability::VaultWrite,
+            Capability::CredentialWrite,
             Capability::ProxyLogin,
             Capability::FillRelease,
             Capability::DeviceAdmin,

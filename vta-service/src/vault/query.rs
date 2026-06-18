@@ -230,6 +230,13 @@ pub async fn search(
 
     let mut out = Vec::new();
     for cred in &candidates {
+        // Archival lifecycle: an archived or soft-deleted credential is hidden
+        // from search the same way revoked/expired ones are — it's not a
+        // candidate to present. (The status index still lists it; the
+        // exclusion is applied here, after the indexed match.)
+        if !cred.is_active() {
+            continue;
+        }
         // §14 invariant 5: a revoked (or expired) credential is never a search result,
         // regardless of the filter — not even when the caller explicitly asks
         // for `status = revoked`. This is the load-bearing exclusion that keeps
@@ -299,6 +306,10 @@ mod tests {
             source: Some("exchange:thread-42".into()),
             tags: std::collections::BTreeMap::from([("label".into(), "alice-invite".into())]),
             body: b"opaque.credential.bytes".to_vec(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         }
     }
 

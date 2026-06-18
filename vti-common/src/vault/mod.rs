@@ -21,6 +21,43 @@ use serde::{Deserialize, Serialize};
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
+/// Lifecycle state of a vault entry (and, reused, of a stored credential).
+/// This is **archival** state — orthogonal to a credential's *validity*
+/// (`CredentialStatus`) and to a password entry's `breached_at`/`expires_at`.
+///
+/// - `Active` — the normal, usable state. Default for any record persisted
+///   before this field existed (`#[serde(default)]` → [`default_active`]).
+/// - `Archived` — hidden from default listing and refused for use
+///   (release / proxy-login / sign / present), but fully restorable.
+/// - `Deleted` — a recoverable tombstone: the row (and its secret) is
+///   retained but blocked from use, restorable until `grace_until`, after
+///   which the vault sweeper hard-purges it. `delete --force` / `purge`
+///   skip this state and erase immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VaultStatus {
+    #[default]
+    Active,
+    Archived,
+    Deleted,
+}
+
+impl VaultStatus {
+    /// `true` for the normal usable state — the only state from which a
+    /// secret may be released / a credential presented.
+    pub fn is_active(&self) -> bool {
+        matches!(self, VaultStatus::Active)
+    }
+}
+
+/// Serde default for the `status` field so records persisted before the
+/// lifecycle existed (which lack the key) deserialize as [`VaultStatus::Active`].
+/// Named rather than relying on `#[serde(default)]` + `Default` so the intent
+/// is explicit at the field.
+pub fn default_active() -> VaultStatus {
+    VaultStatus::Active
+}
+
 /// Public metadata view of a single vault entry. Direct wire-form match for
 /// the `VaultEntry` `$def` in the canonical Trust Task shared schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +125,24 @@ pub struct VaultEntry {
     /// without releasing the secret.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_did: Option<String>,
+    /// Archival lifecycle state. Absent on the wire for `Active` entries
+    /// (`skip_serializing_if`) and defaulted in for records written before
+    /// the lifecycle existed. See [`VaultStatus`].
+    #[serde(
+        default = "default_active",
+        skip_serializing_if = "VaultStatus::is_active"
+    )]
+    pub status: VaultStatus,
+    /// RFC 3339 timestamp the entry was archived (set iff `status == Archived`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// RFC 3339 timestamp the entry was (soft-)deleted (set iff `status == Deleted`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
+    /// RFC 3339 deadline after which the sweeper hard-purges a `Deleted`
+    /// entry. Restorable while `now < grace_until`. Set iff `status == Deleted`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grace_until: Option<String>,
 }
 
 impl VaultEntry {
@@ -106,6 +161,113 @@ impl VaultEntry {
             | VaultSecret::BearerToken { .. }
             | VaultSecret::SshKey { .. }
             | VaultSecret::Custom { .. } => None,
+        }
+    }
+
+    /// Bump the optimistic-concurrency version + modification stamps. Every
+    /// lifecycle transition is a user-visible mutation, so it advances
+    /// `version` (the M5 sync seq baseline) and `updated_at`/`updated_by`.
+    fn bump_revision(&mut self, now: &str, actor: Option<&str>) {
+        self.version = self.version.saturating_add(1);
+        self.updated_at = now.to_string();
+        if let Some(a) = actor {
+            self.updated_by = Some(a.to_string());
+        }
+    }
+
+    /// `Active → Archived`. Refused (`NotActive`) for any other source state.
+    pub fn archive(&mut self, now: &str, actor: Option<&str>) -> Result<(), LifecycleError> {
+        if self.status != VaultStatus::Active {
+            return Err(LifecycleError::NotActive);
+        }
+        self.status = VaultStatus::Archived;
+        self.archived_at = Some(now.to_string());
+        self.bump_revision(now, actor);
+        Ok(())
+    }
+
+    /// `Archived → Active`. Refused (`NotArchived`) for any other source state.
+    pub fn unarchive(&mut self, now: &str, actor: Option<&str>) -> Result<(), LifecycleError> {
+        if self.status != VaultStatus::Archived {
+            return Err(LifecycleError::NotArchived);
+        }
+        self.status = VaultStatus::Active;
+        self.archived_at = None;
+        self.bump_revision(now, actor);
+        Ok(())
+    }
+
+    /// `Active|Archived → Deleted` (recoverable tombstone). `grace_until` is
+    /// the caller-computed `now + grace_days` deadline. Refused
+    /// (`AlreadyDeleted`) if the entry is already a tombstone — the operator
+    /// should `restore` or `purge` instead (a hard `delete --force` bypasses
+    /// this method entirely).
+    pub fn soft_delete(
+        &mut self,
+        now: &str,
+        grace_until: &str,
+        actor: Option<&str>,
+    ) -> Result<(), LifecycleError> {
+        if self.status == VaultStatus::Deleted {
+            return Err(LifecycleError::AlreadyDeleted);
+        }
+        self.status = VaultStatus::Deleted;
+        self.archived_at = None;
+        self.deleted_at = Some(now.to_string());
+        self.grace_until = Some(grace_until.to_string());
+        self.bump_revision(now, actor);
+        Ok(())
+    }
+
+    /// `Deleted → Active`, but only while still inside the grace window.
+    /// Refused `NotDeleted` if the entry isn't a tombstone, or `GraceExpired`
+    /// if `now >= grace_until` (the sweeper has purged it or is about to).
+    /// The `now >= grace_until` comparison is lexical over RFC 3339 strings —
+    /// consistent with the rest of this module's timestamp handling (both
+    /// stamps are produced by `chrono::Utc::now().to_rfc3339()`).
+    pub fn restore(&mut self, now: &str, actor: Option<&str>) -> Result<(), LifecycleError> {
+        if self.status != VaultStatus::Deleted {
+            return Err(LifecycleError::NotDeleted);
+        }
+        if let Some(grace) = self.grace_until.as_deref()
+            && now >= grace
+        {
+            return Err(LifecycleError::GraceExpired);
+        }
+        self.status = VaultStatus::Active;
+        self.deleted_at = None;
+        self.grace_until = None;
+        self.bump_revision(now, actor);
+        Ok(())
+    }
+}
+
+/// Why an archival-lifecycle transition on a [`VaultEntry`] (or stored
+/// credential) was refused. Handlers map each variant to a Trust-Task reject
+/// reason; `code()` gives the stable token used in those messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleError {
+    /// `archive` on an entry that isn't `Active`.
+    NotActive,
+    /// `unarchive` on an entry that isn't `Archived`.
+    NotArchived,
+    /// soft `delete` on an entry that is already a `Deleted` tombstone.
+    AlreadyDeleted,
+    /// `restore` on an entry that isn't a `Deleted` tombstone.
+    NotDeleted,
+    /// `restore` after the grace window elapsed.
+    GraceExpired,
+}
+
+impl LifecycleError {
+    /// Stable token embedded in handler reject messages (e.g. `not_active`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            LifecycleError::NotActive => "not_active",
+            LifecycleError::NotArchived => "not_archived",
+            LifecycleError::AlreadyDeleted => "already_deleted",
+            LifecycleError::NotDeleted => "not_deleted",
+            LifecycleError::GraceExpired => "grace_expired",
         }
     }
 }
@@ -194,6 +356,28 @@ pub struct VaultListFilter<'a> {
     pub never_used: Option<bool>,
     pub expires_before: Option<&'a str>,
     pub breached: Option<bool>,
+    /// Archival-lifecycle filter. `None` (the default) returns only
+    /// [`VaultStatus::Active`] entries — archived and (soft-)deleted entries
+    /// are hidden from normal listing. Pass `Some(status)` to list a specific
+    /// state (e.g. the trash view via `Some(Deleted)`), or use
+    /// [`VaultListFilter::any_status`] to include every state.
+    pub status: Option<VaultStatus>,
+    /// When `true`, the `status` filter is ignored and entries of every
+    /// lifecycle state are returned (the explicit "show all" view). Defaults
+    /// to `false` so callers get the Active-only behaviour for free.
+    pub any_status: bool,
+}
+
+impl VaultListFilter<'_> {
+    /// The lifecycle state this filter selects, applying the Active-only
+    /// default. Returns `None` when every state is requested (`any_status`).
+    fn status_selector(&self) -> Option<VaultStatus> {
+        if self.any_status {
+            None
+        } else {
+            Some(self.status.unwrap_or(VaultStatus::Active))
+        }
+    }
 }
 
 /// Full record persisted in the `vault:` keyspace. `VaultEntry` is the
@@ -672,6 +856,13 @@ pub async fn list_vault_entries(
 }
 
 fn matches_filter(entry: &VaultEntry, filter: &VaultListFilter<'_>) -> bool {
+    // Archival lifecycle first: by default only Active entries are listed, so
+    // archived / soft-deleted entries never leak into a normal `vault/list`.
+    if let Some(want) = filter.status_selector()
+        && entry.status != want
+    {
+        return false;
+    }
     if let Some(ctx) = filter.context_id
         && entry.context_id != ctx
     {
@@ -780,6 +971,10 @@ mod tests {
             last_used_at: last_used.map(String::from),
             version: 1,
             principal_did: None,
+            status: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         }
     }
 
@@ -1131,5 +1326,119 @@ mod tests {
                 s.kind()
             );
         }
+    }
+
+    #[test]
+    fn entry_without_status_field_deserialises_as_active() {
+        // Back-compat: a record persisted before the lifecycle existed has no
+        // `status`/`archivedAt`/`deletedAt`/`graceUntil` keys. It MUST default
+        // to Active so existing vaults keep working after upgrade.
+        let legacy = r#"{
+            "id":"v1","contextId":"ctx","targets":[],"label":"x",
+            "secretKind":"password","createdAt":"2026-01-01T00:00:00Z",
+            "updatedAt":"2026-01-01T00:00:00Z","version":1
+        }"#;
+        let entry: VaultEntry = serde_json::from_str(legacy).expect("parse legacy");
+        assert_eq!(entry.status, VaultStatus::Active);
+        assert!(entry.archived_at.is_none());
+        assert!(entry.deleted_at.is_none());
+        assert!(entry.grace_until.is_none());
+        // And an Active entry re-emits WITHOUT the status keys (wire stays clean).
+        let re = serde_json::to_string(&entry).unwrap();
+        assert!(
+            !re.contains("status"),
+            "active entry must not emit status; got {re}"
+        );
+    }
+
+    #[test]
+    fn list_filter_excludes_non_active_by_default() {
+        let active = sample("a", "ctx", None);
+        let mut archived = sample("b", "ctx", None);
+        archived.status = VaultStatus::Archived;
+        let mut deleted = sample("c", "ctx", None);
+        deleted.status = VaultStatus::Deleted;
+
+        // Default filter → Active only.
+        let f = VaultListFilter::default();
+        assert!(matches_filter(&active, &f));
+        assert!(!matches_filter(&archived, &f));
+        assert!(!matches_filter(&deleted, &f));
+
+        // Explicit status selects exactly that state.
+        let f = VaultListFilter {
+            status: Some(VaultStatus::Deleted),
+            ..Default::default()
+        };
+        assert!(!matches_filter(&active, &f));
+        assert!(matches_filter(&deleted, &f));
+
+        // any_status returns everything.
+        let f = VaultListFilter {
+            any_status: true,
+            ..Default::default()
+        };
+        assert!(matches_filter(&active, &f));
+        assert!(matches_filter(&archived, &f));
+        assert!(matches_filter(&deleted, &f));
+    }
+
+    #[test]
+    fn lifecycle_transitions_follow_the_state_table() {
+        let t0 = "2026-06-18T10:00:00+00:00";
+        let t1 = "2026-06-18T11:00:00+00:00";
+        let grace = "2026-07-18T10:00:00+00:00";
+
+        // archive: Active → Archived, bumps version, stamps archived_at.
+        let mut e = sample("v", "ctx", None);
+        let v0 = e.version;
+        e.archive(t0, Some("did:key:op")).unwrap();
+        assert_eq!(e.status, VaultStatus::Archived);
+        assert_eq!(e.archived_at.as_deref(), Some(t0));
+        assert_eq!(e.version, v0 + 1);
+        assert_eq!(e.updated_by.as_deref(), Some("did:key:op"));
+        // double-archive refused.
+        assert_eq!(e.archive(t1, None), Err(LifecycleError::NotActive));
+        // unarchive: Archived → Active.
+        e.unarchive(t1, None).unwrap();
+        assert_eq!(e.status, VaultStatus::Active);
+        assert!(e.archived_at.is_none());
+        // unarchive of Active refused.
+        assert_eq!(e.unarchive(t1, None), Err(LifecycleError::NotArchived));
+
+        // soft delete: Active → Deleted with grace, restorable in-window.
+        let mut e = sample("v", "ctx", None);
+        e.soft_delete(t0, grace, None).unwrap();
+        assert_eq!(e.status, VaultStatus::Deleted);
+        assert_eq!(e.deleted_at.as_deref(), Some(t0));
+        assert_eq!(e.grace_until.as_deref(), Some(grace));
+        // re-delete refused.
+        assert_eq!(
+            e.soft_delete(t1, grace, None),
+            Err(LifecycleError::AlreadyDeleted)
+        );
+        // restore inside the window.
+        e.restore(t1, None).unwrap();
+        assert_eq!(e.status, VaultStatus::Active);
+        assert!(e.deleted_at.is_none() && e.grace_until.is_none());
+        // restore of a non-deleted entry refused.
+        assert_eq!(e.restore(t1, None), Err(LifecycleError::NotDeleted));
+
+        // restore AFTER grace is refused (the sweeper owns it now).
+        let mut e = sample("v", "ctx", None);
+        e.soft_delete(t0, grace, None).unwrap();
+        let after_grace = "2026-08-01T00:00:00+00:00";
+        assert_eq!(
+            e.restore(after_grace, None),
+            Err(LifecycleError::GraceExpired)
+        );
+        assert_eq!(e.status, VaultStatus::Deleted, "failed restore is a no-op");
+
+        // delete is reachable from Archived too (Archived → Deleted).
+        let mut e = sample("v", "ctx", None);
+        e.archive(t0, None).unwrap();
+        e.soft_delete(t1, grace, None).unwrap();
+        assert_eq!(e.status, VaultStatus::Deleted);
+        assert!(e.archived_at.is_none(), "archived_at cleared on delete");
     }
 }

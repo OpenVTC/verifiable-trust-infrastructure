@@ -45,6 +45,7 @@ pub mod tee;
 /// here, so it lives at the crate root rather than under `routes::` (P2.4).
 pub mod trust_tasks;
 pub mod vault;
+pub mod vault_sweeper;
 #[cfg(feature = "webvh")]
 pub mod webvh_auth;
 #[cfg(feature = "webvh")]

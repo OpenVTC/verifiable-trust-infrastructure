@@ -493,6 +493,46 @@ new flow, update both this section and the relevant `docs/*.md`.
   (EdDSA or ES256). Key derived BIP-32 → signature → memory zeroized.
 - **DIDComm**: `key-management/1.0/sign-request`.
 
+### Vault archival lifecycle (archive / soft-delete / restore / purge)
+- **What**: Full lifecycle for **both** VTA stores — the password
+  vault (`vault:` keyspace, `vti_common::vault::VaultEntry`) and the
+  credential store (`cred:` keyspace, `vta-service::vault::model::
+  StoredCredential`). Adds archive (reversible hide), a **recoverable**
+  soft `delete` (tombstone + grace window, default 30d via
+  `VaultConfig.grace_days`), `restore` (undelete within grace),
+  `purge` (irreversible), and `delete --force` (immediate hard delete).
+  Archival state (`VaultStatus {Active,Archived,Deleted}`) is orthogonal
+  to a credential's *validity* (`CredentialStatus`); non-Active entries
+  drop out of list/query and are refused for use (release / proxy-login
+  / sign / present).
+- **Trust Tasks** (openvtc 0.1 extensions): password vault
+  `vault/{archive,unarchive,restore,purge}/0.1` (`VaultWrite`);
+  credential store `vault/credentials/{archive,unarchive,delete,restore,
+  purge}/0.1` gated on the **new `CredentialWrite`** capability (removing
+  a holder's credentials is higher-trust than receiving them).
+  `vault/delete/0.1` body gained `force: bool`; response `graceUntil`
+  is now a real deadline.
+- **Sweeper**: `vault_sweeper::sweep_expired` (storage-thread interval,
+  alongside acl/consent sweepers) hard-purges grace-expired tombstones in
+  both stores; credential purge tears down the `idx:` secondary index via
+  `vault::storage::delete`.
+- **Audit**: every vault Trust Task (read or write, success or denied) is
+  audited **once at the dispatch spine** (`vault.*` / `vault.cred.*`
+  actions); the operator `reason` lands in the audit row's new `detail`
+  field (`audit::record_with_detail`).
+- **Brick-prevention**: `upsert` refuses to overwrite a non-Active entry
+  (would wipe lifecycle state); `restore` re-checks the grace window
+  before writing; non-Active entries conflate to `not_found` on the
+  consumer use paths (enumeration resistance).
+- **Code**: `vti-common/src/vault/mod.rs` (`VaultStatus`, lifecycle
+  methods, `LifecycleError`), `vta-service/src/trust_tasks/{vault,
+  cred_vault,mod}.rs`, `vta-service/src/vault/{model,status,query,
+  present}.rs`, `vta-service/src/vault_sweeper.rs`,
+  `vta_sdk::client::vault`, `vta_cli_common::commands::{vault,cred_vault}`
+  (`pnm vault {archive,unarchive,restore,purge}`, `delete --force`,
+  `list --status`; `pnm cred-vault {receive,query,get,archive,unarchive,
+  delete,restore,purge}` — the credential store's operator surface).
+
 ### Backup / restore
 - **What**: Encrypted full-state dump + restore.
 - **Endpoints**: `POST /backup/export`, `POST /backup/import`
