@@ -357,6 +357,15 @@ pub enum AuditEvent {
 
     /// An admin onboarding invite was revoked (`DELETE /v1/admin/invites/{jti}`).
     AdminInviteRevoked(AdminInviteData),
+
+    /// A credential schema or accepts-criterion was registered
+    /// (`POST /v1/schemas` or `/v1/schemas/accepts`) — what the community
+    /// accepts/recognises changed.
+    SchemaRegistered(SchemaChangeData),
+
+    /// A credential schema or accepts-criterion was deleted
+    /// (`DELETE /v1/schemas/{type_uri}` or `/v1/schemas/accepts/{id}`).
+    SchemaDeleted(SchemaChangeData),
 }
 
 // ---------------------------------------------------------------------------
@@ -450,6 +459,16 @@ pub struct AdminInviteData {
     /// The admin DID the invite is bound to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admin_did: Option<String>,
+}
+
+/// Payload for [`AuditEvent::SchemaRegistered`] / [`AuditEvent::SchemaDeleted`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaChangeData {
+    /// The schema `type_uri` or accepts-criterion id.
+    pub id: String,
+    /// `"schema"` or `"accepts"`.
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

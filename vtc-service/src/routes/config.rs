@@ -30,6 +30,7 @@ use crate::community::{CommunityProfileUpdate, load_profile, store_profile};
 use crate::config_store::ConfigStore;
 use crate::error::AppError;
 use crate::server::AppState;
+use vti_common::audit::{AuditEvent, CommunityProfileUpdatedData};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ConfigResponse {
@@ -141,6 +142,7 @@ pub async fn update_config(
     }
 
     let mut pending_restart = Vec::new();
+    let mut fields_changed: Vec<String> = Vec::new();
 
     // name/description → the CommunityProfile (sole owner). One write path.
     if req.vtc_name.is_some() || req.vtc_description.is_some() {
@@ -159,6 +161,7 @@ pub async fn update_config(
         let changed = patch.apply(&mut profile)?;
         if !changed.is_empty() {
             store_profile(&state.community_ks, &profile).await?;
+            fields_changed.extend(changed);
         }
     }
 
@@ -174,6 +177,21 @@ pub async fn update_config(
             .put("public_url", &serde_json::Value::String(public_url))
             .await?;
         pending_restart.push("public_url".into());
+        fields_changed.push("publicUrl".into());
+    }
+
+    if !fields_changed.is_empty()
+        && let Some(writer) = state.audit_writer.as_ref()
+    {
+        writer
+            .write(
+                &auth.0.did,
+                None,
+                AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
+                    fields_changed: fields_changed.clone(),
+                }),
+            )
+            .await?;
     }
 
     let (vtc_name, vtc_description) = resolved_name_description(&state).await?;

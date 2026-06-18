@@ -336,6 +336,25 @@ pub async fn claim_finish(
     };
     store_admin_entry(&state.passkey_ks, &admin_entry).await?;
 
+    // Audit the first-admin passkey enrolment — the install-claim flow is the
+    // only place an invited admin's passkey is registered, so without this the
+    // device that gained admin authority leaves no audit trail.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &admin_did,
+                Some(&admin_did),
+                vti_common::audit::AuditEvent::AdminPasskeyRegistered(
+                    vti_common::audit::AdminPasskeyData {
+                        credential_id_hex: cred_id_hex.clone(),
+                        label: "install".into(),
+                        transports: Vec::new(),
+                    },
+                ),
+            )
+            .await?;
+    }
+
     info!(jti = %jti, %admin_did, "install claim ceremony completed");
 
     issue_setup_session(&state, signer, admin_did, &jti).await

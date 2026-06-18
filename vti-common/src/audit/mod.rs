@@ -41,9 +41,10 @@ pub use event::{
     MemberRemovedData, MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData,
     PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData,
     REDACTED_MARKER, RegistryRecordPolicyOverrideData, RegistryStatusChangedData,
-    RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData, SessionRevokedData,
-    StatusListFlippedData, VrcPublishedData, VrcRevokedData, WebsiteBundleDeployedData,
-    WebsiteFileDeletedData, WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
+    RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData, SchemaChangeData,
+    SessionRevokedData, StatusListFlippedData, VrcPublishedData, VrcRevokedData,
+    WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
+    WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::AuditWriter;

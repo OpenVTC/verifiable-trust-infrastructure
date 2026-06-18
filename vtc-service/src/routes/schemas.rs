@@ -21,6 +21,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
+use vti_common::audit::{AuditEvent, SchemaChangeData};
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
@@ -87,6 +88,18 @@ pub async fn register(
         created_by_did: auth.0.did.clone(),
     };
     store_schema(&state.schemas_ks, &entry).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                None,
+                AuditEvent::SchemaRegistered(SchemaChangeData {
+                    id: uri.to_string(),
+                    kind: "schema".into(),
+                }),
+            )
+            .await?;
+    }
     info!(type_uri = %uri, kind = ?entry.kind, by = %auth.0.did, "schema registered");
     Ok((StatusCode::CREATED, Json(entry)))
 }
@@ -159,6 +172,18 @@ pub async fn delete_one(
         return Err(AppError::NotFound(format!("schema `{type_uri}` not found")));
     }
     delete_schema(&state.schemas_ks, &type_uri).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                None,
+                AuditEvent::SchemaDeleted(SchemaChangeData {
+                    id: type_uri.clone(),
+                    kind: "schema".into(),
+                }),
+            )
+            .await?;
+    }
     info!(type_uri = %type_uri, by = %auth.0.did, "schema deleted");
     Ok((StatusCode::OK, Json(DeleteResponse { id: type_uri })))
 }
@@ -207,6 +232,18 @@ pub async fn register_accepts(
         created_by_did: auth.0.did.clone(),
     };
     store_accepts(&state.schemas_ks, &criterion).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                None,
+                AuditEvent::SchemaRegistered(SchemaChangeData {
+                    id: id.to_string(),
+                    kind: "accepts".into(),
+                }),
+            )
+            .await?;
+    }
     info!(id = %id, by = %auth.0.did, "accepts criterion registered");
     Ok((StatusCode::CREATED, Json(criterion)))
 }
@@ -274,6 +311,18 @@ pub async fn delete_accepts_route(
         )));
     }
     delete_accepts(&state.schemas_ks, &id).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                None,
+                AuditEvent::SchemaDeleted(SchemaChangeData {
+                    id: id.clone(),
+                    kind: "accepts".into(),
+                }),
+            )
+            .await?;
+    }
     info!(id = %id, by = %auth.0.did, "accepts criterion deleted");
     Ok((StatusCode::OK, Json(DeleteResponse { id })))
 }
