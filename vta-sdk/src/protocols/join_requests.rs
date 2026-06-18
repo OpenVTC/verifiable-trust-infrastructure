@@ -1,26 +1,70 @@
-//! DIDComm wire types for VTC join-request submission.
+//! Trust Task wire types for the VTC join-request ceremony family.
 //!
-//! The corresponding REST endpoint is `POST /v1/join-requests`;
-//! over DIDComm the message `type` field IS the Trust Task URL
-//! (workspace convention) and the DIDComm authcrypt sender
-//! authenticates the applicant DID — no separate holder-binding
-//! signature is needed (the envelope already binds the sender).
+//! Each body below is a [`trust_tasks_rs::TrustTask`] **payload**; the
+//! document `type` is one of the `JOIN_REQUEST_*_TYPE` URIs. The success
+//! reply is a framework `#response` document carrying a [`VerdictResponse`]
+//! (the `request`/`submit` verb) or a read body (manifest/status/accept);
+//! failures are framework `trust-task-error` documents, never DIDComm
+//! problem-reports.
+//!
+//! ## URI shape (framework-canonical, private-registry authority)
+//!
+//! ```text
+//! https://trusttasks.org/openvtc/vtc/spec/join-requests/{verb}/{maj}.{min}
+//! ```
+//!
+//! Authority `https://trusttasks.org/openvtc/vtc` (SPEC §6.5 private
+//! registry) + the mandatory `/spec/<slug>/<maj.min>` path shape, so the
+//! URIs parse as [`trust_tasks_rs::TypeUri`]. The earlier flat form (no
+//! `/spec/`) deserialised as a `&str` but failed
+//! `serde_json::from_slice::<TrustTask<Value>>`. The success-response
+//! variant is the same URI with a `#response` fragment (the
+//! `*_RESPONSE_TYPE` consts), minted by `TrustTask::respond_with`.
+//!
+//! ## Transports
+//!
+//! - **REST**: the request body is the TrustTask document; routing is by
+//!   the document `type`. The holder identity is the document `issuer` +
+//!   `proof`; replay binding is `recipient` (= the VTC DID) + `expiresAt`.
+//! - **DIDComm**: the message `type` IS the Trust Task URL and the message
+//!   body is the TrustTask document; the authcrypt sender authenticates
+//!   the holder (no separate signature needed).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
-/// DIDComm message `type` for a join-request submission.
+/// Trust Task `type` for a join-request submission (the ceremony `request`
+/// verb). Payload [`JoinRequestSubmitBody`]; response [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0";
 
-/// DIDComm message `type` for the VTC's reply (the submission
-/// receipt). Carried as a `thid` reply to the submit message id.
+/// `#response` variant of [`JOIN_REQUEST_SUBMIT_TYPE`] — the type of the
+/// success document `respond_with` mints; carries a [`VerdictResponse`].
+pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0#response";
+
+/// Reply `type` used by the **credential-exchange** join close-the-loop
+/// (`credential-exchange/present`), which results in a join and echoes this
+/// receipt. Distinct from the Trust Task `submit` conversion above; retained
+/// for that not-yet-converted path. Carries a [`JoinRequestSubmitReceiptBody`].
 pub const JOIN_REQUEST_SUBMIT_RECEIPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/submit-receipt/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit-receipt/1.0";
 
-/// Body of the submit message. Applicant_did comes from the
-/// DIDComm `from` field, not the body.
+/// Body of the credential-exchange join receipt (see
+/// [`JOIN_REQUEST_SUBMIT_RECEIPT_TYPE`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct JoinRequestSubmitReceiptBody {
+    pub request_id: Uuid,
+    /// Status string — e.g. `"pending"` / `"approved"`.
+    pub status: String,
+}
+
+/// Payload of the submit document. The applicant DID is the TrustTask
+/// `issuer` (REST: document proof; DIDComm: authcrypt sender), not a body
+/// field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -32,31 +76,21 @@ pub struct JoinRequestSubmitBody {
     pub extensions: JsonValue,
 }
 
-/// Body of the receipt message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct JoinRequestSubmitReceiptBody {
-    pub request_id: Uuid,
-    /// Status string. Always `"pending"` for a successful submit;
-    /// future protocol versions may add `"deferred"` etc.
-    pub status: String,
-}
-
 // ---------------------------------------------------------------------------
 // Accept — reciprocal VMC (join ceremony close, join-requests/accept/1.0)
 // ---------------------------------------------------------------------------
 
-/// DIDComm message `type` for a join-request accept: the admitted
-/// member counter-signs the issued VMC to form the bidirectional DTG
-/// membership edge. `memberDid` comes from the DIDComm `from` field.
+/// Trust Task `type` for a join-request accept: the admitted member
+/// counter-signs the issued VMC to form the bidirectional DTG membership
+/// edge. `memberDid` is the TrustTask `issuer` (DIDComm authcrypt sender /
+/// REST document proof).
 pub const JOIN_REQUEST_ACCEPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0";
 
-/// DIDComm `type` for the VTC's accept reply (the reciprocation
-/// receipt). Carried as a `thid` reply to the accept message id.
-pub const JOIN_REQUEST_ACCEPT_RECEIPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/accept-receipt/1.0";
+/// `#response` variant of [`JOIN_REQUEST_ACCEPT_TYPE`] — carries a
+/// [`JoinRequestAcceptReceiptBody`].
+pub const JOIN_REQUEST_ACCEPT_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0#response";
 
 /// Body of the accept message. `memberDid` comes from the DIDComm
 /// `from` field (the authcrypt sender) — the envelope binds the member,
@@ -91,14 +125,15 @@ pub struct JoinRequestAcceptReceiptBody {
 // Manifest — pre-submit discovery (join-requests/manifest/1.0)
 // ---------------------------------------------------------------------------
 
-/// DIDComm message `type` for a join-request manifest request: discover
-/// the community's join evidence requirements. Read; empty request body.
+/// Trust Task `type` for a join-request manifest request: discover the
+/// community's join evidence requirements. Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0";
 
-/// DIDComm `type` for the VTC's manifest reply.
+/// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
+/// [`JoinRequestManifestResponseBody`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/manifest-response/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0#response";
 
 /// One community evidence requirement — a named DCQL Presentation
 /// Definition the applicant may present against.
@@ -125,14 +160,15 @@ pub struct JoinRequestManifestResponseBody {
 // Status — applicant poll (join-requests/status/1.0)
 // ---------------------------------------------------------------------------
 
-/// DIDComm message `type` for an applicant status poll. `applicantDid`
-/// is the DIDComm `from` field (authcrypt sender).
+/// Trust Task `type` for an applicant status poll. The applicant DID is
+/// the TrustTask `issuer` (DIDComm authcrypt sender / REST document proof).
 pub const JOIN_REQUEST_STATUS_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0";
 
-/// DIDComm `type` for the VTC's status reply.
+/// `#response` variant of [`JOIN_REQUEST_STATUS_TYPE`] — carries a
+/// [`JoinRequestStatusResponseBody`].
 pub const JOIN_REQUEST_STATUS_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/join-requests/status-response/1.0";
+    "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0#response";
 
 /// Body of the status message (DIDComm). Over REST the `{id}` is the
 /// path segment; over DIDComm it travels here.
@@ -159,6 +195,134 @@ pub struct JoinRequestStatusResponseBody {
     /// for a `deferred` request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation_definition: Option<JsonValue>,
+}
+
+// ---------------------------------------------------------------------------
+// Verdict — the shared `request`/`present` response envelope
+// (docs/05-design-notes/vtc-ceremony-protocol.md §3)
+// ---------------------------------------------------------------------------
+
+/// The policy effect of a ceremony decision. A `deny` means the policy
+/// **refused** a well-formed, verified request — it is NOT how framework
+/// errors (invalid VIC, expired, malformed) are signalled; those are
+/// `trust-task-error` documents (see the module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum VerdictEffect {
+    /// Admitted. `with` carries the granted role + obligations and the
+    /// host-added `bundleRef` (sealed credential pointer) where issuance
+    /// occurred.
+    Allow,
+    /// Policy refused. `with` carries `code` + `reason`.
+    Deny,
+    /// Parked for a human/quorum decision. `with` carries `queue` + `reason`.
+    Refer,
+    /// More evidence required. `with` carries `needs` +
+    /// `presentationDefinition`; the applicant continues over `present`.
+    RequestMore,
+}
+
+/// The effect-dependent detail of a [`Verdict`]. Modelled as one flat
+/// struct with optional fields (rather than an enum) so the wire object is
+/// stable and additive across ceremonies; only the fields relevant to the
+/// `effect` are populated.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct VerdictWith {
+    // effect = allow
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligations: Option<JsonValue>,
+    /// The issued Verifiable Membership Credential, returned inline on an
+    /// auto-admit `allow` over REST (over DIDComm it is delivered in a
+    /// follow-up message and this is omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmc: Option<JsonValue>,
+    /// The issued role VEC — same delivery story as [`Self::vmc`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role_vec: Option<JsonValue>,
+    /// Sealed-transfer pointer to the issued credential bundle — added by
+    /// the host on issuing ceremonies that seal, not emitted by the policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_ref: Option<JsonValue>,
+    // effect = deny
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    // effect = refer
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<String>,
+    // effect = request_more
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_definition: Option<JsonValue>,
+}
+
+/// A ceremony decision: the policy `effect` plus its effect-dependent
+/// detail. Shared by every `request`/`present` response across ceremony
+/// families.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Verdict {
+    pub effect: VerdictEffect,
+    pub with: VerdictWith,
+}
+
+/// The `request`/`present` success-response **payload** (rides inside the
+/// `#response` TrustTask document, whose `threadId` carries the ceremony
+/// thread). `requestId` is the persisted `JoinRequest` id.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct VerdictResponse {
+    pub request_id: Uuid,
+    pub verdict: Verdict,
+}
+
+impl VerdictResponse {
+    /// `allow` verdict for an auto-admitted applicant, with the issued
+    /// credentials returned inline (REST) or omitted (DIDComm follow-up).
+    pub fn allow(
+        request_id: Uuid,
+        role: Option<String>,
+        vmc: Option<JsonValue>,
+        role_vec: Option<JsonValue>,
+    ) -> Self {
+        Self {
+            request_id,
+            verdict: Verdict {
+                effect: VerdictEffect::Allow,
+                with: VerdictWith {
+                    role,
+                    vmc,
+                    role_vec,
+                    ..Default::default()
+                },
+            },
+        }
+    }
+
+    /// `refer` verdict — the request was persisted `Pending` for a human
+    /// admin decision (`approve`/`reject`).
+    pub fn refer(request_id: Uuid, queue: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            request_id,
+            verdict: Verdict {
+                effect: VerdictEffect::Refer,
+                with: VerdictWith {
+                    queue: Some(queue.into()),
+                    reason: Some(reason.into()),
+                    ..Default::default()
+                },
+            },
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

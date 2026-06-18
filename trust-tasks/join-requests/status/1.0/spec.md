@@ -1,16 +1,24 @@
 ---
-id: https://trusttasks.org/openvtc/vtc/join-requests/status/1.0
+id: https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0
 title: VTC Join Requests — Status (applicant poll)
 status: Draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
 applies_to:
-  - rest: POST /v1/join-requests/{id}/status
-  - didcomm: https://trusttasks.org/openvtc/vtc/join-requests/status/1.0
+  - rest: POST /v1/trust-tasks
+  - didcomm: https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0
 ---
 
 # VTC Join Requests — Status (applicant poll)
+
+> **Trust Task document flow (current).** Status is now a `trust_tasks_rs`
+> TrustTask document on the `/spec/…` URI, posted to `POST /v1/trust-tasks`
+> (or sent as a DIDComm message of this `type`). Payload `{requestId}`; the
+> applicant is the document `issuer` (REST proof / DIDComm authcrypt sender).
+> Success → `#response` with `{requestId, status, needs?, presentationDefinition?}`;
+> an unknown request → `trust-task-error` `taskFailed`. The bespoke
+> `applicantDid`/`signature` body fields are superseded.
 
 The `status` verb lets an **applicant poll their own join request**
 while it is in flight (protocol §2 verb set: "poll a thread in

@@ -1,16 +1,23 @@
 ---
-id: https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0
+id: https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0
 title: VTC Join Requests — Accept (reciprocal VMC)
 status: Draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
 applies_to:
-  - rest: POST /v1/join-requests/{id}/accept
-  - didcomm: https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0
+  - rest: POST /v1/trust-tasks
+  - didcomm: https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0
 ---
 
 # VTC Join Requests — Accept (reciprocal VMC)
+
+> **Trust Task document flow (current).** Accept is now a `trust_tasks_rs`
+> TrustTask document on the `/spec/…` URI, posted to `POST /v1/trust-tasks`
+> (or sent as a DIDComm message of this `type`). Payload `{requestId, vmcId,
+> vc}`; the member is the document `issuer` (REST proof / DIDComm authcrypt
+> sender). Success → `#response` receipt; failures → `trust-task-error`. The
+> bespoke `memberDid`/`signature` body fields are superseded.
 
 The `accept` verb closes the join ceremony's **reciprocal step**: the
 newly-admitted member counter-signs the membership the VTC issued,

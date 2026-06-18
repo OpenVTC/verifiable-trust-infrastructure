@@ -34,8 +34,16 @@ use vta_sdk::protocols::credential_exchange::{ISSUE as CREDENTIAL_ISSUE_TYPE, Is
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_TYPE,
     JoinRequestManifestResponseBody, JoinRequestStatusBody, JoinRequestStatusResponseBody,
-    JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
+    JoinRequestSubmitBody, VerdictEffect, VerdictResponse,
 };
+
+/// The `payload` of a Trust Task `#response` document (where every verb's
+/// success body lives).
+fn response_payload(doc: serde_json::Value) -> serde_json::Value {
+    doc.get("payload")
+        .cloned()
+        .unwrap_or_else(|| panic!("Trust Task response has no payload: {doc}"))
+}
 use vta_sdk::vp::{HeldCredential, build_vp_token, select_credentials};
 
 const ADMIN_DID: &str = "did:key:z6MkJoinAdmin";
@@ -155,7 +163,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
         registry_consent: false,
         extensions: json!({}),
     };
-    let receipt: JoinRequestSubmitReceiptBody = serde_json::from_value(
+    let verdict: VerdictResponse = serde_json::from_value(response_payload(
         mock.client
             .request(
                 &vtc_did,
@@ -163,21 +171,22 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
                 serde_json::to_value(submit).unwrap(),
             )
             .await,
-    )
-    .expect("submit receipt");
+    ))
+    .expect("submit verdict");
     assert_eq!(
-        receipt.status, "pending",
-        "default policy defers to pending"
+        verdict.verdict.effect,
+        VerdictEffect::Refer,
+        "default policy refers the request to an admin (pending)"
     );
-    let request_id = receipt.request_id;
+    let request_id = verdict.request_id;
 
     // 2. Discover the community's join evidence over DIDComm (real
     //    `manifest_inner`) — the seeded DCQL Accepts criterion.
-    let manifest: JoinRequestManifestResponseBody = serde_json::from_value(
+    let manifest: JoinRequestManifestResponseBody = serde_json::from_value(response_payload(
         mock.client
             .request(&vtc_did, JOIN_REQUEST_MANIFEST_TYPE, json!({}))
             .await,
-    )
+    ))
     .expect("manifest response");
     assert_eq!(manifest.community_did, vtc_did);
     let criterion = manifest
@@ -219,7 +228,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     );
 
     // 4. Poll status over DIDComm (real `status_inner`) — still pending pre-approval.
-    let status: JoinRequestStatusResponseBody = serde_json::from_value(
+    let status: JoinRequestStatusResponseBody = serde_json::from_value(response_payload(
         mock.client
             .request(
                 &vtc_did,
@@ -227,7 +236,7 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
                 serde_json::to_value(JoinRequestStatusBody { request_id }).unwrap(),
             )
             .await,
-    )
+    ))
     .expect("status response");
     assert_eq!(status.status, "pending");
 
@@ -322,11 +331,11 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
         .await;
     match outcome {
         ReplyOutcome::Reply(body) => {
-            let receipt: JoinRequestSubmitReceiptBody =
-                serde_json::from_value(body).expect("submit receipt");
-            assert_eq!(receipt.status, "pending");
+            let verdict: VerdictResponse =
+                serde_json::from_value(response_payload(body)).expect("submit verdict");
+            assert_eq!(verdict.verdict.effect, VerdictEffect::Refer);
         }
-        other => panic!("expected an accepted receipt after the reject, got {other:?}"),
+        other => panic!("expected an accepted verdict after the reject, got {other:?}"),
     }
 
     mock.shutdown().await;
@@ -343,8 +352,6 @@ async fn didcomm_try_request_classifies_reject_and_keeps_going() {
 /// `e.p.msg.conflict` end-to-end through the real DIDComm handler.
 #[tokio::test]
 async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
-    use vta_sdk::protocols::problem_report_codes as codes;
-
     let mock = MockVtcDidcomm::start().await;
     let _admin_token = seed_join_ceremony(&mock).await;
     let vtc_did = mock.vtc_did().to_string();
@@ -369,11 +376,11 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
         .await;
     match outcome {
         ReplyOutcome::Reply(body) => {
-            let receipt: JoinRequestSubmitReceiptBody =
-                serde_json::from_value(body).expect("submit receipt");
-            assert_eq!(receipt.status, "pending");
+            let verdict: VerdictResponse =
+                serde_json::from_value(response_payload(body)).expect("submit verdict");
+            assert_eq!(verdict.verdict.effect, VerdictEffect::Refer);
         }
-        other => panic!("expected a pending receipt for the first submit, got {other:?}"),
+        other => panic!("expected a refer verdict for the first submit, got {other:?}"),
     }
 
     // Second submit from the same applicant DID before the first is decided or
@@ -391,18 +398,17 @@ async fn didcomm_duplicate_submit_rejects_with_conflict_not_internal_error() {
     match outcome {
         ReplyOutcome::Problem(p) => {
             assert_eq!(
-                p.code,
-                codes::CONFLICT,
-                "duplicate open join request is a 409-style conflict, not `{}`: {p:?}",
-                codes::INTERNAL,
+                p.code, "taskFailed",
+                "duplicate open join request is a business-rule conflict → the framework \
+                 `taskFailed` reject code, not `internalError`: {p:?}",
             );
             assert!(
                 p.comment.contains("already exists"),
-                "comment names the open-request conflict: {p:?}",
+                "message names the open-request conflict: {p:?}",
             );
         }
         other => {
-            panic!("expected a conflict problem-report for the duplicate submit, got {other:?}")
+            panic!("expected a taskFailed trust-task-error for the duplicate submit, got {other:?}")
         }
     }
 

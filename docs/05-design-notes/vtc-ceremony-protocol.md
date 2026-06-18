@@ -13,11 +13,16 @@ effect payload differ.
 
 ## 1. Conventions (inherited from `vtc-mvp.md` §9.4)
 
-- **URL form:** `https://trusttasks.org/openvtc/vtc/{family}/{verb}/{major}.{minor}` — `org = openvtc`,
-  `domain = vtc`. One **family per ceremony** (`join-requests`, `departures`, `role-changes`, `directory`).
-- **REST binding:** every request carries a `Trust-Task` header, exact-matched at attach time (mismatch → 415,
-  missing → 400).
-- **DIDComm binding:** the message `type` **is** the Trust Task URL.
+- **URL form:** `https://trusttasks.org/openvtc/vtc/spec/{family}/{verb}/{major}.{minor}` — `org = openvtc`,
+  `domain = vtc`, with the framework-mandatory `/spec/` path segment (SPEC §6.5 private-registry authority) so the
+  URI parses as a `trust_tasks_rs::TypeUri`. One **family per ceremony** (`join-requests`, `departures`,
+  `role-changes`, `directory`).
+- **REST binding (current — join family):** the holder-facing verbs adopt the `trust_tasks_rs` framework — the
+  request body is a **TrustTask document** posted to the single `POST /v1/trust-tasks` endpoint, routed internally
+  by the document `type`; the holder is authenticated by the document's `eddsa-jcs-2022` proof and replay-bound by
+  `recipient` (= the VTC DID) + `expiresAt`. (The earlier `Trust-Task`-header soft-gate on per-verb routes is
+  retained only for the admin verbs — approve/reject/list/show.)
+- **DIDComm binding:** the message `type` **is** the Trust Task URL and the message body is the TrustTask document.
 - **Per-task artefacts:** `trust-tasks/{family}/{verb}/{maj}.{min}/{spec.md,schema.json}` + an `index.json`
   entry. Lifecycle Draft → Reviewing → Published → Deprecated; these ship at **Draft**.
 - **Rate limit (`vtc-mvp.md` §9.6):** unauthenticated triggers use a per-sender-DID leaky bucket *before*
@@ -159,20 +164,31 @@ response — one source of truth for the wire shape across all ceremonies.
 
 ---
 
-## 9. Implementation status (2026-06)
+## 9. Implementation status
 
-How the §2 verb set for the **join** family maps to what is built + specced
-today, so this proposal stays honest about the realized surface:
+**Update — Trust Task document conversion (shipped).** The holder-facing join
+verbs (`request`/submit, `accept`, `manifest`, `status`) are now genuine
+`trust_tasks_rs` **TrustTask documents** on the `…/spec/join-requests/{verb}/1.0`
+URIs, dispatched by `vtc-service/src/trust_tasks/` over both transports: the
+single `POST /v1/trust-tasks` REST endpoint (`routes/trust_tasks.rs`) and the
+DIDComm handlers in `messaging.rs`. Success replies are framework `#response`
+documents carrying a **Verdict** (`{requestId, verdict:{effect, with}}`);
+failures — invalid VIC, expired, malformed, duplicate — are framework
+**`trust-task-error`** documents (e.g. `permissionDenied` for an invalid VIC),
+not DIDComm problem-reports and not `deny` verdicts. The admin `resolve`
+(approve/reject) + `show`/`list` verbs remain header-gated REST routes.
+
+How the §2 verb set for the **join** family maps to what is built today:
 
 | Verb (§2) | Realized as | Spec | Code |
 |---|---|---|---|
-| `request` | `join-requests/submit/1.0` | `trust-tasks/join-requests/submit` | `routes/join_requests/submit.rs` (REST + DIDComm) |
-| `present` | **`credential-exchange/present/1.0`** (reused; VTC = verifier) | `trust-tasks/credential-exchange/present` | `routes/join_requests/present.rs`, `messaging.rs` |
+| `request` | `spec/join-requests/submit/1.0` (TrustTask doc → Verdict) | `trust-tasks/join-requests/submit` | `trust_tasks/{mod,helpers}.rs`, `routes/trust_tasks.rs`, `messaging.rs` (REST + DIDComm) |
+| `present` | **`credential-exchange/present/1.0`** (reused; VTC = verifier) | `trust-tasks/credential-exchange/present` | `routes/join_requests/present.rs`, `messaging.rs` *(not yet TrustTask-doc-wrapped — follow-up)* |
 | *(query side)* | **`credential-exchange/query/1.0`** (reused; VTC issues the DCQL query) | `trust-tasks/credential-exchange/query` | `routes/join_requests/present.rs::{prepare_join_query,send_query}` |
 | `resolve` | the existing admin REST `approve`/`reject` | `trust-tasks/join-requests/{approve,reject}` | `routes/join_requests/decide.rs` |
-| `accept` | `join-requests/accept/1.0` | `trust-tasks/join-requests/accept` | `routes/join_requests/accept.rs` + `messaging.rs` (REST + DIDComm) — discharges `reciprocate_vmc` |
-| `manifest` | `join-requests/manifest/1.0` | `trust-tasks/join-requests/manifest` *(this branch, Draft)* | **not yet implemented** — `GET /v1/join-requests/manifest` over `schemas::accepts::list_accepts` |
-| `status` | `join-requests/status/1.0` | `trust-tasks/join-requests/status` *(this branch, Draft)* | **not yet implemented** — applicant-facing holder-bound poll; the admin-only `show` (`routes/join_requests/read.rs`) remains the staff view |
+| `accept` | `spec/join-requests/accept/1.0` (TrustTask doc) | `trust-tasks/join-requests/accept` | `trust_tasks/mod.rs` (calls `routes/join_requests/accept::accept_inner`) + REST/DIDComm |
+| `manifest` | `spec/join-requests/manifest/1.0` (TrustTask doc) | `trust-tasks/join-requests/manifest` | `trust_tasks/mod.rs` (public read) + REST/DIDComm |
+| `status` | `spec/join-requests/status/1.0` (TrustTask doc) | `trust-tasks/join-requests/status` | `trust_tasks/mod.rs` (holder-bound poll) + REST/DIDComm |
 
 **Reconciliation note.** The §7 deliverable list implied
 `join-requests/{present,status}` as join-family verbs. In the build, the

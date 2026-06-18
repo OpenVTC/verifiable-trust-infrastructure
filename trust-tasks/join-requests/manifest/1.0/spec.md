@@ -1,16 +1,23 @@
 ---
-id: https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0
+id: https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0
 title: VTC Join Requests — Manifest (discovery)
 status: Draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
 applies_to:
-  - rest: GET /v1/join-requests/manifest
-  - didcomm: https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0
+  - rest: POST /v1/trust-tasks
+  - didcomm: https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0
 ---
 
 # VTC Join Requests — Manifest (discovery)
+
+> **Trust Task document flow (current).** Manifest is now a `trust_tasks_rs`
+> TrustTask document on the `/spec/…` URI, posted to `POST /v1/trust-tasks`
+> (or sent as a DIDComm message of this `type`). It is a public read — the
+> document carries no holder proof, only `recipient` (= the VTC DID) +
+> `expiresAt`. Success → `#response` with `{communityDid, criteria}`. The
+> former bespoke `GET /v1/join-requests/manifest` is superseded.
 
 The `manifest` verb is the join ceremony's **pre-submit discovery** step
 (protocol §2 verb set). A prospective applicant asks the VTC *what it

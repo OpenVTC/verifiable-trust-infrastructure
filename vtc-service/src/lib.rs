@@ -49,6 +49,7 @@ pub mod status;
 pub mod status_list;
 pub mod store;
 pub mod supervisor;
+pub mod trust_tasks;
 pub mod webauthn;
 pub mod website;
 

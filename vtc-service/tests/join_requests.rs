@@ -10,6 +10,8 @@ mod common;
 
 use std::sync::Arc;
 
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::{Signer, SigningKey};
@@ -30,20 +32,19 @@ use vtc_service::test_support::TestVtc;
 /// — the route module is `pub(crate)` so we can't import it from a
 /// test. Keeping a single-line copy here is cheaper than widening
 /// the module's visibility for one test.
-const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
-/// Mirror of `routes::join_requests::accept::JOIN_ACCEPT_DOMAIN_TAG`.
-const JOIN_ACCEPT_DOMAIN_TAG: &[u8] = b"vtc-join-accept/v1\0";
-
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const SUBMIT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+// The holder-facing verbs are now Trust Task **document** types (the `/spec/`
+// canonical form the dispatcher routes on).
+const SUBMIT_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0";
+const ACCEPT_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0";
+const MANIFEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0";
+const STATUS_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0";
+// The admin verbs remain header-gated REST routes (unchanged) — flat URIs.
+// The admin GET list shares the submit mount, so it gates on the flat submit URI.
+const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
 const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0";
 const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
 const REJECT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
-const ACCEPT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0";
-const MANIFEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0";
-const STATUS_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0";
-/// Mirror of `routes::join_requests::status::JOIN_STATUS_DOMAIN_TAG`.
-const JOIN_STATUS_DOMAIN_TAG: &[u8] = b"vtc-join-status/v1\0";
 /// The VTC DID the fixture configures — the issuer of every VMC and the
 /// community a reciprocal VC must acknowledge.
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
@@ -168,65 +169,99 @@ async fn build_fixture() -> Fixture {
     }
 }
 
-/// Build a canonical-signing-payload signature for the holder-
-/// binding check. Mirrors the verifier's payload construction
-/// (P0.13: now includes `audience` + `created`).
-#[allow(clippy::too_many_arguments)]
-fn sign_holder_payload(
-    sk: &SigningKey,
-    applicant_did: &str,
-    vp: &Value,
-    registry_consent: bool,
-    extensions: &Value,
-    audience: &str,
-    created: i64,
-) -> String {
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Payload<'a> {
-        applicant_did: &'a str,
-        vp: &'a Value,
-        registry_consent: bool,
-        extensions: &'a Value,
-        audience: &'a str,
-        created: i64,
-    }
-    let payload = serde_json::to_vec(&Payload {
-        applicant_did,
-        vp,
-        registry_consent,
-        extensions,
-        audience,
-        created,
-    })
-    .unwrap();
-    let mut signing = Vec::with_capacity(JOIN_REQUEST_SUBMIT_DOMAIN_TAG.len() + payload.len());
-    signing.extend_from_slice(JOIN_REQUEST_SUBMIT_DOMAIN_TAG);
-    signing.extend_from_slice(&payload);
-    hex::encode(sk.sign(&signing).to_bytes())
+/// The single Trust Task document endpoint the holder-facing join verbs now
+/// post to (routing is by the document `type`, not the URL).
+const TRUST_TASKS_URI: &str = "/v1/trust-tasks";
+
+/// Sign a Trust Task **document** (`type` = `typ`, `payload` = `payload`) with
+/// the shared applicant key, producing the `eddsa-jcs-2022` holder proof the
+/// REST path authenticates on. `recipient` = the test VTC DID (the replay
+/// binding) and a far-future `expiresAt`. Returns `(applicant_did, document)`.
+async fn signed_trust_task(typ: &str, payload: Value) -> (String, Value) {
+    signed_trust_task_seed(&[0xCD; 32], typ, payload).await
 }
 
-/// Build a complete, signed REST join-submit body for the common case
-/// (`registryConsent = false`, no extensions), addressed to this test VTC
-/// (`TEST_VTC_DID`) with a fresh `created`. (P0.13)
-fn signed_submit_body(sk: &SigningKey, applicant_did: &str, vp: &Value) -> Value {
-    let created = vtc_service::auth::session::now_epoch() as i64;
-    let signature = sign_holder_payload(
-        sk,
-        applicant_did,
-        vp,
-        false,
-        &Value::Null,
-        vtc_service::test_support::TEST_VTC_DID,
-        created,
-    );
-    json!({
-        "applicantDid": applicant_did,
-        "vp": vp,
-        "audience": vtc_service::test_support::TEST_VTC_DID,
-        "created": created,
-        "signature": signature,
-    })
+/// As [`signed_trust_task`] but with an explicit Ed25519 seed — lets a test
+/// sign as a *different* holder (e.g. to exercise the issuer/signer mismatch
+/// rejection).
+async fn signed_trust_task_seed(seed: &[u8; 32], typ: &str, payload: Value) -> (String, Value) {
+    let mut secret = Secret::generate_ed25519(None, Some(seed));
+    let pub_mb = secret
+        .get_public_keymultibase()
+        .expect("applicant pubkey multibase");
+    let did = format!("did:key:{pub_mb}");
+    // For did:key the verification method fragment is the multibase itself —
+    // what `DidKeyResolver` resolves during proof verification.
+    secret.id = format!("{did}#{pub_mb}");
+    let mut doc = json!({
+        "type": typ,
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "issuer": did,
+        "recipient": vtc_service::test_support::TEST_VTC_DID,
+        "issuedAt": "2026-01-01T00:00:00Z",
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "payload": payload,
+    });
+    let proof = DataIntegrityProof::sign(&doc, &secret, SignOptions::new())
+        .await
+        .expect("sign Trust Task document");
+    doc.as_object_mut()
+        .unwrap()
+        .insert("proof".into(), serde_json::to_value(proof).unwrap());
+    (did, doc)
+}
+
+/// A signed submit Trust Task document for `vp` (the common case:
+/// `registryConsent = false`, no extensions).
+async fn submit_doc(vp: &Value) -> (String, Value) {
+    signed_trust_task(
+        SUBMIT_TASK,
+        json!({ "vp": vp, "registryConsent": false, "extensions": null }),
+    )
+    .await
+}
+
+/// POST a Trust Task document to the single `/v1/trust-tasks` endpoint. No
+/// `Trust-Task` header — the document's own `type` is the verb.
+async fn post_tt(router: &axum::Router, doc: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(TRUST_TASKS_URI)
+        .header("content-type", "application/json")
+        .body(Body::from(doc.to_string()))
+        .unwrap();
+    let res = router.clone().oneshot(req).await.expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, json)
+}
+
+/// The `payload` of a Trust Task `#response` document.
+fn tt_payload(doc: &Value) -> Value {
+    doc.get("payload")
+        .cloned()
+        .unwrap_or_else(|| panic!("Trust Task response has no payload: {doc}"))
+}
+
+/// The `verdict.effect` string of a submit `#response` document.
+fn verdict_effect(doc: &Value) -> String {
+    doc.pointer("/payload/verdict/effect")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("no verdict.effect in {doc}"))
+        .to_string()
+}
+
+/// The framework error `code` of a `trust-task-error` document.
+fn tt_error_code(doc: &Value) -> String {
+    doc.pointer("/payload/code")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("no payload.code in {doc}"))
+        .to_string()
 }
 
 fn applicant_pair() -> (SigningKey, String) {
@@ -280,191 +315,107 @@ async fn send(
 #[tokio::test]
 async fn rest_submit_happy_path_persists_pending() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
+    let vp = json!({ "type": "VerifiablePresentation" });
+    let (_did, doc) = submit_doc(&vp).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "pending");
-    assert!(body["requestId"].is_string());
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    // The default policy refers the request to an admin (request persisted
+    // Pending); the document proof authenticated the holder.
+    assert_eq!(verdict_effect(&body), "refer");
+    assert!(tt_payload(&body)["requestId"].is_string());
 }
 
 #[tokio::test]
 async fn rest_submit_rejects_wrong_signer() {
+    // The document proof verifies, but its signer (the real `did:key`) does not
+    // match the document `issuer` — an impersonation attempt. The dispatcher
+    // rejects it `permissionDenied` (403).
     let fix = build_fixture().await;
-    let (_a_sk, applicant_did) = applicant_pair();
-    let other = SigningKey::from_bytes(&[0xEE; 32]);
     let vp = json!({});
-    let created = vtc_service::auth::session::now_epoch() as i64;
-    let bad_sig = sign_holder_payload(
-        &other,
-        &applicant_did,
-        &vp,
-        false,
-        &Value::Null,
-        vtc_service::test_support::TEST_VTC_DID,
-        created,
-    );
+    let (_did, mut doc) = submit_doc(&vp).await;
+    doc["issuer"] = json!("did:key:z6MkpwrongIssuerDidThatIsNotTheSigner");
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "audience": vtc_service::test_support::TEST_VTC_DID,
-            "created": created,
-            "signature": bad_sig,
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert_eq!(tt_error_code(&body), "permissionDenied");
 }
 
 #[tokio::test]
-async fn rest_submit_rejects_non_did_key_applicant() {
+async fn rest_submit_rejects_missing_holder_proof() {
+    // Over REST the holder is authenticated by the document proof; a document
+    // with no proof has no proven holder and is rejected (403).
     let fix = build_fixture().await;
-    let (status, _) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(json!({
-            "applicantDid": "did:web:not-supported.example.com",
-            "vp": {},
-            "audience": vtc_service::test_support::TEST_VTC_DID,
-            "created": vtc_service::auth::session::now_epoch(),
-            "signature": "00",
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let vp = json!({});
+    let (_did, mut doc) = submit_doc(&vp).await;
+    doc.as_object_mut().unwrap().remove("proof");
+
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert_eq!(tt_error_code(&body), "permissionDenied");
 }
 
 // P0.13 — replay / freshness / audience binding + per-applicant dedup.
 
 #[tokio::test]
 async fn rest_submit_dedups_an_open_request_for_the_same_applicant() {
-    // A captured body replayed while a request is still open is refused, and a
-    // second concurrent submit can't accumulate a second open row.
+    // A captured document replayed while a request is still open is refused, and
+    // a second concurrent submit can't accumulate a second open row.
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
+    let vp = json!({ "type": "VerifiablePresentation" });
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(signed_submit_body(&sk, &applicant_did, &vp)),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "pending");
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "refer");
 
-    // Replay / duplicate → 409 (the first request is still open).
-    let (status2, body2) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(signed_submit_body(&sk, &applicant_did, &vp)),
-    )
-    .await;
+    // Duplicate while the first request is still open → a business-rule
+    // conflict, surfaced as the framework `taskFailed` reject (422).
+    let (_did2, doc2) = submit_doc(&vp).await;
+    let (status2, body2) = post_tt(&fix.router, doc2).await;
     assert_eq!(
         status2,
-        StatusCode::CONFLICT,
-        "a second open request for one applicant must 409: {body2}"
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a second open request for one applicant must be a taskFailed conflict: {body2}"
     );
+    assert_eq!(tt_error_code(&body2), "taskFailed");
 }
 
 #[tokio::test]
-async fn rest_submit_rejects_a_foreign_audience() {
-    // A body signed + addressed to a different community cannot be replayed
-    // against this VTC.
+async fn rest_submit_rejects_a_foreign_recipient() {
+    // The replay binding is the document `recipient`: a document addressed to a
+    // different community is rejected `wrongRecipient` (403), replacing the
+    // bespoke `audience` field.
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let created = vtc_service::auth::session::now_epoch() as i64;
-    let foreign = "did:webvh:other.example.com:xyz";
-    let sig = sign_holder_payload(
-        &sk,
-        &applicant_did,
-        &vp,
-        false,
-        &Value::Null,
-        foreign,
-        created,
-    );
+    let (_did, mut doc) = submit_doc(&vp).await;
+    doc["recipient"] = json!("did:webvh:other.example.com:xyz");
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "audience": foreign,
-            "created": created,
-            "signature": sig,
-        })),
-    )
-    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "a submission addressed to another community must be rejected: {body}"
+        StatusCode::FORBIDDEN,
+        "a document addressed to another community must be rejected: {body}"
     );
+    assert_eq!(tt_error_code(&body), "wrongRecipient");
 }
 
 #[tokio::test]
-async fn rest_submit_rejects_a_stale_created() {
-    // A captured body replayed long after signing is outside the freshness
-    // window and is rejected.
+async fn rest_submit_rejects_an_expired_document() {
+    // Freshness is the document `expiresAt`: a stale (expired) document is
+    // rejected `expired` (400), replacing the bespoke `created` window.
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
     let vp = json!({});
-    let stale = vtc_service::auth::session::now_epoch() as i64 - 10_000;
-    let aud = vtc_service::test_support::TEST_VTC_DID;
-    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null, aud, stale);
+    let (_did, mut doc) = submit_doc(&vp).await;
+    doc["expiresAt"] = json!("2000-01-01T00:00:00Z");
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(json!({
-            "applicantDid": applicant_did,
-            "vp": vp,
-            "audience": aud,
-            "created": stale,
-            "signature": sig,
-        })),
-    )
-    .await;
+    let (status, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "a stale `created` must be rejected: {body}"
+        "an expired document must be rejected: {body}"
     );
+    assert_eq!(tt_error_code(&body), "expired");
 }
 
 // ---------------------------------------------------------------------------
@@ -472,19 +423,11 @@ async fn rest_submit_rejects_a_stale_created() {
 // ---------------------------------------------------------------------------
 
 async fn submit_pending(fix: &Fixture) -> Uuid {
-    let (sk, applicant_did) = applicant_pair();
     let vp = json!({"a":"b"});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap()
+    let (_did, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "submit_pending: {body}");
+    Uuid::parse_str(tt_payload(&body)["requestId"].as_str().unwrap()).unwrap()
 }
 
 #[tokio::test]
@@ -495,7 +438,7 @@ async fn list_returns_pending_by_default() {
         &fix.router,
         "GET",
         "/v1/join-requests",
-        SUBMIT_TASK,
+        LIST_TASK,
         Some(&fix.admin_token),
         None,
     )
@@ -532,19 +475,10 @@ async fn show_returns_full_request_including_vp() {
 #[tokio::test]
 async fn approve_writes_acl_and_member_atomically() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = body["requestId"].as_str().unwrap();
+    let (_sk, applicant_did) = applicant_pair();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     let (status, body) = send(
         &fix.router,
@@ -613,19 +547,10 @@ async fn approve_writes_acl_and_member_atomically() {
 #[tokio::test]
 async fn approve_409_when_duplicate_acl_exists() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = body["requestId"].as_str().unwrap();
+    let (_sk, applicant_did) = applicant_pair();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     // Pre-existing ACL row collides with the approve write.
     let now = vtc_service::auth::session::now_epoch();
@@ -659,19 +584,10 @@ async fn approve_409_when_duplicate_acl_exists() {
 #[tokio::test]
 async fn reject_leaves_no_acl_or_member_rows() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = body["requestId"].as_str().unwrap();
+    let (_sk, applicant_did) = applicant_pair();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     let (status, body) = send(
         &fix.router,
@@ -718,19 +634,9 @@ async fn approve_404_for_unknown_id() {
 #[tokio::test]
 async fn approve_409_when_request_already_decided() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = body["requestId"].as_str().unwrap();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     // First approve — succeeds.
     let _ = send(
@@ -829,24 +735,17 @@ async fn rest_submit_under_allow_policy_auto_admits() {
     )
     .await;
 
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
+    let (_sk, applicant_did) = applicant_pair();
+    let vp = json!({ "type": "VerifiablePresentation" });
+    let (_d, doc) = submit_doc(&vp).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "approved");
-    assert!(body["vmc"]["id"].is_string(), "VMC returned inline: {body}");
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "allow", "allow policy auto-admits");
+    let with = &tt_payload(&body)["verdict"]["with"];
+    assert!(with["vmc"]["id"].is_string(), "VMC returned inline: {body}");
     assert!(
-        body["roleVec"]["id"].is_string(),
+        with["roleVec"]["id"].is_string(),
         "role VEC returned: {body}"
     );
 
@@ -905,20 +804,11 @@ async fn auto_admit_emits_membership_issuance_audit() {
     )
     .await;
 
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "approved");
+    let vp = json!({ "type": "VerifiablePresentation" });
+    let (_d, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "allow");
 
     let audit = collect_admit_audit(&fix.state.audit_ks).await;
     assert_eq!(
@@ -949,18 +839,9 @@ async fn auto_admit_emits_membership_issuance_audit() {
 #[tokio::test]
 async fn manual_approve_emits_membership_issuance_audit() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
-    let submit_body = signed_submit_body(&sk, &applicant_did, &json!({}));
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = body["requestId"].as_str().unwrap();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     let (status, body) = send(
         &fix.router,
@@ -990,7 +871,7 @@ async fn manual_approve_emits_membership_issuance_audit() {
 #[tokio::test]
 async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
+    let (_sk, applicant_did) = applicant_pair();
     let vp = json!({
         "type": "VerifiablePresentation",
         "holder": applicant_did,
@@ -1002,20 +883,12 @@ async fn rest_submit_under_default_join_policy_lands_pending_with_vp_claims() {
             }
         ]
     });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
+    let (_d, doc) = submit_doc(&vp).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "pending");
-    let id = body["requestId"].as_str().unwrap();
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "refer");
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     // Fetch via admin show — `vpClaims` is on the persisted row.
     let (status, row) = send(
@@ -1051,24 +924,16 @@ async fn rest_submit_under_deny_all_policy_persists_rejected_with_decision() {
     let fix = build_fixture().await;
     activate_deny_all_join_policy(&fix).await;
 
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
+    let vp = json!({ "type": "VerifiablePresentation" });
+    let (_d, doc) = submit_doc(&vp).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    // Submission still 201 — the row persists either way; the
-    // status field is the decision channel.
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    assert_eq!(body["status"], "rejected");
-    let id = body["requestId"].as_str().unwrap();
+    let (status, body) = post_tt(&fix.router, doc).await;
+    // A policy `deny` is a verdict (not a framework error): the request reached
+    // the policy and was refused. The reply is a `#response` (200) carrying a
+    // `deny` Verdict, and the row persists Rejected.
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "deny");
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     let (status, row) = send(
         &fix.router,
@@ -1097,20 +962,12 @@ async fn policy_rejected_row_cannot_be_approved() {
     let fix = build_fixture().await;
     activate_deny_all_join_policy(&fix).await;
 
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (status, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "got {body}");
-    let id = body["requestId"].as_str().unwrap();
+    let vp = json!({ "type": "VerifiablePresentation" });
+    let (_d, doc) = submit_doc(&vp).await;
+    let (status, body) = post_tt(&fix.router, doc).await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(verdict_effect(&body), "deny");
+    let id = body["payload"]["requestId"].as_str().unwrap();
 
     let (status, _body) = send(
         &fix.router,
@@ -1135,7 +992,7 @@ async fn list_requires_authentication() {
         &fix.router,
         "GET",
         "/v1/join-requests",
-        SUBMIT_TASK,
+        LIST_TASK,
         None,
         None,
     )
@@ -1523,18 +1380,9 @@ async fn admin_query_send_requires_admin() {
 /// `(member sk, member_did, request_id, vmc_id)`.
 async fn admit_member(fix: &Fixture) -> (SigningKey, String, Uuid, String) {
     let (sk, member_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &member_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
-    let id = Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap();
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
+    let id = Uuid::parse_str(body["payload"]["requestId"].as_str().unwrap()).unwrap();
 
     let (status, body) = send(
         &fix.router,
@@ -1572,64 +1420,40 @@ async fn build_reciprocal_vc(
     vc
 }
 
-/// Holder-binding signature over the canonical accept body. Mirrors
-/// `routes::join_requests::accept`'s construction.
-fn sign_accept_payload(sk: &SigningKey, member_did: &str, vmc_id: &str, vc: &Value) -> String {
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Payload<'a> {
-        member_did: &'a str,
-        vmc_id: &'a str,
-        vc: &'a Value,
-    }
-    let payload = serde_json::to_vec(&Payload {
-        member_did,
-        vmc_id,
-        vc,
-    })
-    .unwrap();
-    let mut signing = Vec::with_capacity(JOIN_ACCEPT_DOMAIN_TAG.len() + payload.len());
-    signing.extend_from_slice(JOIN_ACCEPT_DOMAIN_TAG);
-    signing.extend_from_slice(&payload);
-    hex::encode(sk.sign(&signing).to_bytes())
+/// POST an accept as a Trust Task document to `/v1/trust-tasks`, signed by the
+/// member's holder key (`MEMBER_SEED`) so the proof's issuer is the member DID.
+async fn post_accept(fix: &Fixture, id: Uuid, vmc_id: &str, vc: &Value) -> (StatusCode, Value) {
+    post_accept_signed_by(fix, &MEMBER_SEED, id, vmc_id, vc).await
 }
 
-async fn post_accept(
+/// As [`post_accept`] but signed by `seed` — to exercise a wrong-holder proof.
+async fn post_accept_signed_by(
     fix: &Fixture,
+    seed: &[u8; 32],
     id: Uuid,
-    member_did: &str,
     vmc_id: &str,
     vc: &Value,
-    signature: &str,
 ) -> (StatusCode, Value) {
-    send(
-        &fix.router,
-        "POST",
-        &format!("/v1/join-requests/{id}/accept"),
+    let (_did, doc) = signed_trust_task_seed(
+        seed,
         ACCEPT_TASK,
-        None,
-        Some(json!({
-            "memberDid": member_did,
-            "vmcId": vmc_id,
-            "vc": vc,
-            "signature": signature,
-        })),
+        json!({ "requestId": id, "vmcId": vmc_id, "vc": vc }),
     )
-    .await
+    .await;
+    post_tt(&fix.router, doc).await
 }
 
 #[tokio::test]
 async fn accept_records_the_reciprocal_edge() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     let recip_id = "urn:uuid:recip-1";
     let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, recip_id).await;
-    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
 
-    let (status, body) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    let (status, body) = post_accept(&fix, id, &vmc_id, &vc).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    assert_eq!(body["status"], "accepted");
-    assert_eq!(body["reciprocalVcId"], recip_id);
+    assert_eq!(body["payload"]["status"], "accepted");
+    assert_eq!(body["payload"]["reciprocalVcId"], recip_id);
 
     let member = get_member(&fix.members_ks, &member_did)
         .await
@@ -1642,34 +1466,35 @@ async fn accept_records_the_reciprocal_edge() {
 #[tokio::test]
 async fn accept_is_idempotent_for_the_same_vc() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
-    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
 
-    let (s1, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    let (s1, _) = post_accept(&fix, id, &vmc_id, &vc).await;
     assert_eq!(s1, StatusCode::OK);
-    let (s2, b2) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    let (s2, b2) = post_accept(&fix, id, &vmc_id, &vc).await;
     assert_eq!(
         s2,
         StatusCode::OK,
         "re-accept of the same VC is a no-op: {b2}"
     );
-    assert_eq!(b2["reciprocalVcId"], "urn:uuid:recip-1");
+    assert_eq!(b2["payload"]["reciprocalVcId"], "urn:uuid:recip-1");
 }
 
 #[tokio::test]
 async fn accept_conflicts_on_a_different_vc_after_reciprocation() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     let vc1 = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
-    let sig1 = sign_accept_payload(&sk, &member_did, &vmc_id, &vc1);
-    let (s1, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc1, &sig1).await;
+    let (s1, _) = post_accept(&fix, id, &vmc_id, &vc1).await;
     assert_eq!(s1, StatusCode::OK);
 
     let vc2 = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-2").await;
-    let sig2 = sign_accept_payload(&sk, &member_did, &vmc_id, &vc2);
-    let (s2, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc2, &sig2).await;
-    assert_eq!(s2, StatusCode::CONFLICT);
+    let (s2, _) = post_accept(&fix, id, &vmc_id, &vc2).await;
+    assert_eq!(
+        s2,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "conflict → taskFailed"
+    );
 }
 
 #[tokio::test]
@@ -1677,42 +1502,47 @@ async fn accept_rejects_a_wrong_holder_signature() {
     let fix = build_fixture().await;
     let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     let vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
-    let other = SigningKey::from_bytes(&[0xEE; 32]);
-    let bad_sig = sign_accept_payload(&other, &member_did, &vmc_id, &vc);
 
-    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &bad_sig).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Signed by a different holder than the admitted member → the proven holder
+    // is not the request's applicant, so the accept is refused.
+    let (status, _) = post_accept_signed_by(&fix, &[0xEE; 32], id, &vmc_id, &vc).await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::FORBIDDEN,
+        "wrong-holder accept rejected, got {status}"
+    );
 }
 
 #[tokio::test]
 async fn accept_conflicts_when_not_yet_approved() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (sk, member_did) = applicant_pair();
+    let (_sk, member_did) = applicant_pair();
     // No VMC exists yet; build a placeholder vc — the status guard fires first.
     let vc = build_reciprocal_vc(&member_did, "urn:uuid:none", VTC_DID, "urn:uuid:recip-1").await;
-    let sig = sign_accept_payload(&sk, &member_did, "urn:uuid:none", &vc);
 
-    let (status, _) = post_accept(&fix, id, &member_did, "urn:uuid:none", &vc, &sig).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = post_accept(&fix, id, "urn:uuid:none", &vc).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "not-yet-approved → taskFailed conflict"
+    );
 }
 
 #[tokio::test]
 async fn accept_conflicts_on_vmc_id_mismatch() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, _vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, _vmc_id) = admit_member(&fix).await;
     let wrong = "urn:uuid:not-the-current-vmc";
     let vc = build_reciprocal_vc(&member_did, wrong, VTC_DID, "urn:uuid:recip-1").await;
-    let sig = sign_accept_payload(&sk, &member_did, wrong, &vc);
 
-    let (status, _) = post_accept(&fix, id, &member_did, wrong, &vc, &sig).await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = post_accept(&fix, id, wrong, &vc).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
 async fn accept_rejects_a_reciprocal_vc_for_another_community() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     // Subject acknowledges a different community than this VTC.
     let vc = build_reciprocal_vc(
         &member_did,
@@ -1721,22 +1551,20 @@ async fn accept_rejects_a_reciprocal_vc_for_another_community() {
         "urn:uuid:recip-1",
     )
     .await;
-    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
 
-    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    let (status, _) = post_accept(&fix, id, &vmc_id, &vc).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
 async fn accept_rejects_a_tampered_reciprocal_vc() {
     let fix = build_fixture().await;
-    let (sk, member_did, id, vmc_id) = admit_member(&fix).await;
+    let (_sk, member_did, id, vmc_id) = admit_member(&fix).await;
     let mut vc = build_reciprocal_vc(&member_did, &vmc_id, VTC_DID, "urn:uuid:recip-1").await;
     // Mutate the signed `id` after signing — the issuer proof no longer covers it.
     vc["id"] = json!("urn:uuid:swapped");
-    let sig = sign_accept_payload(&sk, &member_did, &vmc_id, &vc);
 
-    let (status, _) = post_accept(&fix, id, &member_did, &vmc_id, &vc, &sig).await;
+    let (status, _) = post_accept(&fix, id, &vmc_id, &vc).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -1769,18 +1597,11 @@ async fn manifest_lists_registered_criteria() {
     let fix = build_fixture().await;
     store_join_criterion(&fix).await;
 
-    let (status, body) = send(
-        &fix.router,
-        "GET",
-        "/v1/join-requests/manifest",
-        MANIFEST_TASK,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) = post_tt(&fix.router, manifest_doc()).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    assert_eq!(body["communityDid"], VTC_DID);
-    let criteria = body["criteria"].as_array().unwrap();
+    let payload = tt_payload(&body);
+    assert_eq!(payload["communityDid"], VTC_DID);
+    let criteria = payload["criteria"].as_array().unwrap();
     assert_eq!(criteria.len(), 1);
     assert_eq!(criteria[0]["id"], "join-evidence");
     assert!(criteria[0]["presentationDefinition"]["credentials"].is_array());
@@ -1793,96 +1614,78 @@ async fn manifest_lists_registered_criteria() {
 #[tokio::test]
 async fn manifest_is_empty_when_no_criteria_registered() {
     let fix = build_fixture().await;
-    let (status, body) = send(
-        &fix.router,
-        "GET",
-        "/v1/join-requests/manifest",
-        MANIFEST_TASK,
-        None,
-        None,
-    )
-    .await;
+    let (status, body) = post_tt(&fix.router, manifest_doc()).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    assert_eq!(body["communityDid"], VTC_DID);
-    assert_eq!(body["criteria"].as_array().unwrap().len(), 0);
+    let payload = tt_payload(&body);
+    assert_eq!(payload["communityDid"], VTC_DID);
+    assert_eq!(payload["criteria"].as_array().unwrap().len(), 0);
 }
 
 // ---------------------------------------------------------------------------
 // Status — applicant poll (join-requests/status/1.0)
 // ---------------------------------------------------------------------------
 
-/// Holder-binding signature over the canonical status body. Mirrors
-/// `routes::join_requests::status`'s construction.
-fn sign_status_payload(sk: &SigningKey, applicant_did: &str, request_id: Uuid) -> String {
-    #[derive(serde::Serialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Payload<'a> {
-        applicant_did: &'a str,
-        request_id: String,
-    }
-    let payload = serde_json::to_vec(&Payload {
-        applicant_did,
-        request_id: request_id.to_string(),
-    })
-    .unwrap();
-    let mut signing = Vec::with_capacity(JOIN_STATUS_DOMAIN_TAG.len() + payload.len());
-    signing.extend_from_slice(JOIN_STATUS_DOMAIN_TAG);
-    signing.extend_from_slice(&payload);
-    hex::encode(sk.sign(&signing).to_bytes())
+/// POST a status-poll Trust Task document signed by the applicant
+/// (`MEMBER_SEED`, the same key `submit_doc`/`applicant_pair` use).
+async fn post_status(fix: &Fixture, id: Uuid) -> (StatusCode, Value) {
+    post_status_signed_by(fix, &[0xCD; 32], id).await
 }
 
-async fn post_status(
-    fix: &Fixture,
-    id: Uuid,
-    applicant_did: &str,
-    signature: &str,
-) -> (StatusCode, Value) {
-    send(
-        &fix.router,
-        "POST",
-        &format!("/v1/join-requests/{id}/status"),
-        STATUS_TASK,
-        None,
-        Some(json!({ "applicantDid": applicant_did, "signature": signature })),
-    )
-    .await
+/// As [`post_status`] but signed by `seed` — to exercise a wrong-holder proof.
+async fn post_status_signed_by(fix: &Fixture, seed: &[u8; 32], id: Uuid) -> (StatusCode, Value) {
+    let (_did, doc) = signed_trust_task_seed(seed, STATUS_TASK, json!({ "requestId": id })).await;
+    post_tt(&fix.router, doc).await
+}
+
+/// An unsigned (public) manifest Trust Task document — manifest is a public
+/// read, so it carries no holder proof, only the recipient + expiry the
+/// framework's `validate_basic` checks.
+fn manifest_doc() -> Value {
+    json!({
+        "type": MANIFEST_TASK,
+        "id": format!("urn:uuid:{}", Uuid::new_v4()),
+        "recipient": vtc_service::test_support::TEST_VTC_DID,
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "payload": {},
+    })
 }
 
 #[tokio::test]
 async fn status_returns_pending_for_the_applicant() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (sk, applicant_did) = applicant_pair();
-    let sig = sign_status_payload(&sk, &applicant_did, id);
 
-    let (status, body) = post_status(&fix, id, &applicant_did, &sig).await;
+    let (status, body) = post_status(&fix, id).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    assert_eq!(body["requestId"], id.to_string());
-    assert_eq!(body["status"], "pending");
-    assert!(body.get("needs").is_none() || body["needs"].as_array().unwrap().is_empty());
+    let payload = tt_payload(&body);
+    assert_eq!(payload["requestId"], id.to_string());
+    assert_eq!(payload["status"], "pending");
+    assert!(payload.get("needs").is_none() || payload["needs"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn status_rejects_a_wrong_signer() {
     let fix = build_fixture().await;
     let id = submit_pending(&fix).await;
-    let (_sk, applicant_did) = applicant_pair();
-    let other = SigningKey::from_bytes(&[0xEE; 32]);
-    let bad_sig = sign_status_payload(&other, &applicant_did, id);
 
-    let (status, _) = post_status(&fix, id, &applicant_did, &bad_sig).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Signed by a different holder than the applicant → the proven holder does
+    // not match the request's applicant, so the poll is refused.
+    let (status, _) = post_status_signed_by(&fix, &[0xEE; 32], id).await;
+    assert!(
+        status == StatusCode::BAD_REQUEST || status == StatusCode::FORBIDDEN,
+        "wrong-holder status rejected, got {status}"
+    );
 }
 
 #[tokio::test]
-async fn status_404_for_an_unknown_request() {
+async fn status_taskfailed_for_an_unknown_request() {
     let fix = build_fixture().await;
-    let (sk, applicant_did) = applicant_pair();
     let unknown = Uuid::new_v4();
-    let sig = sign_status_payload(&sk, &applicant_did, unknown);
 
-    let (status, _) = post_status(&fix, unknown, &applicant_did, &sig).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    // A not-found maps to the framework `taskFailed` reject (422) over the
+    // Trust Task endpoint, not a bare 404.
+    let (status, _) = post_status(&fix, unknown).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -1903,30 +1706,21 @@ decision := {"effect": "request_more", "with": {
     )
     .await;
 
-    let (sk, applicant_did) = applicant_pair();
-    let vp = json!({});
-    let submit_body = signed_submit_body(&sk, &applicant_did, &vp);
-    let (_, body) = send(
-        &fix.router,
-        "POST",
-        "/v1/join-requests",
-        SUBMIT_TASK,
-        None,
-        Some(submit_body),
-    )
-    .await;
+    let (_d, doc) = submit_doc(&json!({})).await;
+    let (_, body) = post_tt(&fix.router, doc).await;
     assert_eq!(
-        body["status"], "deferred",
-        "expected request_more → deferred: {body}"
+        verdict_effect(&body),
+        "request_more",
+        "expected request_more verdict: {body}"
     );
-    let id = Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap();
+    let id = Uuid::parse_str(body["payload"]["requestId"].as_str().unwrap()).unwrap();
 
-    let sig = sign_status_payload(&sk, &applicant_did, id);
-    let (status, body) = post_status(&fix, id, &applicant_did, &sig).await;
+    let (status, body) = post_status(&fix, id).await;
     assert_eq!(status, StatusCode::OK, "got {body}");
-    assert_eq!(body["status"], "deferred");
-    assert_eq!(body["needs"][0], "agreed:code-of-conduct");
-    assert_eq!(body["presentationDefinition"]["id"], "pd-coc");
+    let payload = tt_payload(&body);
+    assert_eq!(payload["status"], "deferred");
+    assert_eq!(payload["needs"][0], "agreed:code-of-conduct");
+    assert_eq!(payload["presentationDefinition"]["id"], "pd-coc");
 }
 
 // ---------------------------------------------------------------------------
@@ -1952,41 +1746,14 @@ async fn floods_to_429(router: &axum::Router, method: &str, uri: &str, task: &st
 }
 
 #[tokio::test]
-async fn submit_post_is_rate_limited() {
+async fn trust_tasks_post_is_rate_limited() {
+    // All holder-facing join verbs (submit/accept/manifest/status) arrive on the
+    // single `POST /v1/trust-tasks` document endpoint, which must sit on the
+    // governed branch — a flood trips 429 before the dispatcher runs.
     let fix = build_fixture().await;
     assert!(
-        floods_to_429(&fix.router, "POST", "/v1/join-requests", SUBMIT_TASK).await,
-        "POST /v1/join-requests must be on the governed branch (no 429 in 40 requests)"
-    );
-}
-
-#[tokio::test]
-async fn accept_post_is_rate_limited() {
-    let fix = build_fixture().await;
-    assert!(
-        floods_to_429(
-            &fix.router,
-            "POST",
-            "/v1/join-requests/00000000-0000-0000-0000-000000000000/accept",
-            ACCEPT_TASK,
-        )
-        .await,
-        "POST /v1/join-requests/{{id}}/accept must be on the governed branch"
-    );
-}
-
-#[tokio::test]
-async fn status_post_is_rate_limited() {
-    let fix = build_fixture().await;
-    assert!(
-        floods_to_429(
-            &fix.router,
-            "POST",
-            "/v1/join-requests/00000000-0000-0000-0000-000000000000/status",
-            STATUS_TASK,
-        )
-        .await,
-        "POST /v1/join-requests/{{id}}/status must be on the governed branch"
+        floods_to_429(&fix.router, "POST", "/v1/trust-tasks", SUBMIT_TASK).await,
+        "POST /v1/trust-tasks must be on the governed branch (no 429 in 40 requests)"
     );
 }
 
@@ -2001,7 +1768,7 @@ async fn admin_list_get_is_not_rate_limited() {
             &fix.router,
             "GET",
             "/v1/join-requests",
-            SUBMIT_TASK,
+            LIST_TASK,
             None,
             None,
         )

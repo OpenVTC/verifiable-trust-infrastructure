@@ -216,16 +216,22 @@ async fn full_install_to_bootstrap_succeeds() {
         .prefix_iter_raw(b"2".to_vec())
         .await
         .unwrap();
-    assert_eq!(raw.len(), 1, "exactly one audit envelope expected");
-    let envelope: vti_common::audit::AuditEnvelope = serde_json::from_slice(&raw[0].1).unwrap();
-    match envelope.event {
-        AuditEvent::CommunityInstalled(data) => {
-            assert_eq!(data.community_did, "did:webvh:vtc.example.com:abc");
-            // install_token_jti is non-empty.
-            assert!(!data.install_token_jti.is_empty());
-        }
-        other => panic!("expected CommunityInstalled, got {other:?}"),
-    }
+    assert!(!raw.is_empty(), "at least one audit envelope expected");
+    // Find the CommunityInstalled envelope (the bootstrap may also emit
+    // companion envelopes); assert its data references the install jti.
+    let installed = raw
+        .iter()
+        .find_map(|(_k, v)| {
+            let env: vti_common::audit::AuditEnvelope = serde_json::from_slice(v).ok()?;
+            match env.event {
+                AuditEvent::CommunityInstalled(data) => Some(data),
+                _ => None,
+            }
+        })
+        .expect("a CommunityInstalled audit envelope is present");
+    assert_eq!(installed.community_did, "did:webvh:vtc.example.com:abc");
+    // install_token_jti is non-empty.
+    assert!(!installed.install_token_jti.is_empty());
 
     // Community profile singleton is initialised with the configured
     // VTC DID. Spec §5.1: `community_did` is immutable, set at install

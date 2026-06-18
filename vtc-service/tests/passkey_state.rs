@@ -51,6 +51,8 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let endorsements_ks = store.keyspace("endorsements").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
+    let invitations_ks = store.keyspace("invitations").unwrap();
+    let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
 
     let config: AppConfig = toml::from_str(&format!(
         r#"
@@ -85,6 +87,8 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         endorsement_types_ks: endorsement_types_ks.clone(),
         schemas_ks: store.keyspace("schemas").unwrap(),
         endorsements_ks: endorsements_ks.clone(),
+        invitations_ks,
+        consumed_invitations_ks,
         registry_client: None,
         registry_health: vtc_service::registry::RegistryHealth::new(),
         syncer_health: vtc_service::registry::SyncerHealth::new(),

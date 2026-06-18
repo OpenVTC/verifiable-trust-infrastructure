@@ -354,6 +354,8 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == ENDORSEMENT_TYPES => &state.endorsement_types_ks,
         x if x == SCHEMAS => &state.schemas_ks,
         x if x == ENDORSEMENTS => &state.endorsements_ks,
+        x if x == INVITATIONS => &state.invitations_ks,
+        x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,
         x if x == AUDIT_KEY => &state.audit_key_ks,
         _ => return None,

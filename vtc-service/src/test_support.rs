@@ -576,20 +576,56 @@ mod didcomm_harness {
     use tokio::sync::{Mutex, oneshot};
     use uuid::Uuid;
     use vta_sdk::protocols::extract_problem_report;
-    use vta_sdk::protocols::join_requests::{
-        JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, JOIN_REQUEST_MANIFEST_TYPE,
-        JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_STATUS_TYPE,
-        JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestStatusBody,
-        JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
-    };
 
-    use crate::join::JoinTransport;
-    use crate::join::submit_inner;
-    use crate::routes::join_requests::manifest::manifest_inner;
-    use crate::routes::join_requests::status::status_inner;
     use crate::server::AppState;
+    use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
 
     use super::TestVtc;
+
+    /// Wrap a verb payload into a Trust Task **document** ready to ride a
+    /// DIDComm message body: `type` = the verb URI, `issuer` = the authcrypt
+    /// sender, `recipient` = the VTC DID (the framework recipient binding),
+    /// and a far-future `expiresAt`. Over DIDComm the authcrypt sender
+    /// authenticates the holder, so the document carries no `proof`.
+    fn wrap_trust_task(typ: &str, issuer: &str, recipient: &str, payload: Value) -> Value {
+        json!({
+            "type": typ,
+            "id": format!("urn:uuid:{}", Uuid::new_v4()),
+            "issuer": issuer,
+            "recipient": recipient,
+            "issuedAt": "2026-01-01T00:00:00Z",
+            "expiresAt": "2099-01-01T00:00:00Z",
+            "payload": payload,
+        })
+    }
+
+    /// `true` if a reply message type names an error envelope — a DIDComm
+    /// report-problem (legacy, non-join) or a framework `trust-task-error`
+    /// document (the join ceremony's rejection shape).
+    fn is_error_reply(typ: &str) -> bool {
+        typ.contains("problem-report") || typ.contains("trust-task-error")
+    }
+
+    /// Extract `(code, detail)` from either an error envelope shape: a
+    /// `trust-task-error` document (`payload.code` / `payload.message`) or a
+    /// legacy DIDComm problem-report (`code` / `comment`).
+    fn extract_error(typ: &str, body: &Value) -> (String, String) {
+        if typ.contains("trust-task-error") {
+            let code = body
+                .pointer("/payload/code")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let msg = body
+                .pointer("/payload/message")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            (code, msg)
+        } else {
+            extract_problem_report(body)
+        }
+    }
 
     /// Two DIDComm verification methods: an Ed25519 authentication key and an
     /// X25519 key-agreement key — the shape an authcrypt counterparty needs.
@@ -625,15 +661,10 @@ mod didcomm_harness {
         body: Value,
     }
 
-    /// `true` if a DIDComm message type names the report-problem protocol.
-    fn is_problem_report(typ: &str) -> bool {
-        typ.contains("problem-report")
-    }
-
-    /// A DIDComm problem-report the VTC threaded back as a rejection, with its
-    /// `code`/`comment` already parsed via
-    /// [`vta_sdk::protocols::extract_problem_report`] plus the raw body for
-    /// finer assertions.
+    /// An error envelope the VTC threaded back as a rejection (a framework
+    /// `trust-task-error` document, or a legacy DIDComm problem-report), with
+    /// its `code`/`comment` already parsed plus the raw body for finer
+    /// assertions.
     #[derive(Debug, Clone)]
     pub struct ProblemReport {
         /// The problem-report `code` (e.g. `e.p.msg.bad-request`).
@@ -760,7 +791,10 @@ mod didcomm_harness {
             timeout: Duration,
         ) -> ReplyOutcome {
             let req_id = Uuid::new_v4().to_string();
-            let msg = Message::build(req_id.clone(), typ.to_string(), body)
+            // Wrap the verb payload into a Trust Task document addressed to the
+            // VTC; the DIDComm message `type` mirrors the document `type`.
+            let doc = wrap_trust_task(typ, &self.did, vtc_did, body);
+            let msg = Message::build(req_id.clone(), typ.to_string(), doc)
                 .from(self.did.clone())
                 .to(vtc_did.to_string())
                 .finalize();
@@ -777,8 +811,8 @@ mod didcomm_harness {
             self.panic_on_problem_report.store(prev, Ordering::SeqCst);
 
             match received {
-                Some(r) if is_problem_report(&r.typ) => {
-                    let (code, comment) = extract_problem_report(&r.body);
+                Some(r) if is_error_reply(&r.typ) => {
+                    let (code, comment) = extract_error(&r.typ, &r.body);
                     ReplyOutcome::Problem(ProblemReport {
                         code,
                         comment,
@@ -838,7 +872,7 @@ mod didcomm_harness {
                     .live_stream_next(&self.profile, Some(POLL), true)
                     .await;
                 if let Ok(Some((msg, _meta))) = next {
-                    if is_problem_report(&msg.typ)
+                    if is_error_reply(&msg.typ)
                         && self.panic_on_problem_report.load(Ordering::SeqCst)
                     {
                         // Happy-path ergonomics: surface the problem loudly rather
@@ -1027,13 +1061,12 @@ mod didcomm_harness {
                 continue;
             };
 
-            let (reply_type, reply_body) = match dispatch_join(&state, &sender, &msg).await {
-                Ok(Some(reply)) => reply,
-                Ok(None) => continue,
-                Err((code, comment)) => (
-                    "https://didcomm.org/report-problem/2.0/problem-report".to_string(),
-                    json!({ "code": code, "comment": comment }),
-                ),
+            // Drive the real Trust Task dispatcher: the message body is the
+            // Trust Task document, the authcrypt sender is the proven holder.
+            // The reply document is self-describing (its own `type` — a
+            // `#response` or a `trust-task-error`).
+            let Some((reply_type, reply_body)) = dispatch_join(&state, &sender, &msg).await else {
+                continue;
             };
 
             let reply_id = Uuid::new_v4().to_string();
@@ -1065,68 +1098,26 @@ mod didcomm_harness {
         atm.graceful_shutdown().await;
     }
 
-    /// Map an inbound join message to a `(reply_type, reply_body)` by calling the
-    /// real handler. `Ok(None)` = no reply for this type; `Err` = problem report.
+    /// Dispatch an inbound join Trust Task document through the **real**
+    /// [`dispatch_trust_task_core`] (the same spine the production DIDComm
+    /// handler uses) and return the `(reply_type, reply_document)` to thread
+    /// back. The reply document is self-describing — a `#response` on success
+    /// or a `trust-task-error` on rejection — so there is no separate error
+    /// channel. `None` only if the reply document can't be parsed.
     async fn dispatch_join(
         state: &AppState,
         sender: &str,
         msg: &Message,
-    ) -> Result<Option<(String, Value)>, (String, String)> {
-        // Map handler errors through the *same* taxonomy the production DIDComm
-        // responder uses (`messaging::app_error_code`) — a 409-style conflict
-        // (e.g. a duplicate open join request) must surface as `e.p.msg.conflict`,
-        // not collapse into the generic `internal-error` bucket. See #485.
-        let problem = |e: vti_common::error::AppError| {
-            (
-                crate::messaging::app_error_code(&e).to_string(),
-                e.to_string(),
-            )
-        };
-        let bad = |e: serde_json::Error| ("e.p.msg.bad-request".to_string(), e.to_string());
-
-        match msg.typ.as_str() {
-            JOIN_REQUEST_SUBMIT_TYPE => {
-                let body: JoinRequestSubmitBody =
-                    serde_json::from_value(msg.body.clone()).map_err(bad)?;
-                let outcome = submit_inner(
-                    state,
-                    sender.to_string(),
-                    body.vp,
-                    body.registry_consent,
-                    body.extensions,
-                    None,
-                    JoinTransport::DIDComm,
-                )
-                .await
-                .map_err(problem)?;
-                let receipt = JoinRequestSubmitReceiptBody {
-                    request_id: outcome.request.id,
-                    status: outcome.request.status.to_string(),
-                };
-                Ok(Some((
-                    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
-                    serde_json::to_value(receipt).expect("serialise receipt"),
-                )))
-            }
-            JOIN_REQUEST_MANIFEST_TYPE => {
-                let manifest = manifest_inner(state).await.map_err(problem)?;
-                Ok(Some((
-                    JOIN_REQUEST_MANIFEST_RESPONSE_TYPE.to_string(),
-                    serde_json::to_value(manifest).expect("serialise manifest"),
-                )))
-            }
-            JOIN_REQUEST_STATUS_TYPE => {
-                let body: JoinRequestStatusBody =
-                    serde_json::from_value(msg.body.clone()).map_err(bad)?;
-                let resp = status_inner(state, body.request_id, sender.to_string(), None)
-                    .await
-                    .map_err(problem)?;
-                Ok(Some((
-                    JOIN_REQUEST_STATUS_RESPONSE_TYPE.to_string(),
-                    serde_json::to_value(resp).expect("serialise status"),
-                )))
-            }
-            _ => Ok(None),
-        }
+    ) -> Option<(String, Value)> {
+        let bytes = serde_json::to_vec(&msg.body).ok()?;
+        let ctx = JoinAuthCtx::didcomm(sender.to_string());
+        let outcome = dispatch_trust_task_core(state, &ctx, &bytes).await;
+        let doc: Value = serde_json::from_slice(&outcome.body).ok()?;
+        let typ = doc
+            .get("type")
+            .and_then(|t| t.as_str())
+            .unwrap_or("https://trusttasks.org/spec/trust-task-error/0.1")
+            .to_string();
+        Some((typ, doc))
     }
 }

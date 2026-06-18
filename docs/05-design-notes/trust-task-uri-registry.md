@@ -550,7 +550,15 @@ here so they're not relitigated per-slice.
 1. **`spec/vta/management/reload-services/1.0`** — keep, renamed from `restart`. The current implementation does an in-process soft reload, not a binary restart, and the URI now reflects that.
 2. **`spec/vta/keys/get-secret/1.0`** → **`spec/vta/seeds/export-mnemonic/1.0`** — relocated to the seeds slice and renamed. Misleading "per-key" semantics fixed; same guard machinery (`MnemonicExportGuard`).
 3. **`GET /did/{did}/log`** — excluded from migration. Load-bearing failover path for public WebVH resolution. Marked in "Excluded from migration" with a `LOAD-BEARING` comment that should appear on the route itself in code.
-4. **VTC** — out of scope. `vtc-service` stays on bespoke DIDComm/REST until a follow-on initiative.
+4. **VTC** — *partially superseded.* This was "out of scope; `vtc-service` stays on bespoke
+   DIDComm/REST until a follow-on initiative." The follow-on has landed for the **join-request
+   ceremony**: the holder-facing verbs (submit/accept/manifest/status) are now genuine
+   `trust_tasks_rs` TrustTask documents on `…/openvtc/vtc/spec/join-requests/{verb}/1.0`,
+   dispatched by `vtc-service/src/trust_tasks/` over the single `POST /v1/trust-tasks` endpoint
+   and DIDComm, with framework `trust-task-error` rejects (see
+   `docs/05-design-notes/vtc-ceremony-protocol.md` §9). The VTC keeps its own `openvtc/vtc`
+   private-registry authority rather than the `spec/vta/...` namespace. Other VTC surfaces
+   (admin verbs, etc.) remain bespoke for now.
 5. **Sealed-armor envelopes** — payload-of. The trust-task envelope holds metadata; the armor blob IS the payload value (a string). No double-wrapping. Applies to `spec/vta/bootstrap/request-response/1.0` and `spec/vta/bootstrap/provision-integration-response/1.0`.
 6. **Large backup payloads** — three-phase descriptor pattern (initiate → out-of-band transport → finalize). Bulk bytes flow over a token-gated streaming REST endpoint that's excluded from the trust-task migration; the descriptor in the trust-task carries hash + size + transport URL + token, so integrity is verified end-to-end against signed metadata. Pluggable transport (stream-from-VTA in v1, S3-presigned later) without breaking clients. See revised `spec/vta/backup/*` slice and Excluded list.
 

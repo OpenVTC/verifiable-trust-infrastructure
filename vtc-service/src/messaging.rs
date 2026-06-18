@@ -23,11 +23,8 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, JOIN_REQUEST_ACCEPT_TYPE,
-    JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, JOIN_REQUEST_MANIFEST_TYPE,
-    JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
-    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestAcceptBody, JoinRequestAcceptReceiptBody,
-    JoinRequestStatusBody, JoinRequestSubmitBody, JoinRequestSubmitReceiptBody,
+    JOIN_REQUEST_ACCEPT_TYPE, JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE,
+    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody,
     MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
     SelfRemoveReceiptBody,
 };
@@ -36,12 +33,9 @@ use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 use crate::ceremony::remove_inner;
 use crate::config::AppConfig;
 use crate::join::JoinTransport;
-use crate::join::submit_inner;
 use crate::members::Disposition;
-use crate::routes::join_requests::accept::accept_inner;
-use crate::routes::join_requests::manifest::manifest_inner;
-use crate::routes::join_requests::status::status_inner;
 use crate::server::AppState;
+use crate::trust_tasks::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
 
 /// Start the DIDComm service and block until shutdown.
 ///
@@ -311,12 +305,36 @@ async fn unhandled_message_handler(
     )))
 }
 
-/// `join-requests/submit/1.0` over DIDComm (M1.8.2).
+/// Render a [`TrustTaskOutcome`] as a DIDComm reply: the response document
+/// (self-describing — carries its own `type`, either a `#response` or a
+/// `trust-task-error`) threaded to the request id.
+fn tt_didcomm_reply(
+    outcome: TrustTaskOutcome,
+    thid: String,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let doc: serde_json::Value = serde_json::from_slice(&outcome.body)
+        .map_err(|e| DIDCommServiceError::Internal(format!("reply document parse: {e}")))?;
+    let typ = doc
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("https://trusttasks.org/spec/trust-task-error/0.1")
+        .to_string();
+    Ok(Some(DIDCommResponse::new(typ, doc).thid(thid)))
+}
+
+/// Serialise an inbound DIDComm message body (the Trust Task document) to the
+/// bytes the dispatcher parses.
+fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, DIDCommServiceError> {
+    serde_json::to_vec(&message.body)
+        .map_err(|e| DIDCommServiceError::Internal(format!("serialise inbound document: {e}")))
+}
+
+/// `join-requests/submit/1.0` over DIDComm — the ceremony `request` verb.
 ///
-/// The applicant DID is the DIDComm `from` field — the
-/// authcrypt sender. No separate holder-binding signature
-/// needed (the envelope IS the proof). Calls into the same
-/// `submit_inner` the REST endpoint uses.
+/// The message body is the Trust Task document; the authcrypt sender is the
+/// proven holder. Dispatches through the shared [`dispatch_trust_task_core`]
+/// (the same spine REST uses) and replies with a `#response` (Verdict) or a
+/// `trust-task-error` document.
 async fn join_request_submit_handler(
     message: Message,
     meta: UnpackMetadata,
@@ -330,56 +348,21 @@ async fn join_request_submit_handler(
     info!(
         applicant = %applicant_did,
         thid = %thid,
-        has_credential = message.body.pointer("/vp/verifiableCredential").is_some(),
-        "received join-request submit over DIDComm"
+        has_credential = message
+            .body
+            .pointer("/payload/vp/verifiableCredential")
+            .is_some(),
+        "received join-request submit (Trust Task) over DIDComm"
     );
-    let body: JoinRequestSubmitBody = match serde_json::from_value(message.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Ok(Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("malformed join-request body: {e}"),
-            )));
-        }
-    };
-
-    let outcome = match submit_inner(
-        &state,
-        applicant_did,
-        body.vp,
-        body.registry_consent,
-        body.extensions,
-        None,
-        JoinTransport::DIDComm,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => return Ok(Some(app_error_report(thid, &e))),
-    };
-
-    // The DIDComm receipt carries the request id + status; a sealed
-    // credential bundle for an auto-admitted applicant lands in a
-    // follow-up DIDComm message.
-    let receipt = JoinRequestSubmitReceiptBody {
-        request_id: outcome.request.id,
-        status: outcome.request.status.to_string(),
-    };
-    let body = serde_json::to_value(&receipt)
-        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, body).thid(message.id),
-    ))
+    let body = inbound_doc_bytes(&message)?;
+    let ctx = JoinAuthCtx::didcomm(applicant_did);
+    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    tt_didcomm_reply(outcome, thid)
 }
 
-/// `join-requests/accept/1.0` over DIDComm — the reciprocal step.
-///
-/// The member DID is the DIDComm `from` field (authcrypt sender), so no
-/// separate holder-binding signature is needed (`signature_hex = None`).
-/// The body carries the `requestId` (no path over DIDComm), the `vmcId`,
-/// and the member-issued reciprocal `vc`. Calls into the same
-/// `accept_inner` the REST endpoint uses; replies with an accept receipt.
+/// `join-requests/accept/1.0` over DIDComm — the reciprocal step. The
+/// authcrypt sender is the proven member; the document payload carries the
+/// `requestId`, `vmcId`, and the member-issued reciprocal `vc`.
 async fn join_request_accept_handler(
     message: Message,
     meta: UnpackMetadata,
@@ -387,69 +370,32 @@ async fn join_request_accept_handler(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let thid = message.id.clone();
     let member_did = authenticated_sender_did(&message, &meta)?;
-    let body: JoinRequestAcceptBody = match serde_json::from_value(message.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Ok(Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("malformed join-accept body: {e}"),
-            )));
-        }
-    };
-
-    let outcome = match accept_inner(
-        &state,
-        body.request_id,
-        member_did,
-        body.vmc_id,
-        body.vc,
-        None,
-        JoinTransport::DIDComm,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => return Ok(Some(app_error_report(thid, &e))),
-    };
-
-    let receipt = JoinRequestAcceptReceiptBody {
-        request_id: outcome.request_id,
-        status: "accepted".to_string(),
-        reciprocal_vc_id: outcome.reciprocal_vc_id,
-    };
-    let body = serde_json::to_value(&receipt)
-        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(JOIN_REQUEST_ACCEPT_RECEIPT_TYPE, body).thid(message.id),
-    ))
+    let body = inbound_doc_bytes(&message)?;
+    let ctx = JoinAuthCtx::didcomm(member_did);
+    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    tt_didcomm_reply(outcome, thid)
 }
 
-/// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery.
-///
-/// A read: the empty request body returns the community's join evidence
-/// requirements. No sender authentication needed (manifest is public).
+/// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery. A
+/// public read; no sender authentication required.
 async fn join_request_manifest_handler(
     _ctx: HandlerContext,
     message: Message,
     Extension(state): Extension<AppState>,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let manifest = match manifest_inner(&state).await {
-        Ok(m) => m,
-        Err(e) => return Ok(Some(app_error_report(message.id.clone(), &e))),
+    let thid = message.id.clone();
+    let body = inbound_doc_bytes(&message)?;
+    let ctx = JoinAuthCtx {
+        transport: JoinTransport::DIDComm,
+        sender_did: message.from.clone(),
     };
-    let body = serde_json::to_value(&manifest)
-        .map_err(|e| DIDCommServiceError::Internal(format!("manifest serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(JOIN_REQUEST_MANIFEST_RESPONSE_TYPE, body).thid(message.id),
-    ))
+    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    tt_didcomm_reply(outcome, thid)
 }
 
-/// `join-requests/status/1.0` over DIDComm — applicant poll.
-///
-/// `applicantDid` is the DIDComm `from` field (authcrypt sender), so no
-/// separate holder-binding signature is needed (`signature_hex = None`).
-/// The body carries the `requestId`.
+/// `join-requests/status/1.0` over DIDComm — applicant poll. The authcrypt
+/// sender is the proven applicant; the document payload carries the
+/// `requestId`.
 async fn join_request_status_handler(
     message: Message,
     meta: UnpackMetadata,
@@ -457,26 +403,10 @@ async fn join_request_status_handler(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
-    let body: JoinRequestStatusBody = match serde_json::from_value(message.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            return Ok(Some(problem_report(
-                thid,
-                codes::BAD_REQUEST,
-                format!("malformed status body: {e}"),
-            )));
-        }
-    };
-
-    let resp = match status_inner(&state, body.request_id, applicant_did, None).await {
-        Ok(r) => r,
-        Err(e) => return Ok(Some(app_error_report(thid, &e))),
-    };
-    let body = serde_json::to_value(&resp)
-        .map_err(|e| DIDCommServiceError::Internal(format!("status serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(JOIN_REQUEST_STATUS_RESPONSE_TYPE, body).thid(message.id),
-    ))
+    let body = inbound_doc_bytes(&message)?;
+    let ctx = JoinAuthCtx::didcomm(applicant_did);
+    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    tt_didcomm_reply(outcome, thid)
 }
 
 /// `members/self-remove/1.0` over DIDComm (M1.11.1 twin).

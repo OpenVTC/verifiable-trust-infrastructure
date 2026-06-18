@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.9.8"
+version = "0.10.0"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -97,7 +97,7 @@ vti-common = { path = "../vti-common", version = "0.10", features = [
 # factory + `*SecretStore` names are a thin facade over these). Per-backend
 # features are activated by this crate's matching features above.
 vti-secrets = { path = "../vti-secrets", version = "0.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.17", features = [
+vta-sdk = { path = "../vta-sdk", version = "0.18", features = [
   "didcomm",
   "session",
   "config-session",
@@ -115,6 +115,12 @@ vta-sdk = { path = "../vta-sdk", version = "0.17", features = [
 ] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm-service = { workspace = true }
+# Trust Task document framework — `TrustTask<P>`, `respond_with`,
+# `reject_with`, `RejectReason`, `TypeUri` (join-request ceremony flow).
+# `trust-tasks-https` provides `status_for_code` for the HTTP status of a
+# reject document.
+trust-tasks-rs = { workspace = true }
+trust-tasks-https = { workspace = true }
 # W3C VC builder + Data Integrity proof signing/verification. Used
 # by `crate::credentials` for VMC + VEC issuance (Phase 2 M2.9).
 # Same crates as `vta-sdk::provision_integration::credential` —

@@ -1,39 +1,44 @@
 ---
-id: https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0
-title: VTC Join Requests — Submit
+id: https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0
+title: VTC Join Requests — Submit (the ceremony `request` verb)
 status: Draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
 applies_to:
-  - rest: POST /v1/join-requests
-  - didcomm: https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0
+  - rest: POST /v1/trust-tasks
+  - didcomm: https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0
 ---
 
 # VTC Join Requests — Submit
+
+> **Trust Task document flow (current).** Submit is now a framework
+> `trust_tasks_rs::TrustTask` **document** (the `/spec/…` URI). The request is
+> a TrustTask document whose `payload` is `{vp, registryConsent, extensions}`;
+> the success reply is a `#response` document carrying a **Verdict**
+> (`{requestId, verdict:{effect, with}}` — effect `allow`/`refer`/`request_more`/
+> `deny`); failures (invalid VIC, expired, malformed, duplicate) are framework
+> **`trust-task-error`** documents (e.g. `permissionDenied` for an invalid VIC),
+> never DIDComm problem-reports and never a `deny` verdict. Over REST the
+> holder is authenticated by the document's `eddsa-jcs-2022` proof; over DIDComm
+> by the authcrypt sender. Replay binding is the document `recipient` (= the VTC
+> DID) + `expiresAt`. The bespoke `applicantDid`/`audience`/`created`/`signature`
+> body fields below are superseded.
 
 Persist a `JoinRequest` in status `Pending`. Phase 1 manual-
 approval flow: admin / moderator runs approve or reject later.
 
 ## Authentication
 
-Unauthenticated. The VP / DIDComm envelope is the auth — see
-spec §5.5.
+Unauthenticated. The TrustTask document proof (REST) / authcrypt envelope
+(DIDComm) is the auth — see spec §5.5.
 
-### REST holder binding
+### Holder binding (superseded — historical)
 
-Request body carries `applicantDid`, `vp`, optional
-`registryConsent` + `extensions`, and a hex-encoded Ed25519
-signature. Phase 1 supports `did:key` applicants only (the
-pubkey is intrinsic to the DID).
-
-The signing payload is the canonical JSON of the request body
-(minus `signature`) prefixed with the domain tag
-`vtc-join-request/v1\0`. Verification:
-
-1. Decode `applicantDid` → Ed25519 pubkey.
-2. Decode `signature` (hex).
-3. Verify the signature against the prefixed payload.
+The original bespoke binding carried `applicantDid`, `vp`, optional
+`registryConsent` + `extensions`, and a hex-encoded Ed25519 signature over the
+canonical body prefixed with the domain tag `vtc-join-request/v1\0`. This is
+replaced by the TrustTask document `proof` (see banner above).
 
 ### DIDComm
 

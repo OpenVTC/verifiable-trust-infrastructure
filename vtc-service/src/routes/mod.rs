@@ -23,6 +23,7 @@ mod recognition_admin;
 mod relationships;
 mod schemas;
 pub(crate) mod status_lists;
+pub mod trust_tasks;
 #[cfg(feature = "website")]
 mod website;
 
@@ -679,13 +680,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(join_requests::decide::reject),
             "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
         ))
-        // Manifest (unauth public discovery): the community's join
-        // evidence requirements. Static `manifest` segment takes
-        // precedence over the `{id}` show route.
-        .routes(tt(
-            routes!(join_requests::manifest::manifest),
-            "https://trusttasks.org/openvtc/vtc/join-requests/manifest/1.0",
-        ))
+        // (Manifest discovery moved to the single `POST /v1/trust-tasks`
+        // document endpoint — `join-requests/manifest/1.0` is now a Trust
+        // Task verb, no longer a bespoke GET.)
         // Credential-exchange query send (admin): prepare a DCQL query + issue a
         // single-use presentation challenge for a holder. Plain admin route (no
         // Trust-Task descriptor) — the holder answers over the credential-exchange
@@ -932,22 +929,14 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
             routes!(recognise::recognise),
             "https://trusttasks.org/openvtc/vtc/auth/recognise/1.0",
         ))
-        // Join-request POSTs (P0.5). Submit shares the `/join-requests` mount
-        // with the admin GET list on the `api` chain — axum merges the GET +
-        // POST method routers; the unauth POST lands here (governed), the admin
-        // GET stays there (JWT-gated).
-        .routes(tt(
-            routes!(join_requests::submit::submit),
-            "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0",
-        ))
-        .routes(tt(
-            routes!(join_requests::accept::accept),
-            "https://trusttasks.org/openvtc/vtc/join-requests/accept/1.0",
-        ))
-        .routes(tt(
-            routes!(join_requests::status::status),
-            "https://trusttasks.org/openvtc/vtc/join-requests/status/1.0",
-        ))
+        // The single Trust Task document endpoint (P0.5: governed unauth
+        // chain). The holder-facing join ceremony verbs (submit/request,
+        // accept, manifest, status) all arrive here as Trust Task documents
+        // and are routed internally by document `type`; the holder is
+        // authenticated by the document's `eddsa-jcs-2022` proof. No
+        // `Trust-Task` header gate — the document's own `type` is the
+        // identity. Admin verbs are not routed here.
+        .routes(routes!(trust_tasks::dispatch))
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
 
     // Apply the per-IP rate limiter in a branch so the two
@@ -1281,9 +1270,10 @@ mod openapi_tests {
         ("POST", "/v1/auth/recognise"),
         ("POST", "/v1/install/claim/start"),
         ("POST", "/v1/install/claim/finish"),
-        ("POST", "/v1/join-requests"),
-        ("POST", "/v1/join-requests/{id}/accept"),
-        ("POST", "/v1/join-requests/{id}/status"),
+        // The single Trust Task document endpoint — the holder-facing join
+        // ceremony (submit/accept/manifest/status) dispatches internally by
+        // document `type`.
+        ("POST", "/v1/trust-tasks"),
     ];
 
     /// Unauthenticated operations intentionally left OFF the governed chain
@@ -1293,8 +1283,8 @@ mod openapi_tests {
     const PUBLIC_UNGOVERNED: &[(&str, &str)] = &[
         // Public, cacheable community metadata — no secrets, cheap to serve.
         ("GET", "/v1/community/public-profile"),
-        // Public join manifest (what a community asks applicants to present).
-        ("GET", "/v1/join-requests/manifest"),
+        // (The join manifest is now the `join-requests/manifest/1.0` Trust
+        // Task verb on `POST /v1/trust-tasks`, not a bespoke public GET.)
         // Verifier-facing status list — public by the W3C BitstringStatusList model.
         ("GET", "/v1/status-lists/{purpose}"),
         // TEE/admin first-boot bootstrap — single-use, setup-JWT gated in-handler.
