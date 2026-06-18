@@ -577,6 +577,29 @@ challenge,revoke-session,whoami,sessions/list}`, `device/{disable,wipe}`,
 contexts, keys, seeds, audit, config, …) are not framework specs and are
 unaffected.
 
+### Vault archival lifecycle (openvtc extension, 0.1)
+
+The vault gained a full archival lifecycle on top of the canonical
+`vault/delete`. These URIs are **openvtc-defined** (no upstream framework
+spec); they stay on `0.1`:
+
+- **Password vault** (`VaultWrite`): `vault/archive`, `vault/unarchive`,
+  `vault/restore`, `vault/purge`. `vault/delete` is now a **recoverable
+  soft delete** (tombstone + grace window); its body gained `force: bool`
+  for an immediate hard delete. The wire response is unchanged — the
+  previously-cosmetic `graceUntil` is now a real deadline.
+- **Credential store** (`CredentialWrite`, a new capability — removing a
+  holder's credentials is higher-trust than `vault/credentials/receive`'s
+  `VaultWrite`): `vault/credentials/{archive,unarchive,delete,restore,purge}`.
+
+Archival state (`Active`/`Archived`/`Deleted`) is orthogonal to a
+credential's *validity* (`CredentialStatus`); non-`Active` entries are
+excluded from list/query and refused for use (release / proxy-login /
+sign / present). A background sweeper hard-purges grace-expired tombstones.
+Every vault Trust Task — read or write, success or denied — is audited once
+at the dispatch spine (`vault.*` / `vault.cred.*` actions; the `reason`
+field lands in the audit row's `detail`).
+
 Two mechanisms, split by whether the payload is signed:
 
 - **Edge transform** (`routes/trust_tasks/wire_v0_2.rs`) — for

@@ -72,14 +72,25 @@ impl VtaClient {
 
     /// `vault/delete/0.1` — delete an entry by id. Requires `VaultWrite`.
     /// `expected_version` enables optimistic-concurrency (reject on mismatch).
+    ///
+    /// Default (`force == false`) is a **recoverable** soft delete: the entry
+    /// becomes a `Deleted` tombstone, restorable via [`Self::vault_restore`]
+    /// until the sweeper purges it at the returned `graceUntil`. `force ==
+    /// true` **hard-deletes immediately** (no recovery) — equivalent to
+    /// [`Self::vault_purge`]. `reason` is recorded in the audit trail.
     pub async fn vault_delete(
         &self,
         id: &str,
         expected_version: Option<u32>,
+        force: bool,
+        reason: Option<&str>,
     ) -> Result<Value, VtaError> {
-        let mut payload = json!({ "id": id });
+        let mut payload = json!({ "id": id, "force": force });
         if let Some(v) = expected_version {
             payload["expectedVersion"] = json!(v);
+        }
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
         }
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_DELETE_0_1,
@@ -87,6 +98,93 @@ impl VtaClient {
             VAULT_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// `vault/archive/0.1` — soft-disable an entry (hidden from default list,
+    /// refused for use, restorable). Requires `VaultWrite`.
+    pub async fn vault_archive(
+        &self,
+        id: &str,
+        expected_version: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.vault_lifecycle(
+            trust_tasks::TASK_VAULT_ARCHIVE_0_1,
+            id,
+            expected_version,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/unarchive/0.1` — return an archived entry to active. Requires
+    /// `VaultWrite`.
+    pub async fn vault_unarchive(
+        &self,
+        id: &str,
+        expected_version: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.vault_lifecycle(
+            trust_tasks::TASK_VAULT_UNARCHIVE_0_1,
+            id,
+            expected_version,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/restore/0.1` — undelete a soft-deleted entry (only within the
+    /// grace window). Requires `VaultWrite`.
+    pub async fn vault_restore(
+        &self,
+        id: &str,
+        expected_version: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.vault_lifecycle(
+            trust_tasks::TASK_VAULT_RESTORE_0_1,
+            id,
+            expected_version,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/purge/0.1` — irreversibly hard-delete an entry, skipping the
+    /// grace window. Requires `VaultWrite`.
+    pub async fn vault_purge(
+        &self,
+        id: &str,
+        expected_version: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.vault_lifecycle(
+            trust_tasks::TASK_VAULT_PURGE_0_1,
+            id,
+            expected_version,
+            reason,
+        )
+        .await
+    }
+
+    /// Shared body for the password-vault archival lifecycle verbs.
+    async fn vault_lifecycle(
+        &self,
+        task: &str,
+        id: &str,
+        expected_version: Option<u32>,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "id": id });
+        if let Some(v) = expected_version {
+            payload["expectedVersion"] = json!(v);
+        }
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        self.dispatch_trust_task(task, payload, VAULT_TT_TIMEOUT)
+            .await
     }
 
     /// `vault/release/0.1` — release a secret sealed to the caller. Requires the
@@ -177,5 +275,105 @@ impl VtaClient {
             VAULT_TT_TIMEOUT,
         )
         .await
+    }
+
+    /// `vault/credentials/archive/0.1` — soft-disable a held credential
+    /// (hidden from query, refused for presentation, restorable). Requires
+    /// `CredentialWrite`.
+    pub async fn cred_vault_archive(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.cred_lifecycle(
+            trust_tasks::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1,
+            id,
+            false,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/credentials/unarchive/0.1` — return an archived credential to
+    /// active. Requires `CredentialWrite`.
+    pub async fn cred_vault_unarchive(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.cred_lifecycle(
+            trust_tasks::TASK_VAULT_CREDENTIALS_UNARCHIVE_0_1,
+            id,
+            false,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/credentials/delete/0.1` — soft-delete a held credential
+    /// (recoverable tombstone). `force == true` hard-deletes immediately.
+    /// Requires `CredentialWrite`.
+    pub async fn cred_vault_delete(
+        &self,
+        id: &str,
+        force: bool,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.cred_lifecycle(
+            trust_tasks::TASK_VAULT_CREDENTIALS_DELETE_0_1,
+            id,
+            force,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/credentials/restore/0.1` — undelete a soft-deleted credential
+    /// (only within the grace window). Requires `CredentialWrite`.
+    pub async fn cred_vault_restore(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.cred_lifecycle(
+            trust_tasks::TASK_VAULT_CREDENTIALS_RESTORE_0_1,
+            id,
+            false,
+            reason,
+        )
+        .await
+    }
+
+    /// `vault/credentials/purge/0.1` — irreversibly hard-delete a held
+    /// credential and its index rows. Requires `CredentialWrite`.
+    pub async fn cred_vault_purge(
+        &self,
+        id: &str,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        self.cred_lifecycle(
+            trust_tasks::TASK_VAULT_CREDENTIALS_PURGE_0_1,
+            id,
+            false,
+            reason,
+        )
+        .await
+    }
+
+    /// Shared body for the credential archival lifecycle verbs. `force` is
+    /// meaningful only for `delete`.
+    async fn cred_lifecycle(
+        &self,
+        task: &str,
+        id: &str,
+        force: bool,
+        reason: Option<&str>,
+    ) -> Result<Value, VtaError> {
+        let mut payload = json!({ "id": id, "force": force });
+        if let Some(r) = reason {
+            payload["reason"] = json!(r);
+        }
+        self.dispatch_trust_task(task, payload, VAULT_TT_TIMEOUT)
+            .await
     }
 }

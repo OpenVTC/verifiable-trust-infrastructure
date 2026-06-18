@@ -132,6 +132,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         services: Default::default(),
         auth: Default::default(),
         audit: Default::default(),
+        vault: Default::default(),
         secrets: Default::default(),
         #[cfg(feature = "tee")]
         tee: Default::default(),

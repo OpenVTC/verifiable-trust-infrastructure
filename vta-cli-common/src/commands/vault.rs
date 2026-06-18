@@ -27,14 +27,21 @@ fn print_result(label: &str, value: &Value) -> Result<(), Box<dyn std::error::Er
 }
 
 /// `vault list` — metadata only (no secrets). `filters` is the wire filter
-/// object (`None` → all entries).
+/// object (`None` → all entries). `status` selects the lifecycle view
+/// (`active` default / `archived` / `deleted` / `all`) and is merged into the
+/// filter object.
 pub async fn cmd_vault_list(
     client: &VtaClient,
     filters: Option<Value>,
+    status: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client
-        .vault_list(filters.unwrap_or_else(|| json!({})))
-        .await?;
+    let mut filters = filters.unwrap_or_else(|| json!({}));
+    if let Some(s) = status
+        && let Some(obj) = filters.as_object_mut()
+    {
+        obj.insert("status".to_string(), json!(s));
+    }
+    let result = client.vault_list(filters).await?;
     print_result("Vault entries:", &result)
 }
 
@@ -47,15 +54,89 @@ pub async fn cmd_vault_get(
     print_result("Vault entry:", &result)
 }
 
-/// `vault delete` — delete an entry by id, with optional optimistic-concurrency
-/// version check.
+/// `vault delete` — soft-delete (recoverable) by default; `force` hard-deletes
+/// irreversibly. Optional optimistic-concurrency version check + audit reason.
 pub async fn cmd_vault_delete(
     client: &VtaClient,
     id: String,
     expected_version: Option<u32>,
+    force: bool,
+    reason: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = client.vault_delete(&id, expected_version).await?;
-    println!("{DIM}Vault entry {id} deleted.{RESET}");
+    let result = client
+        .vault_delete(&id, expected_version, force, reason.as_deref())
+        .await?;
+    if force {
+        println!("{DIM}Vault entry {id} permanently hard-deleted (no recovery).{RESET}");
+    } else {
+        let grace = result.get("graceUntil").and_then(Value::as_str);
+        match grace {
+            Some(g) => println!(
+                "{DIM}Vault entry {id} moved to trash — recoverable with `vault restore {id}` until {g}.{RESET}"
+            ),
+            None => println!(
+                "{DIM}Vault entry {id} soft-deleted — recoverable with `vault restore {id}`.{RESET}"
+            ),
+        }
+    }
+    print_result("Result:", &result)
+}
+
+/// `vault archive` — soft-disable an entry (restorable with `vault unarchive`).
+pub async fn cmd_vault_archive(
+    client: &VtaClient,
+    id: String,
+    expected_version: Option<u32>,
+    reason: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client
+        .vault_archive(&id, expected_version, reason.as_deref())
+        .await?;
+    println!("{DIM}Vault entry {id} archived — restore with `vault unarchive {id}`.{RESET}");
+    print_result("Result:", &result)
+}
+
+/// `vault unarchive` — return an archived entry to active.
+pub async fn cmd_vault_unarchive(
+    client: &VtaClient,
+    id: String,
+    expected_version: Option<u32>,
+    reason: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client
+        .vault_unarchive(&id, expected_version, reason.as_deref())
+        .await?;
+    println!("{DIM}Vault entry {id} unarchived.{RESET}");
+    print_result("Result:", &result)
+}
+
+/// `vault restore` — undelete a soft-deleted entry (only within the grace
+/// window).
+pub async fn cmd_vault_restore(
+    client: &VtaClient,
+    id: String,
+    expected_version: Option<u32>,
+    reason: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client
+        .vault_restore(&id, expected_version, reason.as_deref())
+        .await?;
+    println!("{DIM}Vault entry {id} restored to active.{RESET}");
+    print_result("Result:", &result)
+}
+
+/// `vault purge` — irreversibly hard-delete an entry, skipping any grace
+/// window.
+pub async fn cmd_vault_purge(
+    client: &VtaClient,
+    id: String,
+    expected_version: Option<u32>,
+    reason: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client
+        .vault_purge(&id, expected_version, reason.as_deref())
+        .await?;
+    println!("{DIM}Vault entry {id} permanently purged (no recovery).{RESET}");
     print_result("Result:", &result)
 }
 

@@ -15,6 +15,11 @@ pub struct AuditLogEntry {
     pub channel: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<String>,
+    /// Optional human-readable rationale supplied by the actor (e.g. the
+    /// `reason` on a `vault.delete` / `vault.archive`). `#[serde(default)]`
+    /// so log rows written before this field existed deserialize cleanly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// Request body for listing audit logs with filtering and pagination.

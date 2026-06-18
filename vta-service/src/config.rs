@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 // Re-export shared config types
 pub use vti_common::config::{
-    AuditConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig,
+    AuditConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, StoreConfig, VaultConfig,
 };
 // The `[secrets]` config shape + its seed-store backends live in the shared
 // `vti-secrets` crate (issue #501). Re-exported here so `AppConfig.secrets`
@@ -37,6 +37,10 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub audit: AuditConfig,
+    /// Vault lifecycle tuning (soft-delete grace window). Shared by the
+    /// password vault and the credential store.
+    #[serde(default)]
+    pub vault: VaultConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     /// Verifier DIDs the holder **auto-consents** to when answering a

@@ -1205,6 +1205,14 @@ fn run_storage_thread(
                             Ok(_) => {}
                             Err(e) => warn!("pending-present sweeper error: {e}"),
                         }
+                        // Hard-purge grace-expired vault + credential tombstones
+                        // (soft-deleted entries past their recovery window), so
+                        // the trash can't linger forever. Audits each purge.
+                        if let Err(e) =
+                            crate::vault_sweeper::sweep_expired(&vault_ks, &audit_ks).await
+                        {
+                            warn!("vault sweeper error: {e}");
+                        }
                     }
                     _ = shutdown_rx.changed() => {
                         info!("storage thread shutting down");

@@ -26,8 +26,8 @@ use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vti_common::acl::{Capability, role_has_capability};
 use vti_common::vault::{
-    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter, VaultSecret,
-    delete_vault_entry, get_stored_vault_entry, get_vault_entry,
+    LifecycleError, SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultListFilter,
+    VaultSecret, VaultStatus, delete_vault_entry, get_stored_vault_entry, get_vault_entry,
     list_vault_entries as list_entries_store, put_stored_vault_entry,
 };
 
@@ -46,6 +46,17 @@ use trust_tasks_rs::RejectReason;
 /// returns up to `page_size` entries with `truncated: false` and no cursor.
 /// Real cursor-based pagination lands when the vault grows past a few
 /// thousand entries; for M1 with hand-seeded test data it's overkill.
+/// Archival-lifecycle view selector on `vault/list`. Omitted → `Active`
+/// (archived and soft-deleted entries are hidden from the normal listing).
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum VaultListStatusFilter {
+    Active,
+    Archived,
+    Deleted,
+    All,
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct VaultListBody {
@@ -60,6 +71,9 @@ struct VaultListBody {
     never_used: Option<bool>,
     expires_before: Option<String>,
     breached: Option<bool>,
+    /// Lifecycle view: `active` (default), `archived`, `deleted`, or `all`.
+    #[serde(default)]
+    status: Option<VaultListStatusFilter>,
     page_size: Option<u32>,
     // `cursor` accepted on the wire for forward-compat but ignored in M1.
     #[serde(default)]
@@ -202,13 +216,19 @@ enum ClearableField {
 struct VaultDeleteBody {
     id: String,
     expected_version: Option<u32>,
-    /// Human-readable rationale recorded in the audit trail. M2A.2 doesn't
-    /// have audit-log wiring for vault yet, so this field is accepted but
-    /// only echoed back; full audit landed when the audit module gains a
-    /// vault.delete event type.
+    /// Human-readable rationale persisted to the audit trail (the dispatch
+    /// spine lifts `reason` into the audit row's `detail`). Optional.
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // read generically by the spine, not by this handler
     reason: Option<String>,
+    /// When `true`, skip the grace window and **hard-delete** immediately —
+    /// the secret bytes are zeroised and the entry is unrecoverable
+    /// (equivalent to `vault/purge`). When `false` (default), perform a
+    /// recoverable soft delete: the entry becomes a `Deleted` tombstone,
+    /// restorable via `vault/restore` until the sweeper purges it at
+    /// `graceUntil`.
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,12 +236,47 @@ struct VaultDeleteBody {
 struct VaultDeleteResponseBody {
     id: String,
     deleted_at: String,
-    /// M2A.2 performs a hard delete (no multi-device sync clients exist
-    /// yet, so there's nothing to fan tombstones to). `graceUntil ==
-    /// deletedAt` indicates "no grace window". When sync (M5) lands, this
-    /// gains a real grace window and the storage layer keeps a tombstone
-    /// record until then.
+    /// Deadline after which the sweeper hard-purges the soft-deleted entry —
+    /// the entry is recoverable via `vault/restore` until then. For a forced
+    /// hard delete (`force: true`) there is no recovery, so `graceUntil ==
+    /// deletedAt` signals "no grace window".
     grace_until: String,
+}
+
+/// Shared request body for the archival lifecycle verbs `vault/archive`,
+/// `vault/unarchive`, `vault/restore`, and `vault/purge`. Each targets a
+/// single entry by id, honours optimistic concurrency, and carries an
+/// optional `reason` the dispatch spine lifts into the audit row's `detail`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultLifecycleBody {
+    id: String,
+    #[serde(default)]
+    expected_version: Option<u32>,
+    #[serde(default)]
+    #[allow(dead_code)] // read generically by the spine for the audit `detail`
+    reason: Option<String>,
+}
+
+/// Response for `vault/archive`, `vault/unarchive`, and `vault/restore` — the
+/// post-transition lifecycle view. `graceUntil` is present only while the
+/// entry is a `Deleted` tombstone.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultLifecycleResponseBody {
+    id: String,
+    status: VaultStatus,
+    version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    grace_until: Option<String>,
+}
+
+/// Response for `vault/purge` — the entry is gone for good.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultPurgeResponseBody {
+    id: String,
+    purged: bool,
 }
 
 /// Request body for `vault/release/0.1`. Mirrors the canonical schema.
@@ -397,6 +452,111 @@ fn enforce_context_scope(
     ))
 }
 
+/// `not_found` rejection used by the operator-facing lifecycle verbs
+/// (delete / archive / unarchive / restore / purge) for a missing id. These
+/// are `VaultWrite`-gated, so surfacing a distinct `not_found` (rather than
+/// conflating it like the consumer-facing release/proxy/sign paths) isn't an
+/// enumeration vector.
+fn vault_not_found(doc: &TrustTask<Value>, verb: &str, id: &str) -> TrustTaskOutcome {
+    reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: format!("vault/{verb}:not_found — no entry at id {id}"),
+            details: None,
+        },
+    )
+}
+
+/// Optimistic-concurrency gate shared by the lifecycle verbs. Returns
+/// `Some(reject)` on a version mismatch, `None` when the write may proceed.
+fn check_expected_version(
+    doc: &TrustTask<Value>,
+    verb: &str,
+    current: u32,
+    expected: Option<u32>,
+) -> Option<TrustTaskOutcome> {
+    match expected {
+        Some(v) if v != current => Some(reject_with(
+            doc,
+            RejectReason::TaskFailed {
+                reason: format!(
+                    "vault/{verb}:version_conflict — expectedVersion {v} != current version {current}"
+                ),
+                details: Some(serde_json::json!({ "currentVersion": current })),
+            },
+        )),
+        _ => None,
+    }
+}
+
+/// Map a [`LifecycleError`] from an illegal archival transition to a
+/// Trust-Task rejection carrying an operator hint and the stable error code.
+fn lifecycle_reject(
+    doc: &TrustTask<Value>,
+    verb: &str,
+    id: &str,
+    err: LifecycleError,
+) -> TrustTaskOutcome {
+    let hint = match err {
+        LifecycleError::NotActive => "entry is not active (already archived or deleted)",
+        LifecycleError::NotArchived => "entry is not archived",
+        LifecycleError::AlreadyDeleted => {
+            "entry is already in the trash — restore it (vault/restore) or purge it (vault/purge)"
+        }
+        LifecycleError::NotDeleted => "entry is not in the trash",
+        LifecycleError::GraceExpired => {
+            "the grace window has elapsed — the entry has been (or is about to be) purged"
+        }
+    };
+    reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: format!("vault/{verb}:{} — {hint} (id {id})", err.code()),
+            details: None,
+        },
+    )
+}
+
+/// Post-transition lifecycle view returned by archive / unarchive / restore.
+fn lifecycle_response(entry: &VaultEntry) -> VaultLifecycleResponseBody {
+    VaultLifecycleResponseBody {
+        id: entry.id.clone(),
+        status: entry.status,
+        version: entry.version,
+        grace_until: entry.grace_until.clone(),
+    }
+}
+
+/// The consumer-facing use paths (release / proxy-login / sign-trust-task)
+/// refuse an archived or soft-deleted entry. Returns `Some(reject)` shaped as
+/// the **same `not_found`** a missing entry yields — a consumer must not be
+/// able to tell "archived/deleted" from "absent" (enumeration resistance,
+/// matching the existing missing-entry conflation on these paths). The real
+/// lifecycle state is logged for operators (the persisted audit row, emitted
+/// by the spine, records the op + `not_found` outcome).
+fn refuse_if_not_active(
+    doc: &TrustTask<Value>,
+    op: &str,
+    entry: &VaultEntry,
+) -> Option<TrustTaskOutcome> {
+    if entry.status.is_active() {
+        return None;
+    }
+    tracing::info!(
+        entry_id = %entry.id,
+        status = ?entry.status,
+        op = %op,
+        "vault: refusing a non-active entry on a use path (reported to caller as not_found)"
+    );
+    Some(reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: format!("vault/{op}:not_found — no entry at id {}", entry.id),
+            details: None,
+        },
+    ))
+}
+
 /// Handler for `spec/vault/list/0.1`.
 pub(super) async fn handle_list(
     state: &AppState,
@@ -426,6 +586,15 @@ pub(super) async fn handle_list(
         return r;
     }
 
+    // Translate the wire lifecycle selector to the store filter. Omitted →
+    // Active-only (archived/deleted hidden); `all` returns every state.
+    let (status, any_status) = match req.status.unwrap_or(VaultListStatusFilter::Active) {
+        VaultListStatusFilter::Active => (Some(VaultStatus::Active), false),
+        VaultListStatusFilter::Archived => (Some(VaultStatus::Archived), false),
+        VaultListStatusFilter::Deleted => (Some(VaultStatus::Deleted), false),
+        VaultListStatusFilter::All => (None, true),
+    };
+
     let filter = VaultListFilter {
         context_id: req.context_id.as_deref(),
         target_origin_prefix: req.target_origin_prefix.as_deref(),
@@ -438,6 +607,8 @@ pub(super) async fn handle_list(
         never_used: req.never_used,
         expires_before: req.expires_before.as_deref(),
         breached: req.breached,
+        status,
+        any_status,
     };
 
     let mut entries = match list_entries_store(&state.vault_ks, &filter).await {
@@ -558,6 +729,36 @@ pub(super) async fn handle_upsert(
                     req.id.as_deref().unwrap_or("(none)")
                 ),
                 details: None,
+            },
+        );
+    }
+
+    // Upsert refuses to silently resurrect an archived / soft-deleted entry —
+    // overwriting it would wipe its lifecycle state (`status`, `deletedAt`,
+    // `graceUntil`). The operator must explicitly `unarchive` / `restore`
+    // (or `purge` then recreate) first. Active rows fall through unchanged.
+    if let Some(e) = existing.as_ref()
+        && e.entry.status != VaultStatus::Active
+    {
+        let (state_word, hint) = match e.entry.status {
+            VaultStatus::Archived => (
+                "archived",
+                "unarchive it first (vault/unarchive) before editing",
+            ),
+            VaultStatus::Deleted => (
+                "deleted",
+                "restore it first (vault/restore), or vault/purge and recreate",
+            ),
+            VaultStatus::Active => unreachable!("guarded by the != Active check above"),
+        };
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: format!(
+                    "vault/upsert:entry_{state_word} — entry {} is {state_word}; {hint}",
+                    e.entry.id
+                ),
+                details: Some(serde_json::json!({ "status": e.entry.status })),
             },
         );
     }
@@ -800,6 +1001,13 @@ pub(super) async fn handle_upsert(
         // upsert + rotation. Stays in sync with the actual signing key
         // for did-self-issued / didcomm-peer entries.
         principal_did: VaultEntry::principal_did_from_secret(&secret),
+        // Upsert only ever writes Active rows: a create is Active, and an
+        // update is guarded above to reject non-Active existing entries, so we
+        // never clobber a tombstone here.
+        status: VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
     };
 
     let record = StoredVaultEntry {
@@ -821,20 +1029,20 @@ pub(super) async fn handle_upsert(
 
 /// Handler for `spec/vault/delete/0.1`.
 ///
-/// M2A.2 performs a hard delete — the row is removed from the keyspace
-/// and the secret bytes are zeroised by the keyspace handle's `remove`
-/// implementation. There's no multi-device sync yet (M5 territory), so
-/// no tombstone-with-grace machinery is needed. The response's
-/// `graceUntil` field equals `deletedAt` to signal "no grace window";
-/// callers that re-sync after M5 will see a real grace window.
+/// Default (soft) delete moves the entry to a **recoverable** `Deleted`
+/// tombstone: the row and its secret are retained but blocked from use
+/// (release / proxy-login / sign-trust-task all refuse it), and it is
+/// restorable via `vault/restore` until the vault sweeper hard-purges it at
+/// `graceUntil` (= now + `vault.grace_days`, default 30). `force: true`
+/// bypasses the window and **hard-deletes immediately** — the secret bytes
+/// are zeroised by the keyspace `remove` and there is no recovery
+/// (equivalent to `vault/purge`).
 ///
-/// Enumeration-resistance: a missing entry returns `not_found`
-/// regardless of whether the consumer would actually have had read
-/// access to it — the consumer can't probe id space by deleting.
+/// Enumeration-resistance: a missing entry returns `not_found` regardless of
+/// whether the caller would have had read access to it.
 ///
-/// Audit-log wiring for vault events lands when the audit module gains
-/// a `vault.*` event variant. For M2A.2 the `reason` field is accepted
-/// and ignored.
+/// The audit row (action `vault.delete`, plus the `reason` as `detail`) is
+/// emitted by the dispatch spine, covering success and denied paths alike.
 pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
@@ -849,17 +1057,9 @@ pub(super) async fn handle_delete(
         Err(resp) => return resp,
     };
 
-    let existing = match get_stored_vault_entry(&state.vault_ks, &req.id).await {
+    let mut existing = match get_stored_vault_entry(&state.vault_ks, &req.id).await {
         Ok(Some(e)) => e,
-        Ok(None) => {
-            return reject_with(
-                &doc,
-                RejectReason::TaskFailed {
-                    reason: format!("vault/delete:not_found — no entry at id {}", req.id),
-                    details: None,
-                },
-            );
-        }
+        Ok(None) => return vault_not_found(&doc, "delete", &req.id),
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
@@ -868,33 +1068,172 @@ pub(super) async fn handle_delete(
     if let Err(r) = enforce_context_scope(auth, Some(&existing.entry.context_id), &doc) {
         return r;
     }
-
-    if let Some(v) = req.expected_version
-        && v != existing.entry.version
+    if let Some(r) =
+        check_expected_version(&doc, "delete", existing.entry.version, req.expected_version)
     {
-        return reject_with(
+        return r;
+    }
+
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
+
+    // Forced hard delete (== purge): irreversible, zeroises the secret.
+    if req.force {
+        if let Err(e) = delete_vault_entry(&state.vault_ks, &req.id).await {
+            return app_error_to_reject(&doc, e);
+        }
+        return success_response(
             &doc,
-            RejectReason::TaskFailed {
-                reason: format!(
-                    "vault/delete:version_conflict — expectedVersion {v} != current version {}",
-                    existing.entry.version
-                ),
-                details: Some(serde_json::json!({ "currentVersion": existing.entry.version })),
+            VaultDeleteResponseBody {
+                id: req.id,
+                deleted_at: now_str.clone(),
+                grace_until: now_str, // == deletedAt → no grace window
             },
         );
     }
 
-    if let Err(e) = delete_vault_entry(&state.vault_ks, &req.id).await {
+    // Recoverable soft delete (tombstone with a real grace window).
+    let grace_days = state.config.read().await.vault.grace_days;
+    let grace_until = (now + chrono::Duration::days(grace_days as i64)).to_rfc3339();
+    if let Err(e) = existing
+        .entry
+        .soft_delete(&now_str, &grace_until, Some(&auth.did))
+    {
+        return lifecycle_reject(&doc, "delete", &req.id, e);
+    }
+    if let Err(e) = put_stored_vault_entry(&state.vault_ks, &existing).await {
         return app_error_to_reject(&doc, e);
     }
-
-    let now = chrono::Utc::now().to_rfc3339();
     success_response(
         &doc,
         VaultDeleteResponseBody {
             id: req.id,
-            deleted_at: now.clone(),
-            grace_until: now,
+            deleted_at: now_str,
+            grace_until,
+        },
+    )
+}
+
+/// Handler for `spec/vault/archive/0.1` — soft-disable an `Active` entry so
+/// it drops out of the default `vault/list` and is refused for use, while
+/// staying restorable via `vault/unarchive`. Auth: VaultWrite.
+pub(super) async fn handle_archive(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_lifecycle_transition(state, auth, doc, "archive", |entry, now, actor| {
+        entry.archive(now, actor)
+    })
+    .await
+}
+
+/// Handler for `spec/vault/unarchive/0.1` — return an `Archived` entry to
+/// `Active`. Auth: VaultWrite.
+pub(super) async fn handle_unarchive(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_lifecycle_transition(state, auth, doc, "unarchive", |entry, now, actor| {
+        entry.unarchive(now, actor)
+    })
+    .await
+}
+
+/// Handler for `spec/vault/restore/0.1` — undelete a soft-deleted entry back
+/// to `Active`, allowed only while still inside the grace window. A
+/// `grace_expired` rejection means the sweeper has (or is about to) purge it.
+/// Auth: VaultWrite.
+pub(super) async fn handle_restore(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_lifecycle_transition(state, auth, doc, "restore", |entry, now, actor| {
+        entry.restore(now, actor)
+    })
+    .await
+}
+
+/// Shared body for `archive` / `unarchive` / `restore`: load → context-scope
+/// → optimistic-concurrency → apply the in-place [`VaultEntry`] transition →
+/// persist → return the post-transition lifecycle view. The transition
+/// closure is the only per-verb difference.
+async fn handle_lifecycle_transition(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    verb: &str,
+    transition: impl Fn(&mut VaultEntry, &str, Option<&str>) -> Result<(), LifecycleError>,
+) -> TrustTaskOutcome {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, verb) {
+        return r;
+    }
+    let req: VaultLifecycleBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let mut existing = match get_stored_vault_entry(&state.vault_ks, &req.id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => return vault_not_found(&doc, verb, &req.id),
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    if let Err(r) = enforce_context_scope(auth, Some(&existing.entry.context_id), &doc) {
+        return r;
+    }
+    if let Some(r) =
+        check_expected_version(&doc, verb, existing.entry.version, req.expected_version)
+    {
+        return r;
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = transition(&mut existing.entry, &now, Some(&auth.did)) {
+        return lifecycle_reject(&doc, verb, &req.id, e);
+    }
+    if let Err(e) = put_stored_vault_entry(&state.vault_ks, &existing).await {
+        return app_error_to_reject(&doc, e);
+    }
+    success_response(&doc, lifecycle_response(&existing.entry))
+}
+
+/// Handler for `spec/vault/purge/0.1` — irreversibly hard-delete an entry
+/// (typically an already-`Deleted` tombstone, but valid on any entry),
+/// skipping the grace window. The secret bytes are zeroised on removal.
+/// Auth: VaultWrite.
+pub(super) async fn handle_purge(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(r) = require_capability(auth, &doc, Capability::VaultWrite, "purge") {
+        return r;
+    }
+    let req: VaultLifecycleBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let existing = match get_stored_vault_entry(&state.vault_ks, &req.id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => return vault_not_found(&doc, "purge", &req.id),
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    if let Err(r) = enforce_context_scope(auth, Some(&existing.entry.context_id), &doc) {
+        return r;
+    }
+    if let Some(r) =
+        check_expected_version(&doc, "purge", existing.entry.version, req.expected_version)
+    {
+        return r;
+    }
+    if let Err(e) = delete_vault_entry(&state.vault_ks, &req.id).await {
+        return app_error_to_reject(&doc, e);
+    }
+    success_response(
+        &doc,
+        VaultPurgeResponseBody {
+            id: req.id,
+            purged: true,
         },
     )
 }
@@ -957,6 +1296,12 @@ pub(super) async fn handle_release(
 
     if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
         return r;
+    }
+
+    // Archived / soft-deleted entries are not releasable — refuse as
+    // not_found (a consumer can't distinguish lifecycle state from absence).
+    if let Some(reject) = refuse_if_not_active(&doc, "release", &stored.entry) {
+        return reject;
     }
 
     // Step-up gate (P0.13): honour an operator-configured `vault/release`
@@ -1093,6 +1438,12 @@ pub(super) async fn handle_proxy_login(
 
     if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
         return r;
+    }
+
+    // Archived / soft-deleted entries can't be proxy-logged-in — refuse as
+    // not_found (enumeration resistance).
+    if let Some(reject) = refuse_if_not_active(&doc, "proxy-login", &stored.entry) {
+        return reject;
     }
 
     // Step-up gate (P0.13): honour a `vault/proxy-login` floor before
@@ -1275,6 +1626,12 @@ pub(super) async fn handle_sign_trust_task(
 
     if let Err(r) = enforce_context_scope(auth, Some(&stored.entry.context_id), &doc) {
         return r;
+    }
+
+    // Archived / soft-deleted entries can't sign — refuse as not_found
+    // (enumeration resistance).
+    if let Some(reject) = refuse_if_not_active(&doc, "sign-trust-task", &stored.entry) {
+        return reject;
     }
 
     // Step-up gate (P0.13): honour a `vault/sign-trust-task` floor before

@@ -253,6 +253,10 @@ fn build_stored_bbs(
         source,
         tags: std::collections::BTreeMap::new(),
         body: vc_json.to_vec(),
+        lifecycle: vti_common::vault::VaultStatus::Active,
+        archived_at: None,
+        deleted_at: None,
+        grace_until: None,
     }
 }
 
@@ -845,6 +849,10 @@ mod tests {
             source: None,
             tags: std::collections::BTreeMap::new(),
             body: vec![],
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         };
         assert_eq!(holder_pseudonym_secrets(&cred).unwrap(), None);
         cred.tags.insert(

@@ -74,6 +74,26 @@ pub async fn record(
     channel: Option<&str>,
     context_id: Option<&str>,
 ) -> Result<(), AppError> {
+    record_with_detail(
+        audit_ks, action, actor, resource, outcome, channel, context_id, None,
+    )
+    .await
+}
+
+/// Like [`record`], but also persists an operator-supplied `detail` (e.g. the
+/// `reason` on a `vault.delete`/`vault.archive`). Kept as a separate function
+/// so the existing `record(...)` call sites stay untouched.
+#[allow(clippy::too_many_arguments)]
+pub async fn record_with_detail(
+    audit_ks: &KeyspaceHandle,
+    action: &str,
+    actor: &str,
+    resource: Option<&str>,
+    outcome: &str,
+    channel: Option<&str>,
+    context_id: Option<&str>,
+    detail: Option<&str>,
+) -> Result<(), AppError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -89,6 +109,7 @@ pub async fn record(
         outcome: outcome.to_string(),
         channel: channel.map(String::from),
         context_id: context_id.map(String::from),
+        detail: detail.map(String::from),
     };
 
     // Key: zero-padded timestamp for lexicographic time ordering

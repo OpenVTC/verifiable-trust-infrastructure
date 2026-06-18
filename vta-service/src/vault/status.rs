@@ -526,6 +526,13 @@ pub async fn refresh_status<R: StatusListResolver + ?Sized>(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("no stored credential with id `{id}`")))?;
 
+    // Archival lifecycle short-circuit: a non-Active credential (archived or
+    // soft-deleted) is out of use, so its validity status is neither resolved
+    // nor rewritten — a refresh must never flip/resurrect a tombstoned cred.
+    if !cred.is_active() {
+        return Ok(RefreshOutcome::NotTracked);
+    }
+
     let Some(status_ref) = extract_status_ref(&cred)? else {
         return Ok(RefreshOutcome::NotTracked);
     };
@@ -739,6 +746,10 @@ mod tests {
             source: None,
             tags: BTreeMap::new(),
             body: serde_json::to_vec(&body).unwrap(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         }
     }
 

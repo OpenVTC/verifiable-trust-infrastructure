@@ -15,8 +15,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use vti_common::vault::{
-    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, get_vault_entry,
-    put_stored_vault_entry,
+    SecretKind, SiteTarget, StoredVaultEntry, VaultEntry, VaultSecret, VaultStatus,
+    get_vault_entry, put_stored_vault_entry,
 };
 
 use crate::config::AppConfig;
@@ -187,6 +187,10 @@ fn demo_records(context_id: &str) -> Vec<StoredVaultEntry> {
                 version: 1,
                 // Maintainer-derived; passkey has no principal DID concept.
                 principal_did: None,
+                status: VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
             },
             secret: placeholder_passkey(),
         },
@@ -215,6 +219,10 @@ fn demo_records(context_id: &str) -> Vec<StoredVaultEntry> {
                 last_used_at: Some(now.clone()),
                 version: 1,
                 principal_did: None,
+                status: VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
             },
             secret: placeholder_password(),
         },
@@ -243,6 +251,10 @@ fn demo_records(context_id: &str) -> Vec<StoredVaultEntry> {
                 last_used_at: None,
                 version: 1,
                 principal_did: None,
+                status: VaultStatus::Active,
+                archived_at: None,
+                deleted_at: None,
+                grace_until: None,
             },
             secret: placeholder_password(),
         },

@@ -2427,7 +2427,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -2441,7 +2441,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
 ]
 
 [[package]]
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "didcomm-test"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-tdk 0.8.3",
@@ -3211,7 +3211,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
 ]
 
 [[package]]
@@ -6676,7 +6676,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.9.7"
+version = "0.10.0"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -6698,7 +6698,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
 ]
 
 [[package]]
@@ -9946,7 +9946,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.9.7"
+version = "0.10.0"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9964,14 +9964,14 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "vti-common",
  "x25519-dalek",
 ]
 
 [[package]]
 name = "vta-enclave"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -9986,7 +9986,7 @@ dependencies = [
 
 [[package]]
 name = "vta-mcp"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -9997,12 +9997,12 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
 ]
 
 [[package]]
 name = "vta-mobile-core"
-version = "0.6.7"
+version = "0.6.8"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -10020,7 +10020,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
 ]
 
 [[package]]
@@ -10055,7 +10055,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10111,7 +10111,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.9.10"
+version = "0.10.0"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10186,7 +10186,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10200,7 +10200,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.9.8"
+version = "0.9.9"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10265,7 +10265,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10278,7 +10278,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.10.8"
+version = "0.11.0"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
@@ -10313,7 +10313,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10340,14 +10340,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "vta-service",
  "vti-common",
 ]
 
 [[package]]
 name = "vti-secrets"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aws-config",
  "aws-sdk-secretsmanager",
@@ -10369,7 +10369,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.0",
  "vti-common",
 ]
 

@@ -1764,6 +1764,10 @@ mod tests {
             source: None,
             tags: Default::default(),
             body: serde_json::to_vec(&vc).unwrap(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         };
         crate::vault::storage::put(vault, &cred)
             .await

@@ -143,6 +143,10 @@ mod tests {
             source: Some("exchange:thread-42".into()),
             tags: std::collections::BTreeMap::from([("label".into(), "alice-invite".into())]),
             body: b"opaque.credential.bytes".to_vec(),
+            lifecycle: vti_common::vault::VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
         }
     }
 

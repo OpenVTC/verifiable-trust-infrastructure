@@ -388,9 +388,34 @@ pub const TASK_VAULT_UPSERT_0_1: &str = "https://trusttasks.org/spec/vault/upser
 /// `spec/vault/upsert/0.2` — successor to [`TASK_VAULT_UPSERT_0_1`].
 pub const TASK_VAULT_UPSERT_0_2: &str = "https://trusttasks.org/spec/vault/upsert/0.2";
 
-/// `spec/vault/delete/0.1` — tombstone an entry with a maintainer-defined
-/// grace window. Auth: VaultWrite. No 0.2 spec exists upstream; stays on 0.1.
+/// `spec/vault/delete/0.1` — soft-delete (tombstone) an entry with a
+/// maintainer-defined grace window; the entry stays recoverable via
+/// [`TASK_VAULT_RESTORE_0_1`] until the sweeper hard-purges it at
+/// `grace_until`. A `force: true` body bypasses the window and hard-deletes
+/// immediately (no recovery), equivalent to [`TASK_VAULT_PURGE_0_1`]. Auth:
+/// VaultWrite. No 0.2 spec exists upstream; stays on 0.1.
 pub const TASK_VAULT_DELETE_0_1: &str = "https://trusttasks.org/spec/vault/delete/0.1";
+
+/// `spec/vault/archive/0.1` — soft-disable an entry: it is hidden from the
+/// default `vault/list` and refused for use (release / proxy-login /
+/// sign-trust-task) but fully restorable via [`TASK_VAULT_UNARCHIVE_0_1`].
+/// Auth: VaultWrite. openvtc lifecycle extension (no upstream 0.2).
+pub const TASK_VAULT_ARCHIVE_0_1: &str = "https://trusttasks.org/spec/vault/archive/0.1";
+
+/// `spec/vault/unarchive/0.1` — return an `Archived` entry to `Active`.
+/// Auth: VaultWrite. openvtc lifecycle extension.
+pub const TASK_VAULT_UNARCHIVE_0_1: &str = "https://trusttasks.org/spec/vault/unarchive/0.1";
+
+/// `spec/vault/restore/0.1` — undelete a soft-deleted (`Deleted`) entry back
+/// to `Active`, allowed only while still inside the grace window. Auth:
+/// VaultWrite. openvtc lifecycle extension.
+pub const TASK_VAULT_RESTORE_0_1: &str = "https://trusttasks.org/spec/vault/restore/0.1";
+
+/// `spec/vault/purge/0.1` — irreversibly hard-delete an entry (typically an
+/// already-`Deleted` tombstone, but valid on any entry), skipping the grace
+/// window. The secret bytes are zeroised on removal; no recovery. Auth:
+/// VaultWrite. openvtc lifecycle extension.
+pub const TASK_VAULT_PURGE_0_1: &str = "https://trusttasks.org/spec/vault/purge/0.1";
 
 /// `spec/vault/release/0.1` — release the cleartext secret material of an
 /// entry inside a pluggable cipher envelope sealed to the requesting
@@ -461,6 +486,41 @@ pub const TASK_VAULT_CREDENTIALS_QUERY_0_1: &str =
 /// id, for presentation (requires `VaultRead`).
 pub const TASK_VAULT_CREDENTIALS_GET_0_1: &str =
     "https://trusttasks.org/spec/vault/credentials/get/0.1";
+
+// Credential archival lifecycle (openvtc extension). Mirrors the
+// password-vault lifecycle above but gated on `CredentialWrite` (not
+// `VaultWrite`) — removing a holder's credentials is a higher-trust action
+// than receiving them. The archival `lifecycle` state is orthogonal to a
+// credential's `CredentialStatus` (validity, status-list driven); query/get
+// exclude non-Active credentials by default.
+
+/// `spec/vault/credentials/archive/0.1` — soft-disable a credential (hidden
+/// from default query, refused for presentation, restorable). Auth:
+/// CredentialWrite.
+pub const TASK_VAULT_CREDENTIALS_ARCHIVE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/archive/0.1";
+
+/// `spec/vault/credentials/unarchive/0.1` — return an archived credential to
+/// `Active`. Auth: CredentialWrite.
+pub const TASK_VAULT_CREDENTIALS_UNARCHIVE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/unarchive/0.1";
+
+/// `spec/vault/credentials/delete/0.1` — soft-delete (tombstone) a credential
+/// with a grace window; recoverable via restore until the sweeper purges it.
+/// `force: true` hard-deletes immediately (tears down the `idx:` secondary
+/// index too). Auth: CredentialWrite.
+pub const TASK_VAULT_CREDENTIALS_DELETE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/delete/0.1";
+
+/// `spec/vault/credentials/restore/0.1` — undelete a soft-deleted credential
+/// while still inside the grace window. Auth: CredentialWrite.
+pub const TASK_VAULT_CREDENTIALS_RESTORE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/restore/0.1";
+
+/// `spec/vault/credentials/purge/0.1` — irreversibly hard-delete a credential
+/// (and its index rows), skipping the grace window. Auth: CredentialWrite.
+pub const TASK_VAULT_CREDENTIALS_PURGE_0_1: &str =
+    "https://trusttasks.org/spec/vault/credentials/purge/0.1";
 
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
@@ -1124,6 +1184,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_VAULT_UPSERT_0_1,
     TASK_VAULT_UPSERT_0_2,
     TASK_VAULT_DELETE_0_1,
+    // Vault archival lifecycle (openvtc 0.1 extension).
+    TASK_VAULT_ARCHIVE_0_1,
+    TASK_VAULT_UNARCHIVE_0_1,
+    TASK_VAULT_RESTORE_0_1,
+    TASK_VAULT_PURGE_0_1,
     TASK_VAULT_RELEASE_0_1,
     TASK_VAULT_RELEASE_0_2,
     TASK_VAULT_PROXY_LOGIN_0_1,

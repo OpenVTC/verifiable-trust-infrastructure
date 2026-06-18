@@ -2,7 +2,7 @@
 name = "vta-enclave"
 description = "VTA binary for AWS Nitro Enclaves (TEE mode)"
 readme = "README.md"
-version = "0.7.4"
+version = "0.7.5"
 edition.workspace = true
 # `vta-enclave` is a Linux-only Nitro Enclave binary (vsock-store depends
 # on `tokio-vsock`). Publishing to crates.io would surface "fails on
@@ -27,8 +27,8 @@ vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
 
 [dependencies]
-vta-service = { path = "../vta-service", version = "0.9", default-features = false, features = ["tee"] }
-vti-common = { path = "../vti-common", version = "0.10", features = ["encryption"] }
+vta-service = { path = "../vta-service", version = "0.10", default-features = false, features = ["tee"] }
+vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
