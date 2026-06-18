@@ -539,7 +539,19 @@ The plugin is the consent + key + legibility surface:
 ## 14. Security & privacy invariants (do not relax)
 
 1. **No wallet enumeration across a trust boundary.** No endpoint returns
-   a holder's credential list. Discovery is DCQL-targeted only.
+   a holder's credential list. Discovery is DCQL-targeted only. The local
+   search primitive (`vault/credentials/query/0.1`) is **index-scan-driven,
+   not a `list_all`**: every query must name at least one indexed value, and
+   descriptors never carry the body. The archival-lifecycle opt-ins
+   `includeArchived` / `includeDeleted` (added for the holder's own
+   archive/restore/purge UX) do **not** weaken this — they are
+   `VaultRead`-gated, holder-scoped, and *modifiers* (they do not count toward
+   the ≥1-filter requirement), so they relax only the lifecycle post-filter on
+   an already-anchored scan. They surface archived / soft-deleted rows for
+   management-by-id; archived / soft-deleted credentials remain refused at
+   `get`/present, and a revoked/expired row stays excluded regardless
+   (invariant 5). This is a scoped relaxation of the post-filter, never a
+   cross-boundary list of the wallet.
 2. **Consent before disclosure.** The VTA never presents a credential
    without explicit, purpose-bound holder consent.
 3. **Claim minimisation.** Presentations disclose only the DCQL-requested

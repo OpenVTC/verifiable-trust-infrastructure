@@ -502,10 +502,10 @@ async fn gather_for_query(
                 vault,
                 &VaultQuery {
                     r#type: Some(type_value),
-                    community_did: None,
-                    issuer_did: None,
-                    purpose: None,
-                    status: None,
+                    // Presentation candidate search: active credentials only —
+                    // archived / soft-deleted rows must never be offered to a
+                    // verifier (the include_* opt-ins are management-only).
+                    ..Default::default()
                 },
             )
             .await?;

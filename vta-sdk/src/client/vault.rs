@@ -257,6 +257,15 @@ impl VtaClient {
     /// Requires `VaultRead`. `filter` is a DCQL-shaped object (at least one of
     /// `type`, `communityDid`, `issuerDid`, `purpose`, `status`); an unfiltered
     /// query is refused. Returns `{ credentials: [descriptor] }`.
+    ///
+    /// By default only active credentials are returned. Two optional modifier
+    /// keys opt into the archival lifecycle for management UX (they are *not*
+    /// filters, so at least one real filter is still required):
+    /// `includeArchived` and `includeDeleted` (booleans, default `false`).
+    /// When set, archived / soft-deleted rows matching the filter are also
+    /// returned; each descriptor then carries `lifecycle`
+    /// (`active` | `archived` | `deleted`) alongside the existing validity
+    /// `status`, plus `archivedAt` / `deletedAt` / `graceUntil` as applicable.
     pub async fn cred_vault_query(&self, filter: Value) -> Result<Value, VtaError> {
         self.dispatch_trust_task(
             trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1,
