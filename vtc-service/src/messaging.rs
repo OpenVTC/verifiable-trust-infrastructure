@@ -4,8 +4,9 @@ use std::time::Duration;
 use affinidi_messaging_didcomm::{Message, UnpackMetadata};
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
-    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RestartPolicy,
-    RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler, trust_ping_handler,
+    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RequestLogging,
+    RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
+    trust_ping_handler,
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
@@ -155,6 +156,23 @@ pub async fn run_didcomm_service(
         }
     };
 
+    // Observability: `RequestLogging` emits an `info!` (target
+    // `didcomm_server::request`) for *every* inbound message that is unpacked
+    // and dispatched — message type, sender, ok/error, latency — so operators
+    // can see whether a join request is even reaching the VTC. The `fallback`
+    // makes an unrouted message type loud (`warn!`) instead of the library's
+    // default `debug!`, catching a protocol-type drift between client and VTC
+    // (a message arrives, matches no handler, and is silently dropped).
+    let router = router
+        .layer(RequestLogging)
+        .fallback(handler_fn(unhandled_message_handler));
+
+    info!(
+        vtc_did = %vtc_did,
+        mediator = %mediator_did,
+        "starting VTC DIDComm listener"
+    );
+
     let shutdown_token = CancellationToken::new();
     let service = match DIDCommService::start(service_config, router, shutdown_token.clone()).await
     {
@@ -167,11 +185,18 @@ pub async fn run_didcomm_service(
     };
 
     // Wait for the mediator connection
-    if let Err(e) = service
+    match service
         .wait_connected("vtc-main", Duration::from_secs(30))
         .await
     {
-        warn!("DIDComm listener not connected after 30s: {e}");
+        Ok(()) => info!(
+            listener = "vtc-main",
+            "DIDComm listener connected to mediator — inbound messages will be processed"
+        ),
+        Err(e) => warn!(
+            "DIDComm listener not connected after 30s ({e}) — inbound DIDComm \
+             (join requests etc.) will NOT be received until it connects"
+        ),
     }
 
     // Log lifecycle events in background
@@ -263,6 +288,29 @@ fn app_error_report(thid: String, err: &AppError) -> DIDCommResponse {
     problem_report(thid, app_error_code(err), err.to_string())
 }
 
+/// Fallback for an inbound DIDComm message whose `type` matches no registered
+/// route. The library's built-in default only logs this at `debug!`, so an
+/// unexpected/unsupported message type — e.g. a protocol-version drift between
+/// the client and this VTC — looks like the message "just disappeared". We log
+/// it at `warn!` (visible at the default level) with the type + sender, and
+/// still return a threaded problem-report so the sender isn't left hanging.
+async fn unhandled_message_handler(
+    message: Message,
+    _meta: UnpackMetadata,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    warn!(
+        message_type = %message.typ,
+        from = message.from.as_deref().unwrap_or("<anon>"),
+        id = %message.id,
+        "inbound DIDComm message has no matching handler — dropping (unsupported message type)"
+    );
+    Ok(Some(problem_report(
+        message.id.clone(),
+        codes::BAD_REQUEST,
+        format!("unsupported message type: {}", message.typ),
+    )))
+}
+
 /// `join-requests/submit/1.0` over DIDComm (M1.8.2).
 ///
 /// The applicant DID is the DIDComm `from` field — the
@@ -276,6 +324,15 @@ async fn join_request_submit_handler(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
+    // Entry log: `RequestLogging` only fires once the handler *returns*, so an
+    // explicit log here distinguishes "join received + processing started" from
+    // a handler that received the request but then stalled (no completion log).
+    info!(
+        applicant = %applicant_did,
+        thid = %thid,
+        has_credential = message.body.pointer("/vp/verifiableCredential").is_some(),
+        "received join-request submit over DIDComm"
+    );
     let body: JoinRequestSubmitBody = match serde_json::from_value(message.body.clone()) {
         Ok(b) => b,
         Err(e) => {
