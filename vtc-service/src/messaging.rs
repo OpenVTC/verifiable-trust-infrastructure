@@ -4,9 +4,9 @@ use std::time::Duration;
 use affinidi_messaging_didcomm::{Message, UnpackMetadata};
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
-    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RequestLogging,
-    RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
-    trust_ping_handler,
+    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, MiddlewareResult,
+    Next, RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
+    middleware_fn, trust_ping_handler,
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
@@ -164,7 +164,7 @@ pub async fn run_didcomm_service(
     // default `debug!`, catching a protocol-type drift between client and VTC
     // (a message arrives, matches no handler, and is silently dropped).
     let router = router
-        .layer(RequestLogging)
+        .layer(middleware_fn(log_request_middleware))
         .fallback(handler_fn(unhandled_message_handler));
 
     info!(
@@ -243,6 +243,43 @@ pub async fn run_didcomm_service(
     service.shutdown().await;
     event_task.abort();
     info!("DIDComm service stopped");
+}
+
+/// Per-message request logger (replaces the library's `RequestLogging`) — logs
+/// every inbound message that is unpacked + dispatched (type, sender, outcome,
+/// latency) at `info!`, EXCEPT the high-frequency message-pickup status poll,
+/// which is a no-op (`ignore_handler`) and just floods the log.
+async fn log_request_middleware(
+    ctx: HandlerContext,
+    message: Message,
+    meta: UnpackMetadata,
+    next: Next,
+) -> MiddlewareResult {
+    if message.typ == MESSAGE_PICKUP_STATUS_TYPE {
+        // Dispatch silently — no log line for the pickup-status heartbeat.
+        return next.run(ctx, message, meta).await;
+    }
+    let start = std::time::Instant::now();
+    let message_type = message.typ.clone();
+    let sender = ctx
+        .sender_did
+        .clone()
+        .unwrap_or_else(|| "<anon>".to_string());
+    let result = next.run(ctx, message, meta).await;
+    let status = match &result {
+        Ok(Some(_)) => "ok(response)",
+        Ok(None) => "ok(empty)",
+        Err(_) => "error",
+    };
+    info!(
+        target: "didcomm_server::request",
+        message_type = %message_type,
+        sender = %sender,
+        status,
+        latency = ?start.elapsed(),
+        "Request processed"
+    );
+    result
 }
 
 /// Build a DIDComm problem-report reply, threaded to the request, so a
@@ -324,7 +361,8 @@ async fn join_request_submit_handler(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let thid = message.id.clone();
     let applicant_did = authenticated_sender_did(&message, &meta)?;
-    // Entry log: `RequestLogging` only fires once the handler *returns*, so an
+    let applicant_log = applicant_did.clone();
+    // Entry log: the request logger only fires once the handler *returns*, so an
     // explicit log here distinguishes "join received + processing started" from
     // a handler that received the request but then stalled (no completion log).
     info!(
@@ -356,8 +394,30 @@ async fn join_request_submit_handler(
     .await
     {
         Ok(o) => o,
-        Err(e) => return Ok(Some(app_error_report(thid, &e))),
+        Err(e) => {
+            // The join was refused (e.g. an invalid/consumed/untrusted
+            // invitation rejected before policy, holder-binding, or a policy
+            // deny). Nothing is stored, so it shows up as neither a member nor
+            // a pending request — log WHY so it isn't "silently going nowhere".
+            warn!(
+                applicant = %applicant_log,
+                thid = %thid,
+                error = %e,
+                "join-request refused — no member or pending request created"
+            );
+            return Ok(Some(app_error_report(thid, &e)));
+        }
     };
+
+    // Outcome log: which terminal/queued state the join landed in. `approved`
+    // = auto-admitted (now a member, not a pending request); `pending` = queued
+    // for review; `rejected` = denied by policy.
+    info!(
+        applicant = %applicant_log,
+        request = %outcome.request.id,
+        status = %outcome.request.status,
+        "join-request processed"
+    );
 
     // The DIDComm receipt carries the request id + status; a sealed
     // credential bundle for an auto-admitted applicant lands in a
