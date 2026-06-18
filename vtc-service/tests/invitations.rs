@@ -197,6 +197,43 @@ async fn inviting_an_existing_member_is_a_conflict() {
 }
 
 #[tokio::test]
+async fn issuing_an_invitation_emits_audit() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent};
+
+    let fix = build().await;
+    let req = issue_req(
+        &fix.admin_token,
+        json!({ "subjectDid": INVITEE_DID, "role": "moderator" }),
+    );
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, _) = body_value(resp).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let raw = fix
+        ._vtc
+        .state
+        .audit_ks
+        .prefix_iter_raw(b"2".to_vec())
+        .await
+        .unwrap();
+    let envelopes: Vec<AuditEnvelope> = raw
+        .iter()
+        .map(|(_, v)| serde_json::from_slice(v).unwrap())
+        .collect();
+    let issued: Vec<&AuditEnvelope> = envelopes
+        .iter()
+        .filter(|e| matches!(e.event, AuditEvent::InvitationIssued(_)))
+        .collect();
+    assert_eq!(issued.len(), 1, "exactly one InvitationIssued envelope");
+    assert_eq!(issued[0].target_did_plain.as_deref(), Some(INVITEE_DID));
+    let AuditEvent::InvitationIssued(data) = &issued[0].event else {
+        unreachable!()
+    };
+    assert_eq!(data.subject_did, INVITEE_DID);
+    assert_eq!(data.role.as_deref(), Some("moderator"));
+}
+
+#[tokio::test]
 async fn inviting_a_departed_tombstoned_did_is_allowed() {
     let fix = build().await;
     // A departed member: a tombstone Member row (removed_at set) with NO ACL —

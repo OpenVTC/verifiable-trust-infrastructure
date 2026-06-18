@@ -31,18 +31,19 @@ pub mod writer;
 
 pub use envelope::{AuditEnvelope, EVENT_VERSION, SCHEMA_VERSION};
 pub use event::{
-    AdminPasskeyData, AdminPromotedData, AdminUiServedData, AuditEvent, AuditKeyRotatedData,
-    CommunityInstalledData, CommunityProfileUpdatedData, ConfigChange, ConfigChangedData,
-    ConfigReloadedData, ConfigSource, CredentialIssuedData, CrossCommunitySessionMintedData,
-    CustomEndorsementIssuedData, CustomEndorsementRevokedData, DidRotatedData,
-    EmergencyBootstrapData, EndorsementTypeDeletedData, EndorsementTypeRegisteredData,
-    JoinRequestData, JoinRequestRejectedData, MemberAddedData, MemberRemovedData,
-    MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData, PersonhoodAssertedData,
-    PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData, REDACTED_MARKER,
-    RegistryRecordPolicyOverrideData, RegistryStatusChangedData, RegistrySyncOutcomeData,
-    RestartRequestedData, RoleChangedData, StatusListFlippedData, VrcPublishedData, VrcRevokedData,
-    WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
-    WebsiteGenerationRolledBackData,
+    AclChangeData, AclRevokedData, AdminInviteData, AdminPasskeyData, AdminPromotedData,
+    AdminUiServedData, AuditEvent, AuditKeyRotatedData, BackupData, CommunityInstalledData,
+    CommunityProfileUpdatedData, ConfigChange, ConfigChangedData, ConfigReloadedData, ConfigSource,
+    CredentialIssuedData, CrossCommunitySessionMintedData, CustomEndorsementIssuedData,
+    CustomEndorsementRevokedData, DidRotatedData, EmergencyBootstrapData,
+    EndorsementTypeDeletedData, EndorsementTypeRegisteredData, InvitationIssuedData,
+    InvitationRevokedData, JoinRequestData, JoinRequestRejectedData, MemberAddedData,
+    MemberRemovedData, MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData,
+    PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData,
+    REDACTED_MARKER, RegistryRecordPolicyOverrideData, RegistryStatusChangedData,
+    RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData, SessionRevokedData,
+    StatusListFlippedData, VrcPublishedData, VrcRevokedData, WebsiteBundleDeployedData,
+    WebsiteFileDeletedData, WebsiteFileWrittenData, WebsiteGenerationRolledBackData,
 };
 pub use key_store::{AuditKey, AuditKeyStore, KeyId, RotationReason};
 pub use writer::AuditWriter;

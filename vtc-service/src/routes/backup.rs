@@ -14,6 +14,8 @@ use crate::auth::SuperAdminAuth;
 use crate::backup::{self, BackupEnvelope, ImportResult};
 use crate::keys::seed_store::create_secret_store;
 use crate::server::AppState;
+use crate::store::keyspaces;
+use vti_common::audit::{AuditEvent, BackupData};
 use vti_common::error::AppError;
 
 /// `POST /v1/backup/export` body.
@@ -52,13 +54,25 @@ pub struct ImportRequest {
     ),
 )]
 pub async fn export(
-    SuperAdminAuth(_auth): SuperAdminAuth,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
     let store = create_secret_store(&*state.config.read().await)?;
     let envelope =
         backup::export_backup(&state, store.as_ref(), &req.password, req.include_audit).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.did,
+                None,
+                AuditEvent::BackupExported(BackupData {
+                    keyspace_count: keyspaces::BACKED_UP.len() as u32,
+                    vtc_did: envelope.source_did.clone(),
+                }),
+            )
+            .await?;
+    }
     Ok(Json(envelope))
 }
 
@@ -75,7 +89,7 @@ pub async fn export(
     ),
 )]
 pub async fn import(
-    SuperAdminAuth(_auth): SuperAdminAuth,
+    SuperAdminAuth(auth): SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<ImportRequest>,
 ) -> Result<Json<ImportResult>, AppError> {
@@ -88,5 +102,20 @@ pub async fn import(
         req.confirm,
     )
     .await?;
+    // Audit only a real restore — `confirm: false` is a preview (no writes).
+    if result.status == "imported"
+        && let Some(writer) = state.audit_writer.as_ref()
+    {
+        writer
+            .write(
+                &auth.did,
+                None,
+                AuditEvent::BackupImported(BackupData {
+                    keyspace_count: result.counts.len() as u32,
+                    vtc_did: result.source_did.clone(),
+                }),
+            )
+            .await?;
+    }
     Ok(Json(result))
 }

@@ -20,6 +20,7 @@ use crate::error::AppError;
 use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
+use vti_common::audit::{AuditEvent, SessionRevokedData};
 use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
@@ -992,6 +993,18 @@ pub async fn revoke_session(
     }
 
     delete_session(&sessions, &session_id).await?;
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.did,
+                Some(&session.did),
+                AuditEvent::SessionRevoked(SessionRevokedData {
+                    session_id: Some(session_id.clone()),
+                    revoked_count: 1,
+                }),
+            )
+            .await?;
+    }
     info!(caller = %auth.did, session_id = %session_id, "session revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1045,6 +1058,21 @@ pub async fn revoke_sessions_by_did(
 
     let sessions = state.sessions_ks.clone();
     let revoked = revoke_sessions_for_did(&sessions, &query.did).await?;
+
+    if revoked > 0
+        && let Some(writer) = state.audit_writer.as_ref()
+    {
+        writer
+            .write(
+                &auth.0.did,
+                Some(&query.did),
+                AuditEvent::SessionRevoked(SessionRevokedData {
+                    session_id: None,
+                    revoked_count: revoked as u32,
+                }),
+            )
+            .await?;
+    }
 
     info!(caller = %auth.0.did, target_did = %query.did, revoked, "sessions revoked by DID");
     Ok(Json(RevokeByDidResponse { revoked }))

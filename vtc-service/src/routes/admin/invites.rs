@@ -29,6 +29,7 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
+use vti_common::audit::{AdminInviteData, AuditEvent};
 use vti_common::auth::AdminAuth;
 use vti_common::error::AppError;
 
@@ -147,7 +148,7 @@ const MAX_TTL_SECONDS: u64 = 24 * 60 * 60;
     ),
 )]
 pub async fn create_invite(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateInviteRequest>,
 ) -> Result<(StatusCode, Json<CreateInviteResponse>), AppError> {
@@ -230,6 +231,19 @@ pub async fn create_invite(
         minted.jwt
     );
 
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &admin.0.did,
+                Some(&req.did),
+                AuditEvent::AdminInviteCreated(AdminInviteData {
+                    jti: minted.jti.to_string(),
+                    admin_did: Some(req.did.clone()),
+                }),
+            )
+            .await?;
+    }
+
     info!(
         target_did = %req.did,
         jti = %minted.jti,
@@ -301,7 +315,7 @@ pub async fn list_invites(
     ),
 )]
 pub async fn revoke_invite(
-    _admin: AdminAuth,
+    admin: AdminAuth,
     State(state): State<AppState>,
     Path(jti_str): Path<String>,
 ) -> Result<(StatusCode, Json<RevokeInviteResponse>), AppError> {
@@ -326,6 +340,19 @@ pub async fn revoke_invite(
         // admin raced us. Surface as NotFound so the caller sees
         // the same outcome they would on a stale jti.
         return Err(AppError::NotFound(format!("no invite for jti {jti}")));
+    }
+
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &admin.0.did,
+                None,
+                AuditEvent::AdminInviteRevoked(AdminInviteData {
+                    jti: jti.to_string(),
+                    admin_did: None,
+                }),
+            )
+            .await?;
     }
 
     info!(%jti, "admin invite removed via REST");

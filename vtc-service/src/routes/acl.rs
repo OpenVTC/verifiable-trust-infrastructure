@@ -12,6 +12,7 @@ use crate::acl::{
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::server::AppState;
+use vti_common::audit::{AclChangeData, AclRevokedData, AuditEvent};
 
 // ---------- GET /acl ----------
 
@@ -146,6 +147,21 @@ pub async fn create_acl(
 
     store_acl_entry(&acl, &entry).await?;
 
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &entry.created_by,
+                Some(&entry.did),
+                AuditEvent::AclGranted(AclChangeData {
+                    did: entry.did.clone(),
+                    role: entry.role.to_string(),
+                    contexts: entry.allowed_contexts.clone(),
+                    expires_at: entry.expires_at.map(|e| e.to_string()),
+                }),
+            )
+            .await?;
+    }
+
     info!(caller = %entry.created_by, did = %entry.did, role = %entry.role, "ACL entry created");
     Ok((StatusCode::CREATED, Json(AclEntryResponse::from(entry))))
 }
@@ -272,6 +288,21 @@ pub async fn update_acl(
         info!(did = %did, revoked, "subject sessions revoked after ACL privilege reduction");
     }
 
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                Some(&did),
+                AuditEvent::AclUpdated(AclChangeData {
+                    did: did.clone(),
+                    role: entry.role.to_string(),
+                    contexts: entry.allowed_contexts.clone(),
+                    expires_at: entry.expires_at.map(|e| e.to_string()),
+                }),
+            )
+            .await?;
+    }
+
     info!(did = %did, "ACL entry updated");
     Ok(Json(AclEntryResponse::from(entry)))
 }
@@ -329,6 +360,19 @@ pub async fn delete_acl(
     }
 
     delete_acl_entry(&acl, &did).await?;
+
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.0.did,
+                Some(&did),
+                AuditEvent::AclRevoked(AclRevokedData {
+                    did: did.clone(),
+                    prior_role: Some(entry.role.to_string()),
+                }),
+            )
+            .await?;
+    }
 
     info!(caller = %auth.0.did, did = %did, "ACL entry deleted");
     Ok(StatusCode::NO_CONTENT)

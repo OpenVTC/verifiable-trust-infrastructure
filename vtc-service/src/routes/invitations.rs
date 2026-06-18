@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tracing::info;
 
+use vti_common::audit::{AuditEvent, InvitationIssuedData, InvitationRevokedData};
 use vti_common::auth::AuthClaims;
 use vti_common::error::AppError;
 
@@ -183,6 +184,22 @@ pub async fn issue(
     )
     .await?;
 
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.did,
+                Some(&body.subject_did),
+                AuditEvent::InvitationIssued(InvitationIssuedData {
+                    invitation_id: id.clone(),
+                    subject_did: body.subject_did.clone(),
+                    role: body.role.clone(),
+                    valid_until: valid_until.clone().unwrap_or_default(),
+                    status_list_index: Some(slot),
+                }),
+            )
+            .await?;
+    }
+
     info!(
         actor = %auth.did,
         subject = %body.subject_did,
@@ -331,6 +348,20 @@ pub async fn revoke(
     let now = Utc::now();
     record.revoked_at = Some(now);
     store_invitation(&state.invitations_ks, &record).await?;
+
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &auth.did,
+                Some(&record.subject_did),
+                AuditEvent::InvitationRevoked(InvitationRevokedData {
+                    invitation_id: id.clone(),
+                    subject_did: Some(record.subject_did.clone()),
+                    newly_revoked: true,
+                }),
+            )
+            .await?;
+    }
 
     info!(actor = %auth.did, vic_id = %id, slot, "revoked an invitation credential (VIC)");
 

@@ -309,11 +309,148 @@ pub enum AuditEvent {
     /// correlate which build of the admin SPA is currently
     /// serving. Phase 5 M5.7.2.
     AdminUiServed(AdminUiServedData),
+
+    /// An ACL entry was created — a DID was granted a community role
+    /// (`POST /v1/acl`). Authorization grants are the highest-value
+    /// forensic events: this records who now holds what authority,
+    /// scoped to which contexts, until when. Envelope `target_did` is
+    /// the granted DID.
+    AclGranted(AclChangeData),
+
+    /// An existing ACL entry was modified (`PATCH /v1/acl/{did}`) —
+    /// role / contexts / expiry changed. Envelope `target_did` is the
+    /// affected DID; the payload carries the new state.
+    AclUpdated(AclChangeData),
+
+    /// An ACL entry was deleted (`DELETE /v1/acl/{did}`) — the DID lost
+    /// its community authority. Envelope `target_did` is the revoked DID.
+    AclRevoked(AclRevokedData),
+
+    /// A Verifiable Invitation Credential (VIC) was issued
+    /// (`POST /v1/invitations`). Records the invitee, granted role, and
+    /// the revocation slot so the credential's whole lifecycle is
+    /// traceable. Envelope `target_did` is the invitee.
+    InvitationIssued(InvitationIssuedData),
+
+    /// An invitation was revoked (`DELETE /v1/invitations/{id}`) — its
+    /// revocation bit flipped. Envelope `target_did` is the invitee.
+    InvitationRevoked(InvitationRevokedData),
+
+    /// One or more authenticated sessions were revoked by an admin
+    /// (`DELETE /v1/auth/sessions/{id}` or `?did=`). Cutting off access
+    /// is security-relevant and must be attributable. Envelope
+    /// `target_did` is the session owner (when revoking by DID).
+    SessionRevoked(SessionRevokedData),
+
+    /// An encrypted state backup was exported (`POST /v1/backup/export`).
+    BackupExported(BackupData),
+
+    /// An encrypted state backup was imported, restoring community state
+    /// (`POST /v1/backup/import`). A full-state restore is among the most
+    /// sensitive operations — recorded so a restore is never silent.
+    BackupImported(BackupData),
+
+    /// An admin onboarding invite was minted (`POST /v1/admin/invites`),
+    /// optionally pre-creating an ACL grant. Envelope `target_did` is the
+    /// invited admin DID (when bound to one).
+    AdminInviteCreated(AdminInviteData),
+
+    /// An admin onboarding invite was revoked (`DELETE /v1/admin/invites/{jti}`).
+    AdminInviteRevoked(AdminInviteData),
 }
 
 // ---------------------------------------------------------------------------
 // Variant data structs
 // ---------------------------------------------------------------------------
+
+/// Payload for [`AuditEvent::AclGranted`] / [`AuditEvent::AclUpdated`] — the
+/// state of an ACL entry after the change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AclChangeData {
+    /// The DID whose authority changed.
+    pub did: String,
+    /// The role granted / now held (e.g. `"admin"`, `"moderator"`, `"member"`).
+    pub role: String,
+    /// Context scoping (empty = super-admin / community-wide).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contexts: Vec<String>,
+    /// Expiry (RFC3339), if the grant is time-bounded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+/// Payload for [`AuditEvent::AclRevoked`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AclRevokedData {
+    pub did: String,
+    /// The role the DID held immediately before revocation, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_role: Option<String>,
+}
+
+/// Payload for [`AuditEvent::InvitationIssued`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InvitationIssuedData {
+    /// The VIC's `id` (its consumption / revocation handle).
+    pub invitation_id: String,
+    /// The invited DID (`credentialSubject.id`).
+    pub subject_did: String,
+    /// Role the invite grants on redemption, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Expiry (RFC3339).
+    pub valid_until: String,
+    /// Revocation status-list slot allocated to this invite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_list_index: Option<u32>,
+}
+
+/// Payload for [`AuditEvent::InvitationRevoked`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InvitationRevokedData {
+    pub invitation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_did: Option<String>,
+    /// `true` if this call flipped the bit, `false` if it was already revoked.
+    pub newly_revoked: bool,
+}
+
+/// Payload for [`AuditEvent::SessionRevoked`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRevokedData {
+    /// The specific session id revoked, for a single-session revoke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Number of sessions revoked (1 for a single id, N for revoke-by-DID).
+    pub revoked_count: u32,
+}
+
+/// Payload for [`AuditEvent::BackupExported`] / [`AuditEvent::BackupImported`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupData {
+    /// Number of keyspaces included in the backup.
+    pub keyspace_count: u32,
+    /// The `vtc_did` the backup belongs to (compatibility anchor).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vtc_did: Option<String>,
+}
+
+/// Payload for [`AuditEvent::AdminInviteCreated`] / [`AuditEvent::AdminInviteRevoked`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminInviteData {
+    /// The invite token's `jti`.
+    pub jti: String,
+    /// The admin DID the invite is bound to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_did: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
