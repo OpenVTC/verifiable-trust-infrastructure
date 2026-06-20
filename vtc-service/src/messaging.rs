@@ -366,6 +366,30 @@ fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, DIDCommServiceError> 
         .map_err(|e| DIDCommServiceError::Internal(format!("serialise inbound document: {e}")))
 }
 
+/// Pull the framework reject `code` + human-readable `message` out of a
+/// serialised `trust-task-error` document, for logging. The *reason* a Trust
+/// Task was refused lives in the error document's `payload` (not the HTTP
+/// status), so surfacing it at the dispatch boundary is what makes a refusal
+/// diagnosable. #539 made join refusals loud; #541 moved the reason into the
+/// document body without teaching the log to read it back out — this restores
+/// that visibility. Returns `("<unparseable>", None)` if the bytes aren't a
+/// recognisable error document.
+fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
+    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return ("<unparseable error document>".to_string(), None);
+    };
+    let code = doc
+        .pointer("/payload/code")
+        .and_then(|c| c.as_str())
+        .unwrap_or("<unknown>")
+        .to_string();
+    let message = doc
+        .pointer("/payload/message")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+    (code, message)
+}
+
 /// `join-requests/submit/1.0` over DIDComm — the ceremony `request` verb.
 ///
 /// The message body is the Trust Task document; the authcrypt sender is the
@@ -398,14 +422,19 @@ async fn join_request_submit_handler(
     // Outcome observability (preserved from #539): a refused join must be loud —
     // it replies with a `trust-task-error` and stores nothing, so without this
     // it would look like it "silently went nowhere"; a processed one logs at
-    // info. The reply document carries the typed reject code.
+    // info. The reply document carries the typed reject code + reason, which we
+    // unpack so the *why* (expired / malformed / invalid VIC / duplicate) is in
+    // the log, not just the status.
     if outcome.status.is_success() {
         info!(applicant = %applicant_log, thid = %thid, "join-request processed");
     } else {
+        let (code, reason) = error_doc_summary(&outcome.body);
         warn!(
             applicant = %applicant_log,
             thid = %thid,
             status = outcome.status.as_u16(),
+            code = %code,
+            reason = reason.as_deref().unwrap_or("<none>"),
             "join-request refused — trust-task-error returned, no member or pending request created"
         );
     }
