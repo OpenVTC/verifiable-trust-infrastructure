@@ -126,6 +126,35 @@ pub async fn mark_consumed(
         .await
 }
 
+/// Inspect a VP's `verifiableCredential` for a *structural* defect that means
+/// "a credential was attempted but the envelope is malformed", as distinct from
+/// "no credential presented". Returns a reason string when the field is present
+/// but unusable, or `None` when it is absent (legitimate open request) or a
+/// well-formed array of credential objects (legitimate other-evidence).
+///
+/// This is the discriminator that lets the caller turn a malformed VP into a
+/// loud `malformedRequest` instead of silently dropping it to moderator review:
+/// a holder who shipped a broken presentation gets told why, rather than seeing
+/// their join sit in a queue. Kept conservative — a proper array of non-
+/// invitation VCs is *not* flagged (those feed the trusted-credential policy
+/// path), so this never rejects a legitimate evidence-bearing submission.
+fn malformed_vp_credentials(vp: &JsonValue) -> Option<String> {
+    let vc = vp.get("verifiableCredential")?;
+    match vc.as_array() {
+        None => Some(
+            "`verifiableCredential` is present but is not a JSON array — a W3C \
+             Verifiable Presentation carries credentials as an array"
+                .to_string(),
+        ),
+        Some(arr) if arr.iter().any(|e| !e.is_object()) => Some(
+            "`verifiableCredential` contains a non-object entry — each item must \
+             be a Verifiable Credential object"
+                .to_string(),
+        ),
+        Some(_) => None,
+    }
+}
+
 /// Verify a VIC presented inside `vp`, if one is present.
 ///
 /// - `Ok(None)` — the VP carried no `InvitationCredential`; the join proceeds
@@ -134,12 +163,21 @@ pub async fn mark_consumed(
 ///   validity + revocation).
 /// - `Err(Forbidden)` — a VIC was present but failed verification; the join is
 ///   refused before policy.
+/// - `Err(Validation)` — a credential was attempted but the VP envelope is
+///   structurally malformed; surfaced as `malformedRequest` rather than
+///   silently referred.
 pub async fn verify_presented_invitation(
     state: &AppState,
     applicant_did: &str,
     vp: &JsonValue,
 ) -> Result<Option<VerifiedInvitation>, AppError> {
     let Some(vic_json) = extract_invitation(vp) else {
+        // No InvitationCredential extracted. Before treating this as "no
+        // invitation" (→ open request / moderator), distinguish a structurally
+        // broken `verifiableCredential` and surface it instead of dropping it.
+        if let Some(reason) = malformed_vp_credentials(vp) {
+            return Err(AppError::Validation(reason));
+        }
         return Ok(None);
     };
 
@@ -612,6 +650,38 @@ mod tests {
         });
         assert!(extract_invitation(&vp).is_none());
         assert!(extract_invitation(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn malformed_vp_credentials_flags_only_structural_defects() {
+        // Absent → not malformed (legitimate open request).
+        assert!(malformed_vp_credentials(&serde_json::json!({ "holder": "did:key:z" })).is_none());
+        // A well-formed array of credential objects → not malformed (legitimate
+        // other-evidence; a non-invitation VC feeds the trusted-credential path).
+        assert!(
+            malformed_vp_credentials(&serde_json::json!({
+                "verifiableCredential": [{ "type": ["VerifiableCredential"] }]
+            }))
+            .is_none()
+        );
+        // Empty array → not malformed (no credentials).
+        assert!(
+            malformed_vp_credentials(&serde_json::json!({ "verifiableCredential": [] })).is_none()
+        );
+        // Present but not an array → malformed.
+        assert!(
+            malformed_vp_credentials(&serde_json::json!({
+                "verifiableCredential": { "type": ["VerifiableCredential"] }
+            }))
+            .is_some()
+        );
+        // Array with a non-object entry → malformed.
+        assert!(
+            malformed_vp_credentials(&serde_json::json!({
+                "verifiableCredential": ["urn:uuid:not-an-object"]
+            }))
+            .is_some()
+        );
     }
 
     #[tokio::test]
