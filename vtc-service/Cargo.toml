@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.10.2"
+version = "0.10.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true

@@ -159,6 +159,38 @@ pub async fn submit_inner(
     let consume_invitation_id = invitation_fact.as_ref().map(|(id, _)| id.clone());
     let invitation = invitation_fact.map(|(_, fact)| fact);
 
+    // Diagnostic: "my VIC-bearing join is still pending" almost always comes down
+    // to one of the three policy facts below. The default `join.rego` auto-admits
+    // only on `verified && issuer_trusted && !consumed`; a verified invitation
+    // that still refers failed `issuer_trusted` (issuer ≠ this VTC's own DID and
+    // not registry-recognised) or `consumed` (single-use, already redeemed). Log
+    // the facts + the issuer-vs-own-DID comparison so the cause is in the record,
+    // not inferred. A VP that carried `verifiableCredential` but produced no
+    // invitation fact is logged too — the credential wasn't an InvitationCredential.
+    match &invitation {
+        Some(inv) => {
+            let own_did = state.config.read().await.vtc_did.clone();
+            info!(
+                applicant = %applicant_did,
+                vic_issuer = %inv.issuer,
+                vtc_own_did = own_did.as_deref().unwrap_or("<unset>"),
+                verified = inv.verified,
+                issuer_trusted = inv.issuer_trusted,
+                consumed = inv.consumed,
+                "join: invitation presented — auto-admit needs verified && issuer_trusted && !consumed"
+            );
+        }
+        None => {
+            if vp.get("verifiableCredential").is_some() {
+                info!(
+                    applicant = %applicant_did,
+                    "join: VP carried `verifiableCredential` but no InvitationCredential was \
+                     extracted — auto-admit-on-invitation cannot fire"
+                );
+            }
+        }
+    }
+
     // 5. Decide: assemble verified Facts (the route-layer holder-binding
     // makes this presentation `verified`) and run the active join policy.
     let presentation = presentation_from_vp(&applicant_did, &vp);
