@@ -19,6 +19,40 @@ export function shorten(value: string, head = 8, tail = 4): string {
 }
 
 /**
+ * Abbreviate a DID for table display by shrinking the long opaque middle
+ * segment — the `did:webvh` SCID (a content hash) or a `did:key` multibase —
+ * while keeping the method prefix and, crucially, the **full tail** (the domain
+ * and human-readable path, e.g. `…:webvh.storm.ws:glenn-vta`), which is the part
+ * that actually identifies the agent. Unlike a CSS `text-overflow` ellipsis
+ * (which clips the *end*), this keeps the end visible. The full DID stays
+ * available via a `title` tooltip / copy.
+ *
+ * - `did:webvh:<scid>:<domain>…:<path>` → SCID abbreviated to `keep` chars + `…`,
+ *   everything after it kept verbatim.
+ * - `did:key:<multibase>` (and other 3-segment DIDs) → middle-truncate the id,
+ *   keeping `keep` head + 6 tail chars.
+ * - Non-DID input and already-short DIDs are returned unchanged.
+ */
+export function shortenDid(did: string, keep = 10): string {
+  if (!did.startsWith("did:")) return did;
+  const parts = did.split(":");
+  if ((parts[1] === "webvh" || parts[1] === "web") && parts.length > 3) {
+    const scid = parts[2] ?? "";
+    if (scid.length > keep + 1) {
+      parts[2] = `${scid.slice(0, keep)}…`;
+    }
+    return parts.join(":");
+  }
+  // did:key and other `did:<method>:<id>` shapes: the id carries no human tail,
+  // so keep head + tail to aid visual comparison.
+  const id = parts.slice(2).join(":");
+  if (id.length > keep + 7) {
+    return `${parts[0]}:${parts[1]}:${id.slice(0, keep)}…${id.slice(-6)}`;
+  }
+  return did;
+}
+
+/**
  * Format an RFC3339 / ISO-8601 timestamp into the operator's
  * locale-string. Used for `joinedAt`, `created_at`, `activated_at`,
  * audit envelope timestamps, etc. Falls back to the raw input on

@@ -17,7 +17,7 @@ import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-reac
 import { deleteJson, getJson, patchJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
-import { formatEpoch, formatIso, shorten } from "@/lib/format";
+import { formatEpoch, formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 
 const TRUST_TASK_MANAGE =
@@ -250,9 +250,7 @@ export function Acl() {
             {query.data?.entries.map((e) => (
               <tr key={e.did}>
                 <td>
-                  <code className="truncate" title={e.did}>
-                    {e.did}
-                  </code>
+                  <code title={e.did}>{shortenDid(e.did)}</code>
                 </td>
                 <td>
                   <code>{e.role}</code>
@@ -442,9 +440,7 @@ function InvitesPanel() {
               <tr key={i.jti}>
                 <td>
                   {i.targetDid ? (
-                    <code className="truncate" title={i.targetDid}>
-                      {i.targetDid}
-                    </code>
+                    <code title={i.targetDid}>{shortenDid(i.targetDid)}</code>
                   ) : (
                     <span className="muted">unknown</span>
                   )}
