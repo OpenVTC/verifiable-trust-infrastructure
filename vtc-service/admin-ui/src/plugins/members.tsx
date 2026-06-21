@@ -45,6 +45,8 @@ const TRUST_TASK_REMOVED =
   "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
 const TRUST_TASK_PURGE =
   "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
+const TRUST_TASK_REQUEST_VMC =
+  "https://trusttasks.org/openvtc/vtc/members/request-vmc/1.0";
 
 interface MemberRow {
   did: string;
@@ -60,6 +62,10 @@ interface MemberRow {
   personhood: boolean;
   personhoodAssertedAt: string | null;
   joinedViaInvitation: boolean;
+  /** Top-level `id` of the member-issued reciprocal VMC, once received. */
+  memberVmcId?: string | null;
+  /** When the member's reciprocal VMC was received + stored. */
+  memberVmcReceivedAt?: string | null;
 }
 
 interface MembersPage {
@@ -86,6 +92,23 @@ async function fetchMember(did: string): Promise<MemberRow> {
   return getJson<MemberRow>(`/v1/members/${encodeURIComponent(did)}`, {
     trustTask: TRUST_TASK_SHOW,
   });
+}
+
+interface RequestVmcResponse {
+  memberDid: string;
+  requested: boolean;
+  threadId: string;
+}
+
+/** Ask an active member to issue + send their reciprocal VMC (member →
+ * community half of the pair). The member answers asynchronously over the
+ * `members/vmc/1.0` DIDComm surface; this only dispatches the request. */
+async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
+  return postJson<RequestVmcResponse>(
+    `/v1/members/${encodeURIComponent(did)}/request-vmc`,
+    {},
+    { trustTask: TRUST_TASK_REQUEST_VMC },
+  );
 }
 
 interface PromoteStartResponse {
@@ -430,6 +453,10 @@ function MemberDetail() {
     },
   });
 
+  const requestVmcMutation = useMutation({
+    mutationFn: requestMemberVmc,
+  });
+
   return (
     <section className="page">
       <button type="button" className="link" onClick={() => navigate("..")}>
@@ -508,6 +535,24 @@ function MemberDetail() {
                   "—"
                 )}
               </dd>
+              <dt>Member VMC (member → VTC)</dt>
+              <dd>
+                {query.data.memberVmcId ? (
+                  <>
+                    <code>{query.data.memberVmcId}</code>
+                    {query.data.memberVmcReceivedAt && (
+                      <span className="muted">
+                        {" "}
+                        · received {formatDate(query.data.memberVmcReceivedAt)}
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="muted">
+                    not received — the member hasn't sent their reciprocal VMC
+                  </span>
+                )}
+              </dd>
             </dl>
           </section>
 
@@ -546,6 +591,19 @@ function MemberDetail() {
               </section>
             )}
 
+            {requestVmcMutation.error && (
+              <section className="card error">
+                <h3>Request failed</h3>
+                <p>{(requestVmcMutation.error as Error).message}</p>
+              </section>
+            )}
+            {requestVmcMutation.isSuccess && (
+              <p className="muted">
+                Requested the member's reciprocal VMC. They'll send it back
+                asynchronously; refresh to see it under Credentials.
+              </p>
+            )}
+
             <div className="form-actions">
               <button
                 type="button"
@@ -569,6 +627,19 @@ function MemberDetail() {
                   : query.data.role === "admin"
                     ? "Already admin"
                     : "Promote to admin"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={requestVmcMutation.isPending}
+                title="Ask this member to issue and send their reciprocal VMC (member → VTC half of the membership pair)"
+                onClick={() => requestVmcMutation.mutate(decoded)}
+              >
+                {requestVmcMutation.isPending
+                  ? "Requesting…"
+                  : query.data.memberVmcId
+                    ? "Re-request member VMC"
+                    : "Request member VMC"}
               </button>
             </div>
 

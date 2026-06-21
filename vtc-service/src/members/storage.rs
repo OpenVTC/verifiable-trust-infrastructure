@@ -204,6 +204,9 @@ mod tests {
             reciprocal_vc_id: None,
             accepted_at: None,
             joined_via_invitation: false,
+            member_vmc: None,
+            member_vmc_id: None,
+            member_vmc_received_at: None,
         };
         let json = serde_json::to_value(&m).unwrap();
         assert!(json["joinedAt"].is_string());
@@ -236,6 +239,9 @@ mod tests {
             reciprocal_vc_id: None,
             accepted_at: None,
             joined_via_invitation: false,
+            member_vmc: None,
+            member_vmc_id: None,
+            member_vmc_received_at: None,
         };
         let json = serde_json::to_value(&m).unwrap();
         assert_eq!(json["personhood"], true);

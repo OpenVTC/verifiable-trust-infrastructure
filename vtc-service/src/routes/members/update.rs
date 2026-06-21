@@ -183,6 +183,8 @@ impl MemberResponse {
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,
             joined_via_invitation: member.joined_via_invitation,
+            member_vmc_id: member.member_vmc_id,
+            member_vmc_received_at: member.member_vmc_received_at,
         }
     }
 }

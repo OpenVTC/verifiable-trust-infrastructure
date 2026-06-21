@@ -26,6 +26,7 @@
 //! from day one; the resolver indirection lives at the removal
 //! call site.
 
+pub mod inbound_vmc;
 pub mod storage;
 
 use chrono::{DateTime, Utc};
@@ -117,6 +118,23 @@ pub struct Member {
     /// `false`.
     #[serde(default)]
     pub joined_via_invitation: bool,
+    /// The member → community half of the membership VMC pair: the
+    /// member-issued `VerifiableMembershipCredential` (a Data-Integrity VC
+    /// whose `issuer` is this member and `credentialSubject.id` is the
+    /// community DID), received over the `members/vmc/1.0` exchange and
+    /// verified before storage. `None` until the member sends one. Distinct
+    /// from [`Self::reciprocal_vc_id`], which is the join-ceremony
+    /// acknowledgement; this is the full reciprocal VMC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_vmc: Option<JsonValue>,
+    /// Top-level `id` of [`Self::member_vmc`], for display / dedup without
+    /// reparsing the body. `None` until a member VMC is stored.
+    #[serde(default)]
+    pub member_vmc_id: Option<String>,
+    /// When the member VMC was received + stored. Paired with
+    /// [`Self::member_vmc`].
+    #[serde(default)]
+    pub member_vmc_received_at: Option<DateTime<Utc>>,
 }
 
 impl Member {
@@ -144,7 +162,19 @@ impl Member {
             reciprocal_vc_id: None,
             accepted_at: None,
             joined_via_invitation: false,
+            member_vmc: None,
+            member_vmc_id: None,
+            member_vmc_received_at: None,
         }
+    }
+
+    /// Record the member-issued reciprocal VMC (member → community half of the
+    /// pair), stamping the receipt time. The caller verifies the credential
+    /// (issuer, subject binding, proof) before calling this.
+    pub fn record_member_vmc(&mut self, vmc_id: impl Into<String>, vmc: JsonValue) {
+        self.member_vmc_id = Some(vmc_id.into());
+        self.member_vmc = Some(vmc);
+        self.member_vmc_received_at = Some(Utc::now());
     }
 
     /// Record the member-issued reciprocal VC that closes the
@@ -185,6 +215,11 @@ impl Member {
         // a re-admitted member reciprocates afresh.
         self.reciprocal_vc_id = None;
         self.accepted_at = None;
+        // The member-issued VMC names the (now departed) membership edge —
+        // drop it; a re-admitted member sends a fresh one.
+        self.member_vmc = None;
+        self.member_vmc_id = None;
+        self.member_vmc_received_at = None;
     }
 
     /// Mark the row historical — keep all fields verbatim, just

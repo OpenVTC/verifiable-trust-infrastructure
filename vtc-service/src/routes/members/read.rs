@@ -55,6 +55,15 @@ pub struct MemberResponse {
     /// badge invitation-joined members.
     #[serde(default)]
     pub joined_via_invitation: bool,
+    /// Top-level `id` of the member-issued reciprocal VMC (member → community
+    /// half of the pair), once the member has sent it over `members/vmc/1.0`.
+    /// `None` until then. The VMC body itself is not echoed on this response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_vmc_id: Option<String>,
+    /// When the member VMC was received + stored. Paired with
+    /// [`Self::member_vmc_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_vmc_received_at: Option<DateTime<Utc>>,
 }
 
 impl MemberResponse {
@@ -77,6 +86,8 @@ impl MemberResponse {
             personhood: member.personhood,
             personhood_asserted_at: member.personhood_asserted_at,
             joined_via_invitation: member.joined_via_invitation,
+            member_vmc_id: member.member_vmc_id,
+            member_vmc_received_at: member.member_vmc_received_at,
         }
     }
 }

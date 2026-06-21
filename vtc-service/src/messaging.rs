@@ -28,6 +28,9 @@ use vta_sdk::protocols::join_requests::{
     MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
     SelfRemoveReceiptBody,
 };
+use vta_sdk::protocols::members::{
+    MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
+};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
 use crate::ceremony::remove_inner;
@@ -130,6 +133,7 @@ pub async fn run_didcomm_service(
                 handler_fn(member_self_remove_handler),
             )
         })
+        .and_then(|r| r.route(MEMBER_VMC_TYPE, handler_fn(member_vmc_handler)))
         .and_then(|r| {
             r.route(
                 CREDENTIAL_REQUEST_TYPE,
@@ -596,6 +600,52 @@ async fn member_self_remove_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(MEMBER_SELF_REMOVE_RECEIPT_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `members/vmc/1.0` over DIDComm — a member submits their reciprocal VMC
+/// (member → community half of the membership pair), prompted or unprompted.
+///
+/// The authcrypt sender is the proven member; the body carries the member-issued
+/// VMC. [`receive_member_vmc_inner`](crate::members::inbound_vmc::receive_member_vmc_inner)
+/// verifies the issuer / subject binding + the DI proof and stores it on the
+/// member row. Replies with a receipt, or a threaded problem-report on failure.
+async fn member_vmc_handler(
+    message: Message,
+    meta: UnpackMetadata,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let thid = message.id.clone();
+    let member_did = authenticated_sender_did(&message, &meta)?;
+
+    let body: MemberVmcBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed member-vmc body: {e}"),
+            )));
+        }
+    };
+
+    let outcome =
+        match crate::members::inbound_vmc::receive_member_vmc_inner(&state, member_did, body.vc)
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => return Ok(Some(app_error_report(thid, &e))),
+        };
+
+    let receipt = MemberVmcReceiptBody {
+        member_did: outcome.member_did,
+        vmc_id: outcome.vmc_id,
+        status: "stored".to_string(),
+    };
+    let body = serde_json::to_value(&receipt)
+        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(MEMBER_VMC_RESPONSE_TYPE, body).thid(message.id),
     ))
 }
 

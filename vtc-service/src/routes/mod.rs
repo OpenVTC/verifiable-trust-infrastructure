@@ -542,6 +542,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(members::rotate::rotate),
             "https://trusttasks.org/openvtc/vtc/members/rotate/1.0",
         ))
+        // Reciprocal-VMC request — ask an active member to issue + send the
+        // member → community half of the membership pair. The member replies
+        // asynchronously over the `members/vmc/1.0` DIDComm surface.
+        .routes(tt(
+            routes!(members::request_vmc::request_vmc),
+            "https://trusttasks.org/openvtc/vtc/members/request-vmc/1.0",
+        ))
         // Phase 4 M4.3 + M4.4 — personhood lifecycle. Three
         // mounts on the same path prefix; declared BEFORE
         // `/v1/members/{did}` so axum's path-trie matches the

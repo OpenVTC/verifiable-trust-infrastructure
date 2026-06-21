@@ -22,5 +22,6 @@ pub mod read;
 pub mod relationships;
 pub mod remove;
 pub mod renew;
+pub mod request_vmc;
 pub mod rotate;
 pub mod update;
