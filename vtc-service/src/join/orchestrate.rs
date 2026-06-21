@@ -181,9 +181,27 @@ pub async fn submit_inner(
             );
         }
         None => {
-            if vp.get("verifiableCredential").is_some() {
+            if let Some(vc) = vp.get("verifiableCredential") {
+                // Dump the shape + each credential's `type` so a VIC that wasn't
+                // recognised is self-explanatory: a missing `InvitationCredential`
+                // tag, a non-array `verifiableCredential`, or the lossy `vp_claims`
+                // projection mistakenly sent as the VP all show up here.
+                let cred_types: Vec<String> = vc
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .map(|c| {
+                                c.get("type")
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| "<no type>".to_string())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 info!(
                     applicant = %applicant_did,
+                    is_array = vc.is_array(),
+                    credential_types = ?cred_types,
                     "join: VP carried `verifiableCredential` but no InvitationCredential was \
                      extracted — auto-admit-on-invitation cannot fire"
                 );
