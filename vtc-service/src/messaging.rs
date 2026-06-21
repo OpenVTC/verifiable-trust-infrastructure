@@ -289,6 +289,33 @@ fn problem_report_body(code: &str, comment: impl Into<String>) -> serde_json::Va
     json!({ "code": code, "comment": comment.into() })
 }
 
+/// Pull the human-facing detail out of an inbound DIDComm v2 problem-report
+/// body — `code`, `comment` (which may carry `{1}`/`{2}` placeholders), and the
+/// `args` that fill them — as display strings for logging the *cause* a peer
+/// reported. Missing fields read as `<none>` so the log is explicit about what
+/// the peer omitted rather than silently blank.
+fn problem_report_details(body: &serde_json::Value) -> (String, String, String) {
+    let field = |k: &str| {
+        body.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("<none>")
+            .to_string()
+    };
+    let args = match body.get("args").and_then(|v| v.as_array()) {
+        Some(a) if !a.is_empty() => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "<none>".to_string(),
+    };
+    (field("code"), field("comment"), args)
+}
+
 /// The problem-report `code` for a business-logic [`AppError`],
 /// preserving the 4xx-equivalent distinction (forbidden / unauthorized
 /// / not-found / conflict / bad-request) the same way the REST boundary
@@ -324,11 +351,35 @@ fn app_error_report(thid: String, err: &AppError) -> DIDCommResponse {
 /// unexpected/unsupported message type — e.g. a protocol-version drift between
 /// the client and this VTC — looks like the message "just disappeared". We log
 /// it at `warn!` (visible at the default level) with the type + sender, and
-/// still return a threaded problem-report so the sender isn't left hanging.
+/// (for a genuine unsupported request) return a threaded problem-report so the
+/// sender isn't left hanging.
+///
+/// **Never reply to a problem-report.** Replying to one with our own
+/// (unsupported-type) problem-report makes the peer reply to *that*, and so on —
+/// an unbounded problem-report ping-pong (observed against the mediator). A
+/// problem-report is a terminal notification: log it and stop. Mirrors the VTA's
+/// `handle_unknown` (`vta-service` `messaging::handlers`).
 async fn unhandled_message_handler(
     message: Message,
     _meta: UnpackMetadata,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    if message.typ.contains("problem-report") {
+        let (code, comment, args) = problem_report_details(&message.body);
+        warn!(
+            from = message.from.as_deref().unwrap_or("<anon>"),
+            thid = message.thid.as_deref().unwrap_or("<none>"),
+            code = %code,
+            comment = %comment,
+            args = %args,
+            // The full body too: we don't always know which fields a peer's
+            // problem-report carries, so log the raw JSON so the *cause* is never
+            // lost to a field-name mismatch.
+            body = %message.body,
+            id = %message.id,
+            "received unhandled problem-report — not replying (a reply would loop)"
+        );
+        return Ok(None);
+    }
     warn!(
         message_type = %message.typ,
         from = message.from.as_deref().unwrap_or("<anon>"),
@@ -755,6 +806,26 @@ mod tests {
 
     const ALICE: &str = "did:key:z6MkAlice";
     const ALICE_SKID: &str = "did:key:z6MkAlice#z6MkAlice";
+
+    #[test]
+    fn problem_report_details_extracts_code_comment_and_args() {
+        let (code, comment, args) = problem_report_details(&json!({
+            "code": "e.p.xfer.cant-use-endpoint",
+            "comment": "Unable to use the {1} endpoint for {2}.",
+            "args": ["https://x.example/finance", "did:example:1234"],
+        }));
+        assert_eq!(code, "e.p.xfer.cant-use-endpoint");
+        assert_eq!(comment, "Unable to use the {1} endpoint for {2}.");
+        assert_eq!(args, "https://x.example/finance, did:example:1234");
+    }
+
+    #[test]
+    fn problem_report_details_marks_missing_fields() {
+        let (code, comment, args) = problem_report_details(&json!({}));
+        assert_eq!(code, "<none>");
+        assert_eq!(comment, "<none>");
+        assert_eq!(args, "<none>");
+    }
 
     #[test]
     fn app_error_maps_to_typed_problem_report_codes() {
