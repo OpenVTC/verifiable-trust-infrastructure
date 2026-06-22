@@ -1,0 +1,104 @@
+name: Publish
+
+# Trusted Publishing to crates.io via OIDC — no long-lived API token stored
+# in the repo. crates.io mints a short-lived token for each run after
+# verifying the GitHub OIDC claim against the Trusted Publisher config you
+# register per crate (Settings → Trusted Publishing on each crate's page).
+# See docs/05-design-notes/trusted-publishing.md for the one-time setup.
+#
+# The job walks every publishable crate in dependency order and publishes
+# only the versions that are not yet on crates.io. It is therefore
+# idempotent: bump the version(s) you want to release in a PR, merge to
+# main, and exactly those crates ship. Crates whose version already exists
+# are skipped.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never let two publish runs race — a later push must wait for an in-flight
+# release so dependency ordering across runs stays correct.
+concurrency:
+  group: crates-io-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # required for the OIDC token exchange with crates.io
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-publish-
+            ${{ runner.os }}-cargo-
+
+      # Exchanges the workflow's OIDC identity for a short-lived crates.io
+      # token, exported as CARGO_REGISTRY_TOKEN for the publish step below.
+      - name: Authenticate to crates.io (Trusted Publishing)
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish crates in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          # Bottom-up topological order. A crate must appear after every
+          # internal crate it depends on so its deps already exist on
+          # crates.io when cargo verifies the upload.
+          CRATES=(
+            vta-sdk
+            vti-webauthn
+            vti-common
+            vti-secrets
+            vta-cli-common
+            vtc-service
+            vta-service
+            pnm-cli
+            cnm-cli
+          )
+
+          UA="verifiable-trust-infrastructure-release (https://github.com/${GITHUB_REPOSITORY})"
+
+          for crate in "${CRATES[@]}"; do
+            version=$(cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
+
+            if [ -z "$version" ] || [ "$version" = "null" ]; then
+              echo "::error::could not resolve version for $crate"
+              exit 1
+            fi
+
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+              -H "User-Agent: $UA" \
+              "https://crates.io/api/v1/crates/${crate}/${version}")
+
+            if [ "$status" = "200" ]; then
+              echo "✓ ${crate} ${version} already on crates.io — skipping"
+              continue
+            fi
+
+            echo "→ publishing ${crate} ${version}"
+            # cargo publish blocks until the new version is queryable in the
+            # index, so the next (dependent) crate sees it.
+            cargo publish -p "$crate" --locked
+          done
