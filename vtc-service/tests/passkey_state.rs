@@ -107,6 +107,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         audit_writer: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
+        didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
     };
     (state, dir)
 }

@@ -16,12 +16,8 @@
 //! persisted, so the caller logs a delivery failure rather than unwinding the
 //! decision.
 
-use std::sync::Arc;
-use std::time::Duration;
-
 use affinidi_messaging_didcomm::Message;
 use affinidi_openid4vci::issuer::create_credential_response;
-use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_vc::VerifiableCredential;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
@@ -82,16 +78,18 @@ fn issue_message_body(credential_json: JsonValue) -> Result<JsonValue, AppError>
         .map_err(|e| AppError::Internal(format!("issue body serialise: {e}")))
 }
 
-/// Pack `body` as a DIDComm message (`msg_id` / `msg_type`) authcrypt to
-/// `holder_did`, wrap it in a mediator forward, and send it.
+/// Pack `body` as a DIDComm message (`msg_id` / `msg_type`) from the VTC to
+/// `holder_did` and send it over the VTC's **shared inbound mediator
+/// connection** via [`AppState::send_to_member`].
 ///
-/// The forward is addressed to the **holder's own mediator** (resolved from the
-/// holder's DID document) and sent through the **VTC's own mediator** — the
-/// mediator the VTC has a connection to. The VTC's mediator routes the forward
-/// onward to the holder's mediator, which delivers it. When the holder advertises
-/// no mediator, the VTC's own mediator is used as the forward target (the
-/// shared-mediator deployment). Shared by the credential-query push and the
-/// issued-credential delivery.
+/// This is the single outbound funnel — credential-query push, issued-credential
+/// delivery, and the member-VMC request all go through it. Routing the send
+/// through the running listener's connection is deliberate: the mediator allows
+/// one websocket per DID, so an outbound path must reuse that connection rather
+/// than open its own (a second one made the mediator terminate connections with
+/// `w.websocket.duplicate-channel`, and the auto-reconnecting sockets then
+/// duelled). The listener packs authcrypt and forwards through the VTC's
+/// mediator — the same path inbound replies already take to reach members.
 pub(crate) async fn push_to_holder(
     state: &AppState,
     holder_did: &str,
@@ -99,166 +97,21 @@ pub(crate) async fn push_to_holder(
     msg_type: &str,
     body: JsonValue,
 ) -> Result<(), AppError> {
-    let atm = state
-        .atm
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("messaging (ATM) not configured".into()))?;
-
-    let (vtc_did, mediator_did) = {
-        let config = state.config.read().await;
-        let vtc_did = config
-            .vtc_did
-            .clone()
-            .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
-        let mediator_did = config
-            .messaging
-            .as_ref()
-            .map(|m| m.mediator_did.clone())
-            .ok_or_else(|| AppError::Internal("no mediator configured for messaging".into()))?;
-        (vtc_did, mediator_did)
-    };
-
-    // Resolve the holder's own mediator from its DID document; fall back to the
-    // VTC's mediator (shared-mediator deployment) when the holder has none.
-    let target_mediator = resolve_holder_mediator(state, holder_did)
+    let vtc_did = state
+        .config
+        .read()
         .await
-        .unwrap_or_else(|| mediator_did.clone());
+        .vtc_did
+        .clone()
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| AppError::Internal("VTC DID not configured".into()))?;
 
-    // The VTC sends through its OWN mediator (the profile's connection); the
-    // forward, addressed to the holder's mediator, is routed onward from there.
-    let profile = Arc::new(
-        ATMProfile::new(atm, None, vtc_did.clone(), Some(mediator_did.clone()))
-            .await
-            .map_err(|e| AppError::Internal(format!("ATM profile setup failed: {e}")))?,
-    );
-
-    let msg = Message::build(msg_id.to_string(), msg_type.to_string(), body)
-        .from(vtc_did.clone())
+    let message = Message::build(msg_id.to_string(), msg_type.to_string(), body)
+        .from(vtc_did)
         .to(holder_did.to_string())
         .finalize();
 
-    // Send with a bounded retry. A transient mediator WebSocket failure (e.g.
-    // "Connection reset by peer" / a disconnected socket) right around the
-    // forward must not permanently drop an already-issued credential — nothing
-    // re-pushes it, so the member would be stuck "Pending" forever. Each attempt
-    // re-enables the websocket (the previous connection may be gone) and re-packs
-    // the message; on the final attempt the error is returned so the caller can
-    // log the best-effort failure.
-    send_with_retry(
-        atm,
-        &profile,
-        &msg,
-        msg_id,
-        holder_did,
-        &vtc_did,
-        &target_mediator,
-    )
-    .await
-}
-
-/// Backoff between credential-delivery send attempts. The schedule is the wait
-/// *before* attempts 2, 3, and 4 — total of four attempts. Kept short and
-/// in-request (this runs on the approve/admit path), so it rides out a transient
-/// mediator WebSocket blip without holding the caller for long.
-const DELIVERY_RETRY_BACKOFF: [Duration; 3] = [
-    Duration::from_millis(500),
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-];
-
-/// Pack the message authcrypt to the holder and forward it through the VTC's
-/// mediator over **HTTP**, retrying the whole send on failure with the
-/// [`DELIVERY_RETRY_BACKOFF`] schedule.
-///
-/// We deliberately do **not** enable a websocket here. The VTC's `state.atm`
-/// shares the VTC DID with the inbound `DIDCommService` listener, which already
-/// holds the one websocket the mediator permits per DID; enabling a second one
-/// on this ATM made the mediator terminate a connection as a
-/// `w.websocket.duplicate-channel`, and because the SDK socket auto-reconnects,
-/// the two then duelled indefinitely. `forward_and_send_message` →
-/// `send_message` falls back to the mediator's REST endpoint when no websocket
-/// is enabled (and we pass `wait_for_response = false`, a one-shot POST), so the
-/// forward is delivered over HTTP without ever opening a competing socket.
-///
-/// Retried because an HTTP forward can still hit a transient mediator blip; the
-/// pack is cheap to redo. On success it returns immediately; once the attempts
-/// are exhausted it returns the last error (the caller logs it best-effort).
-async fn send_with_retry(
-    atm: &affinidi_tdk::messaging::ATM,
-    profile: &Arc<ATMProfile>,
-    msg: &Message,
-    msg_id: &str,
-    holder_did: &str,
-    vtc_did: &str,
-    target_mediator: &str,
-) -> Result<(), AppError> {
-    let mut attempt = 0usize;
-    loop {
-        let result: Result<(), AppError> = async {
-            let (jwe, _meta) = atm
-                .pack_encrypted(msg, holder_did, Some(vtc_did), None)
-                .await
-                .map_err(|e| AppError::Internal(format!("pack_encrypted failed: {e}")))?;
-
-            atm.forward_and_send_message(
-                profile,
-                false,
-                &jwe,
-                Some(msg_id),
-                target_mediator,
-                holder_did,
-                None,
-                None,
-                false,
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("mediator forward failed: {e}")))?;
-
-            Ok(())
-        }
-        .await;
-
-        match result {
-            Ok(()) => return Ok(()),
-            Err(e) => match DELIVERY_RETRY_BACKOFF.get(attempt) {
-                Some(delay) => {
-                    tracing::warn!(
-                        holder_did,
-                        msg_id,
-                        attempt = attempt + 1,
-                        error = %e,
-                        "credential delivery send failed; retrying after backoff"
-                    );
-                    tokio::time::sleep(*delay).await;
-                    attempt += 1;
-                }
-                // Backoff schedule exhausted (all attempts used) — surface the
-                // last error for the caller's best-effort log.
-                None => return Err(e),
-            },
-        }
-    }
-}
-
-/// Resolve the holder's own DIDComm mediator from its DID document — the `did:`
-/// `uri` of its `DIDCommMessaging` service. Returns `None` when the holder
-/// advertises no mediator (so the caller routes through its own).
-async fn resolve_holder_mediator(state: &AppState, holder_did: &str) -> Option<String> {
-    let resolver = state.did_resolver.as_ref()?;
-    let resolved = resolver.resolve(holder_did).await.ok()?;
-    for svc in &resolved.doc.service {
-        if svc.type_.iter().any(|t| t == "DIDCommMessaging")
-            && let Some(mediator) = svc
-                .service_endpoint
-                .get_uris()
-                .into_iter()
-                .map(|u| u.trim_matches('"').to_string())
-                .find(|u| u.starts_with("did:"))
-        {
-            return Some(mediator);
-        }
-    }
-    None
+    state.send_to_member(holder_did, message).await
 }
 
 #[cfg(test)]

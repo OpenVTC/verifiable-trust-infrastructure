@@ -359,6 +359,7 @@ impl TestVtcBuilder {
             audit_writer,
             shutdown_tx: watch::channel(false).0,
             supervisor: self.supervisor,
+            didcomm: Arc::new(tokio::sync::OnceCell::new()),
         };
 
         let router = crate::routes::router().with_state(state.clone());

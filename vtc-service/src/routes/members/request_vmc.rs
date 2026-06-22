@@ -44,6 +44,7 @@ pub struct RequestVmcResponse {
 /// POST /members/{did}/request-vmc — dispatch a reciprocal-VMC request.
 #[utoipa::path(
     post, path = "/members/{did}/request-vmc", tag = "members",
+    security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Member DID")),
     request_body = RequestVmcBody,
     responses(

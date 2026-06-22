@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -170,6 +171,14 @@ pub struct AppState {
     /// `Some(Manual)` / `None` without racing other tests on the
     /// shared `std::env`.
     pub supervisor: Option<SupervisorKind>,
+    /// Shared handle to the running inbound DIDComm listener, published by
+    /// [`crate::messaging::run_didcomm_service`] once it starts. Every outbound
+    /// message to a member goes through this (see [`Self::send_to_member`]) so
+    /// it reuses the listener's single mediator websocket — the mediator permits
+    /// only one connection per DID, and opening a second made it terminate one
+    /// as `w.websocket.duplicate-channel`. Unset until the listener boots (and
+    /// when messaging is disabled), so sends are best-effort.
+    pub didcomm: Arc<tokio::sync::OnceCell<Arc<DIDCommService>>>,
 }
 
 impl AppState {
@@ -195,6 +204,36 @@ impl AppState {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 Some(n.saturating_sub(1))
             });
+    }
+
+    /// Send a proactive DIDComm message to a member/holder over the VTC's
+    /// **single inbound mediator connection** (the running listener). This is
+    /// the one channel any VTC component uses to initiate an interaction with a
+    /// member — credential delivery, the credential-exchange query, the
+    /// reciprocal-VMC request. It reuses the listener's websocket (the SDK packs
+    /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
+    /// reply path does), so outbound never opens a competing socket.
+    ///
+    /// `Err` when the listener isn't running/connected yet; callers treat
+    /// delivery as best-effort.
+    pub async fn send_to_member(
+        &self,
+        recipient_did: &str,
+        message: affinidi_messaging_didcomm::Message,
+    ) -> Result<(), AppError> {
+        let service = self.didcomm.get().ok_or_else(|| {
+            AppError::Internal("DIDComm listener not running — cannot send to member".into())
+        })?;
+        service
+            .send_message_with_retry(
+                crate::messaging::VTC_LISTENER_ID,
+                message,
+                recipient_did,
+                3,
+                std::time::Duration::from_secs(2),
+            )
+            .await
+            .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
     }
 }
 
@@ -541,6 +580,7 @@ pub async fn run(
         audit_writer,
         shutdown_tx: shutdown_tx.clone(),
         supervisor: detect_supervisor(),
+        didcomm: Arc::new(tokio::sync::OnceCell::new()),
     };
 
     // Heal missing AdminEntries: any DID with an Admin ACL grant +

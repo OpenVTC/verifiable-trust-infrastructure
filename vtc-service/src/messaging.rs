@@ -40,6 +40,11 @@ use crate::members::Disposition;
 use crate::server::AppState;
 use crate::trust_tasks::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
 
+/// Id of the VTC's single inbound DIDComm listener. Used both to register the
+/// listener and, via [`AppState::send_to_member`](crate::server::AppState::send_to_member),
+/// to send outbound over that same connection.
+pub const VTC_LISTENER_ID: &str = "vtc-main";
+
 /// Start the DIDComm service and block until shutdown.
 ///
 /// Uses `DIDCommService` for automatic mediator connection management,
@@ -56,6 +61,10 @@ pub async fn run_didcomm_service(
     state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
+    // The slot every outbound `AppState::send_to_member` reads — published
+    // below once the service starts, so all `AppState` clones share the one
+    // listener connection. Captured before `state` moves into the router.
+    let didcomm_slot = state.didcomm.clone();
     let mediator_did = match &config.messaging {
         Some(m) => &m.mediator_did,
         None => {
@@ -84,7 +93,7 @@ pub async fn run_didcomm_service(
 
     let service_config = DIDCommServiceConfig {
         listeners: vec![ListenerConfig {
-            id: "vtc-main".into(),
+            id: VTC_LISTENER_ID.into(),
             profile,
             restart_policy: RestartPolicy::Always {
                 backoff: RetryConfig {
@@ -174,7 +183,7 @@ pub async fn run_didcomm_service(
     let shutdown_token = CancellationToken::new();
     let service = match DIDCommService::start(service_config, router, shutdown_token.clone()).await
     {
-        Ok(s) => s,
+        Ok(s) => Arc::new(s),
         Err(e) => {
             warn!("failed to start DIDComm service: {e}");
             let _ = shutdown_rx.changed().await;
@@ -182,13 +191,20 @@ pub async fn run_didcomm_service(
         }
     };
 
+    // Publish the service so any VTC component can send to a member over this
+    // one connection (`AppState::send_to_member`) instead of opening its own
+    // websocket. Set-once; the service object persists across reconnects.
+    if didcomm_slot.set(service.clone()).is_err() {
+        warn!("DIDComm service handle was already published — outbound sends use the existing one");
+    }
+
     // Wait for the mediator connection
     match service
-        .wait_connected("vtc-main", Duration::from_secs(30))
+        .wait_connected(VTC_LISTENER_ID, Duration::from_secs(30))
         .await
     {
         Ok(()) => info!(
-            listener = "vtc-main",
+            listener = VTC_LISTENER_ID,
             "DIDComm listener connected to mediator — inbound messages will be processed"
         ),
         Err(e) => warn!(

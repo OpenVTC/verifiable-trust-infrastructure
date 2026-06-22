@@ -332,6 +332,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         audit_writer,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         supervisor: None,
+        didcomm: std::sync::Arc::new(tokio::sync::OnceCell::new()),
     };
 
     let router = routes::router().with_state(state);
