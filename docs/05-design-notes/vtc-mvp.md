@@ -985,12 +985,14 @@ See §6.4.
 struct AuditEnvelope {
     event_id: Uuid,
     event_version: u32,        // bumped on breaking shape change
-    schema_version: u32,
+    schema_version: u32,       // 2 = hash-chained (see below)
     timestamp: DateTime<Utc>,
     actor_did_hash:  [u8; 32], // HMAC-SHA256(audit_key, did_bytes)
     actor_did_plain: Option<String>,
     target_did_hash:  Option<[u8; 32]>,
     target_did_plain: Option<String>,
+    prev_hash:  [u8; 32],      // entry_hash of the previous envelope
+    entry_hash: [u8; 32],      // SHA-256 commitment to this envelope
     event: AuditEvent,         // tagged enum, see §11.4
 }
 ```
@@ -1000,10 +1002,26 @@ separately from the audit log (own keyspace, encrypted under the
 VTC seed), per-community. Plain SHA-256 over a DID is reversible by
 enumeration (DIDs are a small public space).
 
+**Tamper-evidence (hash chain).** Each envelope's `entry_hash` is a
+domain-tagged SHA-256 commitment over its *immutable* fields, and
+`prev_hash` points at the previous envelope's `entry_hash` — a
+per-row chain anchored at `GENESIS_HASH` (all zeros). Reordering,
+dropping, duplicating, or editing any envelope is detectable by
+`audit::verify_chain`, which walks the keyspace in `<timestamp>:
+<event_id>` order. Writes are serialised process-wide (the single
+`AuditWriter` holds the chain head under a lock; it recovers the head
+from storage on restart), so concurrent events can't fork the chain.
+The digest **excludes** `entry_hash` itself and the `*_plain` fields,
+so RTBF redaction (below) does not break the chain — the HMAC hashes
+it covers are immutable. Pre-v2 envelopes carry no chain fields
+(`serde` defaults them to `GENESIS_HASH`); `verify_chain` skips them
+and re-anchors at the first v2 entry.
+
 **RTBF.** Right-to-be-forgotten requests null the `*_plain` fields
 and **rotate the `audit_key`**. Pre-rotation hashes become opaque to
 anyone without the prior key; post-rotation events use the new key.
-Audit chain integrity preserved via the per-envelope `event_id`.
+Nulling `*_plain` leaves the hash chain intact (the digest excludes
+those fields).
 
 ### 11.2 Query
 

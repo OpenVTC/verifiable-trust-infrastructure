@@ -29,14 +29,16 @@ pub mod event;
 pub mod key_store;
 pub mod writer;
 
-pub use envelope::{AuditEnvelope, EVENT_VERSION, SCHEMA_VERSION};
+pub use envelope::{
+    AuditEnvelope, ChainBreak, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION, verify_chain,
+};
 pub use event::{
     AclChangeData, AclRevokedData, AdminInviteData, AdminPasskeyData, AdminPromotedData,
     AdminUiServedData, AuditEvent, AuditKeyRotatedData, BackupData, CommunityInstalledData,
     CommunityProfileUpdatedData, ConfigChange, ConfigChangedData, ConfigReloadedData, ConfigSource,
     CredentialIssuedData, CrossCommunitySessionMintedData, CustomEndorsementIssuedData,
     CustomEndorsementRevokedData, DidRotatedData, EmergencyBootstrapData,
-    EndorsementTypeDeletedData, EndorsementTypeRegisteredData, InvitationIssuedData,
+    EndorsementTypeDeletedData, EndorsementTypeRegisteredData, FieldChange, InvitationIssuedData,
     InvitationRevokedData, JoinRequestData, JoinRequestRejectedData, MemberAddedData,
     MemberRemovedData, MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData,
     PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData,

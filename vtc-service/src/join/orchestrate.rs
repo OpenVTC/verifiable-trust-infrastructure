@@ -405,6 +405,9 @@ pub async fn realize_join_verdict(
                 AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
                     request_id: request.id.to_string(),
                     reason: "policy denied".into(),
+                    // The serialized Deny verdict (with its `code`) the
+                    // policy returned, recorded above on the request.
+                    policy_decision: request.policy_decision.clone(),
                 }),
             )
             .await?;

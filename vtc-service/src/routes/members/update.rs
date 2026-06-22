@@ -17,7 +17,7 @@ use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use vti_common::audit::{AuditEvent, MemberUpdatedData, RoleChangedData};
+use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::AdminAuth;
@@ -86,21 +86,38 @@ pub async fn update_member(
     // Persisted *before* any role change so the Remint executor (which
     // re-reads the member to repoint its role VEC) sees them.
     let mut fields_changed: Vec<String> = Vec::new();
+    let mut changes: Vec<FieldChange> = Vec::new();
     if let Some(consent) = req.publish_consent
         && consent != member.publish_consent
     {
+        changes.push(FieldChange {
+            field: "publishConsent".into(),
+            old: Some(JsonValue::Bool(member.publish_consent)),
+            new: Some(JsonValue::Bool(consent)),
+        });
         member.publish_consent = consent;
         fields_changed.push("publishConsent".into());
     }
     if let Some(pref) = req.departure_preference
         && pref != member.departure_preference
     {
+        changes.push(FieldChange {
+            field: "departurePreference".into(),
+            old: serde_json::to_value(member.departure_preference).ok(),
+            new: serde_json::to_value(pref).ok(),
+            // (Disposition is Copy; values captured before the move below.)
+        });
         member.departure_preference = pref;
         fields_changed.push("departurePreference".into());
     }
     if let Some(extensions) = req.extensions
         && extensions != member.extensions
     {
+        changes.push(FieldChange {
+            field: "extensions".into(),
+            old: Some(member.extensions.clone()),
+            new: Some(extensions.clone()),
+        });
         member.extensions = extensions;
         fields_changed.push("extensions".into());
     }
@@ -144,6 +161,7 @@ pub async fn update_member(
                 Some(&did),
                 AuditEvent::MemberUpdated(MemberUpdatedData {
                     fields_changed: fields_changed.clone(),
+                    changes,
                 }),
             )
             .await?;

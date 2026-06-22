@@ -710,6 +710,7 @@ default publish_on_join := false
                 AuditEvent::MemberRemoved(MemberRemovedData {
                     disposition: "purge".into(),
                     reason: String::new(),
+                    prior_role: None,
                 }),
             )
             .await

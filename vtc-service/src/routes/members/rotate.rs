@@ -456,6 +456,7 @@ pub async fn rotate(
                 method: method.to_string(),
                 vmc_id,
                 role_vec_id: vec_id,
+                prior_role: Some(acl.role.to_string()),
             }),
         )
         .await?;

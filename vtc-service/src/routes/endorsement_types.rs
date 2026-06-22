@@ -226,6 +226,7 @@ pub async fn delete(
             None,
             AuditEvent::EndorsementTypeDeleted(EndorsementTypeDeletedData {
                 type_uri: type_uri.clone(),
+                live_endorsements_at_delete: in_use as u32,
             }),
         )
         .await?;

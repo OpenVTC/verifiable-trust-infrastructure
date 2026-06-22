@@ -581,13 +581,31 @@ pub struct RestartRequestedData {
     pub drain_timeout_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One field's before/after change, recorded on enrichable "Updated"
+/// audit events so the log can reconstruct *what* changed, not just
+/// which field. `old` / `new` are JSON values; either is omitted when
+/// the field was newly set or cleared.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FieldChange {
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CommunityProfileUpdatedData {
     /// Names of fields that changed (e.g. `name`, `description`,
-    /// `logo_url`, `extensions`). Values themselves stay out of the
-    /// audit log.
+    /// `logo_url`, `extensions`).
     pub fields_changed: Vec<String>,
+    /// Before/after values for each changed field. Additive over
+    /// `fields_changed` (kept for back-compat); empty on pre-enrichment
+    /// rows and emitters that don't diff.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FieldChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -602,12 +620,13 @@ pub struct AuditKeyRotatedData {
 #[serde(rename_all = "camelCase")]
 pub struct MemberUpdatedData {
     /// Names of the fields changed on this PATCH (e.g.
-    /// `["publishConsent", "departurePreference"]`). Field values
-    /// stay out of the audit log — operator-facing extensions data
-    /// can be arbitrarily large, and the metadata `publish_consent`
-    /// / `departure_preference` shifts are individually
-    /// non-sensitive.
+    /// `["publishConsent", "departurePreference"]`).
     pub fields_changed: Vec<String>,
+    /// Before/after values for each changed field, so the change is
+    /// reconstructable. Additive over `fields_changed`; empty on
+    /// pre-enrichment rows.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FieldChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -650,6 +669,11 @@ pub struct JoinRequestRejectedData {
     /// Operator-supplied reason, capped at 1024 chars at the
     /// route layer. May be empty.
     pub reason: String,
+    /// Structured policy verdict that drove an automatic rejection
+    /// (the serialized `Verdict::Deny`, incl. its `code`). `None` for
+    /// a manual admin reject, where `reason` is the operator's words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_decision: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -677,6 +701,12 @@ pub struct MemberRemovedData {
     /// for self-removal.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+    /// Role the member held immediately before removal (e.g.
+    /// `"admin"`, `"member"`). `None` when removing a tombstone that
+    /// no longer has an ACL row. The credential-revocation cascade is
+    /// audited separately via the paired `StatusListFlipped` event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_role: Option<String>,
 }
 
 /// Payload for [`AuditEvent::PolicyUploaded`].
@@ -966,6 +996,12 @@ pub struct EndorsementTypeRegisteredData {
 #[serde(rename_all = "camelCase")]
 pub struct EndorsementTypeDeletedData {
     pub type_uri: String,
+    /// Count of live endorsements of this type at deletion. Deletion
+    /// is refused while any exist, so this is `0` on success — recorded
+    /// so the audit trail documents that the no-orphans precondition
+    /// held. `default` keeps pre-enrichment rows parseable.
+    #[serde(default)]
+    pub live_endorsements_at_delete: u32,
 }
 
 /// Payload for [`AuditEvent::WebsiteFileWritten`]. Phase 5 M5.5.2.
@@ -1042,6 +1078,11 @@ pub struct AdminUiServedData {
     /// `"embedded"` or `"external"`. Embedded serves the baked
     /// SPA; external delegates to an operator-supplied origin.
     pub mode: String,
+    /// Daemon build version (`CARGO_PKG_VERSION`) that served this
+    /// SPA, so the running admin-UI build correlates with a specific
+    /// release. `None` on pre-enrichment rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon_version: Option<String>,
 }
 
 /// Payload for [`AuditEvent::RegistryStatusChanged`]. Phase 3
@@ -1079,6 +1120,11 @@ pub struct DidRotatedData {
     /// New role VEC id minted in the same transaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_vec_id: Option<String>,
+    /// Role the rotating member held before the rotation, carried
+    /// across unchanged. Lets a reviewer see the privilege level a
+    /// rotated key inherits. `None` on pre-enrichment rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prior_role: Option<String>,
 }
 
 /// Payload for [`AuditEvent::PolicyActivated`].
@@ -1222,10 +1268,17 @@ mod tests {
     fn community_profile_updated_round_trip() {
         let e = AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
             fields_changed: vec!["name".into(), "logo_url".into()],
+            changes: vec![FieldChange {
+                field: "name".into(),
+                old: Some(json!("Old Name")),
+                new: Some(json!("New Name")),
+            }],
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "CommunityProfileUpdated");
         assert_eq!(v["data"]["fieldsChanged"][0], "name");
+        assert_eq!(v["data"]["changes"][0]["field"], "name");
+        assert_eq!(v["data"]["changes"][0]["new"], "New Name");
         round_trip(&e);
     }
 
@@ -1426,6 +1479,7 @@ mod tests {
             method: "did:key".into(),
             vmc_id: Some("urn:uuid:vmc-2".into()),
             role_vec_id: Some("urn:uuid:vec-2".into()),
+            prior_role: Some("member".into()),
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "DidRotated");
@@ -1444,6 +1498,7 @@ mod tests {
             method: "did:key".into(),
             vmc_id: None,
             role_vec_id: None,
+            prior_role: None,
         });
         let v = wire_value(&e);
         assert!(v["data"].get("vmcId").is_none());
@@ -1712,6 +1767,7 @@ mod tests {
     fn endorsement_type_deleted_round_trip() {
         let e = AuditEvent::EndorsementTypeDeleted(EndorsementTypeDeletedData {
             type_uri: "https://example.com/v1/skills/rust".into(),
+            live_endorsements_at_delete: 0,
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "EndorsementTypeDeleted");
@@ -1773,6 +1829,7 @@ mod tests {
             (
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: vec![],
+                    changes: vec![],
                 }),
                 "CommunityProfileUpdated",
             ),
@@ -1845,6 +1902,7 @@ mod tests {
                     method: "did:key".into(),
                     vmc_id: None,
                     role_vec_id: None,
+                    prior_role: None,
                 }),
                 "DidRotated",
             ),
@@ -1947,6 +2005,7 @@ mod tests {
             (
                 AuditEvent::EndorsementTypeDeleted(EndorsementTypeDeletedData {
                     type_uri: "https://x/v1/t".into(),
+                    live_endorsements_at_delete: 0,
                 }),
                 "EndorsementTypeDeleted",
             ),
@@ -1986,6 +2045,7 @@ mod tests {
                     index_sha256: "deadbeef".into(),
                     file_count: 3,
                     mode: "embedded".into(),
+                    daemon_version: None,
                 }),
                 "AdminUiServed",
             ),

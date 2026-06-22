@@ -237,6 +237,9 @@ pub async fn reject(
             AuditEvent::JoinRequestRejected(JoinRequestRejectedData {
                 request_id: id.to_string(),
                 reason: reason.clone(),
+                // Manual admin reject — `reason` is the operator's words;
+                // there is no policy verdict to record.
+                policy_decision: None,
             }),
         )
         .await?;

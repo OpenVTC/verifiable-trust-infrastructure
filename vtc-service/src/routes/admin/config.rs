@@ -579,7 +579,9 @@ pub async fn import_config(
     let mut rejected: Vec<RejectedKey> = Vec::new();
 
     if let Some(incoming) = &req.community_profile {
-        for (key, old, new) in profile_field_pairs(current_profile.as_ref(), incoming) {
+        for (key, old, new) in
+            crate::community::profile::profile_field_pairs(current_profile.as_ref(), incoming)
+        {
             if old != new {
                 profile_diff.push(FieldDiff {
                     key: key.into(),
@@ -701,6 +703,16 @@ pub async fn import_config(
                 None,
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: community_profile_applied.clone(),
+                    // Reuse the diff already computed above for the
+                    // import preview — each FieldDiff is a before/after.
+                    changes: profile_diff
+                        .iter()
+                        .map(|d| vti_common::audit::FieldChange {
+                            field: d.key.clone(),
+                            old: d.old_value.clone(),
+                            new: d.new_value.clone(),
+                        })
+                        .collect(),
                 }),
             )
             .await?;
@@ -785,59 +797,6 @@ async fn apply_profile_import(
         store_profile(&state.community_ks, &updated).await?;
     }
     Ok(changed)
-}
-
-/// Iterate profile fields as `(key, old_value, new_value)` triples.
-/// Includes `community_did` so a mismatched-but-allowed (i.e.,
-/// fresh-install) import surfaces it in the diff for the operator's
-/// review.
-fn profile_field_pairs(
-    current: Option<&CommunityProfile>,
-    incoming: &CommunityProfile,
-) -> Vec<(&'static str, Option<Value>, Option<Value>)> {
-    let s = |v: &str| Value::String(v.to_string());
-    let opt_s = |v: &Option<String>| match v {
-        Some(s) => Value::String(s.clone()),
-        None => Value::Null,
-    };
-    vec![
-        (
-            "communityDid",
-            current.map(|p| s(&p.community_did)),
-            Some(s(&incoming.community_did)),
-        ),
-        ("name", current.map(|p| s(&p.name)), Some(s(&incoming.name))),
-        (
-            "description",
-            current.map(|p| s(&p.description)),
-            Some(s(&incoming.description)),
-        ),
-        (
-            "logoUrl",
-            current.map(|p| opt_s(&p.logo_url)),
-            Some(opt_s(&incoming.logo_url)),
-        ),
-        (
-            "publicUrl",
-            current.map(|p| opt_s(&p.public_url)),
-            Some(opt_s(&incoming.public_url)),
-        ),
-        (
-            "contactEmail",
-            current.map(|p| opt_s(&p.contact_email)),
-            Some(opt_s(&incoming.contact_email)),
-        ),
-        (
-            "language",
-            current.map(|p| s(&p.language)),
-            Some(s(&incoming.language)),
-        ),
-        (
-            "extensions",
-            current.map(|p| p.extensions.clone()),
-            Some(incoming.extensions.clone()),
-        ),
-    ]
 }
 
 // ---------------------------------------------------------------------------

@@ -189,6 +189,10 @@ pub async fn update_config(
                 None,
                 AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                     fields_changed: fields_changed.clone(),
+                    // Legacy PATCH applies fields individually (+ a
+                    // public_url overlay); before/after capture lives on
+                    // the canonical PUT /v1/community/profile path.
+                    changes: Vec::new(),
                 }),
             )
             .await?;

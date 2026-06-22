@@ -224,6 +224,79 @@ pub async fn store_profile(
     ks.insert(PROFILE_STORAGE_KEY.to_vec(), profile).await
 }
 
+/// Iterate profile fields as `(key, old_value, new_value)` triples
+/// (camelCase keys — wire-stable). Includes `community_did` so a
+/// mismatched-but-allowed (fresh-install) import surfaces it in the
+/// diff. The single source of truth for "which profile fields exist"
+/// — both the admin-config import preview and the audit before/after
+/// enrichment build on it.
+pub(crate) fn profile_field_pairs(
+    current: Option<&CommunityProfile>,
+    incoming: &CommunityProfile,
+) -> Vec<(&'static str, Option<Value>, Option<Value>)> {
+    let s = |v: &str| Value::String(v.to_string());
+    let opt_s = |v: &Option<String>| match v {
+        Some(s) => Value::String(s.clone()),
+        None => Value::Null,
+    };
+    vec![
+        (
+            "communityDid",
+            current.map(|p| s(&p.community_did)),
+            Some(s(&incoming.community_did)),
+        ),
+        ("name", current.map(|p| s(&p.name)), Some(s(&incoming.name))),
+        (
+            "description",
+            current.map(|p| s(&p.description)),
+            Some(s(&incoming.description)),
+        ),
+        (
+            "logoUrl",
+            current.map(|p| opt_s(&p.logo_url)),
+            Some(opt_s(&incoming.logo_url)),
+        ),
+        (
+            "publicUrl",
+            current.map(|p| opt_s(&p.public_url)),
+            Some(opt_s(&incoming.public_url)),
+        ),
+        (
+            "contactEmail",
+            current.map(|p| opt_s(&p.contact_email)),
+            Some(opt_s(&incoming.contact_email)),
+        ),
+        (
+            "language",
+            current.map(|p| s(&p.language)),
+            Some(s(&incoming.language)),
+        ),
+        (
+            "extensions",
+            current.map(|p| p.extensions.clone()),
+            Some(incoming.extensions.clone()),
+        ),
+    ]
+}
+
+/// Before/after [`FieldChange`]s for the fields that actually changed
+/// between `prior` and `incoming`. Powers the `changes` enrichment on
+/// the `CommunityProfileUpdated` audit event.
+pub(crate) fn profile_changes(
+    prior: Option<&CommunityProfile>,
+    incoming: &CommunityProfile,
+) -> Vec<vti_common::audit::FieldChange> {
+    profile_field_pairs(prior, incoming)
+        .into_iter()
+        .filter(|(_, old, new)| old != new)
+        .map(|(field, old, new)| vti_common::audit::FieldChange {
+            field: field.to_string(),
+            old,
+            new,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

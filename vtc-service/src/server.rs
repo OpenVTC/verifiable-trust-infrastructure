@@ -855,6 +855,7 @@ pub async fn run(
                         index_sha256: (*info.index_sha256).clone(),
                         file_count: info.file_count,
                         mode: (*info.mode).clone(),
+                        daemon_version: Some(env!("CARGO_PKG_VERSION").to_string()),
                     },
                 ),
             )

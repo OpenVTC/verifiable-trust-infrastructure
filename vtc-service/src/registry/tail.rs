@@ -369,6 +369,7 @@ mod tests {
                 AuditEvent::MemberRemoved(MemberRemovedData {
                     disposition: disposition.into(),
                     reason: String::new(),
+                    prior_role: None,
                 }),
             )
             .await
@@ -397,6 +398,7 @@ mod tests {
                 AuditEvent::MemberRemoved(MemberRemovedData {
                     disposition: disposition.into(),
                     reason: String::new(),
+                    prior_role: None,
                 }),
             )
             .await

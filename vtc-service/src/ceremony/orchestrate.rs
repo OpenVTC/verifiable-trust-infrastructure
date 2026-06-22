@@ -197,7 +197,8 @@ pub async fn purge_member(
 
     // Must have *something* to purge — a Member row and/or an ACL entry.
     let has_member = get_member(&state.members_ks, target_did).await?.is_some();
-    let has_acl = get_acl_entry(&state.acl_ks, target_did).await?.is_some();
+    let prior_acl = get_acl_entry(&state.acl_ks, target_did).await?;
+    let has_acl = prior_acl.is_some();
     if !has_member && !has_acl {
         return Err(AppError::NotFound(format!(
             "no member or tombstone to purge: {target_did}"
@@ -227,6 +228,7 @@ pub async fn purge_member(
             AuditEvent::MemberRemoved(MemberRemovedData {
                 disposition: "purge".into(),
                 reason: "operator purge".into(),
+                prior_role: prior_acl.as_ref().map(|a| a.role.to_string()),
             }),
         )
         .await?;
@@ -351,6 +353,7 @@ pub async fn remove_inner(
             AuditEvent::MemberRemoved(MemberRemovedData {
                 disposition: disposition_str.into(),
                 reason: reason.clone(),
+                prior_role: Some(target_acl.role.to_string()),
             }),
         )
         .await?;

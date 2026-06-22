@@ -179,6 +179,7 @@ pub async fn put_profile(
         AppError::NotFound("community profile not initialised — cannot PUT before bootstrap".into())
     })?;
 
+    let prior = profile.clone();
     let fields_changed = update.apply(&mut profile)?;
 
     if fields_changed.is_empty() {
@@ -215,6 +216,7 @@ pub async fn put_profile(
             None,
             AuditEvent::CommunityProfileUpdated(CommunityProfileUpdatedData {
                 fields_changed: fields_changed.clone(),
+                changes: crate::community::profile::profile_changes(Some(&prior), &profile),
             }),
         )
         .await?;
