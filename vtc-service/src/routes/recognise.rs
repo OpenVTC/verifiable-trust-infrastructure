@@ -69,6 +69,7 @@ use crate::recognition::{
 };
 use crate::server::AppState;
 use affinidi_vc::VerifiableCredential;
+use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
 
 /// Request body for `POST /v1/auth/recognise`. The caller supplies a
 /// holder-signed W3C Verifiable Presentation that embeds the foreign VEC and
@@ -310,9 +311,9 @@ fn extract_vec_vmc(
         } else if cred
             .types
             .iter()
-            .any(|t| t == "VerifiableMembershipCredential")
+            .any(|t| t == VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
         {
-            (&mut vmc_cred, "VerifiableMembershipCredential")
+            (&mut vmc_cred, VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE)
         } else {
             continue;
         };
@@ -327,7 +328,9 @@ fn extract_vec_vmc(
         AppError::Validation("presentation has no VerifiableEndorsementCredential".into())
     })?;
     let vmc = vmc_cred.ok_or_else(|| {
-        AppError::Validation("presentation has no VerifiableMembershipCredential".into())
+        AppError::Validation(format!(
+            "presentation has no {VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE}"
+        ))
     })?;
     Ok((vec, vmc))
 }

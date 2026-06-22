@@ -4,7 +4,7 @@
 //! members to the trust registry; this module is the **inverse**
 //! path — taking a foreign community's
 //! `VerifiableEndorsementCredential` +
-//! `VerifiableMembershipCredential` and deciding whether the
+//! `MembershipCredential` and deciding whether the
 //! local VTC should mint a session for the bearer.
 //!
 //! ## Session-mint hardening (fail-closed)

@@ -119,7 +119,7 @@ pub struct Member {
     #[serde(default)]
     pub joined_via_invitation: bool,
     /// The member → community half of the membership VMC pair: the
-    /// member-issued `VerifiableMembershipCredential` (a Data-Integrity VC
+    /// member-issued `MembershipCredential` (a Data-Integrity VC
     /// whose `issuer` is this member and `credentialSubject.id` is the
     /// community DID), received over the `members/vmc/1.0` exchange and
     /// verified before storage. `None` until the member sends one. Distinct

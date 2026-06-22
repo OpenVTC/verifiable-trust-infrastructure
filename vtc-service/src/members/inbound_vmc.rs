@@ -1,7 +1,7 @@
 //! Receive + verify a member-issued **VMC** (member → community half of the
 //! membership pair) and record it on the member's row.
 //!
-//! The VTC issues a `VerifiableMembershipCredential` to each member at
+//! The VTC issues a `MembershipCredential` to each member at
 //! admission; this is the reciprocal the member issues back, naming the
 //! community as its `credentialSubject`. The `eddsa-jcs-2022` issuer proof (key
 //! under the member's DID, resolved via [`DidVmResolver`] so `did:webvh`

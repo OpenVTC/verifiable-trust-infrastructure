@@ -1,7 +1,7 @@
 //! Member-side membership-credential exchange (`members/*`).
 //!
 //! Membership between a persona DID and a VTC is a **pair of VMCs**: the VTC
-//! issues a `VerifiableMembershipCredential` to the member at admission
+//! issues a `MembershipCredential` to the member at admission
 //! (community → member), and the member issues one back to the VTC
 //! (member → community), so each side holds a credential asserting the other's
 //! membership edge. The join-ceremony `accept` step records a member-issued
@@ -23,7 +23,14 @@ use serde_json::Value;
 /// (alongside `VerifiableCredential`). Same credential type the VTC issues for
 /// its half of the pair — the direction is given by `issuer` /
 /// `credentialSubject.id`, not the type.
-pub const VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE: &str = "VerifiableMembershipCredential";
+///
+/// The value is the canonical DTG / W3C tag `MembershipCredential` — exactly
+/// what `dtg-credentials` emits (`DTGCredentialType::Membership`) and what the
+/// VTC's own issuance stamps. The `VERIFIABLE_` prefix in the *name* is
+/// historical; the *tag* is `MembershipCredential`, not
+/// `VerifiableMembershipCredential`, so a credential built with the typed
+/// `dtg-credentials` API verifies without hand-rolling the VC JSON.
+pub const VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE: &str = "MembershipCredential";
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
 pub const MEMBER_REQUEST_VMC_TYPE: &str =

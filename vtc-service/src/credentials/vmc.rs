@@ -9,7 +9,7 @@
 //!     "https://www.w3.org/ns/credentials/v2",
 //!     "https://openvtc.org/contexts/dtg-membership-v1.jsonld"
 //!   ],
-//!   "type": ["VerifiableCredential", "VerifiableMembershipCredential"],
+//!   "type": ["VerifiableCredential", "MembershipCredential"],
 //!   "issuer": "did:webvh:vtc.example.com:abc",
 //!   "validFrom": "2026-05-12T00:00:00Z",
 //!   "validUntil": "2026-06-11T00:00:00Z",
@@ -189,7 +189,7 @@ mod tests {
             .expect("build VMC");
 
         // Type array contains both `VerifiableCredential` (the
-        // builder adds it implicitly) and `VerifiableMembershipCredential`.
+        // builder adds it implicitly) and `MembershipCredential`.
         assert!(vc.types.iter().any(|t| t == "VerifiableCredential"));
         assert!(vc.types.iter().any(|t| t == VMC_TYPE));
 
