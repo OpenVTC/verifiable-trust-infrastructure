@@ -98,7 +98,19 @@ jobs:
             fi
 
             echo "→ publishing ${crate} ${version}"
+
+            # vtc-service's build.rs runs `npm install` + `npm run build` for
+            # the bundled admin-ui, which writes admin-ui/node_modules into the
+            # source tree. cargo's publish verification build rejects that
+            # ("source directory was modified by build.rs"). The Node build is
+            # irrelevant to packaging the crate, so skip verification for it.
+            # All other crates verify normally.
+            extra=""
+            if [ "$crate" = "vtc-service" ]; then
+              extra="--no-verify"
+            fi
+
             # cargo publish blocks until the new version is queryable in the
             # index, so the next (dependent) crate sees it.
-            cargo publish -p "$crate" --locked
+            cargo publish -p "$crate" --locked $extra
           done
