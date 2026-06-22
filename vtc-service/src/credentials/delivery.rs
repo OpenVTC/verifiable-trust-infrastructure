@@ -166,16 +166,23 @@ const DELIVERY_RETRY_BACKOFF: [Duration; 3] = [
     Duration::from_secs(2),
 ];
 
-/// Enable the websocket, pack the message authcrypt to the holder, and forward
-/// it through the VTC's mediator — retrying the whole send on failure with the
+/// Pack the message authcrypt to the holder and forward it through the VTC's
+/// mediator over **HTTP**, retrying the whole send on failure with the
 /// [`DELIVERY_RETRY_BACKOFF`] schedule.
 ///
-/// Mediator delivery over a websocket is exactly where a transient reset
-/// (`ConnectionReset` / a dropped/`Disconnected` socket) shows up, and any of the
-/// three steps can surface it, so each attempt re-runs all three: re-enabling the
-/// websocket reconnects a socket the previous attempt may have lost, and the pack
-/// is cheap to redo. On success it returns immediately; once the attempts are
-/// exhausted it returns the last error (the caller logs it best-effort).
+/// We deliberately do **not** enable a websocket here. The VTC's `state.atm`
+/// shares the VTC DID with the inbound `DIDCommService` listener, which already
+/// holds the one websocket the mediator permits per DID; enabling a second one
+/// on this ATM made the mediator terminate a connection as a
+/// `w.websocket.duplicate-channel`, and because the SDK socket auto-reconnects,
+/// the two then duelled indefinitely. `forward_and_send_message` →
+/// `send_message` falls back to the mediator's REST endpoint when no websocket
+/// is enabled (and we pass `wait_for_response = false`, a one-shot POST), so the
+/// forward is delivered over HTTP without ever opening a competing socket.
+///
+/// Retried because an HTTP forward can still hit a transient mediator blip; the
+/// pack is cheap to redo. On success it returns immediately; once the attempts
+/// are exhausted it returns the last error (the caller logs it best-effort).
 async fn send_with_retry(
     atm: &affinidi_tdk::messaging::ATM,
     profile: &Arc<ATMProfile>,
@@ -188,10 +195,6 @@ async fn send_with_retry(
     let mut attempt = 0usize;
     loop {
         let result: Result<(), AppError> = async {
-            atm.profile_enable_websocket(profile)
-                .await
-                .map_err(|e| AppError::Internal(format!("mediator websocket failed: {e}")))?;
-
             let (jwe, _meta) = atm
                 .pack_encrypted(msg, holder_did, Some(vtc_did), None)
                 .await
