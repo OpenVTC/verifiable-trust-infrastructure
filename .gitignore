@@ -23,3 +23,7 @@ Thumbs.db
 # scheduled-task lockfile, settings.local.json, ephemeral worktree
 # dirs. All operator-local, never checked in.
 .claude/
+
+# Secrets and credentials
+.env
+.env.*
