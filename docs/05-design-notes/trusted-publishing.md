@@ -2,13 +2,13 @@
 
 The workspace publishes its crates to crates.io using **Trusted Publishing**
 — crates.io accepts the GitHub Actions OIDC identity of the
-`.github/workflows/release.yml` workflow instead of a stored API token.
+`.github/workflows/publish.yml` workflow instead of a stored API token.
 There is no `CARGO_REGISTRY_TOKEN` secret in the repo; each run mints a
 short-lived token via the OIDC exchange.
 
 ## What auto-publishes
 
-`release.yml` runs on every push to `main` (and on manual dispatch). It
+`publish.yml` runs on every push to `main` (and on manual dispatch). It
 walks the publishable crates in dependency order and publishes **only the
 versions not already on crates.io**, so the flow is idempotent:
 
@@ -38,7 +38,7 @@ owner. Do this once for each of the nine crates above:
 3. Fill in:
    - **Repository owner**: `OpenVTC`
    - **Repository name**: `verifiable-trust-infrastructure`
-   - **Workflow filename**: `release.yml`
+   - **Workflow filename**: `publish.yml`
    - **Environment name**: *(leave blank)* — the workflow does not use a
      GitHub Environment. If you later add one for protection rules
      (see below), set it here too; the two must match.
@@ -52,7 +52,7 @@ others still publish.
 
 ## How the workflow authenticates
 
-`release.yml` grants `id-token: write`, then `rust-lang/crates-io-auth-action`
+`publish.yml` grants `id-token: write`, then `rust-lang/crates-io-auth-action`
 exchanges the OIDC token for a short-lived crates.io token exported as
 `CARGO_REGISTRY_TOKEN`. The token is valid only for the crates whose
 Trusted Publisher config matches this repo + workflow, and it expires
