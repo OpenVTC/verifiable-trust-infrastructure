@@ -1,5 +1,8 @@
 use axum::Json;
+use axum::body::Body;
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::Response;
 
 use crate::auth::SuperAdminAuth;
 use crate::error::{AppError, tee_attestation_error};
@@ -81,11 +84,11 @@ pub async fn cached_report(
 #[utoipa::path(
     get, path = "/attestation/did-log", tag = "attestation",
     responses(
-        (status = 200, description = "Auto-generated did.jsonl", content_type = "application/jsonl"),
+        (status = 200, description = "Auto-generated did.jsonl", content_type = "text/jsonl"),
         (status = 404, description = "No auto-generated DID log"),
     ),
 )]
-pub async fn did_log(State(state): State<AppState>) -> Result<String, AppError> {
+pub async fn did_log(State(state): State<AppState>) -> Result<Response, AppError> {
     let log_bytes = state.keys_ks.get_raw("tee:did_log").await?.ok_or_else(|| {
         AppError::NotFound(
             "no auto-generated DID log found — the VTA may not have \
@@ -94,8 +97,19 @@ pub async fn did_log(State(state): State<AppState>) -> Result<String, AppError> 
         )
     })?;
 
-    String::from_utf8(log_bytes)
-        .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))
+    let log = String::from_utf8(log_bytes)
+        .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))?;
+
+    // did:webvh v1.0 SHOULDs text/jsonl for the log file (DID-to-HTTPS
+    // Transformation §6); previously this returned a bare String, which axum
+    // served as text/plain, contradicting the OpenAPI annotation. nosniff
+    // matches the other did.jsonl-serving routes (see routes::self_hosted_did).
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/jsonl")
+        .header("x-content-type-options", "nosniff")
+        .body(Body::from(log))
+        .expect("static headers + owned body always build a valid response"))
 }
 
 /// GET /attestation/mnemonic — Check mnemonic export window status (super admin only).
