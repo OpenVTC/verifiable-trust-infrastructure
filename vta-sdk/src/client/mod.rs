@@ -342,6 +342,37 @@ impl VtaClient {
         }
     }
 
+    /// Authenticate a `did:key` over plain REST (the canonical DI-signed
+    /// `eddsa-jcs-2022` path) and return a ready, token-bearing REST client.
+    ///
+    /// No DIDComm / mediator is required — this is the single call an external
+    /// consumer needs to go from a `did:key` + its private key to an
+    /// authenticated [`VtaClient`]. `client_did` must be a `did:key` whose seed
+    /// is `private_key_multibase`; `vta_did` is the VTA the request is addressed
+    /// to. Access is scoped by the DID's ACL entry on the VTA.
+    ///
+    /// For just the bearer token (e.g. to hand to another process such as
+    /// `vta-mcp` in token mode), use
+    /// [`crate::provision_client::authenticate_did_key_rest`].
+    #[cfg(feature = "provision-client")]
+    pub async fn connect_with_did_key(
+        base_url: &str,
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+    ) -> Result<Self, VtaError> {
+        let tokens = crate::provision_client::authenticate_did_key_rest(
+            base_url,
+            client_did,
+            private_key_multibase,
+            vta_did,
+        )
+        .await?;
+        let client = Self::new(base_url);
+        client.set_token_async(tokens.access_token).await;
+        Ok(client)
+    }
+
     /// Returns the base URL (REST) or VTA DID (DIDComm).
     pub fn base_url(&self) -> &str {
         match &self.transport {

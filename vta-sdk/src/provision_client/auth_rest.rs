@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use trust_tasks_rs::{Proof, TrustTask};
 
 use crate::did_key::decode_private_key_multibase;
+use crate::error::VtaError;
 use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
 use crate::session::TokenResult;
 use crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
@@ -34,6 +35,30 @@ use crate::trust_tasks::TASK_AUTH_AUTHENTICATE_0_1;
 fn did_key_to_vm(did: &str) -> Option<String> {
     let mb = did.strip_prefix("did:key:")?;
     Some(format!("{did}#{mb}"))
+}
+
+/// Authenticate a `did:key` over plain REST using the canonical DI-signed
+/// (`eddsa-jcs-2022`) `auth/authenticate/0.1` Trust Task, returning the access
+/// token + its expiry.
+///
+/// No DIDComm / mediator is required — this works against *any* VTA (REST-only
+/// or DIDComm-enabled), because the server attempts the DI path before the
+/// DIDComm-envelope path. This is the building block any external VTA consumer
+/// needs to go from a `did:key` + its private key to a bearer token; see also
+/// [`crate::client::VtaClient::connect_with_did_key`] for a ready client.
+///
+/// `client_did` must be a `did:key` whose private seed is
+/// `private_key_multibase`; `vta_did` is the VTA the document is addressed to.
+/// Access is scoped by the DID's ACL entry on the VTA.
+pub async fn authenticate_did_key_rest(
+    base_url: &str,
+    client_did: &str,
+    private_key_multibase: &str,
+    vta_did: &str,
+) -> Result<TokenResult, VtaError> {
+    challenge_response_di(base_url, client_did, private_key_multibase, vta_did)
+        .await
+        .map_err(|e| VtaError::Auth(e.to_string()))
 }
 
 /// Authenticate over plain REST using a DI-signed `auth/authenticate/0.1`
@@ -164,4 +189,39 @@ pub(crate) async fn challenge_response_di(
         access_token: auth_data.tokens.access_token,
         access_expires_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn did_key_to_vm_builds_self_referential_fragment() {
+        let did = "did:key:z6MkExample";
+        assert_eq!(
+            did_key_to_vm(did).as_deref(),
+            Some("did:key:z6MkExample#z6MkExample")
+        );
+        // Non-did:key holders are rejected by the DI path.
+        assert!(did_key_to_vm("did:web:example.com").is_none());
+    }
+
+    /// Live end-to-end check of [`authenticate_did_key_rest`] against a running
+    /// VTA. Ignored by default (needs a live VTA); set the four env vars and run:
+    /// `cargo test -p vta-sdk --features provision-client -- --ignored authenticate_did_key_rest_live`
+    #[tokio::test]
+    #[ignore = "requires a live VTA; set VTA_SDK_TEST_{URL,DID,KEY,VTA_DID}"]
+    async fn authenticate_did_key_rest_live() {
+        let url = std::env::var("VTA_SDK_TEST_URL").expect("VTA_SDK_TEST_URL");
+        let did = std::env::var("VTA_SDK_TEST_DID").expect("VTA_SDK_TEST_DID");
+        let key = std::env::var("VTA_SDK_TEST_KEY").expect("VTA_SDK_TEST_KEY");
+        let vta_did = std::env::var("VTA_SDK_TEST_VTA_DID").expect("VTA_SDK_TEST_VTA_DID");
+        let tokens = authenticate_did_key_rest(&url, &did, &key, &vta_did)
+            .await
+            .expect("authentication should succeed against the live VTA");
+        assert!(
+            !tokens.access_token.is_empty(),
+            "expected a non-empty access token"
+        );
+    }
 }

@@ -44,6 +44,7 @@
 
 pub mod ask;
 pub(crate) mod auth_rest;
+pub use auth_rest::authenticate_did_key_rest;
 pub mod diagnostics;
 pub mod driver;
 pub mod error;
