@@ -147,9 +147,22 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("vta-mcp connected to VTA; serving MCP over stdio");
 
-    let service = VtaMcp::new(Arc::new(agent), holder).serve(stdio()).await?;
-    service.waiting().await?;
-    Ok(())
+    // Keep a handle so the client's DIDComm session can be closed cleanly once
+    // serving ends — however it ends. A DIDComm `VtaClient` owns a live,
+    // auto-reconnecting mediator socket that `Drop` can't close; leaking it
+    // trips a debug-assert and duels the mediator on reconnect. We run serve +
+    // wait, then `shutdown()` unconditionally (idempotent, a no-op for
+    // REST/token clients) *before* propagating any error — a bare `?` on
+    // `waiting()` would skip the cleanup on the common EOF/disconnect path.
+    let agent = Arc::new(agent);
+    let served = async {
+        let service = VtaMcp::new(agent.clone(), holder).serve(stdio()).await?;
+        service.waiting().await?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    agent.shutdown().await;
+    served
 }
 
 /// Resolve the four did:key DIDComm-mode params. Returns `Some(..)` when all
