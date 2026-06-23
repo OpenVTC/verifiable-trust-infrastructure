@@ -44,7 +44,7 @@ use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
 use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
-use crate::keys::seed_store::PlaintextSeedStore;
+use crate::keys::seed_store::{SeedStore, create_seed_store};
 use crate::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
 use crate::messaging::handshake::AlwaysOkProver;
 use crate::messaging::registry::MediatorListenerRegistry;
@@ -84,7 +84,7 @@ struct OfflineDeps {
     drains_ks: KeyspaceHandle,
     snapshot_ks: KeyspaceHandle,
     service_state_ks: KeyspaceHandle,
-    seed_store: PlaintextSeedStore,
+    seed_store: Box<dyn SeedStore>,
     did_resolver: DIDCacheClient,
     didcomm_bridge: Arc<DIDCommBridge>,
     telemetry: SharedTelemetrySink,
@@ -114,7 +114,7 @@ impl OfflineDeps {
             snapshot_ks: &self.snapshot_ks,
             service_state_ks: &self.service_state_ks,
             drains_ks: &self.drains_ks,
-            seed_store: &self.seed_store,
+            seed_store: &*self.seed_store,
             did_resolver: &self.did_resolver,
             didcomm_bridge: &self.didcomm_bridge,
             telemetry: &self.telemetry,
@@ -168,7 +168,15 @@ async fn build_offline_deps(
     config.services.didcomm =
         crate::operations::protocol::runtime_state::is_didcomm_enabled(&service_state_ks).await?;
 
-    let seed_store = PlaintextSeedStore::new(&data_dir);
+    // Build the seed store from the configured `[secrets]` backend
+    // (keyring / AWS / GCP / Vault / plaintext / …) exactly as the
+    // daemon and every other offline command (`keys`, `contexts`,
+    // `create-did-key`, `webvh`) do. WebVH-mutating service ops
+    // (enable/disable/update DIDComm) re-sign the DID log and need
+    // the master seed; hardcoding `PlaintextSeedStore(data_dir)`
+    // meant any non-plaintext backend failed with
+    // "no seed found in external store" (#564).
+    let seed_store = create_seed_store(&config)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge = Arc::new(DIDCommBridge::placeholder());
     let telemetry: SharedTelemetrySink = Arc::new(RingBufferTelemetry::new());
