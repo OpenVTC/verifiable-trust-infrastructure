@@ -26,6 +26,7 @@ use vti_common::acl::{Capability, role_has_capability};
 use vti_common::vault::{LifecycleError, VaultStatus};
 
 use crate::auth::AuthClaims;
+use crate::error::AppError;
 use crate::server::AppState;
 use crate::vault::model::{CredentialPurpose, CredentialStatus};
 use crate::vault::query::{CredentialDescriptor, CredentialQuery, search};
@@ -69,6 +70,13 @@ struct ReceiveBody {
     /// fresh `urn:uuid`.
     #[serde(default)]
     id: Option<String>,
+    /// Optional custody context override — which context owns the credential
+    /// (and whose `ContextPolicy` governs its disclosure). Must be a context the
+    /// caller can access. When omitted, the credential auto-binds to the caller's
+    /// context iff they have exactly one; a super-admin / multi-context caller
+    /// stores it unscoped.
+    #[serde(default)]
+    context_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -116,6 +124,13 @@ pub(super) async fn handle_receive(
 
     let id = resolve_storage_id(req.id, &req.credential);
 
+    // Resolve the custody context (which context owns the credential, governing
+    // its disclosure via ContextPolicy).
+    let custody_context = match resolve_custody_context(auth, req.context_id) {
+        Ok(c) => c,
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+
     // Resolve the issuer's signing key from the credential's DID (did:key
     // locally, did:webvh / did:web via the cache) — the data plane verifies the
     // proof against it.
@@ -141,7 +156,7 @@ pub(super) async fn handle_receive(
         }
     };
 
-    let stored = match receive::receive_di_vc(
+    let mut stored = match receive::receive_di_vc(
         &state.vault_ks,
         &id,
         &body,
@@ -154,6 +169,15 @@ pub(super) async fn handle_receive(
         Ok(s) => s,
         Err(e) => return app_error_to_reject(&doc, e),
     };
+
+    // Persist the custody binding (receive_di_vc stores it unscoped). Only an
+    // extra write when a context was resolved.
+    if custody_context.is_some() {
+        stored.context_id = custody_context;
+        if let Err(e) = storage::put(&state.vault_ks, &stored).await {
+            return app_error_to_reject(&doc, e);
+        }
+    }
 
     success_response(
         &doc,
@@ -197,6 +221,29 @@ fn resolve_storage_id(explicit: Option<String>, credential: &Value) -> String {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| format!("urn:uuid:{}", Uuid::new_v4()))
+}
+
+/// Resolve the custody context for a received credential — "auto with optional
+/// override": an explicit `override_ctx` must be a context the caller can
+/// access; otherwise auto-bind to the caller's context iff they have exactly one
+/// (a super-admin / multi-context caller stores the credential unscoped). Kept
+/// pure so the policy is unit-testable without an `AppState`.
+fn resolve_custody_context(
+    auth: &AuthClaims,
+    override_ctx: Option<String>,
+) -> Result<Option<String>, AppError> {
+    match override_ctx {
+        Some(ctx) => {
+            if !auth.has_context_access(&ctx) {
+                return Err(AppError::Forbidden(format!(
+                    "caller cannot receive a credential into context {ctx}"
+                )));
+            }
+            Ok(Some(ctx))
+        }
+        None if auth.allowed_contexts.len() == 1 => Ok(Some(auth.allowed_contexts[0].clone())),
+        None => Ok(None),
+    }
 }
 
 /// Handler for `spec/vault/credentials/get/0.1`.
@@ -476,6 +523,47 @@ mod tests {
             generated.starts_with("urn:uuid:"),
             "fallback id is a urn:uuid: {generated}"
         );
+    }
+
+    fn auth_scoped(ctxs: &[&str]) -> AuthClaims {
+        AuthClaims {
+            role: crate::acl::Role::Admin,
+            allowed_contexts: ctxs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn custody_auto_binds_to_callers_single_context() {
+        let r = resolve_custody_context(&auth_scoped(&["acme"]), None).unwrap();
+        assert_eq!(r.as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn custody_unscoped_for_super_admin_and_multi_context() {
+        // Super-admin (empty contexts) → unscoped.
+        assert_eq!(
+            resolve_custody_context(&auth_scoped(&[]), None).unwrap(),
+            None
+        );
+        // Multiple contexts, no override → unscoped (ambiguous which owns it).
+        assert_eq!(
+            resolve_custody_context(&auth_scoped(&["a", "b"]), None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn custody_override_must_be_accessible() {
+        // Accessible override wins over the auto default.
+        let ok = resolve_custody_context(&auth_scoped(&["acme"]), Some("acme".into())).unwrap();
+        assert_eq!(ok.as_deref(), Some("acme"));
+        // A super-admin may target any context.
+        let sa = resolve_custody_context(&auth_scoped(&[]), Some("acme".into())).unwrap();
+        assert_eq!(sa.as_deref(), Some("acme"));
+        // An override outside the caller's scope is refused.
+        let err = resolve_custody_context(&auth_scoped(&["acme"]), Some("other".into()));
+        assert!(matches!(err, Err(AppError::Forbidden(_))), "{err:?}");
     }
 
     #[test]
