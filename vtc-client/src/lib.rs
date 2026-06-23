@@ -88,6 +88,44 @@ struct Page<T> {
     next_cursor: Option<String>,
 }
 
+/// A join request in the admin work queue (subset of the VTC's `JoinRequest`).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestSummary {
+    /// The request id (used to approve / reject).
+    pub id: String,
+    /// The DID applying to join (for a fleet, the VTA being enrolled).
+    pub applicant_did: String,
+    /// Wire status: `"pending"`, `"approved"`, `"rejected"`, `"withdrawn"`.
+    pub status: String,
+    pub submitted_at: DateTime<Utc>,
+}
+
+/// Outcome of approving or rejecting a join request.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DecideResult {
+    pub request_id: String,
+    pub status: String,
+    /// The issued membership credential (VMC) — present on approve.
+    #[serde(default)]
+    pub vmc: Option<serde_json::Value>,
+    /// The issued role credential (VEC) — present on approve when a role applies.
+    #[serde(default)]
+    pub role_vec: Option<serde_json::Value>,
+}
+
+/// Outcome of removing a member (offboarding). The VTC flips the member's
+/// status-list revocation bit as part of removal.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveResult {
+    pub did: String,
+    /// Wire disposition: `"tombstone"`, `"purge"`, `"historical"`.
+    pub disposition: String,
+    pub removed: bool,
+}
+
 /// A client bound to one VTC's API base, holding a bearer token once
 /// authenticated.
 #[derive(Debug, Clone)]
@@ -184,6 +222,99 @@ impl VtcClient {
         }
         Ok(out)
     }
+
+    /// List join requests (the admin work queue), optionally filtered by
+    /// `status` (e.g. `"pending"`). Requires an admin token. For a fleet, these
+    /// are VTAs awaiting enrollment.
+    pub async fn list_join_requests(
+        &self,
+        status: Option<&str>,
+    ) -> Result<Vec<JoinRequestSummary>, VtcError> {
+        let token = self.token()?;
+        let mut out: Vec<JoinRequestSummary> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = Vec::new();
+            if let Some(status) = status {
+                params.push(("status", status));
+            }
+            if let Some(cursor) = &cursor {
+                params.push(("cursor", cursor.as_str()));
+            }
+            let url = reqwest::Url::parse_with_params(
+                &format!("{}/join-requests", self.base_url),
+                &params,
+            )
+            .map_err(|e| VtcError::Url(e.to_string()))?;
+
+            let resp = self.http.get(url).bearer_auth(token).send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(VtcError::Http { status, body });
+            }
+            let page: Page<JoinRequestSummary> = resp.json().await?;
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Approve a join request — admit the applicant and issue its membership
+    /// credential (VMC). Requires an admin token. For a fleet, this enrolls a
+    /// VTA that has applied to join.
+    pub async fn approve_join(&self, request_id: &str) -> Result<DecideResult, VtcError> {
+        self.decide(request_id, "approve").await
+    }
+
+    /// Reject a join request. Requires an admin token.
+    pub async fn reject_join(&self, request_id: &str) -> Result<DecideResult, VtcError> {
+        self.decide(request_id, "reject").await
+    }
+
+    async fn decide(&self, request_id: &str, verb: &str) -> Result<DecideResult, VtcError> {
+        let token = self.token()?;
+        let url = format!("{}/join-requests/{request_id}/{verb}", self.base_url);
+        let resp = self.http.post(url).bearer_auth(token).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Remove a member (offboarding). The VTC applies its removal disposition and
+    /// flips the member's status-list revocation bit. `reason` is an optional
+    /// admin note. Requires an admin token. For a fleet, this decommissions a
+    /// managed VTA.
+    pub async fn remove_member(
+        &self,
+        did: &str,
+        reason: Option<&str>,
+    ) -> Result<RemoveResult, VtcError> {
+        let token = self.token()?;
+        let url = format!("{}/members/{did}", self.base_url);
+        let mut req = self.http.delete(url).bearer_auth(token);
+        if let Some(reason) = reason {
+            req = req.json(&serde_json::json!({ "reason": reason }));
+        }
+        let resp = req.send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Bearer token or [`VtcError::NotAuthenticated`].
+    fn token(&self) -> Result<&str, VtcError> {
+        self.token.as_deref().ok_or(VtcError::NotAuthenticated)
+    }
 }
 
 #[cfg(test)]
@@ -232,5 +363,64 @@ mod tests {
         // The token guard returns before any network I/O.
         let err = client.list_members(None).await;
         assert!(matches!(err, Err(VtcError::NotAuthenticated)), "{err:?}");
+    }
+
+    #[test]
+    fn decide_result_deserializes_camel_case() {
+        let json = serde_json::json!({
+            "requestId": "11111111-1111-1111-1111-111111111111",
+            "status": "approved",
+            "vmc": { "type": ["VerifiableCredential", "MembershipCredential"] },
+            "roleVec": null
+        });
+        let d: DecideResult = serde_json::from_value(json).unwrap();
+        assert_eq!(d.request_id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(d.status, "approved");
+        assert!(d.vmc.is_some());
+        assert!(d.role_vec.is_none());
+    }
+
+    #[test]
+    fn join_request_and_remove_results_deserialize() {
+        let jr: JoinRequestSummary = serde_json::from_value(serde_json::json!({
+            "id": "22222222-2222-2222-2222-222222222222",
+            "applicantDid": "did:key:z6MkApplicant",
+            "status": "pending",
+            "submittedAt": "2026-06-23T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(jr.applicant_did, "did:key:z6MkApplicant");
+        assert_eq!(jr.status, "pending");
+
+        let rm: RemoveResult = serde_json::from_value(serde_json::json!({
+            "did": "did:key:z6MkGone",
+            "disposition": "tombstone",
+            "removed": true
+        }))
+        .unwrap();
+        assert_eq!(rm.did, "did:key:z6MkGone");
+        assert!(rm.removed);
+    }
+
+    #[tokio::test]
+    async fn admin_methods_without_token_are_not_authenticated() {
+        let client = VtcClient {
+            http: reqwest::Client::new(),
+            base_url: "https://vtc.example.com/v1".into(),
+            vtc_did: "did:web:vtc.example.com".into(),
+            token: None,
+        };
+        assert!(matches!(
+            client.list_join_requests(Some("pending")).await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.approve_join("req-1").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.remove_member("did:key:x", Some("reason")).await,
+            Err(VtcError::NotAuthenticated)
+        ));
     }
 }
