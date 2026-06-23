@@ -1,6 +1,8 @@
 pub use vta_sdk::contexts::ContextRecord;
 
 use chrono::Utc;
+use vta_sdk::context_path::parent_path;
+use vta_sdk::context_policy::ContextPolicy;
 
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
@@ -12,6 +14,38 @@ fn ctx_key(id: &str) -> String {
 /// Retrieve a context by ID.
 pub async fn get_context(ks: &KeyspaceHandle, id: &str) -> Result<Option<ContextRecord>, AppError> {
     ks.get(ctx_key(id)).await
+}
+
+/// Resolve the *effective* [`ContextPolicy`] for `context_id` by intersecting
+/// the policies of every context on the path root→leaf (field-wise, additive
+/// narrowing — see [`ContextPolicy`] docs). Contexts with no policy (or a
+/// missing record) contribute nothing; a chain that constrains nothing resolves
+/// to [`ContextPolicy::unrestricted`], i.e. today's behaviour.
+///
+/// Because enforcement always resolves the whole chain, a permissive policy
+/// written at a child level can never widen what an ancestor allows.
+pub async fn effective_context_policy(
+    ks: &KeyspaceHandle,
+    context_id: &str,
+) -> Result<ContextPolicy, AppError> {
+    // Collect ids leaf→root, then resolve root→leaf.
+    let mut ids: Vec<String> = Vec::new();
+    let mut cur: Option<String> = Some(context_id.to_string());
+    while let Some(id) = cur {
+        cur = parent_path(&id).map(str::to_string);
+        ids.push(id);
+    }
+    ids.reverse();
+
+    let mut policies: Vec<ContextPolicy> = Vec::new();
+    for id in &ids {
+        if let Some(rec) = get_context(ks, id).await? {
+            if let Some(policy) = rec.context_policy {
+                policies.push(policy);
+            }
+        }
+    }
+    Ok(ContextPolicy::resolve(policies.iter()))
 }
 
 /// Store (create or overwrite) a context record.
@@ -106,6 +140,7 @@ pub async fn create_context(
         index,
         created_at: now,
         updated_at: now,
+        context_policy: None,
     };
     if !store_new_context(contexts_ks, &record)
         .await

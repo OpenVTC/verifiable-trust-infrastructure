@@ -29,6 +29,10 @@ pub struct UpdateContextRequest {
     pub name: Option<String>,
     pub did: Option<String>,
     pub description: Option<String>,
+    /// Set this context's policy (super-admin only). Omitted leaves it
+    /// unchanged; send an unrestricted policy to clear constraints.
+    #[serde(default)]
+    pub context_policy: Option<vta_sdk::context_policy::ContextPolicy>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -134,6 +138,7 @@ pub async fn update_context_handler(
             name: req.name,
             did: req.did,
             description: req.description,
+            context_policy: req.context_policy,
         },
         "rest",
     )

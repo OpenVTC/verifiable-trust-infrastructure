@@ -112,6 +112,7 @@ pub(super) async fn handle_update(
             name: req.name,
             did: req.did,
             description: req.description,
+            context_policy: req.context_policy,
         },
         TRANSPORT_TRUST_TASK,
     )

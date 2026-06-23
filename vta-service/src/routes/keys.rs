@@ -312,6 +312,7 @@ pub async fn sign_with_key(
     let result = operations::keys::sign_payload(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.seed_store,
         &auth,
         &key_id,

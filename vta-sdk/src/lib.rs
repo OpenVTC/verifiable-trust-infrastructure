@@ -95,6 +95,7 @@ pub mod attestation;
 pub mod auth_light;
 #[cfg(feature = "client")]
 pub mod client;
+pub mod context_policy;
 pub mod context_provision;
 pub mod contexts;
 pub mod credentials;

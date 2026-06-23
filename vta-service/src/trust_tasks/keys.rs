@@ -202,6 +202,7 @@ pub(super) async fn handle_sign(
     match operations::keys::sign_payload(
         &state.keys_ks,
         &state.imported_ks,
+        &state.contexts_ks,
         &state.seed_store,
         auth,
         &req.key_id,

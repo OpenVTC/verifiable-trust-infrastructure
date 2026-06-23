@@ -21,4 +21,11 @@ pub struct ContextRecord {
     pub index: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Per-context policy constraining what context-scoped actors may do within
+    /// this context (see [`crate::context_policy::ContextPolicy`]). Absent on
+    /// legacy records and by default, which imposes no constraints — enforcement
+    /// resolves the policy across the whole ancestor chain, so a missing policy
+    /// at any level simply contributes nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_policy: Option<crate::context_policy::ContextPolicy>,
 }

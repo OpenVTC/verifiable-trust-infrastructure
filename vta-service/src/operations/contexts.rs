@@ -19,6 +19,11 @@ pub struct UpdateContextParams {
     pub name: Option<String>,
     pub did: Option<String>,
     pub description: Option<String>,
+    /// Set this context's policy. `None` leaves it unchanged; `Some(policy)`
+    /// replaces it (send [`ContextPolicy::unrestricted`] to clear constraints).
+    /// Super-admin only (via [`update_context`]). Widening is impossible
+    /// regardless: enforcement resolves the full ancestor chain.
+    pub context_policy: Option<vta_sdk::context_policy::ContextPolicy>,
 }
 
 fn validate_slug(id: &str) -> Result<(), AppError> {
@@ -135,6 +140,7 @@ pub async fn create_context(
         index,
         created_at: now,
         updated_at: now,
+        context_policy: None,
     };
 
     // Atomic claim: the early exists-check above is the friendly fast
@@ -202,6 +208,9 @@ pub async fn update_context(
     }
     if let Some(description) = params.description {
         record.description = Some(description);
+    }
+    if let Some(context_policy) = params.context_policy {
+        record.context_policy = Some(context_policy);
     }
     record.updated_at = Utc::now();
 
@@ -571,6 +580,78 @@ mod tests {
         assert_eq!(child.parent.as_deref(), Some("acme"));
         // The child's BIP-32 base nests under the parent's.
         assert_eq!(child.base_path, format!("{}/0'", parent.base_path));
+    }
+
+    #[tokio::test]
+    async fn update_sets_context_policy_and_chain_resolves() {
+        use vta_sdk::context_policy::ContextPolicy;
+        let (_d, _s, ks) = fresh_contexts();
+
+        create_context(&ks, &super_admin(), "acme", "Acme".into(), None, None, "t")
+            .await
+            .unwrap();
+        create_context(
+            &ks,
+            &admin_of("acme"),
+            "eng",
+            "Engineering".into(),
+            None,
+            Some("acme".into()),
+            "t",
+        )
+        .await
+        .unwrap();
+
+        // Parent allows {a, b}; child allows {b, c} and disables export.
+        update_context(
+            &ks,
+            &super_admin(),
+            "acme",
+            UpdateContextParams {
+                name: None,
+                did: None,
+                description: None,
+                context_policy: Some(ContextPolicy {
+                    signable_keys: Some(["a".into(), "b".into()].into_iter().collect()),
+                    ..ContextPolicy::unrestricted()
+                }),
+            },
+            "t",
+        )
+        .await
+        .expect("set parent policy");
+        update_context(
+            &ks,
+            &super_admin(),
+            "acme/eng",
+            UpdateContextParams {
+                name: None,
+                did: None,
+                description: None,
+                context_policy: Some(ContextPolicy {
+                    signable_keys: Some(["b".into(), "c".into()].into_iter().collect()),
+                    export_allowed: false,
+                    ..ContextPolicy::unrestricted()
+                }),
+            },
+            "t",
+        )
+        .await
+        .expect("set child policy");
+
+        // The policy is persisted on the record …
+        let rec = get_context(&ks, "acme/eng").await.unwrap().unwrap();
+        assert!(rec.context_policy.is_some());
+
+        // … and the effective policy intersects the whole chain: keys narrow to
+        // {b}; export is off (child disabled it, can't be re-enabled).
+        let eff = crate::contexts::effective_context_policy(&ks, "acme/eng")
+            .await
+            .unwrap();
+        assert!(eff.allows_signing_key("b"));
+        assert!(!eff.allows_signing_key("a"), "child narrowed 'a' away");
+        assert!(!eff.allows_signing_key("c"), "parent never allowed 'c'");
+        assert!(!eff.allows_export());
     }
 
     #[tokio::test]

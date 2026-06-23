@@ -919,6 +919,7 @@ pub async fn run_context_update(
         name,
         did,
         description,
+        context_policy: None,
     };
     let record = crate::operations::contexts::update_context(
         &contexts_ks,

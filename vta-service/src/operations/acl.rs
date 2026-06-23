@@ -540,6 +540,7 @@ mod tests {
                     index: i as u32,
                     created_at: now,
                     updated_at: now,
+                    context_policy: None,
                 },
             )
             .await
