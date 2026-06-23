@@ -134,6 +134,40 @@ pub struct WizardInputs {
     /// deployments often want 90 or 365.
     #[serde(default)]
     pub audit: AuditConfig,
+
+    /// Enterprise staff provisioning. For each entry the wizard creates a
+    /// context, applies its initial `ContextPolicy`, and seeds a
+    /// context-scoped ACL row — the VTA *user*, bounded by the policy. The
+    /// *owner* is the super-admin `admin_did` above. Empty by default (a
+    /// personal VTA where owner and user are the same DID).
+    #[serde(default)]
+    pub staff: Vec<StaffProvision>,
+}
+
+/// One enterprise staff member to provision at setup: a context, its initial
+/// policy, and a context-scoped ACL entry scoped to it (separation of duty —
+/// the owner sets the guardrail, the staff member works within it).
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaffProvision {
+    /// The staff member's DID (the VTA *user*) — gets a context-scoped ACL row.
+    pub did: String,
+    /// Context to create and scope the staff member to (a kebab-case slug,
+    /// e.g. `staff` or `sales`).
+    pub context: String,
+    /// Human label for the context and the ACL row.
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Role for the staff entry (admin / initiator / application / reader /
+    /// monitor). Defaults to `application` — use keys, present, and vault
+    /// within the context, but never manage it.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Initial `ContextPolicy` guardrail for the context (trusted verifiers,
+    /// presentable types, signable keys, export, quotas). Omit for an
+    /// unrestricted context the owner tightens later.
+    #[serde(default)]
+    pub context_policy: Option<vta_sdk::context_policy::ContextPolicy>,
 }
 
 fn default_services() -> ServicesConfig {
@@ -802,6 +836,10 @@ pub async fn apply_inputs(
         seed_initial_admin(&inputs.data_dir, admin_did, inputs.admin_label.clone()).await?;
     }
 
+    // 14b. Enterprise staff provisioning (context + policy + scoped ACL row).
+    //     Runs after the owner is seeded; no-op for a personal VTA.
+    seed_staff(&inputs.data_dir, &inputs.staff).await?;
+
     // 15. Summary.
     eprintln!();
     eprintln!("\x1b[1;32mSetup complete.\x1b[0m");
@@ -947,6 +985,25 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
         errors.push(format!(
             "admin_did = {did:?} must be a DID (starts with `did:`)"
         ));
+    }
+    for s in &inputs.staff {
+        if !s.did.starts_with("did:") {
+            errors.push(format!(
+                "staff.did = {:?} must be a DID (starts with `did:`)",
+                s.did
+            ));
+        }
+        if s.context.trim().is_empty() {
+            errors.push("staff.context must be a non-empty context id".into());
+        }
+        if let Some(role) = &s.role
+            && crate::acl::Role::parse(role).is_err()
+        {
+            errors.push(format!(
+                "staff.role = {role:?} is not a valid role \
+                 (admin/initiator/application/reader/monitor)"
+            ));
+        }
     }
     if inputs.resolver_url.as_deref().is_some_and(str::is_empty) {
         errors.push(
@@ -1439,12 +1496,126 @@ async fn seed_initial_admin(
     Ok(())
 }
 
+/// Provision enterprise staff: for each entry, create its context (+ initial
+/// `ContextPolicy`) and seed a context-scoped ACL row. Separation of duty — the
+/// owner (super-admin) sets the guardrail; the staff entry is bounded by it.
+/// No-op when no staff are configured. Setup runs once on a fresh store, so this
+/// does not attempt idempotency: a duplicate context id surfaces as an error.
+async fn seed_staff(
+    data_dir: &Path,
+    staff: &[StaffProvision],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if staff.is_empty() {
+        return Ok(());
+    }
+    use crate::acl;
+
+    let store = Store::open(&StoreConfig {
+        data_dir: data_dir.to_path_buf(),
+    })?;
+    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+
+    for s in staff {
+        let name = s.label.clone().unwrap_or_else(|| s.context.clone());
+        let mut record = crate::contexts::create_context(&contexts_ks, &s.context, &name).await?;
+        if let Some(policy) = &s.context_policy {
+            record.context_policy = Some(policy.clone());
+            crate::contexts::store_context(&contexts_ks, &record).await?;
+        }
+
+        let role = match s.role.as_deref() {
+            Some(r) => acl::Role::parse(r)?,
+            None => acl::Role::Application,
+        };
+        eprintln!("  Staff:    {} → context `{}` ({role:?})", s.did, s.context);
+        let entry = acl::AclEntry::new(&s.did, role, "cli:setup-from-file")
+            .with_contexts(vec![s.context.clone()])
+            .with_label(s.label.clone());
+        acl::store_acl_entry(&acl_ks, &entry).await?;
+    }
+    store.persist().await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn parse(toml_str: &str) -> Result<WizardInputs, Box<dyn std::error::Error>> {
         Ok(toml::from_str::<WizardInputs>(toml_str)?)
+    }
+
+    #[test]
+    fn staff_section_parses_with_inline_context_policy() {
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [secrets]
+            backend = "keyring"
+
+            [[staff]]
+            did     = "did:key:z6MkStaff"
+            context = "sales"
+            label   = "Sales"
+            role    = "application"
+
+            [staff.context_policy]
+            export_allowed    = false
+            trusted_verifiers = ["did:web:partner.example"]
+        "#;
+        let inputs = parse(raw).expect("parse staff");
+        assert_eq!(inputs.staff.len(), 1);
+        let s = &inputs.staff[0];
+        assert_eq!(s.did, "did:key:z6MkStaff");
+        assert_eq!(s.context, "sales");
+        assert_eq!(s.role.as_deref(), Some("application"));
+        let pol = s.context_policy.as_ref().unwrap();
+        assert!(!pol.allows_export());
+        assert!(pol.allows_verifier("did:web:partner.example"));
+        assert!(!pol.allows_verifier("did:web:other"));
+    }
+
+    #[tokio::test]
+    async fn seed_staff_creates_context_policy_and_scoped_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let staff = vec![StaffProvision {
+            did: "did:key:z6MkStaff".into(),
+            context: "sales".into(),
+            label: Some("Sales".into()),
+            role: Some("application".into()),
+            context_policy: Some(vta_sdk::context_policy::ContextPolicy {
+                export_allowed: false,
+                ..vta_sdk::context_policy::ContextPolicy::unrestricted()
+            }),
+        }];
+        seed_staff(dir.path(), &staff).await.expect("seed_staff");
+
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+
+        // The context exists and carries the initial policy (export disabled).
+        let ctx = crate::contexts::get_context(&contexts_ks, "sales")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!ctx.context_policy.unwrap().allows_export());
+
+        // The staff member has a context-scoped Application entry — not a
+        // super-admin (allowed_contexts is non-empty).
+        let entries = crate::acl::list_acl_entries(&acl_ks).await.unwrap();
+        let e = entries
+            .iter()
+            .find(|e| e.did == "did:key:z6MkStaff")
+            .expect("staff entry seeded");
+        assert_eq!(e.role, crate::acl::Role::Application);
+        assert_eq!(e.allowed_contexts, vec!["sales".to_string()]);
+        assert!(!e.allowed_contexts.is_empty(), "staff must be scoped");
     }
 
     #[test]

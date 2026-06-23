@@ -993,6 +993,9 @@ async fn gather_inputs(
         admin_label: None,
         resolver_url,
         audit,
+        // Staff provisioning is a non-interactive (enterprise) feature, exposed
+        // only via `--from <toml>`.
+        staff: Vec::new(),
     }))
 }
 
