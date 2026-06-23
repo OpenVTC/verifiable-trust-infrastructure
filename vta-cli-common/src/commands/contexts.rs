@@ -355,6 +355,7 @@ pub async fn cmd_context_update(
         name,
         did,
         description,
+        context_policy: None,
     };
     let resp = client.update_context(id, req).await?;
     println!("Context updated:");

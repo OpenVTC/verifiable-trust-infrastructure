@@ -744,6 +744,7 @@ async fn update_context_patches() {
         name: Some("Renamed".into()),
         did: None,
         description: None,
+        context_policy: None,
     };
     c.update_context("primary", req).await.unwrap();
 }

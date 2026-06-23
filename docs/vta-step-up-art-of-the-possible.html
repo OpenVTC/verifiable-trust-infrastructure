@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VTA Step-Up Auth · The Art of the Possible</title>
+<style>
+  :root {
+    --bg: #0a0e1a;
+    --bg-2: #111726;
+    --panel: #161d2f;
+    --panel-2: #1c2540;
+    --line: #2a3450;
+    --ink: #e8edf7;
+    --muted: #94a3c4;
+    --dim: #647196;
+    --accent: #6ea8ff;
+    --accent-2: #58e6c9;
+    --accent-3: #c79bff;
+    --warn: #ffb454;
+    --hard: #ff7a8a;
+    --good: #58e6a8;
+    --shadow: 0 18px 50px rgba(0,0,0,.45);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 700px at 80% -10%, #1a2238 0%, transparent 60%),
+                radial-gradient(1000px 600px at 0% 10%, #16203a 0%, transparent 55%),
+                var(--bg);
+    color: var(--ink);
+    font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+  .mono { font-family: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace; }
+
+  /* ---------- HERO ---------- */
+  header.hero {
+    padding: 88px 0 64px;
+    border-bottom: 1px solid var(--line);
+    background:
+      linear-gradient(180deg, rgba(110,168,255,.06), transparent 70%);
+  }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--accent-2); font-weight: 600;
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--panel);
+  }
+  h1 {
+    font-size: 52px; line-height: 1.08; margin: 22px 0 14px; letter-spacing: -.02em;
+    background: linear-gradient(110deg, #fff 10%, var(--accent) 55%, var(--accent-3) 95%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    max-width: 18ch;
+  }
+  .lede { font-size: 20px; color: var(--muted); max-width: 70ch; margin: 0; }
+  .hero-tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 30px; }
+  .tag {
+    font-size: 13px; color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px;
+  }
+  .tag b { color: var(--accent-2); font-weight: 600; }
+
+  section { padding: 70px 0; border-bottom: 1px solid var(--line); }
+  .kicker { font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); font-weight: 600; margin: 0 0 10px; }
+  h2 { font-size: 34px; margin: 0 0 14px; letter-spacing: -.015em; }
+  h2 + .sub { color: var(--muted); font-size: 18px; max-width: 72ch; margin: 0 0 36px; }
+
+  /* ---------- WHY / reasoning cards ---------- */
+  .why-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .why {
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    border: 1px solid var(--line); border-radius: 16px; padding: 24px;
+    box-shadow: var(--shadow);
+  }
+  .why .n { font-size: 13px; color: var(--accent); font-weight: 700; letter-spacing: .1em; }
+  .why h3 { margin: 8px 0 8px; font-size: 19px; }
+  .why p { margin: 0; color: var(--muted); font-size: 15px; }
+
+  /* ---------- SEAMS ---------- */
+  .seams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .seam {
+    border: 1px solid var(--line); border-radius: 16px; padding: 26px 24px;
+    background: var(--panel); position: relative; overflow: hidden;
+  }
+  .seam::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 4px;
+  }
+  .seam.s1::before { background: linear-gradient(90deg, var(--accent), transparent); }
+  .seam.s2::before { background: linear-gradient(90deg, var(--accent-2), transparent); }
+  .seam.s3::before { background: linear-gradient(90deg, var(--accent-3), transparent); }
+  .seam .dial { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  .seam h3 { font-size: 22px; margin: 6px 0 14px; }
+  .seam ul { margin: 0; padding: 0; list-style: none; }
+  .seam li { padding: 9px 0; border-top: 1px dashed var(--line); color: var(--muted); font-size: 14.5px; display: flex; gap: 9px; }
+  .seam li:first-child { border-top: none; }
+  .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; height: fit-content; margin-top: 2px; }
+  .pill.now { background: rgba(88,230,168,.13); color: var(--good); border: 1px solid rgba(88,230,168,.3); }
+  .pill.next { background: rgba(255,180,84,.12); color: var(--warn); border: 1px solid rgba(255,180,84,.3); }
+  .pill.soon { background: rgba(199,155,255,.12); color: var(--accent-3); border: 1px solid rgba(199,155,255,.3); }
+  .seam-foot { text-align:center; color: var(--dim); font-size: 14px; margin-top: 26px; }
+  .seam-foot b { color: var(--ink); }
+
+  /* ---------- FLOW ---------- */
+  .flow-banner {
+    background: linear-gradient(120deg, rgba(255,122,138,.10), rgba(199,155,255,.08));
+    border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px; margin-bottom: 34px;
+    display: flex; gap: 16px; align-items: center;
+  }
+  .flow-banner .bolt { font-size: 30px; }
+  .flow-banner p { margin: 0; color: var(--muted); }
+  .flow-banner b { color: var(--ink); }
+
+  .lane-legend { display:flex; flex-wrap:wrap; gap: 18px; margin-bottom: 26px; font-size: 13.5px; color: var(--muted); }
+  .lane-legend span { display:inline-flex; align-items:center; gap:8px; }
+  .dot { width: 11px; height: 11px; border-radius: 3px; display:inline-block; }
+  .d-op { background: var(--accent); }
+  .d-vta { background: var(--accent-2); }
+  .d-push { background: var(--warn); }
+  .d-dev { background: var(--accent-3); }
+  .d-hw { background: var(--hard); }
+
+  .steps { position: relative; }
+  .step {
+    display: grid; grid-template-columns: 56px 1fr; gap: 20px; padding: 4px 0;
+  }
+  .step .rail { position: relative; }
+  .step .num {
+    width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 700; font-size: 16px; background: var(--panel-2); border: 1px solid var(--line);
+    color: var(--ink); z-index: 2; position: relative;
+  }
+  .step .rail::after {
+    content: ""; position: absolute; left: 19px; top: 40px; bottom: -22px; width: 2px;
+    background: linear-gradient(var(--line), var(--line)); z-index: 1;
+  }
+  .step:last-child .rail::after { display: none; }
+  .step .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 20px; margin-bottom: 22px; box-shadow: var(--shadow);
+  }
+  .step .card .who { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; display:inline-flex; align-items:center; gap: 7px; }
+  .who.op { color: var(--accent); }
+  .who.vta { color: var(--accent-2); }
+  .who.push { color: var(--warn); }
+  .who.dev { color: var(--accent-3); }
+  .who.hw { color: var(--hard); }
+  .step .card h4 { margin: 7px 0 5px; font-size: 17px; }
+  .step .card p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .step .card .wire {
+    margin-top: 10px; font-size: 12.5px; color: var(--accent-2);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 6px 10px; display: inline-block;
+  }
+  .step .card .wire .hard { color: var(--hard); }
+
+  /* ---------- ROADMAP ---------- */
+  .road { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .phase {
+    border: 1px solid var(--line); border-radius: 16px; padding: 22px 20px; background: var(--panel);
+    display: flex; flex-direction: column;
+  }
+  .phase .ph-h { display:flex; align-items:center; justify-content: space-between; margin-bottom: 6px; }
+  .phase .ph-tag { font-size: 11.5px; font-weight: 700; padding: 3px 9px; border-radius: 999px; }
+  .phase.p0 { border-color: rgba(88,230,168,.4); }
+  .phase.p0 .ph-tag { background: rgba(88,230,168,.14); color: var(--good); }
+  .phase.p1 .ph-tag { background: rgba(110,168,255,.14); color: var(--accent); }
+  .phase.p2 .ph-tag { background: rgba(255,180,84,.14); color: var(--warn); }
+  .phase.p3 .ph-tag { background: rgba(199,155,255,.14); color: var(--accent-3); }
+  .phase h3 { margin: 2px 0 4px; font-size: 18px; }
+  .phase .when { font-size: 12.5px; color: var(--dim); margin-bottom: 12px; }
+  .phase ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
+  .phase li { margin-bottom: 7px; }
+
+  /* ---------- CLOSING ---------- */
+  .pitch {
+    background: linear-gradient(135deg, rgba(110,168,255,.10), rgba(199,155,255,.08));
+    border: 1px solid var(--line); border-radius: 20px; padding: 40px 44px;
+  }
+  .pitch h2 { font-size: 30px; margin-bottom: 14px; }
+  .pitch p { color: var(--muted); font-size: 18px; max-width: 80ch; }
+  .pitch .punch { color: var(--ink); font-weight: 600; }
+
+  footer { padding: 40px 0 70px; color: var(--dim); font-size: 13px; }
+  footer .wrap { display:flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+
+  @media (max-width: 880px) {
+    h1 { font-size: 38px; }
+    .why-grid, .seams, .road { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow">◆ Verifiable Trust Agent · Design Vision</span>
+    <h1>Step-Up Auth: The Art of the Possible</h1>
+    <p class="lede">
+      Step-up authentication in the VTA is not a hardcoded login — it is a <b>composable approval
+      ceremony</b>. Who approves, what proof they must produce, and how they are summoned are three
+      independent dials. This is what becomes possible as we build it out with push-enabled devices
+      and hardware authenticators.
+    </p>
+    <div class="hero-tags">
+      <span class="tag"><b>DIDComm-first</b> transport</span>
+      <span class="tag"><b>WebAuthn</b> hardware gate</span>
+      <span class="tag"><b>Push-wake</b> any device</span>
+      <span class="tag"><b>VC / VP</b> credential approval</span>
+      <span class="tag"><b>Type-enforced</b> verified evidence</span>
+      <span class="tag"><b>Fully audited</b> ceremonies</span>
+    </div>
+  </div>
+</header>
+
+<!-- WHY -->
+<section>
+  <div class="wrap">
+    <p class="kicker">The reasoning</p>
+    <h2>Why design it this way</h2>
+    <p class="sub">A normal session proves <em>you logged in</em>. Step-up proves <em>this exact
+      sensitive action is authorized, by the right party, with sufficient assurance, right now.</em>
+      Three principles make that durable.</p>
+    <div class="why-grid">
+      <div class="why">
+        <div class="n">01 — BLAST RADIUS</div>
+        <h3>High-risk ops deserve more</h3>
+        <p>Granting admin, revoking keys, releasing vault secrets, proxy-login — these can't ride on
+          a 15-minute token. Step-up demands a fresh, explicit, scoped approval bound to that one
+          operation and a single-use challenge.</p>
+      </div>
+      <div class="why">
+        <div class="n">02 — SEPARATION</div>
+        <h3>Four-eyes, by design</h3>
+        <p>Delegated modes mean a different person or device must sign off. The most dangerous
+          actions can require a second human — turning a single compromised session into a dead end
+          for an attacker.</p>
+      </div>
+      <div class="why">
+        <div class="n">03 — FLEXIBILITY</div>
+        <h3>Policy, not plumbing</h3>
+        <p>Raising the assurance bar — from "tap your phone" to "two officers touch hardware keys" —
+          is a configuration change against the same core machinery. No re-architecture, no new
+          subsystem, no bespoke crypto.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SEAMS -->
+<section>
+  <div class="wrap">
+    <p class="kicker">The architecture</p>
+    <h2>Three composable dials</h2>
+    <p class="sub">Almost any authorization ceremony you can describe is just a point in this
+      three-dimensional space — not a feature we have to build from scratch.
+      <span class="mono" style="color:var(--good)">● live</span>
+      <span class="mono" style="color:var(--warn)">● next</span>
+      <span class="mono" style="color:var(--accent-3)">● horizon</span></p>
+    <div class="seams">
+      <div class="seam s1">
+        <div class="dial">Dial 1</div>
+        <h3>Who approves</h3>
+        <ul>
+          <li><span class="pill now">LIVE</span> Self-approve (second factor, same identity)</li>
+          <li><span class="pill now">LIVE</span> Delegated — a named approver DID</li>
+          <li><span class="pill now">LIVE</span> Delegated-any — any covering admin</li>
+          <li><span class="pill next">NEXT</span> M-of-N quorum on one challenge</li>
+          <li><span class="pill soon">HORIZON</span> Credential-derived approver pools</li>
+          <li><span class="pill soon">HORIZON</span> Escalation chains &amp; break-glass</li>
+        </ul>
+      </div>
+      <div class="seam s2">
+        <div class="dial">Dial 2</div>
+        <h3>What proof counts</h3>
+        <ul>
+          <li><span class="pill now">LIVE</span> DID-signed (eddsa-jcs-2022 proof)</li>
+          <li><span class="pill now">LIVE</span> WebAuthn assertion (passkey / hardware)</li>
+          <li><span class="pill next">NEXT</span> WebAuthn-only enforced per op</li>
+          <li><span class="pill next">NEXT</span> Attestation gate (roaming-key / device-bound)</li>
+          <li><span class="pill soon">HORIZON</span> VC / VP presentation as approval</li>
+          <li><span class="pill soon">HORIZON</span> TEE-attested enclave approval</li>
+        </ul>
+      </div>
+      <div class="seam s3">
+        <div class="dial">Dial 3</div>
+        <h3>How they're reached</h3>
+        <ul>
+          <li><span class="pill now">LIVE</span> Mediator buffer + drain (DIDComm)</li>
+          <li><span class="pill now">LIVE</span> Push-wake via gateway (opaque handle)</li>
+          <li><span class="pill now">LIVE</span> REST / HTTPS gateway fallback</li>
+          <li><span class="pill next">NEXT</span> Multi-device fan-out, first-valid-wins</li>
+          <li><span class="pill next">NEXT</span> Urgency-aware UX (background vs. interrupt)</li>
+          <li><span class="pill soon">HORIZON</span> Dedicated hardware approver appliance</li>
+        </ul>
+      </div>
+    </div>
+    <p class="seam-foot">Pick a value on each dial → you have a ceremony. <b>Quorum × Hardware × Push</b>
+      is the flow below.</p>
+  </div>
+</section>
+
+<!-- FLOW -->
+<section>
+  <div class="wrap">
+    <p class="kicker">End-to-end</p>
+    <h2>Worked example: quorum hardware-key approval for <span class="mono" style="color:var(--hard)">key/revoke</span></h2>
+    <div class="flow-banner">
+      <div class="bolt">⚡</div>
+      <p><b>The scenario.</b> An operator tries to revoke a production signing key. Policy requires
+        <b>2-of-3 security officers</b> to each approve from a <b>push-woken phone</b> by <b>touching a
+        FIDO security key</b> — within a 5-minute window, or the operation is refused.</p>
+    </div>
+    <div class="lane-legend">
+      <span><i class="dot d-op"></i> Operator</span>
+      <span><i class="dot d-vta"></i> VTA</span>
+      <span><i class="dot d-push"></i> Push gateway</span>
+      <span><i class="dot d-dev"></i> Approver device</span>
+      <span><i class="dot d-hw"></i> Hardware key</span>
+    </div>
+
+    <div class="steps">
+      <div class="step">
+        <div class="rail"><div class="num">1</div></div>
+        <div class="card">
+          <span class="who op">● Operator → VTA</span>
+          <h4>Request the sensitive operation</h4>
+          <p>Operator calls <span class="mono">key/revoke</span> on a live, authenticated AAL1 session.
+            The VTA's gate resolves the policy for this op-class and finds a quorum + hardware floor.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">2</div></div>
+        <div class="card">
+          <span class="who vta">● VTA</span>
+          <h4>Mint a single-use step-up challenge</h4>
+          <p>A 256-bit challenge is bound to the session, subject, the approver pool, target assurance
+            (<span class="mono">aal2+</span>), required evidence and a 5-minute TTL. The operation parks,
+            pending approval.</p>
+          <span class="wire mono">403 step_up_required · acceptableEvidence: ["webauthn"]</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">3</div></div>
+        <div class="card">
+          <span class="who vta">● VTA → Mediator + Gateway</span>
+          <h4>Summon the approvers</h4>
+          <p>The VTA buffers an <span class="mono">approve-request</span> for each officer through its
+            mediator <em>and</em> fires a push-wake to each registered gateway. The VTA never sees the
+            APNs/FCM token — only an opaque wake handle.</p>
+          <span class="wire mono">auth/step-up/approve-request/0.1 &nbsp;·&nbsp; push/wake/0.1 (authcrypt)</span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">4</div></div>
+        <div class="card">
+          <span class="who push">● Gateway → Devices</span>
+          <h4>Wake the pocket approvers</h4>
+          <p>Each gateway fires the platform push. Officers' phones wake, connect to the mediator,
+            drain the pending request, and render a consent screen: <em>"Approve revocation of key X?"</em></p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">5</div></div>
+        <div class="card">
+          <span class="who hw">● Device + Hardware key</span>
+          <h4>Touch to authorize</h4>
+          <p>Each officer confirms. The device invokes WebAuthn against the bound challenge; the FIDO
+            key requires a <b>physical touch + user verification</b> before it will sign. The private key
+            never leaves the authenticator.</p>
+          <span class="wire mono">approve-response/0.1 · evidence.kind=<span class="hard">webauthn</span></span>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">6</div></div>
+        <div class="card">
+          <span class="who vta">● VTA</span>
+          <h4>Verify evidence &amp; count the quorum</h4>
+          <p>Each assertion is verified against the challenge and resolved to a passkey in the approver's
+            DID document. Verified evidence becomes a distinct type — a call site that forgets to verify
+            won't compile. The VTA counts approvals until the 2-of-3 threshold is met.</p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="rail"><div class="num">7</div></div>
+        <div class="card">
+          <span class="who vta">● VTA → Operator</span>
+          <h4>Elevate, execute, audit</h4>
+          <p>Threshold met inside the window → the session is elevated, the parked
+            <span class="mono">key/revoke</span> executes, and every step — request, wakes, each
+            approval, the outcome — is written to the audit log. Window expires first → the operation
+            is refused, untouched.</p>
+          <span class="wire mono">session → aal2 · operation committed · ceremony audited</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ROADMAP -->
+<section>
+  <div class="wrap">
+    <p class="kicker">The roadmap</p>
+    <h2>From live primitive to full ceremony</h2>
+    <p class="sub">Each phase reuses the same three dials. We are not building new systems — we are
+      turning dials we already designed for.</p>
+    <div class="road">
+      <div class="phase p0">
+        <div class="ph-h"><h3>Foundation</h3><span class="ph-tag">LIVE</span></div>
+        <div class="when">Shipped &amp; tested</div>
+        <ul>
+          <li>Step-up gate + policy engine</li>
+          <li>4 approval modes</li>
+          <li>DID-signed &amp; WebAuthn gates</li>
+          <li>DIDComm approve-request / response</li>
+          <li>Push-wake via gateway</li>
+          <li>Single-use challenge + TTL + audit</li>
+        </ul>
+      </div>
+      <div class="phase p1">
+        <div class="ph-h"><h3>Enforce hardware</h3><span class="ph-tag">NEXT</span></div>
+        <div class="when">Near term</div>
+        <ul>
+          <li>Per-op <span class="mono">webauthn</span>-only floors</li>
+          <li>Attestation gate (roaming-key / device-bound)</li>
+          <li>AAL3-style assurance tiers</li>
+          <li>Richer consent-UI payloads</li>
+          <li>Urgency-aware push</li>
+        </ul>
+      </div>
+      <div class="phase p2">
+        <div class="ph-h"><h3>Quorum &amp; reach</h3><span class="ph-tag">NEXT</span></div>
+        <div class="when">Mid term</div>
+        <ul>
+          <li>M-of-N approvals on one challenge</li>
+          <li>Multi-device fan-out, first-valid-wins</li>
+          <li>Escalation / fallback chains</li>
+          <li>Break-glass JIT delegation</li>
+        </ul>
+      </div>
+      <div class="phase p3">
+        <div class="ph-h"><h3>Credentialed trust</h3><span class="ph-tag">HORIZON</span></div>
+        <div class="when">Forward</div>
+        <ul>
+          <li>VC / VP presentation as approval</li>
+          <li>Credential-derived approver pools</li>
+          <li>TEE-attested enclave approval</li>
+          <li>Dedicated hardware approver appliance</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CLOSING -->
+<section>
+  <div class="wrap">
+    <div class="pitch">
+      <h2>The one-sentence pitch</h2>
+      <p><span class="punch">Step-up auth in the VTA is a composable ceremony, not a hardcoded
+        login.</span> The same core machinery delivers everything from "tap to confirm on your phone"
+        to "two security officers each touch a FIDO key from attested environments, summoned by push,
+        within five minutes — or the operation is refused." It is standards-native throughout —
+        DIDComm, WebAuthn, VCs/VPs, DIDs — so every future gate interoperates with external verifiers
+        instead of being a scheme we alone must defend. And because verified evidence is enforced by
+        the type system and every ceremony is audited, raising the bar later never risks a silently
+        skipped check.</p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>VTA · Verifiable Trust Agent — design vision, forward-looking. Capabilities marked NEXT / HORIZON are not yet shipped.</span>
+    <span class="mono">step-up · push-wake · webauthn · didcomm</span>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -183,7 +183,7 @@ impl CreateContextRequest {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub struct UpdateContextRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -191,6 +191,10 @@ pub struct UpdateContextRequest {
     pub did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Set this context's policy (super-admin only). Omitted leaves it
+    /// unchanged; send an unrestricted policy to clear constraints.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_policy: Option<crate::context_policy::ContextPolicy>,
 }
 
 #[derive(Debug, Serialize)]
