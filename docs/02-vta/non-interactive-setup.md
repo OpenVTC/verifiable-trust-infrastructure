@@ -85,6 +85,52 @@ pre_rotation_count = 2
 A complete annotated reference is at
 [`examples/vta-setup.example.toml`](examples/vta-setup.example.toml).
 
+## Enterprise: owner + bounded staff
+
+For an enterprise-managed VTA (the org owns and manages it; a staff member uses
+it within bounds), add one or more `[[staff]]` entries. Each one creates a
+context, applies its initial **context policy** (the guardrail), and seeds a
+**context-scoped** ACL row — the bounded *user*. The super-admin `admin_did` is
+the *owner*. Separation of duty is enforced VTA-side: the staff entry is scoped
+to its context and bound by the policy; only the owner can change config or the
+policy. (A personal VTA omits `[[staff]]` — owner and user are the same DID.)
+
+```toml
+config_path = "/etc/vta/config.toml"
+data_dir    = "/var/lib/vta"
+
+# The enterprise owner (super-admin).
+admin_did   = "did:key:z6MkOWNER..."
+
+[secrets]
+backend = "keyring"
+
+# A staff member, bounded to the `sales` context.
+[[staff]]
+did     = "did:key:z6MkSTAFF..."
+context = "sales"
+label   = "Sales user"
+role    = "application"          # use keys/present/vault within the context, never manage it
+
+# The guardrail the staff member works within (all fields optional; absent = no
+# constraint, resolved by intersection down the context tree, so a child can
+# only narrow). Enforced even against the super-admin on this context's
+# resources — relax by editing the policy, not by bypassing it.
+[staff.context_policy]
+export_allowed    = false                          # no sealed-transfer export / vault release
+trusted_verifiers = ["did:web:partner.example"]    # may only present to these verifiers
+presentable_types = ["MembershipCredential"]       # may only present these credential types
+signable_keys     = ["sales-signing-key"]          # signing oracle limited to these key ids
+
+[staff.context_policy.quotas]
+per_day = { sign = 1000, "vault/release" = 10 }     # per-context daily ceilings
+```
+
+The same guardrails can be set/changed on a running VTA via
+`pnm contexts update` (super-admin). Credentials received into a context — via
+the receive request's `contextId`, or auto-bound when the caller has a single
+context — are governed by that context's policy at presentation time.
+
 ## Schema
 
 The schema is defined in Rust by `vta_service::setup::WizardInputs`
@@ -103,6 +149,7 @@ summary.
 | `data_dir_exists` | no | `"error"` | What to do if `data_dir` already exists. `"delete"` for CI re-runs. |
 | `admin_did` | no | `null` | If set, seeds a super-admin and seals the VTA atomically. Must start with `did:`. See [`seal-and-unseal.md`](seal-and-unseal.md) for the consequences of sealing at setup time and the recommended seal-last alternative. |
 | `admin_label` | no | `null` | Label on the seeded admin's ACL row. |
+| `staff` | no | `[]` | Array of `[[staff]]` entries — each creates a context, applies its `context_policy`, and seeds a context-scoped ACL row (the bounded *user*). See [Enterprise: owner + bounded staff](#enterprise-owner--bounded-staff). |
 
 ### Sections
 
