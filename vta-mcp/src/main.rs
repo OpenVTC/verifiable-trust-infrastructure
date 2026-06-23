@@ -7,13 +7,18 @@
 //! most hosts spawn the server and speak JSON-RPC over stdin/stdout). All
 //! logging therefore goes to **stderr**; stdout is the protocol channel.
 //!
-//! Auth (two modes):
-//! - **Session** (default): reuse an existing `pnm`/`cnm` login —
-//!   `--vta <slug>` selects the stored keyring session; the client
-//!   auto-refreshes its token. This is the "log in with pnm, then run vta-mcp"
-//!   path.
+//! Auth (three modes):
+//! - **did:key DIDComm** (`--agent-did` + `--agent-key` + `--vta-did` +
+//!   `--mediator-did`): authenticate a scoped agent `did:key` directly over
+//!   DIDComm via a mediator. The canonical path — it works against any VTA,
+//!   including DIDComm-only VTAs that expose no REST endpoint. Use this to run a
+//!   dedicated, context-scoped vta-mcp (the agent's ACL bounds it to its
+//!   context). Takes precedence when fully configured.
+//! - **Session**: reuse an existing `pnm`/`cnm` login — `--vta <slug>` selects
+//!   the stored keyring session; the client auto-refreshes its token. This is
+//!   the "log in with pnm, then run vta-mcp" path.
 //! - **Token**: set `VTA_URL` + `VTA_TOKEN` for a REST client with a bearer
-//!   token (simple, for testing / short-lived use; no auto-refresh).
+//!   token (simple, for testing / short-lived use; no auto-refresh; REST only).
 
 mod server;
 
@@ -49,9 +54,31 @@ struct Args {
     sessions_dir: Option<PathBuf>,
 
     /// Override the VTA REST URL (otherwise resolved from the session/DID,
-    /// or required in token mode).
+    /// or required in token mode). Optional in did:key DIDComm mode (REST is a
+    /// fallback there).
     #[arg(long, env = "VTA_URL")]
     url: Option<String>,
+
+    /// Agent `did:key` to authenticate as, directly over DIDComm (did:key
+    /// DIDComm mode). Requires `--agent-key`, `--vta-did`, `--mediator-did`.
+    /// Lets a consumer run a dedicated, context-scoped vta-mcp against any VTA —
+    /// including DIDComm-only VTAs with no REST endpoint.
+    #[arg(long, env = "VTA_MCP_AGENT_DID")]
+    agent_did: Option<String>,
+
+    /// Agent Ed25519 signing key (multibase) for did:key DIDComm mode. Stays in
+    /// this process; never sent over MCP.
+    #[arg(long, env = "VTA_MCP_AGENT_KEY")]
+    agent_key: Option<String>,
+
+    /// The VTA's DID (did:key DIDComm mode) — the recipient of the DIDComm
+    /// messages.
+    #[arg(long, env = "VTA_MCP_VTA_DID")]
+    vta_did: Option<String>,
+
+    /// The mediator's DID to route DIDComm through (did:key DIDComm mode).
+    #[arg(long, env = "VTA_MCP_MEDIATOR_DID")]
+    mediator_did: Option<String>,
 
     /// Register this bridge as an `ai-agent` device at startup, so it appears in
     /// `pnm device list` and can be revoked with `pnm device {disable,wipe}`.
@@ -125,8 +152,49 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Resolve the four did:key DIDComm-mode params. Returns `Some(..)` when all
+/// four are set, `None` when none are, and an error when only some are — so a
+/// half-configured invocation fails fast instead of silently falling through to
+/// another auth mode.
+fn didkey_didcomm_params(
+    agent_did: Option<String>,
+    agent_key: Option<String>,
+    vta_did: Option<String>,
+    mediator_did: Option<String>,
+) -> anyhow::Result<Option<(String, String, String, String)>> {
+    match (agent_did, agent_key, vta_did, mediator_did) {
+        (Some(a), Some(k), Some(v), Some(m)) => Ok(Some((a, k, v, m))),
+        (None, None, None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "did:key DIDComm mode needs all of --agent-did, --agent-key, \
+             --vta-did, --mediator-did (or none of them)"
+        ),
+    }
+}
+
 /// Build an authenticated [`VtaClient`] from the args/env (see module docs).
 async fn build_client(args: &Args) -> anyhow::Result<VtaClient> {
+    // did:key DIDComm mode: authenticate a scoped agent did:key directly over
+    // DIDComm (the canonical transport — works against DIDComm-only VTAs that
+    // expose no REST endpoint). Takes precedence when fully configured.
+    if let Some((agent_did, agent_key, vta_did, mediator_did)) = didkey_didcomm_params(
+        args.agent_did.clone(),
+        args.agent_key.clone(),
+        args.vta_did.clone(),
+        args.mediator_did.clone(),
+    )? {
+        tracing::info!(%agent_did, %mediator_did, "using did:key DIDComm mode");
+        return VtaClient::connect_didcomm(
+            &agent_did,
+            &agent_key,
+            &vta_did,
+            &mediator_did,
+            args.url.clone(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("connecting to VTA over DIDComm: {e}"));
+    }
+
     // Token mode: explicit URL + bearer token.
     if let (Some(url), Ok(token)) = (args.url.as_deref(), std::env::var("VTA_TOKEN"))
         && !token.is_empty()
@@ -163,4 +231,46 @@ fn default_sessions_dir() -> anyhow::Result<PathBuf> {
     let home =
         std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME not set; pass --sessions-dir"))?;
     Ok(PathBuf::from(home).join(".config").join("pnm"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn didkey_didcomm_params_all_set_returns_some() {
+        let got = didkey_didcomm_params(
+            Some("did:key:zAgent".into()),
+            Some("zKey".into()),
+            Some("did:key:zVta".into()),
+            Some("did:key:zMed".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Some((
+                "did:key:zAgent".into(),
+                "zKey".into(),
+                "did:key:zVta".into(),
+                "did:key:zMed".into(),
+            ))
+        );
+    }
+
+    #[test]
+    fn didkey_didcomm_params_none_set_returns_none() {
+        assert_eq!(didkey_didcomm_params(None, None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn didkey_didcomm_params_partial_is_error() {
+        let err = didkey_didcomm_params(
+            Some("did:key:zAgent".into()),
+            None,
+            Some("did:key:zVta".into()),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("all of"));
+    }
 }
