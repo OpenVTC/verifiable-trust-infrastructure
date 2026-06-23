@@ -848,6 +848,9 @@ pub async fn sign_payload(
                 "signing key {key_id} is not permitted by the policy of context {ctx}"
             )));
         }
+        if let Some(limit) = policy.quota_for("sign") {
+            crate::contexts::enforce_daily_quota(contexts_ks, ctx, "sign", limit).await?;
+        }
     } else if !auth.is_super_admin() {
         return Err(AppError::Forbidden(
             "only super admin can use unscoped keys".into(),

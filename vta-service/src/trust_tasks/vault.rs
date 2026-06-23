@@ -1306,16 +1306,28 @@ pub(super) async fn handle_release(
     match crate::contexts::effective_context_policy(&state.contexts_ks, &stored.entry.context_id)
         .await
     {
-        Ok(policy) if !policy.allows_export() => {
-            return app_error_to_reject(
-                &doc,
-                AppError::Forbidden(format!(
-                    "vault release is disabled by the policy of context {}",
-                    stored.entry.context_id
-                )),
-            );
+        Ok(policy) => {
+            if !policy.allows_export() {
+                return app_error_to_reject(
+                    &doc,
+                    AppError::Forbidden(format!(
+                        "vault release is disabled by the policy of context {}",
+                        stored.entry.context_id
+                    )),
+                );
+            }
+            if let Some(limit) = policy.quota_for("vault/release")
+                && let Err(e) = crate::contexts::enforce_daily_quota(
+                    &state.contexts_ks,
+                    &stored.entry.context_id,
+                    "vault/release",
+                    limit,
+                )
+                .await
+            {
+                return app_error_to_reject(&doc, e);
+            }
         }
-        Ok(_) => {}
         Err(e) => return app_error_to_reject(&doc, e),
     }
 

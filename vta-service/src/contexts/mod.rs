@@ -48,6 +48,30 @@ pub async fn effective_context_policy(
     Ok(ContextPolicy::resolve(policies.iter()))
 }
 
+/// Enforce a per-day operation quota for a context (the `quotas` arm of
+/// [`ContextPolicy`]). Atomically counts this operation in the current UTC day
+/// and returns `Forbidden` once the ceiling is reached. Counters are keyed by
+/// day (`quota:{context}:{op}:{YYYY-MM-DD}`) in the contexts keyspace, so they
+/// roll over automatically and stale days are inert (a future sweep can prune
+/// them). `allocate_u32` is 0-indexed, so the call that returns `limit` is the
+/// `(limit+1)`-th — rejecting it allows exactly `limit` operations per day.
+pub async fn enforce_daily_quota(
+    ks: &KeyspaceHandle,
+    context_id: &str,
+    op_class: &str,
+    limit: u64,
+) -> Result<(), AppError> {
+    let day = Utc::now().format("%Y-%m-%d");
+    let key = format!("quota:{context_id}:{op_class}:{day}");
+    let slot = vti_common::store::counter::allocate_u32(ks, &key).await?;
+    if u64::from(slot) >= limit {
+        return Err(AppError::Forbidden(format!(
+            "daily quota exceeded for {op_class} in context {context_id} ({limit}/day)"
+        )));
+    }
+    Ok(())
+}
+
 /// Store (create or overwrite) a context record.
 pub async fn store_context(ks: &KeyspaceHandle, record: &ContextRecord) -> Result<(), AppError> {
     ks.insert(ctx_key(&record.id), record).await
@@ -174,6 +198,25 @@ mod tests {
                 .expect("keyspace"),
             dir,
         )
+    }
+
+    #[tokio::test]
+    async fn daily_quota_allows_up_to_limit_then_forbids() {
+        let (ks, _dir) = temp_ks();
+        // Limit 2: the first two operations pass, the third is refused.
+        enforce_daily_quota(&ks, "sales", "sign", 2).await.unwrap();
+        enforce_daily_quota(&ks, "sales", "sign", 2).await.unwrap();
+        let err = enforce_daily_quota(&ks, "sales", "sign", 2).await;
+        assert!(matches!(err, Err(AppError::Forbidden(_))), "{err:?}");
+
+        // A different op-class (and a different context) has an independent
+        // counter.
+        enforce_daily_quota(&ks, "sales", "vault/release", 1)
+            .await
+            .unwrap();
+        let err2 = enforce_daily_quota(&ks, "sales", "vault/release", 1).await;
+        assert!(matches!(err2, Err(AppError::Forbidden(_))), "{err2:?}");
+        enforce_daily_quota(&ks, "eng", "sign", 2).await.unwrap();
     }
 
     /// Regression test for the context-index race: N concurrent
