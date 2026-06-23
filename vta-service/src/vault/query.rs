@@ -387,6 +387,7 @@ mod tests {
             types: vec!["VerifiableCredential".into(), "InvitationCredential".into()],
             schema_id: Some("schema:invite:1".into()),
             community_did: Some("did:web:acme".into()),
+            context_id: None,
             subject_did: Some("did:key:zAlice".into()),
             issuer_did: Some("did:web:issuer.example".into()),
             purpose: Some(CredentialPurpose::Invite),

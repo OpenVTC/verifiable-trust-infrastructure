@@ -146,9 +146,17 @@ pub struct StoredCredential {
     /// Reference into the VTC schema store / catalog entry, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_id: Option<String>,
-    /// Which community / context this credential is for.
+    /// **Provenance** axis: which community this credential is about / from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community_did: Option<String>,
+    /// **Custody** axis: which context in *this* VTA owns the credential —
+    /// distinct from [`community_did`](Self::community_did) (provenance). The
+    /// owning context's `ContextPolicy` governs disclosure of this credential
+    /// (which verifiers, which types). `None` = unscoped (super-admin root) → no
+    /// policy → unrestricted, which is how records stored before this field
+    /// deserialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
     /// The holder DID this VC is about (credential subject).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_did: Option<String>,
@@ -338,6 +346,7 @@ mod tests {
             types: vec!["MembershipCredential".into()],
             schema_id: None,
             community_did: Some("did:web:acme".into()),
+            context_id: None,
             subject_did: None,
             issuer_did: Some("did:web:issuer".into()),
             purpose: Some(CredentialPurpose::Membership),

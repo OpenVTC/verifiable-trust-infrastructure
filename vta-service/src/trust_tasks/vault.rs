@@ -1298,29 +1298,25 @@ pub(super) async fn handle_release(
         return r;
     }
 
-    // Context policy may disable secret export (release) for the entry's
-    // context. Constrains context-scoped actors; the super-admin (policy author)
-    // is exempt, consistent with the signing-oracle gate. Resolved across the
-    // whole ancestor chain so a child context can only tighten, never re-enable.
-    if !auth.is_super_admin() {
-        match crate::contexts::effective_context_policy(
-            &state.contexts_ks,
-            &stored.entry.context_id,
-        )
+    // Context policy is a resource-bound guardrail: release (secret export) is
+    // gated by the entry's context regardless of the actor — even the
+    // super-admin — so a fleet/owner-set policy binds every release. Resolved
+    // across the whole ancestor chain so a child context can only tighten, never
+    // re-enable.
+    match crate::contexts::effective_context_policy(&state.contexts_ks, &stored.entry.context_id)
         .await
-        {
-            Ok(policy) if !policy.allows_export() => {
-                return app_error_to_reject(
-                    &doc,
-                    AppError::Forbidden(format!(
-                        "vault release is disabled by the policy of context {}",
-                        stored.entry.context_id
-                    )),
-                );
-            }
-            Ok(_) => {}
-            Err(e) => return app_error_to_reject(&doc, e),
+    {
+        Ok(policy) if !policy.allows_export() => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Forbidden(format!(
+                    "vault release is disabled by the policy of context {}",
+                    stored.entry.context_id
+                )),
+            );
         }
+        Ok(_) => {}
+        Err(e) => return app_error_to_reject(&doc, e),
     }
 
     // Archived / soft-deleted entries are not releasable — refuse as

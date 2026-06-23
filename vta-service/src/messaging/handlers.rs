@@ -1905,6 +1905,7 @@ pub async fn handle_credential_query(
         operations::credential_exchange::present_query(
             &app_state.vault_ks,
             &app_state.keys_ks,
+            &app_state.contexts_ks,
             &app_state.seed_store,
             &auth,
             &body,

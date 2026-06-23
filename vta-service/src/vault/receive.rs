@@ -233,6 +233,7 @@ pub async fn receive_sd_jwt_vc(
         // concept (a claim convention); not part of the minimal SD-JWT-VC
         // profile, so left unset at receive time.
         community_did: None,
+        context_id: None,
         subject_did,
         issuer_did: Some(issuer_did.to_string()),
         purpose,
@@ -356,6 +357,7 @@ pub async fn receive_di_vc(
         types,
         schema_id: None,
         community_did: None,
+        context_id: None,
         subject_did,
         issuer_did,
         purpose,

@@ -736,6 +736,7 @@ mod tests {
             types: vec!["MembershipCredential".into()],
             schema_id: None,
             community_did: Some("did:web:acme".into()),
+            context_id: None,
             subject_did: Some("did:key:zAlice".into()),
             issuer_did: Some("did:web:issuer.example".into()),
             purpose: Some(CredentialPurpose::Membership),

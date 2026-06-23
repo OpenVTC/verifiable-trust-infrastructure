@@ -161,6 +161,7 @@ async fn mint_and_put(
         types: vec!["MembershipCredential".into()],
         schema_id: None,
         community_did: Some("did:web:acme.example".into()),
+        context_id: None,
         subject_did: Some(subject_did.to_string()),
         issuer_did: Some(issuer_did.to_string()),
         purpose: None,

@@ -770,6 +770,7 @@ pub enum PresentOutcome {
 pub async fn present_query(
     vault: &KeyspaceHandle,
     keys_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     query: &QueryBody,
@@ -778,12 +779,48 @@ pub async fn present_query(
     status_resolver: Option<&dyn crate::vault::status::StatusListResolver>,
     now: DateTime<Utc>,
 ) -> Result<PresentOutcome, AppError> {
-    let matched = match_vault(vault, &query.dcql_query).await?;
+    let mut matched = match_vault(vault, &query.dcql_query).await?;
     if matched.is_empty() {
         return Err(AppError::NotFound(
             "no held credential satisfies the verifier's query".to_string(),
         ));
     }
+
+    // Context-policy guardrail (resource-bound, actor-independent): each matched
+    // credential's owning context governs *to whom* and *which types* it may be
+    // disclosed. A credential whose context forbids this verifier — or whose
+    // type the context does not permit — is excluded (egress is decided per
+    // credential). Unscoped credentials (no context_id) carry no policy and pass
+    // through. This applies regardless of caller, so the autonomous flow (which
+    // runs as super-admin) is governed too — the owner relaxes it via policy
+    // CRUD, not by bypassing it here.
+    let mut filtered = Vec::with_capacity(matched.len());
+    for m in matched.drain(..) {
+        let stored = vault::storage::get(vault, &m.credential_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(format!("matched credential `{}` is gone", m.credential_id))
+            })?;
+        let permitted = match stored.context_id.as_deref() {
+            None => true,
+            Some(ctx) => {
+                let pol = crate::contexts::effective_context_policy(contexts_ks, ctx).await?;
+                let verifier_ok = pol.allows_verifier(verifier_did);
+                let type_ok = pol.presentable_types.is_none()
+                    || stored.types.iter().any(|t| pol.allows_presentable_type(t));
+                verifier_ok && type_ok
+            }
+        };
+        if permitted {
+            filtered.push(m);
+        }
+    }
+    if filtered.is_empty() {
+        return Err(AppError::NotFound(
+            "context policy permits none of the matched credentials to this verifier".to_string(),
+        ));
+    }
+    let matched = filtered;
 
     if !policy.trusted_verifiers.contains(verifier_did) {
         // Defer — list every credential the query would disclose for the approver.
@@ -1164,6 +1201,112 @@ mod tests {
         .unwrap();
         let ks = store.keyspace(crate::keyspaces::VAULT).unwrap();
         (dir, store, ks)
+    }
+
+    /// An empty contexts keyspace for present_query tests whose credentials are
+    /// unscoped (context_id = None), so the context-policy guardrail is a no-op.
+    fn fresh_contexts() -> (tempfile::TempDir, Store, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+        (dir, store, ks)
+    }
+
+    /// Resource-bound present guardrail: a credential whose owning context
+    /// forbids the verifier is excluded from the presentation (here it is the
+    /// only match, so the result is `NotFound`); a verifier the context permits
+    /// presents normally. Applies even though the caller is super-admin.
+    #[tokio::test]
+    async fn present_query_excludes_credentials_their_context_forbids_the_verifier() {
+        use crate::acl::Role;
+
+        let (_dir, vault, keys_ks, seed_store, _subject) = holder_fixture().await;
+        let (_cd, _cs, contexts_ks) = fresh_contexts();
+
+        // holder_fixture stores exactly one membership credential (unscoped).
+        // Bind it to context "staff", whose policy permits only a *different*
+        // verifier.
+        let existing = match_vault(&vault, &membership_query().dcql_query)
+            .await
+            .unwrap();
+        assert_eq!(existing.len(), 1, "fixture stores exactly one credential");
+        let mut stored = crate::vault::storage::get(&vault, &existing[0].credential_id)
+            .await
+            .unwrap()
+            .unwrap();
+        stored.context_id = Some("staff".into());
+        crate::vault::storage::put(&vault, &stored).await.unwrap();
+        crate::contexts::store_context(
+            &contexts_ks,
+            &crate::contexts::ContextRecord {
+                id: "staff".into(),
+                name: "Staff".into(),
+                did: None,
+                description: None,
+                parent: None,
+                base_path: "m/26'/2'/7'".into(),
+                index: 7,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                context_policy: Some(vta_sdk::context_policy::ContextPolicy {
+                    trusted_verifiers: Some(
+                        ["did:web:approved.example".to_string()]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    ..vta_sdk::context_policy::ContextPolicy::unrestricted()
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+        let auth = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: Vec::new(), // super-admin — still governed
+            ..Default::default()
+        };
+        let query = membership_query();
+        let now = Utc::now();
+
+        // Forbidden verifier → the only match is excluded → NotFound.
+        let forbidden = present_query(
+            &vault,
+            &keys_ks,
+            &contexts_ks,
+            &seed_store,
+            &auth,
+            &query,
+            "did:web:stranger.example",
+            &ConsentPolicy::trusting(["did:web:stranger.example"]),
+            None,
+            now,
+        )
+        .await;
+        assert!(
+            matches!(forbidden, Err(AppError::NotFound(_))),
+            "context policy must exclude the forbidden verifier, got {forbidden:?}"
+        );
+
+        // Verifier the context permits (and globally trusted) → presented.
+        let approved = present_query(
+            &vault,
+            &keys_ks,
+            &contexts_ks,
+            &seed_store,
+            &auth,
+            &query,
+            "did:web:approved.example",
+            &ConsentPolicy::trusting(["did:web:approved.example"]),
+            None,
+            now,
+        )
+        .await
+        .expect("approved verifier presents");
+        assert!(matches!(approved, PresentOutcome::Presented(_)));
     }
 
     /// A minimal Ed25519 issuer whose DID is the `did:key` for its key.
@@ -1754,6 +1897,7 @@ mod tests {
             types: vec!["MembershipCredential".into()],
             schema_id: None,
             community_did: None,
+            context_id: None,
             subject_did: Some(subject_did.to_string()),
             issuer_did: Some("did:web:issuer.example".into()),
             purpose: None,
@@ -1945,9 +2089,11 @@ mod tests {
         let query = membership_query();
 
         // Trusted verifier → present, end to end (key resolved + kb-jwt signed).
+        let (_cd, _cs, contexts_ks) = fresh_contexts();
         let outcome = present_query(
             &vault,
             &keys_ks,
+            &contexts_ks,
             &seed_store,
             &auth,
             &query,
@@ -1974,9 +2120,11 @@ mod tests {
         }
 
         // Untrusted verifier → deferral.
+        let (_cd, _cs, contexts_ks) = fresh_contexts();
         let deferred = present_query(
             &vault,
             &keys_ks,
+            &contexts_ks,
             &seed_store,
             &auth,
             &query,
@@ -2061,9 +2209,11 @@ mod tests {
             purpose: "join the Acme community".into(),
         };
 
+        let (_cd, _cs, contexts_ks) = fresh_contexts();
         let outcome = present_query(
             &vault,
             &keys_ks,
+            &contexts_ks,
             &seed_store,
             &auth,
             &query,
@@ -2312,9 +2462,11 @@ mod tests {
         let query = membership_query();
 
         // 1. Untrusted verifier defers → no presentation yet, but a pending record.
+        let (_cd, _cs, contexts_ks) = fresh_contexts();
         let outcome = present_query(
             &vault,
             &keys_ks,
+            &contexts_ks,
             &seed_store,
             &auth,
             &query,
