@@ -1,0 +1,28 @@
+[package]
+name = "vtc-client"
+description = "Client SDK for Verifiable Trust Communities (VTC) — auth, members, join, removal, policies"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Reuses the VTA SDK's challenge-response auth (audience-agnostic) and the
+# published join-request protocol types. `session` gates `auth_light` +
+# `protocols`.
+vta-sdk = { path = "../vta-sdk", version = "0.18", features = ["session"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true
