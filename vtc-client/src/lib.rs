@@ -78,6 +78,10 @@ pub struct MemberRecord {
     pub personhood: bool,
     #[serde(default)]
     pub joined_via_invitation: bool,
+    /// Community-defined extensions (opaque JSON). A fleet manager can stash
+    /// per-member operational state here — e.g. a `fleet_index` — at enrollment.
+    #[serde(default)]
+    pub extensions: serde_json::Value,
 }
 
 /// One page of a cursor-paginated VTC listing. Mirrors the server's
@@ -311,6 +315,123 @@ impl VtcClient {
         Ok(resp.json().await?)
     }
 
+    /// Submit a join request (the applicant side): POST the VP-framed
+    /// `body` to `/join-requests`. The VP's holder-binding proof authenticates
+    /// the applicant, so this does not require a bearer token. Returns the
+    /// verdict (auto-admit issues the VMC inline; otherwise it's queued).
+    pub async fn submit_join(
+        &self,
+        body: &join_requests::JoinRequestSubmitBody,
+    ) -> Result<DecideResult, VtcError> {
+        let resp = self
+            .http
+            .post(format!("{}/join-requests", self.base_url))
+            .json(body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// List the community's policies (opaque JSON descriptors). Admin token.
+    pub async fn list_policies(&self) -> Result<Vec<serde_json::Value>, VtcError> {
+        let token = self.token()?;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut params: Vec<(&str, &str)> = Vec::new();
+            if let Some(cursor) = &cursor {
+                params.push(("cursor", cursor.as_str()));
+            }
+            let url =
+                reqwest::Url::parse_with_params(&format!("{}/policies", self.base_url), &params)
+                    .map_err(|e| VtcError::Url(e.to_string()))?;
+            let resp = self.http.get(url).bearer_auth(token).send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(VtcError::Http { status, body });
+            }
+            let page: Page<serde_json::Value> = resp.json().await?;
+            out.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch one policy by id (opaque JSON, incl. the Rego source). Admin token.
+    pub async fn get_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
+        self.get_json(&format!("policies/{id}")).await
+    }
+
+    /// Upload a new Rego policy bundle for `purpose` (`"join"`, `"removal"`,
+    /// …). Returns the upload descriptor (id, sha256, version). Admin token.
+    /// Upload alone does not activate it — call [`activate_policy`](Self::activate_policy).
+    pub async fn upload_policy(
+        &self,
+        purpose: &str,
+        rego_source: &str,
+    ) -> Result<serde_json::Value, VtcError> {
+        self.post_json(
+            "policies",
+            &serde_json::json!({ "purpose": purpose, "regoSource": rego_source }),
+        )
+        .await
+    }
+
+    /// Activate a previously-uploaded policy (make it live for decisions of its
+    /// purpose). Admin token.
+    pub async fn activate_policy(&self, id: &str) -> Result<serde_json::Value, VtcError> {
+        self.post_json(&format!("policies/{id}/activate"), &serde_json::json!({}))
+            .await
+    }
+
+    /// Authenticated GET returning JSON.
+    async fn get_json(&self, path: &str) -> Result<serde_json::Value, VtcError> {
+        let token = self.token()?;
+        let resp = self
+            .http
+            .get(format!("{}/{path}", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
+    /// Authenticated POST of a JSON body returning JSON.
+    async fn post_json(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, VtcError> {
+        let token = self.token()?;
+        let resp = self
+            .http
+            .post(format!("{}/{path}", self.base_url))
+            .bearer_auth(token)
+            .json(body)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(resp.json().await?)
+    }
+
     /// Bearer token or [`VtcError::NotAuthenticated`].
     fn token(&self) -> Result<&str, VtcError> {
         self.token.as_deref().ok_or(VtcError::NotAuthenticated)
@@ -420,6 +541,47 @@ mod tests {
         ));
         assert!(matches!(
             client.remove_member("did:key:x", Some("reason")).await,
+            Err(VtcError::NotAuthenticated)
+        ));
+    }
+
+    #[test]
+    fn member_extensions_default_and_parse() {
+        let none: MemberRecord = serde_json::from_value(serde_json::json!({
+            "did": "did:key:z", "role": "member", "joinedAt": "2026-06-23T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(none.extensions.is_null());
+        let with: MemberRecord = serde_json::from_value(serde_json::json!({
+            "did": "did:key:z", "role": "member", "joinedAt": "2026-06-23T00:00:00Z",
+            "extensions": { "fleet_index": 3 }
+        }))
+        .unwrap();
+        assert_eq!(with.extensions["fleet_index"], 3);
+    }
+
+    #[tokio::test]
+    async fn policy_admin_methods_without_token_are_not_authenticated() {
+        let client = VtcClient {
+            http: reqwest::Client::new(),
+            base_url: "https://vtc.example.com/v1".into(),
+            vtc_did: "did:web:vtc.example.com".into(),
+            token: None,
+        };
+        assert!(matches!(
+            client.list_policies().await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.get_policy("p1").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.upload_policy("join", "package x").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client.activate_policy("p1").await,
             Err(VtcError::NotAuthenticated)
         ));
     }
