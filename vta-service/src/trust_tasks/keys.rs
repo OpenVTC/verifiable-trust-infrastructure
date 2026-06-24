@@ -9,6 +9,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::key_management::create::CreateKeyBody;
+use vta_sdk::protocols::key_management::derive_and_sign::DeriveAndSignBody;
 use vta_sdk::protocols::key_management::get::GetKeyBody;
 use vta_sdk::protocols::key_management::list::ListKeysBody;
 use vta_sdk::protocols::key_management::rename::RenameKeyBody;
@@ -206,6 +207,53 @@ pub(super) async fn handle_sign(
         &state.seed_store,
         auth,
         &req.key_id,
+        &payload_bytes,
+        &req.algorithm,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/keys/derive-and-sign/1.0`. Admin only.
+///
+/// Ephemeral: derives at the requested BIP-32 path, signs, and returns the
+/// signature + derived public key without persisting a key record.
+pub(super) async fn handle_derive_and_sign(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: DeriveAndSignBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let payload_bytes = match base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.payload)
+        .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(&req.payload))
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("invalid base64url payload: {e}"),
+                },
+            );
+        }
+    };
+    match operations::keys::derive_and_sign(
+        &state.keys_ks,
+        &state.seed_store,
+        auth,
+        &req.key_type,
+        &req.derivation_path,
         &payload_bytes,
         &req.algorithm,
         TRANSPORT_TRUST_TASK,

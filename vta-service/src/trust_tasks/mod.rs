@@ -517,6 +517,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_KEYS_RENAME_1_0 => keys::handle_rename,
     vta_sdk::trust_tasks::TASK_KEYS_REVOKE_1_0 => keys::handle_revoke,
     vta_sdk::trust_tasks::TASK_KEYS_SIGN_1_0 => keys::handle_sign,
+    vta_sdk::trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_1_0 => keys::handle_derive_and_sign,
     // ─── Seeds slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_SEEDS_LIST_1_0 => seeds::handle_list,
     vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => seeds::handle_rotate,

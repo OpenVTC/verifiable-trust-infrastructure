@@ -294,6 +294,15 @@ pub const TASK_KEYS_REVOKE_1_0: &str = "https://trusttasks.org/spec/vta/keys/rev
 /// Auth: write (Application or higher).
 pub const TASK_KEYS_SIGN_1_0: &str = "https://trusttasks.org/spec/vta/keys/sign/1.0";
 
+/// `spec/vta/keys/derive-and-sign/1.0` — derive a key at a BIP-32 path from the
+/// seed, sign a base64url payload, and return `{ public_key, signature }`
+/// WITHOUT persisting a key record (ephemeral signing oracle over the seed's
+/// derivation tree).
+/// Payload: [`crate::protocols::key_management::derive_and_sign::DeriveAndSignBody`].
+/// Auth: admin.
+pub const TASK_KEYS_DERIVE_AND_SIGN_1_0: &str =
+    "https://trusttasks.org/spec/vta/keys/derive-and-sign/1.0";
+
 // ─── Seeds slice (spec/vta/seeds/*) ──────────────────────────────────────
 
 /// `spec/vta/seeds/list/1.0` — list all seed records.
@@ -1183,6 +1192,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_RENAME_1_0,
     TASK_KEYS_REVOKE_1_0,
     TASK_KEYS_SIGN_1_0,
+    TASK_KEYS_DERIVE_AND_SIGN_1_0,
     // Seeds slice
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,

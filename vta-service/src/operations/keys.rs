@@ -9,6 +9,7 @@ use zeroize::Zeroize;
 
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
+    derive_and_sign::DeriveAndSignResultBody,
     list::ListKeysResultBody,
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
@@ -952,6 +953,65 @@ pub async fn sign_payload(
     })
 }
 
+/// Ephemeral derive-and-sign: derive an Ed25519 key at `derivation_path` from
+/// the VTA's seed, sign `payload`, and return `{ public_key, signature }`
+/// **without persisting a `KeyRecord`**.
+///
+/// This is the signing oracle that lets a fleet manager (whose fleet seed *is*
+/// this VTA's seed, ideally TEE-sealed) act as any derived child identity — e.g.
+/// a per-VTA super-admin at `m/26'/9'/<idx>'` — so the seed never leaves the
+/// VTA. **Admin-gated** (the strictest gate, like `create_key`): the caller can
+/// derive + sign as *any* path, so it must be a fully-trusted admin.
+pub async fn derive_and_sign(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    key_type: &KeyType,
+    derivation_path: &str,
+    payload: &[u8],
+    algorithm: &SignAlgorithm,
+    channel: &str,
+) -> Result<DeriveAndSignResultBody, AppError> {
+    auth.require_admin()?;
+
+    if !matches!((algorithm, key_type), (SignAlgorithm::EdDSA, KeyType::Ed25519)) {
+        return Err(AppError::Validation(format!(
+            "derive-and-sign currently supports only EdDSA/Ed25519 (got {algorithm}/{key_type:?})"
+        )));
+    }
+
+    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+    let path: ed25519_dalek_bip32::DerivationPath = derivation_path
+        .parse()
+        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
+    let derived = bip32
+        .derive(&path)
+        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let public_key =
+        encode_public_multibase(&KeyType::Ed25519, signing_key.verifying_key().as_bytes());
+
+    use ed25519_dalek::Signer;
+    let signature_bytes = signing_key.sign(payload).to_bytes().to_vec();
+    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signature_bytes);
+
+    info!(
+        channel,
+        derivation_path = %derivation_path,
+        "ephemeral derive-and-sign (no key record persisted)"
+    );
+
+    Ok(DeriveAndSignResultBody {
+        public_key,
+        signature,
+        algorithm: algorithm.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1383,6 +1443,75 @@ mod tests {
         assert!(!decoded.is_empty(), "decoded signature must be non-empty");
         // Ed25519 signatures are 64 bytes
         assert_eq!(decoded.len(), 64, "Ed25519 signature should be 64 bytes");
+    }
+
+    #[tokio::test]
+    async fn derive_and_sign_is_ephemeral_admin_only_and_verifies() {
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+        let payload = b"fleet super-admin auth challenge";
+
+        let result = derive_and_sign(
+            &h.keys_ks,
+            &h.seed_store,
+            &auth,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            payload,
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect("derive_and_sign should succeed for an admin");
+
+        // The signature verifies against the returned (derived) public key.
+        let (_, pk_bytes) = multibase::decode(&result.public_key).expect("multibase pubkey");
+        assert_eq!(&pk_bytes[0..2], &[0xed, 0x01], "ed25519-pub multicodec");
+        let vk = VerifyingKey::from_bytes(pk_bytes[2..].try_into().unwrap()).unwrap();
+        let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&result.signature)
+            .unwrap();
+        let sig = Signature::from_bytes(sig_bytes.as_slice().try_into().unwrap());
+        vk.verify(payload, &sig).expect("signature must verify");
+
+        // Ephemeral: no key record was persisted.
+        let listed = list_keys(
+            &h.keys_ks,
+            &auth,
+            ListKeysParams {
+                offset: None,
+                limit: None,
+                status: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("list keys");
+        assert!(listed.keys.is_empty(), "derive_and_sign must not persist a key");
+
+        // A non-admin caller is rejected.
+        let non_admin = AuthClaims {
+            role: Role::Application,
+            ..h.super_admin_auth()
+        };
+        assert!(
+            derive_and_sign(
+                &h.keys_ks,
+                &h.seed_store,
+                &non_admin,
+                &KeyType::Ed25519,
+                "m/26'/9'/0'",
+                payload,
+                &SignAlgorithm::EdDSA,
+                "test",
+            )
+            .await
+            .is_err(),
+            "non-admin must be rejected"
+        );
     }
 
     /// Context policy gates the signing oracle as a *resource-bound* guardrail:
