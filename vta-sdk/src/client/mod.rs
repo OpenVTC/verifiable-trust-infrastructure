@@ -106,6 +106,7 @@ mod backup_descriptors;
 mod bootstrap;
 mod consent;
 mod contexts;
+mod credentials;
 mod did_templates;
 mod keys;
 mod secrets;

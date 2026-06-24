@@ -7,6 +7,7 @@ pub mod cache;
 pub mod config;
 pub mod contexts;
 pub mod credential_exchange;
+pub mod credentials;
 pub mod device;
 pub mod did_templates;
 #[cfg(feature = "webvh")]

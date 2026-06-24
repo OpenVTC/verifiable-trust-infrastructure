@@ -522,6 +522,23 @@ pub const TASK_VAULT_CREDENTIALS_RESTORE_0_1: &str =
 pub const TASK_VAULT_CREDENTIALS_PURGE_0_1: &str =
     "https://trusttasks.org/spec/vault/credentials/purge/0.1";
 
+// Issued-credential lifecycle (canonical `spec/vta/credentials/*` from the
+// merged `dtgwg-trust-tasks-tf` registry). Distinct from the credential-vault
+// slice above (which stores credentials the holder *holds*): these MINT a new
+// VTA-signed W3C VC to a holder DID and revoke it by id. Both are
+// dispatcher-routed and gated by operator step-up (AAL2) + an admin capability
+// check. See `vta-service::trust_tasks::credentials`.
+
+/// `spec/vta/credentials/issue/0.1` — issue a scoped, time-boxed Verifiable
+/// Credential to a holder DID. Auth: Admin + operator step-up (AAL2).
+pub const TASK_VTA_CREDENTIALS_ISSUE_0_1: &str =
+    "https://trusttasks.org/spec/vta/credentials/issue/0.1";
+
+/// `spec/vta/credentials/revoke/0.1` — revoke a previously-issued credential by
+/// id. Auth: Admin + operator step-up (AAL2).
+pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
+    "https://trusttasks.org/spec/vta/credentials/revoke/0.1";
+
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
 // Canonical Trust Tasks for DID + domain + server + registry management
@@ -1276,6 +1293,9 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONSENT_LIST_1_0,
     TASK_CONSENT_APPROVER_SET_1_0,
     TASK_CONSENT_APPROVER_LIST_1_0,
+    // Issued-credential lifecycle (spec/vta/credentials/*)
+    TASK_VTA_CREDENTIALS_ISSUE_0_1,
+    TASK_VTA_CREDENTIALS_REVOKE_0_1,
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than

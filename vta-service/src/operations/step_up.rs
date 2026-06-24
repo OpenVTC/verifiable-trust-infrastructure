@@ -28,8 +28,8 @@ use crate::config::AppConfig;
 /// the route module re-exports this in turn for its handlers + extractor).
 pub mod op {
     pub use vti_common::auth::step_up::op_class::{
-        ACL_CHANGE_ROLE, ACL_GRANT, ACL_REVOKE, ACL_SWAP_KEY, CONTEXT_DELETE, KEY_REVOKE,
-        VAULT_PROXY_LOGIN, VAULT_RELEASE, VAULT_SIGN_TRUST_TASK,
+        ACL_CHANGE_ROLE, ACL_GRANT, ACL_REVOKE, ACL_SWAP_KEY, CONTEXT_DELETE, CREDENTIALS_ISSUE,
+        CREDENTIALS_REVOKE, KEY_REVOKE, VAULT_PROXY_LOGIN, VAULT_RELEASE, VAULT_SIGN_TRUST_TASK,
     };
 }
 

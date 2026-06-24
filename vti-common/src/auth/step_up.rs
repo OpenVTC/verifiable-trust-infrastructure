@@ -83,6 +83,12 @@ pub mod op_class {
     /// Sign a Trust Task envelope as a vault entry's principal DID
     /// (`vault/sign-trust-task/0.1`).
     pub const VAULT_SIGN_TRUST_TASK: &str = "vault/sign-trust-task";
+    /// Mint a new VTA-signed Verifiable Credential for a holder
+    /// (`vta/credentials/issue/0.1`).
+    pub const CREDENTIALS_ISSUE: &str = "credentials/issue";
+    /// Revoke a previously-issued VTA credential
+    /// (`vta/credentials/revoke/0.1`).
+    pub const CREDENTIALS_REVOKE: &str = "credentials/revoke";
 
     /// Every recognized operation-class (excludes the `*` catch-all).
     pub const ALL: &[&str] = &[
@@ -95,6 +101,8 @@ pub mod op_class {
         VAULT_RELEASE,
         VAULT_PROXY_LOGIN,
         VAULT_SIGN_TRUST_TASK,
+        CREDENTIALS_ISSUE,
+        CREDENTIALS_REVOKE,
     ];
 
     /// Whether `operation` is a floor target the maintainer recognizes: a known

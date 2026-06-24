@@ -55,6 +55,11 @@ pub const CONSENT: &str = "consent";
 /// Per-(platform, context) approver bindings — who decides consent and how the
 /// prompt routes (`vti_common::consent::ApproverBinding`).
 pub const CONSENT_APPROVERS: &str = "consent_approvers";
+/// VTA-issued credentials (minted by `vta/credentials/issue/0.1`, revoked by
+/// `vta/credentials/revoke/0.1`). One record per credential keyed `cred:<id>`;
+/// revocation is a tombstone (`revokedAt` set in place), not a delete. Distinct
+/// from [`VAULT`] (which stores credentials the holder *holds*).
+pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
@@ -80,6 +85,7 @@ pub const ALL: &[&str] = &[
     BOOTSTRAP,
     CONSENT,
     CONSENT_APPROVERS,
+    ISSUED_CREDENTIALS,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -115,6 +121,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     DRAINS,
     SNAPSHOT,
     BOOTSTRAP,
+    // Durable VTA-issued holder credentials. Like [`VAULT`], a known backup
+    // gap — a backup-fidelity follow-up should move it into [`BACKED_UP`].
+    ISSUED_CREDENTIALS,
 ];
 
 /// Test-only keyspaces (descriptor sweeper tests open isolated keyspaces so a

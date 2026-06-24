@@ -383,6 +383,51 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
     (vta_did, deps)
 }
 
+/// Build a full [`crate::server::AppState`] whose VTA signing identity is
+/// provisioned (active seed + `{vta_did}#key-0`), so handlers that **mint**
+/// VTA-signed credentials (e.g. `trust_tasks::credentials::handle_issue`) can
+/// load the issuer key and produce a real Data-Integrity proof.
+///
+/// Returns the `AppState` plus the owning `TempDir` (the caller must keep it
+/// alive — dropping it removes the on-disk fjall store). Uses the canonical
+/// [`build_app_state`](crate::server::build_app_state) constructor so the test
+/// state can't diverge from production wiring.
+pub async fn build_signing_test_app_state() -> (crate::server::AppState, tempfile::TempDir) {
+    use crate::server::{AppStateParts, build_app_state};
+    use tokio::sync::watch;
+
+    init_jwt_provider();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = Store::open(&StoreConfig {
+        data_dir: dir.path().to_path_buf(),
+    })
+    .expect("open store");
+
+    // Provision the VTA's `{vta_did}#key-0` VC-issuance key into the keystore
+    // and point the config at the resulting self-resolving did:key.
+    let keys_ks = store.keyspace(crate::keyspaces::KEYS).expect("keys ks");
+    let (vta_did, seed_store) = provision_vta_signing_identity(&keys_ks, dir.path()).await;
+    let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> = seed_store;
+
+    let mut config = test_app_config(dir.path().to_path_buf());
+    config.vta_did = Some(vta_did);
+    config.public_url = Some("https://vta.test".into());
+
+    let (restart_tx, _rx) = watch::channel(false);
+    let state = build_app_state(
+        config,
+        &store,
+        seed_store,
+        None,
+        None,
+        restart_tx,
+        AppStateParts::default(),
+    )
+    .await
+    .expect("build signing app state");
+    (state, dir)
+}
+
 /// The context [`bootstrap_provisionable_test_vta`] registers and the one a
 /// well-formed request should target (`context_hint` + the `context` param).
 pub const PROVISIONABLE_CONTEXT: &str = "provisionable-ctx";
@@ -777,6 +822,9 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         vault_ks,
         consent_ks: store.keyspace(crate::keyspaces::CONSENT).unwrap(),
         consent_approvers_ks: store.keyspace(crate::keyspaces::CONSENT_APPROVERS).unwrap(),
+        issued_credentials_ks: store
+            .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
+            .unwrap(),
         service_state_ks,
         sealed_nonces_ks,
         backup_bundles_ks: backup_bundles_ks.clone(),

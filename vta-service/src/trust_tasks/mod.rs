@@ -53,6 +53,7 @@ mod consent;
 mod contexts;
 mod cred_vault;
 mod credential_exchange;
+mod credentials;
 mod device;
 mod did_templates;
 mod discovery;
@@ -563,6 +564,10 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_DELETE_0_1 => cred_vault::handle_delete,
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_RESTORE_0_1 => cred_vault::handle_restore,
     vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_PURGE_0_1 => cred_vault::handle_purge,
+    // ─── Issued-credential lifecycle (spec/vta/credentials/*) ────
+    // Mint + revoke VTA-signed VCs; Admin-gated + operator step-up (AAL2).
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1 => credentials::handle_issue,
+    vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1 => credentials::handle_revoke,
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get,
     vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update,

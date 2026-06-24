@@ -120,6 +120,10 @@ pub struct AppState {
     pub consent_ks: KeyspaceHandle,
     /// Per-(platform, context) approver bindings for consent routing.
     pub consent_approvers_ks: KeyspaceHandle,
+    /// VTA-issued credentials minted via `vta/credentials/issue/0.1` and
+    /// revoked via `vta/credentials/revoke/0.1`. Keyed `cred:<id>`; revoke is a
+    /// tombstone (`revokedAt`), not a delete.
+    pub issued_credentials_ks: KeyspaceHandle,
     /// Persisted drain set for the protocol-management feature
     /// (`docs/05-design-notes/didcomm-protocol-management.md`).
     /// Keyed by mediator DID; replayed at boot.
@@ -302,6 +306,8 @@ pub async fn build_app_state(
     let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
     let consent_approvers_ks =
         apply_encryption(store.keyspace(crate::keyspaces::CONSENT_APPROVERS)?);
+    let issued_credentials_ks =
+        apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -357,6 +363,7 @@ pub async fn build_app_state(
         passkey_vms_ks,
         consent_ks,
         consent_approvers_ks,
+        issued_credentials_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
         #[cfg(feature = "webvh")]
