@@ -539,6 +539,30 @@ pub const TASK_VTA_CREDENTIALS_ISSUE_0_1: &str =
 pub const TASK_VTA_CREDENTIALS_REVOKE_0_1: &str =
     "https://trusttasks.org/spec/vta/credentials/revoke/0.1";
 
+// ─── Agent-memory slice (spec/vta/memory/*) ──────────────────────────────
+//
+// A per-context key/value store for AI-agent memory. Dispatcher-routed like
+// the issued-credential slice above, but gated on **context access** (the
+// caller must be permitted to act in `payload.contextId`, the same
+// `require_context` ACL check the context-scoped key tasks use) rather than
+// operator step-up. The context gate enforces per-domain memory isolation: a
+// context-A agent cannot touch context-B memory. See
+// `vta-service::trust_tasks::memory`.
+
+/// `spec/vta/memory/put/0.1` — upsert a value under a `(contextId, key)` pair.
+/// Auth: context access (`require_context(contextId)`). Payload:
+/// [`crate::protocols::memory::MemoryPutBody`].
+pub const TASK_VTA_MEMORY_PUT_0_1: &str = "https://trusttasks.org/spec/vta/memory/put/0.1";
+
+/// `spec/vta/memory/list/0.1` — list every entry in a context. Auth: context
+/// access. Payload: [`crate::protocols::memory::MemoryListBody`].
+pub const TASK_VTA_MEMORY_LIST_0_1: &str = "https://trusttasks.org/spec/vta/memory/list/0.1";
+
+/// `spec/vta/memory/delete/0.1` — remove one entry by key (`not_found` if
+/// absent). Auth: context access. Payload:
+/// [`crate::protocols::memory::MemoryDeleteBody`].
+pub const TASK_VTA_MEMORY_DELETE_0_1: &str = "https://trusttasks.org/spec/vta/memory/delete/0.1";
+
 // ─── DID-management slice (spec/did-management/*) ────────────────────────
 //
 // Canonical Trust Tasks for DID + domain + server + registry management
@@ -1296,6 +1320,10 @@ pub const ALL_URIS: &[&str] = &[
     // Issued-credential lifecycle (spec/vta/credentials/*)
     TASK_VTA_CREDENTIALS_ISSUE_0_1,
     TASK_VTA_CREDENTIALS_REVOKE_0_1,
+    // Agent-memory slice (spec/vta/memory/*)
+    TASK_VTA_MEMORY_PUT_0_1,
+    TASK_VTA_MEMORY_LIST_0_1,
+    TASK_VTA_MEMORY_DELETE_0_1,
 ];
 
 /// The subset of [`ALL_URIS`] served by **dedicated REST routes** rather than

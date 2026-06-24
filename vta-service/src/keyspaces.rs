@@ -61,6 +61,12 @@ pub const CONSENT_APPROVERS: &str = "consent_approvers";
 /// from [`VAULT`] (which stores credentials the holder *holds*).
 pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 
+/// Per-context key/value store for AI-agent memory (`vta/memory/{put,list,
+/// delete}/0.1`). One record per `(contextId, key)` pair, keyed
+/// `mem:<contextId>:<key>`; `list` is a `mem:<contextId>:` prefix scan. Durable
+/// user data → in [`BACKED_UP`].
+pub const MEMORY: &str = "memory";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -86,6 +92,7 @@ pub const ALL: &[&str] = &[
     CONSENT,
     CONSENT_APPROVERS,
     ISSUED_CREDENTIALS,
+    MEMORY,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -99,6 +106,8 @@ pub const BACKED_UP: &[&str] = &[
     WEBVH,
     CONSENT,
     CONSENT_APPROVERS,
+    // Durable agent memory is user data and must survive a restore.
+    MEMORY,
 ];
 
 /// Keyspaces deliberately **not** in a backup.

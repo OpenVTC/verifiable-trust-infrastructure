@@ -825,6 +825,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         issued_credentials_ks: store
             .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
             .unwrap(),
+        memory_ks: store.keyspace(crate::keyspaces::MEMORY).unwrap(),
         service_state_ks,
         sealed_nonces_ks,
         backup_bundles_ks: backup_bundles_ks.clone(),

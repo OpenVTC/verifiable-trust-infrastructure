@@ -60,6 +60,7 @@ mod discovery;
 mod helpers;
 mod keys;
 mod management;
+mod memory;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
 #[cfg(feature = "webvh")]
@@ -568,6 +569,12 @@ dispatch_table! {
     // Mint + revoke VTA-signed VCs; Admin-gated + operator step-up (AAL2).
     vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1 => credentials::handle_issue,
     vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_REVOKE_0_1 => credentials::handle_revoke,
+    // ─── Agent-memory slice (spec/vta/memory/*) ──────────────────
+    // Per-context key/value store; gated on context access (require_context),
+    // NOT operator step-up.
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_PUT_0_1 => memory::handle_put,
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_LIST_0_1 => memory::handle_list,
+    vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_1 => memory::handle_delete,
     // ─── Config slice ────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get,
     vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update,

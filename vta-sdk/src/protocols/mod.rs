@@ -17,6 +17,9 @@ pub mod key_management;
 /// Member-side membership-credential exchange (`members/*`) — the member → VTC
 /// reciprocal VMC and the VTC's request for it.
 pub mod members;
+/// Per-context key/value store for AI-agent memory
+/// (`spec/vta/memory/{put,list,delete}/0.1`).
+pub mod memory;
 /// Passkey-based login flow (`vta/auth/passkey-login-{start,finish}/1.0`).
 pub mod passkey_login;
 pub mod protocol_management;

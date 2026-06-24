@@ -124,6 +124,10 @@ pub struct AppState {
     /// revoked via `vta/credentials/revoke/0.1`. Keyed `cred:<id>`; revoke is a
     /// tombstone (`revokedAt`), not a delete.
     pub issued_credentials_ks: KeyspaceHandle,
+    /// Per-context key/value store for AI-agent memory (`vta/memory/{put,list,
+    /// delete}/0.1`). Entries keyed `mem:<contextId>:<key>`; gated on context
+    /// access. Durable user data.
+    pub memory_ks: KeyspaceHandle,
     /// Persisted drain set for the protocol-management feature
     /// (`docs/05-design-notes/didcomm-protocol-management.md`).
     /// Keyed by mediator DID; replayed at boot.
@@ -308,6 +312,7 @@ pub async fn build_app_state(
         apply_encryption(store.keyspace(crate::keyspaces::CONSENT_APPROVERS)?);
     let issued_credentials_ks =
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
+    let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -364,6 +369,7 @@ pub async fn build_app_state(
         consent_ks,
         consent_approvers_ks,
         issued_credentials_ks,
+        memory_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
         #[cfg(feature = "webvh")]

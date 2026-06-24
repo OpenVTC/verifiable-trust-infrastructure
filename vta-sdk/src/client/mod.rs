@@ -109,6 +109,7 @@ mod contexts;
 mod credentials;
 mod did_templates;
 mod keys;
+mod memory;
 mod secrets;
 mod vault;
 mod vta_management;

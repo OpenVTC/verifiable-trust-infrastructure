@@ -25,6 +25,11 @@ pub mod export;
 pub mod holder_keys;
 pub mod internal_authority;
 pub mod keys;
+/// Per-context key/value store for AI-agent memory. Backs the
+/// `vta/memory/{put,list,delete}/0.1` Trust Tasks. Entries are keyed
+/// `mem:<contextId>:<key>` in the [`MEMORY`](crate::keyspaces::MEMORY) keyspace;
+/// `list` is a `mem:<contextId>:` prefix scan.
+pub mod memory;
 /// Passkey login — DID-VM-resolved WebAuthn assertion verification.
 /// Drives `vta/auth/passkey-login-{start,finish}/1.0` trust-tasks.
 /// Distinct from [`passkey_vms`] which handles VM *enrolment*.
