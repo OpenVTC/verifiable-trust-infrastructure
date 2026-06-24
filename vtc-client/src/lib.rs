@@ -315,6 +315,31 @@ impl VtcClient {
         Ok(resp.json().await?)
     }
 
+    /// Update a member's community-defined `extensions` (opaque JSON) via
+    /// `PATCH /members/{did}`. A fleet manager records per-member operational
+    /// state here — e.g. the assigned `fleet_index` at enrollment, which the
+    /// roster then carries (see [`MemberRecord::extensions`]). Admin token.
+    pub async fn update_member_extensions(
+        &self,
+        did: &str,
+        extensions: serde_json::Value,
+    ) -> Result<(), VtcError> {
+        let token = self.token()?;
+        let resp = self
+            .http
+            .patch(format!("{}/members/{did}", self.base_url))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "extensions": extensions }))
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VtcError::Http { status, body });
+        }
+        Ok(())
+    }
+
     /// Submit a join request (the applicant side): POST the VP-framed
     /// `body` to `/join-requests`. The VP's holder-binding proof authenticates
     /// the applicant, so this does not require a bearer token. Returns the
@@ -582,6 +607,12 @@ mod tests {
         ));
         assert!(matches!(
             client.activate_policy("p1").await,
+            Err(VtcError::NotAuthenticated)
+        ));
+        assert!(matches!(
+            client
+                .update_member_extensions("did:key:z", serde_json::json!({}))
+                .await,
             Err(VtcError::NotAuthenticated)
         ));
     }
