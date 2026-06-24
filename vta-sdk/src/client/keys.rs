@@ -9,6 +9,7 @@ use super::{
 use crate::error::VtaError;
 use crate::keys::{KeyRecord, KeyType};
 use crate::protocols::key_management::derive_and_sign::DeriveAndSignResultBody;
+use crate::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentResultBody;
 use crate::protocols::key_management::sign::SignAlgorithm;
 use crate::trust_tasks;
 
@@ -150,6 +151,36 @@ impl VtaClient {
             body.clone(),
             30,
             move |c, url| c.post(format!("{url}/keys/derive-and-sign")).json(&body),
+        )
+        .await
+    }
+
+    /// Derive a key at `derivation_path` and attach an `eddsa-jcs-2022`
+    /// Data-Integrity proof to `document`, signed **as the derived key** —
+    /// persisting no key record. Admin-only. Returns the signer `did:key` + the
+    /// signed document. This is how a fleet manager has its fleet VTA sign an
+    /// auth document as a per-VTA super-admin without the seed leaving the VTA.
+    pub async fn derive_and_sign_document(
+        &self,
+        key_type: KeyType,
+        derivation_path: &str,
+        document: serde_json::Value,
+        proof_purpose: Option<&str>,
+    ) -> Result<DeriveAndSignDocumentResultBody, VtaError> {
+        let body = serde_json::json!({
+            "key_type": serde_json::to_value(&key_type)?,
+            "derivation_path": derivation_path,
+            "document": document,
+            "proof_purpose": proof_purpose,
+        });
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0,
+            body.clone(),
+            30,
+            move |c, url| {
+                c.post(format!("{url}/keys/derive-and-sign-document"))
+                    .json(&body)
+            },
         )
         .await
     }

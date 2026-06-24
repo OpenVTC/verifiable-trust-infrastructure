@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
     derive_and_sign::{DeriveAndSignBody, DeriveAndSignResultBody},
+    derive_and_sign_document::{DeriveAndSignDocumentBody, DeriveAndSignDocumentResultBody},
     list::ListKeysResultBody,
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
@@ -357,6 +358,39 @@ pub async fn derive_and_sign_key(
         &req.derivation_path,
         &payload,
         &req.algorithm,
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+/// POST /keys/derive-and-sign-document — derive a key at a BIP-32 path and
+/// attach an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
+/// the derived key, without persisting a key record. Auth: admin.
+#[utoipa::path(
+    post, path = "/keys/derive-and-sign-document", tag = "keys",
+    security(("bearer_jwt" = [])),
+    request_body = DeriveAndSignDocumentBody,
+    responses(
+        (status = 200, description = "Signer DID + DI-signed document", body = DeriveAndSignDocumentResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn derive_and_sign_document_key(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Json(req): Json<DeriveAndSignDocumentBody>,
+) -> Result<Json<DeriveAndSignDocumentResultBody>, AppError> {
+    auth.require_admin()?;
+    let result = operations::keys::derive_and_sign_document(
+        &state.keys_ks,
+        &state.seed_store,
+        &auth,
+        &req.key_type,
+        &req.derivation_path,
+        req.document,
+        req.proof_purpose.as_deref(),
         "rest",
     )
     .await?;

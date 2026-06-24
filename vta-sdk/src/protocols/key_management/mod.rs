@@ -1,5 +1,6 @@
 pub mod create;
 pub mod derive_and_sign;
+pub mod derive_and_sign_document;
 pub mod get;
 pub mod list;
 pub mod rename;

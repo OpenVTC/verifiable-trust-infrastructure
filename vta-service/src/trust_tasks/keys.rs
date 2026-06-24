@@ -10,6 +10,7 @@ use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::key_management::create::CreateKeyBody;
 use vta_sdk::protocols::key_management::derive_and_sign::DeriveAndSignBody;
+use vta_sdk::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentBody;
 use vta_sdk::protocols::key_management::get::GetKeyBody;
 use vta_sdk::protocols::key_management::list::ListKeysBody;
 use vta_sdk::protocols::key_management::rename::RenameKeyBody;
@@ -256,6 +257,39 @@ pub(super) async fn handle_derive_and_sign(
         &req.derivation_path,
         &payload_bytes,
         &req.algorithm,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/keys/derive-and-sign-document/1.0`. Admin only.
+///
+/// Attaches an `eddsa-jcs-2022` Data-Integrity proof to the document, signed as
+/// the key derived at the requested path — without persisting a key record.
+pub(super) async fn handle_derive_and_sign_document(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: DeriveAndSignDocumentBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::keys::derive_and_sign_document(
+        &state.keys_ks,
+        &state.seed_store,
+        auth,
+        &req.key_type,
+        &req.derivation_path,
+        req.document,
+        req.proof_purpose.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await

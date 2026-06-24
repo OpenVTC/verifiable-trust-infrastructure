@@ -303,6 +303,15 @@ pub const TASK_KEYS_SIGN_1_0: &str = "https://trusttasks.org/spec/vta/keys/sign/
 pub const TASK_KEYS_DERIVE_AND_SIGN_1_0: &str =
     "https://trusttasks.org/spec/vta/keys/derive-and-sign/1.0";
 
+/// `spec/vta/keys/derive-and-sign-document/1.0` — derive a key at a BIP-32 path
+/// from the seed and attach an `eddsa-jcs-2022` Data-Integrity proof to a
+/// document, signed *as the derived key*, persisting no key record. The
+/// DI-signing counterpart of derive-and-sign.
+/// Payload: [`crate::protocols::key_management::derive_and_sign_document::DeriveAndSignDocumentBody`].
+/// Auth: admin.
+pub const TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0: &str =
+    "https://trusttasks.org/spec/vta/keys/derive-and-sign-document/1.0";
+
 // ─── Seeds slice (spec/vta/seeds/*) ──────────────────────────────────────
 
 /// `spec/vta/seeds/list/1.0` — list all seed records.
@@ -1217,6 +1226,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_KEYS_REVOKE_1_0,
     TASK_KEYS_SIGN_1_0,
     TASK_KEYS_DERIVE_AND_SIGN_1_0,
+    TASK_KEYS_DERIVE_AND_SIGN_DOCUMENT_1_0,
     // Seeds slice
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,

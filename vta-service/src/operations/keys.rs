@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
+use affinidi_secrets_resolver::secrets::Secret;
 use base64::Engine;
 use chrono::Utc;
 use multibase::Base;
@@ -10,6 +12,7 @@ use zeroize::Zeroize;
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
     derive_and_sign::DeriveAndSignResultBody,
+    derive_and_sign_document::DeriveAndSignDocumentResultBody,
     list::ListKeysResultBody,
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
@@ -1012,6 +1015,94 @@ pub async fn derive_and_sign(
     })
 }
 
+/// Derive an Ed25519 key at `derivation_path` and attach an `eddsa-jcs-2022`
+/// Data-Integrity proof to `document`, signed **as the derived key**, persisting
+/// no key record. The DI-signing counterpart of [`derive_and_sign`].
+///
+/// Uses the same `DataIntegrityProof::sign` the VTA uses to issue VCs, so the
+/// proof is correct-by-construction for any `affinidi-data-integrity` verifier.
+/// This is how a fleet manager has its fleet VTA sign an `auth/authenticate/0.1`
+/// document as a per-VTA super-admin (`m/26'/9'/<idx>'`) — the seed never leaves
+/// the VTA. **Admin-gated.**
+pub async fn derive_and_sign_document(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &Arc<dyn SeedStore>,
+    auth: &AuthClaims,
+    key_type: &KeyType,
+    derivation_path: &str,
+    mut document: serde_json::Value,
+    proof_purpose: Option<&str>,
+    channel: &str,
+) -> Result<DeriveAndSignDocumentResultBody, AppError> {
+    auth.require_admin()?;
+
+    if !matches!(key_type, KeyType::Ed25519) {
+        return Err(AppError::Validation(format!(
+            "derive-and-sign-document currently supports only Ed25519 (got {key_type:?})"
+        )));
+    }
+    if !document.is_object() {
+        return Err(AppError::Validation("document must be a JSON object".into()));
+    }
+
+    let seed = load_seed_bytes(keys_ks, &**seed_store, None)
+        .await
+        .map_err(|e| AppError::Internal(format!("{e}")))?;
+    let bip32 = ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| key_derivation_error(format!("failed to create BIP-32 root key: {e}")))?;
+    let path: ed25519_dalek_bip32::DerivationPath = derivation_path
+        .parse()
+        .map_err(|e| key_derivation_error(format!("invalid derivation path: {e}")))?;
+    let derived = bip32
+        .derive(&path)
+        .map_err(|e| key_derivation_error(format!("derivation failed: {e}")))?;
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(derived.signing_key.as_bytes());
+
+    // The derived identity's did:key + its verification method (did:key:zX#zX),
+    // and a Secret built from the derived private key — identical to how the VTA
+    // builds its issuer Secret.
+    let pub_mb = encode_public_multibase(&KeyType::Ed25519, signing_key.verifying_key().as_bytes());
+    let signer_did = format!("did:key:{pub_mb}");
+    let priv_mb = encode_private_multibase(&KeyType::Ed25519, &signing_key.to_bytes());
+    let mut secret = Secret::from_multibase(&priv_mb, None)
+        .map_err(|e| AppError::Internal(format!("construct derived Secret: {e}")))?;
+    secret.id = format!("{signer_did}#{pub_mb}");
+
+    // JCS is presence-sensitive — sign the proof-less shape (verifiers strip
+    // `proof` too).
+    if let Some(obj) = document.as_object_mut() {
+        obj.remove("proof");
+    }
+    let proof = DataIntegrityProof::sign(
+        &document,
+        &secret,
+        SignOptions::new()
+            .with_proof_purpose(proof_purpose.unwrap_or("assertionMethod"))
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022)
+            .with_created(Utc::now()),
+    )
+    .await
+    .map_err(|e| AppError::Internal(format!("DI-sign document: {e}")))?;
+    document
+        .as_object_mut()
+        .expect("checked is_object above")
+        .insert(
+            "proof".to_string(),
+            serde_json::to_value(&proof)
+                .map_err(|e| AppError::Internal(format!("serialize proof: {e}")))?,
+        );
+
+    info!(
+        channel,
+        derivation_path = %derivation_path,
+        "derive-and-sign-document (DI proof, no key record persisted)"
+    );
+    Ok(DeriveAndSignDocumentResultBody {
+        signer_did,
+        document,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1506,6 +1597,69 @@ mod tests {
                 "m/26'/9'/0'",
                 payload,
                 &SignAlgorithm::EdDSA,
+                "test",
+            )
+            .await
+            .is_err(),
+            "non-admin must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn derive_and_sign_document_grafts_di_proof_as_derived_key() {
+        let h = TestHarness::new().await;
+        let auth = h.super_admin_auth();
+        let doc = serde_json::json!({
+            "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+            "payload": { "challenge": "abc", "sessionId": "s1" },
+        });
+
+        let res = derive_and_sign_document(
+            &h.keys_ks,
+            &h.seed_store,
+            &auth,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            doc.clone(),
+            None,
+            "test",
+        )
+        .await
+        .expect("derive_and_sign_document should succeed for an admin");
+
+        // Signer is the derived super-admin did:key.
+        assert!(res.signer_did.starts_with("did:key:z6Mk"), "{}", res.signer_did);
+        // A proof was grafted, by the derived key, with a proofValue.
+        let proof = res.document.get("proof").expect("proof grafted");
+        assert!(
+            proof.get("proofValue").and_then(|v| v.as_str()).is_some(),
+            "proof has a proofValue"
+        );
+        let vm = proof.get("verificationMethod").and_then(|v| v.as_str()).unwrap();
+        assert!(vm.starts_with(&res.signer_did), "vm {vm} bound to signer {}", res.signer_did);
+
+        // Deterministic: same path → same signer.
+        let res2 = derive_and_sign_document(
+            &h.keys_ks, &h.seed_store, &auth, &KeyType::Ed25519, "m/26'/9'/0'", doc, None, "test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.signer_did, res2.signer_did);
+
+        // Non-admin rejected.
+        let non_admin = AuthClaims {
+            role: Role::Application,
+            ..h.super_admin_auth()
+        };
+        assert!(
+            derive_and_sign_document(
+                &h.keys_ks,
+                &h.seed_store,
+                &non_admin,
+                &KeyType::Ed25519,
+                "m/26'/9'/0'",
+                serde_json::json!({"x": 1}),
+                None,
                 "test",
             )
             .await
