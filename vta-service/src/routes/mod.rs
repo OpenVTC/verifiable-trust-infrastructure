@@ -381,6 +381,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         .routes(routes!(keys::get_key_secret))
         .routes(routes!(keys::sign_with_key))
+        .routes(routes!(keys::derive_and_sign_key))
         .routes(routes!(keys::get_wrapping_key))
         .routes(routes!(keys::import_key))
         .routes(routes!(keys::list_seeds))

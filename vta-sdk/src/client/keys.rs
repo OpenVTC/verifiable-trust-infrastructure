@@ -7,8 +7,10 @@ use super::{
     WrappingKeyResponse, encode_path_segment,
 };
 use crate::error::VtaError;
-use crate::keys::KeyRecord;
+use crate::keys::{KeyRecord, KeyType};
+use crate::protocols::key_management::derive_and_sign::DeriveAndSignResultBody;
 use crate::protocols::key_management::sign::SignAlgorithm;
+use crate::trust_tasks;
 
 #[cfg(feature = "client")]
 use crate::protocols::{key_management, seed_management};
@@ -115,6 +117,39 @@ impl VtaClient {
                         "algorithm": algorithm,
                     }))
             },
+        )
+        .await
+    }
+
+    /// Ephemerally derive a key at `derivation_path` and sign `payload` —
+    /// **without persisting a key record**. Admin-only on the VTA. Returns the
+    /// derived public key + signature.
+    ///
+    /// This is how a client (e.g. a fleet manager whose fleet seed *is* this
+    /// VTA's seed) acts as a derived child identity — e.g. a per-VTA super-admin
+    /// at `m/26'/9'/<idx>'` — so the seed never leaves the VTA. REST:
+    /// `POST /keys/derive-and-sign`; DIDComm: the `keys/derive-and-sign/1.0`
+    /// trust task.
+    pub async fn derive_and_sign(
+        &self,
+        key_type: KeyType,
+        derivation_path: &str,
+        payload: &[u8],
+        algorithm: SignAlgorithm,
+    ) -> Result<DeriveAndSignResultBody, VtaError> {
+        use base64::Engine;
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        let body = serde_json::json!({
+            "key_type": serde_json::to_value(&key_type)?,
+            "derivation_path": derivation_path,
+            "payload": payload_b64,
+            "algorithm": algorithm,
+        });
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_DERIVE_AND_SIGN_1_0,
+            body.clone(),
+            30,
+            move |c, url| c.post(format!("{url}/keys/derive-and-sign")).json(&body),
         )
         .await
     }

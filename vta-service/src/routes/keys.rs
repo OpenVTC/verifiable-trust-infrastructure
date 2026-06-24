@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use vta_sdk::protocols::key_management::{
     create::CreateKeyResultBody,
+    derive_and_sign::{DeriveAndSignBody, DeriveAndSignResultBody},
     list::ListKeysResultBody,
     rename::RenameKeyResultBody,
     revoke::RevokeKeyResultBody,
@@ -316,6 +317,44 @@ pub async fn sign_with_key(
         &state.seed_store,
         &auth,
         &key_id,
+        &payload,
+        &req.algorithm,
+        "rest",
+    )
+    .await?;
+    Ok(Json(result))
+}
+
+/// POST /keys/derive-and-sign — ephemerally derive a key at a BIP-32 path, sign a
+/// base64url payload, and return `{ public_key, signature }` without persisting a
+/// key record. Auth: admin.
+#[utoipa::path(
+    post, path = "/keys/derive-and-sign", tag = "keys",
+    security(("bearer_jwt" = [])),
+    request_body = DeriveAndSignBody,
+    responses(
+        (status = 200, description = "Derived public key + signature", body = DeriveAndSignResultBody),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn derive_and_sign_key(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+    Json(req): Json<DeriveAndSignBody>,
+) -> Result<Json<DeriveAndSignResultBody>, AppError> {
+    auth.require_admin()?;
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.payload)
+        .map_err(|e| AppError::Validation(format!("invalid base64url payload: {e}")))?;
+
+    let result = operations::keys::derive_and_sign(
+        &state.keys_ks,
+        &state.seed_store,
+        &auth,
+        &req.key_type,
+        &req.derivation_path,
         &payload,
         &req.algorithm,
         "rest",
