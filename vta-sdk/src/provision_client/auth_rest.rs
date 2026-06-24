@@ -43,7 +43,12 @@ fn did_key_to_vm(did: &str) -> Option<String> {
 /// `client_did` must be a `did:key` whose private seed is
 /// `private_key_multibase` (the holder/setup key); `vta_did` is the VTA the
 /// document is addressed to. No DIDComm / mediator is involved.
-pub(crate) async fn challenge_response_di(
+///
+/// This is the cryptographically-sound REST auth (the key signs the request),
+/// suitable for any client that *holds* a key — e.g. a fleet manager
+/// authenticating as a per-VTA super-admin. Re-exported as
+/// [`crate::provision_client::challenge_response_di`].
+pub async fn challenge_response_di(
     base_url: &str,
     client_did: &str,
     private_key_multibase: &str,

@@ -75,6 +75,11 @@ pub use ask::{
     BUILTIN_DID_HOST_HTTP_TEMPLATE, BUILTIN_MEDIATOR_TEMPLATE, BUILTIN_VTA_ADMIN_TEMPLATE,
     DEFAULT_VALIDITY, ProvisionAsk,
 };
+/// Cryptographically-sound DI-signed (`eddsa-jcs-2022`) REST authentication for
+/// any client holding a key (e.g. a fleet manager authenticating as a per-VTA
+/// super-admin). The key signs an `auth/authenticate/0.1` Trust Task — no
+/// DIDComm/mediator, and unlike the anoncrypt light path the sender is proven.
+pub use auth_rest::challenge_response_di;
 pub use diagnostics::{
     ConnectedInfo, DiagCheck, DiagEntry, DiagStatus, Protocol, apply_update, pending_list,
 };
