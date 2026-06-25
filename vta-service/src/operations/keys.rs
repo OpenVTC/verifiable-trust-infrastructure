@@ -977,7 +977,10 @@ pub async fn derive_and_sign(
 ) -> Result<DeriveAndSignResultBody, AppError> {
     auth.require_admin()?;
 
-    if !matches!((algorithm, key_type), (SignAlgorithm::EdDSA, KeyType::Ed25519)) {
+    if !matches!(
+        (algorithm, key_type),
+        (SignAlgorithm::EdDSA, KeyType::Ed25519)
+    ) {
         return Err(AppError::Validation(format!(
             "derive-and-sign currently supports only EdDSA/Ed25519 (got {algorithm}/{key_type:?})"
         )));
@@ -1042,7 +1045,9 @@ pub async fn derive_and_sign_document(
         )));
     }
     if !document.is_object() {
-        return Err(AppError::Validation("document must be a JSON object".into()));
+        return Err(AppError::Validation(
+            "document must be a JSON object".into(),
+        ));
     }
 
     let seed = load_seed_bytes(keys_ks, &**seed_store, None)
@@ -1581,7 +1586,10 @@ mod tests {
         )
         .await
         .expect("list keys");
-        assert!(listed.keys.is_empty(), "derive_and_sign must not persist a key");
+        assert!(
+            listed.keys.is_empty(),
+            "derive_and_sign must not persist a key"
+        );
 
         // A non-admin caller is rejected.
         let non_admin = AuthClaims {
@@ -1628,19 +1636,37 @@ mod tests {
         .expect("derive_and_sign_document should succeed for an admin");
 
         // Signer is the derived super-admin did:key.
-        assert!(res.signer_did.starts_with("did:key:z6Mk"), "{}", res.signer_did);
+        assert!(
+            res.signer_did.starts_with("did:key:z6Mk"),
+            "{}",
+            res.signer_did
+        );
         // A proof was grafted, by the derived key, with a proofValue.
         let proof = res.document.get("proof").expect("proof grafted");
         assert!(
             proof.get("proofValue").and_then(|v| v.as_str()).is_some(),
             "proof has a proofValue"
         );
-        let vm = proof.get("verificationMethod").and_then(|v| v.as_str()).unwrap();
-        assert!(vm.starts_with(&res.signer_did), "vm {vm} bound to signer {}", res.signer_did);
+        let vm = proof
+            .get("verificationMethod")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(
+            vm.starts_with(&res.signer_did),
+            "vm {vm} bound to signer {}",
+            res.signer_did
+        );
 
         // Deterministic: same path → same signer.
         let res2 = derive_and_sign_document(
-            &h.keys_ks, &h.seed_store, &auth, &KeyType::Ed25519, "m/26'/9'/0'", doc, None, "test",
+            &h.keys_ks,
+            &h.seed_store,
+            &auth,
+            &KeyType::Ed25519,
+            "m/26'/9'/0'",
+            doc,
+            None,
+            "test",
         )
         .await
         .unwrap();
