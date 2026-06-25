@@ -328,14 +328,25 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
     let doc = tpl.render(&vars).unwrap();
     assert_eq!(doc["id"], "did:webvh:mediator:example.com");
     let services = doc["service"].as_array().unwrap();
-    assert_eq!(services.len(), 2);
+    assert_eq!(services.len(), 3);
+
+    // TSP service first (canonical preference order, §3.3): id `#tsp`,
+    // type `TSPTransport`, serviceEndpoint a plain-string transport URL.
+    // The mediator's own doc (shape (b)) carries the URL directly, unlike
+    // a consumer doc whose `#tsp` points at this mediator's DID.
+    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#tsp");
+    assert_eq!(services[0]["type"], "TSPTransport");
+    assert_eq!(
+        services[0]["serviceEndpoint"],
+        "https://mediator.example.com"
+    );
 
     // DIDComm service: id `#service`, type as a single-element array,
     // serviceEndpoint as an array of two endpoint objects (HTTP first,
     // WSS second). Each endpoint carries the same accept/routingKeys.
-    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#service");
-    assert_eq!(services[0]["type"], json!(["DIDCommMessaging"]));
-    let endpoints = services[0]["serviceEndpoint"].as_array().unwrap();
+    assert_eq!(services[1]["id"], "did:webvh:mediator:example.com#service");
+    assert_eq!(services[1]["type"], json!(["DIDCommMessaging"]));
+    let endpoints = services[1]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints.len(), 2);
     assert_eq!(endpoints[0]["uri"], "https://mediator.example.com");
     assert_eq!(endpoints[0]["accept"], json!(["didcomm/v2"]));
@@ -346,10 +357,10 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
 
     // Authentication service: id `#auth`, type as a single-element array,
     // serviceEndpoint as a plain string at `<URL>/authenticate`.
-    assert_eq!(services[1]["id"], "did:webvh:mediator:example.com#auth");
-    assert_eq!(services[1]["type"], json!(["Authentication"]));
+    assert_eq!(services[2]["id"], "did:webvh:mediator:example.com#auth");
+    assert_eq!(services[2]["type"], json!(["Authentication"]));
     assert_eq!(
-        services[1]["serviceEndpoint"],
+        services[2]["serviceEndpoint"],
         "https://mediator.example.com/authenticate"
     );
 }
@@ -370,7 +381,7 @@ fn ws_url_is_derived_from_url_when_omitted() {
     // WS_URL deliberately omitted.
 
     let doc = tpl.render(&vars).expect("render with derived WS_URL");
-    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
+    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(
         endpoints[0]["uri"],
         "https://mediator.example.com/mediator/v1"
@@ -394,7 +405,7 @@ fn ws_url_derivation_handles_plain_http_and_trailing_slash() {
     vars.insert_string("URL", "http://mediator.local/");
 
     let doc = tpl.render(&vars).expect("render with derived ws://");
-    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
+    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints[1]["uri"], "ws://mediator.local/ws");
 }
 
@@ -412,7 +423,7 @@ fn explicit_ws_url_overrides_derivation() {
     vars.insert_string("WS_URL", "wss://ws-gateway.example.net/mediator/ws");
 
     let doc = tpl.render(&vars).unwrap();
-    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
+    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints[0]["uri"], "https://mediator.example.com");
     assert_eq!(
         endpoints[1]["uri"],
@@ -540,7 +551,9 @@ fn did_host_didcomm_builtin_accept_is_native_array_not_string() {
     // accept list as an array; a stringified version breaks them silently.
     let tpl = load_embedded("did-host-didcomm").unwrap();
     let doc = tpl.render(&did_host_didcomm_fixture_vars()).unwrap();
-    let endpoint = &doc["service"][0]["serviceEndpoint"][0];
+    // The DIDComm entry is at [1] (the `#tsp` TSP entry sorts first); its
+    // first serviceEndpoint object carries the `accept` array.
+    let endpoint = &doc["service"][1]["serviceEndpoint"][0];
     let accept = &endpoint["accept"];
     assert!(
         accept.is_array(),
@@ -550,25 +563,35 @@ fn did_host_didcomm_builtin_accept_is_native_array_not_string() {
 }
 
 #[test]
-fn did_host_didcomm_builtin_has_exactly_one_service_entry() {
-    // Older mediator setups emitted an unnamed duplicate DIDCommMessaging
-    // service alongside the named one. Lock the invariant here so this
-    // template never regresses into that.
+fn did_host_didcomm_builtin_has_exactly_one_entry_per_transport() {
+    // Two transports advertised: TSP (`#tsp`, preferred) then DIDComm
+    // (`#vta-didcomm`), both pointing at the same mediator DID (D8 — one
+    // dual-protocol mediator). Older mediator setups emitted an unnamed
+    // duplicate DIDCommMessaging service; lock exactly one entry per type
+    // so the template never regresses into that.
     let tpl = load_embedded("did-host-didcomm").unwrap();
     let doc = tpl.render(&did_host_didcomm_fixture_vars()).unwrap();
     let services = doc["service"].as_array().expect("service is array");
     assert_eq!(
         services.len(),
-        1,
-        "expected exactly one service entry, got {}: {:?}",
+        2,
+        "expected exactly two service entries (tsp + didcomm), got {}: {:?}",
         services.len(),
         services
     );
+    // TSP first (canonical order): plain-string mediator-DID endpoint.
+    assert_eq!(services[0]["id"], "did:webvh:QmTEST:example.com#tsp");
+    assert_eq!(services[0]["type"], "TSPTransport");
     assert_eq!(
-        services[0]["id"],
+        services[0]["serviceEndpoint"],
+        "did:webvh:QmMED:mediator.example.com:mediator"
+    );
+    // DIDComm second, same mediator.
+    assert_eq!(
+        services[1]["id"],
         "did:webvh:QmTEST:example.com#vta-didcomm"
     );
-    assert_eq!(services[0]["type"], "DIDCommMessaging");
+    assert_eq!(services[1]["type"], "DIDCommMessaging");
 }
 
 #[test]
@@ -616,7 +639,10 @@ fn did_host_didcomm_builtin_rejects_unknown_placeholder_in_template() {
     // required/optional vars.
     let tpl = load_embedded("did-host-didcomm").unwrap();
     let mut doc = tpl.document.clone();
-    doc["service"][0]["serviceEndpoint"][0]["extra"] =
+    // Inject into the DIDComm entry at [1] (whose serviceEndpoint is an
+    // array of objects); [0] is now the `#tsp` entry with a plain-string
+    // endpoint that can't take a nested key.
+    doc["service"][1]["serviceEndpoint"][0]["extra"] =
         Value::String("{UNDECLARED_TOKEN}".to_string());
 
     let raw = serde_json::json!({
@@ -765,22 +791,30 @@ fn ai_agent_builtin_has_key_agreement_for_authcrypt() {
 }
 
 #[test]
-fn ai_agent_builtin_has_exactly_one_didcomm_service_via_mediator() {
+fn ai_agent_builtin_advertises_tsp_then_didcomm_via_mediator() {
     let tpl = load_embedded("ai-agent").unwrap();
     let doc = tpl.render(&ai_agent_fixture_vars()).unwrap();
     let services = doc["service"].as_array().expect("service is array");
     assert_eq!(
         services.len(),
-        1,
-        "expected one service entry: {services:?}"
+        2,
+        "expected two service entries (tsp + didcomm): {services:?}"
     );
-    assert_eq!(services[0]["type"], "DIDCommMessaging");
+    // TSP first (canonical preference): plain-string mediator-DID endpoint —
+    // inbound TSP routes through the same mediator as DIDComm (D8).
+    assert_eq!(services[0]["type"], "TSPTransport");
     assert_eq!(
-        services[0]["serviceEndpoint"][0]["uri"], "did:webvh:QmMED:mediator.example.com:mediator",
+        services[0]["serviceEndpoint"],
+        "did:webvh:QmMED:mediator.example.com:mediator"
+    );
+    // DIDComm second, through the same mediator.
+    assert_eq!(services[1]["type"], "DIDCommMessaging");
+    assert_eq!(
+        services[1]["serviceEndpoint"][0]["uri"], "did:webvh:QmMED:mediator.example.com:mediator",
         "inbound traffic must route through the operator's mediator"
     );
     // Whole-string-placeholder contract: accept substitutes to an array.
-    assert!(services[0]["serviceEndpoint"][0]["accept"].is_array());
+    assert!(services[1]["serviceEndpoint"][0]["accept"].is_array());
 }
 
 #[test]

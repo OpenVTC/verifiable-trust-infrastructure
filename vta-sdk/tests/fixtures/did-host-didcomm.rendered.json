@@ -23,6 +23,11 @@
   "keyAgreement": ["did:webvh:QmTEST:example.com#key-1"],
   "service": [
     {
+      "id": "did:webvh:QmTEST:example.com#tsp",
+      "type": "TSPTransport",
+      "serviceEndpoint": "did:webvh:QmMED:mediator.example.com:mediator"
+    },
+    {
       "id": "did:webvh:QmTEST:example.com#vta-didcomm",
       "type": "DIDCommMessaging",
       "serviceEndpoint": [

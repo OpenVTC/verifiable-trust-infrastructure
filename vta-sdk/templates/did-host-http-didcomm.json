@@ -49,6 +49,11 @@
         }
       },
       {
+        "id": "{DID}#tsp",
+        "type": "TSPTransport",
+        "serviceEndpoint": "{MEDIATOR_DID}"
+      },
+      {
         "id": "{DID}#vta-didcomm",
         "type": "DIDCommMessaging",
         "serviceEndpoint": [
