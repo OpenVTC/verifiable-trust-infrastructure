@@ -258,6 +258,7 @@ mod tests {
             rest: true,
             didcomm: false,
             webauthn: false,
+            tsp: false,
         };
         let out = build_vta_additional_services(&services, url)
             .expect("REST + URL must emit a service entry");
@@ -287,6 +288,7 @@ mod tests {
             rest: false,
             didcomm: true,
             webauthn: false,
+            tsp: false,
         };
         assert!(
             build_vta_additional_services(&services, url).is_none(),
@@ -299,6 +301,7 @@ mod tests {
             rest: false,
             didcomm: false,
             webauthn: false,
+            tsp: false,
         };
         assert!(build_vta_additional_services(&services, None).is_none());
     }

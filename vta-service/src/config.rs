@@ -89,6 +89,13 @@ pub struct ServicesConfig {
     /// want browser-side passkey login flip this on explicitly.
     #[serde(default)]
     pub webauthn: bool,
+    /// Trust Spanning Protocol transport. Additive and `false` by
+    /// default while TSP rolls out gated — DIDComm stays the default
+    /// transport. When enabled, the VTA advertises a `#tsp`
+    /// `TSPTransport` service (pointing at the same mediator as
+    /// DIDComm). See `docs/05-design-notes/tsp-enablement.md`.
+    #[serde(default)]
+    pub tsp: bool,
 }
 
 fn default_true() -> bool {
@@ -101,6 +108,7 @@ impl Default for ServicesConfig {
             rest: true,
             didcomm: true,
             webauthn: false,
+            tsp: false,
         }
     }
 }

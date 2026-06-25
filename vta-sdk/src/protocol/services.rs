@@ -313,14 +313,23 @@ pub struct ServicesListResponse {
 }
 
 /// State of a single transport kind. The `kind` discriminator is
-/// `"rest"`, `"didcomm"`, or `"webauthn"` on the wire (kebab-case to
-/// align with the rest of the runtime service-management surface).
+/// `"tsp"`, `"rest"`, `"didcomm"`, or `"webauthn"` on the wire (kebab-case
+/// to align with the rest of the runtime service-management surface).
 /// When `enabled` is `false`, the kind-specific config fields are
 /// absent.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ServiceState {
+    Tsp {
+        enabled: bool,
+        /// Mediator DID the `#tsp` service advertises (the VTA's TSP
+        /// VID) — TSP uses the same mediator indirection as DIDComm, so
+        /// this is typically the same value as the DIDComm `mediator_did`
+        /// (one dual-protocol mediator). `None` when TSP is disabled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mediator_did: Option<String>,
+    },
     Rest {
         enabled: bool,
         /// Currently-published REST URL. `None` when REST is

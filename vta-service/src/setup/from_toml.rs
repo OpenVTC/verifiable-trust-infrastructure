@@ -178,6 +178,9 @@ fn default_services() -> ServicesConfig {
         // `services webauthn enable`, and the existing `services.rest`
         // continues to be the discoverable HTTP surface until they do.
         webauthn: false,
+        // TSP defaults off — operators enable it via `services tsp enable`
+        // (or the setup wizard once it learns TSP). DIDComm stays default.
+        tsp: false,
     }
 }
 

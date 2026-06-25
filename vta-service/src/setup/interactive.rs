@@ -973,6 +973,9 @@ async fn gather_inputs(
             rest: enable_rest,
             didcomm: enable_didcomm,
             webauthn,
+            // TSP is enabled post-setup via `services tsp enable` (the
+            // interactive wizard's TSP prompt lands in a later phase).
+            tsp: false,
         },
         server: ServerConfig {
             host,

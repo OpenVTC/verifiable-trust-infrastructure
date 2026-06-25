@@ -28,7 +28,7 @@ use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::operations::protocol::document::{
-    current_didcomm_service, current_rest_service, current_webauthn_service,
+    current_didcomm_service, current_rest_service, current_tsp_service, current_webauthn_service,
 };
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
@@ -75,6 +75,7 @@ pub async fn list_services(
             rest_enabled: cfg.services.rest,
             didcomm_enabled: cfg.services.didcomm,
             webauthn_enabled: cfg.services.webauthn,
+            tsp_enabled: cfg.services.tsp,
             vta_did: cfg.vta_did.clone(),
             mediator_did: cfg
                 .messaging
@@ -92,7 +93,13 @@ pub async fn list_services(
     // For non-webvh DIDs (e.g. did:key), there is no on-chain DID document
     // to inspect. Report service state from config only.
     if !vta_did.starts_with("did:webvh:") {
+        // TSP uses the same mediator as DIDComm (D8 — one dual-protocol
+        // mediator), so its endpoint mirrors the DIDComm `mediator_did`.
         let services = vec![
+            ServiceState::Tsp {
+                enabled: cfg_view.tsp_enabled && cfg_view.mediator_did.is_some(),
+                mediator_did: cfg_view.mediator_did.clone(),
+            },
             ServiceState::Didcomm {
                 enabled: cfg_view.didcomm_enabled && cfg_view.mediator_did.is_some(),
                 mediator_did: cfg_view.mediator_did,
@@ -122,16 +129,21 @@ pub async fn list_services(
     // the source of truth for what SDK consumers will resolve.
     let rest_url = current_rest_service(&current_doc).map(|s| s.url);
     let webauthn_url = current_webauthn_service(&current_doc).map(|s| s.url);
+    let tsp_mediator = current_tsp_service(&current_doc).map(|s| s.mediator_did);
     let didcomm = current_didcomm_service(&current_doc);
     let (didcomm_mediator, didcomm_routing_keys) = match didcomm {
         Some(svc) => (Some(svc.mediator_did), svc.routing_keys),
         None => (None, Vec::new()),
     };
 
-    // Canonical order: DIDComm first when present, REST second,
-    // WebAuthn third. Empty kinds (disabled in both config and the
-    // doc) still appear so the operator gets a uniform shape.
+    // Canonical order: TSP first when present, then DIDComm, REST,
+    // WebAuthn (spec §3.3). Empty kinds (disabled in both config and
+    // the doc) still appear so the operator gets a uniform shape.
     let services = vec![
+        ServiceState::Tsp {
+            enabled: cfg_view.tsp_enabled && tsp_mediator.is_some(),
+            mediator_did: tsp_mediator,
+        },
         ServiceState::Didcomm {
             enabled: cfg_view.didcomm_enabled && didcomm_mediator.is_some(),
             mediator_did: didcomm_mediator,
@@ -154,6 +166,7 @@ struct ConfigView {
     rest_enabled: bool,
     didcomm_enabled: bool,
     webauthn_enabled: bool,
+    tsp_enabled: bool,
     vta_did: Option<String>,
     mediator_did: Option<String>,
     public_url: Option<String>,
@@ -272,8 +285,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.services.len(), 3);
+        assert_eq!(response.services.len(), 4);
+        // TSP first (canonical order); disabled here (config `tsp` is off
+        // by default) though it carries the same mediator as DIDComm.
         match &response.services[0] {
+            ServiceState::Tsp {
+                enabled,
+                mediator_did,
+            } => {
+                assert!(!enabled, "TSP is off by default in config");
+                assert_eq!(mediator_did.as_deref(), Some("did:peer:2.MEDIATOR"));
+            }
+            other => panic!("expected TSP first; got {other:?}"),
+        }
+        match &response.services[1] {
             ServiceState::Didcomm {
                 enabled,
                 mediator_did,
@@ -282,21 +307,21 @@ mod tests {
                 assert!(enabled);
                 assert_eq!(mediator_did.as_deref(), Some("did:peer:2.MEDIATOR"));
             }
-            other => panic!("expected DIDComm first; got {other:?}"),
+            other => panic!("expected DIDComm second; got {other:?}"),
         }
-        match &response.services[1] {
+        match &response.services[2] {
             ServiceState::Rest { enabled, url } => {
                 assert!(!enabled, "REST is disabled in config");
                 assert_eq!(url.as_deref(), Some("https://vta.example.com"));
             }
-            other => panic!("expected REST second; got {other:?}"),
+            other => panic!("expected REST third; got {other:?}"),
         }
-        match &response.services[2] {
+        match &response.services[3] {
             ServiceState::Webauthn { enabled, url } => {
                 assert!(!enabled);
                 assert!(url.is_none());
             }
-            other => panic!("expected WebAuthn third; got {other:?}"),
+            other => panic!("expected WebAuthn fourth; got {other:?}"),
         }
     }
 
@@ -380,11 +405,22 @@ mod tests {
 
         assert_eq!(
             response.services.len(),
-            3,
-            "expected one entry per kind (DIDComm + REST + WebAuthn); got {response:?}"
+            4,
+            "expected one entry per kind (TSP + DIDComm + REST + WebAuthn); got {response:?}"
         );
-        // Canonical order: DIDComm first.
+        // Canonical order: TSP first. The fixture publishes no `#tsp`
+        // service, so it's disabled with no mediator.
         match &response.services[0] {
+            ServiceState::Tsp {
+                enabled,
+                mediator_did,
+            } => {
+                assert!(!enabled);
+                assert!(mediator_did.is_none());
+            }
+            other => panic!("expected TSP first; got {other:?}"),
+        }
+        match &response.services[1] {
             ServiceState::Didcomm {
                 enabled,
                 mediator_did,
@@ -393,23 +429,23 @@ mod tests {
                 assert!(enabled);
                 assert_eq!(mediator_did.as_deref(), Some("did:peer:2.MEDIATOR"));
             }
-            other => panic!("expected DIDComm first; got {other:?}"),
+            other => panic!("expected DIDComm second; got {other:?}"),
         }
-        match &response.services[1] {
+        match &response.services[2] {
             ServiceState::Rest { enabled, url } => {
                 assert!(enabled);
                 assert_eq!(url.as_deref(), Some("https://vta.example/api"));
             }
-            other => panic!("expected REST second; got {other:?}"),
+            other => panic!("expected REST third; got {other:?}"),
         }
-        match &response.services[2] {
+        match &response.services[3] {
             ServiceState::Webauthn { enabled, url } => {
                 // Test fixture doesn't publish a WebAuthn service
                 // entry; assert the "disabled, no URL" baseline.
                 assert!(!enabled);
                 assert!(url.is_none());
             }
-            other => panic!("expected WebAuthn third; got {other:?}"),
+            other => panic!("expected WebAuthn fourth; got {other:?}"),
         }
     }
 }

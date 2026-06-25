@@ -34,6 +34,16 @@ pub async fn cmd_services_list(client: &VtaClient) -> Result<(), Box<dyn std::er
     println!();
     for state in &response.services {
         match state {
+            vta_sdk::protocol::services::ServiceState::Tsp {
+                enabled,
+                mediator_did,
+            } => {
+                let on = if *enabled { "on" } else { "off" };
+                println!("  TSP:      {on}");
+                if let Some(m) = mediator_did {
+                    println!("    Mediator:     {m}");
+                }
+            }
             vta_sdk::protocol::services::ServiceState::Didcomm {
                 enabled,
                 mediator_did,
