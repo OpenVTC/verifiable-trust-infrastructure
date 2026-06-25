@@ -316,6 +316,56 @@ impl VtaClient {
         })
     }
 
+    /// Connect via DIDComm through a mediator using a hosted-DID secrets
+    /// bundle (`did:webvh` and any DID whose signing + key-agreement keys are
+    /// independent, exported as a [`DidSecretsBundle`]).
+    ///
+    /// The DIDComm `client_did` is taken from `bundle.did`; the secrets are
+    /// reconstructed from the bundle's entries via
+    /// [`crate::did_key::secrets_from_bundle`] (signing/key-agreement order
+    /// preserved). This is the bundle counterpart to
+    /// [`connect_didcomm`](Self::connect_didcomm), which derives both keys from
+    /// a single `did:key` seed.
+    ///
+    /// `rest_url` is an optional fallback for REST-only operations like
+    /// `health()`.
+    ///
+    /// # You MUST call [`shutdown`](Self::shutdown) when done
+    ///
+    /// See [`connect_didcomm`](Self::connect_didcomm) — the same live-session
+    /// leak contract applies. Prefer [`with_didcomm`](Self::with_didcomm).
+    ///
+    /// [`DidSecretsBundle`]: crate::did_secrets::DidSecretsBundle
+    #[cfg(feature = "session")]
+    pub async fn connect_didcomm_bundle(
+        bundle: &crate::did_secrets::DidSecretsBundle,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let secrets = crate::did_key::secrets_from_bundle(bundle)
+            .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
+
+        let session = crate::didcomm_session::DIDCommSession::connect_with_secrets(
+            &bundle.did,
+            secrets,
+            vta_did,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
+
+        let rest_client = rest_url.as_ref().map(|_| Client::new());
+
+        Ok(Self {
+            transport: Transport::DIDComm {
+                session,
+                rest_client,
+                rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
+            },
+        })
+    }
+
     /// Set the Bearer token for authenticated requests (REST only, no-op for DIDComm).
     ///
     /// Can be called from sync or async contexts. For async contexts, use

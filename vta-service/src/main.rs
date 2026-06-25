@@ -135,7 +135,11 @@ enum Commands {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Create a did:webvh DID for a context (interactive wizard, no server required)
+    /// Create a did:webvh DID for a context (interactive wizard, no server required).
+    ///
+    /// Passing `--url` makes the command fully non-interactive (no prompts) so
+    /// it can be scripted: combine with `--export-secrets` to emit the secrets
+    /// bundle to stdout and `--admin` to grant the new DID admin in the context.
     CreateDidWebvh {
         /// Target context ID
         #[arg(long)]
@@ -143,6 +147,20 @@ enum Commands {
         /// Human-readable label prefix for key records (default: context id)
         #[arg(long)]
         label: Option<String>,
+        /// Hosting URL for the DID (e.g. https://example.com). When set, the
+        /// command runs fully non-interactive — no hosting-URL, save-log, or
+        /// export-secrets prompts.
+        #[arg(long)]
+        url: Option<String>,
+        /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on
+        /// stdout; human text goes to stderr) and skip the save-log /
+        /// export-secrets prompts.
+        #[arg(long)]
+        export_secrets: bool,
+        /// Also create an ACL entry with Admin role for the new did:webvh in
+        /// the target context (mirrors `create-did-key --admin`).
+        #[arg(long)]
+        admin: bool,
     },
     /// Import an external DID and create an ACL entry (offline, no server required)
     ImportDid {
@@ -1414,7 +1432,13 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Some(Commands::CreateDidWebvh { context, label }) => {
+        Some(Commands::CreateDidWebvh {
+            context,
+            label,
+            url,
+            export_secrets,
+            admin,
+        }) => {
             // SEALED CHECK: creates keys and DIDs
             check_seal(&cli.config).await;
             #[cfg(feature = "setup")]
@@ -1423,6 +1447,9 @@ async fn main() {
                     config_path: cli.config,
                     context,
                     label,
+                    url,
+                    export_secrets,
+                    admin,
                 };
                 if let Err(e) = did_webvh::run_create_did_webvh(args).await {
                     eprintln!("Error: {e}");
@@ -1431,7 +1458,7 @@ async fn main() {
             }
             #[cfg(not(feature = "setup"))]
             {
-                let _ = (context, label);
+                let _ = (context, label, url, export_secrets, admin);
                 eprintln!("create-did-webvh is not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }

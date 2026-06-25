@@ -119,14 +119,50 @@ impl DIDCommSession {
         vta_did: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Decode private key and build DIDComm secrets
+        // Decode private key and build DIDComm secrets for a `did:key`
+        // (Ed25519 signing + X25519 key-agreement derived from it).
         let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
         let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
 
+        // Delegate to the secrets-driven path (signing first, then KA).
+        Self::connect_with_secrets(
+            client_did,
+            vec![secrets.signing, secrets.key_agreement],
+            vta_did,
+            mediator_did,
+        )
+        .await
+    }
+
+    /// Connect to a VTA via DIDComm using **pre-built** DIDComm secrets.
+    ///
+    /// Same transport behaviour as [`connect`](Self::connect) — a persistent,
+    /// auto-reconnecting WebSocket to the mediator — but the caller supplies
+    /// the [`Secret`](affinidi_tdk::secrets_resolver::secrets::Secret)s rather
+    /// than deriving them from a `did:key` seed. This is the path for hosted
+    /// DIDs (`did:webvh`) whose signing (`#key-0` Ed25519) and key-agreement
+    /// (`#key-1` X25519) keys are *independent* and exported as a
+    /// [`DidSecretsBundle`](crate::did_secrets::DidSecretsBundle) — build the
+    /// secrets with [`crate::did_key::secrets_from_bundle`] and pass them here.
+    ///
+    /// Secrets are inserted into the resolver in the order given; pass signing
+    /// first by convention. Every secret's `id` MUST be a verification-method
+    /// id of `client_did` (`{did}#...`) so the mediator/peer can match inbound
+    /// JWE recipients against it.
+    ///
+    /// The same [`shutdown`](Self::shutdown) contract applies — see
+    /// [`connect`](Self::connect).
+    pub async fn connect_with_secrets(
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Create TDK shared state and insert secrets
         let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-        tdk.secrets_resolver().insert(secrets.signing).await;
-        tdk.secrets_resolver().insert(secrets.key_agreement).await;
+        for secret in secrets {
+            tdk.secrets_resolver().insert(secret).await;
+        }
 
         // Build ATM (no inbound channel needed — we use REST polling)
         let atm_config = ATMConfig::builder().build()?;

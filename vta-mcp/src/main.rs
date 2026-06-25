@@ -7,13 +7,19 @@
 //! most hosts spawn the server and speak JSON-RPC over stdin/stdout). All
 //! logging therefore goes to **stderr**; stdout is the protocol channel.
 //!
-//! Auth (three modes):
-//! - **did:key DIDComm** (`--agent-did` + `--agent-key` + `--vta-did` +
-//!   `--mediator-did`): authenticate a scoped agent `did:key` directly over
-//!   DIDComm via a mediator. The canonical path — it works against any VTA,
-//!   including DIDComm-only VTAs that expose no REST endpoint. Use this to run a
-//!   dedicated, context-scoped vta-mcp (the agent's ACL bounds it to its
-//!   context). Takes precedence when fully configured.
+//! Auth (modes):
+//! - **DIDComm** — authenticate a scoped agent directly over DIDComm via a
+//!   mediator (`--vta-did` + `--mediator-did` required). The canonical path —
+//!   it works against any VTA, including DIDComm-only VTAs that expose no REST
+//!   endpoint. Two mutually-exclusive ways to supply the agent identity:
+//!   - **did:webvh bundle** (`--agent-secrets <PATH|JSON>`): a hosted DID whose
+//!     `#key-0` (Ed25519 signing) + `#key-1` (X25519 key-agreement) keys are
+//!     exported as a `DidSecretsBundle` (e.g. by `vta create-did-webvh
+//!     --export-secrets`). The agent's `client_did` is the bundle's `did`.
+//!   - **did:key** (`--agent-did` + `--agent-key`): authenticate a scoped agent
+//!     `did:key` directly. Both keys are derived from the one Ed25519 seed.
+//!     Either runs a dedicated, context-scoped vta-mcp (the agent's ACL bounds
+//!     it to its context). Takes precedence when fully configured.
 //! - **Session**: reuse an existing `pnm`/`cnm` login — `--vta <slug>` selects
 //!   the stored keyring session; the client auto-refreshes its token. This is
 //!   the "log in with pnm, then run vta-mcp" path.
@@ -30,6 +36,7 @@ use rmcp::ServiceExt;
 use rmcp::transport::stdio;
 use vta_sdk::agent_session::{AgentConfig, AgentSession};
 use vta_sdk::client::VtaClient;
+use vta_sdk::did_secrets::DidSecretsBundle;
 use vta_sdk::session::SessionStore;
 
 use server::VtaMcp;
@@ -54,15 +61,25 @@ struct Args {
     sessions_dir: Option<PathBuf>,
 
     /// Override the VTA REST URL (otherwise resolved from the session/DID,
-    /// or required in token mode). Optional in did:key DIDComm mode (REST is a
+    /// or required in token mode). Optional in DIDComm mode (REST is a
     /// fallback there).
     #[arg(long, env = "VTA_URL")]
     url: Option<String>,
 
+    /// did:webvh agent secrets bundle (DIDComm mode) — a path to a JSON
+    /// `DidSecretsBundle` file, or the inline JSON itself. The agent's
+    /// `client_did` is the bundle's `did`; its `#key-0` (Ed25519) +
+    /// `#key-1` (X25519) keys authenticate + decrypt. Requires `--vta-did`
+    /// and `--mediator-did`. Mutually exclusive with `--agent-did`/`--agent-key`.
+    /// Stays in this process; never sent over MCP.
+    #[arg(long, env = "VTA_MCP_AGENT_SECRETS")]
+    agent_secrets: Option<String>,
+
     /// Agent `did:key` to authenticate as, directly over DIDComm (did:key
     /// DIDComm mode). Requires `--agent-key`, `--vta-did`, `--mediator-did`.
     /// Lets a consumer run a dedicated, context-scoped vta-mcp against any VTA —
-    /// including DIDComm-only VTAs with no REST endpoint.
+    /// including DIDComm-only VTAs with no REST endpoint. Mutually exclusive
+    /// with `--agent-secrets`.
     #[arg(long, env = "VTA_MCP_AGENT_DID")]
     agent_did: Option<String>,
 
@@ -71,12 +88,11 @@ struct Args {
     #[arg(long, env = "VTA_MCP_AGENT_KEY")]
     agent_key: Option<String>,
 
-    /// The VTA's DID (did:key DIDComm mode) — the recipient of the DIDComm
-    /// messages.
+    /// The VTA's DID (DIDComm mode) — the recipient of the DIDComm messages.
     #[arg(long, env = "VTA_MCP_VTA_DID")]
     vta_did: Option<String>,
 
-    /// The mediator's DID to route DIDComm through (did:key DIDComm mode).
+    /// The mediator's DID to route DIDComm through (DIDComm mode).
     #[arg(long, env = "VTA_MCP_MEDIATOR_DID")]
     mediator_did: Option<String>,
 
@@ -185,8 +201,49 @@ fn didkey_didcomm_params(
     }
 }
 
+/// Load a [`DidSecretsBundle`] from the `--agent-secrets` argument, which is
+/// either a path to a JSON file or the inline JSON itself. A value that parses
+/// as JSON is taken inline; otherwise it is read as a file path.
+fn load_agent_bundle(raw: &str) -> anyhow::Result<DidSecretsBundle> {
+    let json = if std::path::Path::new(raw).exists() {
+        std::fs::read_to_string(raw)
+            .map_err(|e| anyhow::anyhow!("reading agent secrets bundle from `{raw}`: {e}"))?
+    } else {
+        raw.to_string()
+    };
+    serde_json::from_str(&json).map_err(|e| {
+        anyhow::anyhow!("parsing agent secrets bundle (path or inline JSON expected): {e}")
+    })
+}
+
 /// Build an authenticated [`VtaClient`] from the args/env (see module docs).
 async fn build_client(args: &Args) -> anyhow::Result<VtaClient> {
+    // The two DIDComm agent-identity modes are mutually exclusive.
+    if args.agent_secrets.is_some() && (args.agent_did.is_some() || args.agent_key.is_some()) {
+        anyhow::bail!(
+            "--agent-secrets (did:webvh bundle) and --agent-did/--agent-key (did:key) are \
+             mutually exclusive — pass one identity, not both"
+        );
+    }
+
+    // did:webvh DIDComm mode: authenticate a scoped agent via a hosted-DID
+    // secrets bundle (#key-0 Ed25519 + #key-1 X25519). Requires --vta-did +
+    // --mediator-did. Takes precedence when configured.
+    if let Some(raw) = args.agent_secrets.as_deref() {
+        let bundle = load_agent_bundle(raw)?;
+        let (vta_did, mediator_did) = match (args.vta_did.as_deref(), args.mediator_did.as_deref())
+        {
+            (Some(v), Some(m)) => (v, m),
+            _ => anyhow::bail!(
+                "did:webvh DIDComm mode (--agent-secrets) needs --vta-did and --mediator-did"
+            ),
+        };
+        tracing::info!(agent_did = %bundle.did, %mediator_did, "using did:webvh DIDComm mode");
+        return VtaClient::connect_didcomm_bundle(&bundle, vta_did, mediator_did, args.url.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("connecting to VTA over DIDComm: {e}"));
+    }
+
     // did:key DIDComm mode: authenticate a scoped agent did:key directly over
     // DIDComm (the canonical transport — works against DIDComm-only VTAs that
     // expose no REST endpoint). Takes precedence when fully configured.
@@ -273,6 +330,31 @@ mod tests {
     #[test]
     fn didkey_didcomm_params_none_set_returns_none() {
         assert_eq!(didkey_didcomm_params(None, None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn load_agent_bundle_parses_inline_json() {
+        let json = r#"{"did":"did:webvh:abc:example.com:a","secrets":[
+            {"key_id":"did:webvh:abc:example.com:a#key-0","key_type":"ed25519","private_key_multibase":"z6Mksign"}
+        ]}"#;
+        let bundle = load_agent_bundle(json).unwrap();
+        assert_eq!(bundle.did, "did:webvh:abc:example.com:a");
+        assert_eq!(bundle.secrets.len(), 1);
+        assert_eq!(
+            bundle.secrets[0].key_id,
+            "did:webvh:abc:example.com:a#key-0"
+        );
+    }
+
+    #[test]
+    fn load_agent_bundle_reads_file_path() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("vta-mcp-bundle-{}.json", std::process::id()));
+        std::fs::write(&path, r#"{"did":"did:webvh:f:example.com:b","secrets":[]}"#).unwrap();
+        let bundle = load_agent_bundle(path.to_str().unwrap()).unwrap();
+        assert_eq!(bundle.did, "did:webvh:f:example.com:b");
+        assert!(bundle.secrets.is_empty());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -2,13 +2,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dialoguer::{Confirm, Input, Select};
+use didwebvh_rs::url::WebVHURL;
 use serde_json::json;
+use url::Url;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
+use crate::acl::{AclEntry, Role, store_acl_entry};
 use crate::config::AppConfig;
 use crate::keys::seed_store::create_seed_store;
 use crate::operations;
@@ -21,6 +24,12 @@ pub struct CreateDidWebvhArgs {
     pub config_path: Option<PathBuf>,
     pub context: String,
     pub label: Option<String>,
+    /// Hosting URL. When `Some`, the command runs fully non-interactive.
+    pub url: Option<String>,
+    /// Emit the `DidSecretsBundle` JSON to stdout and skip interactive prompts.
+    pub export_secrets: bool,
+    /// Create an ACL admin entry for the new DID in the target context.
+    pub admin: bool,
 }
 
 pub async fn run_create_did_webvh(
@@ -51,8 +60,21 @@ pub async fn run_create_did_webvh(
 
     let label = args.label.as_deref().unwrap_or(&args.context);
 
-    // Prompt for URL
-    let webvh_url = setup::prompt_webvh_url(label)?;
+    // `--url` selects fully non-interactive mode: no hosting-URL prompt, no
+    // save-log prompt, no export-secrets confirm, and no DID-document
+    // edit/portability/pre-rotation prompts. Without it, behave interactively
+    // exactly as before.
+    let interactive = args.url.is_none();
+
+    // Resolve the hosting URL: from `--url` (non-interactive) or by prompting.
+    let webvh_url = match &args.url {
+        Some(raw) => {
+            let parsed = Url::parse(raw).map_err(|e| format!("invalid --url `{raw}`: {e}"))?;
+            WebVHURL::parse_url(&parsed)
+                .map_err(|e| format!("invalid did:webvh hosting URL `{raw}`: {e}"))?
+        }
+        None => setup::prompt_webvh_url(label)?,
+    };
     let url_str = webvh_url
         .get_http_url(None)
         .map_err(|e| format!("{e}"))?
@@ -85,19 +107,26 @@ pub async fn run_create_did_webvh(
     let mut did_document =
         operations::did_webvh::build_did_document(&derived, &config, false, &None);
 
-    // Interactive service endpoint selection
+    // Service endpoint selection. Interactive: prompt. Non-interactive:
+    // advertise the DIDComm mediator endpoint when messaging is configured
+    // (the same default as the interactive prompt).
     if let Some(ref msg) = config.messaging {
-        let service_options = &[
-            "DIDComm endpoint (references mediator DID for routing)",
-            "No service endpoints",
-        ];
-        let service_choice = Select::new()
-            .with_prompt("Service endpoints")
-            .items(service_options)
-            .default(0)
-            .interact()?;
+        let want_didcomm = if interactive {
+            let service_options = &[
+                "DIDComm endpoint (references mediator DID for routing)",
+                "No service endpoints",
+            ];
+            Select::new()
+                .with_prompt("Service endpoints")
+                .items(service_options)
+                .default(0)
+                .interact()?
+                == 0
+        } else {
+            true
+        };
 
-        if service_choice == 0 {
+        if want_didcomm {
             did_document["service"] = json!([
                 {
                     "id": "{DID}#vta-didcomm",
@@ -118,26 +147,35 @@ pub async fn run_create_did_webvh(
     );
     eprintln!();
 
-    // Offer to edit in $EDITOR
-    if Confirm::new()
-        .with_prompt("Edit DID document in your editor?")
-        .default(false)
-        .interact()?
+    // Offer to edit in $EDITOR (interactive only).
+    if interactive
+        && Confirm::new()
+            .with_prompt("Edit DID document in your editor?")
+            .default(false)
+            .interact()?
     {
         did_document = edit_did_document(did_document)?;
     }
 
-    // Portability
-    let portable = Confirm::new()
-        .with_prompt("Make this DID portable (can move to a different domain later)?")
-        .default(true)
-        .interact()?;
+    // Portability (interactive prompt; non-interactive uses the prompt default).
+    let portable = if interactive {
+        Confirm::new()
+            .with_prompt("Make this DID portable (can move to a different domain later)?")
+            .default(true)
+            .interact()?
+    } else {
+        true
+    };
 
-    // Pre-rotation count
-    let pre_rotation_count: u32 = Input::new()
-        .with_prompt("Number of pre-rotation keys (0 = none, recommended: 1-3)")
-        .default(1u32)
-        .interact_text()?;
+    // Pre-rotation count (interactive prompt; non-interactive uses the default).
+    let pre_rotation_count: u32 = if interactive {
+        Input::new()
+            .with_prompt("Number of pre-rotation keys (0 = none, recommended: 1-3)")
+            .default(1u32)
+            .interact_text()?
+    } else {
+        1
+    };
 
     // Build params and call the operations layer
     let auth = cli_super_admin();
@@ -187,31 +225,62 @@ pub async fn run_create_did_webvh(
     let final_did = &result.did;
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {final_did}");
 
-    // Persist all writes
-    store.persist().await?;
-
-    // Save did.jsonl
-    if let Some(ref log_entry) = result.log_entry {
-        let default_file = format!("{label}-did.jsonl");
-        let did_file: String = Input::new()
-            .with_prompt("Save DID log to file")
-            .default(default_file)
-            .interact_text()?;
-
-        std::fs::write(&did_file, log_entry)?;
-        eprintln!("  DID log saved to: {did_file}");
-        eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
-        eprintln!();
-        eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
-        eprintln!("  {url_str}\x1b[0m");
+    // Optionally grant the new DID admin in the target context. Mirrors
+    // `create-did-key --admin` (`vta-service/src/did_key.rs`): same
+    // `AclEntry::new(..).with_label(..).with_contexts(..)` +
+    // `store_acl_entry` call, scoped to the target context.
+    if args.admin {
+        let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+        let entry = AclEntry::new(final_did.clone(), Role::Admin, "cli:create-did-webvh")
+            .with_label(args.label.clone())
+            .with_contexts(vec![args.context.clone()]);
+        store_acl_entry(&acl_ks, &entry).await?;
+        eprintln!(
+            "ACL entry created: {final_did} (admin, context: {})",
+            args.context
+        );
     }
 
-    // Optionally export secrets bundle
-    if Confirm::new()
-        .with_prompt("Export DID secrets bundle?")
-        .default(false)
-        .interact()?
-    {
+    // Persist all writes (DID + optional ACL entry)
+    store.persist().await?;
+
+    // Save did.jsonl. Interactive: prompt for the filename. Non-interactive
+    // (`--url`): no prompt — the operator wanted automation, and stdout is
+    // reserved for the secrets bundle, so we only note the log on stderr.
+    if let Some(ref log_entry) = result.log_entry {
+        if interactive {
+            let default_file = format!("{label}-did.jsonl");
+            let did_file: String = Input::new()
+                .with_prompt("Save DID log to file")
+                .default(default_file)
+                .interact_text()?;
+
+            std::fs::write(&did_file, log_entry)?;
+            eprintln!("  DID log saved to: {did_file}");
+            eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
+            eprintln!();
+            eprintln!("  \x1b[2mTo self-host this DID, upload {did_file} to:");
+            eprintln!("  {url_str}\x1b[0m");
+        } else {
+            eprintln!("  Context '{}' updated with DID: {final_did}", args.context);
+            eprintln!("  \x1b[2mDID log (did.jsonl) ready; self-host at: {url_str}\x1b[0m");
+        }
+    }
+
+    // Optionally export secrets bundle. `--export-secrets` forces it
+    // unconditionally (no confirm); interactively, prompt. Non-interactive
+    // without the flag emits nothing on stdout.
+    let want_export = if args.export_secrets {
+        true
+    } else if interactive {
+        Confirm::new()
+            .with_prompt("Export DID secrets bundle?")
+            .default(false)
+            .interact()?
+    } else {
+        false
+    };
+    if want_export {
         // Fetch key secrets via the operations layer
         let signing_secret = crate::operations::keys::get_key_secret(
             &keys_ks,
@@ -272,6 +341,122 @@ pub async fn run_create_did_webvh(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acl::get_acl_entry;
+    use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
+    use vti_common::acl::Role;
+
+    /// `vta create-did-webvh --url <URL> --admin --export-secrets` must run
+    /// fully non-interactive and, in one shot:
+    ///   * mint a did:webvh with #key-0 (Ed25519 signing) + #key-1 (X25519
+    ///     key-agreement),
+    ///   * create an ACL **admin** entry for that DID, scoped to the context,
+    ///   * (export-secrets emits the bundle to stdout — verified by the
+    ///     vta-sdk `secrets_from_bundle` tests; here we assert the store-side
+    ///     effects that prove the non-interactive + ACL wiring).
+    ///
+    /// Gated on `config-seed` so the seed store is the in-config backend (no
+    /// OS keyring), making the test hermetic. Run with:
+    /// `cargo test -p vta-service --bin vta --features config-seed`.
+    #[cfg(feature = "config-seed")]
+    #[tokio::test]
+    async fn create_did_webvh_url_admin_export_is_noninteractive_and_grants_admin() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let config_path = dir.path().join("config.toml");
+
+        // Minimal config: local store + a config-seed backend carrying a
+        // fixed hex seed (dev/test only; selected ahead of keyring in the
+        // factory). No messaging, so the DID gets no DIDComm service.
+        let seed_hex = hex::encode([7u8; 64]);
+        std::fs::write(
+            &config_path,
+            format!(
+                "[store]\ndata_dir = \"{}\"\n\n[secrets]\nseed = \"{seed_hex}\"\n",
+                data_dir.display()
+            ),
+        )
+        .unwrap();
+
+        // Bootstrap the seed generation record (the bytes live in the
+        // config-seed backend); record generation 0 as active.
+        let config = AppConfig::load(Some(config_path.clone())).expect("load config");
+        let store = Store::open(&config.store).expect("open store");
+        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
+
+        save_seed_record(
+            &keys_ks,
+            &SeedRecord {
+                id: 0,
+                seed_hex: None,
+                seed_enc: None,
+                created_at: chrono::Utc::now(),
+                retired_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_active_seed_id(&keys_ks, 0).await.unwrap();
+
+        // Create the target context up-front (so no "create context?" prompt).
+        crate::contexts::create_context(&contexts_ks, "agents", "Agents")
+            .await
+            .unwrap();
+        store.persist().await.unwrap();
+        // Release the fjall lock fully before the command opens its own Store.
+        drop(keys_ks);
+        drop(contexts_ks);
+        drop(store);
+
+        // Run fully non-interactive: --url set, --admin, --export-secrets.
+        let args = CreateDidWebvhArgs {
+            config_path: Some(config_path.clone()),
+            context: "agents".to_string(),
+            label: Some("agent-1".to_string()),
+            url: Some("https://example.com/agents/agent-1".to_string()),
+            export_secrets: true,
+            admin: true,
+        };
+        run_create_did_webvh(args).await.expect("create-did-webvh");
+
+        // Reopen the store and assert the side effects.
+        let store = Store::open(&config.store).expect("reopen store");
+        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
+
+        // Exactly one did:webvh was created, with #key-0 + #key-1 records.
+        let dids = crate::webvh_store::list_dids(&webvh_ks).await.unwrap();
+        assert_eq!(dids.len(), 1, "one did:webvh minted");
+        let did = &dids[0].did;
+        assert!(did.starts_with("did:webvh:"), "got {did}");
+
+        let keys_ks2 = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let key0: Option<crate::keys::KeyRecord> = keys_ks2
+            .get(crate::keys::store_key(&format!("{did}#key-0")))
+            .await
+            .unwrap();
+        let key1: Option<crate::keys::KeyRecord> = keys_ks2
+            .get(crate::keys::store_key(&format!("{did}#key-1")))
+            .await
+            .unwrap();
+        assert!(key0.is_some(), "#key-0 (signing) record present");
+        assert!(key1.is_some(), "#key-1 (key-agreement) record present");
+        assert_eq!(key1.unwrap().key_type, crate::keys::KeyType::X25519);
+
+        // The ACL admin entry exists for the new DID, scoped to the context.
+        let entry = get_acl_entry(&acl_ks, did)
+            .await
+            .unwrap()
+            .expect("ACL entry created for the did:webvh");
+        assert_eq!(entry.role, Role::Admin);
+        assert_eq!(entry.allowed_contexts, vec!["agents".to_string()]);
+    }
 }
 
 fn edit_did_document(
