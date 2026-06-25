@@ -12,6 +12,7 @@
 //! `UpdateRestRequest`, `DisableRestRequest`, `RollbackRestRequest`,
 //! `ServiceMutationResponse`) live in [`services`].
 
+pub mod matching;
 pub mod services;
 
 use serde::{Deserialize, Serialize};

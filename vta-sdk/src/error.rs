@@ -113,6 +113,22 @@ pub enum VtaError {
     NoPriorMutation,
 
     /// Catch-all for other errors.
+    /// No transport protocol is advertised by **both** this party and the
+    /// counterparty, so there is no way to communicate. Carries each side's
+    /// advertised set (in preference order) so the CLI can show the operator
+    /// what each offers and which transport to enable. Determined locally by
+    /// [`crate::protocol::matching::select_protocol`] after resolving the
+    /// peer's DID document — never a server-returned wire error.
+    #[error(
+        "no transport protocol in common with {counterparty_did}: \
+         we advertise {ours:?}, they advertise {theirs:?}"
+    )]
+    NoMatchingProtocol {
+        counterparty_did: String,
+        ours: Vec<crate::protocol::matching::Protocol>,
+        theirs: Vec<crate::protocol::matching::Protocol>,
+    },
+
     #[error("{0}")]
     Other(String),
 }
@@ -368,6 +384,11 @@ impl VtaError {
             Self::NoPriorMutation => Some(
                 "No prior mutation for this service kind to roll back from. Use \
                  the direct `enable`/`update`/`disable` command instead.",
+            ),
+            Self::NoMatchingProtocol { .. } => Some(
+                "The two parties share no transport protocol. Enable a common \
+                 transport (TSP, DIDComm, or REST) on both sides — compare each \
+                 DID document's advertised `service` entries and add the missing one.",
             ),
             // No generic hint for these — the message itself is the
             // hint, or the failure is a protocol/programmer error
