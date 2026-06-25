@@ -77,28 +77,52 @@ This applies to both sides of `sealed_transfer` (`client_did`, `producer_did`),
 to CLI recipient flags (`--recipient-did`), and to any new protocol we add.
 Tests and docs refer to DIDs, not pubkeys.
 
-## Prefer DIDComm transport wherever possible
+## Prefer TSP, then DIDComm, then REST
 
-**DIDComm (authcrypt) is the preferred transport/protocol for inter-component
-communication** — VTA ↔ mediator ↔ push-gateway ↔ devices ↔ integrations —
-wherever the counterparty can speak it. REST/HTTPS is a **fallback for parties
-that cannot do DIDComm**, not the default.
+**Preference order for inter-component transport is TSP > DIDComm > REST** —
+VTA ↔ VTC ↔ mediator ↔ push-gateway ↔ devices ↔ integrations. **TSP (Trust
+Spanning Protocol) is the preferred transport** wherever both parties advertise
+it; **DIDComm (authcrypt) is the fully-supported fallback** for peers that don't
+yet speak TSP; **REST/HTTPS is the last fallback** for parties that can do
+neither. TSP is additive — DIDComm keeps working everywhere it does today. See
+`docs/05-design-notes/tsp-enablement.md` for the rollout design.
+
+**The DID document is authoritative for which protocols a party speaks.** Both
+sides' capability is read from their advertised services, **matched on the service
+`type`** (`TSPTransport` → TSP, `DIDCommMessaging` → DIDComm, `VTARest` → REST) —
+**never on the `#id` fragment**, which is an arbitrary label (the OWF reference TSP
+impl names it `#tsp-transport`, Affinidi names it `#tsp` — same type). The protocol
+used is the **highest-preference one present in *both* parties' DID documents**. If
+the intersection is empty, raise a typed **"no matching protocol"** error
+(`VtaError::NoMatchingProtocol`) — never silently downgrade past what a peer
+advertises, and never infer protocol from endpoint *shape* (a TSP VID and a DIDComm
+mediator are both DIDs — match on `type`, not "is it a DID"). Emitted service-id
+convention is `#tsp` / `#didcomm` / `#rest` (the older `#vta-didcomm` / `#vta-rest`
+are still read by type). TSP advertises like DIDComm: `#tsp`'s `serviceEndpoint` is
+the **mediator's DID**; the real transport URL lives in the mediator's own DID doc.
 
 When designing any new inter-component flow *or its authentication*, reach for
-DIDComm **first**. Do **not** default to "a REST endpoint plus a bespoke
+TSP first, then DIDComm. Do **not** default to "a REST endpoint plus a bespoke
 signature/DID-resolution scheme" — that is a recurring mistake.
 
-Why: with authcrypt, **sender authentication is intrinsic** — unpacking a
-message yields a cryptographically-authenticated sender DID (resolution handled
-inside the DIDComm stack), so there is no hand-rolled signature verification and
-no custom DID-resolution-in-verify, and `did:webvh` / `did:web` peers work
-without special handling. It also provides encryption and reuses the existing
-mediator infrastructure, and keeps everything on canonical DIDs (above).
+Why TSP over DIDComm: metadata-private routing (intermediaries don't learn the
+final recipient) at **bounded** message size (CESR + HPKE add roughly additive
+per-hop overhead, versus DIDComm-nested's multiplicative base64 blow-up), while
+keeping DIDs as VIDs so one identity works in both stacks. Long-term goal is to
+deprecate DIDComm in favour of TSP (phased — see the design note); until then
+DIDComm remains a first-class supported transport.
 
-Add a REST/HTTPS path only for counterparties that genuinely can't speak
-DIDComm, and treat its (e.g. did-signed) auth as the secondary path. Concrete
-example — the push gateway is reachable both ways: a `WakeHandle.gateway` that
-is a **DID** means DIDComm (preferred); a **URL** means REST (for others).
+Why DIDComm over REST (the established fallback): with authcrypt, **sender
+authentication is intrinsic** — unpacking a message yields a cryptographically-
+authenticated sender DID (resolution handled inside the stack), so there is no
+hand-rolled signature verification and `did:webvh` / `did:web` peers work
+without special handling. TSP gives the same intrinsic sender authentication.
+
+Add a REST/HTTPS path only for counterparties that can speak neither TSP nor
+DIDComm, and treat its (e.g. did-signed) auth as the last-resort path. Concrete
+example — the push gateway: a `WakeHandle.gateway` carries an explicit protocol
+tag (a bare DID-vs-URL shape no longer disambiguates, since TSP VIDs are DIDs
+too).
 
 ## Use DID templates, don't hand-roll DID shapes
 
@@ -435,10 +459,11 @@ new flow, update both this section and the relevant `docs/*.md`.
   caches keep landing while the new mediator picks up traffic.
   State is restart-resilient — boot replays outstanding drain
   timers via `DrainSweeper`. REST has no drain semantics.
-- **Service[] ordering** (§3.3): when both transports are
-  advertised, DIDComm comes first. Encoded via array order, not
-  DIDComm v2's `priority` key — DID-Core resolvers walking the
-  array pick DIDComm first. Enforced in
+- **Service[] ordering** (§3.3): when multiple transports are
+  advertised, the canonical order is **TSP > DIDComm > REST**
+  (then WebAuthn). Encoded via array order, not DIDComm v2's
+  `priority` key — DID-Core resolvers walking the array pick the
+  highest-preference transport first. Enforced in
   `protocol::document::sort_services_canonical` at the end of
   every `with_*_service` patcher.
 - **Handshake**: `update`/`rollback`-into-update uses a *live*

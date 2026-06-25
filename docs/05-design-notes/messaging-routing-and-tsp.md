@@ -1,6 +1,14 @@
 # Design note: VTC↔member messaging routing, and TSP
 
-Status: **Research / decision record** (no implementation pending)
+> **SUPERSEDED (2026-06-25) by `tsp-enablement.md`.** This note's §6 decision to
+> *defer* TSP ("stay on lazy DIDComm; treat TSP as watch-and-wait") was reversed
+> once the published mediator gained TSP routing + TSP↔DIDComm bridging and
+> `affinidi-tsp` became usable. TSP is now being enabled across VTI as the
+> preferred transport (TSP > DIDComm > REST). The routing-model analysis
+> (§3–§5) remains accurate and is the background for that decision. See
+> `tsp-enablement.md` for the active plan.
+
+Status: **Research / decision record** — **superseded** (see banner above)
 Owner: Glenn Gore
 Last updated: 2026-06-22
 
