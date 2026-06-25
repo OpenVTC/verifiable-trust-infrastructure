@@ -270,6 +270,42 @@ fn placeholders_in_nested_arrays_and_objects() {
 }
 
 #[test]
+fn null_array_elements_are_pruned() {
+    // Optional array members are expressed as whole-string tokens whose
+    // `optionalVars` default is `null`. When the caller omits them the
+    // element resolves to `null` and is dropped, leaving a clean array —
+    // never a literal `null` member (invalid in DID-doc key arrays).
+    let raw = base_template(json!({
+        "optionalVars": { "EXTRA_KEY": null },
+        "document": {
+            "id": "{DID}",
+            "authentication": ["{DID}#key-0", "{EXTRA_KEY}"]
+        }
+    }));
+    let tpl = DidTemplate::from_json(raw).unwrap();
+
+    // Omitted -> pruned.
+    let out = tpl.render(&ambient_vars()).unwrap();
+    assert_eq!(
+        out["authentication"],
+        json!(["did:webvh:abc:example.com#key-0"])
+    );
+
+    // Supplied -> retained. (A supplied value is not recursively
+    // re-substituted, so it must already carry the resolved DID.)
+    let mut vars = ambient_vars();
+    vars.insert_string("EXTRA_KEY", "did:webvh:abc:example.com#key-2");
+    let out = tpl.render(&vars).unwrap();
+    assert_eq!(
+        out["authentication"],
+        json!([
+            "did:webvh:abc:example.com#key-0",
+            "did:webvh:abc:example.com#key-2"
+        ])
+    );
+}
+
+#[test]
 fn provided_token_may_pass_through_as_sentinel() {
     // A caller supplying `DID = "{DID}"` means "leave this literal alone for
     // a downstream library to resolve" — render must not flag it.
@@ -327,6 +363,27 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
 
     let doc = tpl.render(&vars).unwrap();
     assert_eq!(doc["id"], "did:webvh:mediator:example.com");
+
+    // No P-256 vars supplied -> the optional P-256 slots default to `null`
+    // and are pruned: only the Ed25519 + X25519 pair survives, and the
+    // verification-relationship arrays each carry a single key reference.
+    let vms = doc["verificationMethod"].as_array().unwrap();
+    assert_eq!(vms.len(), 2);
+    assert_eq!(vms[0]["id"], "did:webvh:mediator:example.com#key-0");
+    assert_eq!(vms[1]["id"], "did:webvh:mediator:example.com#key-1");
+    assert_eq!(
+        doc["authentication"],
+        json!(["did:webvh:mediator:example.com#key-0"])
+    );
+    assert_eq!(
+        doc["assertionMethod"],
+        json!(["did:webvh:mediator:example.com#key-0"])
+    );
+    assert_eq!(
+        doc["keyAgreement"],
+        json!(["did:webvh:mediator:example.com#key-1"])
+    );
+
     let services = doc["service"].as_array().unwrap();
     assert_eq!(services.len(), 3);
 
@@ -362,6 +419,78 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
     assert_eq!(
         services[2]["serviceEndpoint"],
         "https://mediator.example.com/authenticate"
+    );
+}
+
+#[test]
+fn didcomm_mediator_builtin_renders_p256_slots_when_supplied() {
+    // Opt-in P-256: the caller supplies the optional verification-method
+    // objects (whole-string native-type substitution) plus the
+    // relationship references. The document then carries 4 verification
+    // methods and two-entry authentication/assertionMethod/keyAgreement
+    // arrays — exactly what a P-256-capable counterparty needs. (Supplied
+    // values are not recursively re-substituted, so they carry the resolved
+    // DID rather than the `{DID}` sentinel the local generator would pass.)
+    let tpl = load_embedded("didcomm-mediator").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
+    vars.insert_string("KA_KEY_MB", "z6LSKa");
+    vars.insert_string("URL", "https://mediator.example.com");
+    vars.insert_string("WS_URL", "wss://mediator.example.com/ws");
+    vars.insert(
+        "VM_P256_SIGNING",
+        json!({
+            "id": "did:webvh:mediator:example.com#key-2",
+            "type": "Multikey",
+            "controller": "did:webvh:mediator:example.com",
+            "publicKeyMultibase": "zDnaP256Sign"
+        }),
+    );
+    vars.insert(
+        "VM_P256_KA",
+        json!({
+            "id": "did:webvh:mediator:example.com#key-3",
+            "type": "Multikey",
+            "controller": "did:webvh:mediator:example.com",
+            "publicKeyMultibase": "zDnaP256Ka"
+        }),
+    );
+    vars.insert_string("AUTH_P256", "did:webvh:mediator:example.com#key-2");
+    vars.insert_string("ASSERTION_P256", "did:webvh:mediator:example.com#key-2");
+    vars.insert_string("KEYAGREEMENT_P256", "did:webvh:mediator:example.com#key-3");
+
+    let doc = tpl.render(&vars).unwrap();
+
+    let vms = doc["verificationMethod"].as_array().unwrap();
+    assert_eq!(vms.len(), 4);
+    assert_eq!(vms[2]["id"], "did:webvh:mediator:example.com#key-2");
+    assert_eq!(vms[2]["type"], "Multikey");
+    assert_eq!(vms[2]["controller"], "did:webvh:mediator:example.com");
+    assert_eq!(vms[2]["publicKeyMultibase"], "zDnaP256Sign");
+    assert_eq!(vms[3]["id"], "did:webvh:mediator:example.com#key-3");
+    assert_eq!(vms[3]["publicKeyMultibase"], "zDnaP256Ka");
+
+    assert_eq!(
+        doc["authentication"],
+        json!([
+            "did:webvh:mediator:example.com#key-0",
+            "did:webvh:mediator:example.com#key-2"
+        ])
+    );
+    assert_eq!(
+        doc["assertionMethod"],
+        json!([
+            "did:webvh:mediator:example.com#key-0",
+            "did:webvh:mediator:example.com#key-2"
+        ])
+    );
+    assert_eq!(
+        doc["keyAgreement"],
+        json!([
+            "did:webvh:mediator:example.com#key-1",
+            "did:webvh:mediator:example.com#key-3"
+        ])
     );
 }
 

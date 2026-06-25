@@ -8,7 +8,12 @@
   "optionalVars": {
     "ROUTING_KEYS": [],
     "ACCEPT": ["didcomm/v2"],
-    "WEBVH_SERVER": null
+    "WEBVH_SERVER": null,
+    "VM_P256_SIGNING": null,
+    "VM_P256_KA": null,
+    "AUTH_P256": null,
+    "ASSERTION_P256": null,
+    "KEYAGREEMENT_P256": null
   },
   "defaults": {
     "preRotationCount": 2,
@@ -34,11 +39,13 @@
         "type": "Multikey",
         "controller": "{DID}",
         "publicKeyMultibase": "{KA_KEY_MB}"
-      }
+      },
+      "{VM_P256_SIGNING}",
+      "{VM_P256_KA}"
     ],
-    "authentication": ["{DID}#key-0"],
-    "assertionMethod": ["{DID}#key-0"],
-    "keyAgreement": ["{DID}#key-1"],
+    "authentication": ["{DID}#key-0", "{AUTH_P256}"],
+    "assertionMethod": ["{DID}#key-0", "{ASSERTION_P256}"],
+    "keyAgreement": ["{DID}#key-1", "{KEYAGREEMENT_P256}"],
     "service": [
       {
         "id": "{DID}#tsp",

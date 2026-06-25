@@ -114,7 +114,26 @@ fn substitute_value(value: &Value, vars: &HashMap<String, Value>) -> Value {
     match value {
         Value::String(s) => substitute_string(s, vars),
         Value::Array(items) => {
-            Value::Array(items.iter().map(|v| substitute_value(v, vars)).collect())
+            // Substitute each element, then prune any that resolved to JSON
+            // `null`. This is the mechanism for *optional* array members: a
+            // template writes a whole-string token (e.g. `"{VM_P256_SIGNING}"`)
+            // as an array element and declares it in `optionalVars` with a
+            // `null` default. When the caller supplies a value the element
+            // renders; when they don't, the `null` default makes it disappear
+            // rather than leaving a literal `null` in the document (which would
+            // be invalid in a `verificationMethod` / `authentication` array).
+            //
+            // Only whole-array-element nulls are pruned — a `null` nested
+            // inside an object value is left untouched. No built-in template
+            // relies on a literal `null` array member, so this is purely
+            // additive.
+            Value::Array(
+                items
+                    .iter()
+                    .map(|v| substitute_value(v, vars))
+                    .filter(|v| !v.is_null())
+                    .collect(),
+            )
         }
         Value::Object(map) => {
             let mut out = Map::with_capacity(map.len());
