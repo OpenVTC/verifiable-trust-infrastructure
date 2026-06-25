@@ -41,6 +41,30 @@ packed frames, the fallback is a `direct_channel` / pickup consumer on the same
 authenticated session — still no upstream change. Verify which against the
 0.18.37 `DIDCommService` API when implementing PR 6b.
 
+### 0a. Update (2026-06-26, later): raw-TSP WebSocket delivery mode (mediator)
+
+TDK #534 (`affinidi-messaging-mediator` **0.16.31**) adds a **second, cleaner
+inbound mode** — but **mediator-side only for now**:
+
+- A WebSocket client opts in by offering the **`tsp` subprotocol** (alongside
+  `bearer.{token}`). The socket then carries **raw TSP `Message::Binary`
+  frames**, with a **flush-on-connect + delete-on-successful-send** contract
+  (queued TSP is drained on connect; a frame is deleted from the inbox only once
+  its send succeeds → **at-least-once** delivery). This is a dedicated TSP
+  channel, separate from the DIDComm-text websocket of §0/Mode 1.
+- **The `affinidi-messaging-sdk` client was NOT changed by #534** (it's
+  mediator + test-mediator only; the e2e test drives it with a raw
+  tokio-tungstenite socket). So there is **no turn-key ATM API to *open* this
+  raw-TSP websocket yet** — using it means a raw-ws client or a future SDK
+  helper.
+
+**Decision: PR 6b stays on Mode 1** (the existing DIDComm-text websocket +
+`is_tsp` sniff → `PackedMessageReceived`), which is fully turn-key in the
+published SDK 0.18.37/.38. **Mode 2 (raw-TSP WS, at-least-once) is the preferred
+target once the SDK client exposes opening it** — track for a follow-up; it
+gives cleaner delivery semantics and a clean channel separation. No VTI code
+change is blocked on it.
+
 ---
 
 ## 1. The problem
