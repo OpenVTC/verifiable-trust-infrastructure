@@ -130,6 +130,7 @@ pub async fn setup_vta_in_state(state: ServiceState) -> StateFixture {
         rest,
         didcomm,
         webauthn: false,
+        tsp: false,
     };
     config.vta_did = Some("did:webvh:scid123:host:vta".into());
 
