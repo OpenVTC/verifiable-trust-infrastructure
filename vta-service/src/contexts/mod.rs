@@ -39,10 +39,10 @@ pub async fn effective_context_policy(
 
     let mut policies: Vec<ContextPolicy> = Vec::new();
     for id in &ids {
-        if let Some(rec) = get_context(ks, id).await? {
-            if let Some(policy) = rec.context_policy {
-                policies.push(policy);
-            }
+        if let Some(rec) = get_context(ks, id).await?
+            && let Some(policy) = rec.context_policy
+        {
+            policies.push(policy);
         }
     }
     Ok(ContextPolicy::resolve(policies.iter()))

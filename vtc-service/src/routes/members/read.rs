@@ -240,7 +240,7 @@ pub async fn list_removed(
             })
         })
         .collect();
-    removed.sort_by(|a, b| b.removed_at.cmp(&a.removed_at));
+    removed.sort_by_key(|b| std::cmp::Reverse(b.removed_at));
     Ok(Json(removed))
 }
 
