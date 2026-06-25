@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.10.7"
+version = "0.10.8"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -14,6 +14,10 @@ repository.workspace = true
 default = ["setup", "keyring", "rest", "didcomm", "cli-synthesis"]
 rest = []
 didcomm = []
+# Trust Spanning Protocol transport. Additive and OFF by default (TSP rolls out
+# gated; DIDComm stays in `default`). Enables the SDK's `tsp` capability; later
+# PRs add the TSP listener + `services tsp` surface behind this flag.
+tsp = ["vta-sdk/tsp"]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
 setup = ["webvh", "dep:tempfile"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381

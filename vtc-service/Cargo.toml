@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.10.12"
+version = "0.10.13"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -12,6 +12,11 @@ repository.workspace = true
 
 [features]
 default = ["setup", "keyring", "website", "admin-ui"]
+# Trust Spanning Protocol transport (additive, OFF by default). Enables the
+# SDK's `tsp` capability for the VTC; later PRs add the TSP listener + the
+# `send_to_member` TSP path behind it. DIDComm stays the VTC's default member
+# transport until the phased flip (docs/05-design-notes/tsp-enablement.md §12).
+tsp = ["vta-sdk/tsp"]
 # Test-harness surface: the `test_support` module (in-process `TestVtc`
 # builder, `MockVtc` listening server, JWT/session minting). Enabled by
 # the crate's own integration tests via a `[dev-dependencies]` self-dep,

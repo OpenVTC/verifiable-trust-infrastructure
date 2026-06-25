@@ -2,7 +2,7 @@
 name = "vta-sdk"
 description = "SDK for Verifiable Trust Agents operating in Verifiable Trust Communities"
 readme = "README.md"
-version = "0.18.9"
+version = "0.18.10"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -12,6 +12,22 @@ repository.workspace = true
 
 [features]
 didcomm = ["dep:affinidi-tdk", "dep:affinidi-did-resolver-cache-sdk", "dep:tracing", "dep:uuid", "dep:tokio"]
+# Trust Spanning Protocol (TSP) support. Pulls the TSP agent + DID-backed VID
+# resolver — `affinidi_tdk::tsp` re-exports the `affinidi-tsp` crate when the
+# TDK's `tsp` feature is on. Mirrors the `didcomm` dep set (TDK runtime +
+# resolver cache + tracing/uuid/tokio). Additive and OFF by default — DIDComm is
+# unaffected. Later PRs gate the TSP modules + transport selection on this
+# feature. NB: the messaging-SDK's own `tsp` ops (`atm.tsp()`) are a separate
+# upstream toggle the outbound-seam PR must enable. See
+# docs/05-design-notes/tsp-enablement.md.
+tsp = [
+  "dep:affinidi-tdk",
+  "affinidi-tdk/tsp",
+  "dep:affinidi-did-resolver-cache-sdk",
+  "dep:tracing",
+  "dep:uuid",
+  "dep:tokio",
+]
 client = [
   "dep:reqwest",
   "dep:tracing",

@@ -22,6 +22,9 @@ path = "src/main.rs"
 default = ["rest", "didcomm"]
 rest = ["vta-service/rest"]
 didcomm = ["vta-service/didcomm"]
+# TSP transport pass-through. Off by default (not in `default`); enable
+# explicitly for a TSP-capable enclave build once the transport lands.
+tsp = ["vta-service/tsp"]
 webvh = ["vta-service/webvh"]
 vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
