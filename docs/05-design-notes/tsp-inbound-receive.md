@@ -1,12 +1,45 @@
 # Design note: how a VTA receives TSP inbound
 
-**Status:** DRAFT for review — gates SDD PR 6 (inbound listener + auth) and
-informs PR 7 (outbound). No code until approved.
+**Status:** Decision record — gates SDD PR 6 (inbound listener + auth) and
+informs PR 7 (outbound).
 **Owner:** Glenn Gore
 **Created:** 2026-06-26
+**Updated:** 2026-06-26 — **the TDK gained native TSP support that resolves both
+load-bearing open questions** (see §0 + §3). `affinidi-messaging-sdk` 0.18.37
+graduated TSP from experimental to supported (TDK #528) and added turn-key
+client auth + live-stream CESR sniffing. The recommendation (Option A) stands
+but is now much closer to turn-key.
 **Context:** `docs/05-design-notes/tsp-enablement.md` §6 assumed "add a TSP
 listener alongside the DIDComm one." This note records why that's not a drop-in
 and specifies the actual receive path.
+
+---
+
+## 0. Update (2026-06-26): native TDK TSP support landed
+
+Two TDK capabilities resolve the open questions this note originally flagged:
+
+- **Turn-key TSP client auth** — `affinidi_messaging_sdk::TspAuthHandler` (TDK
+  #533): a pure-TSP `CustomAuthHandler` that signs a challenge to the mediator's
+  `POST /tsp/authenticate`; afterwards the usual `atm.tsp()` ops authenticate
+  transparently. **Resolves §3 open-Q2.**
+- **Live-stream CESR sniffing** — the SDK websocket transport
+  (`transports/websockets/websocket.rs::process_inbound_didcomm_message`) now
+  sniffs `atm.tsp().is_tsp(frame)` and, for a TSP frame, surfaces it as
+  `WebSocketResponses::PackedMessageReceived` (un-unpacked) instead of failing
+  the DIDComm unpack and dropping it. **Resolves §3 open-Q1 (the load-bearing
+  one): the live-stream *does* surface TSP, gracefully, as a packed frame the
+  consumer unpacks via `atm.tsp()`.**
+
+**Net effect on the plan:** Option A (below) is unchanged in shape but no longer
+needs a bespoke pickup loop *or* an upstream change — the VTA already holds a
+mediator websocket via its DIDComm listener, and that stream now carries TSP
+frames. The **only** remaining seam is whether the VTA's `DIDCommService`-based
+listener exposes those `PackedMessageReceived` TSP frames to a VTI handler (vs.
+only routing unpacked DIDComm `Message`s). If `DIDCommService` doesn't surface
+packed frames, the fallback is a `direct_channel` / pickup consumer on the same
+authenticated session — still no upstream change. Verify which against the
+0.18.37 `DIDCommService` API when implementing PR 6b.
 
 ---
 
@@ -80,15 +113,16 @@ owned by `AppState`) that:
   consumer to reason about (must not double-consume vs. the DIDComm pickup —
   see §3).
 
-### Option B — pre-unpack sniff hook in `DIDCommService` (upstream change)
+### Option B — live websocket delivery (now largely shipped upstream)
 
-Add a middleware/hook in `affinidi-messaging-didcomm-service` that sniffs the
-CESR magic on raw inbound bytes and routes TSP out *before* DIDComm unpack, into
-a VTI-supplied TSP handler.
-
-- **Pros:** live (websocket-push) latency; one inbound connection.
-- **Cons:** requires an **upstream change** to the messaging-service crate;
-  couples our rollout to their release cadence. Defer to a v2 optimization.
+Originally framed as "needs an upstream pre-unpack hook." **Update (§0): the
+sniff already shipped** — the SDK websocket transport detects TSP frames and
+surfaces them as `PackedMessageReceived` rather than dropping them. So live
+delivery is available *if* the VTA's listener exposes packed frames to a VTI
+consumer. This collapses Option A and Option B into one approach over the
+existing authenticated websocket; the choice is now just *where* the VTA taps
+the packed TSP frames (DIDCommService handler surface vs. a `direct_channel`
+consumer), not push-vs-poll.
 
 ### Option C — mediator bridges all TSP→DIDComm at the recipient
 
@@ -103,27 +137,30 @@ into a DIDComm `forward`.
 
 ## 3. Recommendation & open questions
 
-**Adopt Option A (TSP fetch/pickup loop) for PR 6**, with Option B as a future
-live-delivery optimization once (and if) the upstream hook lands.
+**Adopt Option A** — receive TSP off the VTA's existing authenticated mediator
+connection (no bespoke pickup loop, no upstream change), filter `is_tsp`, unpack
+via `atm.tsp()`, and feed `dispatch_trust_task_core`.
 
-Resolve before/while implementing:
+Original open questions — status after the §0 TDK update:
 
-1. **Mailbox partition (the load-bearing one).** Does the existing DIDComm
-   live-stream / pickup also surface the stored **TSP** blobs (which
-   `DIDCommService` cannot unpack and would error/drop)? Two sub-cases:
-   - If the mediator's live-stream only pushes DIDComm and TSP is pickup-only →
-     clean: Option A's loop owns TSP, `DIDCommService` owns DIDComm.
-   - If the live-stream pushes TSP blobs too → we must ensure `DIDCommService`
-     **ignores** non-DIDComm bytes (an `ignore`/error-handler tweak) rather than
-     erroring, and that pickup doesn't double-consume. **Verify against the
-     running mediator before coding the loop.**
-2. **TSP client auth to the mediator.** Per the upstream dual-protocol mediator
-   SDD (D1), a TSP client performs a TSP handshake that mints the **same** EdDSA
-   `SessionClaims` JWT used by DIDComm. Confirm the VTA establishes that session
-   (and the relationship/`is_tsp` pickup auth) at listener start.
-3. **VID registration.** Confirm the ATM `tsp()` agent accepts the VTA's
-   existing DID + secrets as a `PrivateVid` (it should — `affinidi-tsp` has a
-   `did-resolver` feature and the keys are standard Ed25519/X25519).
+1. ~~Mailbox partition (the load-bearing one)~~ **RESOLVED (§0).** The SDK
+   websocket sniffs `is_tsp` and surfaces TSP frames as `PackedMessageReceived`
+   instead of failing the DIDComm unpack — so the live-stream carries TSP
+   *and* DIDComm without dropping or double-unpacking. No mediator-behavior
+   verification needed; the SDK handles the partition.
+2. ~~TSP client auth to the mediator~~ **RESOLVED (§0).** `TspAuthHandler`
+   (`POST /tsp/authenticate`) is turn-key; `atm.tsp()` authenticates
+   transparently afterwards.
+3. ~~VID registration~~ **Effectively resolved.** `atm.tsp().unpack(profile,
+   stored)` extracts the profile's Ed25519+X25519 keys from the secrets resolver
+   directly — no separate `PrivateVid` registration. The VTA's existing DID
+   profile is the VID.
+
+**The one remaining seam** (narrow, no upstream dep): does the VTA's
+`DIDCommService`-based listener (0.18.37) expose `PackedMessageReceived` TSP
+frames to a VTI handler, or must the VTA tap a `direct_channel` on the same
+session? Determine this against the live `DIDCommService` API when coding PR 6b —
+it's a "where do we attach the consumer" question, not a design risk.
 
 ---
 
@@ -147,19 +184,38 @@ The vault `SealedEnvelope::TspMessage` unseal (`trust_tasks/vault.rs`,
 `operations/vault/upsert.rs`) does **not** depend on the inbound listener. It's a
 request-scoped unpack: when a `vault/upsert` Trust Task carries a `tsp-message`
 sealed secret, add a `TspMessage` arm beside `DidcommAuthcrypt` that calls a
-`unseal_tsp_secret(atm, caller_did, message)` (mirroring `unseal_secret`):
-`atm.tsp().unpack` with the VTA's VID + the sender-vs-caller cross-check, then
-the existing cleartext deserialize. This is a clean, self-contained, testable PR
-that can land **before** the listener — recommend doing it as the first concrete
-PR 6 increment while the §3 mailbox question is verified.
+`unseal_tsp_secret(atm, profile, caller_did, message)` (mirroring
+`unseal_secret`): `atm.tsp().unpack(profile, message)` → `(payload, sender_vid)`,
+sender-vs-caller cross-check, then `serde_json::from_slice(&payload)` into the
+cleartext `VaultSecret`.
+
+**One plumbing wrinkle to resolve in PR 6a (found while scoping):** unlike the
+DIDComm `atm.unpack(jwe)` (no profile arg), `atm.tsp().unpack` requires an
+`Arc<ATMProfile>`, and the VTA's profile is **not** currently held in `AppState`
+— it's created inline for the DIDComm listener (`server.rs`) and the vault-context
+ATM (`state.atm`) is built separately without a registered profile (no
+`profile_add` in `vta-service` today). So PR 6a must either (a) thread the VTA's
+`Arc<ATMProfile>` into `AppState`, or (b) construct it on demand in
+`unseal_tsp_secret` from the VTA DID + secrets resolver. (a) is cleaner and also
+serves PR 6b/7. This makes 6a slightly more than a pure mirror of
+`unseal_secret`, but it's still self-contained and listener-independent.
 
 ---
 
 ## 6. Resulting PR plan (supersedes the single "PR 6" in tsp-enablement.md §13)
 
 - **PR 6a — sealed-envelope TSP unseal** (§5). Self-contained; no listener dep.
-- **PR 6b — TSP inbound fetch/pickup loop** (§2 Option A) feeding
-  `dispatch_trust_task_core`, after the §3.1 mailbox question is verified.
+  Includes the `Arc<ATMProfile>`-into-`AppState` plumbing (§5).
+- **PR 6b — TSP inbound over the existing mediator websocket** (§2 Option A):
+  tap `PackedMessageReceived` TSP frames (or a `direct_channel` consumer on the
+  same session), `is_tsp`-filter, `atm.tsp().unpack`, feed
+  `dispatch_trust_task_core`. Wire `TspAuthHandler` at listener start. The §3
+  open questions are resolved by the §0 TDK update — the only thing to confirm is
+  the `DIDCommService` 0.18.37 packed-frame surface.
 - **PR 6c — auth over TSP** (§4): mostly a consequence of 6b; the delta is the
   proven-signer plumbing + an audience-isolation test. May fold into 6b.
-- Option B (live pre-unpack hook) is a later optimization, gated on upstream.
+
+**Dependency bump:** PR 6 requires `affinidi-messaging-sdk` ≥ 0.18.37 (TSP
+graduated to supported, #528; `TspAuthHandler`, #533; websocket CESR sniff). The
+workspace pins `affinidi-tdk = "0.8"`; verify the resolved messaging-sdk patch is
+≥ 0.18.37 (or bump) when starting 6a/6b.
