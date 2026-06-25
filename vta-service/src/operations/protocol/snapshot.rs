@@ -53,6 +53,7 @@ pub enum ServiceKind {
     Rest,
     Didcomm,
     Webauthn,
+    Tsp,
 }
 
 impl ServiceKind {
@@ -63,6 +64,7 @@ impl ServiceKind {
             ServiceKind::Rest => "rest",
             ServiceKind::Didcomm => "didcomm",
             ServiceKind::Webauthn => "webauthn",
+            ServiceKind::Tsp => "tsp",
         }
     }
 }
@@ -79,6 +81,7 @@ pub enum ServiceConfigSnapshot {
     Rest(RestSnapshot),
     Didcomm(DidcommSnapshot),
     Webauthn(WebauthnSnapshot),
+    Tsp(TspSnapshot),
 }
 
 impl ServiceConfigSnapshot {
@@ -87,6 +90,7 @@ impl ServiceConfigSnapshot {
             ServiceConfigSnapshot::Rest(_) => ServiceKind::Rest,
             ServiceConfigSnapshot::Didcomm(_) => ServiceKind::Didcomm,
             ServiceConfigSnapshot::Webauthn(_) => ServiceKind::Webauthn,
+            ServiceConfigSnapshot::Tsp(_) => ServiceKind::Tsp,
         }
     }
 }
@@ -124,6 +128,17 @@ pub enum DidcommSnapshot {
 #[serde(tag = "state", rename_all = "lowercase")]
 pub enum WebauthnSnapshot {
     Enabled { url: String },
+    Disabled,
+}
+
+/// Pre-mutation state for the TSP (`TSPTransport`) kind. Mirrors
+/// [`RestSnapshot`] — the TSP surface has the same single-value shape on
+/// the DID document — but the advertised value is the **mediator DID**
+/// (the VTA's TSP VID), not a URL, so the field is named `mediator_did`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum TspSnapshot {
+    Enabled { mediator_did: String },
     Disabled,
 }
 
@@ -260,6 +275,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_then_read_round_trips_tsp_enabled() {
+        let (_dir, ks) = empty_snapshot_keyspace().await;
+
+        let snap = ServiceConfigSnapshot::Tsp(TspSnapshot::Enabled {
+            mediator_did: "did:webvh:scid:host:mediator".into(),
+        });
+        write(&ks, snap.clone()).await.unwrap();
+
+        let restored = read(&ks, ServiceKind::Tsp).await.unwrap().unwrap();
+        assert_eq!(restored, snap);
+    }
+
+    #[tokio::test]
+    async fn write_then_read_round_trips_tsp_disabled() {
+        let (_dir, ks) = empty_snapshot_keyspace().await;
+
+        let snap = ServiceConfigSnapshot::Tsp(TspSnapshot::Disabled);
+        write(&ks, snap.clone()).await.unwrap();
+
+        let restored = read(&ks, ServiceKind::Tsp).await.unwrap().unwrap();
+        assert_eq!(restored, snap);
+    }
+
+    #[tokio::test]
     async fn second_write_overwrites_first_for_same_kind() {
         let (_dir, ks) = empty_snapshot_keyspace().await;
 
@@ -363,6 +402,21 @@ mod tests {
         let snap = ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Disabled);
         let json = serde_json::to_value(&snap).unwrap();
         assert_eq!(json["kind"], "didcomm");
+        assert_eq!(json["state"], "disabled");
+
+        // TSP enabled — advertises a mediator DID, not a URL
+        let snap = ServiceConfigSnapshot::Tsp(TspSnapshot::Enabled {
+            mediator_did: "did:webvh:scid:host:mediator".into(),
+        });
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["kind"], "tsp");
+        assert_eq!(json["state"], "enabled");
+        assert_eq!(json["mediator_did"], "did:webvh:scid:host:mediator");
+
+        // TSP disabled — no extra fields
+        let snap = ServiceConfigSnapshot::Tsp(TspSnapshot::Disabled);
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["kind"], "tsp");
         assert_eq!(json["state"], "disabled");
     }
 

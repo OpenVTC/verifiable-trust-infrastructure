@@ -96,6 +96,9 @@ pub enum TelemetryKind {
     ServicesWebauthnEnable,
     ServicesWebauthnUpdate,
     ServicesWebauthnDisable,
+    ServicesTspEnable,
+    ServicesTspUpdate,
+    ServicesTspDisable,
 }
 
 #[derive(Debug, Clone, Default)]

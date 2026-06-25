@@ -65,6 +65,13 @@ pub(crate) trait ServiceLifecycle {
     /// Telemetry kind emitted on a successful update.
     const UPDATE_TELEMETRY: TelemetryKind;
 
+    /// Validate + canonicalize the operator-supplied advertised value,
+    /// returning the canonical form to publish or an error message.
+    ///
+    /// REST / WebAuthn validate an HTTPS URL (`validate_service_url`); TSP
+    /// validates a mediator **DID** (the endpoint is a `did:...` VID, not a
+    /// URL), so it can't reuse the URL validator.
+    fn validate(input: &str) -> Result<String, String>;
     /// Is this service currently flagged on in the live config?
     fn config_enabled(cfg: &AppConfig) -> bool;
     /// The URL this service currently advertises in the DID document, if any.
@@ -243,7 +250,7 @@ where
     E: DisableMutationError,
 {
     // Brick-prevention runs FIRST — cheap config-only check before any I/O.
-    let (rest, didcomm, webauthn) = {
+    let (rest, didcomm, webauthn, tsp) = {
         let cfg = config.read().await;
         if !S::config_enabled(&cfg) {
             return Err(E::not_present());
@@ -252,10 +259,11 @@ where
             cfg.services.rest,
             cfg.services.didcomm,
             cfg.services.webauthn,
+            cfg.services.tsp,
         )
     };
     would_violate_last_service(
-        &CurrentServices::new(rest, didcomm, webauthn),
+        &CurrentServices::new(rest, didcomm, webauthn, tsp),
         ProposedOp::disable(S::KIND),
     )?;
 
@@ -288,9 +296,7 @@ where
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    let canonical_url = validate_service_url(url)
-        .map_err(|e| E::validation(e.to_string()))?
-        .to_string();
+    let canonical_url = S::validate(url).map_err(E::validation)?;
 
     let state = check_enable_preconditions::<S, E>(deps.config, deps.webvh_ks).await?;
 
@@ -352,9 +358,7 @@ where
 
     let _guard = PROTOCOL_LOCK.lock().await;
 
-    let canonical_url = validate_service_url(url)
-        .map_err(|e| E::validation(e.to_string()))?
-        .to_string();
+    let canonical_url = S::validate(url).map_err(E::validation)?;
 
     let (state, prior_url) = check_update_preconditions::<S, E>(deps.config, deps.webvh_ks).await?;
 
@@ -429,6 +433,11 @@ impl ServiceLifecycle for RestService {
     const ENABLE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesRestEnable;
     const UPDATE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesRestUpdate;
 
+    fn validate(input: &str) -> Result<String, String> {
+        validate_service_url(input)
+            .map(|u| u.to_string())
+            .map_err(|e| e.to_string())
+    }
     fn config_enabled(cfg: &AppConfig) -> bool {
         cfg.services.rest
     }
@@ -460,6 +469,11 @@ impl ServiceLifecycle for WebauthnService {
     const ENABLE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesWebauthnEnable;
     const UPDATE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesWebauthnUpdate;
 
+    fn validate(input: &str) -> Result<String, String> {
+        validate_service_url(input)
+            .map(|u| u.to_string())
+            .map_err(|e| e.to_string())
+    }
     fn config_enabled(cfg: &AppConfig) -> bool {
         cfg.services.webauthn
     }
@@ -480,6 +494,53 @@ impl ServiceLifecycle for WebauthnService {
     fn snapshot_enabled(prior_url: String) -> ServiceConfigSnapshot {
         ServiceConfigSnapshot::Webauthn(
             crate::operations::protocol::snapshot::WebauthnSnapshot::Enabled { url: prior_url },
+        )
+    }
+}
+
+/// TSP transport (`#tsp`, `TSPTransport`).
+///
+/// Unlike REST / WebAuthn the advertised value is a **mediator DID** (the
+/// VTA's TSP VID), not a URL — so `validate` checks for a non-empty
+/// `did:...` string rather than running `validate_service_url`. TSP has no
+/// drain and no handshake, so (like REST) it needs only the shared
+/// enable/update/disable skeleton. The lifecycle hooks' `*_url` naming is
+/// kept (it's the engine's generic "advertised value" slot); the value
+/// carried is the mediator DID.
+pub(crate) struct TspService;
+
+impl ServiceLifecycle for TspService {
+    const LABEL: &'static str = "TSP";
+    const KIND: ServiceKind = ServiceKind::Tsp;
+    const ENABLE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesTspEnable;
+    const UPDATE_TELEMETRY: TelemetryKind = TelemetryKind::ServicesTspUpdate;
+
+    fn validate(input: &str) -> Result<String, String> {
+        if input.is_empty() || !input.starts_with("did:") {
+            return Err("TSP mediator must be a DID (did:...)".into());
+        }
+        Ok(input.to_string())
+    }
+    fn config_enabled(cfg: &AppConfig) -> bool {
+        cfg.services.tsp
+    }
+    fn current_service_url(doc: &JsonValue) -> Option<String> {
+        crate::operations::protocol::document::current_tsp_service(doc).map(|s| s.mediator_did)
+    }
+    fn with_service(doc: JsonValue, url: &str) -> Result<JsonValue, DocumentPatchError> {
+        crate::operations::protocol::document::with_tsp_service(doc, url)
+    }
+    fn without_service(doc: JsonValue) -> JsonValue {
+        crate::operations::protocol::document::without_tsp_service(doc)
+    }
+    fn snapshot_disabled() -> ServiceConfigSnapshot {
+        ServiceConfigSnapshot::Tsp(crate::operations::protocol::snapshot::TspSnapshot::Disabled)
+    }
+    fn snapshot_enabled(prior_url: String) -> ServiceConfigSnapshot {
+        ServiceConfigSnapshot::Tsp(
+            crate::operations::protocol::snapshot::TspSnapshot::Enabled {
+                mediator_did: prior_url,
+            },
         )
     }
 }

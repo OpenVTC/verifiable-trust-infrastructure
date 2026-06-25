@@ -304,6 +304,7 @@ async fn read_preconditions(
                 cfg.services.rest,
                 cfg.services.didcomm,
                 cfg.services.webauthn,
+                cfg.services.tsp,
             ),
             ProposedOp::disable(ServiceKind::Didcomm),
         ) {

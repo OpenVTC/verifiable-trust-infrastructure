@@ -21,6 +21,7 @@ use crate::store::KeyspaceHandle;
 
 const REST_KEY: &str = "runtime-state:service:rest";
 const DIDCOMM_KEY: &str = "runtime-state:service:didcomm";
+const TSP_KEY: &str = "runtime-state:service:tsp";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ServiceState {
@@ -48,6 +49,19 @@ pub async fn is_didcomm_enabled(ks: &KeyspaceHandle) -> Result<bool, AppError> {
         .unwrap_or(true))
 }
 
+/// True if TSP should be active (advertised + bridged to a mediator).
+/// Defaults to **disabled** when no state has been written yet — TSP is
+/// additive and off-by-default while it rolls out gated (see
+/// `docs/05-design-notes/tsp-enablement.md`), so a freshly-built VTA does
+/// not advertise TSP until the operator enables it explicitly.
+pub async fn is_tsp_enabled(ks: &KeyspaceHandle) -> Result<bool, AppError> {
+    Ok(ks
+        .get::<ServiceState>(TSP_KEY.to_string())
+        .await?
+        .map(|s| s.enabled)
+        .unwrap_or(false))
+}
+
 pub async fn set_rest_enabled(ks: &KeyspaceHandle, enabled: bool) -> Result<(), AppError> {
     ks.insert(REST_KEY.to_string(), &ServiceState { enabled })
         .await
@@ -55,6 +69,11 @@ pub async fn set_rest_enabled(ks: &KeyspaceHandle, enabled: bool) -> Result<(), 
 
 pub async fn set_didcomm_enabled(ks: &KeyspaceHandle, enabled: bool) -> Result<(), AppError> {
     ks.insert(DIDCOMM_KEY.to_string(), &ServiceState { enabled })
+        .await
+}
+
+pub async fn set_tsp_enabled(ks: &KeyspaceHandle, enabled: bool) -> Result<(), AppError> {
+    ks.insert(TSP_KEY.to_string(), &ServiceState { enabled })
         .await
 }
 
@@ -77,6 +96,9 @@ pub async fn migrate_from_config(ks: &KeyspaceHandle, config: &AppConfig) -> Res
         .is_none()
     {
         set_didcomm_enabled(ks, config.services.didcomm).await?;
+    }
+    if ks.get::<ServiceState>(TSP_KEY.to_string()).await?.is_none() {
+        set_tsp_enabled(ks, config.services.tsp).await?;
     }
     Ok(())
 }

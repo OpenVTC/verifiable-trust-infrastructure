@@ -8,11 +8,13 @@
 
 pub mod disable_didcomm;
 pub mod disable_rest;
+pub mod disable_tsp;
 pub mod disable_webauthn;
 pub mod document;
 pub mod drain_cancel;
 pub mod enable_didcomm;
 pub mod enable_rest;
+pub mod enable_tsp;
 pub mod enable_webauthn;
 pub mod invariant;
 pub mod list;
@@ -22,12 +24,14 @@ pub mod preconditions;
 pub mod report;
 pub mod rollback_didcomm;
 pub mod rollback_rest;
+pub mod rollback_tsp;
 pub mod rollback_webauthn;
 pub mod runtime_state;
 pub(crate) mod service_lifecycle;
 pub mod snapshot;
 pub mod update_didcomm;
 pub mod update_rest;
+pub mod update_tsp;
 pub mod update_webauthn;
 
 /// Process-wide lock serializing every service-management mutation
