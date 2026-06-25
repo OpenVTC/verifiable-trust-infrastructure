@@ -17,8 +17,9 @@
 use vta_sdk::client::VtaClient;
 use vta_sdk::error::VtaError;
 use vta_sdk::protocol::services::{
-    DisableRestRequest, EnableRestRequest, RollbackDidcommRequest, RollbackRestRequest,
-    UpdateRestRequest,
+    DisableRestRequest, DisableTspRequest, EnableRestRequest, EnableTspRequest,
+    RollbackDidcommRequest, RollbackRestRequest, RollbackTspRequest, UpdateRestRequest,
+    UpdateTspRequest,
 };
 use vta_sdk::protocol::{
     DisableDidcommRequest, EnableDidcommConflictBody, EnableDidcommRequest, UpdateDidcommRequest,
@@ -121,6 +122,58 @@ pub async fn cmd_services_rest_rollback(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let resp = client.rollback_rest(RollbackRestRequest::default()).await?;
     print_rollback_result("REST", &resp);
+    Ok(())
+}
+
+// ── services tsp {enable, update, disable, rollback} ──────────────
+//
+// TSP advertises a **mediator DID** (the VTA's TSP VID), not a URL —
+// so these mirror the REST commands with `mediator_did` in place of
+// `url`. Responses reuse the same `ServiceMutationResponse` /
+// `RollbackResponse` shapes, so the rendering is identical.
+
+pub async fn cmd_services_tsp_enable(
+    client: &VtaClient,
+    mediator_did: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let req = EnableTspRequest::new(mediator_did);
+    let resp = client.enable_tsp(req).await?;
+    println!("TSP enabled.");
+    println!("  New version ID: {}", resp.log_entry_version_id);
+    println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
+    Ok(())
+}
+
+pub async fn cmd_services_tsp_update(
+    client: &VtaClient,
+    mediator_did: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let req = UpdateTspRequest::new(mediator_did);
+    let resp = client.update_tsp(req).await?;
+    println!("TSP mediator DID updated.");
+    println!("  New version ID: {}", resp.log_entry_version_id);
+    println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
+    Ok(())
+}
+
+pub async fn cmd_services_tsp_disable(
+    client: &VtaClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.disable_tsp(DisableTspRequest::default()).await?;
+    println!("TSP disabled.");
+    println!("  New version ID: {}", resp.log_entry_version_id);
+    println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
+    Ok(())
+}
+
+pub async fn cmd_services_tsp_rollback(
+    client: &VtaClient,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client.rollback_tsp(RollbackTspRequest::default()).await?;
+    print_rollback_result("TSP", &resp);
     Ok(())
 }
 

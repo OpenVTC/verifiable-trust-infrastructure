@@ -72,6 +72,34 @@ pub const ROLLBACK_DIDCOMM: &str =
 pub const ROLLBACK_DIDCOMM_RESULT: &str =
     "https://firstperson.network/protocols/services-management/1.0/didcomm-rollback-result";
 
+// TSP-side service management. Same shape as REST — single value on
+// the `#tsp` service entry — but the value is a **mediator DID** (the
+// VTA's TSP VID), not a URL. All four are reachable over both REST
+// and DIDComm: unlike `enable_didcomm` (which can't arrive over a
+// transport that isn't running yet), DIDComm is always running when
+// REST is, so a TSP enable/update/disable/rollback can travel over
+// either transport.
+
+pub const ENABLE_TSP: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-enable";
+pub const ENABLE_TSP_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-enable-result";
+
+pub const UPDATE_TSP: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-update";
+pub const UPDATE_TSP_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-update-result";
+
+pub const DISABLE_TSP: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-disable";
+pub const DISABLE_TSP_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-disable-result";
+
+pub const ROLLBACK_TSP: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-rollback";
+pub const ROLLBACK_TSP_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/tsp-rollback-result";
+
 // WebAuthn-RP service ops. Same shape as REST — single URL on the
 // `#vta-webauthn` service entry — but with different runtime
 // availability semantics + the hard-disable passkey-VM cleanup.

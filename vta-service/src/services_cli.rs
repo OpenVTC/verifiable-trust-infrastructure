@@ -54,18 +54,22 @@ use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
 use crate::operations::protocol::disable_rest::{DisableRestParams, disable_rest};
+use crate::operations::protocol::disable_tsp::{DisableTspParams, disable_tsp};
 use crate::operations::protocol::drain_cancel::{DrainCancelParams, drain_cancel};
 use crate::operations::protocol::enable_didcomm::{EnableDidcommParams, enable_didcomm};
 use crate::operations::protocol::enable_rest::{EnableRestParams, enable_rest};
+use crate::operations::protocol::enable_tsp::{EnableTspParams, enable_tsp};
 use crate::operations::protocol::list::list_services;
 use crate::operations::protocol::list_drain::list_drain;
 use crate::operations::protocol::rollback_didcomm::{RollbackDidcommParams, rollback_didcomm};
 use crate::operations::protocol::rollback_rest::{RollbackRestParams, rollback_rest};
+use crate::operations::protocol::rollback_tsp::{RollbackTspParams, rollback_tsp};
 use crate::operations::protocol::snapshot;
 use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommParams, update_didcomm,
 };
 use crate::operations::protocol::update_rest::{UpdateRestParams, update_rest};
+use crate::operations::protocol::update_tsp::{UpdateTspParams, update_tsp};
 use crate::store::{KeyspaceHandle, Store};
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
@@ -370,6 +374,97 @@ pub async fn run_services_rest_rollback(config_path: Option<PathBuf>) -> CliResu
         println!("REST rollback: no change required (snapshot ≡ current state).");
     } else {
         println!("REST rolled back.");
+        if let Some(version) = result.new_version_id {
+            println!("  New version ID: {version}");
+        }
+        print_serverless_hint(result.serverless, &result.vta_did);
+    }
+    Ok(())
+}
+
+// ── services tsp {enable, update, disable, rollback} ──────────────
+//
+// TSP advertises a **mediator DID** (the VTA's TSP VID), not a URL —
+// so these mirror the REST offline ops with `mediator_did` in place
+// of `url`. Direct op calls, no auth ceremony (offline binary).
+
+pub async fn run_services_tsp_enable(
+    config_path: Option<PathBuf>,
+    mediator_did: String,
+) -> CliResult {
+    let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
+    let result = enable_tsp(
+        &deps,
+        &d.auth,
+        EnableTspParams { mediator_did },
+        OpContext::Direct,
+        "vta-cli-offline",
+    )
+    .await
+    .map_err(report_op_error)?;
+    println!("TSP enabled.");
+    println!("  New version ID: {}", result.new_version_id);
+    println!("  Mediator DID:   {}", result.mediator_did);
+    print_serverless_hint(result.serverless, &result.vta_did);
+    Ok(())
+}
+
+pub async fn run_services_tsp_update(
+    config_path: Option<PathBuf>,
+    mediator_did: String,
+) -> CliResult {
+    let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
+    let result = update_tsp(
+        &deps,
+        &d.auth,
+        UpdateTspParams { mediator_did },
+        OpContext::Direct,
+        "vta-cli-offline",
+    )
+    .await
+    .map_err(report_op_error)?;
+    println!("TSP mediator DID updated.");
+    println!("  Prior mediator: {}", result.prior_mediator_did);
+    println!("  New mediator:   {}", result.mediator_did);
+    println!("  New version ID: {}", result.new_version_id);
+    print_serverless_hint(result.serverless, &result.vta_did);
+    Ok(())
+}
+
+pub async fn run_services_tsp_disable(config_path: Option<PathBuf>) -> CliResult {
+    let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
+    let result = disable_tsp(
+        &deps,
+        &d.auth,
+        DisableTspParams,
+        OpContext::Direct,
+        "vta-cli-offline",
+    )
+    .await
+    .map_err(report_op_error)?;
+    println!("TSP disabled.");
+    println!("  Prior mediator: {}", result.prior_mediator_did);
+    println!("  New version ID: {}", result.new_version_id);
+    print_serverless_hint(result.serverless, &result.vta_did);
+    Ok(())
+}
+
+pub async fn run_services_tsp_rollback(config_path: Option<PathBuf>) -> CliResult {
+    let d = build_offline_deps(config_path).await?;
+    let deps = d.service_op_deps();
+    let result = rollback_tsp(&deps, &d.auth, RollbackTspParams, "vta-cli-offline")
+        .await
+        .map_err(report_op_error)?;
+    if matches!(
+        result.kind,
+        crate::operations::protocol::rollback_tsp::RollbackKind::NoOp
+    ) {
+        println!("TSP rollback: no change required (snapshot ≡ current state).");
+    } else {
+        println!("TSP rolled back.");
         if let Some(version) = result.new_version_id {
             println!("  New version ID: {version}");
         }

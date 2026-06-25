@@ -1232,6 +1232,12 @@ pub(crate) enum ConfigCommands {
 pub(crate) enum ServicesCommands {
     /// Show currently-advertised transport services.
     List,
+    /// Manage TSP advertisement (the `#tsp` `TSPTransport` service
+    /// entry advertising the VTA's TSP-VID mediator DID).
+    Tsp {
+        #[command(subcommand)]
+        command: TspCommands,
+    },
     /// Manage REST advertisement.
     Rest {
         #[command(subcommand)]
@@ -1262,6 +1268,27 @@ pub(crate) enum ServicesCommands {
         #[arg(long, default_value = "json")]
         format: String,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TspCommands {
+    /// Add a `#tsp` service entry advertising `--mediator-did` (the
+    /// VTA's TSP VID).
+    Enable {
+        #[arg(long = "mediator-did")]
+        mediator_did: String,
+    },
+    /// Replace the mediator DID on the existing `#tsp` entry.
+    Update {
+        #[arg(long = "mediator-did")]
+        mediator_did: String,
+    },
+    /// Remove the `#tsp` entry. Refused when TSP is the only
+    /// advertised transport (spec §3.2 — at least one must remain).
+    Disable,
+    /// Fail-forward the most recent TSP mutation by re-applying the
+    /// snapshotted prior state (spec §3.5a).
+    Rollback,
 }
 
 #[derive(Subcommand)]

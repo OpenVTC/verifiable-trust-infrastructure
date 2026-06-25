@@ -4,7 +4,7 @@ use vta_cli_common::commands::services;
 use vta_sdk::client::VtaClient;
 
 use crate::cli::{
-    DidcommCommands, DrainCommands, RestCommands, ServicesCommands, WebauthnCommands,
+    DidcommCommands, DrainCommands, RestCommands, ServicesCommands, TspCommands, WebauthnCommands,
 };
 
 pub(crate) async fn run(
@@ -13,6 +13,7 @@ pub(crate) async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         ServicesCommands::List => services::cmd_services_list(client).await,
+        ServicesCommands::Tsp { command } => run_tsp(client, command).await,
         ServicesCommands::Rest { command } => run_rest(client, command).await,
         ServicesCommands::Didcomm { command } => run_didcomm(client, command).await,
         ServicesCommands::Webauthn { command } => run_webauthn(client, command).await,
@@ -40,6 +41,22 @@ async fn run_webauthn(
         }
         WebauthnCommands::Disable => services::cmd_services_webauthn_disable(client).await,
         WebauthnCommands::Rollback => services::cmd_services_webauthn_rollback(client).await,
+    }
+}
+
+async fn run_tsp(
+    client: &VtaClient,
+    command: TspCommands,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        TspCommands::Enable { mediator_did } => {
+            services::cmd_services_tsp_enable(client, mediator_did).await
+        }
+        TspCommands::Update { mediator_did } => {
+            services::cmd_services_tsp_update(client, mediator_did).await
+        }
+        TspCommands::Disable => services::cmd_services_tsp_disable(client).await,
+        TspCommands::Rollback => services::cmd_services_tsp_rollback(client).await,
     }
 }
 

@@ -33,15 +33,19 @@ use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
 use crate::operations::protocol::disable_rest::{DisableRestParams, disable_rest};
+use crate::operations::protocol::disable_tsp::{DisableTspParams, disable_tsp};
 use crate::operations::protocol::drain_cancel::{DrainCancelParams, drain_cancel};
 use crate::operations::protocol::enable_rest::{EnableRestParams, enable_rest};
+use crate::operations::protocol::enable_tsp::{EnableTspParams, enable_tsp};
 use crate::operations::protocol::report::{ReportParams, mediator_report};
 use crate::operations::protocol::rollback_didcomm::{RollbackDidcommParams, rollback_didcomm};
 use crate::operations::protocol::rollback_rest::{RollbackRestParams, rollback_rest};
+use crate::operations::protocol::rollback_tsp::{RollbackTspParams, rollback_tsp};
 use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommParams, update_didcomm,
 };
 use crate::operations::protocol::update_rest::{UpdateRestParams, update_rest};
+use crate::operations::protocol::update_tsp::{UpdateTspParams, update_tsp};
 use crate::operations::protocol::{OpContext, ServiceOpDeps};
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
@@ -233,6 +237,64 @@ impl ToProblemReport for crate::operations::protocol::rollback_rest::RollbackRes
                 crate::operations::protocol::disable_rest::DisableRestError::LastServiceRefused,
             ) => ProblemReport::conflict(
                 "rolling back this REST mutation would leave the VTA with no advertised services",
+            ),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::enable_tsp::EnableTspError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::enable_tsp::EnableTspError as E;
+        match self {
+            E::ServiceAlreadyEnabled => ProblemReport::conflict("TSP is already enabled"),
+            E::Validation(e) => ProblemReport::bad_request(e),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::update_tsp::UpdateTspError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::update_tsp::UpdateTspError as E;
+        match self {
+            E::ServiceNotPresent => ProblemReport::conflict("TSP is not currently enabled"),
+            E::Validation(e) => ProblemReport::bad_request(e),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::disable_tsp::DisableTspError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::disable_tsp::DisableTspError as E;
+        match self {
+            E::ServiceNotPresent => {
+                ProblemReport::conflict("TSP is not currently enabled — nothing to disable")
+            }
+            E::LastServiceRefused => ProblemReport::conflict(
+                "refusing operation: would leave the VTA with no advertised services",
+            ),
+            E::Auth(e) => ProblemReport::unauthorized(e),
+            other => ProblemReport::internal_error(other.to_string()),
+        }
+    }
+}
+
+impl ToProblemReport for crate::operations::protocol::rollback_tsp::RollbackTspError {
+    fn to_problem_report(self) -> ProblemReport {
+        use crate::operations::protocol::rollback_tsp::RollbackTspError as E;
+        match self {
+            E::NoPriorMutation => {
+                ProblemReport::conflict("no prior TSP mutation to roll back from")
+            }
+            E::DisableForward(
+                crate::operations::protocol::disable_tsp::DisableTspError::LastServiceRefused,
+            ) => ProblemReport::conflict(
+                "rolling back this TSP mutation would leave the VTA with no advertised services",
             ),
             E::Auth(e) => ProblemReport::unauthorized(e),
             other => ProblemReport::internal_error(other.to_string()),
@@ -610,6 +672,119 @@ pub async fn handle_disable_rest(
     }
 }
 
+// ── TSP service management over DIDComm ────────────────────────────
+//
+// Symmetric with the REST handlers above, but the wire field is
+// `mediator_did` (a DID, the VTA's TSP VID) instead of `url`. Unlike
+// `enable_didcomm`, TSP enable IS reachable over DIDComm — DIDComm is
+// always running when REST is.
+
+pub async fn handle_enable_tsp(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = protocol_auth!(state, message);
+
+    let mediator_did = body_str_field(&message, "mediator_did")?;
+
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
+    let result = enable_tsp(
+        &deps,
+        &auth,
+        EnableTspParams { mediator_did },
+        OpContext::Direct,
+        "didcomm",
+    )
+    .await;
+
+    match result {
+        Ok(r) => response(
+            protocol_management::ENABLE_TSP_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "mediator_did": r.mediator_did,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
+            }),
+        ),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
+    }
+}
+
+pub async fn handle_update_tsp(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = protocol_auth!(state, message);
+
+    let mediator_did = body_str_field(&message, "mediator_did")?;
+
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
+    let result = update_tsp(
+        &deps,
+        &auth,
+        UpdateTspParams { mediator_did },
+        OpContext::Direct,
+        "didcomm",
+    )
+    .await;
+
+    match result {
+        Ok(r) => response(
+            protocol_management::UPDATE_TSP_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "prior_mediator_did": r.prior_mediator_did,
+                "mediator_did": r.mediator_did,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
+            }),
+        ),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
+    }
+}
+
+pub async fn handle_disable_tsp(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = protocol_auth!(state, message);
+
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
+    let result = disable_tsp(&deps, &auth, DisableTspParams, OpContext::Direct, "didcomm").await;
+
+    match result {
+        Ok(r) => response(
+            protocol_management::DISABLE_TSP_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "prior_mediator_did": r.prior_mediator_did,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
+            }),
+        ),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
+    }
+}
+
 // ── Fail-forward rollback over DIDComm (T3.4) ──────────────────────
 
 pub async fn handle_rollback_rest(
@@ -637,6 +812,40 @@ pub async fn handle_rollback_rest(
                     crate::operations::protocol::rollback_rest::RollbackKind::Enabled => "enabled",
                     crate::operations::protocol::rollback_rest::RollbackKind::Updated => "updated",
                     crate::operations::protocol::rollback_rest::RollbackKind::NoOp => "no_op",
+                },
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
+            }),
+        ),
+        Err(e) => Ok(Some(DIDCommResponse::problem_report(e.to_problem_report()))),
+    }
+}
+
+pub async fn handle_rollback_tsp(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = protocol_auth!(state, message);
+
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| handler_err("did_resolver unavailable"))?;
+    let deps = ServiceOpDeps::from_vta_state(&state, did_resolver);
+    let result = rollback_tsp(&deps, &auth, RollbackTspParams, "didcomm").await;
+
+    match result {
+        Ok(r) => response(
+            protocol_management::ROLLBACK_TSP_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id.unwrap_or_default(),
+                "effective_at": Utc::now().to_rfc3339(),
+                "kind": match r.kind {
+                    crate::operations::protocol::rollback_tsp::RollbackKind::Disabled => "disabled",
+                    crate::operations::protocol::rollback_tsp::RollbackKind::Enabled => "enabled",
+                    crate::operations::protocol::rollback_tsp::RollbackKind::Updated => "updated",
+                    crate::operations::protocol::rollback_tsp::RollbackKind::NoOp => "no_op",
                 },
                 "vta_did": r.vta_did,
                 "serverless": r.serverless,
@@ -757,10 +966,13 @@ mod tests {
     use crate::messaging::registry::RegistryError;
     use crate::operations::protocol::disable_didcomm::DisableDidcommError;
     use crate::operations::protocol::disable_rest::DisableRestError;
+    use crate::operations::protocol::disable_tsp::DisableTspError;
     use crate::operations::protocol::drain_cancel::DrainCancelError;
     use crate::operations::protocol::enable_rest::EnableRestError;
+    use crate::operations::protocol::enable_tsp::EnableTspError;
     use crate::operations::protocol::list::ListServicesError;
     use crate::operations::protocol::rollback_rest::RollbackRestError;
+    use crate::operations::protocol::rollback_tsp::RollbackTspError;
     use vta_sdk::protocols::problem_report_codes as codes;
 
     /// Pins the protocol-management error → `e.p.msg.*` problem-report contract
@@ -824,6 +1036,24 @@ mod tests {
         assert_eq!(
             last_service.comment,
             "rolling back this REST mutation would leave the VTA with no advertised services"
+        );
+
+        // ── TSP analogs (mediator_did, not url) ──────────────────────
+        let tsp_already = EnableTspError::ServiceAlreadyEnabled.to_problem_report();
+        assert_eq!(tsp_already.code, codes::CONFLICT);
+        assert_eq!(tsp_already.comment, "TSP is already enabled");
+
+        let tsp_validation = EnableTspError::Validation("bad did".into()).to_problem_report();
+        assert_eq!(tsp_validation.code, codes::BAD_REQUEST);
+        assert_eq!(tsp_validation.comment, "bad did");
+
+        let tsp_last_service =
+            RollbackTspError::DisableForward(DisableTspError::LastServiceRefused)
+                .to_problem_report();
+        assert_eq!(tsp_last_service.code, codes::CONFLICT);
+        assert_eq!(
+            tsp_last_service.comment,
+            "rolling back this TSP mutation would leave the VTA with no advertised services"
         );
     }
 }

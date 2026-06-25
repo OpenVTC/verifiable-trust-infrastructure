@@ -501,6 +501,22 @@ pub fn build_handler(
                 handler_fn(super::handlers_protocol::handle_rollback_rest),
             )?
             .route(
+                protocol_management::ENABLE_TSP,
+                handler_fn(super::handlers_protocol::handle_enable_tsp),
+            )?
+            .route(
+                protocol_management::UPDATE_TSP,
+                handler_fn(super::handlers_protocol::handle_update_tsp),
+            )?
+            .route(
+                protocol_management::DISABLE_TSP,
+                handler_fn(super::handlers_protocol::handle_disable_tsp),
+            )?
+            .route(
+                protocol_management::ROLLBACK_TSP,
+                handler_fn(super::handlers_protocol::handle_rollback_tsp),
+            )?
+            .route(
                 protocol_management::UPDATE_DIDCOMM,
                 handler_fn(super::handlers_protocol::handle_update_didcomm),
             )?

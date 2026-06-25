@@ -24,6 +24,7 @@ use crate::operations::protocol::disable_didcomm::{
 use crate::operations::protocol::disable_rest::{
     DisableRestError, DisableRestParams, disable_rest,
 };
+use crate::operations::protocol::disable_tsp::{DisableTspError, DisableTspParams, disable_tsp};
 use crate::operations::protocol::disable_webauthn::{
     DisableWebauthnError, DisableWebauthnParams, disable_webauthn,
 };
@@ -31,6 +32,7 @@ use crate::operations::protocol::enable_didcomm::{
     EnableDidcommError, EnableDidcommParams, enable_didcomm,
 };
 use crate::operations::protocol::enable_rest::{EnableRestError, EnableRestParams, enable_rest};
+use crate::operations::protocol::enable_tsp::{EnableTspError, EnableTspParams, enable_tsp};
 use crate::operations::protocol::enable_webauthn::{
     EnableWebauthnError, EnableWebauthnParams, enable_webauthn,
 };
@@ -41,6 +43,9 @@ use crate::operations::protocol::rollback_didcomm::{
 use crate::operations::protocol::rollback_rest::{
     RollbackKind as RestRollbackKind, RollbackRestError, RollbackRestParams, rollback_rest,
 };
+use crate::operations::protocol::rollback_tsp::{
+    RollbackKind as TspRollbackKind, RollbackTspError, RollbackTspParams, rollback_tsp,
+};
 use crate::operations::protocol::rollback_webauthn::{
     RollbackKind as WebauthnRollbackKind, RollbackWebauthnError, RollbackWebauthnParams,
     rollback_webauthn,
@@ -49,6 +54,7 @@ use crate::operations::protocol::update_didcomm::{
     MigrateAuditKind, UpdateDidcommError, UpdateDidcommParams, update_didcomm,
 };
 use crate::operations::protocol::update_rest::{UpdateRestError, UpdateRestParams, update_rest};
+use crate::operations::protocol::update_tsp::{UpdateTspError, UpdateTspParams, update_tsp};
 use crate::operations::protocol::update_webauthn::{
     UpdateWebauthnError, UpdateWebauthnParams, update_webauthn,
 };
@@ -1747,6 +1753,357 @@ impl IntoResponse for RestServiceHttpError {
     }
 }
 
+// ── TSP service-management handlers ───────────────────────────────
+//
+// `POST /services/tsp/{enable,update,disable}`. Symmetric with the
+// REST handlers above, but TSP advertises a **mediator DID** (the
+// VTA's TSP VID) instead of a URL, so the request types carry
+// `mediator_did`. TSP reuses the shared `ServiceMutationResponse`
+// shape (no drain, so `drain_until` is always `None`).
+
+/// `POST /services/tsp/enable` — add a `#tsp` service entry
+/// (`type: "TSPTransport"`) to the VTA's DID document. Auth:
+/// super-admin. Refused with `ServiceAlreadyEnabled` if TSP is
+/// already advertised.
+#[utoipa::path(
+    post, path = "/services/tsp/enable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::EnableTspRequest,
+    responses(
+        (status = 200, description = "TSP service enabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "TSP is already enabled"),
+    ),
+)]
+pub async fn enable_tsp_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(req): Json<vta_sdk::protocol::services::EnableTspRequest>,
+) -> Result<Json<vta_sdk::protocol::services::ServiceMutationResponse>, TspServiceHttpError> {
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or(TspServiceHttpError::DidResolverUnavailable)?
+        .clone();
+
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = enable_tsp(
+        &deps,
+        &auth.0,
+        EnableTspParams {
+            mediator_did: req.mediator_did,
+        },
+        OpContext::Direct,
+        "rest",
+    )
+    .await?;
+
+    Ok(Json(vta_sdk::protocol::services::ServiceMutationResponse {
+        log_entry_version_id: result.new_version_id,
+        effective_at: chrono::Utc::now().to_rfc3339(),
+        drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
+    }))
+}
+
+/// `POST /services/tsp/update` — replace the mediator DID on the
+/// existing `#tsp` entry. Auth: super-admin. Refused with
+/// `ServiceNotPresent` if TSP isn't currently advertised.
+#[utoipa::path(
+    post, path = "/services/tsp/update", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::UpdateTspRequest,
+    responses(
+        (status = 200, description = "TSP mediator DID updated", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "TSP is not currently enabled"),
+    ),
+)]
+pub async fn update_tsp_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(req): Json<vta_sdk::protocol::services::UpdateTspRequest>,
+) -> Result<Json<vta_sdk::protocol::services::ServiceMutationResponse>, TspServiceHttpError> {
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or(TspServiceHttpError::DidResolverUnavailable)?
+        .clone();
+
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = update_tsp(
+        &deps,
+        &auth.0,
+        UpdateTspParams {
+            mediator_did: req.mediator_did,
+        },
+        OpContext::Direct,
+        "rest",
+    )
+    .await?;
+
+    Ok(Json(vta_sdk::protocol::services::ServiceMutationResponse {
+        log_entry_version_id: result.new_version_id,
+        effective_at: chrono::Utc::now().to_rfc3339(),
+        drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
+    }))
+}
+
+/// `POST /services/tsp/disable` — remove the `#tsp` entry. Auth:
+/// super-admin. Refused with `LastServiceRefused` when TSP is the
+/// only advertised transport (spec §3.2 — no `--force` escape).
+#[utoipa::path(
+    post, path = "/services/tsp/disable", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::DisableTspRequest,
+    responses(
+        (status = 200, description = "TSP service disabled", body = vta_sdk::protocol::services::ServiceMutationResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "TSP not present, or last remaining service"),
+    ),
+)]
+pub async fn disable_tsp_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(_req): Json<vta_sdk::protocol::services::DisableTspRequest>,
+) -> Result<Json<vta_sdk::protocol::services::ServiceMutationResponse>, TspServiceHttpError> {
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or(TspServiceHttpError::DidResolverUnavailable)?
+        .clone();
+
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = disable_tsp(&deps, &auth.0, DisableTspParams, OpContext::Direct, "rest").await?;
+
+    Ok(Json(vta_sdk::protocol::services::ServiceMutationResponse {
+        log_entry_version_id: result.new_version_id,
+        effective_at: chrono::Utc::now().to_rfc3339(),
+        drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
+    }))
+}
+
+/// Unified HTTP error type for the three TSP service-management
+/// routes. Symmetric with [`RestServiceHttpError`] — TSP's
+/// `Validation` arm carries a DID-shaped rejection rather than a
+/// URL one, so the suggested-fix text differs.
+#[derive(Debug)]
+pub enum TspServiceHttpError {
+    Enable(EnableTspError),
+    Update(UpdateTspError),
+    Disable(DisableTspError),
+    DidResolverUnavailable,
+}
+
+impl From<EnableTspError> for TspServiceHttpError {
+    fn from(value: EnableTspError) -> Self {
+        Self::Enable(value)
+    }
+}
+impl From<UpdateTspError> for TspServiceHttpError {
+    fn from(value: UpdateTspError) -> Self {
+        Self::Update(value)
+    }
+}
+impl From<DisableTspError> for TspServiceHttpError {
+    fn from(value: DisableTspError) -> Self {
+        Self::Disable(value)
+    }
+}
+
+impl IntoResponse for TspServiceHttpError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            // ── Enable ────────────────────────────────────────────
+            Self::Enable(EnableTspError::ServiceAlreadyEnabled) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "service_already_enabled",
+                    message: "TSP is already enabled.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Use `pnm services tsp update --mediator-did <did>` to change the mediator."
+                            .into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Enable(EnableTspError::Validation(msg)) => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody {
+                    error: "invalid_mediator_did",
+                    message: msg,
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "The mediator must be a `did:...` string (the VTA's TSP VID).".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+
+            // ── Update ────────────────────────────────────────────
+            Self::Update(UpdateTspError::ServiceNotPresent) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "service_not_present",
+                    message: "TSP is not currently enabled.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Run `pnm services tsp enable --mediator-did <did>` first.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Update(UpdateTspError::Validation(msg)) => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody {
+                    error: "invalid_mediator_did",
+                    message: msg,
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "The mediator must be a `did:...` string (the VTA's TSP VID).".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+
+            // ── Disable ───────────────────────────────────────────
+            Self::Disable(DisableTspError::ServiceNotPresent) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "service_not_present",
+                    message: "TSP is not currently enabled — nothing to disable.".into(),
+                    mediator_did: None,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Disable(DisableTspError::LastServiceRefused) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "last_service_refused",
+                    message: "Refusing to disable TSP — it is the only advertised transport, so the VTA would have no protocol surface left.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Run `pnm services didcomm enable --mediator-did <did>` or `pnm services rest enable --url <url>` first, then retry."
+                            .into(),
+                    ),
+                    stage: None,
+                },
+            ),
+
+            // ── Shared per-op errors (auth / VTA-DID / publish /
+            //    storage). Grouped by underlying concept, mirroring
+            //    the REST handler's collapse.
+            Self::Enable(EnableTspError::Auth(msg))
+            | Self::Update(UpdateTspError::Auth(msg))
+            | Self::Disable(DisableTspError::Auth(msg)) => (
+                StatusCode::FORBIDDEN,
+                ErrorBody {
+                    error: "auth",
+                    message: msg,
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Super-admin role required for service-management operations.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Enable(EnableTspError::VtaDidNotConfigured)
+            | Self::Update(UpdateTspError::VtaDidNotConfigured)
+            | Self::Disable(DisableTspError::VtaDidNotConfigured) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "vta_did_not_configured",
+                    message: "VTA DID is not configured.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some("Run `vta setup` to configure the VTA's DID first.".into()),
+                    stage: None,
+                },
+            ),
+            Self::Enable(EnableTspError::WebVHUpdate(e))
+            | Self::Update(UpdateTspError::WebVHUpdate(e))
+            | Self::Disable(DisableTspError::WebVHUpdate(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "webvh_update_failed",
+                    message: e.to_string(),
+                    mediator_did: None,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Enable(EnableTspError::DocumentPatch(e))
+            | Self::Update(UpdateTspError::DocumentPatch(e))
+            | Self::Disable(DisableTspError::DocumentPatch(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "document_patch_failed",
+                    message: e.to_string(),
+                    mediator_did: None,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+
+            // ── Storage / persistence / log-corruption catch-alls.
+            Self::Enable(
+                EnableTspError::VtaDidRecordMissing(_)
+                | EnableTspError::VtaDidLogMissing(_)
+                | EnableTspError::EmptyLog
+                | EnableTspError::ConfigPersistence(_)
+                | EnableTspError::Storage(_),
+            )
+            | Self::Update(
+                UpdateTspError::VtaDidRecordMissing(_)
+                | UpdateTspError::VtaDidLogMissing(_)
+                | UpdateTspError::EmptyLog
+                | UpdateTspError::Storage(_),
+            )
+            | Self::Disable(
+                DisableTspError::VtaDidRecordMissing(_)
+                | DisableTspError::VtaDidLogMissing(_)
+                | DisableTspError::EmptyLog
+                | DisableTspError::ConfigPersistence(_)
+                | DisableTspError::Storage(_),
+            ) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "storage_error",
+                    message: "Internal storage / log-replay failure.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Re-run `vta setup` if local state appears corrupted.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+
+            Self::DidResolverUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorBody {
+                    error: "did_resolver_unavailable",
+                    message: "DID resolver not available on this VTA.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Confirm the resolver is configured and running, then retry.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
 // ── Fail-forward rollback handlers (T3.4) ─────────────────────────
 //
 // `POST /services/{rest,didcomm}/rollback` — read the per-kind
@@ -1791,6 +2148,46 @@ pub async fn rollback_rest_handler(
         log_entry_version_id: result.new_version_id.unwrap_or_default(),
         effective_at: chrono::Utc::now().to_rfc3339(),
         kind: rest_kind_str(result.kind).into(),
+        drain_until: None,
+        draining_mediator: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
+    }))
+}
+
+/// `POST /services/tsp/rollback` — fail-forward the most recent TSP
+/// mutation. Auth: super-admin. Refused with `NoPriorMutation` when
+/// no snapshot is recorded. TSP has no drain, so `drain_until` /
+/// `draining_mediator` are always `None`.
+#[utoipa::path(
+    post, path = "/services/tsp/rollback", tag = "services",
+    security(("bearer_jwt" = [])),
+    request_body = vta_sdk::protocol::services::RollbackTspRequest,
+    responses(
+        (status = 200, description = "TSP mutation rolled back (fail-forward)", body = RollbackResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not a super-admin"),
+        (status = 409, description = "No prior mutation, or last remaining service"),
+    ),
+)]
+pub async fn rollback_tsp_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(_req): Json<vta_sdk::protocol::services::RollbackTspRequest>,
+) -> Result<Json<RollbackResponse>, RollbackTspHttpError> {
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or(RollbackTspHttpError::DidResolverUnavailable)?
+        .clone();
+
+    let deps = ServiceOpDeps::from_app_state(&state, &did_resolver);
+    let result = rollback_tsp(&deps, &auth.0, RollbackTspParams, "rest").await?;
+
+    Ok(Json(RollbackResponse {
+        log_entry_version_id: result.new_version_id.unwrap_or_default(),
+        effective_at: chrono::Utc::now().to_rfc3339(),
+        kind: tsp_kind_str(result.kind).into(),
         drain_until: None,
         draining_mediator: None,
         vta_did: result.vta_did,
@@ -1923,6 +2320,15 @@ fn rest_kind_str(k: RestRollbackKind) -> &'static str {
     }
 }
 
+fn tsp_kind_str(k: TspRollbackKind) -> &'static str {
+    match k {
+        TspRollbackKind::Disabled => "disabled",
+        TspRollbackKind::Enabled => "enabled",
+        TspRollbackKind::Updated => "updated",
+        TspRollbackKind::NoOp => "no_op",
+    }
+}
+
 fn didcomm_kind_str(k: DidcommRollbackKind) -> &'static str {
     match k {
         DidcommRollbackKind::Disabled => "disabled",
@@ -1971,6 +2377,74 @@ impl IntoResponse for RollbackRestHttpError {
                     mediator_did: None,
                     suggested_fix: Some(
                         "Run `pnm services didcomm enable --mediator-did <did>`, then retry rollback."
+                            .into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(other) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "rollback_failed",
+                    message: other.to_string(),
+                    mediator_did: None,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::DidResolverUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorBody {
+                    error: "did_resolver_unavailable",
+                    message: "DID resolver not available on this VTA.".into(),
+                    mediator_did: None,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
+#[derive(Debug)]
+pub enum RollbackTspHttpError {
+    Op(RollbackTspError),
+    DidResolverUnavailable,
+}
+
+impl From<RollbackTspError> for RollbackTspHttpError {
+    fn from(value: RollbackTspError) -> Self {
+        Self::Op(value)
+    }
+}
+
+impl IntoResponse for RollbackTspHttpError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            Self::Op(RollbackTspError::NoPriorMutation) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "no_prior_mutation",
+                    message: "No prior TSP mutation to roll back from.".into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Use `pnm services tsp enable / update / disable` directly instead.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(RollbackTspError::DisableForward(DisableTspError::LastServiceRefused)) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "last_service_refused",
+                    message:
+                        "Rolling back this TSP mutation would leave the VTA with no advertised \
+                         services. Enable another transport first and retry."
+                            .into(),
+                    mediator_did: None,
+                    suggested_fix: Some(
+                        "Run `pnm services didcomm enable --mediator-did <did>` (or `pnm services rest enable --url <url>`), then retry rollback."
                             .into(),
                     ),
                     stage: None,

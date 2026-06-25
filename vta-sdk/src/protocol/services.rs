@@ -147,6 +147,83 @@ pub struct DisableRestRequest {}
 #[must_use]
 pub struct RollbackRestRequest {}
 
+// ── TSP service-management request types ──────────────────────────
+//
+// TSP advertises a **mediator DID** (the VTA's TSP VID), not a URL —
+// so where the REST types carry `url: String`, these carry
+// `mediator_did: String`. TSP reuses the shared
+// [`ServiceMutationResponse`] / [`RollbackResponse`] shapes; there
+// are no TSP-specific response types. TSP has no drain and no
+// handshake, so the disable / rollback bodies stay field-free.
+
+/// Request body for `POST /services/tsp/enable`.
+///
+/// Adds a `#tsp` service entry (`type: "TSPTransport"`) to the VTA's
+/// DID document advertising `mediator_did` — the VTA's TSP VID.
+/// Refused with `ServiceAlreadyEnabled` if TSP is already advertised.
+/// Unlike DIDComm enable, TSP enable is reachable over both REST and
+/// DIDComm (DIDComm is always running when REST is, per the §3.2
+/// at-least-one-service invariant).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[must_use]
+pub struct EnableTspRequest {
+    pub mediator_did: String,
+}
+
+impl EnableTspRequest {
+    pub fn new(mediator_did: impl Into<String>) -> Self {
+        Self {
+            mediator_did: mediator_did.into(),
+        }
+    }
+}
+
+/// Request body for `POST /services/tsp/update`.
+///
+/// Replaces the mediator DID on the existing `#tsp` entry. Refused
+/// with `ServiceNotPresent` if TSP is not currently advertised.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[must_use]
+pub struct UpdateTspRequest {
+    pub mediator_did: String,
+}
+
+impl UpdateTspRequest {
+    pub fn new(mediator_did: impl Into<String>) -> Self {
+        Self {
+            mediator_did: mediator_did.into(),
+        }
+    }
+}
+
+/// Request body for `POST /services/tsp/disable`.
+///
+/// Removes the `#tsp` entry. Refused with `LastServiceRefused` when
+/// TSP is the only advertised transport (spec §3.2) and with
+/// `ServiceNotPresent` if TSP isn't currently advertised.
+///
+/// No fields today — like [`DisableRestRequest`] the body exists so
+/// the wire surface stays uniform. Serializes as `{}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[must_use]
+pub struct DisableTspRequest {}
+
+/// Request body for `POST /services/tsp/rollback`.
+///
+/// Fail-forwards the most recent TSP mutation (spec §3.5a) by reading
+/// the snapshot store and dispatching to the equivalent forward
+/// operation. Refused with `NoPriorMutation` when no snapshot is
+/// recorded, and with `LastServiceRefused` if the rollback would
+/// brick the VTA. Like [`RollbackRestRequest`], no fields today —
+/// serializes as `{}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[must_use]
+pub struct RollbackTspRequest {}
+
 /// Request body for `POST /services/webauthn/enable`.
 ///
 /// Adds a `#vta-webauthn` service entry to the VTA's DID document
@@ -429,6 +506,58 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         let restored: RollbackRestRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(restored, req);
+    }
+
+    /// TSP request types round-trip — `mediator_did` (a DID) where
+    /// REST uses `url`. Mirror of `rest_request_types_round_trip…`.
+    #[test]
+    fn tsp_request_types_round_trip_through_json() {
+        let req = EnableTspRequest::new("did:peer:2.Mediator");
+        let json = serde_json::to_string(&req).unwrap();
+        let restored: EnableTspRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, req);
+
+        let req = UpdateTspRequest::new("did:peer:2.NewMediator");
+        let json = serde_json::to_string(&req).unwrap();
+        let restored: UpdateTspRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, req);
+
+        let req = DisableTspRequest::default();
+        let json = serde_json::to_string(&req).unwrap();
+        let restored: DisableTspRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, req);
+
+        let req = RollbackTspRequest::default();
+        let json = serde_json::to_string(&req).unwrap();
+        let restored: RollbackTspRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, req);
+    }
+
+    /// TSP's enable/update field must stay literal `mediator_did` on
+    /// the wire (a DID, not a URL). Pin via JSON shape.
+    #[test]
+    fn tsp_mediator_did_field_is_literal_on_wire() {
+        let json = serde_json::to_value(EnableTspRequest::new("did:peer:2.M")).unwrap();
+        assert_eq!(json["mediator_did"], "did:peer:2.M");
+        assert!(json.get("url").is_none(), "TSP must not carry a url field");
+
+        let json = serde_json::to_value(UpdateTspRequest::new("did:peer:2.N")).unwrap();
+        assert_eq!(json["mediator_did"], "did:peer:2.N");
+    }
+
+    /// TSP's empty bodies serialize as `{}` (mirror of the REST pin).
+    #[test]
+    fn tsp_empty_request_bodies_serialize_as_empty_object() {
+        assert_eq!(
+            serde_json::to_string(&DisableTspRequest::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::to_string(&RollbackTspRequest::default()).unwrap(),
+            "{}"
+        );
+        let _: DisableTspRequest = serde_json::from_str("{}").unwrap();
+        let _: RollbackTspRequest = serde_json::from_str("{}").unwrap();
     }
 
     /// The empty request bodies must serialize as `{}`, not `null`,

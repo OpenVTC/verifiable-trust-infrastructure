@@ -1215,6 +1215,11 @@ enum AclCommands {
 enum ServicesCommands {
     /// Show currently-advertised transport services.
     List,
+    /// Manage TSP advertisement.
+    Tsp {
+        #[command(subcommand)]
+        command: TspCommands,
+    },
     /// Manage REST advertisement.
     Rest {
         #[command(subcommand)]
@@ -1237,6 +1242,21 @@ enum ServicesCommands {
         #[arg(long, default_value = "json")]
         format: String,
     },
+}
+
+#[cfg(feature = "webvh")]
+#[derive(Subcommand)]
+enum TspCommands {
+    Enable {
+        #[arg(long = "mediator-did")]
+        mediator_did: String,
+    },
+    Update {
+        #[arg(long = "mediator-did")]
+        mediator_did: String,
+    },
+    Disable,
+    Rollback,
 }
 
 #[cfg(feature = "webvh")]
@@ -1786,6 +1806,20 @@ async fn main() {
             }
             let result = match command {
                 ServicesCommands::List => services_cli::run_services_list(cli.config).await,
+                ServicesCommands::Tsp { command } => match command {
+                    TspCommands::Enable { mediator_did } => {
+                        services_cli::run_services_tsp_enable(cli.config, mediator_did).await
+                    }
+                    TspCommands::Update { mediator_did } => {
+                        services_cli::run_services_tsp_update(cli.config, mediator_did).await
+                    }
+                    TspCommands::Disable => {
+                        services_cli::run_services_tsp_disable(cli.config).await
+                    }
+                    TspCommands::Rollback => {
+                        services_cli::run_services_tsp_rollback(cli.config).await
+                    }
+                },
                 ServicesCommands::Rest { command } => match command {
                     RestCommands::Enable { url } => {
                         services_cli::run_services_rest_enable(cli.config, url).await

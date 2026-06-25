@@ -306,6 +306,80 @@ impl VtaClient {
         .await
     }
 
+    // ── TSP service-management client methods ──────────────────────
+    //
+    // TSP advertises a **mediator DID** (the VTA's TSP VID), not a
+    // URL — so these mirror the REST methods exactly except for the
+    // request types carrying `mediator_did` and the `/services/tsp/…`
+    // paths. All four go through `self.rpc(…)` (reachable over both
+    // REST and DIDComm); `enable_tsp` is NOT REST-only the way
+    // `enable_didcomm` is.
+
+    /// Enable TSP advertisement on the VTA's DID document by
+    /// publishing a `#tsp` service entry pointing at the mediator
+    /// DID. Spec §3.4.
+    pub async fn enable_tsp(
+        &self,
+        req: services::EnableTspRequest,
+    ) -> Result<services::ServiceMutationResponse, VtaError> {
+        self.rpc(
+            protocol_management::ENABLE_TSP,
+            serde_json::to_value(&req)?,
+            protocol_management::ENABLE_TSP_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/services/tsp/enable")).json(&req),
+        )
+        .await
+    }
+
+    /// Update the mediator DID on the existing `#tsp` service entry.
+    pub async fn update_tsp(
+        &self,
+        req: services::UpdateTspRequest,
+    ) -> Result<services::ServiceMutationResponse, VtaError> {
+        self.rpc(
+            protocol_management::UPDATE_TSP,
+            serde_json::to_value(&req)?,
+            protocol_management::UPDATE_TSP_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/services/tsp/update")).json(&req),
+        )
+        .await
+    }
+
+    /// Remove the `#tsp` entry from the VTA's DID document.
+    /// Refused with `LastServiceRefused` when TSP is the only
+    /// advertised transport.
+    pub async fn disable_tsp(
+        &self,
+        req: services::DisableTspRequest,
+    ) -> Result<services::ServiceMutationResponse, VtaError> {
+        self.rpc(
+            protocol_management::DISABLE_TSP,
+            serde_json::to_value(&req)?,
+            protocol_management::DISABLE_TSP_RESULT,
+            30,
+            |c, url| c.post(format!("{url}/services/tsp/disable")).json(&req),
+        )
+        .await
+    }
+
+    /// Fail-forward the most recent TSP mutation by re-applying the
+    /// snapshotted prior state. Spec §3.5a.
+    pub async fn rollback_tsp(
+        &self,
+        req: services::RollbackTspRequest,
+    ) -> Result<services::RollbackResponse, VtaError> {
+        self.rpc(
+            protocol_management::ROLLBACK_TSP,
+            serde_json::to_value(&req)?,
+            protocol_management::ROLLBACK_TSP_RESULT,
+            60,
+            |c, url| c.post(format!("{url}/services/tsp/rollback")).json(&req),
+        )
+        .await
+    }
+
     // ── WebAuthn service-management client methods ─────────────────
 
     /// Enable WebAuthn-RP advertisement on the VTA's DID document by
