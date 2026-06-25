@@ -86,6 +86,20 @@ pub const WEBAUTHN_SERVICE_FRAGMENT: &str = "#vta-webauthn";
 /// different literal later, this is the one knob to change.
 pub const WEBAUTHN_SERVICE_TYPE: &str = "WebAuthnRP";
 
+/// Fragment used for the VTA's TSP (Trust Spanning Protocol) service
+/// entry. Per the TSP enablement design (D9) the TSP id drops the
+/// `vta-` prefix — `#tsp`, not `#vta-tsp`. Service discovery is by
+/// `type` (below), so the exact fragment is a cosmetic label.
+/// See docs/05-design-notes/tsp-enablement.md.
+pub const TSP_SERVICE_FRAGMENT: &str = "#tsp";
+
+/// `type` literal for the TSP service entry. `TSPTransport` is the
+/// OpenWallet-Foundation-Labs reference-implementation convention
+/// (the ToIP TSP spec names no DID-document service type) and is what
+/// `affinidi_tsp`'s DID-backed VID resolver matches on. Do not change —
+/// renaming silently breaks TSP discovery by any TSP party.
+pub const TSP_SERVICE_TYPE: &str = "TSPTransport";
+
 /// A read-only view of the DIDComm service entry on a DID document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DidcommServiceRef {
@@ -126,6 +140,19 @@ pub struct WebauthnServiceRef {
     /// The URL this entry advertises — typically the operator-facing
     /// auth portal (e.g. `https://vta.example.com/auth/portal`).
     pub url: String,
+}
+
+/// A read-only view of the TSP (`TSPTransport`) service entry on a DID
+/// document. Like [`DidcommServiceRef`] the endpoint is a **mediator
+/// DID** (the VTA's TSP VID), not a URL — TSP uses the same mediator
+/// indirection as DIDComm, with the actual transport URL living in the
+/// mediator's own DID document (tsp-enablement.md §2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TspServiceRef {
+    /// Full service `id` (e.g. `did:webvh:scid:host:path#tsp`).
+    pub id: String,
+    /// The mediator DID this entry advertises (the VTA's TSP VID).
+    pub mediator_did: String,
 }
 
 #[derive(Debug, Error)]
@@ -232,6 +259,91 @@ pub fn without_didcomm_service(mut doc: Value) -> Value {
     doc
 }
 
+/// Locate the `#tsp` (`TSPTransport`) service entry on `doc`, if any.
+///
+/// TSP advertises like DIDComm — the `serviceEndpoint` is the VTA's
+/// **mediator DID** (its TSP VID), not a transport URL — so it reuses
+/// [`extract_mediator_did`] to tolerate the bare-string, `{uri}`, and
+/// single-element-array endpoint shapes.
+pub fn current_tsp_service(doc: &Value) -> Option<TspServiceRef> {
+    let services = doc.get("service")?.as_array()?;
+    for svc in services {
+        let id = svc.get("id")?.as_str()?;
+        if id_matches_tsp(id) {
+            let mediator_did = extract_mediator_did(svc.get("serviceEndpoint")?)?;
+            return Some(TspServiceRef {
+                id: id.to_string(),
+                mediator_did,
+            });
+        }
+    }
+    None
+}
+
+/// Insert or replace the `#tsp` service entry, returning the updated
+/// document. `mediator_did` is the VTA's mediator DID (its TSP VID),
+/// emitted as a plain-string `serviceEndpoint`. Other service entries
+/// are preserved byte-for-byte; verification methods are never touched.
+pub fn with_tsp_service(mut doc: Value, mediator_did: &str) -> Result<Value, DocumentPatchError> {
+    if mediator_did.is_empty() {
+        return Err(DocumentPatchError::EmptyMediatorDid);
+    }
+    let did_id = doc
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or(DocumentPatchError::MissingDocumentId)?
+        .to_string();
+
+    let new_entry = json!({
+        "id": format!("{did_id}{TSP_SERVICE_FRAGMENT}"),
+        "type": TSP_SERVICE_TYPE,
+        "serviceEndpoint": mediator_did,
+    });
+
+    let obj = doc.as_object_mut().ok_or(DocumentPatchError::NotAnObject)?;
+
+    let services = obj
+        .entry("service")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .expect("service field must be an array");
+
+    if let Some(existing) = services.iter_mut().find(|s| {
+        s.get("id")
+            .and_then(Value::as_str)
+            .is_some_and(id_matches_tsp)
+    }) {
+        *existing = new_entry;
+    } else {
+        services.push(new_entry);
+    }
+
+    // Canonicalize order — TSP is the preferred transport per spec §3.3.
+    sort_services_canonical(&mut doc);
+    Ok(doc)
+}
+
+/// Remove the `#tsp` service entry, if present. If the resulting
+/// service array is empty, the `service` field is removed entirely
+/// (mirrors [`without_didcomm_service`]).
+pub fn without_tsp_service(mut doc: Value) -> Value {
+    let Some(obj) = doc.as_object_mut() else {
+        return doc;
+    };
+    let Some(services) = obj.get_mut("service").and_then(Value::as_array_mut) else {
+        return doc;
+    };
+    services.retain(|s| {
+        !s.get("id")
+            .and_then(Value::as_str)
+            .is_some_and(id_matches_tsp)
+    });
+    if services.is_empty() {
+        obj.remove("service");
+    }
+    doc
+}
+
 /// Match the workspace's canonical `#vta-didcomm` fragment shape.
 /// Strict — accepts only `<did-without-fragment>#vta-didcomm`,
 /// rejects malformed nested-fragment ids like
@@ -248,6 +360,12 @@ fn id_matches_rest(id: &str) -> bool {
     matches_canonical_fragment(id, REST_SERVICE_FRAGMENT)
 }
 
+/// Match the workspace's canonical `#tsp` fragment shape.
+/// See [`id_matches_didcomm`] for the rationale.
+fn id_matches_tsp(id: &str) -> bool {
+    matches_canonical_fragment(id, TSP_SERVICE_FRAGMENT)
+}
+
 /// `id` matches `<did-without-fragment><fragment>` exactly. The
 /// service-id contract per DID-Core is a single `#fragment` suffix
 /// after the DID; reject ids that contain another `#` before the
@@ -259,26 +377,28 @@ fn matches_canonical_fragment(id: &str, fragment: &str) -> bool {
     !prefix.contains('#')
 }
 
-/// Sort the `service` array so DIDComm comes before REST and
-/// WebAuthn, with all other entries (e.g. `#tee-attestation`)
-/// preserving their original relative order.
+/// Sort the `service` array into the canonical transport-preference
+/// order — TSP, then DIDComm, then REST, then WebAuthn — with all
+/// other entries (e.g. `#tee-attestation`) preserving their original
+/// relative order.
 ///
-/// Spec §3.3 — when multiple transports are advertised, DIDComm is
-/// the preferred transport for clients that support it. We encode
-/// this via array ordering so a DID-Core resolver walking the array
-/// picks DIDComm first. No `priority` key is used (DIDComm-v2-spec
-/// only) so that DID-Core-only resolvers see the same preference.
+/// Spec §3.3 — when multiple transports are advertised, TSP is the
+/// preferred transport, then DIDComm, then REST (tsp-enablement.md
+/// §11). We encode this via array ordering so a DID-Core resolver
+/// walking the array picks the highest-preference transport first. No
+/// `priority` key is used (DIDComm-v2-spec only) so that DID-Core-only
+/// resolvers see the same preference.
 ///
-/// Stable sort: `#vta-didcomm` -> `#vta-rest` -> `#vta-webauthn` ->
-/// everything else (preserved in input order). Idempotent. Pure —
-/// only mutates the `service` field of `doc`; verification methods
-/// and other fields are untouched.
+/// Stable sort: `#tsp` -> `#vta-didcomm` -> `#vta-rest` ->
+/// `#vta-webauthn` -> everything else (preserved in input order).
+/// Idempotent. Pure — only mutates the `service` field of `doc`;
+/// verification methods and other fields are untouched.
 ///
-/// WebAuthn sits after REST because:
-/// - DIDComm is preferred when the client can do it (private
-///   end-to-end, no public-internet requirement)
-/// - REST is the next-best for programmatic clients that hold a
-///   bearer credential
+/// The ordering rationale:
+/// - TSP is preferred (metadata-private routing at bounded size) when
+///   both parties speak it.
+/// - DIDComm is the next-best private end-to-end transport.
+/// - REST is for programmatic clients that hold a bearer credential.
 /// - WebAuthn is the operator/user-facing fallback that requires a
 ///   browser session — listed last so non-browser clients don't
 ///   accidentally pick it.
@@ -291,15 +411,17 @@ pub fn sort_services_canonical(doc: &mut Value) {
     };
     services.sort_by_key(|s| {
         let id = s.get("id").and_then(Value::as_str).unwrap_or("");
-        // 0 = DIDComm, 1 = REST, 2 = WebAuthn, 3 = anything else (TEE etc.)
-        if id_matches_didcomm(id) {
+        // 0 = TSP, 1 = DIDComm, 2 = REST, 3 = WebAuthn, 4 = anything else (TEE etc.)
+        if id_matches_tsp(id) {
             0u8
-        } else if id_matches_rest(id) {
+        } else if id_matches_didcomm(id) {
             1u8
-        } else if id_matches_webauthn(id) {
+        } else if id_matches_rest(id) {
             2u8
-        } else {
+        } else if id_matches_webauthn(id) {
             3u8
+        } else {
+            4u8
         }
     });
 }
@@ -634,6 +756,91 @@ mod tests {
             services[3].get("id").unwrap().as_str().unwrap(),
             format!("{}#tee-attestation", vta_did())
         );
+    }
+
+    #[test]
+    fn id_matches_tsp_is_strict() {
+        assert!(id_matches_tsp("did:webvh:foo#tsp"));
+        // Nested fragment — reject.
+        assert!(!id_matches_tsp("did:webvh:foo#extra#tsp"));
+        // Suffix-only collision — reject.
+        assert!(!id_matches_tsp("did:webvh:foo-tsp"));
+        // The TSP id drops the `vta-` prefix (D9); the `#vta-tsp` shape
+        // is not the canonical TSP fragment.
+        assert!(!id_matches_tsp("did:webvh:foo#vta-tsp"));
+    }
+
+    #[test]
+    fn with_tsp_service_inserts_then_replaces() {
+        let patched = with_tsp_service(doc_without_service(), "did:webvh:mediator-A").unwrap();
+        let svc = current_tsp_service(&patched).expect("tsp entry present");
+        assert_eq!(svc.mediator_did, "did:webvh:mediator-A");
+        assert_eq!(svc.id, format!("{}#tsp", vta_did()));
+        // Endpoint is a plain-string mediator DID (mediator indirection,
+        // not a transport URL).
+        assert_eq!(
+            patched["service"][0]["serviceEndpoint"].as_str().unwrap(),
+            "did:webvh:mediator-A"
+        );
+
+        // Replace with a new mediator — single entry, no duplication.
+        let patched2 = with_tsp_service(patched, "did:webvh:mediator-B").unwrap();
+        let svc2 = current_tsp_service(&patched2).unwrap();
+        assert_eq!(svc2.mediator_did, "did:webvh:mediator-B");
+        let count = patched2["service"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| id_matches_tsp(s.get("id").and_then(Value::as_str).unwrap_or("")))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn with_tsp_service_rejects_empty_mediator() {
+        let err = with_tsp_service(doc_without_service(), "").unwrap_err();
+        assert!(matches!(err, DocumentPatchError::EmptyMediatorDid));
+    }
+
+    #[test]
+    fn without_tsp_service_removes_entry() {
+        let doc = with_tsp_service(doc_without_service(), "did:webvh:m").unwrap();
+        assert!(current_tsp_service(&doc).is_some());
+        let stripped = without_tsp_service(doc);
+        assert!(current_tsp_service(&stripped).is_none());
+        // Service array gone entirely when it's the only entry.
+        assert!(stripped.get("service").is_none());
+    }
+
+    #[test]
+    fn current_tsp_tolerates_object_and_array_endpoints() {
+        // `{uri}` object shape.
+        let obj_doc = json!({
+            "id": vta_did(),
+            "service": [{
+                "id": format!("{}#tsp", vta_did()),
+                "type": TSP_SERVICE_TYPE,
+                "serviceEndpoint": { "uri": "did:webvh:mediator-obj" }
+            }]
+        });
+        assert_eq!(
+            current_tsp_service(&obj_doc).unwrap().mediator_did,
+            "did:webvh:mediator-obj"
+        );
+    }
+
+    #[test]
+    fn sort_canonical_places_tsp_first() {
+        // DIDComm + REST already advertised; adding TSP must sort it to
+        // the front, ahead of DIDComm and REST (spec §3.3 — TSP is the
+        // preferred transport, tsp-enablement.md §11).
+        let with_d = with_didcomm_service(doc_without_service(), "did:webvh:m").unwrap();
+        let with_dr = with_rest_service(with_d, "https://r.example.com").unwrap();
+        let with_drt = with_tsp_service(with_dr, "did:webvh:m").unwrap();
+        let services = with_drt.get("service").unwrap().as_array().unwrap();
+        assert!(id_matches_tsp(services[0]["id"].as_str().unwrap()));
+        assert!(id_matches_didcomm(services[1]["id"].as_str().unwrap()));
+        assert!(id_matches_rest(services[2]["id"].as_str().unwrap()));
     }
 
     fn vta_did() -> &'static str {
