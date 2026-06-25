@@ -3,6 +3,8 @@ mod acl_cli;
 mod bootstrap_cli;
 mod did_key;
 #[cfg(feature = "setup")]
+mod did_peer;
+#[cfg(feature = "setup")]
 mod did_webvh;
 mod import_did;
 mod keys_cli;
@@ -161,6 +163,34 @@ enum Commands {
         /// the target context (mirrors `create-did-key --admin`).
         #[arg(long)]
         admin: bool,
+    },
+    /// Create a self-contained did:peer:2 agent identity for a context.
+    ///
+    /// A did:peer encodes its keys and service endpoints in the DID itself, so
+    /// it resolves locally with no hosting — ideal for testing/dev and
+    /// ephemeral agents (production uses did:webvh). Fully non-interactive:
+    /// there is no hosting step, so nothing to prompt for. Mirrors
+    /// `create-did-webvh` minus all hosting (no `--url`, no did.jsonl, no log).
+    CreateDidPeer {
+        /// Target context ID
+        #[arg(long)]
+        context: String,
+        /// Mediator HTTP endpoint (e.g. http://127.0.0.1:61881/mediator/v1)
+        /// used to build the did:peer's DIDComm + Authentication services so
+        /// the agent is reachable. The ws:// endpoint is derived from it.
+        #[arg(long)]
+        mediator_url: String,
+        /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on
+        /// stdout; human text goes to stderr).
+        #[arg(long)]
+        export_secrets: bool,
+        /// Also create an ACL entry with Admin role for the new did:peer in
+        /// the target context (mirrors `create-did-webvh --admin`).
+        #[arg(long)]
+        admin: bool,
+        /// Human-readable label for the ACL entry / display.
+        #[arg(long)]
+        label: Option<String>,
     },
     /// Import an external DID and create an ACL entry (offline, no server required)
     ImportDid {
@@ -1460,6 +1490,37 @@ async fn main() {
             {
                 let _ = (context, label, url, export_secrets, admin);
                 eprintln!("create-did-webvh is not available (compiled without 'setup' feature)");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::CreateDidPeer {
+            context,
+            mediator_url,
+            export_secrets,
+            admin,
+            label,
+        }) => {
+            // SEALED CHECK: creates keys and DIDs
+            check_seal(&cli.config).await;
+            #[cfg(feature = "setup")]
+            {
+                let args = did_peer::CreateDidPeerArgs {
+                    config_path: cli.config,
+                    context,
+                    label,
+                    mediator_url,
+                    export_secrets,
+                    admin,
+                };
+                if let Err(e) = did_peer::run_create_did_peer(args).await {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            }
+            #[cfg(not(feature = "setup"))]
+            {
+                let _ = (context, label, mediator_url, export_secrets, admin);
+                eprintln!("create-did-peer is not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }
         }
