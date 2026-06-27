@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.10.12"
+version = "0.10.13"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -17,7 +17,7 @@ didcomm = []
 # Trust Spanning Protocol transport. Additive and OFF by default (TSP rolls out
 # gated; DIDComm stays in `default`). Enables the SDK's `tsp` capability; later
 # PRs add the TSP listener + `services tsp` surface behind this flag.
-tsp = ["vta-sdk/tsp"]
+tsp = ["vta-sdk/tsp", "dep:affinidi-messaging-sdk", "affinidi-messaging-sdk/tsp"]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
 setup = ["webvh", "dep:tempfile"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
@@ -142,6 +142,12 @@ hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.15"
 affinidi-messaging-didcomm-service = { workspace = true }
+# Direct (optional) dependency only so the `tsp` feature can turn on the
+# messaging-SDK's own `tsp` ops (`atm.tsp()`), which are gated behind that
+# crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate
+# is already present transitively via `affinidi-tdk` at the same 0.18.x; this
+# entry adds no new code when `tsp` is off (optional + default-features off).
+affinidi-messaging-sdk = { version = "0.18", optional = true, default-features = false }
 async-trait = "0.1"
 affinidi-tdk-common = "0.6"
 affinidi-did-resolver-cache-sdk = { workspace = true }

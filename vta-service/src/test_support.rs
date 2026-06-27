@@ -863,6 +863,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         )),
         jwt_keys: Some(jwt_keys.clone()),
         atm: None,
+        #[cfg(feature = "tsp")]
+        tsp_profile: None,
         tee: None,
         restart_tx,
         metrics_handle: None,

@@ -57,3 +57,52 @@ pub async fn unseal_secret(
 
     serde_json::from_value(msg.body).map_err(|e| UnsealError::CleartextInvalid(e.to_string()))
 }
+
+/// Unpack a `tsp-message` sealed secret via TSP, verify the sender VID is
+/// `caller_did`, and return the enclosed `VaultSecret`.
+///
+/// Mirrors [`unseal_secret`] (the DIDComm-authcrypt path) exactly, adapted for
+/// TSP: `atm.tsp().unpack` returns `(payload_bytes, sender_vid)` rather than a
+/// DIDComm message, so the cleartext is deserialised from the raw payload bytes
+/// and the sender cross-check is against the returned VID (with any `#fragment`
+/// stripped) instead of `msg.from`.
+///
+/// The route has already established that the envelope is the `tsp-message`
+/// variant, that an ATM is configured, and that a TSP profile is registered.
+///
+/// NOTE: every error arm except `UnpackFailed` (`SenderMismatch`,
+/// `CleartextInvalid`) is only reachable *after* a successful
+/// `atm.tsp().unpack`, which requires a real TSP-sealed message (a sender VID,
+/// the recipient's keys, and a mediator-fetched envelope). That path is not
+/// unit-testable without live crypto and needs runtime verification against a
+/// real TSP message; the route-level configuration gate (the "TSP not
+/// configured" reject) is covered by a unit test in `trust_tasks::vault`.
+#[cfg(feature = "tsp")]
+pub async fn unseal_tsp_secret(
+    atm: &ATM,
+    profile: &std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    caller_did: &str,
+    message: &str,
+) -> Result<VaultSecret, UnsealError> {
+    let (payload, sender_vid) = atm
+        .tsp()
+        .unpack(profile, message)
+        .await
+        .map_err(|e| UnsealError::UnpackFailed(e.to_string()))?;
+
+    // Cross-check: the TSP sender's VID must equal the authenticated caller.
+    // Strip any `#fragment` so a fragmented VID still matches the bare DID.
+    let sender = sender_vid
+        .split('#')
+        .next()
+        .unwrap_or(&sender_vid)
+        .to_string();
+    if sender != caller_did {
+        return Err(UnsealError::SenderMismatch {
+            sender,
+            caller: caller_did.to_string(),
+        });
+    }
+
+    serde_json::from_slice(&payload).map_err(|e| UnsealError::CleartextInvalid(e.to_string()))
+}

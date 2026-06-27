@@ -187,6 +187,15 @@ enum SealedEnvelope {
     },
 }
 
+/// Envelope variants this VTA can actually unseal, surfaced in the
+/// `envelope_unsupported` reject so a consumer knows its options. With the
+/// `tsp` feature on, `tsp-message` joins `didcomm-authcrypt`; off, only the
+/// latter is supported (byte-identical to pre-TSP behaviour).
+#[cfg(feature = "tsp")]
+const SUPPORTED_ENVELOPES: &[&str] = &["didcomm-authcrypt", "tsp-message"];
+#[cfg(not(feature = "tsp"))]
+const SUPPORTED_ENVELOPES: &[&str] = &["didcomm-authcrypt"];
+
 impl SealedEnvelope {
     fn kind_name(&self) -> &'static str {
         match self {
@@ -803,10 +812,100 @@ pub(super) async fn handle_upsert(
     //   - no sealed_secret, existing entry → reuse existing secret.
     //   - no sealed_secret, create → secret_required.
     let secret: VaultSecret = match (&req.sealed_secret, existing.as_ref()) {
-        (Some(env), _) => {
+        // The `'unseal` label is only `break`-targeted by the cfg-gated TSP arm
+        // below; with the `tsp` feature off it is unused (the didcomm path falls
+        // through to the block's tail value), so silence the lint there.
+        #[cfg_attr(not(feature = "tsp"), allow(unused_labels))]
+        (Some(env), _) => 'unseal: {
             // Envelope-variant check stays here (the route owns the
             // `SealedEnvelope` wire shape); the unpack + sender cross-check +
             // cleartext deserialise are the operations-layer crypto (P2.4).
+            // TSP arm: when the `tsp` feature is on, a `tsp-message` envelope is
+            // unsealed via TSP (mirrors the didcomm-authcrypt path below). On
+            // success it `break`s the resolved secret out of the `'unseal`
+            // block; on failure it `return`s a reject. With the feature off,
+            // `TspMessage` falls through to `other =>` and is rejected as
+            // `envelope_unsupported`, exactly as before.
+            #[cfg(feature = "tsp")]
+            if let SealedEnvelope::TspMessage { message } = env {
+                let atm = match state.atm.as_ref() {
+                    Some(atm) => atm,
+                    None => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::InternalError {
+                                reason: "TSP not configured — VTA cannot unpack TSP envelopes"
+                                    .into(),
+                            },
+                        );
+                    }
+                };
+                let profile = match state.tsp_profile.as_ref() {
+                    Some(p) => p,
+                    None => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::InternalError {
+                                reason: "TSP not configured — VTA cannot unpack TSP envelopes"
+                                    .into(),
+                            },
+                        );
+                    }
+                };
+                use crate::operations::vault::upsert::UnsealError;
+                match crate::operations::vault::upsert::unseal_tsp_secret(
+                    atm, profile, &auth.did, message,
+                )
+                .await
+                {
+                    Ok(s) => break 'unseal s,
+                    Err(UnsealError::SenderMismatch { sender, caller }) => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::PermissionDenied {
+                                reason: format!(
+                                    "vault/upsert:sealed_secret_invalid — TSP sender {sender} does not match authenticated caller {caller}"
+                                ),
+                            },
+                        );
+                    }
+                    Err(UnsealError::UnpackFailed(e)) => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::TaskFailed {
+                                reason: format!(
+                                    "vault/upsert:sealed_secret_invalid — TSP unpack: {e}"
+                                ),
+                                details: Some(serde_json::json!({ "reason": "unpack_failed" })),
+                            },
+                        );
+                    }
+                    Err(UnsealError::MissingSender) => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::TaskFailed {
+                                reason:
+                                    "vault/upsert:sealed_secret_invalid — TSP message has no sender"
+                                        .into(),
+                                details: Some(serde_json::json!({ "reason": "missing_sender" })),
+                            },
+                        );
+                    }
+                    Err(UnsealError::CleartextInvalid(e)) => {
+                        return reject_with(
+                            &doc,
+                            RejectReason::TaskFailed {
+                                reason: format!(
+                                    "vault/upsert:sealed_secret_invalid — cleartext not a VaultSecret: {e}"
+                                ),
+                                details: Some(
+                                    serde_json::json!({ "reason": "cleartext_schema_invalid" }),
+                                ),
+                            },
+                        );
+                    }
+                }
+            }
             let jwe = match env {
                 SealedEnvelope::DidcommAuthcrypt { jwe } => jwe,
                 other => {
@@ -819,7 +918,7 @@ pub(super) async fn handle_upsert(
                             ),
                             details: Some(serde_json::json!({
                                 "receivedEnvelope": other.kind_name(),
-                                "supportedEnvelopes": ["didcomm-authcrypt"],
+                                "supportedEnvelopes": SUPPORTED_ENVELOPES,
                             })),
                         },
                     );
@@ -1877,5 +1976,55 @@ mod sealed_envelope_tests {
         // The recognised-but-unsupported variants dual-accept too.
         assert!(serde_json::from_str::<SealedEnvelope>(r#"{"envelope":"hpkeArmored"}"#).is_ok());
         assert!(serde_json::from_str::<SealedEnvelope>(r#"{"envelope":"tspMessage"}"#).is_ok());
+    }
+}
+
+/// Tests for the TSP `tsp-message` unseal arm. The live `atm.tsp().unpack`
+/// success path can't be unit-tested without a real TSP message (which needs a
+/// running mediator + a sender VID + a sealed payload), so these cover the
+/// configuration-gate behaviour that IS testable without crypto. The
+/// unpack-success path needs runtime verification against a real TSP message.
+#[cfg(all(test, feature = "tsp"))]
+mod tsp_unseal_tests {
+    use super::handle_upsert;
+    use crate::test_support::{build_signing_test_app_state, super_admin_claims};
+    use serde_json::json;
+    use trust_tasks_rs::{TrustTask, TypeUri};
+    use vta_sdk::trust_tasks::TASK_VAULT_UPSERT_0_2;
+
+    /// A `vault/upsert` document carrying a `tspMessage` sealed secret.
+    fn upsert_tsp_doc() -> TrustTask<serde_json::Value> {
+        let uri: TypeUri = TASK_VAULT_UPSERT_0_2.parse().expect("upsert uri");
+        let payload = json!({
+            "contextId": "ctx-test",
+            "targets": [{ "kind": "web-origin", "origin": "https://example.com" }],
+            "label": "test entry",
+            "secretKind": "password",
+            "sealedSecret": { "envelope": "tspMessage", "message": "not-a-real-tsp-message" },
+        });
+        TrustTask::new(format!("urn:uuid:{}", uuid::Uuid::new_v4()), uri, payload)
+    }
+
+    /// With the `tsp` feature on but no ATM / TSP profile wired (the default
+    /// test state), a `tspMessage` envelope must be refused with an
+    /// `InternalError` "TSP not configured" reject rather than panicking or
+    /// attempting an unpack. This exercises the configuration gate in the TSP
+    /// arm (`state.atm` / `state.tsp_profile` are both `None` in the harness).
+    #[tokio::test]
+    async fn tsp_message_without_tsp_configured_is_rejected() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let auth = super_admin_claims();
+        let out = handle_upsert(&state, &auth, upsert_tsp_doc()).await;
+
+        assert!(
+            !out.status.is_success(),
+            "tspMessage with no TSP configured must be rejected, got {}",
+            out.status
+        );
+        let body = String::from_utf8_lossy(&out.body);
+        assert!(
+            body.contains("TSP not configured"),
+            "rejection should explain TSP isn't configured, got: {body}"
+        );
     }
 }

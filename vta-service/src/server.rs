@@ -188,6 +188,14 @@ pub struct AppState {
     pub didcomm_websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
+    /// VTA's registered TSP profile, used to unpack `tsp-message` sealed
+    /// envelopes (e.g. on `vault/upsert`). Built in `init_auth` when the `tsp`
+    /// feature is on and an ATM is available; `None` if the VTA keys are
+    /// missing or profile registration fails (TSP unseal then stays
+    /// unavailable, never panics). Unpack reads the decryption key from the
+    /// ATM's own secrets resolver, so the profile carries no secrets itself.
+    #[cfg(feature = "tsp")]
+    pub tsp_profile: Option<std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
     pub tee: Option<TeeContext>,
     /// Send `true` to trigger a soft restart (threads shut down and re-initialize).
     pub restart_tx: watch::Sender<bool>,
@@ -400,6 +408,8 @@ pub async fn build_app_state(
 
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
+        #[cfg(feature = "tsp")]
+        tsp_profile: auth.tsp_profile,
         tee: tee_context,
         restart_tx,
         #[cfg(feature = "rest")]
@@ -1323,6 +1333,10 @@ struct AuthInit {
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     jwt_keys: Option<Arc<JwtKeys>>,
     atm: Option<ATM>,
+    /// VTA's registered TSP profile (see [`AppState::tsp_profile`]). Built
+    /// alongside `atm` when the `tsp` feature is on; `None` on any failure.
+    #[cfg(feature = "tsp")]
+    tsp_profile: Option<std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>>,
     /// Signing verification method ID (e.g. `{did}#key-0` or `{did}#{ed_pub_mb}`).
     /// Consumed only by the DIDComm secret-collection path; cfg-gated to
     /// keep non-didcomm builds warning-free.
@@ -1340,6 +1354,8 @@ impl AuthInit {
             secrets_resolver: None,
             jwt_keys: None,
             atm: None,
+            #[cfg(feature = "tsp")]
+            tsp_profile: None,
             signing_vm_id: None,
             ka_vm_id: None,
         }
@@ -1628,6 +1644,43 @@ async fn init_auth(
         }
     };
 
+    // 5. Build + register the VTA's TSP profile (used to unpack `tsp-message`
+    // sealed envelopes). The unpack path reads the VTA's decryption key from
+    // the ATM's own secrets resolver — which already holds the signing + KA
+    // secrets inserted above (mirroring the DIDComm listener's secret
+    // collection in `run()`) — so the profile itself carries no secrets and
+    // needs no mediator. On any failure we warn! and leave it None; TSP unseal
+    // just stays unavailable, never a panic.
+    #[cfg(feature = "tsp")]
+    let tsp_profile = if let Some(ref atm) = atm {
+        match affinidi_tdk::messaging::profiles::ATMProfile::new(
+            atm,
+            Some("VTA".to_string()),
+            vta_did.clone(),
+            None,
+        )
+        .await
+        {
+            Ok(profile) => match atm.profile_add(&profile, false).await {
+                Ok(arc) => {
+                    info!("TSP profile registered for DID {vta_did}");
+                    Some(arc)
+                }
+                Err(e) => {
+                    warn!("failed to register TSP profile (TSP unseal disabled): {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("failed to build TSP profile (TSP unseal disabled): {e}");
+                None
+            }
+        }
+    } else {
+        warn!("ATM unavailable — TSP profile not built (TSP unseal disabled)");
+        None
+    };
+
     info!("auth initialized for DID {vta_did}");
 
     AuthInit {
@@ -1635,6 +1688,8 @@ async fn init_auth(
         secrets_resolver: Some(secrets_resolver),
         jwt_keys: Some(Arc::new(jwt_keys)),
         atm,
+        #[cfg(feature = "tsp")]
+        tsp_profile,
         signing_vm_id,
         ka_vm_id,
     }
