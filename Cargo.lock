@@ -396,9 +396,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-mediator-common"
-version = "0.15.15"
+version = "0.15.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de97156c77842ec60f2a3156da1a8aa2a05ef214b12e796c7989eb369b9b5371"
+checksum = "c03122eaf3023dab93a876df19468d37b09e055c3e8692cbdda3e468a366c88f"
 dependencies = [
  "aes-gcm",
  "ahash 0.8.12",
@@ -446,9 +446,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.18.12"
+version = "0.18.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2022cd5c4baa0ed5f872f3febd8c9cb7fe7fd92330f0c758d5cf05de6c46368"
+checksum = "9ceee57cd19a86e57d319ff19f05f807119287391f834c5b822b4030ac8c7aeb"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -473,6 +473,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -4731,7 +4732,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -6921,7 +6922,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.40",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6959,7 +6960,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9490,9 +9491,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.7"
+version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70c4de0c2a4edf0014d6a87ffe85392bdb7a8ace6828a012b8ea05e028a02c7f"
+checksum = "ccbddb304248cc6cb1e2e6385bd2f7042df71c805d9e128d6cb40125322a9274"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10826,7 +10827,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
