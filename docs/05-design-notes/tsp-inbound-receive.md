@@ -58,12 +58,42 @@ inbound mode** — but **mediator-side only for now**:
   raw-TSP websocket yet** — using it means a raw-ws client or a future SDK
   helper.
 
-**Decision: PR 6b stays on Mode 1** (the existing DIDComm-text websocket +
-`is_tsp` sniff → `PackedMessageReceived`), which is fully turn-key in the
-published SDK 0.18.37/.38. **Mode 2 (raw-TSP WS, at-least-once) is the preferred
-target once the SDK client exposes opening it** — track for a follow-up; it
-gives cleaner delivery semantics and a clean channel separation. No VTI code
-change is blocked on it.
+### 0b. Update (2026-06-27): SDK client consumer for Mode 2 landed (#536) — this is now the plan
+
+TDK #536 (`affinidi-messaging-sdk` **0.18.39**) adds the turn-key **client
+consumer** for the raw-TSP WebSocket mode that #534 added server-side. **Mode 2
+is now fully available client-side, so PR 6b adopts it** (superseding the Mode 1
+sniff path):
+
+- `atm.tsp().connect_websocket(profile) -> TspWebSocket` — opens the raw-TSP WS
+  to the mediator; **authenticates internally** (calls the TDK authentication →
+  `TspAuthHandler` path) and the server runs flush-on-connect + delete-on-send.
+- `TspWebSocket::recv()` → `Option<Vec<u8>>` next **raw qb2 TSP** message (`None`
+  on close; skips ping/pong); `.send(&[u8])` for outbound.
+- `atm.tsp().unpack_bytes(profile, qb2)` → `(payload, sender_vid)` — `payload`
+  is the inner Trust Task doc; `sender_vid` is the **proven signer**.
+
+**PR 6b inbound loop (turn-key):**
+
+```rust
+let ws = atm.tsp().connect_websocket(&profile).await?;
+while let Some(qb2) = ws.recv().await? {
+    let (payload, sender_vid) = atm.tsp().unpack_bytes(&profile, &qb2).await?;
+    // sender_vid = intrinsic proven signer (like DIDComm msg.from)
+    dispatch_trust_task_core(&app_state, sender_vid, payload).await;
+}
+// recv() == None → reconnect with backoff (mirror the DIDComm RestartPolicy)
+```
+
+So PR 6b is: own this loop as a background task in `AppState` (gated on the
+`tsp` feature + a configured TSP mediator), with reconnect/backoff, feeding the
+existing spine. **No DIDComm-stream sniffing, no mailbox-partition concern, no
+`DIDCommService` hook question** — those are all moot under Mode 2. Both
+`connect_websocket` and `unpack_bytes` take `Arc<ATMProfile>`, confirming the
+profile-into-`AppState` plumbing (§5) serves 6a, 6b, **and** outbound (PR 7).
+
+**Dependency floor rises to `affinidi-messaging-sdk` ≥ 0.18.39** for PR 6b
+(6a/unseal only needs ≥ 0.18.37 + `unpack`/`unpack_bytes`).
 
 ---
 
@@ -230,16 +260,16 @@ serves PR 6b/7. This makes 6a slightly more than a pure mirror of
 
 - **PR 6a — sealed-envelope TSP unseal** (§5). Self-contained; no listener dep.
   Includes the `Arc<ATMProfile>`-into-`AppState` plumbing (§5).
-- **PR 6b — TSP inbound over the existing mediator websocket** (§2 Option A):
-  tap `PackedMessageReceived` TSP frames (or a `direct_channel` consumer on the
-  same session), `is_tsp`-filter, `atm.tsp().unpack`, feed
-  `dispatch_trust_task_core`. Wire `TspAuthHandler` at listener start. The §3
-  open questions are resolved by the §0 TDK update — the only thing to confirm is
-  the `DIDCommService` 0.18.37 packed-frame surface.
+- **PR 6b — TSP inbound via `atm.tsp().connect_websocket`** (§0b — Mode 2, the
+  current plan): a background task in `AppState` (gated on `tsp` + a configured
+  TSP mediator) that runs the `recv()` → `unpack_bytes` → `dispatch_trust_task_core`
+  loop with reconnect/backoff. No DIDComm-stream sniffing, no
+  `DIDCommService`-hook question — Mode 2 is a dedicated channel. `connect_websocket`
+  handles TSP auth internally (`TspAuthHandler`).
 - **PR 6c — auth over TSP** (§4): mostly a consequence of 6b; the delta is the
   proven-signer plumbing + an audience-isolation test. May fold into 6b.
 
-**Dependency bump:** PR 6 requires `affinidi-messaging-sdk` ≥ 0.18.37 (TSP
-graduated to supported, #528; `TspAuthHandler`, #533; websocket CESR sniff). The
-workspace pins `affinidi-tdk = "0.8"`; verify the resolved messaging-sdk patch is
-≥ 0.18.37 (or bump) when starting 6a/6b.
+**Dependency floor:** PR 6a (unseal) needs `affinidi-messaging-sdk` ≥ 0.18.37
+(`atm.tsp().unpack`); **PR 6b needs ≥ 0.18.39** (`connect_websocket` /
+`unpack_bytes`, #536). The workspace pins `affinidi-tdk = "0.8"`; verify the
+resolved messaging-sdk patch (or bump) when starting each.
