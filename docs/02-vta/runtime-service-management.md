@@ -34,6 +34,7 @@ copy-pasteable suggestion instead of a generic parse error.
 | (no equivalent) | `pnm services list` |
 | (no equivalent) | `pnm services didcomm drain list` |
 | (no equivalent) | `pnm services rest {enable,update,disable,rollback}` |
+| (no equivalent) | `pnm services tsp {enable,update,disable,rollback}` |
 
 **Default `--drain-ttl` is now 24h** (was 1h). The 1h floor for
 DIDComm-transport delivery is unchanged.
@@ -53,9 +54,11 @@ The `--to` muscle memory is partially preserved on `update`:
 ## Operations at a glance
 
 All commands require **super-admin** privileges on the target VTA.
-All twelve operations are reachable over both REST and DIDComm
-transports, except `services didcomm enable` which is REST-only by
-nature (DIDComm isn't running yet at first-enable).
+The operations are reachable over both REST and DIDComm transports,
+except `services didcomm enable` which is REST-only by nature (DIDComm
+isn't running yet at first-enable). `services tsp enable` — unlike
+`services didcomm enable` — is reachable over **either** transport, since
+enabling TSP doesn't depend on TSP already running.
 
 ### Inspect
 
@@ -103,6 +106,22 @@ exposes the same `mediator_did`.
 | Disable DIDComm (drain, then tear down) | `pnm services didcomm disable [--drain-ttl 86400]` |
 | Roll back the most recent DIDComm mutation | `pnm services didcomm rollback [--drain-ttl 86400]` |
 | Cancel an in-flight drain early | `pnm services didcomm drain cancel --mediator-did <did>` |
+
+### Mutate TSP
+
+TSP (Trust Spanning Protocol) is the **preferred** transport wherever both
+parties advertise it — see [`tsp.md`](./tsp.md) for the full picture. It is
+**off by default** and gated behind the `tsp` build feature. TSP advertises the
+**same mediator** as DIDComm (the `#tsp` service's `serviceEndpoint` is the
+mediator DID), so enable DIDComm first. Unlike DIDComm, TSP has **no drain** (its
+inter-mediator relay is stateless) and **no first-enable handshake**.
+
+| Task | Command |
+|---|---|
+| Add `#tsp` service entry | `pnm services tsp enable --mediator-did <did>` |
+| Change the advertised mediator | `pnm services tsp update --mediator-did <did>` |
+| Remove the `#tsp` entry | `pnm services tsp disable` |
+| Roll back the most recent TSP mutation | `pnm services tsp rollback` |
 
 ## How service changes touch the DID document
 
