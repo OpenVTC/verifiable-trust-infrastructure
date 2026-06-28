@@ -10153,7 +10153,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.10.14"
+version = "0.10.16"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",

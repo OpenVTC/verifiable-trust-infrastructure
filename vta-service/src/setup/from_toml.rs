@@ -909,6 +909,21 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
                 .into(),
         );
     }
+    // TSP advertises the **same** mediator as DIDComm (one dual-protocol
+    // mediator — tsp-enablement.md D8), so `services.tsp = true` without
+    // DIDComm would point the `#tsp` service at a mediator the VTA never
+    // configured. Require DIDComm when TSP is on. (TSP is usually enabled
+    // post-setup via `services tsp enable` once it's been verified; this rule
+    // guards the declarative `--from <toml>` path.)
+    if inputs.services.tsp && !inputs.services.didcomm {
+        errors.push(
+            "services.tsp = true requires services.didcomm = true — TSP advertises \
+             the same mediator as DIDComm. Set services.didcomm = true (and \
+             configure messaging), or leave TSP off here and enable it later with \
+             `services tsp enable`"
+                .into(),
+        );
+    }
     if let MessagingInput::CreateMediator {
         context,
         webvh_url,
@@ -2141,6 +2156,53 @@ mod tests {
         "#;
         let inputs = parse(raw).expect("parses");
         validate_inputs(&inputs).expect("rest disabled means public_url is optional");
+    }
+
+    #[test]
+    fn services_tsp_without_didcomm_is_rejected() {
+        // TSP shares the DIDComm mediator, so it can't be advertised without
+        // DIDComm — the `--from <toml>` path must reject the combination.
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [services]
+            rest    = false
+            didcomm = false
+            tsp     = true
+
+            [secrets]
+            backend = "keyring"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        let err = validate_inputs(&inputs).expect_err("tsp without didcomm must be rejected");
+        assert!(
+            err.to_string()
+                .contains("services.tsp = true requires services.didcomm = true"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn services_tsp_with_didcomm_passes_and_carries_through() {
+        // The declarative TSP path: `[services] tsp = true` (with DIDComm)
+        // parses, validates, and the flag is carried on `WizardInputs.services`
+        // (which `apply` writes verbatim to `config.services`).
+        let raw = r#"
+            config_path = "/tmp/vta-test/config.toml"
+            data_dir    = "/tmp/vta-test/data"
+
+            [services]
+            rest    = false
+            didcomm = true
+            tsp     = true
+
+            [secrets]
+            backend = "keyring"
+        "#;
+        let inputs = parse(raw).expect("parses");
+        validate_inputs(&inputs).expect("tsp + didcomm should validate");
+        assert!(inputs.services.tsp, "tsp flag must be carried through");
     }
 
     #[test]
