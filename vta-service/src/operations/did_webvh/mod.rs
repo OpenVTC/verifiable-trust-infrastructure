@@ -437,6 +437,20 @@ async fn load_key_as_secret(
     Ok((secret, record.public_key.clone(), record))
 }
 
+/// A synthetic, strictly-increasing, backdated `versionTime` for the VTA's next
+/// did:webvh log entry. did:webvh serialises `versionTime` at second granularity
+/// and requires each entry to be strictly later than the previous and not in the
+/// future; the real wall-clock value is irrelevant for resolution. We backdate a
+/// day and space entries a minute apart by their index, so the VTA can create
+/// then update its DID back-to-back (e.g. `setup` then `services didcomm enable`)
+/// without producing same-second timestamps that serialise identically and make
+/// the DID unresolvable. `existing_entry_count` is the number of log entries
+/// already in the chain (0 for the genesis entry).
+fn backdated_version_time(existing_entry_count: usize) -> chrono::DateTime<chrono::FixedOffset> {
+    use chrono::Duration;
+    Utc::now().fixed_offset() - Duration::days(1) + Duration::minutes(existing_entry_count as i64)
+}
+
 /// Check whether a DID document (JSON) contains any DIDCommMessaging service.
 fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
     doc.get("service")
@@ -919,6 +933,9 @@ pub async fn create_did_webvh(
         .authorization_key(derived.signing_secret.clone())
         .did_document(did_document.clone())
         .parameters(parameters)
+        // Backdated genesis timestamp (entry index 0) so a follow-on update in
+        // the same second doesn't collide — see `backdated_version_time`.
+        .version_time(backdated_version_time(0))
         .build()
         .map_err(|e| AppError::Internal(format!("failed to build DID config: {e}")))?;
 

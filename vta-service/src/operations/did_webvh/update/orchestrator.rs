@@ -106,6 +106,8 @@ pub async fn update_did_webvh(
     let last_state = state.log_entries().last().ok_or_else(|| {
         UpdateDidWebvhError::Library(format!("DID {} has no log entries", record.did))
     })?;
+    // Index for the new entry's backdated versionTime (count already in the chain).
+    let new_entry_index = state.log_entries().len();
 
     // 4a. Optimistic-concurrency precondition. Check BEFORE key
     //     derivation / signing so a stale `get → edit → save` cycle
@@ -203,7 +205,10 @@ pub async fn update_did_webvh(
     // 9. Build the library config.
     let mut builder = UpdateDIDConfig::<Secret, Secret>::builder_generic()
         .state(state)
-        .signing_key(signing_secret);
+        .signing_key(signing_secret)
+        // Backdated, index-spaced timestamp so a back-to-back update doesn't
+        // collide with the previous entry's second — see `backdated_version_time`.
+        .version_time(super::super::backdated_version_time(new_entry_index));
     if let Some(doc) = new_doc {
         builder = builder.document(doc);
         let new_keys: Vec<Multibase> = if pre_rotation_active {
