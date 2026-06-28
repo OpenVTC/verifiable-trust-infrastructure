@@ -23,6 +23,23 @@ pub async fn auth_from_message(
         .as_deref()
         .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
 
+    auth_from_did(did, acl_ks).await
+}
+
+/// Resolve an envelope-authenticated sender DID into unified `AuthClaims`.
+///
+/// This is the DID-based core shared by every intrinsic-sender transport
+/// (DIDComm authcrypt via [`auth_from_message`], raw-TSP via
+/// `messaging::tsp_inbound`). The caller has *already* proven the sender
+/// DID cryptographically — by unpacking an authcrypt envelope, or by
+/// TSP unpack returning the verified `sender_vid` — so this function only
+/// performs ACL lookup + claim construction, never signature verification.
+///
+/// Routes through [`check_acl_full`] (rather than the lower-level
+/// `get_acl_entry`) so that `expires_at` is enforced identically to the
+/// REST path. A time-bounded ACL grant must stop working over every
+/// transport the moment it lapses.
+pub async fn auth_from_did(did: &str, acl_ks: &KeyspaceHandle) -> Result<AuthClaims, AppError> {
     // Strip any fragment (e.g. did:key:z6Mk...#z6Mk... → did:key:z6Mk...)
     let base_did = did.split('#').next().unwrap_or(did);
 
@@ -32,16 +49,17 @@ pub async fn auth_from_message(
         did: base_did.to_string(),
         role,
         allowed_contexts,
-        // DIDComm auth is envelope-authenticated (authcrypt sender),
-        // not JWT-session-backed. Synthesise a sentinel session_id
-        // tagged with the transport + sender DID so log scraping can
-        // still distinguish DIDComm callers. `access_expires_at = 0`
-        // is the "no JWT expiry" sentinel — DIDComm doesn't carry one.
+        // Intrinsic-sender auth is envelope-authenticated (authcrypt
+        // sender / TSP unpack), not JWT-session-backed. Synthesise a
+        // sentinel session_id tagged with the sender DID so log scraping
+        // can still distinguish these callers. `access_expires_at = 0`
+        // is the "no JWT expiry" sentinel — these transports don't carry
+        // one.
         session_id: format!("didcomm:{base_did}"),
         access_expires_at: 0,
-        // DIDComm authcrypt-sender authentication is a single DID-key
-        // factor with no JWT-bound expiry. Mark amr accordingly so
-        // handlers gating on AAL see this as aal1-equivalent.
+        // Authcrypt-sender / TSP-unpack authentication is a single
+        // DID-key factor with no JWT-bound expiry. Mark amr accordingly
+        // so handlers gating on AAL see this as aal1-equivalent.
         amr: vec!["did".to_string()],
         acr: "aal1".to_string(),
     })
@@ -137,6 +155,60 @@ mod tests {
 
         let msg = message_from(&format!("{base}#zBase"));
         let claims = auth_from_message(&msg, &acl_ks).await.unwrap();
+        assert_eq!(claims.did, base);
+    }
+
+    /// `auth_from_did` (the transport-neutral core) resolves a DID with a
+    /// live ACL entry to the right role + contexts. This is the path the
+    /// TSP inbound loop drives directly (sender DID, no DIDComm message).
+    #[tokio::test]
+    async fn auth_from_did_resolves_role_and_contexts() {
+        let (_store, acl_ks, _dir) = fresh_acl_ks().await;
+        let did = "did:key:zDidCore";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(did, Role::Admin, "test")
+                .with_contexts(vec!["ctx-a".into(), "ctx-b".into()])
+                .with_expires_at(Some(now_epoch() + 3600)),
+        )
+        .await
+        .unwrap();
+
+        let claims = auth_from_did(did, &acl_ks).await.unwrap();
+        assert_eq!(claims.did, did);
+        assert_eq!(claims.role, Role::Admin);
+        assert_eq!(claims.allowed_contexts, vec!["ctx-a", "ctx-b"]);
+    }
+
+    /// A DID with no ACL entry errors (peer not authorized) — the TSP loop
+    /// relies on this to drop unknown senders.
+    #[tokio::test]
+    async fn auth_from_did_unknown_did_errors() {
+        let (_store, acl_ks, _dir) = fresh_acl_ks().await;
+        let err = auth_from_did("did:key:zUnknownPeer", &acl_ks)
+            .await
+            .unwrap_err();
+        // No ACL entry → check_acl_full surfaces a not-found / forbidden
+        // class error; the exact variant is the ACL layer's, we just pin
+        // that it is an error (never silently authorized).
+        assert!(
+            matches!(err, AppError::Forbidden(_) | AppError::NotFound(_)),
+            "expected unauthorized-class error, got {err:?}"
+        );
+    }
+
+    /// Fragmented DID collapses to base for the core too.
+    #[tokio::test]
+    async fn auth_from_did_fragment_collapses() {
+        let (_store, acl_ks, _dir) = fresh_acl_ks().await;
+        let base = "did:key:zCoreBase";
+        store_acl_entry(&acl_ks, &AclEntry::new(base, Role::Reader, "test"))
+            .await
+            .unwrap();
+
+        let claims = auth_from_did(&format!("{base}#zCoreBase"), &acl_ks)
+            .await
+            .unwrap();
         assert_eq!(claims.did, base);
     }
 

@@ -11,3 +11,5 @@ pub mod registry;
 pub mod router;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 pub mod transient_handshake;
+#[cfg(feature = "tsp")]
+pub mod tsp_inbound;

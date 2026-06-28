@@ -982,6 +982,53 @@ pub async fn run(
         #[cfg(not(feature = "didcomm"))]
         let didcomm_service: Option<()> = None;
 
+        // Start the TSP inbound listener: a raw-TSP websocket to the mediator
+        // (`atm.tsp().connect_websocket`) whose received frames are unpacked
+        // and fed into the same `dispatch_trust_task_core` spine as DIDComm /
+        // REST. Distinct from `AppState.tsp_profile` (built in `init_auth`
+        // without a mediator, for vault-secret unpack): `connect_websocket`
+        // needs a mediator-bearing profile, built here where the messaging
+        // config is in scope. Uses the global `shutdown_rx` watch — a stop
+        // flips it to `true` and the loop breaks promptly. Any build/register
+        // failure just warns; the listener stays down (DIDComm unaffected).
+        #[cfg(feature = "tsp")]
+        if let (Some(atm), Some(vta_did), Some(messaging_config)) =
+            (&app_state.atm, &config.vta_did, &config.messaging)
+        {
+            let atm = atm.clone();
+            let vta_did = vta_did.clone();
+            let mediator_did = messaging_config.mediator_did.clone();
+            match affinidi_tdk::messaging::profiles::ATMProfile::new(
+                &atm,
+                Some("VTA".to_string()),
+                vta_did.clone(),
+                Some(mediator_did),
+            )
+            .await
+            {
+                Ok(profile) => match atm.profile_add(&profile, false).await {
+                    Ok(profile) => {
+                        let task_state = app_state.clone();
+                        let task_atm = atm.clone();
+                        let task_shutdown = shutdown_rx.clone();
+                        tokio::spawn(messaging::tsp_inbound::run_tsp_inbound(
+                            task_state,
+                            task_atm,
+                            profile,
+                            task_shutdown,
+                        ));
+                        info!("TSP inbound listener started for DID {vta_did}");
+                    }
+                    Err(e) => warn!(
+                        "failed to register TSP inbound profile (TSP listener not started): {e}"
+                    ),
+                },
+                Err(e) => {
+                    warn!("failed to build TSP inbound profile (TSP listener not started): {e}")
+                }
+            }
+        }
+
         // Spawn the teardown channel consumer. The drain sweeper
         // sends mediator DIDs over `teardown_rx` whenever a TTL
         // fires; this task translates each signal into a

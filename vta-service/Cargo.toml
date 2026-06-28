@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.10.13"
+version = "0.10.14"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
