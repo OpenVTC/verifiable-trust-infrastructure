@@ -29,6 +29,10 @@ pub struct HealthDetailsResponse {
     tee_status: Option<crate::tee::types::TeeStatus>,
     sealed: bool,
     storage_encrypted: bool,
+    /// Whether this VTA advertises TSP (Trust Spanning Protocol) as a
+    /// transport (`services.tsp`). TSP shares the same mediator as DIDComm
+    /// (`mediator_did` above), so no separate endpoint is reported.
+    tsp_enabled: bool,
 }
 
 /// Minimal health check — no authentication required.
@@ -60,6 +64,8 @@ pub async fn health_details(
     // Check if storage encryption is active
     let storage_encrypted = state.keys_ks.is_encrypted();
 
+    let tsp_enabled = config.services.tsp;
+
     Ok(Json(HealthDetailsResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
@@ -69,5 +75,6 @@ pub async fn health_details(
         tee_status: state.tee.as_ref().map(|tc| tc.state.status.clone()),
         sealed,
         storage_encrypted,
+        tsp_enabled,
     }))
 }

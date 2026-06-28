@@ -317,6 +317,18 @@ async fn health_details_returns_version_with_auth() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
     assert!(body["version"].is_string());
+    // TSP is off by default — health surfaces the advertised-transport state.
+    assert_eq!(body["tsp_enabled"], false);
+}
+
+#[tokio::test]
+async fn health_details_reports_tsp_enabled_when_configured() {
+    let (app, ctx) = TestApp::new().await;
+    ctx.inner.config.write().await.services.tsp = true;
+    let token = ctx.auth_token("did:key:z6MkTest", "admin", vec![]).await;
+    let (status, body) = app.request(get_auth("/health/details", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tsp_enabled"], true);
 }
 
 #[cfg(feature = "webvh")]
