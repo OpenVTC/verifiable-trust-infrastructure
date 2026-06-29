@@ -1,44 +1,33 @@
-//! TSP (Trust Spanning Protocol) inbound message loop.
+//! TSP (Trust Spanning Protocol) inbound handler.
 //!
-//! Background task that receives raw-TSP messages off the mediator
-//! websocket and feeds each one into the shared
-//! [`dispatch_trust_task_core`](crate::trust_tasks) spine — the *same*
-//! spine REST and DIDComm use. TSP is the highest-preference transport
+//! [`VtaTspHandler`] receives TSP messages off the VTA's **single** mediator
+//! websocket — the *same* socket the DIDComm listener uses — and feeds each one
+//! into the shared [`dispatch_trust_task_core`](crate::trust_tasks) spine that
+//! REST and DIDComm also use. TSP is the highest-preference transport
 //! (TSP > DIDComm > REST); this is its receive side.
+//!
+//! ## One socket, multiplexed
+//!
+//! The mediator permits **one websocket per DID**. The DIDComm service
+//! (`affinidi-messaging-didcomm-service`, ADR 0005 — `AffinidiMessageService`)
+//! owns that socket, sniffs inbound frames, and routes TSP frames to a
+//! [`TspHandler`]. The VTA registers `VtaTspHandler` via
+//! `DIDCommService::start_with_tsp`. There is **no second websocket** — opening
+//! one (as the earlier standalone loop did) made the mediator evict a
+//! connection as `w.websocket.duplicate-channel`, flapping the VTA.
 //!
 //! ## V1 scope: inbound, one-way
 //!
-//! Each received Trust Task is dispatched and its outcome is logged. This
-//! loop does **not** send a Trust-Task response back over TSP. Returning a
-//! response routes through the normal send path and is a documented
-//! follow-up (see the workspace TSP enablement design note). See the
-//! `NOTE` in [`dispatch_one`].
-//!
-//! ## Runtime verification
-//!
-//! The connect / recv loop cannot be unit-tested without a live mediator
-//! (it needs a real websocket endpoint authenticated against a mediator
-//! DID). [`dispatch_one`] — the per-message bridge — is unit-tested; the
-//! connect/recv/reconnect machinery in [`run_tsp_inbound`] is only
-//! compile-verified here and must be validated against a live mediator.
+//! Each received Trust Task is dispatched and its outcome is logged. The
+//! handler does **not** send a Trust-Task response back over TSP; returning a
+//! response routes through the normal send path and is a documented follow-up.
+//! See the `NOTE` in [`dispatch_one`].
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use affinidi_tdk::messaging::ATM;
-use affinidi_tdk::messaging::profiles::ATMProfile;
-use tokio::sync::watch;
+use affinidi_messaging_didcomm_service::{DIDCommServiceError, HandlerContext, TspHandler};
 use tracing::{info, warn};
 
 use crate::messaging::auth::auth_from_did;
 use crate::server::AppState;
-
-/// Initial reconnect backoff. Mirrors the DIDComm listener's
-/// `RestartPolicy::Always { initial_delay_secs: 5 }`.
-const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
-/// Maximum reconnect backoff. Mirrors the DIDComm listener's
-/// `max_delay_secs: 60`.
-const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
 /// Per-message bridge: turn one unpacked TSP message into a dispatched
 /// Trust Task on the shared spine.
@@ -82,93 +71,34 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     }
 }
 
-/// The TSP inbound loop: connect to the mediator's raw-TSP websocket,
-/// receive frames, unpack + dispatch each, and reconnect with backoff on
-/// disconnect.
+/// TSP handler registered on the VTA's DIDComm service via
+/// [`DIDCommService::start_with_tsp`](affinidi_messaging_didcomm_service::DIDCommService::start_with_tsp).
 ///
-/// Mirrors the DIDComm listener's restart spirit: backoff starts at
-/// [`BACKOFF_INITIAL`] and doubles up to [`BACKOFF_MAX`], resetting on a
-/// successful connect. A shutdown signal (`shutdown` flipped to `true`)
-/// breaks promptly via `tokio::select!` at every await point. Never panics.
-///
-/// `profile` MUST be a mediator-bearing profile (built with
-/// `Some(mediator_did)`); `connect_websocket` resolves the websocket
-/// endpoint from the profile's mediator config. This is distinct from
-/// `AppState.tsp_profile`, which carries no mediator and is for unpack only.
-pub async fn run_tsp_inbound(
+/// The service unpacks the TSP frame off the shared websocket (yielding the
+/// cleartext payload + the cryptographically-authenticated `sender_vid`) and
+/// invokes [`handle`](TspHandler::handle), which bridges to the shared spine via
+/// [`dispatch_one`]. Inbound is one-way: the dispatch outcome is logged, not
+/// returned over TSP (see the `NOTE` in [`dispatch_one`]).
+pub struct VtaTspHandler {
     app_state: AppState,
-    atm: ATM,
-    profile: Arc<ATMProfile>,
-    mut shutdown: watch::Receiver<bool>,
-) {
-    info!("TSP inbound loop starting");
-    let mut backoff = BACKOFF_INITIAL;
+}
 
-    loop {
-        // Shutdown check before each connect attempt.
-        if *shutdown.borrow() {
-            info!("TSP inbound loop shutting down");
-            return;
-        }
+impl VtaTspHandler {
+    pub fn new(app_state: AppState) -> Self {
+        Self { app_state }
+    }
+}
 
-        match atm.tsp().connect_websocket(&profile).await {
-            Ok(mut ws) => {
-                info!("TSP inbound websocket connected");
-                // Successful connect resets the backoff.
-                backoff = BACKOFF_INITIAL;
-
-                // Inner receive loop — runs until the socket closes, errors,
-                // or shutdown is signalled.
-                loop {
-                    tokio::select! {
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
-                                info!("TSP inbound loop shutting down");
-                                return;
-                            }
-                        }
-                        r = ws.recv() => match r {
-                            Ok(Some(qb2)) => {
-                                match atm.tsp().unpack_bytes(&profile, &qb2).await {
-                                    Ok((payload, sender)) => {
-                                        dispatch_one(&app_state, &payload, &sender).await;
-                                    }
-                                    Err(e) => {
-                                        warn!(error = %e, "TSP unpack failed — dropping frame");
-                                    }
-                                }
-                            }
-                            Ok(None) => {
-                                info!("TSP inbound websocket closed — reconnecting");
-                                break;
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "TSP inbound recv error — reconnecting");
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    backoff_secs = backoff.as_secs(),
-                    "TSP inbound connect failed — backing off"
-                );
-                // Wait out the backoff, but wake promptly on shutdown.
-                tokio::select! {
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
-                            info!("TSP inbound loop shutting down");
-                            return;
-                        }
-                    }
-                    _ = tokio::time::sleep(backoff) => {}
-                }
-                backoff = (backoff * 2).min(BACKOFF_MAX);
-            }
-        }
+#[async_trait::async_trait]
+impl TspHandler for VtaTspHandler {
+    async fn handle(
+        &self,
+        _ctx: HandlerContext,
+        payload: Vec<u8>,
+        sender_vid: String,
+    ) -> Result<(), DIDCommServiceError> {
+        dispatch_one(&self.app_state, &payload, &sender_vid).await;
+        Ok(())
     }
 }
 

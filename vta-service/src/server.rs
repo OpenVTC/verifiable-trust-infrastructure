@@ -36,7 +36,7 @@ use tracing::{debug, error, info, warn};
 
 #[cfg(feature = "didcomm")]
 use affinidi_messaging_didcomm_service::{
-    DIDCommService, DIDCommServiceConfig, ListenerConfig, RestartPolicy, RetryConfig,
+    DIDCommService, DIDCommServiceConfig, ListenerConfig, Protocols, RestartPolicy, RetryConfig,
 };
 #[cfg(feature = "didcomm")]
 use affinidi_tdk_common::profiles::TDKProfile;
@@ -899,6 +899,11 @@ pub async fn run(
                         builder.build().ok()
                     };
 
+                    // When TSP is advertised, the listener multiplexes TSP +
+                    // DIDComm on its single mediator websocket (one socket per
+                    // DID — a second would be evicted as `duplicate-channel`).
+                    let tsp_enabled = config.services.tsp;
+
                     let service_config = DIDCommServiceConfig {
                         listeners: vec![ListenerConfig {
                             id: "vta-main".into(),
@@ -910,6 +915,11 @@ pub async fn run(
                                 },
                             },
                             tdk_config: listener_tdk_config,
+                            protocols: if tsp_enabled {
+                                Protocols::BOTH
+                            } else {
+                                Protocols::DIDCOMM_ONLY
+                            },
                             ..Default::default()
                         }],
                     };
@@ -923,9 +933,29 @@ pub async fn run(
                         AppError::Internal(format!("failed to build DIDComm handler: {e}"))
                     })?;
 
-                    match DIDCommService::start(service_config, handler, didcomm_shutdown.clone())
-                        .await
-                    {
+                    // With `tsp` compiled and advertised, register the TSP
+                    // handler so inbound TSP frames off the shared socket reach
+                    // the trust-task spine; otherwise the plain DIDComm start.
+                    #[cfg(feature = "tsp")]
+                    let service_start = async {
+                        if tsp_enabled {
+                            DIDCommService::start_with_tsp(
+                                service_config,
+                                handler,
+                                messaging::tsp_inbound::VtaTspHandler::new(app_state.clone()),
+                                didcomm_shutdown.clone(),
+                            )
+                            .await
+                        } else {
+                            DIDCommService::start(service_config, handler, didcomm_shutdown.clone())
+                                .await
+                        }
+                    };
+                    #[cfg(not(feature = "tsp"))]
+                    let service_start =
+                        DIDCommService::start(service_config, handler, didcomm_shutdown.clone());
+
+                    match service_start.await {
                         Ok(service) => {
                             {
                                 let mut status = app_state.didcomm_websocket_status.write().await;
@@ -982,52 +1012,13 @@ pub async fn run(
         #[cfg(not(feature = "didcomm"))]
         let didcomm_service: Option<()> = None;
 
-        // Start the TSP inbound listener: a raw-TSP websocket to the mediator
-        // (`atm.tsp().connect_websocket`) whose received frames are unpacked
-        // and fed into the same `dispatch_trust_task_core` spine as DIDComm /
-        // REST. Distinct from `AppState.tsp_profile` (built in `init_auth`
-        // without a mediator, for vault-secret unpack): `connect_websocket`
-        // needs a mediator-bearing profile, built here where the messaging
-        // config is in scope. Uses the global `shutdown_rx` watch — a stop
-        // flips it to `true` and the loop breaks promptly. Any build/register
-        // failure just warns; the listener stays down (DIDComm unaffected).
-        #[cfg(feature = "tsp")]
-        if let (Some(atm), Some(vta_did), Some(messaging_config)) =
-            (&app_state.atm, &config.vta_did, &config.messaging)
-        {
-            let atm = atm.clone();
-            let vta_did = vta_did.clone();
-            let mediator_did = messaging_config.mediator_did.clone();
-            match affinidi_tdk::messaging::profiles::ATMProfile::new(
-                &atm,
-                Some("VTA".to_string()),
-                vta_did.clone(),
-                Some(mediator_did),
-            )
-            .await
-            {
-                Ok(profile) => match atm.profile_add(&profile, false).await {
-                    Ok(profile) => {
-                        let task_state = app_state.clone();
-                        let task_atm = atm.clone();
-                        let task_shutdown = shutdown_rx.clone();
-                        tokio::spawn(messaging::tsp_inbound::run_tsp_inbound(
-                            task_state,
-                            task_atm,
-                            profile,
-                            task_shutdown,
-                        ));
-                        info!("TSP inbound listener started for DID {vta_did}");
-                    }
-                    Err(e) => warn!(
-                        "failed to register TSP inbound profile (TSP listener not started): {e}"
-                    ),
-                },
-                Err(e) => {
-                    warn!("failed to build TSP inbound profile (TSP listener not started): {e}")
-                }
-            }
-        }
+        // TSP inbound is no longer a standalone websocket. When `services.tsp`
+        // is on, the DIDComm service above multiplexes TSP frames off its
+        // single mediator websocket and routes them to `VtaTspHandler`
+        // (registered via `start_with_tsp`). Opening a second socket here — as
+        // the earlier `run_tsp_inbound` loop did — made the mediator evict a
+        // connection as `duplicate-channel`, flapping the VTA. See
+        // `messaging::tsp_inbound`.
 
         // Spawn the teardown channel consumer. The drain sweeper
         // sends mediator DIDs over `teardown_rx` whenever a TTL

@@ -17,7 +17,12 @@ didcomm = []
 # Trust Spanning Protocol transport. Additive and OFF by default (TSP rolls out
 # gated; DIDComm stays in `default`). Enables the SDK's `tsp` capability; later
 # PRs add the TSP listener + `services tsp` surface behind this flag.
-tsp = ["vta-sdk/tsp", "dep:affinidi-messaging-sdk", "affinidi-messaging-sdk/tsp"]
+tsp = [
+    "vta-sdk/tsp",
+    "dep:affinidi-messaging-sdk",
+    "affinidi-messaging-sdk/tsp",
+    "affinidi-messaging-didcomm-service/tsp",
+]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
 setup = ["webvh", "dep:tempfile"]
 # BBS+ (`bbs-2023`) credential support in the vault — pulls in the BLS12-381
