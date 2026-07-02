@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### vta-sdk (0.18.15) — didcomm-mediator template: make the TSPTransport service opt-in
+
+The `didcomm-mediator` built-in template previously advertised a `#tsp`
+`TSPTransport` service **unconditionally**, so every mediator minted from it
+(VTA-managed or self-hosted webvh) published a TSP endpoint even on
+DIDComm-only deployments — misleading peers into routing TSP the mediator can't
+serve.
+
+The `#tsp` service is now an optional slot: a new `SERVICE_TSP` optional var
+(default `null`) rendered as the whole-string array element `"{SERVICE_TSP}"`,
+pruned when unset (the same mechanism as the P-256 verification-method slots).
+Callers that want TSP advertised supply `SERVICE_TSP` as the fully-resolved
+service object, e.g.:
+
+```json
+{ "id": "{DID}#tsp", "type": "TSPTransport", "serviceEndpoint": "https://mediator.example.com" }
+```
+
+The renderer does not recurse into injected values, so the caller resolves the
+endpoint URL itself; `{DID}` stays a sentinel for the did-method layer.
+
+**Breaking for the mint path:** a caller that does not supply `SERVICE_TSP` now
+gets a document without `#tsp`. Provisioning callers that want TSP advertised
+must pass `SERVICE_TSP` in `integration_template_vars` (it flows through the VTA
+provisioning render unchanged). Other built-in templates that advertise TSP
+(`ai-agent`, `did-host-didcomm`, `did-host-http-didcomm`) are unchanged.
+
 ### vta-service — reliability: preload VTA self DID into resolver cache
 
 `vta-service` now preloads its own `did:webvh` DID document into the

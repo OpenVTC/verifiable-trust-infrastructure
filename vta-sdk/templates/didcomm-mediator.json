@@ -13,7 +13,8 @@
     "VM_P256_KA": null,
     "AUTH_P256": null,
     "ASSERTION_P256": null,
-    "KEYAGREEMENT_P256": null
+    "KEYAGREEMENT_P256": null,
+    "SERVICE_TSP": null
   },
   "defaults": {
     "preRotationCount": 2,
@@ -47,11 +48,7 @@
     "assertionMethod": ["{DID}#key-0", "{ASSERTION_P256}"],
     "keyAgreement": ["{DID}#key-1", "{KEYAGREEMENT_P256}"],
     "service": [
-      {
-        "id": "{DID}#tsp",
-        "type": "TSPTransport",
-        "serviceEndpoint": "{URL}"
-      },
+      "{SERVICE_TSP}",
       {
         "id": "{DID}#service",
         "type": ["DIDCommMessaging"],

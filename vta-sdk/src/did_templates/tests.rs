@@ -385,25 +385,23 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
     );
 
     let services = doc["service"].as_array().unwrap();
-    assert_eq!(services.len(), 3);
-
-    // TSP service first (canonical preference order, §3.3): id `#tsp`,
-    // type `TSPTransport`, serviceEndpoint a plain-string transport URL.
-    // The mediator's own doc (shape (b)) carries the URL directly, unlike
-    // a consumer doc whose `#tsp` points at this mediator's DID.
-    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#tsp");
-    assert_eq!(services[0]["type"], "TSPTransport");
-    assert_eq!(
-        services[0]["serviceEndpoint"],
-        "https://mediator.example.com"
+    // No `SERVICE_TSP` supplied -> the optional `#tsp` slot defaults to `null`
+    // and is pruned. A DIDComm-only mediator advertises only DIDComm + auth;
+    // TSP is opt-in (see `..._renders_tsp_service_when_supplied`).
+    assert_eq!(services.len(), 2);
+    assert!(
+        !services
+            .iter()
+            .any(|s| s["type"] == "TSPTransport" || s["type"] == json!(["TSPTransport"])),
+        "TSP must be absent unless SERVICE_TSP is supplied"
     );
 
     // DIDComm service: id `#service`, type as a single-element array,
     // serviceEndpoint as an array of two endpoint objects (HTTP first,
     // WSS second). Each endpoint carries the same accept/routingKeys.
-    assert_eq!(services[1]["id"], "did:webvh:mediator:example.com#service");
-    assert_eq!(services[1]["type"], json!(["DIDCommMessaging"]));
-    let endpoints = services[1]["serviceEndpoint"].as_array().unwrap();
+    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#service");
+    assert_eq!(services[0]["type"], json!(["DIDCommMessaging"]));
+    let endpoints = services[0]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints.len(), 2);
     assert_eq!(endpoints[0]["uri"], "https://mediator.example.com");
     assert_eq!(endpoints[0]["accept"], json!(["didcomm/v2"]));
@@ -414,12 +412,50 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
 
     // Authentication service: id `#auth`, type as a single-element array,
     // serviceEndpoint as a plain string at `<URL>/authenticate`.
-    assert_eq!(services[2]["id"], "did:webvh:mediator:example.com#auth");
-    assert_eq!(services[2]["type"], json!(["Authentication"]));
+    assert_eq!(services[1]["id"], "did:webvh:mediator:example.com#auth");
+    assert_eq!(services[1]["type"], json!(["Authentication"]));
     assert_eq!(
-        services[2]["serviceEndpoint"],
+        services[1]["serviceEndpoint"],
         "https://mediator.example.com/authenticate"
     );
+}
+
+#[test]
+fn didcomm_mediator_builtin_renders_tsp_service_when_supplied() {
+    // Opt-in TSP: the caller supplies `SERVICE_TSP` as the fully-resolved
+    // service object (whole-string native-type substitution). Supplied values
+    // are not recursively re-substituted, so — like the P-256 VM slots — they
+    // carry the resolved DID here rather than the `{DID}` sentinel the local
+    // generator would pass in production (which the did-method layer resolves
+    // after SCID computation).
+    let tpl = load_embedded("didcomm-mediator").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:mediator:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
+    vars.insert_string("KA_KEY_MB", "z6LSKa");
+    vars.insert_string("URL", "https://mediator.example.com");
+    vars.insert_string("WS_URL", "wss://mediator.example.com/ws");
+    vars.insert(
+        "SERVICE_TSP",
+        json!({
+            "id": "did:webvh:mediator:example.com#tsp",
+            "type": "TSPTransport",
+            "serviceEndpoint": "https://mediator.example.com"
+        }),
+    );
+
+    let doc = tpl.render(&vars).unwrap();
+    let services = doc["service"].as_array().unwrap();
+    // TSP first (canonical preference order), then DIDComm, then auth.
+    assert_eq!(services.len(), 3);
+    assert_eq!(services[0]["id"], "did:webvh:mediator:example.com#tsp");
+    assert_eq!(services[0]["type"], "TSPTransport");
+    assert_eq!(
+        services[0]["serviceEndpoint"],
+        "https://mediator.example.com"
+    );
+    assert_eq!(services[1]["type"], json!(["DIDCommMessaging"]));
+    assert_eq!(services[2]["type"], json!(["Authentication"]));
 }
 
 #[test]
@@ -510,7 +546,8 @@ fn ws_url_is_derived_from_url_when_omitted() {
     // WS_URL deliberately omitted.
 
     let doc = tpl.render(&vars).expect("render with derived WS_URL");
-    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
+    // No SERVICE_TSP -> DIDComm is the first service entry.
+    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(
         endpoints[0]["uri"],
         "https://mediator.example.com/mediator/v1"
@@ -534,7 +571,8 @@ fn ws_url_derivation_handles_plain_http_and_trailing_slash() {
     vars.insert_string("URL", "http://mediator.local/");
 
     let doc = tpl.render(&vars).expect("render with derived ws://");
-    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
+    // No SERVICE_TSP -> DIDComm is the first service entry.
+    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints[1]["uri"], "ws://mediator.local/ws");
 }
 
@@ -552,7 +590,8 @@ fn explicit_ws_url_overrides_derivation() {
     vars.insert_string("WS_URL", "wss://ws-gateway.example.net/mediator/ws");
 
     let doc = tpl.render(&vars).unwrap();
-    let endpoints = doc["service"][1]["serviceEndpoint"].as_array().unwrap();
+    // No SERVICE_TSP -> DIDComm is the first service entry.
+    let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
     assert_eq!(endpoints[0]["uri"], "https://mediator.example.com");
     assert_eq!(
         endpoints[1]["uri"],
