@@ -357,17 +357,32 @@ pub async fn provision_integration(
             )),
             other => other,
         })?;
+    // A `methods` list containing `"peer"` selects the self-contained
+    // did:peer path (no WebVH hosting, no did.jsonl, no publish). Checked
+    // before the did:key / did:webvh dispatch.
+    let use_did_peer = templates::template_targets_did_peer(&integration_template);
     let use_did_key = templates::template_targets_did_key_only(&integration_template);
 
-    // When the did:key path runs, we already hold the full
+    // When the did:key or did:peer path runs, we already hold the full
     // `DidKeyMaterial` (signing + KA public/private) from the mint
     // helper — there's no keystore round-trip for the KA key because
-    // X25519 is derived from the Ed25519 seed, not BIP-32 derived at
-    // its own path. Capture it here so the readback section below can
-    // skip `get_key_secret` on this branch.
+    // X25519 is derived from the Ed25519 seed (did:key) or minted directly
+    // as the peer's `#key-2` (did:peer), not BIP-32 derived at its own
+    // path. Capture it here so the readback section below can skip
+    // `get_key_secret` on those branches.
     let mut did_key_material: Option<DidKeyMaterial> = None;
 
-    let (integration_did, signing_key_id, ka_key_id, did_document, did_log) = if use_did_key {
+    let (integration_did, signing_key_id, ka_key_id, did_document, did_log) = if use_did_peer {
+        // did:peer path — self-contained. Mint an Ed25519 signing key +
+        // X25519 key-agreement key and encode them into a did:peer:2 with
+        // a DIDCommMessaging service on MEDIATOR_DID (matching how the
+        // `ai-agent` did:webvh template advertises DIDComm), so the agent
+        // reaches the VTA over the mediator identically. `WEBVH_SERVER` /
+        // `WEBVH_PATH` / `URL` are forbidden — there is nothing to host.
+        let (did, skid, kkid, doc, material) = provision_did_peer(state, &template_vars).await?;
+        did_key_material = Some(material);
+        (did, skid, kkid, doc, None)
+    } else if use_did_key {
         // did:key path — no webvh publication. `WEBVH_SERVER` /
         // `WEBVH_PATH` / `URL` are all irrelevant here; the template's
         // `methods: ["key"]` is load-bearing metadata, not the URL.
@@ -486,10 +501,10 @@ pub async fn provision_integration(
         )
     };
 
-    // did:key path: set the minted DID as primary when the context has
-    // none. The webvh path already handles this inside create_did_webvh
-    // via `set_primary`.
-    if use_did_key && set_primary {
+    // did:key / did:peer paths: set the minted DID as primary when the
+    // context has none. The webvh path already handles this inside
+    // create_did_webvh via `set_primary`.
+    if (use_did_key || use_did_peer) && set_primary {
         let mut ctx = ctx_before_mint.clone();
         ctx.did = Some(integration_did.clone());
         ctx.updated_at = chrono::Utc::now();
@@ -990,6 +1005,123 @@ async fn provision_admin_rotation(
             webvh_server_id: None,
         },
     })
+}
+
+/// Step 2 of the flow for the `did:peer` method — the self-contained
+/// counterpart to `create_did_webvh` (webvh) / `mint_integration_via_did_key_template`
+/// (did:key). Steps 1/3/4/5 around it are DID-method-agnostic and run
+/// unchanged.
+///
+/// Mints an Ed25519 signing key + X25519 key-agreement key and encodes
+/// them into a `did:peer:2` whose only service is a `DIDCommMessaging`
+/// endpoint on `MEDIATOR_DID` (matching how the `ai-agent` did:webvh
+/// template advertises DIDComm), so the minted agent reaches the VTA over
+/// the mediator identically to a did:webvh agent. Nothing is hosted or
+/// published — the DID resolves locally.
+///
+/// Returns the tuple the caller destructures in place of the webvh /
+/// did:key branches: `(did, signing_key_id, ka_key_id, did_document,
+/// material)`. `did_log` is always `None` for did:peer (no did.jsonl).
+///
+/// Forbids `WEBVH_SERVER` / `URL` — a did:peer has no hosting target, so
+/// their presence is an operator error worth surfacing loudly rather than
+/// silently ignoring.
+async fn provision_did_peer(
+    state: &ProvisionIntegrationDeps,
+    template_vars: &BTreeMap<String, Value>,
+) -> Result<(String, String, String, Value, DidKeyMaterial), AppError> {
+    use crate::operations::did_peer::{
+        mediator_did_didcomm_service, mint_did_peer_with_services, peer_secrets_to_did_key_material,
+    };
+
+    // MEDIATOR_DID is required — it is the DIDComm service endpoint the
+    // agent routes through. Same var + role as the `ai-agent` did:webvh
+    // template's `requiredVars`.
+    let mediator_did = template_vars
+        .get("MEDIATOR_DID")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AppError::Validation(
+                "did:peer agent template requires a non-empty 'MEDIATOR_DID' var — it becomes \
+                 the agent's DIDCommMessaging service endpoint. Pass `--var MEDIATOR_DID=<did>`."
+                    .into(),
+            )
+        })?
+        .to_string();
+
+    // A did:peer is self-contained: there is nothing to host, so webvh
+    // vars are meaningless here. Reject them rather than silently drop —
+    // their presence means the operator picked the wrong template.
+    for forbidden in ["WEBVH_SERVER", "URL", "WEBVH_PATH", "WEBVH_DOMAIN"] {
+        if template_vars.get(forbidden).is_some_and(|v| !v.is_null()) {
+            return Err(AppError::Validation(format!(
+                "did:peer agent template does not accept '{forbidden}' — a did:peer is \
+                 self-contained (no WebVH hosting, no did.jsonl, no publish). Remove it, or \
+                 use the did:webvh 'ai-agent' template if you need hosting."
+            )));
+        }
+    }
+
+    // ACCEPT / ROUTING_KEYS mirror the `ai-agent` template's DIDComm
+    // service optionals: string list of accepted media types, and DIDComm
+    // routing keys. Defaults match the template's `optionalVars`.
+    let accept =
+        string_list_var(template_vars, "ACCEPT").unwrap_or_else(|| vec!["didcomm/v2".into()]);
+    let routing_keys = string_list_var(template_vars, "ROUTING_KEYS").unwrap_or_default();
+
+    let services = mediator_did_didcomm_service(&mediator_did, accept, routing_keys);
+    let (did, secrets) = mint_did_peer_with_services(services)
+        .map_err(|e| AppError::Internal(format!("mint did:peer: {e}")))?;
+
+    let material = peer_secrets_to_did_key_material(&did, &secrets)
+        .map_err(|e| AppError::Internal(format!("map did:peer secrets: {e}")))?;
+
+    // Resolve the freshly-minted did:peer to its DID document for the
+    // sealed payload's `config.did_document`. did:peer resolves locally
+    // (no network), so this never leaves the process.
+    let resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?;
+    let resolved = resolver
+        .resolve(&did)
+        .await
+        .map_err(|e| AppError::Internal(format!("resolve minted did:peer '{did}': {e}")))?;
+    let did_document = serde_json::to_value(&resolved.doc)
+        .map_err(|e| AppError::Internal(format!("serialize did:peer document: {e}")))?;
+
+    info!(
+        did = %did,
+        mediator_did = %mediator_did,
+        "minted did:peer agent via provision-integration"
+    );
+
+    Ok((
+        did,
+        material.signing_key.key_id.clone(),
+        material.ka_key.key_id.clone(),
+        did_document,
+        material,
+    ))
+}
+
+/// Extract a template var as a `Vec<String>`: accepts a JSON array of
+/// strings (native shape) or a single string (coerced to a one-element
+/// vec). Returns `None` when absent / null / wrong-typed, letting the
+/// caller apply its default.
+fn string_list_var(vars: &BTreeMap<String, Value>, key: &str) -> Option<Vec<String>> {
+    match vars.get(key) {
+        Some(Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+        ),
+        Some(Value::String(s)) => Some(vec![s.clone()]),
+        _ => None,
+    }
 }
 
 /// Find a `verificationMethod.id` whose `publicKeyMultibase` matches
@@ -1667,6 +1799,172 @@ mod tests {
             Some(integration_did),
             "did:key path must set context primary when ctx.did was None"
         );
+    }
+
+    #[tokio::test]
+    async fn provision_integration_mints_did_peer_when_template_methods_is_peer() {
+        // The did:peer path: a template declaring `methods: ["peer"]`
+        // yields a self-contained did:peer:2 agent — no WebVH hosting,
+        // no webvh log — whose DIDComm service routes through MEDIATOR_DID
+        // exactly like the did:webvh `ai-agent` template. Runs the SAME
+        // step 1/3/4/5 as the webvh path (VP precondition + holder ACL +
+        // seal); only step 2 (DID construction) differs.
+        use super::sealed_transfer_open::open_for_test;
+
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "agents", "Agents")
+            .await
+            .expect("create context");
+
+        // A plausible mediator DID — used only as the DIDCommMessaging
+        // service endpoint (a uri), so it need not resolve.
+        let mediator_did = "did:peer:2.Ez6LSbysY2xFMRpGMhb7tFTLMpeuPRaqaWM8m1jhSw9UZTQY.Vz6MkqRYqQ";
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".into(),
+            Value::String(mediator_did.to_string()),
+        );
+
+        let auth = super_admin_claims();
+        let request = signed_request_with_vars("ai-agent-peer", "agents", vars).await;
+        let client_did = request.holder().to_string();
+
+        let output = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "agents".into(),
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await
+        .expect("provision_integration did:peer");
+
+        let integration_did = output
+            .summary
+            .integration_did
+            .as_deref()
+            .expect("TemplateBootstrap path must yield Some(integration_did)");
+
+        // (1) The returned DID is a valid did:peer:2 with a DIDCommMessaging
+        //     service on MEDIATOR_DID.
+        assert!(
+            integration_did.starts_with("did:peer:2"),
+            "integration DID must be a did:peer:2, got {integration_did}"
+        );
+        assert_eq!(
+            output.summary.output_count, 0,
+            "did:peer path emits no webvh log — outputs must be empty"
+        );
+
+        // (2) The sealed bundle opens with the holder key to a
+        //     DidSecretsBundle-equivalent DidKeyMaterial carrying the
+        //     signing + key-agreement keys.
+        let payload = open_for_test(&output.armored, &output.digest, &[7u8; 32]);
+        assert_eq!(output.summary.secret_count, 1, "one minted did:peer");
+        let material = payload
+            .secrets
+            .get(integration_did)
+            .expect("did:peer secrets present in bundle");
+        assert_eq!(material.did, integration_did);
+        assert!(
+            material.signing_key.key_id.contains("#key-1"),
+            "signing key id: {}",
+            material.signing_key.key_id
+        );
+        assert!(!material.signing_key.private_key_multibase.is_empty());
+        assert!(
+            material.ka_key.key_id.contains("#key-2"),
+            "ka key id: {}",
+            material.ka_key.key_id
+        );
+        assert!(!material.ka_key.private_key_multibase.is_empty());
+
+        // The rendered did:peer document carries a DIDCommMessaging service
+        // whose endpoint is the MEDIATOR_DID.
+        // The resolved did:peer document expresses `service.type` as an
+        // array (`["DIDCommMessaging"]`) per did:peer resolution — match on
+        // the type appearing there, not on an exact string, and confirm the
+        // endpoint uri is the MEDIATOR_DID.
+        let doc = &payload.config.did_document;
+        let services = doc["service"].as_array().expect("service array");
+        let didcomm = services
+            .iter()
+            .find(|s| {
+                let t = &s["type"];
+                t == "DIDCommMessaging"
+                    || t.as_array()
+                        .is_some_and(|a| a.iter().any(|v| v == "DIDCommMessaging"))
+            })
+            .expect("DIDCommMessaging service present");
+        let endpoint_str = serde_json::to_string(&didcomm["serviceEndpoint"]).unwrap();
+        assert!(
+            endpoint_str.contains(mediator_did),
+            "DIDCommMessaging endpoint must route through MEDIATOR_DID; got {endpoint_str}"
+        );
+
+        // (3) A context-admin ACL entry exists for the holder (step 4 ran
+        //     unchanged — no admin rollover, so admin_did == client_did).
+        assert!(!output.summary.admin_rolled_over);
+        assert_eq!(output.summary.admin_did, client_did);
+        let acl = crate::acl::get_acl_entry(&ts.acl_ks, &client_did)
+            .await
+            .unwrap()
+            .expect("holder ACL entry created");
+        assert_eq!(acl.role, Role::Admin);
+        assert!(acl.allowed_contexts.contains(&"agents".to_string()));
+
+        // did:peer is self-contained → set as context primary when none.
+        let ctx_after = crate::contexts::get_context(&ts.contexts_ks, "agents")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ctx_after.did.as_deref(), Some(integration_did));
+    }
+
+    #[tokio::test]
+    async fn provision_integration_did_peer_rejects_webvh_vars() {
+        // A did:peer template must reject WEBVH_SERVER / URL — a did:peer
+        // is self-contained, so their presence is an operator error.
+        let ts = open_test_store().await;
+        let (_vta_did, deps) = bootstrap_test_vta(&ts).await;
+        crate::contexts::create_context(&ts.contexts_ks, "agents", "Agents")
+            .await
+            .expect("create context");
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".into(),
+            Value::String("did:peer:2.Ez6LSm".into()),
+        );
+        vars.insert(
+            "URL".into(),
+            Value::String("https://should-not-be-here.example".into()),
+        );
+
+        let auth = super_admin_claims();
+        let request = signed_request_with_vars("ai-agent-peer", "agents", vars).await;
+
+        let result = provision_integration(
+            &deps,
+            &auth,
+            ProvisionIntegrationParams {
+                request,
+                context: "agents".into(),
+                assertion_mode: AssertionMode::PinnedOnly,
+                vc_validity: None,
+            },
+        )
+        .await;
+        let err = match result {
+            Ok(_) => panic!("did:peer must reject URL"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+        assert!(err.to_string().contains("URL"), "got: {err}");
     }
 
     #[tokio::test]

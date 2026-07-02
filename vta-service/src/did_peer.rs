@@ -1,14 +1,13 @@
 use std::path::PathBuf;
 
-use affinidi_tdk::dids::{
-    DID, KeyType, OneOrMany, PeerKeyRole, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong,
-};
+use affinidi_tdk::dids::{OneOrMany, PeerService, PeerServiceEndpoint, PeerServiceEndpointLong};
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 
-use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
+use vta_sdk::did_secrets::DidSecretsBundle;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
 use crate::config::AppConfig;
+use crate::operations::did_peer::{mint_did_peer_with_services, peer_secrets_to_entries};
 use crate::store::Store;
 
 pub struct CreateDidPeerArgs {
@@ -64,16 +63,12 @@ pub async fn run_create_did_peer(
     // (id "#auth").
     let services = mediator_services(&args.mediator_url)?;
 
-    // did:peer key shape: Ed25519 verification (#key-1) + X25519 encryption
-    // (#key-2). Matches `mediator-setup`'s generator exactly.
-    let keys = vec![
-        (PeerKeyRole::Verification, KeyType::Ed25519),
-        (PeerKeyRole::Encryption, KeyType::X25519),
-    ];
-
-    let (did, secrets): (String, Vec<Secret>) =
-        DID::generate_did_peer_with_services(keys, Some(services))
-            .map_err(|e| format!("failed to generate did:peer: {e}"))?;
+    // did:peer key shape (Ed25519 #key-1 + X25519 #key-2) and the actual
+    // did:peer:2 encoding live in the shared library construction
+    // (`operations::did_peer::mint_did_peer_with_services`) so this offline
+    // CLI and the online provision-integration path can't drift. Only the
+    // `services` differ (URL-style here; MEDIATOR_DID-style online).
+    let (did, secrets): (String, Vec<Secret>) = mint_did_peer_with_services(services)?;
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {did}");
 
@@ -105,35 +100,9 @@ pub async fn run_create_did_peer(
     // Optionally export the secrets bundle. `--export-secrets` forces it
     // unconditionally; without the flag nothing is emitted on stdout.
     if args.export_secrets {
-        let mut entries = Vec::with_capacity(secrets.len());
-        for s in &secrets {
-            // `Secret::get_key_type()` returns `affinidi_crypto::KeyType`;
-            // `SecretEntry.key_type` is `vta_sdk::keys::KeyType` — map across
-            // the two enums. Only Ed25519 / X25519 are produced by the key
-            // shape above; reject anything else loudly.
-            let key_type = match s.get_key_type() {
-                affinidi_tdk::secrets_resolver::secrets::KeyType::Ed25519 => {
-                    vta_sdk::keys::KeyType::Ed25519
-                }
-                affinidi_tdk::secrets_resolver::secrets::KeyType::X25519 => {
-                    vta_sdk::keys::KeyType::X25519
-                }
-                other => {
-                    return Err(format!(
-                        "unexpected key type {other:?} in generated did:peer secret {}",
-                        s.id
-                    )
-                    .into());
-                }
-            };
-            entries.push(SecretEntry {
-                key_id: s.id.clone(),
-                key_type,
-                private_key_multibase: s
-                    .get_private_keymultibase()
-                    .map_err(|e| format!("failed to encode private key for {}: {e}", s.id))?,
-            });
-        }
+        // Map the generated secrets to bundle entries via the shared helper
+        // (Ed25519 #key-1 then X25519 #key-2; rejects any other key type).
+        let entries = peer_secrets_to_entries(&secrets)?;
 
         let bundle = DidSecretsBundle {
             did: did.clone(),
@@ -303,32 +272,11 @@ mod tests {
     #[test]
     fn bundle_has_two_entries_ed25519_then_x25519() {
         let services = mediator_services("http://127.0.0.1:61881/mediator/v1").unwrap();
-        let keys = vec![
-            (PeerKeyRole::Verification, KeyType::Ed25519),
-            (PeerKeyRole::Encryption, KeyType::X25519),
-        ];
-        let (did, secrets) =
-            DID::generate_did_peer_with_services(keys, Some(services)).expect("generate did:peer");
+        let (did, secrets) = mint_did_peer_with_services(services).expect("generate did:peer");
         assert!(did.starts_with("did:peer:2"), "got {did}");
         assert_eq!(secrets.len(), 2);
 
-        let mut entries = Vec::new();
-        for s in &secrets {
-            let key_type = match s.get_key_type() {
-                affinidi_tdk::secrets_resolver::secrets::KeyType::Ed25519 => {
-                    vta_sdk::keys::KeyType::Ed25519
-                }
-                affinidi_tdk::secrets_resolver::secrets::KeyType::X25519 => {
-                    vta_sdk::keys::KeyType::X25519
-                }
-                other => panic!("unexpected key type {other:?}"),
-            };
-            entries.push(SecretEntry {
-                key_id: s.id.clone(),
-                key_type,
-                private_key_multibase: s.get_private_keymultibase().unwrap(),
-            });
-        }
+        let entries = peer_secrets_to_entries(&secrets).expect("map secrets to entries");
 
         assert_eq!(entries.len(), 2);
         assert!(entries[0].key_id.contains("#key-1"));

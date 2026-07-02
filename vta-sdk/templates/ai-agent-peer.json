@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "name": "ai-agent-peer",
+  "kind": "ai-agent",
+  "description": "Self-contained did:peer personal AI agent identity (open-claw / nano-claw / hermes and the like). The did:peer counterpart to the 'ai-agent' template: it mints an agent DID whose keys and DIDCommMessaging service are encoded directly in the identifier, so there is NO WebVH hosting, no did.jsonl, and no publish step — the DID resolves locally. Use this for agents that authenticate to the VTA over DIDComm and are never resolved by outside HTTPS parties. MEDIATOR_DID is required at provision time and is advertised as the DIDCommMessaging service endpoint (matching how the 'ai-agent' did:webvh template advertises DIDComm), so a minted did:peer agent connects to the VTA over the mediator identically to a did:webvh agent. WEBVH_SERVER / URL are not accepted — there is nothing to host.",
+  "methods": ["peer"],
+  "requiredVars": ["MEDIATOR_DID"],
+  "optionalVars": {
+    "ACCEPT": ["didcomm/v2"],
+    "ROUTING_KEYS": [],
+    "LABEL": null
+  },
+  "defaults": {
+    "portable": true
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-2",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-1"],
+    "authentication": ["{DID}#key-1"],
+    "keyAgreement": ["{DID}#key-2"],
+    "service": [
+      {
+        "id": "{DID}#vta-didcomm",
+        "type": "DIDCommMessaging",
+        "serviceEndpoint": [
+          {
+            "accept": "{ACCEPT}",
+            "routingKeys": "{ROUTING_KEYS}",
+            "uri": "{MEDIATOR_DID}"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -9,6 +9,7 @@ pub mod contexts;
 pub mod credential_exchange;
 pub mod credentials;
 pub mod device;
+pub mod did_peer;
 pub mod did_templates;
 #[cfg(feature = "webvh")]
 pub mod did_webvh;

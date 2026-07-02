@@ -74,6 +74,15 @@ pub(super) fn template_targets_did_key_only(
     !template.methods.is_empty() && template.methods.iter().all(|m| m == "key")
 }
 
+/// Returns `true` when the template declares `methods` containing `"peer"`
+/// — i.e. the operator intends a self-contained `did:peer` integration (no
+/// WebVH hosting, no did.jsonl, no publish). Selected before the did:key /
+/// did:webvh dispatch. An empty `methods` list is not peer (back-compat
+/// default stays on the did:webvh path).
+pub(super) fn template_targets_did_peer(template: &vta_sdk::did_templates::DidTemplate) -> bool {
+    template.methods.iter().any(|m| m == "peer")
+}
+
 /// Resolve only the `kind` field of a template (context → global →
 /// builtin). Used for the VC's `credentialSubject.integrationKind`
 /// without the cost of parsing the full template body.
