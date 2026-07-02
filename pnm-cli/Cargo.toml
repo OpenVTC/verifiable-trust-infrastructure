@@ -1,7 +1,7 @@
 [package]
 name = "pnm-cli"
 description = "CLI Tool for managing a personal Verifiable Trust Agent"
-version = "0.10.2"
+version = "0.10.3"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -15,14 +15,16 @@ name = "pnm"
 path = "src/main.rs"
 
 [features]
-default = ["keyring"]
+default = ["keyring", "tsp"]
 keyring = ["vta-sdk/keyring"]
 config-session = ["vta-sdk/config-session"]
 azure-secrets = ["vta-sdk/azure-secrets"]
-# Trust Spanning Protocol probe in `pnm health`. Additive and OFF by default
-# (mirrors the gated TSP rollout in vta-service). Enables the SDK's
-# `TspPingSession`; without it `pnm health` still recognises an advertised
-# `TSPTransport` service but notes the probe isn't compiled in.
+# Trust Spanning Protocol probe in `pnm health`. **On by default** — TSP is the
+# preferred transport (TSP > DIDComm > REST), so operators get the round-trip
+# probe out of the box. Enables the SDK's `TspPingSession`. Build with
+# `--no-default-features` (re-adding `keyring`) to drop the TSP deps; without
+# it `pnm health` still recognises an advertised `TSPTransport` service but
+# notes the probe isn't compiled in.
 tsp = ["vta-sdk/tsp"]
 
 [dependencies]
