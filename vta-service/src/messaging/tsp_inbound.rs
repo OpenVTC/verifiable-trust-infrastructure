@@ -16,21 +16,27 @@
 //! one (as the earlier standalone loop did) made the mediator evict a
 //! connection as `w.websocket.duplicate-channel`, flapping the VTA.
 //!
-//! ## V1 scope: inbound, one-way
+//! ## Round-trip: the reply routes back over the same socket
 //!
-//! Each received Trust Task is dispatched and its outcome is logged. The
-//! handler does **not** send a Trust-Task response back over TSP; returning a
-//! response routes through the normal send path and is a documented follow-up.
-//! See the `NOTE` in [`dispatch_one`].
+//! Each received Trust Task is dispatched on the shared spine and its response
+//! envelope is returned to the sender **over TSP** — the message service
+//! (`affinidi-messaging-didcomm-service` ≥ 0.3.14) seals the returned
+//! [`TspResponse`] to the proven `sender_vid` and routes it back over the same
+//! mediator socket (`send_routed([mediator_did, sender_vid])`). This mirrors the
+//! DIDComm `handle_trust_task` bridge, which returns the same framework document
+//! as its reply, so TSP and DIDComm callers get byte-identical round-trip
+//! semantics off the shared `dispatch_trust_task_core`.
 
-use affinidi_messaging_didcomm_service::{DIDCommServiceError, HandlerContext, TspHandler};
-use tracing::{info, warn};
+use affinidi_messaging_didcomm_service::{
+    DIDCommServiceError, HandlerContext, TspHandler, TspResponse,
+};
+use tracing::info;
 
 use crate::messaging::auth::auth_from_did;
 use crate::server::AppState;
 
-/// Per-message bridge: turn one unpacked TSP message into a dispatched
-/// Trust Task on the shared spine.
+/// Per-message bridge: turn one unpacked TSP message into a dispatched Trust
+/// Task on the shared spine and return the framework response envelope bytes.
 ///
 /// `sender_vid` is the **proven** sender DID returned by TSP `unpack_bytes`
 /// (verification already happened inside the TSP stack), so this only needs
@@ -39,46 +45,39 @@ use crate::server::AppState;
 /// the Trust-Task envelope bytes (identical to the REST `POST
 /// /api/trust-tasks` body and the DIDComm message body).
 ///
-/// On an unknown / unauthorized sender (no ACL entry, or an expired grant)
-/// the message is logged and dropped — never silently authorized.
-///
-/// NOTE (V1, one-way): the dispatch outcome is logged but **not** returned
-/// to the sender over TSP. Response-over-TSP routes through the normal send
-/// path and is a documented follow-up; this loop is receive-only.
-pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str) {
-    match auth_from_did(sender_vid, &app_state.acl_ks).await {
-        Ok(auth) => {
-            let outcome =
-                crate::trust_tasks::dispatch_trust_task_core(app_state, &auth, payload).await;
-            // The outcome's HTTP `status` is the framework result code; on
-            // the one-way TSP path we only log it (the self-describing
-            // response document is dropped — see NOTE above).
-            info!(
-                sender = %sender_vid,
-                status = %outcome.status,
-                "TSP trust-task dispatched"
-            );
-        }
-        Err(e) => {
-            // Peer is not in this VTA's ACL (or grant expired). Drop the
-            // message; do not respond.
-            warn!(
-                sender = %sender_vid,
-                error = %e,
-                "TSP message from unauthorized sender — dropped"
-            );
-        }
-    }
+/// The returned `Vec<u8>` is the self-describing framework trust-task document
+/// (its own `type` + status `code`); the caller seals + routes it back to the
+/// sender over TSP. On an unknown / unauthorized sender (no ACL entry, or an
+/// expired grant) the reply is a Trust-Task `permission_denied` **envelope**,
+/// not a drop — the sender VID is cryptographically proven, so there is no
+/// enumeration exposure, and a conformant Trust-Task client only understands
+/// binding envelopes (identical to the DIDComm path).
+pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str) -> Vec<u8> {
+    let outcome = match auth_from_did(sender_vid, &app_state.acl_ks).await {
+        Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(app_state, &auth, payload).await,
+        Err(e) => crate::trust_tasks::reject_trust_task(
+            payload,
+            trust_tasks_rs::RejectReason::PermissionDenied {
+                reason: e.to_string(),
+            },
+        ),
+    };
+    info!(
+        sender = %sender_vid,
+        status = %outcome.status,
+        "TSP trust-task dispatched"
+    );
+    outcome.body
 }
 
-/// TSP handler registered on the VTA's DIDComm service via
-/// [`DIDCommService::start_with_tsp`](affinidi_messaging_didcomm_service::DIDCommService::start_with_tsp).
+/// TSP handler registered on the VTA's message service via
+/// [`AffinidiMessageService::start_with_tsp`](affinidi_messaging_didcomm_service::AffinidiMessageService::start_with_tsp).
 ///
 /// The service unpacks the TSP frame off the shared websocket (yielding the
 /// cleartext payload + the cryptographically-authenticated `sender_vid`) and
 /// invokes [`handle`](TspHandler::handle), which bridges to the shared spine via
-/// [`dispatch_one`]. Inbound is one-way: the dispatch outcome is logged, not
-/// returned over TSP (see the `NOTE` in [`dispatch_one`]).
+/// [`dispatch_one`] and returns the response envelope as a [`TspResponse`]. The
+/// service seals + routes that reply back to the sender over the same socket.
 pub struct VtaTspHandler {
     app_state: AppState,
 }
@@ -96,9 +95,9 @@ impl TspHandler for VtaTspHandler {
         _ctx: HandlerContext,
         payload: Vec<u8>,
         sender_vid: String,
-    ) -> Result<(), DIDCommServiceError> {
-        dispatch_one(&self.app_state, &payload, &sender_vid).await;
-        Ok(())
+    ) -> Result<Option<TspResponse>, DIDCommServiceError> {
+        let body = dispatch_one(&self.app_state, &payload, &sender_vid).await;
+        Ok(Some(TspResponse::new(body)))
     }
 }
 
@@ -108,24 +107,37 @@ mod tests {
     use crate::acl::{AclEntry, Role, store_acl_entry};
     use crate::test_support::build_signing_test_app_state;
 
-    /// `dispatch_one` with a sender that has no ACL entry must log + drop
-    /// without panicking (it returns `()`; the assertion is that it
-    /// completes). Exercises the unauthorized-sender path.
+    /// A sender with no ACL entry still gets a Trust-Task error **envelope**
+    /// back (not a silent drop) — the sender VID is proven, so we reply like the
+    /// DIDComm path. With this unparseable `{}` body the reject degrades to a
+    /// `malformedRequest` envelope (a well-formed-but-unauthorized request would
+    /// yield `permissionDenied`); either way the round-trip invariant under test
+    /// holds: a non-empty error envelope is produced for the service to route
+    /// back over TSP.
     #[tokio::test]
-    async fn dispatch_one_unknown_sender_drops_without_panic() {
+    async fn dispatch_one_unknown_sender_replies_with_error_envelope() {
         let (app_state, _dir) = build_signing_test_app_state().await;
 
-        // No ACL entry for this sender → auth_from_did errors → dispatch_one
-        // logs a warning and returns without dispatching or panicking.
-        dispatch_one(&app_state, b"{}", "did:key:zUnauthorizedTspSender").await;
+        let body = dispatch_one(&app_state, b"{}", "did:key:zUnauthorizedTspSender").await;
+
+        assert!(
+            !body.is_empty(),
+            "unauthorized sender must get a reply envelope"
+        );
+        let doc: serde_json::Value = serde_json::from_slice(&body).expect("reply is JSON");
+        assert!(
+            doc.get("type").is_some() && doc.get("payload").is_some(),
+            "reply should be a trust-task error envelope, got: {doc}"
+        );
     }
 
-    /// An authorized sender reaches `dispatch_trust_task_core`. The empty
-    /// body is rejected by the core's envelope parser, but the point under
-    /// test is that the bridge resolves the ACL grant and drives the spine
-    /// without panicking (one-way: the outcome is logged, not returned).
+    /// An authorized sender reaches `dispatch_trust_task_core` and the bridge
+    /// returns the framework response envelope bytes for the service to route
+    /// back over TSP. The empty `{}` body is rejected by the core's envelope
+    /// parser, but the point under test is that the ACL grant resolves and the
+    /// spine produces a non-empty reply document.
     #[tokio::test]
-    async fn dispatch_one_authorized_sender_reaches_spine() {
+    async fn dispatch_one_authorized_sender_returns_reply_envelope() {
         let (app_state, _dir) = build_signing_test_app_state().await;
 
         let did = "did:key:zAuthorizedTspSender";
@@ -133,6 +145,12 @@ mod tests {
             .await
             .unwrap();
 
-        dispatch_one(&app_state, b"{}", did).await;
+        let body = dispatch_one(&app_state, b"{}", did).await;
+
+        assert!(
+            !body.is_empty(),
+            "authorized sender must get a reply envelope"
+        );
+        serde_json::from_slice::<serde_json::Value>(&body).expect("reply is JSON");
     }
 }

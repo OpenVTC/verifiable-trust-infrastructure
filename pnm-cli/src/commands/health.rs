@@ -350,5 +350,90 @@ pub(crate) async fn run(
         println!("  {DIM}(no session){RESET}");
     }
 
+    // ── VTA TSP ────────────────────────────────────────────────────
+    // TSP is the highest-preference transport; probe it when the VTA's DID
+    // document advertises a `TSPTransport` service. That `#tsp` endpoint is the
+    // mediator DID (the VTA is a local account on it — the same mediator the
+    // DIDComm probe used). This runs *after* the DIDComm `TrustPingSession`
+    // above has shut down, so the client DID never holds two mediator sockets at
+    // once (the one-socket-per-DID rule — ADR 0005).
+    let tsp_mediator = caps.as_ref().and_then(|c| c.tsp.as_deref());
+    if let (Some(tsp_mediator), Some(info)) = (tsp_mediator, session.as_ref())
+        && let Some(vta_did) = info.vta_did.as_deref()
+    {
+        print_section("VTA TSP");
+        tsp_probe(
+            &info.client_did,
+            &info.private_key_multibase,
+            tsp_mediator,
+            vta_did,
+        )
+        .await;
+    }
+
     Ok(())
+}
+
+/// Drive the TSP connectivity probe: open the client's TSP websocket to the
+/// mediator, send a Trust Task to the VTA over TSP, and await the response —
+/// proving the full TSP round-trip. Compiled only with the `tsp` feature.
+#[cfg(feature = "tsp")]
+async fn tsp_probe(
+    client_did: &str,
+    private_key_multibase: &str,
+    mediator_did: &str,
+    vta_did: &str,
+) {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        vta_sdk::session::TspPingSession::new(client_did, private_key_multibase, mediator_did),
+    )
+    .await
+    {
+        Ok(Ok(mut session)) => {
+            match session
+                .ping(vta_did, std::time::Duration::from_secs(10))
+                .await
+            {
+                Ok(latency) => {
+                    println!(
+                        "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
+                        "Trust-ping"
+                    );
+                }
+                Err(e) => {
+                    println!(
+                        "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP ping failed: {e}",
+                        "Trust-ping"
+                    );
+                }
+            }
+            session.shutdown().await;
+        }
+        Ok(Err(e)) => {
+            println!(
+                "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP setup failed: {e}",
+                "Trust-ping"
+            );
+        }
+        Err(_) => {
+            println!(
+                "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP setup timed out",
+                "Trust-ping"
+            );
+        }
+    }
+}
+
+/// Without the `tsp` feature the probe machinery isn't compiled in; note that
+/// TSP is advertised but not exercised so the operator isn't misled into
+/// thinking the transport was tested.
+#[cfg(not(feature = "tsp"))]
+async fn tsp_probe(
+    _client_did: &str,
+    _private_key_multibase: &str,
+    _mediator_did: &str,
+    _vta_did: &str,
+) {
+    println!("  {DIM}advertised — rebuild pnm with `--features tsp` to probe over TSP{RESET}");
 }

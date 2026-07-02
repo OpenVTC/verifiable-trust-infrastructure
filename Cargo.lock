@@ -311,9 +311,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-didcomm-service"
-version = "0.3.12"
+version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3600eba2f7e8b1c7ebcaad81c356cee6ffaf8bd03770477fe346025137841ba9"
+checksum = "4d898f2f3b7ae39d3a623d9398c292760a7d5e6016c4fe8ccd413a28b218382d"
 dependencies = [
  "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
@@ -2452,7 +2452,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -3254,7 +3254,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -6692,7 +6692,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -6714,7 +6714,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -10016,7 +10016,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "vti-common",
  "x25519-dalek",
 ]
@@ -10049,7 +10049,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -10072,7 +10072,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -10107,13 +10107,14 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.18.15"
+version = "0.18.16"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
  "affinidi-sd-jwt",
@@ -10163,7 +10164,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.10.19"
+version = "0.10.20"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10239,7 +10240,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10261,7 +10262,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
 ]
 
 [[package]]
@@ -10333,7 +10334,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10381,7 +10382,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10408,7 +10409,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "vta-service",
  "vti-common",
 ]
@@ -10437,7 +10438,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.18.15",
+ "vta-sdk 0.18.16",
  "vti-common",
 ]
 

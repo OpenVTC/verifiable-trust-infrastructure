@@ -1368,6 +1368,143 @@ impl TrustPingSession {
     }
 }
 
+/// A client-side TSP connectivity probe — the TSP analogue of
+/// [`TrustPingSession`].
+///
+/// Opens the client's **single** TSP websocket to the shared mediator, sends a
+/// Trust Task to the VTA's VID over TSP (routed through the mediator), and
+/// awaits the VTA's response envelope — proving the whole TSP round-trip:
+/// client seal → mediator route → VTA unpack → auth → `dispatch_trust_task_core`
+/// → reply → route back → client receive. This is the receive-capable
+/// counterpart to the outbound-only `atm.tsp().send_*`; the VTA replies via the
+/// symmetric `TspHandler` (`affinidi-messaging-didcomm-service` ≥ 0.3.14).
+///
+/// TSP-only client: no DIDComm listener shares this DID's socket, so
+/// `connect_websocket` is safe here (the one-socket-per-DID rule only bites a
+/// *dual* node — ADR 0005). Callers running a DIDComm [`TrustPingSession`] on
+/// the same client DID must shut it down before opening this.
+#[cfg(feature = "tsp")]
+pub struct TspPingSession {
+    atm: affinidi_tdk::messaging::ATM,
+    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    ws: affinidi_tdk::messaging::TspWebSocket,
+    client_did: String,
+    mediator_did: String,
+}
+
+#[cfg(feature = "tsp")]
+impl TspPingSession {
+    /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
+    /// service endpoint — the same mediator the VTA is a local account on).
+    pub async fn new(
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use affinidi_tdk::common::TDKSharedState;
+        use affinidi_tdk::common::config::TDKConfig;
+        use affinidi_tdk::messaging::ATM;
+        use affinidi_tdk::messaging::config::ATMConfig;
+        use affinidi_tdk::messaging::profiles::ATMProfile;
+        use std::sync::Arc;
+
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
+        tdk.secrets_resolver().insert(secrets.signing).await;
+        tdk.secrets_resolver().insert(secrets.key_agreement).await;
+
+        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            client_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
+        .await?;
+        let profile = Arc::new(profile);
+
+        let ws = atm.tsp().connect_websocket(&profile).await?;
+
+        Ok(Self {
+            atm,
+            profile,
+            ws,
+            client_did: client_did.to_string(),
+            mediator_did: mediator_did.to_string(),
+        })
+    }
+
+    /// Send a Trust Task to `vta_did` over TSP and await the response envelope.
+    /// Returns latency in milliseconds.
+    ///
+    /// The probe sends an `auth/whoami/0.1` Trust Task (authenticated by the TSP
+    /// unpack's proven sender VID — no holder proof needed on TSP, like DIDComm
+    /// authcrypt). **Any** well-formed response envelope proves the round-trip,
+    /// so the latency is measured to the first frame that unpacks + parses as
+    /// JSON; the probe measures TSP liveness, not whoami success (the DIDComm
+    /// trust-ping is likewise a reachability check, not a semantic one).
+    pub async fn ping(
+        &mut self,
+        vta_did: &str,
+        timeout: std::time::Duration,
+    ) -> Result<u128, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+        use trust_tasks_rs::TrustTask;
+
+        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+        let type_uri = crate::trust_tasks::TASK_AUTH_WHOAMI_0_1
+            .parse()
+            .map_err(|e| format!("whoami type URI parse: {e}"))?;
+        let mut doc: TrustTask<serde_json::Value> =
+            TrustTask::new(id, type_uri, serde_json::json!({}));
+        doc.issuer = Some(self.client_did.clone());
+        doc.recipient = Some(vta_did.to_string());
+        let body = serde_json::to_vec(&doc)?;
+
+        let start = Instant::now();
+        // Route through our mediator to the VTA (a local account on it):
+        // inner sealed end-to-end to the VTA, outer sealed to the mediator.
+        self.atm
+            .tsp()
+            .send_routed(
+                &self.profile,
+                &[self.mediator_did.clone(), vta_did.to_string()],
+                &body,
+            )
+            .await?;
+
+        loop {
+            let remaining = timeout
+                .checked_sub(start.elapsed())
+                .ok_or("TSP ping timed out waiting for reply")?;
+            let frame = match tokio::time::timeout(remaining, self.ws.recv()).await {
+                Ok(Ok(Some(bytes))) => bytes,
+                Ok(Ok(None)) => return Err("TSP websocket closed before reply".into()),
+                Ok(Err(e)) => return Err(Box::new(e)),
+                Err(_) => return Err("TSP ping timed out waiting for reply".into()),
+            };
+            // The VTA's reply is sealed to us; a frame we can unpack and parse
+            // as a JSON trust-task envelope is the pong. (Our ephemeral-ish
+            // client DID has no other TSP traffic, so the first such frame is
+            // our reply.) Frames that don't unpack are skipped.
+            if let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
+                && serde_json::from_slice::<serde_json::Value>(&payload).is_ok()
+            {
+                return Ok(start.elapsed().as_millis());
+            }
+        }
+    }
+
+    /// Close the TSP websocket and shut down the ATM connection.
+    pub async fn shutdown(self) {
+        let _ = self.ws.close().await;
+        self.atm.graceful_shutdown().await;
+    }
+}
+
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
