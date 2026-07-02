@@ -908,10 +908,20 @@ pub async fn run(
                         builder.build().ok()
                     };
 
-                    // When TSP is advertised, the listener multiplexes TSP +
-                    // DIDComm on its single mediator websocket (one socket per
-                    // DID — a second would be evicted as `duplicate-channel`).
-                    let tsp_enabled = config.services.tsp;
+                    // TSP receive-capability is a **compile-time** property, not
+                    // a runtime toggle: a `tsp`-compiled VTA ALWAYS multiplexes
+                    // TSP + DIDComm on its single mediator websocket (one socket
+                    // per DID — a second would be evicted as
+                    // `duplicate-channel`). Gating the listener mode on
+                    // `config.services.tsp` used to leave a split-brain — a VTA
+                    // that advertised `#tsp` (via `services tsp enable`) but
+                    // hadn't rebooted with `[services] tsp = true` ran a
+                    // DIDComm-only receive path that couldn't unpack inbound TSP
+                    // frames, poison-looping them every ~30s. `config.services.tsp`
+                    // now governs **advertisement** only; receive is always on
+                    // when compiled with `tsp`. Build without the `tsp` feature
+                    // to exclude the TSP receive path entirely.
+                    let listen_tsp = cfg!(feature = "tsp");
 
                     let service_config = DIDCommServiceConfig {
                         listeners: vec![ListenerConfig {
@@ -924,7 +934,7 @@ pub async fn run(
                                 },
                             },
                             tdk_config: listener_tdk_config,
-                            protocols: if tsp_enabled {
+                            protocols: if listen_tsp {
                                 Protocols::BOTH
                             } else {
                                 Protocols::DIDCOMM_ONLY
@@ -942,24 +952,17 @@ pub async fn run(
                         AppError::Internal(format!("failed to build DIDComm handler: {e}"))
                     })?;
 
-                    // With `tsp` compiled and advertised, register the TSP
-                    // handler so inbound TSP frames off the shared socket reach
-                    // the trust-task spine; otherwise the plain DIDComm start.
+                    // With `tsp` compiled, always register the TSP handler so
+                    // inbound TSP frames off the shared socket reach the
+                    // trust-task spine — independent of whether TSP is currently
+                    // advertised. Without the feature, the plain DIDComm start.
                     #[cfg(feature = "tsp")]
-                    let service_start = async {
-                        if tsp_enabled {
-                            DIDCommService::start_with_tsp(
-                                service_config,
-                                handler,
-                                messaging::tsp_inbound::VtaTspHandler::new(app_state.clone()),
-                                didcomm_shutdown.clone(),
-                            )
-                            .await
-                        } else {
-                            DIDCommService::start(service_config, handler, didcomm_shutdown.clone())
-                                .await
-                        }
-                    };
+                    let service_start = DIDCommService::start_with_tsp(
+                        service_config,
+                        handler,
+                        messaging::tsp_inbound::VtaTspHandler::new(app_state.clone()),
+                        didcomm_shutdown.clone(),
+                    );
                     #[cfg(not(feature = "tsp"))]
                     let service_start =
                         DIDCommService::start(service_config, handler, didcomm_shutdown.clone());
