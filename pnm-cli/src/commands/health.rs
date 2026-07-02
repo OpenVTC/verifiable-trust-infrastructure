@@ -60,37 +60,67 @@ pub(crate) async fn run(
         }
     }
 
-    // What the VTA's DID document actually advertises. Source of truth
-    // for the "Mode" label below — and for whether to show URL / probe
-    // Service / attempt REST authentication. An explicit `--url`
-    // override (or `[vta] url = "..."` in pnm config) is the only thing
-    // that can light those up when the DID document doesn't advertise
-    // REST itself; falling back to a URL synthesized from the DID
-    // string would point at a non-existent endpoint for DIDComm-only
-    // VTAs.
-    let advertised = match session.as_ref().and_then(|s| s.vta_did.as_deref()) {
-        Some(vta_did) => vta_sdk::session::resolve_vta_endpoint(vta_did).await.ok(),
-        None => None,
+    // What the VTA's DID document actually advertises — the source of truth for
+    // the "Mode" label below, and for whether to show URL / probe Service /
+    // attempt REST authentication. Parse advertised transports by service
+    // **type** (TSPTransport / DIDCommMessaging / VTARest) via the SDK's
+    // canonical matcher — never by the `#id` fragment. This is what makes a
+    // TSP-enabled VTA show as "TSP + DIDComm" rather than the old TSP-blind
+    // "DIDComm-only" (the previous `resolve_vta_endpoint` had no TSP variant and
+    // matched REST by `#vta-rest` id). An explicit `--url` override (or
+    // `[vta] url = "..."` in pnm config) is still the only thing that can light
+    // up the REST rows when the DID document doesn't advertise REST itself.
+    // Uses the shared cached resolver rather than spinning up its own.
+    let caps = match (
+        session.as_ref().and_then(|s| s.vta_did.as_deref()),
+        did_resolver.as_ref(),
+    ) {
+        (Some(vta_did), Some(resolver)) => resolver
+            .resolve(vta_did)
+            .await
+            .ok()
+            .and_then(|r| serde_json::to_value(&r.doc).ok())
+            .map(|doc| vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)),
+        _ => None,
     };
 
-    let (mode_label, advertised_rest_url, advertises_didcomm) = match &advertised {
-        Some(vta_sdk::session::VtaEndpoint::DIDComm {
-            rest_url: Some(u), ..
-        }) => ("DIDComm + REST", Some(u.clone()), true),
-        Some(vta_sdk::session::VtaEndpoint::DIDComm { rest_url: None, .. }) => {
-            ("DIDComm-only", None, true)
+    let has_vta_did = session
+        .as_ref()
+        .and_then(|s| s.vta_did.as_deref())
+        .is_some();
+
+    let (mode_label, advertised_rest_url, advertises_messaging) = match &caps {
+        Some(caps) => {
+            use vta_sdk::protocol::matching::Protocol;
+            let label = if caps.advertised().is_empty() {
+                "unknown (no advertised services)".to_string()
+            } else {
+                caps.advertised()
+                    .iter()
+                    .map(|p| match p {
+                        Protocol::Tsp => "TSP",
+                        Protocol::Didcomm => "DIDComm",
+                        Protocol::Rest => "REST",
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            };
+            let rest_url = caps
+                .rest
+                .as_deref()
+                .map(|u| u.trim_matches('"').trim_end_matches('/').to_string());
+            (
+                label,
+                rest_url,
+                caps.tsp.is_some() || caps.didcomm.is_some(),
+            )
         }
-        Some(vta_sdk::session::VtaEndpoint::Rest { url }) => {
-            ("REST-only", Some(url.clone()), false)
-        }
-        None if session
-            .as_ref()
-            .and_then(|s| s.vta_did.as_deref())
-            .is_some() =>
-        {
-            ("unknown (could not enumerate services)", None, false)
-        }
-        None => ("(pending DID setup)", None, false),
+        None if has_vta_did => (
+            "unknown (could not enumerate services)".to_string(),
+            None,
+            false,
+        ),
+        None => ("(pending DID setup)".to_string(), None, false),
     };
     println!("  {CYAN}{:<13}{RESET} {mode_label}", "Mode");
 
@@ -162,8 +192,8 @@ pub(crate) async fn run(
         } else {
             println!("  {DIM}Not authenticated{RESET}");
         }
-    } else if advertises_didcomm {
-        println!("  {DIM}DIDComm-only VTA — no REST auth{RESET}");
+    } else if advertises_messaging {
+        println!("  {DIM}Messaging-only VTA (TSP/DIDComm) — no REST auth{RESET}");
     } else {
         println!("  {DIM}No transport advertised{RESET}");
     }
