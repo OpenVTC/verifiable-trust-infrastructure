@@ -279,10 +279,10 @@ pub(crate) async fn run(
                 .await
                 {
                     Ok(Ok(session)) => {
-                        // Ping mediator
+                        // Ping mediator (steady-state: warm-up + measured)
                         match tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            session.ping(None),
+                            std::time::Duration::from_secs(20),
+                            steady_ping(&session, None),
                         )
                         .await
                         {
@@ -297,12 +297,12 @@ pub(crate) async fn run(
                             }
                         }
 
-                        // Ping VTA through the same session
+                        // Ping VTA through the same session (steady-state)
                         print_section("VTA DIDComm");
 
                         match tokio::time::timeout(
-                            std::time::Duration::from_secs(15),
-                            session.ping(Some(vta_did)),
+                            std::time::Duration::from_secs(30),
+                            steady_ping(&session, Some(vta_did)),
                         )
                         .await
                         {
@@ -374,6 +374,20 @@ pub(crate) async fn run(
     Ok(())
 }
 
+/// Ping `target` twice through `session`, discarding the first and returning the
+/// second — a **steady-state** latency. The first ping pays one-time costs the
+/// steady state shouldn't be blamed for (resolving the target's DID + routing on
+/// first send), which is why a cold VTA ping reads far higher than the
+/// already-connected mediator ping. If the warm-up fails, its error is returned
+/// (the endpoint is down; measuring twice adds nothing).
+async fn steady_ping(
+    session: &vta_sdk::session::TrustPingSession,
+    target: Option<&str>,
+) -> Result<u128, Box<dyn std::error::Error>> {
+    session.ping(target).await?; // warm-up (propagates a genuine failure)
+    session.ping(target).await // measured
+}
+
 /// Drive the TSP connectivity probe: open the client's TSP websocket to the
 /// mediator, send a Trust Task to the VTA over TSP, and await the response —
 /// proving the full TSP round-trip. Compiled only with the `tsp` feature.
@@ -391,10 +405,15 @@ async fn tsp_probe(
     .await
     {
         Ok(Ok(mut session)) => {
-            match session
-                .ping(vta_did, std::time::Duration::from_secs(10))
-                .await
-            {
+            // Warm-up ping (pays the first-send VID/route resolution), then a
+            // measured one — a steady-state latency comparable to the DIDComm
+            // probe. A warm-up failure is reported straight away.
+            let ping_timeout = std::time::Duration::from_secs(10);
+            let measured = match session.ping(vta_did, ping_timeout).await {
+                Ok(_) => session.ping(vta_did, ping_timeout).await,
+                Err(e) => Err(e),
+            };
+            match measured {
                 Ok(latency) => {
                     println!(
                         "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
