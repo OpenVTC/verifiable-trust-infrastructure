@@ -122,6 +122,11 @@ pub struct ProvisionIntegrationDeps {
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
     pub didcomm_bridge: Arc<DIDCommBridge>,
+    /// Per-server webvh auth-cache mutex registry, shared with the rest
+    /// of the process via `AppState`. Needed so a provisioned
+    /// server-managed DID authenticates its publish to the hosting
+    /// daemon (challenge → VTA-signed JWS → Bearer token).
+    pub webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks,
 }
 
 impl From<&AppState> for ProvisionIntegrationDeps {
@@ -139,6 +144,7 @@ impl From<&AppState> for ProvisionIntegrationDeps {
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
             didcomm_bridge: state.didcomm_bridge.clone(),
+            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }
@@ -417,17 +423,19 @@ pub async fn provision_integration(
             .as_ref()
             .ok_or_else(|| AppError::Internal("DID resolver not initialized".into()))?;
         // `state` is a `ProvisionIntegrationDeps`, not an `AppState`, so build
-        // the create-deps by hand (it carries all nine fields).
+        // the create-deps by hand (it carries all the fields).
         let create_deps = super::did_webvh::CreateDidWebvhDeps {
             keys_ks: &state.keys_ks,
             imported_ks: &state.imported_ks,
             contexts_ks: &state.contexts_ks,
             webvh_ks: &state.webvh_ks,
             did_templates_ks: &state.did_templates_ks,
+            audit_ks: &state.audit_ks,
             seed_store: &*state.seed_store,
             config: &config,
             did_resolver,
             didcomm_bridge: &state.didcomm_bridge,
+            auth_locks: &state.webvh_auth_locks,
         };
         let create_result = super::did_webvh::create_did_webvh(
             &create_deps,

@@ -130,6 +130,7 @@ impl From<&VtaState> for crate::operations::provision_integration::ProvisionInte
             config: state.config.clone(),
             did_resolver: state.did_resolver.clone(),
             didcomm_bridge: state.didcomm_bridge.clone(),
+            webvh_auth_locks: state.webvh_auth_locks.clone(),
         }
     }
 }

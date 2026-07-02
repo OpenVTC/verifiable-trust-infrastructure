@@ -562,6 +562,7 @@ pub async fn apply_inputs(
     let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
@@ -685,6 +686,7 @@ pub async fn apply_inputs(
                 &imported_ks,
                 &contexts_ks,
                 &webvh_ks,
+                &audit_ks,
                 &did_templates_ks,
                 &*wizard_seed_store,
                 &wizard_config,
@@ -773,6 +775,7 @@ pub async fn apply_inputs(
                 &imported_ks,
                 &contexts_ks,
                 &webvh_ks,
+                &audit_ks,
                 &did_templates_ks,
                 &*wizard_seed_store,
                 &wizard_config,
@@ -1373,6 +1376,7 @@ async fn create_simple_webvh_did(
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     config: &AppConfig,
@@ -1413,16 +1417,23 @@ async fn create_simple_webvh_did(
         is_vta_identity,
     };
 
+    // Setup wizard: no shared AppState, so create a local per-server
+    // auth-lock registry. This path is serverless (mints from a URL),
+    // so it won't authenticate to a hosting server, but the deps bundle
+    // requires the field.
+    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks,
         imported_ks,
         contexts_ks,
         webvh_ks,
         did_templates_ks,
+        audit_ks,
         seed_store,
         config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
+        auth_locks: &auth_locks,
     };
     let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "setup")
         .await

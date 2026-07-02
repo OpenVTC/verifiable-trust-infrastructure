@@ -150,6 +150,7 @@ pub async fn run_create_did(
     let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
     let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
@@ -190,16 +191,22 @@ pub async fn run_create_did(
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let no_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
+    // Offline CLI: no shared AppState, so create a local per-server
+    // auth-lock registry for any daemon-REST authentication a publish
+    // may need.
+    let auth_locks = operations::did_webvh::WebvhAuthLocks::new();
     let deps = operations::did_webvh::CreateDidWebvhDeps {
         keys_ks: &keys_ks,
         imported_ks: &imported_ks,
         contexts_ks: &contexts_ks,
         webvh_ks: &webvh_ks,
         did_templates_ks: &did_templates_ks,
+        audit_ks: &audit_ks,
         seed_store: &*seed_store,
         config: &config,
         did_resolver: &did_resolver,
         didcomm_bridge: &no_bridge,
+        auth_locks: &auth_locks,
     };
     let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "cli").await?;
     store.persist().await?;

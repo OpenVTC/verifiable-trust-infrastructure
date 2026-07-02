@@ -677,16 +677,21 @@ mod pre_rotation_e2e_tests {
         context_id: &str,
         pre_rotation_count: u32,
     ) -> (String, String) {
+        // Serverless create helper — no server publish, so a fresh local
+        // auth-lock registry suffices.
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
         let deps = CreateDidWebvhDeps {
             keys_ks: &ts.keys_ks,
             imported_ks: &ts.imported_ks,
             contexts_ks: &ts.contexts_ks,
             webvh_ks: &ts.webvh_ks,
             did_templates_ks: &ts.did_templates_ks,
+            audit_ks: &ts.audit_ks,
             seed_store,
             config: cfg,
             did_resolver: resolver,
             didcomm_bridge: bridge,
+            auth_locks: &auth_locks,
         };
         let result = create_did_webvh(
             &deps,

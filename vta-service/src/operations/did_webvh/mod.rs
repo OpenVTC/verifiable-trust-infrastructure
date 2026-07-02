@@ -165,10 +165,18 @@ pub struct CreateDidWebvhDeps<'a> {
     pub contexts_ks: &'a KeyspaceHandle,
     pub webvh_ks: &'a KeyspaceHandle,
     pub did_templates_ks: &'a KeyspaceHandle,
+    /// Audit keyspace — needed to load the VTA's own signing identity
+    /// (`load_vta_webvh_signing_identity`) when authenticating a
+    /// server publish. Only touched on the non-serverless path.
+    pub audit_ks: &'a KeyspaceHandle,
     pub seed_store: &'a dyn SeedStore,
     pub config: &'a AppConfig,
     pub did_resolver: &'a DIDCacheClient,
     pub didcomm_bridge: &'a Arc<DIDCommBridge>,
+    /// Per-server auth-cache mutex registry — serialises token
+    /// refresh/reauth against a hosting daemon. Only used when
+    /// publishing to a registered server (not serverless / did:key).
+    pub auth_locks: &'a WebvhAuthLocks,
 }
 
 impl<'a> CreateDidWebvhDeps<'a> {
@@ -187,10 +195,12 @@ impl<'a> CreateDidWebvhDeps<'a> {
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
             did_templates_ks: &s.did_templates_ks,
+            audit_ks: &s.audit_ks,
             seed_store: &*s.seed_store,
             config,
             did_resolver,
             didcomm_bridge: &s.didcomm_bridge,
+            auth_locks: &s.webvh_auth_locks,
         }
     }
 
@@ -208,10 +218,12 @@ impl<'a> CreateDidWebvhDeps<'a> {
             contexts_ks: &s.contexts_ks,
             webvh_ks: &s.webvh_ks,
             did_templates_ks: &s.did_templates_ks,
+            audit_ks: &s.audit_ks,
             seed_store: &*s.seed_store,
             config,
             did_resolver,
             didcomm_bridge: &s.didcomm_bridge,
+            auth_locks: &s.webvh_auth_locks,
         }
     }
 }
@@ -458,6 +470,61 @@ fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
         })
 }
 
+/// Build an *authenticated* hosting-server transport for a create-DID
+/// publish/request-uri call.
+///
+/// This is the create-path analogue of the `auth_cache::*_on_server`
+/// helpers (which take a [`WebvhDeps`], not a [`CreateDidWebvhDeps`]).
+/// It loads the VTA's own signing identity via `config.vta_did`,
+/// constructs an [`auth_cache::AuthContext`], and hands it to
+/// [`WebvhTransport::from_server_authenticated`], which applies a fresh
+/// Bearer token for REST transports and no-ops for DIDComm (authcrypt
+/// authenticates at the envelope layer).
+///
+/// The returned transport does not borrow the (locally-owned) signing
+/// identity — `from_server_authenticated` consumes the `AuthContext`
+/// synchronously while minting/refreshing the token, so the identity can
+/// be dropped as soon as this helper returns.
+///
+/// Returns a clear [`AppError`] when `config.vta_did` is `None`: a server
+/// publish requires the VTA to authenticate to the hosting daemon with
+/// its own DID, and there is no identity to sign the auth challenge with.
+#[allow(clippy::too_many_arguments)]
+async fn authenticated_server_transport<'a>(
+    keys_ks: &KeyspaceHandle,
+    imported_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    audit_ks: &KeyspaceHandle,
+    webvh_ks: &KeyspaceHandle,
+    did_resolver: &DIDCacheClient,
+    didcomm_bridge: &'a Arc<DIDCommBridge>,
+    auth_locks: &WebvhAuthLocks,
+    vta_did: Option<&str>,
+    server: &WebvhServerRecord,
+) -> Result<WebvhTransport<'a>, AppError> {
+    let vta_did = vta_did.ok_or_else(|| {
+        AppError::Validation(
+            "vta_did is not configured; the VTA needs its own DID to authenticate to a webvh \
+             hosting server (set `vta_did` in config / VTA_DID)"
+                .into(),
+        )
+    })?;
+    let identity = auth_cache::load_vta_webvh_signing_identity(
+        keys_ks,
+        imported_ks,
+        seed_store,
+        audit_ks,
+        vta_did,
+    )
+    .await?;
+    let auth_ctx = auth_cache::AuthContext {
+        webvh_ks,
+        identity: &identity,
+        locks: auth_locks,
+    };
+    WebvhTransport::from_server_authenticated(server, did_resolver, didcomm_bridge, &auth_ctx).await
+}
+
 pub async fn create_did_webvh(
     deps: &CreateDidWebvhDeps<'_>,
     auth: &AuthClaims,
@@ -473,10 +540,12 @@ pub async fn create_did_webvh(
         contexts_ks,
         webvh_ks,
         did_templates_ks,
+        audit_ks,
         seed_store,
         config,
         did_resolver,
         didcomm_bridge,
+        auth_locks,
     } = *deps;
 
     auth.require_admin()?;
@@ -554,8 +623,19 @@ pub async fn create_did_webvh(
                 .ok_or_else(|| {
                     AppError::NotFound(format!("webvh server not found: {server_id}"))
                 })?;
-            let transport =
-                WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+            let transport = authenticated_server_transport(
+                keys_ks,
+                imported_ks,
+                seed_store,
+                audit_ks,
+                webvh_ks,
+                did_resolver,
+                didcomm_bridge,
+                auth_locks,
+                config.vta_did.as_deref(),
+                &server,
+            )
+            .await?;
             // Final mode has no mnemonic from a server request — use the SCID as identifier
             // Background publish (final-mode rotation push): no
             // domain override; the remote uses the slot's recorded
@@ -773,7 +853,19 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+        let transport = authenticated_server_transport(
+            keys_ks,
+            imported_ks,
+            seed_store,
+            audit_ks,
+            webvh_ks,
+            did_resolver,
+            didcomm_bridge,
+            auth_locks,
+            config.vta_did.as_deref(),
+            &server,
+        )
+        .await?;
         // Domain selection: `params.domain` is the explicit caller-
         // supplied override (pnm CLI `--domain`). When omitted, the
         // remote resolves via caller's ACL default → system default.
@@ -1131,7 +1223,19 @@ pub async fn create_did_webvh(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
-        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
+        let transport = authenticated_server_transport(
+            keys_ks,
+            imported_ks,
+            seed_store,
+            audit_ks,
+            webvh_ks,
+            did_resolver,
+            didcomm_bridge,
+            auth_locks,
+            config.vta_did.as_deref(),
+            &server,
+        )
+        .await?;
         // Reuse the same `params.domain` selection the request_uri
         // call above used. The remote already knows the slot's domain
         // from the reservation, so this is a redundant override —

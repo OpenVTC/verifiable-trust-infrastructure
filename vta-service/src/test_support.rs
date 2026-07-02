@@ -158,6 +158,7 @@ pub fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
         config: Arc::new(RwLock::new(test_app_config(ts.data_dir.clone()))),
         did_resolver: None,
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     }
 }
 
@@ -379,6 +380,7 @@ pub async fn bootstrap_test_vta(ts: &TestStore) -> (String, ProvisionIntegration
         config: Arc::new(RwLock::new(config)),
         did_resolver: Some(resolver),
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
     };
     (vta_did, deps)
 }
@@ -981,6 +983,23 @@ impl StubWebvhHost {
         use axum::routing::{post, put};
         use serde_json::json;
 
+        /// Reject a request that arrives without an `Authorization: Bearer`
+        /// header. The real hosting daemon returns 401 "missing or invalid
+        /// Authorization header" here; the stub mirrors that so a test can
+        /// prove the VTA's publish path actually authenticates (regression
+        /// guard for the `from_server` → `from_server_authenticated` fix).
+        fn require_bearer(headers: &axum::http::HeaderMap) -> Result<(), axum::http::StatusCode> {
+            let ok = headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("Bearer ") && v.len() > "Bearer ".len());
+            if ok {
+                Ok(())
+            } else {
+                Err(axum::http::StatusCode::UNAUTHORIZED)
+            }
+        }
+
         async fn tokens() -> axum::Json<serde_json::Value> {
             axum::Json(json!({
                 "sessionId": "stub-session",
@@ -1007,28 +1026,39 @@ impl StubWebvhHost {
             .route("/api/auth/refresh", post(tokens))
             .route(
                 "/api/dids",
-                post(|| async {
-                    axum::Json(
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(
                         json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
-                    )
+                    ))
                 }),
             )
             .route(
                 "/api/dids/register",
-                post(|| async {
-                    axum::Json(
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(
                         json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
-                    )
+                    ))
                 }),
             )
             .route(
                 "/api/dids/check",
-                post(|| async { axum::Json(json!({ "available": true })) }),
+                post(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::Json(json!({ "available": true })))
+                }),
             )
             .route(
                 "/api/dids/{mnemonic}",
-                put(|| async { axum::http::StatusCode::OK })
-                    .delete(|| async { axum::http::StatusCode::OK }),
+                put(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                })
+                .delete(|headers: axum::http::HeaderMap| async move {
+                    require_bearer(&headers)?;
+                    Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                }),
             );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
