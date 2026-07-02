@@ -1574,6 +1574,46 @@ mod tests {
     use vti_common::acl::Role;
     use vti_common::config::StoreConfig as VtiStoreConfig;
 
+    /// `backdated_version_time` must yield timestamps that are (a) in
+    /// the past (did:webvh rejects future `versionTime`) and (b)
+    /// strictly increasing by entry index at *second* granularity, so
+    /// a genesis-create and a follow-on update minted in the same
+    /// wall-clock second don't collide. This is the helper behind the
+    /// `services didcomm enable`-right-after-`setup` fix (PR #600).
+    #[test]
+    fn backdated_version_time_is_past_and_strictly_increasing() {
+        let now = chrono::Utc::now();
+
+        let t0 = backdated_version_time(0);
+        let t1 = backdated_version_time(1);
+        let t2 = backdated_version_time(2);
+
+        // Backdated — comfortably in the past (roughly a day).
+        assert!(
+            t0 < now.fixed_offset(),
+            "genesis timestamp must be in the past"
+        );
+        assert!(
+            t2 < now.fixed_offset(),
+            "later timestamps must still be in the past"
+        );
+
+        // Strictly increasing by index …
+        assert!(t0 < t1, "entry 1 must be strictly after entry 0");
+        assert!(t1 < t2, "entry 2 must be strictly after entry 1");
+
+        // … and distinct even after did:webvh's second-granularity
+        // truncation — index spacing (a minute apart) guarantees a
+        // whole-second gap, which is what the same-second collision
+        // needed. Compare truncated-to-second Unix timestamps.
+        assert_ne!(
+            t0.timestamp(),
+            t1.timestamp(),
+            "entries must differ at second precision"
+        );
+        assert_ne!(t1.timestamp(), t2.timestamp());
+    }
+
     /// Pin the post-fetch context-scoping invariant that `delete_did_webvh`
     /// enforces. A context-A admin must not be able to delete a DID record
     /// owned by context B, even when the record exists and the caller has

@@ -1546,4 +1546,104 @@ mod pre_rotation_e2e_tests {
         assert!(result.new_version_id.starts_with("2-"));
         assert_chain_validates(&ts, &did).await;
     }
+
+    /// Regression test for the same-second `versionTime` collision
+    /// (PR #600, `backdated_version_time`).
+    ///
+    /// The VTA creates its `did:webvh` at `vta setup` and updates it
+    /// moments later — e.g. `services didcomm enable` patching in the
+    /// DIDComm mediator service. `did:webvh` serialises `versionTime`
+    /// at *second* granularity and requires each entry to be strictly
+    /// later than the previous, so two entries minted in the same
+    /// wall-clock second serialise identically and make the DID
+    /// unresolvable ("versionTime must be greater than previous") —
+    /// surfacing only when a client fetches `did.jsonl`. The
+    /// user-visible symptom was that `services didcomm enable` reported
+    /// success and wrote `config.toml`, yet the resolved DID document
+    /// still advertised REST-only at version 1.
+    ///
+    /// Every other test in this module dodges the collision by sleeping
+    /// past the second boundary ([`VERSION_TIME_GAP`]); operators
+    /// running `setup` then `enable` back-to-back had no such luxury.
+    /// This test deliberately drives create → didcomm-enable **with no
+    /// sleep in between** and asserts the chain still validates and
+    /// advertises DIDCommMessaging at version 2 — i.e.
+    /// `backdated_version_time` keeps the log strictly increasing
+    /// regardless of how fast the entries are minted.
+    #[tokio::test]
+    async fn create_then_didcomm_enable_back_to_back_resolves() {
+        use crate::operations::protocol::document::{
+            current_didcomm_service, current_document_from_log, with_didcomm_service,
+        };
+
+        let (ts, seed_store) = setup("ctx-vtime").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        // Genesis entry — mirrors `vta setup`'s `create_webvh` (no
+        // pre-rotation, the plain serverless case from the bug report).
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-vtime",
+            0,
+        )
+        .await;
+
+        // NO `sleep(VERSION_TIME_GAP)` here — reproducing the operator's
+        // back-to-back `setup` → `services didcomm enable`. Read the
+        // genesis document and patch in the DIDComm mediator service
+        // exactly as `enable_didcomm` does, via the shared patcher.
+        let genesis_log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("genesis log present");
+        let genesis_doc = current_document_from_log(&genesis_log).expect("read genesis doc");
+        let mediator_did = "did:web:mediator.example.com";
+        let patched =
+            with_didcomm_service(genesis_doc, mediator_did).expect("patch didcomm service");
+
+        let result = update_did_webvh(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(patched),
+                ..Default::default()
+            },
+            Some(did.as_str()),
+            "test",
+        )
+        .await
+        .expect("didcomm-enable update immediately after create must succeed");
+        assert!(
+            result.new_version_id.starts_with("2-"),
+            "expected version 2, got {}",
+            result.new_version_id
+        );
+
+        // The load-bearing assertion: re-parsing the persisted log runs
+        // didwebvh-rs' chain validation, including the strict
+        // `versionTime` monotonicity check that collided pre-#600.
+        assert_chain_validates(&ts, &did).await;
+
+        // And the resolved document actually advertises DIDCommMessaging
+        // — the whole point of `services didcomm enable`.
+        let final_log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let final_doc = current_document_from_log(&final_log).expect("read final doc");
+        let svc = current_didcomm_service(&final_doc)
+            .expect("DIDCommMessaging service advertised after enable");
+        assert_eq!(svc.mediator_did, mediator_did);
+    }
 }
