@@ -73,7 +73,11 @@ fn enforce_transport_security(parsed: &Url, raw: &str) -> Result<(), AppError> {
     )))
 }
 
+/// Wire shape of `POST /api/dids` (and `/api/dids/register`) responses.
+/// The daemon (`did-hosting-common::RequestUriResponse`) serializes camelCase,
+/// so `did_url` arrives as `didUrl` — match it or the body fails to decode.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RequestUriResponse {
     pub did_url: String,
     pub mnemonic: String,
@@ -1175,6 +1179,20 @@ mod tests {
             serde_json::from_str(body).expect("flat daemon challenge body must deserialize");
         assert_eq!(parsed.challenge, "abc");
         assert_eq!(parsed.session_id, "sess-1");
+    }
+
+    #[test]
+    fn request_uri_response_deserializes_camelcase_daemon_body() {
+        // The daemon's `POST /api/dids` (+ `/api/dids/register`) response
+        // (did-hosting-common::RequestUriResponse) is camelCase, so `did_url`
+        // arrives as `didUrl`. Regression guard for the wire-format bug where
+        // the mirror lacked `#[serde(rename_all = "camelCase")]` and the body
+        // failed to decode on the publish path.
+        let body = r#"{"mnemonic":"apple-banana-cherry","didUrl":"did:webvh:Qm...:host%3A8534"}"#;
+        let parsed: RequestUriResponse =
+            serde_json::from_str(body).expect("camelCase daemon request-uri body must deserialize");
+        assert_eq!(parsed.mnemonic, "apple-banana-cherry");
+        assert_eq!(parsed.did_url, "did:webvh:Qm...:host%3A8534");
     }
 
     #[test]
