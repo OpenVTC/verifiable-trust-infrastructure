@@ -84,12 +84,15 @@ pub struct CheckPathResponse {
     pub available: bool,
 }
 
-/// Tokens returned by the daemon's `/api/auth/` and `/api/auth/refresh`
-/// endpoints. Field names match the daemon's
-/// `affinidi_webvh_common::AuthenticateData` / `RefreshData` (camelCase
-/// on the wire). The daemon **always rotates the refresh token** on
-/// use, so a `TokenData` returned from `refresh()` carries a
-/// different `refresh_token` from the one supplied as input —
+/// The VTA's **internal** token representation — the value
+/// `authenticate()` / `refresh()` return and `auth_cache::persist_tokens`
+/// writes to `WebvhServerAuthRecord`. Not a wire type: it is built from
+/// [`TokenResponseWire`] via [`TokenResponseWire::into_token_data`], which
+/// converts the daemon's **relative** `expiresIn` / `refreshExpiresIn`
+/// (seconds-from-now) into the **absolute** Unix-second expiries this
+/// type (and the cached record) store. The daemon **always rotates the
+/// refresh token** on use, so a `TokenData` returned from `refresh()`
+/// carries a different `refresh_token` from the one supplied as input —
 /// callers must persist the new value.
 ///
 /// Hygiene:
@@ -98,8 +101,7 @@ pub struct CheckPathResponse {
 /// - `Debug` is manually implemented to redact the token strings —
 ///   accidental `tracing::error!(?tokens, ...)` then logs
 ///   `<redacted>` instead of the secret.
-#[derive(Clone, Deserialize, zeroize::ZeroizeOnDrop)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, zeroize::ZeroizeOnDrop)]
 pub struct TokenData {
     pub access_token: String,
     pub access_expires_at: u64,
@@ -118,33 +120,81 @@ impl std::fmt::Debug for TokenData {
     }
 }
 
-/// Wire shape of `/api/auth/` and `/api/auth/refresh` responses.
-/// Wrapped in `{session_id, data}` per the daemon's
-/// `AuthenticateResponse` / `RefreshResponse` types.
+/// Wire shape of `/api/auth/` and `/api/auth/refresh` responses. The
+/// daemon emits a **flat** body — `{ session, tokens }` — matching its
+/// `did_hosting_common::AuthenticateResponse` / `RefreshResponse`
+/// (both `spec/auth/authenticate/0.1#response`, the `{ session, tokens }`
+/// canonical shape). `session` is accepted for shape-completeness but the
+/// client doesn't need it. `tokens` carries **relative** OAuth2-style
+/// expiries (`expiresIn` seconds from issuance), converted to absolute in
+/// [`Self::into_token_data`].
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct TokenResponseWire {
     #[allow(dead_code)] // accepted for shape match; client doesn't need the value
-    session_id: String,
-    data: TokenData,
+    session: serde::de::IgnoredAny,
+    tokens: TokenBundleWire,
 }
 
-/// Wire shape of `/api/auth/challenge` response. Daemon emits
-/// camelCase (`sessionId`); we accept both forms via `alias` to
-/// stay compatible with any deployment that hasn't redeployed yet
-/// (the daemon's older builds emitted snake_case before the
-/// `#[serde(rename_all = "camelCase")]` annotation was added).
+/// Wire shape of the daemon's `TokenBundle` (`spec/auth/_shared/0.1/
+/// tokens.schema.json`, camelCase). Expiries are **relative** — seconds
+/// from issuance (RFC 6749 §5.1) — not absolute timestamps. `refresh_token`
+/// / `refresh_expires_in` are optional on the canonical shape, but the VTA
+/// flow relies on rotation, so [`TokenResponseWire::into_token_data`]
+/// rejects a bundle that omits them.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenBundleWire {
+    access_token: String,
+    expires_in: u64,
+    refresh_token: Option<String>,
+    refresh_expires_in: Option<u64>,
+}
+
+impl TokenResponseWire {
+    /// Convert the daemon's relative-expiry wire bundle into the VTA's
+    /// internal absolute-expiry [`TokenData`]. `now_secs` is the current
+    /// Unix time captured at the call site (via `unix_now_secs()`); the
+    /// absolute expiry is `now_secs + expires_in`, saturating so an
+    /// implausibly large `expires_in` can't wrap.
+    fn into_token_data(self, now_secs: u64) -> Result<TokenData, AppError> {
+        let refresh_token = self.tokens.refresh_token.ok_or_else(|| {
+            AppError::Internal(
+                "webvh-server auth response omitted `refreshToken`; the VTA requires a \
+                 refresh token to keep the hosting session alive"
+                    .to_string(),
+            )
+        })?;
+        let refresh_expires_in = self.tokens.refresh_expires_in.ok_or_else(|| {
+            AppError::Internal(
+                "webvh-server auth response omitted `refreshExpiresIn`; cannot compute \
+                 the refresh-token expiry"
+                    .to_string(),
+            )
+        })?;
+        Ok(TokenData {
+            access_token: self.tokens.access_token,
+            access_expires_at: now_secs.saturating_add(self.tokens.expires_in),
+            refresh_token,
+            refresh_expires_at: now_secs.saturating_add(refresh_expires_in),
+        })
+    }
+}
+
+/// Wire shape of `/api/auth/challenge` response. The daemon emits a
+/// **flat** body — `{ challenge, sessionId, expiresAt }` — matching
+/// its `did_hosting_common::ChallengeResponse`
+/// (`spec/auth/challenge/0.1#response`), which dropped the `data: {}`
+/// envelope. `#[serde(rename_all = "camelCase")]` deserialises
+/// `sessionId`; the `alias` keeps older daemon builds that emitted
+/// snake_case working through one upgrade cycle. `expiresAt` is
+/// ignored — the client redeems the challenge immediately and the
+/// daemon enforces its own TTL.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ChallengeResponseWire {
+    challenge: String,
     #[serde(alias = "session_id")]
     session_id: String,
-    data: ChallengeData,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChallengeData {
-    challenge: String,
 }
 
 fn unix_now_secs() -> u64 {
@@ -205,7 +255,7 @@ impl WebvhClient {
             identity,
             &ChallengeContext {
                 session_id: &challenge.session_id,
-                challenge: &challenge.data.challenge,
+                challenge: &challenge.challenge,
                 server_did: &self.server_did,
             },
             unix_now_secs(),
@@ -232,7 +282,7 @@ impl WebvhClient {
                 "webvh authenticate response parse error: {e} (body: {body})"
             ))
         })?;
-        Ok(parsed.data)
+        parsed.into_token_data(unix_now_secs())
     }
 
     /// Redeem a refresh token against the daemon. Returns the rotated
@@ -277,7 +327,7 @@ impl WebvhClient {
                 "webvh refresh response parse error: {e} (body: {body})"
             ))
         })?;
-        Ok(parsed.data)
+        parsed.into_token_data(unix_now_secs())
     }
 
     async fn fetch_challenge(&self, vta_did: &str) -> Result<ChallengeResponseWire, AppError> {
@@ -767,22 +817,34 @@ mod tests {
     }
 
     fn token_response_json() -> serde_json::Value {
-        // Daemon's wire shape (camelCase): wrapped in {sessionId, data}.
+        // Daemon's flat `AuthenticateResponse` wire shape (camelCase):
+        // `{ session, tokens }`, with OAuth2-style *relative* expiries
+        // (`expiresIn` seconds from issuance), no `data` envelope.
         json!({
-            "sessionId": "auth-session-1",
-            "data": {
+            "session": {
+                "id": "auth-session-1",
+                "subject": "did:webvh:test:vta",
+                "issuedAt": "2026-01-01T00:00:00Z",
+                "expiresAt": "2026-01-02T00:00:00Z",
+            },
+            "tokens": {
                 "accessToken": "access-token-A",
-                "accessExpiresAt": 9_999_999_999u64,
                 "refreshToken": "refresh-token-A",
-                "refreshExpiresAt": 9_999_999_999u64,
+                "tokenType": "Bearer",
+                "expiresIn": 900u64,
+                "refreshExpiresIn": 86_400u64,
+                "scope": ["did:hosting"],
             }
         })
     }
 
     fn challenge_response_json() -> serde_json::Value {
+        // Daemon's `ChallengeResponse` wire shape — flat
+        // `{ challenge, sessionId, expiresAt }`, no `data` envelope.
         json!({
+            "challenge": "deadbeef",
             "sessionId": "chal-session-1",
-            "data": { "challenge": "deadbeef" },
+            "expiresAt": "2026-01-01T00:00:00Z",
         })
     }
 
@@ -815,13 +877,29 @@ mod tests {
             private_key: &private,
         };
 
+        let before = unix_now_secs();
         let tokens = client
             .authenticate(&identity)
             .await
             .expect("authenticate must succeed");
+        let after = unix_now_secs();
         assert_eq!(tokens.access_token, "access-token-A");
         assert_eq!(tokens.refresh_token, "refresh-token-A");
-        assert_eq!(tokens.access_expires_at, 9_999_999_999);
+        // The daemon returns *relative* `expiresIn: 900`; the client
+        // converts to an *absolute* expiry `now + 900`. Bracket by the
+        // pre/post-call clock reads so we don't depend on exact timing.
+        assert!(
+            (before + 900..=after + 900).contains(&tokens.access_expires_at),
+            "access_expires_at {} not within now+900 window [{}, {}]",
+            tokens.access_expires_at,
+            before + 900,
+            after + 900,
+        );
+        assert!(
+            (before + 86_400..=after + 86_400).contains(&tokens.refresh_expires_at),
+            "refresh_expires_at {} not within now+86400 window",
+            tokens.refresh_expires_at,
+        );
     }
 
     #[tokio::test]
@@ -952,13 +1030,20 @@ mod tests {
             .and(header("Content-Type", "application/json"))
             // The old refresh token rides inside the JWS body; we
             // can't match on encoded contents from a wiremock matcher.
+            // Flat `{ session, tokens }`, relative expiries.
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "sessionId": "refreshed-session",
-                "data": {
+                "session": {
+                    "id": "refreshed-session",
+                    "subject": "did:webvh:test:vta",
+                    "issuedAt": "2026-01-01T00:00:00Z",
+                    "expiresAt": "2026-01-02T00:00:00Z",
+                },
+                "tokens": {
                     "accessToken": "new-access",
-                    "accessExpiresAt": 1_900_000_000u64,
                     "refreshToken": "rotated-refresh",
-                    "refreshExpiresAt": 1_900_999_999u64,
+                    "tokenType": "Bearer",
+                    "expiresIn": 900u64,
+                    "refreshExpiresIn": 86_400u64,
                 }
             })))
             .expect(1)
@@ -973,14 +1058,20 @@ mod tests {
             private_key: &private,
         };
 
+        let before = unix_now_secs();
         let tokens = client
             .refresh(&identity, "old-refresh")
             .await
             .expect("refresh must succeed");
+        let after = unix_now_secs();
         assert_eq!(tokens.access_token, "new-access");
         assert_eq!(
             tokens.refresh_token, "rotated-refresh",
             "refresh must return rotated token, not echo input"
+        );
+        assert!(
+            (before + 900..=after + 900).contains(&tokens.access_expires_at),
+            "refreshed access_expires_at must be now+900 (relative→absolute)"
         );
     }
 
@@ -1043,10 +1134,12 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/auth/challenge"))
-            // Note: explicit camelCase `sessionId`, not snake_case.
+            // Note: explicit camelCase `sessionId`, not snake_case,
+            // and the flat daemon body (no `data` envelope).
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "challenge": "cafebabe",
                 "sessionId": "camel-id",
-                "data": { "challenge": "cafebabe" }
+                "expiresAt": "2026-01-01T00:00:00Z"
             })))
             .mount(&server)
             .await;
@@ -1067,5 +1160,99 @@ mod tests {
             .authenticate(&identity)
             .await
             .expect("must accept camelCase sessionId");
+    }
+
+    #[test]
+    fn challenge_response_deserializes_flat_daemon_body() {
+        // The daemon emits `spec/auth/challenge/0.1#response` flat:
+        // `{ challenge, sessionId, expiresAt }`, with no `data`
+        // envelope. Regression guard for the wire-format bug where we
+        // modelled the response as data-wrapped and serde failed with
+        // "missing field `data`". `expiresAt` is present on the wire
+        // but intentionally ignored by the parser.
+        let body = r#"{"challenge":"abc","sessionId":"sess-1","expiresAt":"2026-01-01T00:00:00Z"}"#;
+        let parsed: ChallengeResponseWire =
+            serde_json::from_str(body).expect("flat daemon challenge body must deserialize");
+        assert_eq!(parsed.challenge, "abc");
+        assert_eq!(parsed.session_id, "sess-1");
+    }
+
+    #[test]
+    fn challenge_response_accepts_snake_case_session_id_alias() {
+        // Older daemon builds emitted snake_case `session_id` before
+        // the `#[serde(rename_all = "camelCase")]` annotation landed;
+        // the `#[serde(alias = "session_id")]` keeps them working
+        // through one upgrade cycle.
+        let body =
+            r#"{"challenge":"abc","session_id":"sess-1","expiresAt":"2026-01-01T00:00:00Z"}"#;
+        let parsed: ChallengeResponseWire =
+            serde_json::from_str(body).expect("snake_case session_id alias must deserialize");
+        assert_eq!(parsed.challenge, "abc");
+        assert_eq!(parsed.session_id, "sess-1");
+    }
+
+    #[test]
+    fn auth_response_deserializes_flat_daemon_body_and_maps_relative_expiries() {
+        // The daemon emits `spec/auth/authenticate/0.1#response` flat:
+        // `{ session, tokens }`, with OAuth2-style *relative* expiries
+        // (`expiresIn` / `refreshExpiresIn` seconds from issuance).
+        // Regression guard for the wire-format bug where we modelled
+        // this as `{ session_id, data }`; and proof that the client
+        // converts relative → absolute (`now + expiresIn`).
+        let body = r#"{
+            "session": {
+                "id": "sess-1",
+                "subject": "did:webvh:test:vta",
+                "issuedAt": "2026-01-01T00:00:00Z",
+                "expiresAt": "2026-01-02T00:00:00Z"
+            },
+            "tokens": {
+                "accessToken": "a",
+                "refreshToken": "r",
+                "tokenType": "Bearer",
+                "expiresIn": 900,
+                "refreshExpiresIn": 86400,
+                "scope": ["did:hosting"]
+            }
+        }"#;
+        let parsed: TokenResponseWire =
+            serde_json::from_str(body).expect("flat daemon auth body must deserialize");
+
+        // Use a fixed `now` so the absolute expiry is deterministic.
+        let now = 1_800_000_000u64;
+        let tokens = parsed
+            .into_token_data(now)
+            .expect("mapping must succeed with both tokens present");
+        assert_eq!(tokens.access_token, "a");
+        assert_eq!(tokens.refresh_token, "r");
+        assert_eq!(
+            tokens.access_expires_at,
+            now + 900,
+            "access expiry must be now + expiresIn"
+        );
+        assert_eq!(
+            tokens.refresh_expires_at,
+            now + 86_400,
+            "refresh expiry must be now + refreshExpiresIn"
+        );
+    }
+
+    #[test]
+    fn auth_response_without_refresh_token_is_rejected() {
+        // The canonical `TokenBundle` marks `refreshToken` optional,
+        // but the VTA's hosting-session lifecycle depends on rotation.
+        // A bundle without one must surface a typed error rather than
+        // silently persisting an empty refresh token.
+        let body = r#"{
+            "session": { "id": "s", "subject": "did:x", "issuedAt": "t", "expiresAt": "t" },
+            "tokens": { "accessToken": "a", "tokenType": "Bearer", "expiresIn": 900 }
+        }"#;
+        let parsed: TokenResponseWire =
+            serde_json::from_str(body).expect("body without refresh token still deserializes");
+        let err = parsed.into_token_data(0).unwrap_err();
+        assert!(
+            matches!(err, AppError::Internal(msg) if msg.contains("refreshToken")),
+            "missing refreshToken must be a typed Internal error"
+        );
     }
 }

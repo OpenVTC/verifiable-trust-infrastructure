@@ -1003,13 +1003,21 @@ impl StubWebvhHost {
         }
 
         async fn tokens() -> axum::Json<serde_json::Value> {
+            // Daemon's flat `AuthenticateResponse` — `{ session, tokens }`
+            // with OAuth2-style *relative* expiries (`expiresIn` seconds).
             axum::Json(json!({
-                "sessionId": "stub-session",
-                "data": {
+                "session": {
+                    "id": "stub-session",
+                    "subject": "did:webvh:stub:vta",
+                    "issuedAt": "2026-01-01T00:00:00Z",
+                    "expiresAt": "2026-01-02T00:00:00Z",
+                },
+                "tokens": {
                     "accessToken": "stub-access-token",
-                    "accessExpiresAt": 9_999_999_999u64,
                     "refreshToken": "stub-refresh-token",
-                    "refreshExpiresAt": 9_999_999_999u64,
+                    "tokenType": "Bearer",
+                    "expiresIn": 9_999_999u64,
+                    "refreshExpiresIn": 9_999_999u64,
                 }
             }))
         }
@@ -1018,9 +1026,14 @@ impl StubWebvhHost {
             .route(
                 "/api/auth/challenge",
                 post(|| async {
+                    // Daemon's flat `ChallengeResponse` shape —
+                    // `{ challenge, sessionId, expiresAt }`, no `data`
+                    // envelope. (The token endpoints below stay
+                    // `{ sessionId, data }`, matching TokenResponseWire.)
                     axum::Json(json!({
+                        "challenge": "stub-challenge-0000000000000000",
                         "sessionId": "stub-session",
-                        "data": { "challenge": "stub-challenge-0000000000000000" }
+                        "expiresAt": "2099-01-01T00:00:00Z"
                     }))
                 }),
             )
