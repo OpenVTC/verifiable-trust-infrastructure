@@ -20,6 +20,7 @@ pub mod backup_bundle_sweeper;
 pub mod config;
 pub mod consent_sweeper;
 pub mod contexts;
+pub mod deprecation;
 pub mod did_templates;
 pub mod didcomm_bridge;
 pub mod error;

@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 
 use vta_sdk::protocols::context_management::{
@@ -54,9 +54,15 @@ pub struct DeleteContextQuery {
 pub async fn list_contexts_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
-) -> Result<Json<ListContextsResultBody>, AppError> {
+) -> Result<(HeaderMap, Json<ListContextsResultBody>), AppError> {
     let result = operations::contexts::list_contexts(&state.contexts_ks, &auth, "rest").await?;
-    Ok(Json(result))
+    // Deprecated: superseded by the `contexts/list/1.0` Trust-Task via
+    // /api/trust-tasks. See `crate::deprecation`.
+    let headers = crate::deprecation::superseded(
+        "GET /contexts",
+        vta_sdk::trust_tasks::TASK_CONTEXTS_LIST_1_0,
+    );
+    Ok((headers, Json(result)))
 }
 
 /// POST /contexts — create a context. Auth: **admin** (the operation enforces
@@ -76,7 +82,7 @@ pub async fn create_context_handler(
     auth: AdminAuth,
     State(state): State<AppState>,
     Json(req): Json<CreateContextRequest>,
-) -> Result<(StatusCode, Json<CreateContextResultBody>), AppError> {
+) -> Result<(StatusCode, HeaderMap, Json<CreateContextResultBody>), AppError> {
     let result = operations::contexts::create_context(
         &state.contexts_ks,
         &auth.0,
@@ -87,7 +93,12 @@ pub async fn create_context_handler(
         "rest",
     )
     .await?;
-    Ok((StatusCode::CREATED, Json(result)))
+    // Deprecated: superseded by the `contexts/create/1.0` Trust-Task.
+    let headers = crate::deprecation::superseded(
+        "POST /contexts",
+        vta_sdk::trust_tasks::TASK_CONTEXTS_CREATE_1_0,
+    );
+    Ok((StatusCode::CREATED, headers, Json(result)))
 }
 
 /// GET /contexts/{id} — retrieve a single context by ID. Auth: any authenticated user.
