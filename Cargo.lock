@@ -311,9 +311,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-didcomm-service"
-version = "0.3.15"
+version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3be37a0227fb1b08a0b73c92ad068955b7197335074b86ccc7a38e11b0a4004a"
+checksum = "525bb8c3cb37f5c470ca1ed443d2beebba698b254d7656b8e4783e772355f1f0"
 dependencies = [
  "affinidi-messaging-didcomm",
  "affinidi-messaging-sdk",
@@ -448,9 +448,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.18.42"
+version = "0.18.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23dc09e11e17725c058593221810b65b86705f33570285c1bb9a195c0242957c"
+checksum = "cac096a2ce0775d8f5858bc9c0b94d0a30a5dc9e6a4bf0310488d319209639b4"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
