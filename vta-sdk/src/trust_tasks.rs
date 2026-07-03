@@ -1169,6 +1169,14 @@ pub const TASK_CONSENT_APPROVER_LIST_1_0: &str =
 // in docs/05-design-notes/trust-task-uri-registry.md enumerates the
 // full target surface (~75 URIs).
 
+/// `messaging/ping/0.1` — transport-agnostic liveness + capability probe
+/// (ToIP Trust Tasks `messaging/ping`). Session-less by spec: any authenticated
+/// caller gets back `serverTime` / `status` / `protocols` (the transports the
+/// VTA serves), echoing an optional `nonce`. Side-effect-free. This is the
+/// canonical health ping the `pnm health` TSP/DIDComm probes use — see
+/// <https://trusttasks.org/spec/messaging/ping/0.1>.
+pub const TASK_MESSAGING_PING_0_1: &str = "https://trusttasks.org/spec/messaging/ping/0.1";
+
 /// Every URI registered in this module — handy for the dispatcher's
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
@@ -1204,6 +1212,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DEVICE_WIPE_0_1,
     TASK_DEVICE_SET_WAKE_0_1,
     TASK_DEVICE_SET_WAKE_0_2,
+    // Messaging slice
+    TASK_MESSAGING_PING_0_1,
     // ACL slice
     TASK_ACL_LIST_1_0,
     TASK_ACL_CREATE_1_0,

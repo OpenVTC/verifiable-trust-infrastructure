@@ -1440,12 +1440,13 @@ impl TspPingSession {
     /// Send a Trust Task to `vta_did` over TSP and await the response envelope.
     /// Returns latency in milliseconds.
     ///
-    /// The probe sends an `auth/whoami/0.1` Trust Task (authenticated by the TSP
-    /// unpack's proven sender VID — no holder proof needed on TSP, like DIDComm
-    /// authcrypt). **Any** well-formed response envelope proves the round-trip,
-    /// so the latency is measured to the first frame that unpacks + parses as
-    /// JSON; the probe measures TSP liveness, not whoami success (the DIDComm
-    /// trust-ping is likewise a reachability check, not a semantic one).
+    /// The probe sends a `messaging/ping/0.1` Trust Task — the canonical,
+    /// session-less liveness + capability probe (ToIP Trust Tasks). It's
+    /// authenticated intrinsically by the TSP unpack's proven sender VID (no
+    /// holder proof needed on TSP, like DIDComm authcrypt) and requires no
+    /// capability beyond reachability, so it returns a clean `#response` (not a
+    /// 422 like a session-bound task would). A correlation `nonce` is included;
+    /// the round-trip latency is measured to the response frame.
     pub async fn ping(
         &mut self,
         vta_did: &str,
@@ -1455,11 +1456,12 @@ impl TspPingSession {
         use trust_tasks_rs::TrustTask;
 
         let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
-        let type_uri = crate::trust_tasks::TASK_AUTH_WHOAMI_0_1
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
             .parse()
-            .map_err(|e| format!("whoami type URI parse: {e}"))?;
+            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
         let mut doc: TrustTask<serde_json::Value> =
-            TrustTask::new(id, type_uri, serde_json::json!({}));
+            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
         doc.issuer = Some(self.client_did.clone());
         doc.recipient = Some(vta_did.to_string());
         let body = serde_json::to_vec(&doc)?;

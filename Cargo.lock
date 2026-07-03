@@ -2452,7 +2452,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -3254,7 +3254,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -6714,7 +6714,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -10016,7 +10016,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "vti-common",
  "x25519-dalek",
 ]
@@ -10049,7 +10049,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -10072,7 +10072,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -10107,7 +10107,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.18.16"
+version = "0.18.17"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10164,7 +10164,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.10.22"
+version = "0.10.23"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10240,7 +10240,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10262,7 +10262,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
 ]
 
 [[package]]
@@ -10334,7 +10334,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10382,7 +10382,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10409,7 +10409,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "vta-service",
  "vti-common",
 ]
@@ -10438,7 +10438,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.18.16",
+ "vta-sdk 0.18.17",
  "vti-common",
 ]
 
