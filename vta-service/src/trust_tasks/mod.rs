@@ -66,6 +66,7 @@ mod messaging;
 mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
+mod replay;
 mod seeds;
 // `pub(crate)` so the REST routes (`routes::acl`, `routes::contexts`) can
 // reach the `RequireStepUp` extractor + op markers. The step-up *engine* lives
@@ -315,6 +316,25 @@ pub(crate) async fn dispatch_trust_task_core(
         // No vta_did configured → service is in setup; skip
         // the recipient check (no identity to bind against).
         // Production VTAs always have vta_did set by `vta setup`.
+    }
+
+    // 2b. Replay dedup. Reject a re-submitted `(actor, envelope-id)` within the
+    //     dedup window so a retry — including a client's cross-transport
+    //     fallback — cannot double-apply a mutating task. Ids are unique per
+    //     request, so this only fires on a genuine resubmission of the same
+    //     envelope. Record-before-dispatch = at-most-once (see `replay`).
+    if !replay::check_and_record(&auth.did, &doc.id) {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: "duplicate".to_string(),
+                details: Some(serde_json::json!({
+                    "id": doc.id,
+                    "reason": "this request id was already submitted; the prior submission is \
+                               authoritative — do not retry with the same id",
+                })),
+            },
+        );
     }
 
     // 3. Session-pubkey binding pre-check.
