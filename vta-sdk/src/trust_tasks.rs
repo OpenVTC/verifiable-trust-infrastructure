@@ -222,6 +222,16 @@ pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/acl/updat
 /// Auth: Admin or Initiator.
 pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/acl/delete/1.0";
 
+/// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
+/// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:
+/// [`crate::protocols::acl_management::swap::SwapKeyBody`]. Auth: any
+/// authenticated caller (the operation binds `currentSubject` to the sender).
+///
+/// Registry alias of [`crate::protocols::acl_management::ACL_SWAP_KEY`] so the
+/// dispatcher can route it through the shared spine (previously it was bespoke
+/// on both REST `/acl/swap` and the DIDComm router).
+pub const TASK_ACL_SWAP_KEY_1_0: &str = crate::protocols::acl_management::ACL_SWAP_KEY;
+
 // ─── Contexts slice (spec/vta/contexts/*) ────────────────────────────────
 
 /// `spec/vta/contexts/list/1.0` — list contexts visible to caller.
@@ -1220,6 +1230,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ACL_GET_1_0,
     TASK_ACL_UPDATE_1_0,
     TASK_ACL_DELETE_1_0,
+    TASK_ACL_SWAP_KEY_1_0,
     // Contexts slice
     TASK_CONTEXTS_LIST_1_0,
     TASK_CONTEXTS_CREATE_1_0,
@@ -1441,6 +1452,9 @@ mod tests {
             "https://trusttasks.org/spec/vault/",
             "https://trusttasks.org/spec/webvh/",
             "https://trusttasks.org/spec/consent/",
+            // Framework ACL protocol — the `acl/swap-key` self-service key
+            // rotation task (`TASK_ACL_SWAP_KEY_1_0`), now dispatcher-routed.
+            "https://trusttasks.org/spec/acl/",
         ];
         for uri in ALL_URIS {
             assert!(

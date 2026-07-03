@@ -497,6 +497,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => acl::handle_get,
     vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update,
     vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete,
+    vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_1_0 => acl::handle_swap_key,
     // ─── Device slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => device::handle_register,
     vta_sdk::trust_tasks::TASK_DEVICE_HEARTBEAT_0_1 => device::handle_heartbeat,

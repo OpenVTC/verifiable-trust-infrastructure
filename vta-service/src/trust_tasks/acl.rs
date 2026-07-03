@@ -4,17 +4,20 @@
 //! Initiator for list/create/get/delete; Admin-only for update.
 
 use super::helpers::TrustTaskOutcome;
-use serde_json::Value;
+use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
 use vta_sdk::protocols::acl_management::create::CreateAclBody;
 use vta_sdk::protocols::acl_management::delete::DeleteAclBody;
 use vta_sdk::protocols::acl_management::get::GetAclBody;
 use vta_sdk::protocols::acl_management::list::ListAclBody;
+use vta_sdk::protocols::acl_management::swap::SwapKeyBody;
 use vta_sdk::protocols::acl_management::update::UpdateAclBody;
 
 use crate::acl::Role;
 use crate::auth::AuthClaims;
+use crate::error::AppError;
 use crate::operations;
+use crate::operations::step_up::{StepUpDecision, op, resolve_step_up};
 use crate::server::AppState;
 
 use super::helpers::{
@@ -203,6 +206,117 @@ pub(super) async fn handle_delete(
     .await
     {
         Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for the canonical `acl/swap-key/0.1` Trust Task — self-service
+/// rotation of the caller's own ACL entry onto a new subject DID. Consolidates
+/// the bespoke REST `/acl/swap` handler and the DIDComm `handle_swap_acl` onto
+/// the shared dispatcher (so it works over REST, DIDComm, and TSP identically).
+///
+/// No `require_manage()`: the caller only moves their own grant. The
+/// transport-authenticated sender (REST bearer / DIDComm authcrypt / TSP VID)
+/// is bound to `currentSubject`; the `link_proof` VP-JWT proves control of
+/// `newSubject`.
+pub(super) async fn handle_swap_key(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: SwapKeyBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    // The authenticated caller must equal the declared currentSubject — stops a
+    // sender from claiming to rotate someone else's entry.
+    if req.current_subject != auth.did {
+        return reject_with(
+            &doc,
+            RejectReason::MalformedRequest {
+                reason: format!(
+                    "acl/swap-key: currentSubject {} does not equal authenticated caller {}",
+                    req.current_subject, auth.did
+                ),
+            },
+        );
+    }
+
+    // Step-up floor WITH the non-escalating carve-out (swap-key is self-service).
+    // Deliberately NOT the escalating `require_step_up` helper: with the default
+    // no-floor policy this resolves to `Allow`, so AAL1 sender-authenticated
+    // transports (DIDComm/TSP) proceed. A floor that genuinely requires step-up
+    // rejects here with guidance to use the REST session (which can reach AAL2).
+    if !matches!(
+        resolve_step_up(
+            &state.config,
+            &state.acl_ks,
+            op::ACL_SWAP_KEY,
+            &auth.did,
+            true, // swap-key is non-escalating
+        )
+        .await,
+        StepUpDecision::Allow
+    ) {
+        return reject_with(
+            &doc,
+            RejectReason::TaskFailed {
+                reason: "auth:step_up_required".to_string(),
+                details: Some(json!({
+                    "requiredAcr": "aal2",
+                    "reason": "acl/swap-key requires a stepped-up (AAL2) session under this \
+                               VTA's step-up policy. Sender-authenticated transports \
+                               (DIDComm/TSP) are AAL1 and cannot be elevated in-band — perform \
+                               this self-service rotation over the authenticated REST session.",
+                })),
+            },
+        );
+    }
+
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = match state.config.read().await.vta_did.clone() {
+        Some(v) => v,
+        None => {
+            return app_error_to_reject(&doc, AppError::Internal("VTA DID not configured".into()));
+        }
+    };
+
+    match operations::acl::swap_acl(
+        &state.acl_ks,
+        &state.audit_ks,
+        auth,
+        &req.link_proof,
+        did_resolver,
+        &vta_did,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(result) => {
+            // Cross-check the declared newSubject matches the VP holder the
+            // operation actually verified (defence-in-depth over the proof).
+            if req.new_subject != result.did {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: format!(
+                            "acl/swap-key: newSubject {} does not match verified VP holder {}",
+                            req.new_subject, result.did
+                        ),
+                    },
+                );
+            }
+            success_response(&doc, result)
+        }
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
