@@ -11,7 +11,7 @@
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
-use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
+use trust_tasks_rs::specs::auth::step_up::approve_response::v0_2 as approve_response;
 
 use crate::error::FfiError;
 use crate::keys::Signer;
@@ -53,7 +53,7 @@ pub struct ApproveResponseDraft {
     pub granted_acr: Option<String>,
 }
 
-/// Build a passkey-backed `auth/step-up/approve-response/0.1`: decision
+/// Build a passkey-backed `auth/step-up/approve-response/0.2`: decision
 /// `approved`, `evidence.kind = webauthn` carrying `assertion`. The assertion is
 /// the gate, so no framework proof is attached. Returns the serialized Trust
 /// Task JSON for the native layer to send back to the relying party.
@@ -79,8 +79,8 @@ pub fn build_approve_response_webauthn(
     serialize(&doc)
 }
 
-/// Build a DID-signed `auth/step-up/approve-response/0.1`: decision `approved`,
-/// `evidence.kind = did-signed`, gated by a Data Integrity proof
+/// Build a DID-signed `auth/step-up/approve-response/0.2`: decision `approved`,
+/// `evidence.kind = didSigned`, gated by a Data Integrity proof
 /// (`eddsa-jcs-2022`) over the document. `signer` is the native enclave key
 /// (the holder/subject key) — its private material never enters this crate;
 /// it only signs the canonical input produced here.
@@ -172,7 +172,7 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
             v["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-response/0.1"
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
         );
         assert_eq!(v["payload"]["decision"], "approved");
         assert_eq!(v["payload"]["evidence"]["kind"], "webauthn");
@@ -260,6 +260,15 @@ mod tests {
             }),
         )
         .unwrap();
+
+        // 0.2 wire form: the type URI is `/0.2` and did-signed evidence
+        // serializes as the camelCase `didSigned` (the sole 0.1→0.2 change).
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            raw["type"],
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
+        );
+        assert_eq!(raw["payload"]["evidence"]["kind"], "didSigned");
 
         let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
         assert!(matches!(

@@ -10054,7 +10054,7 @@ dependencies = [
 
 [[package]]
 name = "vta-mobile-core"
-version = "0.6.8"
+version = "0.6.9"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
