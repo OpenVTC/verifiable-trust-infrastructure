@@ -33,7 +33,18 @@ pub struct StepUpRequest {
     /// Whether the request carried WebAuthn options — i.e. the relying party
     /// wants a passkey-backed elevation and supplied the ceremony parameters.
     pub webauthn_requested: bool,
+    /// Structured authorization context (raw JSON), when the request carries one
+    /// under the reverse-DNS `payload.ext` key `org.openvtc.authorization-context`
+    /// — e.g. a Cierge cross-domain share / spend / tool ask. The native layer
+    /// decodes and renders it as the approval card; absent for a plain
+    /// login-elevation step-up (the UI falls back to `reason`).
+    pub authorization_context: Option<String>,
 }
+
+/// Reverse-DNS `payload.ext` key (SPEC §4.5.1) under which the VTA embeds the
+/// structured authorization context. Kept in lockstep with the VTA
+/// (`vta-service` `EXT_KEY_AUTHZ_CONTEXT`).
+const EXT_KEY_AUTHZ_CONTEXT: &str = "org.openvtc.authorization-context";
 
 /// Parse an inbound `auth/step-up/approve-request/0.1` Trust Task document.
 ///
@@ -47,6 +58,20 @@ pub fn parse_step_up_request(json: String) -> Result<StepUpRequest, FfiError> {
         serde_json::from_str(&json).map_err(|e| FfiError::Decode {
             reason: format!("not a valid auth/step-up/approve-request document: {e}"),
         })?;
+    // Pull the structured authorization context (if any) from `payload.ext` by
+    // its reverse-DNS key, as a raw JSON string for the native layer to decode.
+    // Read from a lenient Value copy so we don't depend on the generated `Ext`
+    // newtype's key API; the typed parse above already validated the envelope,
+    // so this re-parse cannot fail.
+    let authorization_context = serde_json::from_str::<serde_json::Value>(&json)
+        .ok()
+        .and_then(|v| {
+            v.get("payload")
+                .and_then(|p| p.get("ext"))
+                .and_then(|e| e.get(EXT_KEY_AUTHZ_CONTEXT))
+                .map(|c| c.to_string())
+        });
+
     let p = doc.payload;
     Ok(StepUpRequest {
         relying_party: doc.issuer,
@@ -62,6 +87,7 @@ pub fn parse_step_up_request(json: String) -> Result<StepUpRequest, FfiError> {
             .map(|e| e.to_string())
             .collect(),
         webauthn_requested: p.webauthn.is_some(),
+        authorization_context,
     })
 }
 
@@ -124,6 +150,44 @@ mod tests {
         assert!(r.acceptable_evidence.is_empty());
         assert!(!r.webauthn_requested);
         assert_eq!(r.target_acr, None);
+        // No ext → no structured context (the UI falls back to `reason`).
+        assert!(r.authorization_context.is_none());
+    }
+
+    #[test]
+    fn parses_authorization_context_from_ext() {
+        // A Cierge share ask carried under the reverse-DNS `ext` key.
+        let json = r#"{
+          "id": "x",
+          "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+          "issuer": "did:webvh:vta",
+          "payload": {
+            "subject": "did:webvh:operator",
+            "sessionId": "s1",
+            "challenge": "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ",
+            "reason": "finance wants to share salaryBand with travel",
+            "ext": {
+              "org.openvtc.authorization-context": {
+                "type": "https://openvtc.org/cierge/authorization-context/0.1",
+                "summary": "finance wants to share salaryBand with travel",
+                "risk": "high",
+                "action": { "kind": "share", "from": "finance", "to": "travel", "ttlSeconds": 3600 }
+              }
+            }
+          }
+        }"#;
+        let r = parse_step_up_request(json.to_string()).unwrap();
+        // Surfaced as a raw JSON string for the native layer to decode + render.
+        let ctx = r
+            .authorization_context
+            .expect("authorization_context present");
+        let v: serde_json::Value = serde_json::from_str(&ctx).unwrap();
+        assert_eq!(v["action"]["kind"], "share");
+        assert_eq!(v["risk"], "high");
+        assert_eq!(
+            v["summary"],
+            "finance wants to share salaryBand with travel"
+        );
     }
 
     #[test]

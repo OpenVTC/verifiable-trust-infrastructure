@@ -30,6 +30,12 @@ pub struct IssueCredentialBody {
     /// VC).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    /// Optional structured authorization context surfaced to the operator's
+    /// step-up device (e.g. a Cierge share/spend/tool ask). Request-only: the
+    /// step-up gate reads it to render *what* is being authorized; it is never
+    /// signed into the issued VC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_context: Option<Value>,
 }
 
 /// `spec/vta/credentials/issue/0.1` response body.

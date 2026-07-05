@@ -1,6 +1,6 @@
 [package]
 name = "vta-mobile-core"
-version = "0.6.9"
+version = "0.6.10"
 description = "UniFFI engine for the VTA mobile agent (Android/iOS): DIDComm, Trust Tasks, AAL step-up."
 edition.workspace = true
 # Not a crates.io library — the published artifacts are the Android AAR

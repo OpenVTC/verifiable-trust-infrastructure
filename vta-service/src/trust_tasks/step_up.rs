@@ -479,6 +479,29 @@ const STEP_UP_TTL_SECS: u64 = 300;
 /// ([`issue_step_up_challenge`]) and the trust-task reject ([`require_step_up`]).
 /// Returns the approve-request document, or `Err(())` if the pending step-up
 /// could not be persisted (the caller maps that to a 5xx / internal-error reject).
+/// The default step-up reason when the gated request carries no structured
+/// authorization context (or one without a `summary`).
+const DEFAULT_STEP_UP_REASON: &str = "this operation requires a stepped-up (AAL2) session";
+
+/// Reverse-DNS `payload.ext` key (SPEC §4.5.1) under which the structured
+/// authorization context rides in the approve-request. The mobile engine reads
+/// the same key.
+const EXT_KEY_AUTHZ_CONTEXT: &str = "org.openvtc.authorization-context";
+
+/// Pick the reason string + optional structured authorization context from a
+/// gated request's payload. A request MAY carry a `payload.authorizationContext`
+/// (e.g. a Cierge share/spend/tool ask); when it does, its human `summary`
+/// becomes the reason so even a context-unaware renderer shows something
+/// meaningful. Pure — unit-tested.
+fn reason_and_context(payload: &Value) -> (&str, Option<&Value>) {
+    let ctx = payload.get("authorizationContext");
+    let reason = ctx
+        .and_then(|c| c.get("summary"))
+        .and_then(|s| s.as_str())
+        .unwrap_or(DEFAULT_STEP_UP_REASON);
+    (reason, ctx)
+}
+
 async fn mint_pending_step_up(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
@@ -487,6 +510,13 @@ async fn mint_pending_step_up(
     approver_any: bool,
     session_id: &str,
     reason: &str,
+    // Optional structured context describing *what* is being authorized, shown
+    // to the approver's device verbatim (e.g. a Cierge cross-domain share /
+    // spend / tool ask). Embedded under the spec's `payload.ext` extension map
+    // (the payload is `deny_unknown_fields`, so a bespoke top-level field would
+    // break every typed consumer). `None` leaves the payload byte-identical to
+    // the reason-only form.
+    authorization_context: Option<&Value>,
 ) -> Result<Value, ()> {
     let acceptable = vec!["did-signed".to_string(), "webauthn".to_string()];
 
@@ -536,6 +566,13 @@ async fn mint_pending_step_up(
     if !approver_any && !recipient.is_empty() {
         doc["recipient"] = json!(recipient);
     }
+    // Carry the structured authorization context when the gated op supplied one,
+    // under a reverse-DNS-namespaced `ext` key (SPEC §4.5.1) so the payload stays
+    // spec-valid for `deny_unknown_fields` typed consumers (e.g. the mobile
+    // engine's `parse_step_up_request`).
+    if let Some(ctx) = authorization_context {
+        doc["payload"]["ext"] = json!({ EXT_KEY_AUTHZ_CONTEXT: ctx });
+    }
     Ok(doc)
 }
 
@@ -553,6 +590,7 @@ pub(crate) async fn issue_step_up_challenge(
     approver_any: bool,
     session_id: &str,
     reason: &str,
+    authorization_context: Option<&Value>,
 ) -> Response {
     let approve_request = match mint_pending_step_up(
         sessions_ks,
@@ -562,6 +600,7 @@ pub(crate) async fn issue_step_up_challenge(
         approver_any,
         session_id,
         reason,
+        authorization_context,
     )
     .await
     {
@@ -802,6 +841,13 @@ pub(super) async fn require_step_up(
         .vta_did
         .clone()
         .unwrap_or_default();
+    // A gated request MAY carry a structured authorization context (e.g. a
+    // Cierge cross-domain share / spend / tool ask) at
+    // `payload.authorizationContext`. Thread it into the approve-request so the
+    // approver's device renders *what* is being authorized, and prefer its human
+    // `summary` as the `reason` so a context-unaware renderer still shows
+    // something meaningful.
+    let (reason, authorization_context) = reason_and_context(&doc.payload);
     let reject = match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
@@ -809,7 +855,8 @@ pub(super) async fn require_step_up(
         &recipient,
         approver_any,
         &auth.session_id,
-        "this operation requires a stepped-up (AAL2) session",
+        reason,
+        authorization_context,
     )
     .await
     {
@@ -939,6 +986,8 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
             approver_any,
             &claims.session_id,
             "this operation requires a stepped-up (AAL2) session",
+            // REST-gated routes carry no structured authorization context.
+            None,
         )
         .await)
     }
@@ -994,6 +1043,7 @@ mod tests {
             false,
             "sess-9",
             "rotate keys",
+            None,
         )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -1026,6 +1076,79 @@ mod tests {
         assert_eq!(
             pending.acceptable_evidence,
             vec!["did-signed".to_string(), "webauthn".to_string()]
+        );
+    }
+
+    #[test]
+    fn reason_and_context_prefers_summary_and_passes_context_through() {
+        // No context → generic reason, no context.
+        let no_ctx = json!({ "holder": "did:key:z" });
+        let (r, c) = reason_and_context(&no_ctx);
+        assert_eq!(r, DEFAULT_STEP_UP_REASON);
+        assert!(c.is_none());
+
+        // Context with a summary → the summary IS the reason; context passes through.
+        let payload = json!({
+            "authorizationContext": {
+                "summary": "finance wants to share salaryBand with travel",
+                "action": { "kind": "share", "from": "finance", "to": "travel" }
+            }
+        });
+        let (r, c) = reason_and_context(&payload);
+        assert_eq!(r, "finance wants to share salaryBand with travel");
+        assert_eq!(c.unwrap()["action"]["kind"], "share");
+
+        // Context without a summary → generic reason, but context still carried.
+        let summariless = json!({ "authorizationContext": { "action": {} } });
+        let (r, c) = reason_and_context(&summariless);
+        assert_eq!(r, DEFAULT_STEP_UP_REASON);
+        assert!(c.is_some());
+    }
+
+    #[tokio::test]
+    async fn step_up_challenge_embeds_authorization_context() {
+        use vti_common::config::StoreConfig;
+        use vti_common::store::Store;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
+
+        let ctx = json!({
+            "type": "https://openvtc.org/cierge/authorization-context/0.1",
+            "summary": "finance wants to share salaryBand with travel",
+            "risk": "high",
+            "action": { "kind": "share", "from": "finance", "to": "travel", "ttlSeconds": 3600 },
+        });
+        let resp = issue_step_up_challenge(
+            &ks,
+            "did:web:vta.example",
+            "did:key:zHolder",
+            "did:key:zHolder",
+            false,
+            "sess-ctx",
+            "finance wants to share salaryBand with travel",
+            Some(&ctx),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        let payload = &v["approveRequest"]["payload"];
+        // The structured context rode into the approve-request under the
+        // reverse-DNS `ext` key (spec-valid for deny_unknown_fields consumers)…
+        let ctx = &payload["ext"]["org.openvtc.authorization-context"];
+        assert_eq!(ctx["action"]["kind"], "share");
+        assert_eq!(ctx["risk"], "high");
+        assert_eq!(ctx["action"]["ttlSeconds"], 3600);
+        // …and the reason echoes the human summary.
+        assert_eq!(
+            payload["reason"],
+            "finance wants to share salaryBand with travel"
         );
     }
     use trust_tasks_rs::Proof;
