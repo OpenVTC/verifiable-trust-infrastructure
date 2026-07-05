@@ -75,7 +75,12 @@ pub fn build_approve_response_webauthn(
         authenticator_attachment: None,
         client_extension_results: serde_json::Map::new(),
     });
-    let doc = assemble_doc(&draft, evidence)?;
+    let doc = assemble_doc(
+        &draft,
+        evidence,
+        approve_response::PayloadDecision::Approved,
+        None,
+    )?;
     serialize(&doc)
 }
 
@@ -89,15 +94,44 @@ pub fn build_approve_response_did_signed(
     draft: ApproveResponseDraft,
     signer: Box<dyn Signer>,
 ) -> Result<String, FfiError> {
-    let mut doc = assemble_doc(&draft, approve_response::Evidence::DidSigned)?;
+    let mut doc = assemble_doc(
+        &draft,
+        approve_response::Evidence::DidSigned,
+        approve_response::PayloadDecision::Approved,
+        None,
+    )?;
     attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
     serialize(&doc)
 }
 
-/// Build the approve-response envelope + payload (no proof) for a given gate.
+/// Build a DID-signed **denial** `auth/step-up/approve-response/0.2`: decision
+/// `denied`, carrying the human `reason`, gated by the same `eddsa-jcs-2022`
+/// proof as an approval. A denial is a *signed refusal* — the VTA verifies the
+/// gate (so an injection can't forge it), audits `step_up_denied`, and elevates
+/// nothing. This is how the operator says "no" from the device.
+#[uniffi::export]
+pub fn build_approve_response_denied(
+    draft: ApproveResponseDraft,
+    reason: String,
+    signer: Box<dyn Signer>,
+) -> Result<String, FfiError> {
+    let mut doc = assemble_doc(
+        &draft,
+        approve_response::Evidence::DidSigned,
+        approve_response::PayloadDecision::Denied,
+        Some(reason),
+    )?;
+    attach_did_signed_proof(&mut doc, &*signer, &draft.issued_at)?;
+    serialize(&doc)
+}
+
+/// Build the approve-response envelope + payload (no proof) for a given gate +
+/// decision.
 fn assemble_doc(
     draft: &ApproveResponseDraft,
     evidence: approve_response::Evidence,
+    decision: approve_response::PayloadDecision,
+    denied_reason: Option<String>,
 ) -> Result<TrustTask<approve_response::Payload>, FfiError> {
     let issued_at = DateTime::parse_from_rfc3339(&draft.issued_at)
         .map_err(|e| FfiError::InvalidInput {
@@ -111,8 +145,8 @@ fn assemble_doc(
             .map_err(conv)?,
         challenge: approve_response::PayloadChallenge::try_from(draft.challenge.clone())
             .map_err(conv)?,
-        decision: approve_response::PayloadDecision::Approved,
-        denied_reason: None,
+        decision,
+        denied_reason,
         granted_acr: draft.granted_acr.clone(),
         evidence: Some(evidence),
         ext: None,
@@ -291,5 +325,67 @@ mod tests {
             affinidi_data_integrity::VerifyOptions::default(),
         )
         .expect("the did-signed proof must verify against the holder's key");
+    }
+
+    /// A denial is a *signed* refusal: decision `denied`, the human reason, a
+    /// didSigned gate, and a verifiable proof (so an injection can't forge it).
+    #[test]
+    fn denied_response_is_signed_and_carries_the_reason() {
+        use affinidi_data_integrity::DataIntegrityProof;
+        use ed25519_dalek::{Signer as _, SigningKey};
+        use multibase::Base;
+
+        let sk = SigningKey::from_bytes(&[9u8; 32]);
+        let pk = sk.verifying_key();
+        let mut mc = vec![0xed, 0x01];
+        mc.extend_from_slice(pk.as_bytes());
+        let mb = multibase::encode(Base::Base58Btc, mc);
+        let did = format!("did:key:{mb}");
+
+        struct EnclaveStub {
+            sk: SigningKey,
+            did: String,
+        }
+        impl Signer for EnclaveStub {
+            fn did(&self) -> String {
+                self.did.clone()
+            }
+            fn sign(&self, payload: Vec<u8>) -> Result<Vec<u8>, FfiError> {
+                Ok(self.sk.sign(&payload).to_bytes().to_vec())
+            }
+        }
+
+        let json = build_approve_response_denied(
+            draft(),
+            "not something I authorized".to_string(),
+            Box::new(EnclaveStub {
+                sk,
+                did: did.clone(),
+            }),
+        )
+        .unwrap();
+
+        let raw: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            raw["type"],
+            "https://trusttasks.org/spec/auth/step-up/approve-response/0.2"
+        );
+        assert_eq!(raw["payload"]["decision"], "denied");
+        assert_eq!(raw["payload"]["deniedReason"], "not something I authorized");
+        assert_eq!(raw["payload"]["evidence"]["kind"], "didSigned");
+
+        // The refusal is cryptographically signed, verifiable against the key.
+        let doc: TrustTask<approve_response::Payload> = serde_json::from_str(&json).unwrap();
+        let proof = doc.proof.clone().expect("a denial must be signed");
+        let di: DataIntegrityProof =
+            serde_json::from_value(serde_json::to_value(&proof).unwrap()).unwrap();
+        let mut unsigned = doc;
+        unsigned.proof = None;
+        di.verify_with_public_key(
+            &unsigned,
+            pk.as_bytes(),
+            affinidi_data_integrity::VerifyOptions::default(),
+        )
+        .expect("the denial's proof must verify against the holder's key");
     }
 }
