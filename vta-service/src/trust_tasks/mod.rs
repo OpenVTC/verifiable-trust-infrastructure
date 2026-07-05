@@ -89,7 +89,9 @@ pub(crate) mod wire_v0_2;
 /// TrustTaskOutcome`.
 pub(crate) use helpers::TrustTaskOutcome;
 use helpers::{body_parse_error_response, method_not_found, reject_with};
-#[cfg(feature = "didcomm")]
+// Used unconditionally by the replay-dedup reject + `reject_trust_task`, not just
+// the didcomm path — keep the import ungated (previously `#[cfg(feature =
+// "didcomm")]`, which broke `--features rest` without `didcomm`).
 use trust_tasks_rs::RejectReason;
 
 /// URIs that the VTA exposes through dedicated unauth REST routes

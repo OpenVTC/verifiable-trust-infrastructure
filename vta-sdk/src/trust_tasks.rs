@@ -1455,6 +1455,9 @@ mod tests {
             // Framework ACL protocol — the `acl/swap-key` self-service key
             // rotation task (`TASK_ACL_SWAP_KEY_1_0`), now dispatcher-routed.
             "https://trusttasks.org/spec/acl/",
+            // ToIP messaging protocol — the transport-agnostic `messaging/ping`
+            // liveness/capability probe (`TASK_MESSAGING_PING_0_1`).
+            "https://trusttasks.org/spec/messaging/",
         ];
         for uri in ALL_URIS {
             assert!(
