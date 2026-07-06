@@ -33,12 +33,32 @@ enum Commands {
     /// prompts — suitable for CI, immutable images, or any unattended
     /// bring-up. See `docs/03-vtc/examples/vtc-setup.example.toml` for
     /// the worked schema.
+    ///
+    /// For a fully headless (no-TTY) bring-up, setup is two-phase — the
+    /// same shape the mediator and did-hosting services use:
+    ///
+    /// 1. `--setup-key-out <path>` mints an ephemeral did:key, persists
+    ///    it (0600), and prints the `pnm contexts create … --admin-did`
+    ///    command. An operator (or a CI step holding VTA admin) runs that
+    ///    to enrol the setup DID at the VTA. Exits without touching
+    ///    anything else.
+    /// 2. `--from <toml>` (with `setup_key_file` pointing at that path)
+    ///    provisions end-to-end using the now-authorised key.
     Setup {
         /// Path to a TOML setup-inputs file. When set, setup runs
         /// non-interactively. The ephemeral setup key it references
         /// (`setup_key_file`) must already be ACL-authorised at the VTA.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "setup_key_out")]
         from: Option<PathBuf>,
+        /// Phase 1: mint an ephemeral did:key, persist it to <path>
+        /// (0600), print the `pnm contexts create --admin-did` grant
+        /// command, and exit. Does not touch config or the VTA.
+        #[arg(long, conflicts_with = "from")]
+        setup_key_out: Option<PathBuf>,
+        /// Context id used only to render phase 1's printed grant
+        /// command. Must match `context` in the phase-2 setup TOML.
+        #[arg(long, default_value = "default", requires = "setup_key_out")]
+        context: String,
     },
     /// Show VTC status and statistics
     Status,
@@ -158,12 +178,17 @@ async fn main() {
     print_banner();
 
     match cli.command {
-        Some(Commands::Setup { from }) => {
+        Some(Commands::Setup {
+            from,
+            setup_key_out,
+            context,
+        }) => {
             #[cfg(feature = "setup")]
             {
-                let result = match from {
-                    Some(path) => setup::run_setup_from_file(path).await,
-                    None => setup::run_setup_wizard(cli.config).await,
+                let result = match (setup_key_out, from) {
+                    (Some(out), _) => setup::run_setup_phase1(&out, &context).await,
+                    (None, Some(path)) => setup::run_setup_from_file(path).await,
+                    (None, None) => setup::run_setup_wizard(cli.config).await,
                 };
                 if let Err(e) = result {
                     eprintln!("Setup failed: {e}");
@@ -172,7 +197,7 @@ async fn main() {
             }
             #[cfg(not(feature = "setup"))]
             {
-                let _ = from;
+                let _ = (from, setup_key_out, context);
                 eprintln!("Setup wizard not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }

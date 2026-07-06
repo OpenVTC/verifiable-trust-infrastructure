@@ -50,7 +50,12 @@ const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 
 /// Create a secret store backend based on compiled features and configuration.
 ///
-/// Priority:
+/// **Selection.** If `secrets.backend` is set it wins outright — the named
+/// backend is used and its required field(s) are validated (a mismatch is a
+/// hard `Config` error, never a silent pick of a different backend). If it is
+/// unset (`None`), resolution falls back to the legacy implicit priority chain
+/// below, keyed on which selector field is set:
+///
 /// 1. AWS Secrets Manager (if `aws-secrets` compiled + `secrets.aws_secret_name` set)
 /// 2. GCP Secret Manager (if `gcp-secrets` compiled + `secrets.gcp_secret_name` set)
 /// 3. Azure Key Vault (if `azure-secrets` compiled + `secrets.azure_vault_url` set)
@@ -59,53 +64,72 @@ const VTC_PLAINTEXT_FILENAME: &str = "secret.plaintext";
 /// 6. Config file secret (if `config-secret` compiled + `secrets.secret` set)
 /// 7. OS keyring (if `keyring` compiled — the default)
 /// 8. Plaintext file (always available — NOT secure)
+///
+/// Either way, a backend requested on a binary built without its feature is a
+/// hard `Config` error — never a silent fall-through to keyring/plaintext
+/// (P0.8): pre-P0.8 the arm was `#[cfg]`'d away, so a prod config pointing at
+/// AWS on a keyring-only binary booted with an empty store and a mere `warn!`.
 #[allow(unused_variables)]
 pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, AppError> {
-    // For every cloud/config backend, a set selector field on a binary that
-    // wasn't compiled with the matching feature is a hard error — never a
-    // silent fall-through to the keyring/plaintext default. Pre-P0.8 the arm
-    // was simply `#[cfg]`'d away, so a production config pointing at AWS on a
-    // keyring-only binary booted with an empty store and a mere `warn!`
-    // (every auth/issue/install call then 503s). Fail closed instead.
+    use crate::config::SecretBackend;
+    let explicit = config.secrets.backend;
+
+    // Is backend `b` the one to build? An explicit selector wins outright;
+    // otherwise fall back to "its selector field is set" implicit resolution.
+    // Used only for the cloud/config backends (keyring/plaintext are the tail
+    // fallbacks, handled separately below).
+    let wants = |b: SecretBackend, field_set: bool| match explicit {
+        Some(sel) => sel == b,
+        None => field_set,
+    };
+
     #[cfg(feature = "aws-secrets")]
-    if config.secrets.aws_secret_name.is_some() {
-        let store = AwsSecretStore::new(
-            config.secrets.aws_secret_name.clone().unwrap(),
-            config.secrets.aws_region.clone(),
-        );
+    if wants(SecretBackend::Aws, config.secrets.aws_secret_name.is_some()) {
+        let name = config.secrets.aws_secret_name.clone().ok_or_else(|| {
+            AppError::Config("secrets.backend = aws requires secrets.aws_secret_name".into())
+        })?;
+        let store = AwsSecretStore::new(name, config.secrets.aws_region.clone());
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "aws-secrets"))]
-    if config.secrets.aws_secret_name.is_some() {
+    if wants(SecretBackend::Aws, config.secrets.aws_secret_name.is_some()) {
         return Err(AppError::Config(
-            "secrets.aws_secret_name is set but this binary was built without the \
+            "secrets backend 'aws' selected but this binary was built without the \
              'aws-secrets' feature"
                 .into(),
         ));
     }
 
     #[cfg(feature = "gcp-secrets")]
-    if config.secrets.gcp_secret_name.is_some() {
+    if wants(SecretBackend::Gcp, config.secrets.gcp_secret_name.is_some()) {
+        let name = config.secrets.gcp_secret_name.clone().ok_or_else(|| {
+            AppError::Config("secrets.backend = gcp requires secrets.gcp_secret_name".into())
+        })?;
         let project = config.secrets.gcp_project.clone().ok_or_else(|| {
             AppError::Config(
                 "secrets.gcp_project is required when secrets.gcp_secret_name is set".into(),
             )
         })?;
-        let store = GcpSecretStore::new(project, config.secrets.gcp_secret_name.clone().unwrap());
+        let store = GcpSecretStore::new(project, name);
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "gcp-secrets"))]
-    if config.secrets.gcp_secret_name.is_some() {
+    if wants(SecretBackend::Gcp, config.secrets.gcp_secret_name.is_some()) {
         return Err(AppError::Config(
-            "secrets.gcp_secret_name is set but this binary was built without the \
+            "secrets backend 'gcp' selected but this binary was built without the \
              'gcp-secrets' feature"
                 .into(),
         ));
     }
 
     #[cfg(feature = "azure-secrets")]
-    if config.secrets.azure_vault_url.is_some() {
-        let vault_url = config.secrets.azure_vault_url.clone().unwrap();
+    if wants(
+        SecretBackend::Azure,
+        config.secrets.azure_vault_url.is_some(),
+    ) {
+        let vault_url = config.secrets.azure_vault_url.clone().ok_or_else(|| {
+            AppError::Config("secrets.backend = azure requires secrets.azure_vault_url".into())
+        })?;
         let secret_name = config
             .secrets
             .azure_secret_name
@@ -115,9 +139,12 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "azure-secrets"))]
-    if config.secrets.azure_vault_url.is_some() {
+    if wants(
+        SecretBackend::Azure,
+        config.secrets.azure_vault_url.is_some(),
+    ) {
         return Err(AppError::Config(
-            "secrets.azure_vault_url is set but this binary was built without the \
+            "secrets backend 'azure' selected but this binary was built without the \
              'azure-secrets' feature"
                 .into(),
         ));
@@ -127,8 +154,13 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
     // VTC's `vault_*` config fields mirror the VTA's, so the auth-method
     // parsing is not duplicated here.
     #[cfg(feature = "vault-secrets")]
-    if config.secrets.vault_addr.is_some() {
+    if wants(SecretBackend::Vault, config.secrets.vault_addr.is_some()) {
         let s = &config.secrets;
+        if s.vault_addr.is_none() {
+            return Err(AppError::Config(
+                "secrets.backend = vault requires secrets.vault_addr".into(),
+            ));
+        }
         let store =
             vti_secrets::seed_store::vault_from_params(&vti_secrets::seed_store::VaultParams {
                 addr: s.vault_addr.as_deref(),
@@ -149,57 +181,79 @@ pub fn create_secret_store(config: &AppConfig) -> Result<Box<dyn SecretStore>, A
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "vault-secrets"))]
-    if config.secrets.vault_addr.is_some() {
+    if wants(SecretBackend::Vault, config.secrets.vault_addr.is_some()) {
         return Err(AppError::Config(
-            "secrets.vault_addr is set but this binary was built without the \
+            "secrets backend 'vault' selected but this binary was built without the \
              'vault-secrets' feature"
                 .into(),
         ));
     }
 
     #[cfg(feature = "k8s-secrets")]
-    if config.secrets.k8s_secret_name.is_some() {
+    if wants(SecretBackend::K8s, config.secrets.k8s_secret_name.is_some()) {
+        let name = config.secrets.k8s_secret_name.clone().ok_or_else(|| {
+            AppError::Config("secrets.backend = k8s requires secrets.k8s_secret_name".into())
+        })?;
         let store = K8sSecretStore::new(
-            config.secrets.k8s_secret_name.clone().unwrap(),
+            name,
             config.secrets.k8s_namespace.clone(),
             config.secrets.k8s_secret_key.clone(),
         );
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "k8s-secrets"))]
-    if config.secrets.k8s_secret_name.is_some() {
+    if wants(SecretBackend::K8s, config.secrets.k8s_secret_name.is_some()) {
         return Err(AppError::Config(
-            "secrets.k8s_secret_name is set but this binary was built without the \
+            "secrets backend 'k8s' selected but this binary was built without the \
              'k8s-secrets' feature"
                 .into(),
         ));
     }
 
     #[cfg(feature = "config-secret")]
-    if config.secrets.secret.is_some() {
-        let store = ConfigSecretStore::new(config.secrets.secret.clone().unwrap());
+    if wants(SecretBackend::Config, config.secrets.secret.is_some()) {
+        let secret = config.secrets.secret.clone().ok_or_else(|| {
+            AppError::Config("secrets.backend = config requires secrets.secret".into())
+        })?;
+        let store = ConfigSecretStore::new(secret);
         return Ok(Box::new(store));
     }
     #[cfg(not(feature = "config-secret"))]
-    if config.secrets.secret.is_some() {
+    if wants(SecretBackend::Config, config.secrets.secret.is_some()) {
         return Err(AppError::Config(
-            "secrets.secret is set but this binary was built without the \
+            "secrets backend 'config' selected but this binary was built without the \
              'config-secret' feature"
                 .into(),
         ));
     }
 
+    // Keyring — the implicit default when nothing is selected, or an explicit
+    // `backend = "keyring"`. An explicit keyring selection on a binary built
+    // without the feature is a hard error (mirrors the cloud arms); the
+    // implicit path just falls through to plaintext when keyring isn't compiled.
+    #[cfg(not(feature = "keyring"))]
+    if matches!(explicit, Some(SecretBackend::Keyring)) {
+        return Err(AppError::Config(
+            "secrets backend 'keyring' selected but this binary was built without the \
+             'keyring' feature"
+                .into(),
+        ));
+    }
     #[cfg(feature = "keyring")]
-    {
+    if explicit.is_none() || matches!(explicit, Some(SecretBackend::Keyring)) {
         let store = KeyringSecretStore::new(&config.secrets.keyring_service, "vtc_secret");
         return Ok(Box::new(store));
     }
 
+    // Plaintext — explicit `backend = "plaintext"`, or the unconditional last
+    // resort when no keyring is compiled and nothing else matched.
     #[allow(unreachable_code)]
     {
-        tracing::warn!(
-            "no secure secret store backend available — falling back to plaintext file storage"
-        );
+        if !matches!(explicit, Some(SecretBackend::Plaintext)) {
+            tracing::warn!(
+                "no secure secret store backend available — falling back to plaintext file storage"
+            );
+        }
         let store =
             PlaintextSecretStore::with_filename(&config.store.data_dir, VTC_PLAINTEXT_FILENAME);
         Ok(Box::new(store))
@@ -283,5 +337,68 @@ mod tests {
         // not an error. Guards must only fire when a backend is *requested*.
         let config = base_config();
         assert!(create_secret_store(&config).is_ok());
+    }
+
+    // ---- explicit `secrets.backend` selector ------------------------------
+
+    use crate::config::SecretBackend;
+
+    #[test]
+    fn explicit_backend_uncompiled_is_config_error() {
+        // `backend = "vault"` on the keyring-only default test build fails
+        // closed (vault-secrets not compiled), same as the implicit path.
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::Vault);
+        assert_config_err_mentions(&config, "vault-secrets");
+    }
+
+    #[test]
+    fn explicit_aws_uncompiled_is_config_error() {
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::Aws);
+        assert_config_err_mentions(&config, "aws-secrets");
+    }
+
+    #[test]
+    fn explicit_keyring_selects_keyring() {
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::Keyring);
+        assert!(create_secret_store(&config).is_ok());
+    }
+
+    #[test]
+    fn explicit_plaintext_selects_plaintext() {
+        // Explicit plaintext is honoured even though keyring is compiled —
+        // the keyring arm is skipped when an explicit non-keyring backend is
+        // named.
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::Plaintext);
+        assert!(create_secret_store(&config).is_ok());
+    }
+
+    #[test]
+    fn explicit_backend_overrides_a_stray_implicit_field() {
+        // A leftover `vault_addr` would make the implicit path error (vault
+        // not compiled here), but an explicit `backend = "keyring"` wins
+        // outright and ignores it — no error, keyring selected.
+        let mut config = base_config();
+        config.secrets.vault_addr = Some("https://vault.internal:8200".into());
+        config.secrets.backend = Some(SecretBackend::Keyring);
+        assert!(
+            create_secret_store(&config).is_ok(),
+            "explicit backend must override a stray selector field"
+        );
+    }
+
+    // Only meaningful when the feature is actually compiled: an explicit
+    // backend whose required field is missing is a clear "requires" error
+    // rather than a silent fall-through.
+    #[cfg(feature = "vault-secrets")]
+    #[test]
+    fn explicit_vault_without_addr_reports_required_field() {
+        let mut config = base_config();
+        config.secrets.backend = Some(SecretBackend::Vault);
+        // vault_addr deliberately left None.
+        assert_config_err_mentions(&config, "requires secrets.vault_addr");
     }
 }

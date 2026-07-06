@@ -53,8 +53,11 @@ src/
 ├── routes/             Every HTTP route handler, sub-mounted by feature
 ├── routing/            Security headers, CSRF, body cap, governor middleware
 ├── setup/              `vtc setup` wizard: `wizard.rs` (interactive) +
-│                       `from_toml.rs` (`setup --from <toml>`). Both build one
-│                       `WizardPlan` and share the `apply` effect driver.
+│                       `from_toml.rs` (`setup --from <toml>`, phase 2) +
+│                       `phase1.rs` (`setup --setup-key-out`, mint the
+│                       ephemeral key for headless two-phase bring-up).
+│                       wizard + from_toml build one `WizardPlan` and share
+│                       the `apply` effect driver.
 ├── status_list/        Bitstring status list allocator + storage + serve route
 ├── store/              Re-export of vti-common's keyspace abstractions
 └── website/            Public website handler, bundle + deploy, default site

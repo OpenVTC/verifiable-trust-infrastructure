@@ -287,6 +287,35 @@ new flow, update both this section and the relevant `docs/*.md`.
   backend (OS keyring by default; AWS/GCP/Azure via feature flags).
 - **Docs**: `docs/02-vta/cold-start.md`, `docs/02-vta/non-interactive-setup.md`.
 
+### VTC first-boot setup (VTA-provisioned)
+- **What**: Stands up a VTC by provisioning its DID + keys from a running
+  VTA via the `vtc-host` DID template, then writing `config.toml`, the
+  `did.jsonl`, the sealed key bundle, and a one-shot admin install URL.
+  The VTC is **not** the key authority — the VTA mints; the VTC caches.
+- **Entry point**: `vtc setup` (interactive) or, for headless bring-up, a
+  **two-phase** flow mirroring mediator / did-hosting:
+  1. `vtc setup --setup-key-out <path> [--context <id>]` — mint + persist
+     an ephemeral `did:key` (0600) and print the `pnm contexts create …
+     --admin-did` grant command. Reuses the shared SDK helper
+     `vta_sdk::provision_client::driver::run_phase1_init`.
+  2. *(out of band)* an operator / CI step holding VTA admin runs that
+     grant — VTC deliberately never holds a VTA admin credential (no
+     self-grant), same as mediator / did-hosting.
+  3. `vtc setup --from <toml>` — load the now-authorised key
+     (`setup_key_file`) and provision end-to-end (no TTY).
+- **Secrets**: `[secrets] backend = "vault"|"k8s"|"aws"|"gcp"|"azure"|`
+  `"keyring"|"config"|"plaintext"` selects the store explicitly (validated,
+  fail-closed); omit for legacy implicit resolution. All backends except
+  TEE-KMS (a permanent VTC non-goal) are supported. Factory:
+  `vtc-service/src/keys/seed_store/mod.rs::create_secret_store`.
+- **Code**: `vtc-service/src/setup/{wizard,from_toml,phase1}.rs` (both
+  front-ends build one `WizardPlan` → shared `apply`),
+  `vtc-service/src/main.rs` (`setup` subcommand),
+  `vtc-service/src/config.rs` (`SecretBackend`).
+- **Docs**: `docs/03-vtc/non-interactive-setup.md`,
+  `docs/03-vtc/getting-started.md`,
+  `docs/03-vtc/examples/vtc-setup.example.toml`.
+
 ### Admin credential cold-start
 - **What**: Bootstrap the first operator without a running VTA.
 - **Flow**: PNM mints ephemeral `did:key` locally → operator runs

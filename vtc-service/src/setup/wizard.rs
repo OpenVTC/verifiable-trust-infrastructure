@@ -221,11 +221,19 @@ pub(crate) async fn apply(plan: WizardPlan) -> Result<SetupOutcome, AppError> {
     //    hex-encode the bundle into the config and let the config write
     //    carry it to disk instead of calling `.set()`.
     //    `secrets_choice_to_config` seeds `secret = Some("")` when the
-    //    operator picks the inline backend, so an `is_some()` secret is the
-    //    signal we took that path. Mirrors the VTA wizard's config-seed
-    //    handling in `vta-service/src/setup/interactive.rs`.
+    //    interactive operator picks the inline backend, so an `is_some()`
+    //    secret is one signal we took that path; an explicit
+    //    `backend = "config"` (the non-interactive selector, where the
+    //    operator leaves `secret` empty because the bundle is minted here)
+    //    is the other. Mirrors the VTA wizard's config-seed handling in
+    //    `vta-service/src/setup/interactive.rs`.
     let bundle_bytes = bundle.to_secret_store_bytes()?;
-    if app_config.secrets.secret.is_some() {
+    let inline_config_backend = app_config.secrets.secret.is_some()
+        || matches!(
+            app_config.secrets.backend,
+            Some(crate::config::SecretBackend::Config)
+        );
+    if inline_config_backend {
         app_config.secrets.secret = Some(hex::encode(&bundle_bytes));
         write_config_toml(&config_path, &app_config)?;
     } else {
@@ -1236,7 +1244,11 @@ fn provision_failed(msg: &str) -> AppError {
 }
 
 /// `OperatorMessages` impl for the vtc-host integration kind.
-struct VtcHostMessages;
+///
+/// Reused by the phase-1 `--setup-key-out` helper
+/// ([`super::run_setup_phase1`]) so the printed grant command matches
+/// the one the interactive/DIDComm provision paths reference.
+pub(crate) struct VtcHostMessages;
 
 impl OperatorMessages for VtcHostMessages {
     fn integration_label(&self) -> &str {

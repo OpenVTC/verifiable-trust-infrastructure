@@ -158,12 +158,15 @@ for the schema.
 There's one wrinkle: provisioning authenticates to the VTA with an
 ephemeral `did:key` that must be ACL-authorised *before* setup runs, and
 a non-interactive run can't pause to grant it (the interactive wizard's
-"press Enter once authorised" step). So it's a **two-phase** flow:
+"press Enter once authorised" step). So it's a **two-phase** flow — the
+same shape the mediator and did-hosting services use:
 
-1. Generate + persist an ephemeral setup key (the same JSON `pnm` writes)
-   and grant its `did:key` an admin ACL at the VTA:
+1. Mint + persist an ephemeral setup key (phase 1), then grant its
+   `did:key` an admin ACL at the VTA:
 
    ```sh
+   vtc setup --setup-key-out /srv/vtc/setup-key.json --context mycommunity
+   # prints the exact command to run next:
    pnm contexts create --id mycommunity --name "VTC" \
        --admin-did "did:key:z6Mk..." --admin-expires 1h
    # (or `pnm acl create ...` if the context already exists)
@@ -176,6 +179,10 @@ a non-interactive run can't pause to grant it (the interactive wizard's
    terse `key=value` block (including the install URL + claim code).
    The admin private key is **never** printed in non-interactive mode —
    re-run interactively if you need it.
+
+For the full walkthrough — including the secret-store `backend` selector
+and a Kubernetes example — see
+[`non-interactive-setup.md`](non-interactive-setup.md).
 
 ## Step 2 — Start the daemon
 

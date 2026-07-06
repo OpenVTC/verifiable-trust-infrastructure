@@ -4,20 +4,27 @@
 # unattended bring-up. Mirrors the decisions the interactive `vtc setup`
 # wizard collects via prompts. See docs/03-vtc/getting-started.md.
 #
-# IMPORTANT — the ephemeral setup key is a TWO-PHASE bridge.
-# Provisioning authenticates to the VTA with an ephemeral did:key whose
-# DID must already be ACL-authorised at the VTA. A non-interactive run
-# can't pause to grant it, so do this first, out of band:
+# IMPORTANT — the ephemeral setup key is a TWO-PHASE bridge (the same
+# shape the mediator and did-hosting services use). Provisioning
+# authenticates to the VTA with an ephemeral did:key whose DID must
+# already be ACL-authorised at the VTA. A non-interactive run can't pause
+# to grant it, so do this first, out of band:
 #
-#   1. Generate + persist an ephemeral setup key (the same JSON `pnm`
-#      writes via EphemeralSetupKey::persist_to), e.g. under
-#      ~/.config/vtc/setup-key.json (0600).
-#   2. Grant its did:key an admin ACL at the VTA:
+#   1. Mint + persist an ephemeral setup key (phase 1):
+#        vtc setup --setup-key-out /srv/vtc/setup-key.json --context <context>
+#      This writes the key (0600) and prints the exact `pnm contexts
+#      create … --admin-did <setup-did>` command to run next.
+#   2. Grant that did:key an admin ACL at the VTA (run the printed command
+#      on a host with PNM authenticated to the VTA):
 #        pnm contexts create --id <context> --name "VTC" \
 #          --admin-did <setup-did> --admin-expires 1h
 #      (or `pnm acl create ...` if the context already exists).
-#   3. Run: vtc setup --from vtc-setup.toml
+#   3. Provision (phase 2):
+#        vtc setup --from vtc-setup.toml
 #      with `setup_key_file` below pointing at that persisted key.
+#
+# See docs/03-vtc/non-interactive-setup.md for the full walkthrough
+# (incl. a Kubernetes example).
 
 # ── Required ────────────────────────────────────────────────────────────
 config_path    = "/srv/vtc/config.toml"
@@ -50,27 +57,57 @@ context = "default"   # the VTA context this community provisions under
 # in config.toml. The choice is security-sensitive — there is no implicit
 # default. Pick exactly one backend; the others are shown commented.
 [secrets]
-# OS keyring (default backend). Change `keyring_service` to run multiple
-# VTC instances on one machine.
+# `backend` selects the store explicitly (recommended for declarative /
+# K8s deploys). When set it wins outright and setup validates that its
+# required field(s) below are present. Accepts:
+#   keyring | vault | k8s | aws | gcp | azure | config | plaintext
+# Omit `backend` to keep the legacy "whichever field is set wins"
+# resolution. TEE-KMS is intentionally not a VTC backend.
+backend = "keyring"
+
+# OS keyring (backend = "keyring", the default). Change `keyring_service`
+# to run multiple VTC instances on one machine.
 keyring_service = "vtc"
 
-# AWS Secrets Manager (aws-secrets feature)
-# aws_secret_name = "vtc/prod/key-bundle"
-# aws_region      = "us-east-1"
+# HashiCorp Vault (backend = "vault", vault-secrets feature). In K8s,
+# `vault_auth_method = "kubernetes"` (the default) uses the pod's
+# ServiceAccount token — no static secret to mount.
+# backend            = "vault"
+# vault_addr         = "https://vault.internal:8200"
+# vault_secret_path  = "vtc/key-bundle"     # path under the KV v2 mount
+# vault_kv_mount     = "secret"             # default
+# vault_secret_key   = "seed"               # field in the KV secret (default)
+# vault_auth_method  = "kubernetes"         # kubernetes | token | approle
+# vault_k8s_role     = "vtc"                # Vault role bound to the SA
+# vault_namespace    = "team-a"             # Vault Enterprise, optional
 
-# GCP Secret Manager (gcp-secrets feature)
-# gcp_project     = "my-project"
-# gcp_secret_name = "vtc-prod-key-bundle"
-
-# Azure Key Vault (azure-secrets feature)
-# azure_vault_url   = "https://my-vault.vault.azure.net"
-# azure_secret_name = "vtc-prod-key-bundle"
-
-# Kubernetes Secret (k8s-secrets feature)
+# Kubernetes Secret (backend = "k8s", k8s-secrets feature). Reads the hex
+# bundle straight from a mounted/API Secret; namespace defaults to the
+# in-cluster ServiceAccount namespace when unset.
+# backend         = "k8s"
 # k8s_secret_name = "vtc-key-bundle"
 # k8s_namespace   = "vtc"
 # k8s_secret_key  = "secret"
 
-# Inline config-secret (dev/test): the hex key bundle is written into
-# this file's [secrets] secret by setup. Read-only at runtime.
-# secret = ""
+# AWS Secrets Manager (backend = "aws", aws-secrets feature)
+# backend         = "aws"
+# aws_secret_name = "vtc/prod/key-bundle"
+# aws_region      = "us-east-1"
+
+# GCP Secret Manager (backend = "gcp", gcp-secrets feature)
+# backend         = "gcp"
+# gcp_project     = "my-project"
+# gcp_secret_name = "vtc-prod-key-bundle"
+
+# Azure Key Vault (backend = "azure", azure-secrets feature)
+# backend           = "azure"
+# azure_vault_url   = "https://my-vault.vault.azure.net"
+# azure_secret_name = "vtc-prod-key-bundle"
+
+# Inline config-secret (backend = "config", dev/test): setup writes the
+# hex key bundle into this file's [secrets] secret. Read-only at runtime.
+# backend = "config"
+
+# Plaintext file (backend = "plaintext", NOT secure — dev/test only): the
+# bundle is written to <data_dir>/secret.plaintext.
+# backend = "plaintext"

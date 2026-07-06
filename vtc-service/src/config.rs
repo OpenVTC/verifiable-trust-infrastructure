@@ -429,9 +429,51 @@ pub struct ServerConfig {
 // (P0.8). Safe here — `SecretsConfig` carries no serde aliases; the
 // alias-bearing fields live on the parent `AppConfig`, which is intentionally
 // left lenient until the alias audit in the plan.
+/// Explicit secret-store backend selector.
+///
+/// When set on [`SecretsConfig::backend`], it wins outright over the
+/// legacy "whichever selector field is set" implicit resolution — so a
+/// declarative deploy (K8s, an immutable image) states its backend once
+/// and unambiguously, and `create_secret_store` validates that the
+/// backend's required fields are present rather than silently picking a
+/// different backend whose field happens to also be set. When unset
+/// (`None`), resolution is unchanged (implicit priority chain).
+///
+/// Variant → required field: `vault` → `vault_addr`, `k8s` →
+/// `k8s_secret_name`, `aws` → `aws_secret_name`, `gcp` → `gcp_secret_name`
+/// (+ `gcp_project`), `azure` → `azure_vault_url`, `config` → `secret`.
+/// `keyring` and `plaintext` need no field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SecretBackend {
+    /// OS keyring (the default when nothing is selected).
+    Keyring,
+    /// HashiCorp Vault (KV v2).
+    Vault,
+    /// Kubernetes `Secret`.
+    K8s,
+    /// AWS Secrets Manager.
+    Aws,
+    /// GCP Secret Manager.
+    Gcp,
+    /// Azure Key Vault.
+    Azure,
+    /// Hex secret inlined in `[secrets] secret` in config.toml (read-only).
+    Config,
+    /// Plaintext file under the data dir — NOT secure, dev/test only.
+    Plaintext,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretsConfig {
+    /// Explicit backend selector. When set, it overrides the implicit
+    /// "whichever selector field is set" resolution and `create_secret_store`
+    /// validates the chosen backend's required fields. Omit to keep the
+    /// legacy priority-chain behaviour. Accepts `keyring` | `vault` | `k8s`
+    /// | `aws` | `gcp` | `azure` | `config` | `plaintext`.
+    #[serde(default)]
+    pub backend: Option<SecretBackend>,
     /// Hex-encoded VTC key material (config-secret feature)
     pub secret: Option<String>,
     /// AWS Secrets Manager secret name (aws-secrets feature)
@@ -548,6 +590,7 @@ fn default_vault_approle_mount() -> String {
 impl std::fmt::Debug for SecretsConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SecretsConfig")
+            .field("backend", &self.backend)
             .field("secret", &self.secret.as_ref().map(|_| "<redacted>"))
             .field("aws_secret_name", &self.aws_secret_name)
             .field("aws_region", &self.aws_region)
@@ -587,6 +630,7 @@ impl std::fmt::Debug for SecretsConfig {
 impl Default for SecretsConfig {
     fn default() -> Self {
         Self {
+            backend: None,
             secret: None,
             aws_secret_name: None,
             aws_region: None,
@@ -992,6 +1036,41 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_backend_selector_parses_each_variant() {
+        // Every accepted spelling maps to its variant (kebab-case wire form).
+        for (wire, expected) in [
+            ("keyring", SecretBackend::Keyring),
+            ("vault", SecretBackend::Vault),
+            ("k8s", SecretBackend::K8s),
+            ("aws", SecretBackend::Aws),
+            ("gcp", SecretBackend::Gcp),
+            ("azure", SecretBackend::Azure),
+            ("config", SecretBackend::Config),
+            ("plaintext", SecretBackend::Plaintext),
+        ] {
+            let cfg: SecretsConfig =
+                toml::from_str(&format!("backend = \"{wire}\"")).expect("parse backend");
+            assert_eq!(cfg.backend, Some(expected), "wire form {wire:?}");
+        }
+    }
+
+    #[test]
+    fn secret_backend_omitted_is_none() {
+        // Back-compat: an existing `[secrets]` with no `backend` key parses
+        // to None (implicit resolution preserved).
+        let cfg: SecretsConfig = toml::from_str("keyring_service = \"vtc\"").expect("parse");
+        assert_eq!(cfg.backend, None);
+    }
+
+    #[test]
+    fn secret_backend_unknown_is_rejected() {
+        assert!(
+            toml::from_str::<SecretsConfig>("backend = \"hashicorp\"").is_err(),
+            "unknown backend spelling must be a parse error"
+        );
+    }
 
     #[test]
     fn secrets_config_debug_redacts_secret() {
