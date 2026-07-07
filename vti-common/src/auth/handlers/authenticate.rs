@@ -29,7 +29,7 @@ use vta_sdk::protocols::auth::{
 
 use crate::auth::AuthError;
 use crate::auth::backend::{AuthBackend, AuthenticateInput, SessionStore};
-use crate::auth::session::{SessionState, now_epoch};
+use crate::auth::session::{Session, SessionState, now_epoch};
 
 /// Default first-factor AMR; the transport layer (or step-up
 /// handler) can override by passing different values to
@@ -58,7 +58,7 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
 ) -> Result<AuthenticateResponse, B::Error> {
     // ---- Load + state-check session ----
 
-    let mut session = backend
+    let session = backend
         .sessions()
         .get_session(&input.session_id)
         .await
@@ -122,14 +122,19 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
 
     // ---- Mint tokens (acr-dependent TTL + Authenticated audit) ----
     //
-    // The shared minter centralises the `aal2` short-TTL hardening
-    // (M2 from the May 2026 security review — bound the blast radius
-    // of a leaked elevated token) so every mint path applies it
-    // identically.
+    // The authenticated session is **canonical and transport-agnostic**: keyed
+    // on the identity (the DID), not the ephemeral challenge handle. So the JWT
+    // `session_id` is the DID, and this session unifies with the intrinsic-
+    // sender (DIDComm/TSP) session for the same DID.
+    //
+    // The shared minter centralises the `aal2` short-TTL hardening (M2 from the
+    // May 2026 security review — bound the blast radius of a leaked elevated
+    // token) so every mint path applies it identically.
+    let did = session.did.clone();
     let minted = super::mint::mint_session_tokens(
         backend,
-        &session.did,
-        &session.session_id,
+        &did,
+        &did,
         &role_resolution.role,
         &role_resolution.contexts,
         &amr,
@@ -138,28 +143,48 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     )
     .await?;
 
-    // ---- Transition session + persist refresh index ----
-
-    session.state = SessionState::Authenticated;
-    session.refresh_token = Some(minted.refresh_token.clone());
-    session.refresh_expires_at = Some(minted.refresh_expires_at);
-    session.amr = amr.clone();
-    session.acr = acr.clone();
-    // Pin the access token to the session: the extractor rejects any token
-    // whose jti != this value, so only the just-minted token authenticates.
-    session.token_id = Some(minted.token_id.clone());
-    if let Some(pk) = input.session_pubkey_b58btc {
-        session.session_pubkey_b58btc = Some(pk);
-    }
+    // ---- Create the authenticated session, replace the challenge row ----
+    //
+    // Coalesce-per-DID: a fresh login overwrites any prior session for this
+    // identity, so one DID has one active refresh token (last-write-wins). The
+    // access token is pinned via `token_id` (the jti), so the previous login's
+    // access token is superseded immediately. The single-use challenge row (a
+    // distinct, ephemeral, uuid-keyed record) is deleted.
+    let auth_session = Session {
+        session_id: did.clone(),
+        did: did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now,
+        last_seen: now,
+        refresh_token: Some(minted.refresh_token.clone()),
+        refresh_expires_at: Some(minted.refresh_expires_at),
+        tee_attested: session.tee_attested,
+        amr: amr.clone(),
+        acr: acr.clone(),
+        acr_expires_at: None,
+        token_id: Some(minted.token_id.clone()),
+        session_pubkey_b58btc: input
+            .session_pubkey_b58btc
+            .or(session.session_pubkey_b58btc.clone()),
+    };
 
     backend
         .sessions()
-        .store_session(&session)
+        .store_session(&auth_session)
         .await
         .map_err(|e| AuthError::Internal(format!("store_session failed: {e:?}")))?;
+    // Remove the single-use challenge row (keyed on the ephemeral handle).
+    if input.session_id != did {
+        backend
+            .sessions()
+            .delete_session(&input.session_id)
+            .await
+            .map_err(|e| AuthError::Internal(format!("delete_session failed: {e:?}")))?;
+    }
     backend
         .sessions()
-        .store_refresh_index(&minted.refresh_token, &session.session_id)
+        .store_refresh_index(&minted.refresh_token, &did)
         .await
         .map_err(|e| AuthError::Internal(format!("store_refresh_index failed: {e:?}")))?;
 
@@ -167,8 +192,8 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
 
     Ok(AuthenticateResponse {
         session: WireSession {
-            id: session.session_id.clone(),
-            subject: session.did,
+            id: did.clone(),
+            subject: did,
             issued_at: epoch_to_rfc3339(minted.issued_at),
             expires_at: epoch_to_rfc3339(minted.access_expires_at),
             amr,

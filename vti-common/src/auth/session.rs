@@ -384,18 +384,24 @@ pub async fn cleanup_expired_sessions(
         let expired = match session.state {
             SessionState::ChallengeSent => now.saturating_sub(session.created_at) > challenge_ttl,
             SessionState::Authenticated => {
-                if session.session_id == session.did {
+                if session.refresh_token.is_some() {
+                    // REST/JWT session (has a refresh token) — bounded by its
+                    // refresh-token deadline. Now that REST sessions are also
+                    // DID-keyed, the presence of a refresh token, not the key
+                    // shape, is what marks a JWT session.
+                    session
+                        .refresh_expires_at
+                        .is_none_or(|expires| now > expires)
+                } else if session.session_id == session.did {
                     // Intrinsic-sender (DIDComm/TSP) canonical session — keyed on
-                    // the DID itself (session_id == did), no refresh token,
-                    // reaped on idle. Fall back to created_at for pre-migration
-                    // rows whose last_seen is unset (0).
+                    // the DID, no refresh token, reaped on idle. Fall back to
+                    // created_at for pre-migration rows whose last_seen is 0.
                     let last = session.last_seen.max(session.created_at);
                     now.saturating_sub(last) > INTRINSIC_SESSION_IDLE_TTL_SECS
                 } else {
-                    // REST/JWT session (UUID session_id): bounded by its
-                    // refresh-token deadline. Unchanged behaviour, including
-                    // recognise-style sessions with no refresh token, which
-                    // still expire on the next pass.
+                    // Transient authenticated rows with neither a refresh token
+                    // nor a DID key (e.g. VTC cross-community recognise sessions)
+                    // — unchanged: expire on the next pass.
                     session
                         .refresh_expires_at
                         .is_none_or(|expires| now > expires)

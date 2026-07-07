@@ -97,21 +97,20 @@ pub async fn handle_refresh<B: AuthBackend>(
 
     let (amr, acr) = super::refresh_amr_acr(&old_session);
 
-    // ---- 7. Delete old session ----
-
-    backend
-        .sessions()
-        .delete_session(&old_session.session_id)
-        .await
-        .map_err(|e| AuthError::Internal(format!("delete_session failed: {e:?}")))?;
-
-    // ---- 8. Re-look-up ACL role ----
+    // ---- 7. Re-look-up ACL role ----
 
     let role_resolution = backend.check_acl(&old_session.did).await?;
 
-    // ---- 9. Mint new session + tokens ----
-
-    let new_session_id = Uuid::new_v4().to_string();
+    // ---- 8. Mint rotated tokens ----
+    //
+    // The `session_id` is **stable** — it is the caller's DID, the canonical
+    // transport-agnostic session key. Only the refresh token and the access
+    // token's `jti` (`token_id`) rotate; the old refresh index was already
+    // claimed-and-deleted atomically in step 4, and the old access token is
+    // superseded by the new `token_id` pin. We overwrite `session:{did}` in
+    // place rather than delete-then-recreate, so a concurrent authed request
+    // never observes a momentarily-missing session.
+    let new_session_id = old_session.session_id.clone();
     let new_refresh_token = Uuid::new_v4().to_string();
     let new_token_id = Uuid::new_v4().to_string();
     let new_refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());

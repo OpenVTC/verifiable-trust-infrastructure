@@ -156,8 +156,19 @@ async fn di_signed_authenticate_issues_tokens() {
         "an access token is issued: {body}"
     );
 
-    // The session transitioned to Authenticated (so a replay can't re-auth).
-    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
+    // The response session is keyed on the DID (canonical, transport-agnostic).
+    assert_eq!(body["payload"]["session"]["id"], did, "{body}");
+
+    // The single-use challenge row is consumed (so a replay can't re-auth), and
+    // the authenticated session now lives under the DID, not the challenge id.
+    assert!(
+        vti_common::auth::session::get_session(&ctx.sessions_ks, &session_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the ephemeral challenge row must be consumed on authenticate"
+    );
+    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &did)
         .await
         .unwrap()
         .unwrap();
@@ -165,6 +176,7 @@ async fn di_signed_authenticate_issues_tokens() {
         stored.state,
         vti_common::auth::session::SessionState::Authenticated
     );
+    assert_eq!(stored.session_id, did, "session is keyed on the DID");
 
     // Replay the exact same document: the session is no longer ChallengeSent.
     let (replay_status, _) = send(&router, post("/auth/", serde_json::to_vec(&doc).unwrap())).await;
@@ -172,6 +184,51 @@ async fn di_signed_authenticate_issues_tokens() {
         replay_status,
         StatusCode::OK,
         "replaying the authenticate document must not re-authenticate"
+    );
+}
+
+/// Coalesce-per-DID: a second login for the same identity resolves the **same**
+/// `session:{did}` row (one session per DID), and the latest login's refresh
+/// token wins (last-write-wins).
+#[tokio::test]
+async fn second_login_for_same_did_coalesces_into_one_session() {
+    let (router, ctx) = build_test_app().await;
+    let sk = SigningKey::from_bytes(&[9u8; 32]);
+    let (did, mb) = did_key(&sk);
+    let vm = format!("{did}#{mb}");
+    seed_admin_acl(&ctx, &did).await;
+
+    // First login.
+    let (sid1, ch1) = obtain_challenge(&router, &did).await;
+    let doc1 = signed_authenticate_doc(&sk, &did, &vm, &ch1, &sid1);
+    let (s1, b1) = send(&router, post("/auth/", serde_json::to_vec(&doc1).unwrap())).await;
+    assert_eq!(s1, StatusCode::OK, "first login: {b1}");
+    let rt1 = b1["payload"]["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Second login for the same DID.
+    let (sid2, ch2) = obtain_challenge(&router, &did).await;
+    let doc2 = signed_authenticate_doc(&sk, &did, &vm, &ch2, &sid2);
+    let (s2, b2) = send(&router, post("/auth/", serde_json::to_vec(&doc2).unwrap())).await;
+    assert_eq!(s2, StatusCode::OK, "second login: {b2}");
+    let rt2 = b2["payload"]["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // One canonical session, keyed on the DID, holding the latest refresh token.
+    let stored = vti_common::auth::session::get_session(&ctx.sessions_ks, &did)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.session_id, did);
+    assert_ne!(rt1, rt2, "each login mints a distinct refresh token");
+    assert_eq!(
+        stored.refresh_token.as_deref(),
+        Some(rt2.as_str()),
+        "coalesce-per-DID: the latest login's refresh token wins"
     );
 }
 
