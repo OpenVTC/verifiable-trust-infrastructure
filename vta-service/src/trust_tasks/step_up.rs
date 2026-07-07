@@ -721,6 +721,28 @@ async fn maybe_push_step_up(
                 "failed to buffer delegated step-up push; relay fallback applies"
             );
         }
+
+        // Actually deliver it: send the approve-request straight to the
+        // approver's device over the mediator. `buffer_outbound` alone never
+        // reaches the device (nothing drains it in steady state); this is the
+        // send. The device replies later with a separate approve-response, so
+        // it's fire-and-forget. Best-effort — the reject already carries the
+        // approveRequest as the relay fallback.
+        if let Err(e) = state
+            .didcomm_bridge
+            .send_oneway(
+                "vta-main",
+                recipient,
+                STEP_UP_APPROVE_REQUEST_TYPE,
+                approve_request.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %e, approver = %recipient,
+                "delegated step-up push send failed; relay fallback applies"
+            );
+        }
     }
 
     // VTA-trigger: wake the approver's device via its push gateway so a

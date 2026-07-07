@@ -67,6 +67,42 @@ impl DIDCommBridge {
         self.service.get().cloned()
     }
 
+    /// Fire-and-forget: pack `body` as a DIDComm message to `recipient_did` and
+    /// send it via the mediator, **without** registering a pending reply. Used
+    /// for the delegated step-up push — the approver's device replies later via
+    /// a separate `approve-response` call, not as a DIDComm reply on this thread.
+    pub async fn send_oneway(
+        &self,
+        listener_id: &str,
+        recipient_did: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let service = self
+            .service
+            .get()
+            .ok_or_else(|| AppError::Internal("DIDComm service not initialized".into()))?;
+        let vta_did = service.listener_did(listener_id).await.ok_or_else(|| {
+            AppError::Internal(format!(
+                "listener '{listener_id}' not found in DIDComm service"
+            ))
+        })?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let msg = Message::build(uuid::Uuid::new_v4().to_string(), msg_type.to_string(), body)
+            .from(vta_did)
+            .to(recipient_did.to_string())
+            .created_time(now)
+            .finalize();
+        service
+            .send_message_with_retry(listener_id, msg, recipient_did, 3, Duration::from_secs(2))
+            .await
+            .map_err(|e| bad_gateway_error(format!("failed to send message: {e}")))?;
+        Ok(())
+    }
+
     /// Like [`send_and_wait`](Self::send_and_wait) but uses the
     /// caller-supplied `listener_id` instead of `self.listener_id`.
     /// Required when the VTA holds multiple listeners (e.g. during

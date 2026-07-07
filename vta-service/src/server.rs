@@ -1009,6 +1009,22 @@ pub async fn run(
                                 service.clone(),
                                 Arc::clone(&app_state.didcomm_websocket_status),
                             );
+                            // Register the config-loaded mediator in the listener
+                            // registry so the delegated step-up push (which buffers
+                            // outbound through the registry) can reach approvers on
+                            // this mediator. The runtime `services didcomm enable`
+                            // path calls `record_activate`; a mediator loaded from
+                            // config at boot did not, so `buffer_outbound` failed
+                            // with `NotRegistered` and the delegated push never
+                            // reached the device.
+                            #[cfg(feature = "webvh")]
+                            app_state
+                                .mediator_registry
+                                .record_activate(crate::messaging::registry::MediatorBinding {
+                                    mediator_did: messaging_config.mediator_did.clone(),
+                                    endpoint: messaging_config.mediator_url.clone(),
+                                })
+                                .await;
                             info!("DIDComm service started");
                             Some(service)
                         }
