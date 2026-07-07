@@ -255,6 +255,7 @@ pub trait AuthBackend: Send + Sync + 'static {
     /// surface. Each backend implements this method using whatever
     /// minter it holds; the canonical handler treats the return
     /// value as an opaque base64url-encoded JWS.
+    #[allow(clippy::too_many_arguments)]
     async fn mint_access_token(
         &self,
         subject: &str,
@@ -265,6 +266,9 @@ pub trait AuthBackend: Send + Sync + 'static {
         acr: &str,
         tee_attested: bool,
         ttl_secs: u64,
+        // Per-issue `jti` nonce; embedded in the token and pinned to the
+        // session's `token_id` so a freshly-minted token supersedes the prior.
+        jti: &str,
     ) -> Result<String, Self::Error>;
 
     // -------- Policy hooks --------

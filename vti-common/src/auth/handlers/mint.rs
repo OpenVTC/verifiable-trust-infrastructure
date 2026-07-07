@@ -26,6 +26,10 @@ pub struct MintedTokens {
     pub refresh_expires_at: u64,
     /// Epoch second the tokens were minted at.
     pub issued_at: u64,
+    /// The `jti` embedded in `access_token`. The caller MUST persist this as
+    /// the session's `token_id` so the extractor's pin matches — otherwise the
+    /// freshly-minted token would be rejected as superseded.
+    pub token_id: String,
 }
 
 /// Mint an access + refresh token pair for an already-authenticated
@@ -62,6 +66,7 @@ pub async fn mint_session_tokens<B: AuthBackend>(
         backend.access_token_ttl()
     };
     let refresh_token = Uuid::new_v4().to_string();
+    let token_id = Uuid::new_v4().to_string();
     let refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());
     let access_expires_at = now.saturating_add(access_ttl);
 
@@ -75,6 +80,7 @@ pub async fn mint_session_tokens<B: AuthBackend>(
             acr,
             tee_attested,
             access_ttl,
+            &token_id,
         )
         .await?;
 
@@ -92,6 +98,7 @@ pub async fn mint_session_tokens<B: AuthBackend>(
         access_expires_at,
         refresh_expires_at,
         issued_at: now,
+        token_id,
     })
 }
 
@@ -158,6 +165,7 @@ mod tests {
             _acr: &str,
             _tee_attested: bool,
             ttl_secs: u64,
+            _jti: &str,
         ) -> Result<String, AppError> {
             // Echo the applied TTL so the test can confirm which one was used.
             Ok(format!("token-ttl-{ttl_secs}"))

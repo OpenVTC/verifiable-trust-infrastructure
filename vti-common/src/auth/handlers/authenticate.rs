@@ -145,6 +145,9 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     session.refresh_expires_at = Some(minted.refresh_expires_at);
     session.amr = amr.clone();
     session.acr = acr.clone();
+    // Pin the access token to the session: the extractor rejects any token
+    // whose jti != this value, so only the just-minted token authenticates.
+    session.token_id = Some(minted.token_id.clone());
     if let Some(pk) = input.session_pubkey_b58btc {
         session.session_pubkey_b58btc = Some(pk);
     }

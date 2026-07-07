@@ -92,6 +92,7 @@ impl AuthBackend for VtaAuthBackend {
         acr: &str,
         tee_attested: bool,
         ttl_secs: u64,
+        jti: &str,
     ) -> Result<String, Self::Error> {
         let claims = self
             .jwt_keys
@@ -103,7 +104,8 @@ impl AuthBackend for VtaAuthBackend {
                 ttl_secs,
                 tee_attested,
             )
-            .with_aal(amr.to_vec(), acr.to_string());
+            .with_aal(amr.to_vec(), acr.to_string())
+            .with_jti(jti);
         self.jwt_keys
             .encode(&claims)
             .map_err(|e| AppError::Internal(format!("jwt encode failed: {e:?}")))

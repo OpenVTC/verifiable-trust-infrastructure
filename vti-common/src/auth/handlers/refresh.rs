@@ -113,6 +113,7 @@ pub async fn handle_refresh<B: AuthBackend>(
 
     let new_session_id = Uuid::new_v4().to_string();
     let new_refresh_token = Uuid::new_v4().to_string();
+    let new_token_id = Uuid::new_v4().to_string();
     let new_refresh_expires_at = now.saturating_add(backend.refresh_token_ttl());
     // M2: stepped-up sessions keep the shorter `aal2` TTL
     // across rotation (was previously dropping back to the
@@ -134,6 +135,7 @@ pub async fn handle_refresh<B: AuthBackend>(
             &acr,
             old_session.tee_attested,
             access_ttl,
+            &new_token_id,
         )
         .await?;
 
@@ -150,9 +152,10 @@ pub async fn handle_refresh<B: AuthBackend>(
         amr: amr.clone(),
         acr: acr.clone(),
         acr_expires_at: old_session.acr_expires_at,
+        // Pin the rotated access token to the new session row.
+        token_id: Some(new_token_id.clone()),
         // Inherit the per-session ephemeral pubkey across rotation;
         // the holder's DI-proof key didn't change.
-        token_id: None,
         session_pubkey_b58btc: old_session.session_pubkey_b58btc.clone(),
     };
 

@@ -613,7 +613,7 @@ pub async fn passkey_login_finish(
         amr: amr.clone(),
         acr: acr.clone(),
         acr_expires_at: None,
-        token_id: None,
+        token_id: Some(minted.token_id.clone()),
         session_pubkey_b58btc: None,
     };
     store_session(&state.sessions_ks, &session).await?;

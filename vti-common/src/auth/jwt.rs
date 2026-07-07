@@ -60,6 +60,16 @@ pub struct Claims {
     /// Empty when not categorised.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub acr: String,
+    /// JWT ID (RFC 7519 §4.1.7) — a per-issue nonce that pins this access
+    /// token to the session's current `token_id`. The extractor rejects a
+    /// token whose `jti` does not match `Session.token_id` (when that field is
+    /// set), so minting a fresh token immediately supersedes the prior one for
+    /// the same session. Load-bearing once a session_id stops rotating on
+    /// refresh; harmless before then (each session already has exactly one live
+    /// token). `#[serde(default)]` so pre-`jti` tokens deserialise with an empty
+    /// string and are treated as "no pin" by sessions that predate the field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub jti: String,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -165,6 +175,7 @@ impl JwtKeys {
             tee_attested,
             amr: Vec::new(),
             acr: String::new(),
+            jti: String::new(),
         }
     }
 }
@@ -184,6 +195,15 @@ impl Claims {
     /// ```ignore
     /// claims = claims.with_aal(vec!["did".into(), "passkey".into()], "aal2");
     /// ```
+    /// Builder-style setter for the `jti` pin. Minters call this after
+    /// [`JwtKeys::new_claims`] with the same value they persist as the
+    /// session's `token_id`, so the extractor's pin check matches. Defaults to
+    /// empty (no pin) when not called.
+    pub fn with_jti(mut self, jti: impl Into<String>) -> Self {
+        self.jti = jti.into();
+        self
+    }
+
     pub fn with_aal(mut self, amr: Vec<String>, acr: impl Into<String>) -> Self {
         self.amr = amr;
         self.acr = acr.into();
@@ -233,6 +253,40 @@ mod tests {
         assert_eq!(decoded.sub, "did:key:z6Mk");
         assert_eq!(decoded.role, "admin");
         assert!(!decoded.tee_attested);
+    }
+
+    #[test]
+    fn jti_defaults_empty_and_round_trips_when_set() {
+        let keys = test_keys();
+        // Default: no pin.
+        let plain = keys.new_claims(
+            "did:key:z6Mk".into(),
+            "s".into(),
+            "admin".into(),
+            vec![],
+            900,
+            false,
+        );
+        assert_eq!(plain.jti, "", "jti defaults empty (unpinned)");
+        assert!(!keys.encode(&plain).unwrap().is_empty());
+
+        // Pinned via the builder: survives encode → decode.
+        let pinned = keys
+            .new_claims(
+                "did:key:z6Mk".into(),
+                "s".into(),
+                "admin".into(),
+                vec![],
+                900,
+                false,
+            )
+            .with_jti("tok-abc123");
+        assert_eq!(pinned.jti, "tok-abc123");
+        let decoded = keys.decode(&keys.encode(&pinned).unwrap()).unwrap();
+        assert_eq!(
+            decoded.jti, "tok-abc123",
+            "jti must round-trip so the extractor pin can match"
+        );
     }
 
     #[test]

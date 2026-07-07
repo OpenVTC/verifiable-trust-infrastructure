@@ -110,6 +110,20 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
             return Err(AppError::Unauthorized("session not authenticated".into()));
         }
 
+        // jti pin: when the session records a `token_id`, only the token whose
+        // `jti` matches it authenticates. Minting a fresh token (login, refresh,
+        // step-up) rotates `token_id`, so every previously-issued access token
+        // for this session is superseded immediately — the mechanism that keeps
+        // a non-rotating session_id revocable. Skipped when `token_id` is unset
+        // (sessions written before this field, or intrinsic-sender sessions that
+        // carry no JWT), preserving their existing behaviour.
+        if let Some(ref pinned) = session.token_id
+            && claims.jti != *pinned
+        {
+            warn!(session_id = %claims.session_id, "auth rejected: token superseded (jti mismatch)");
+            return Err(AppError::Unauthorized("token superseded".into()));
+        }
+
         let role = Role::parse(&claims.role)?;
 
         Ok(AuthClaims {
