@@ -43,6 +43,10 @@ use vta_sdk::protocols::{
 pub struct VtaState {
     pub keys_ks: KeyspaceHandle,
     pub acl_ks: KeyspaceHandle,
+    /// Sessions keyspace — mirrored from `AppState` so intrinsic-sender
+    /// (DIDComm/TSP) auth can resolve + elevate the caller's canonical
+    /// DID-keyed session, exactly as the REST path does.
+    pub sessions_ks: KeyspaceHandle,
     pub contexts_ks: KeyspaceHandle,
     pub did_templates_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
@@ -153,6 +157,7 @@ impl From<&AppState> for VtaState {
         Self {
             keys_ks: state.keys_ks.clone(),
             acl_ks: state.acl_ks.clone(),
+            sessions_ks: state.sessions_ks.clone(),
             contexts_ks: state.contexts_ks.clone(),
             did_templates_ks: state.did_templates_ks.clone(),
             audit_ks: state.audit_ks.clone(),

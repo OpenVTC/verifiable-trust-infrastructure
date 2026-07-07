@@ -53,7 +53,7 @@ use crate::server::AppState;
 /// enumeration exposure, and a conformant Trust-Task client only understands
 /// binding envelopes (identical to the DIDComm path).
 pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str) -> Vec<u8> {
-    let outcome = match auth_from_did(sender_vid, &app_state.acl_ks).await {
+    let outcome = match auth_from_did(sender_vid, &app_state.acl_ks, &app_state.sessions_ks).await {
         Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(app_state, &auth, payload).await,
         Err(e) => crate::trust_tasks::reject_trust_task(
             payload,

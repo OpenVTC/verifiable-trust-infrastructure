@@ -592,11 +592,13 @@ impl TestAppContext {
             challenge: String::new(),
             state: SessionState::Authenticated,
             created_at: now,
+            last_seen: now,
             refresh_token: None,
             refresh_expires_at: None,
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
         };

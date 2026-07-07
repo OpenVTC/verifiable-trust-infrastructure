@@ -424,6 +424,13 @@ pub(super) async fn handle_approve_response(
         session.amr.push(factor.to_string());
     }
     session.acr = target.to_string(); // ≤ granted, enforced above
+    // Bound the elevation. For an intrinsic-sender (DIDComm/TSP) session — whose
+    // acr is read straight off this row on every subsequent message — the window
+    // is what stops a single approval from granting permanent aal2:
+    // `resolve_did_session` downgrades back to aal1 once it lapses. A REST
+    // session ignores this field for now (its short access-token TTL bounds
+    // elevation); a later phase wires REST into the same read-time downgrade.
+    session.acr_expires_at = Some(now_epoch().saturating_add(STEP_UP_ELEVATION_TTL_SECS));
     if let Err(e) = update_session(&state.sessions_ks, &session).await {
         return reject_with(
             &doc,
@@ -468,6 +475,12 @@ pub(super) async fn handle_approve_response(
 /// Target assurance level and lifetime for a minted step-up challenge.
 const STEP_UP_TARGET_ACR: &str = "aal2";
 const STEP_UP_TTL_SECS: u64 = 300;
+/// How long a step-up elevation stays in force on the elevated session, after
+/// which the raised `acr` lapses back to `aal1`. Matches the REST access-token
+/// lifetime so intrinsic-sender and REST callers see the same elevation window.
+/// A caller that received approval retries immediately, so this is comfortably
+/// long enough while keeping the standing grant short.
+const STEP_UP_ELEVATION_TTL_SECS: u64 = 900; // 15m
 
 /// Mint a pending step-up and build the `auth/step-up/approve-request/0.1`
 /// document the AAL1 caller hands to its approver (wallet / VTA).

@@ -606,11 +606,13 @@ pub async fn passkey_login_finish(
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: minted.issued_at,
+        last_seen: minted.issued_at,
         refresh_token: Some(minted.refresh_token.clone()),
         refresh_expires_at: Some(minted.refresh_expires_at),
         tee_attested: false,
         amr: amr.clone(),
         acr: acr.clone(),
+        acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
     };

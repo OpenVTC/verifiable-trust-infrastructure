@@ -26,6 +26,15 @@ pub struct Session {
     pub challenge: String,
     pub state: SessionState,
     pub created_at: u64,
+    /// Wall-clock epoch seconds of the most recent authenticated request on
+    /// this session. Intrinsic-sender (DIDComm/TSP) sessions carry no refresh
+    /// token, so this drives their idle-TTL expiry in
+    /// [`cleanup_expired_sessions`]. REST sessions set it too but are bounded
+    /// by `refresh_expires_at`. `#[serde(default)]` so rows written before this
+    /// field existed deserialise with `0`; the sweeper falls back to
+    /// `created_at` in that case.
+    #[serde(default)]
+    pub last_seen: u64,
     pub refresh_token: Option<String>,
     pub refresh_expires_at: Option<u64>,
     /// Whether the **challenge issued for this session** was accompanied
@@ -54,6 +63,15 @@ pub struct Session {
     pub amr: Vec<String>,
     #[serde(default)]
     pub acr: String,
+    /// Epoch-seconds deadline after which a step-up-elevated `acr` lapses back
+    /// to `aal1`. Set when a step-up elevates the session; read by the
+    /// intrinsic-sender resolver ([`resolve_did_session`]), which downgrades on
+    /// read once the window closes. `None` for an un-elevated session — and, in
+    /// this phase, for REST sessions, whose short access-token TTL already
+    /// bounds elevation (a later phase wires REST into the same read-time
+    /// downgrade). `#[serde(default)]` for back-compat with pre-existing rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acr_expires_at: Option<u64>,
     /// JWT `jti` rotation pin. Set per-token-issue so old JWTs are
     /// immediately invalidated when a new token is minted for the
     /// same session — the `AuthClaims` extractor compares the JWT's
@@ -87,6 +105,7 @@ impl std::fmt::Debug for Session {
             .field("challenge", &"<redacted>")
             .field("state", &self.state)
             .field("created_at", &self.created_at)
+            .field("last_seen", &self.last_seen)
             .field(
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "<redacted>"),
@@ -95,6 +114,7 @@ impl std::fmt::Debug for Session {
             .field("tee_attested", &self.tee_attested)
             .field("amr", &self.amr)
             .field("acr", &self.acr)
+            .field("acr_expires_at", &self.acr_expires_at)
             .field("token_id", &self.token_id.as_ref().map(|_| "<redacted>"))
             .field("session_pubkey_b58btc", &self.session_pubkey_b58btc)
             .finish()
@@ -151,6 +171,67 @@ pub async fn update_session(sessions: &KeyspaceHandle, session: &Session) -> Res
     sessions
         .insert(session_key(&session.session_id), session)
         .await
+}
+
+/// Idle lifetime for an intrinsic-sender (DIDComm/TSP) session. Such a session
+/// carries no refresh token, so it is reaped this many seconds after its last
+/// authenticated request rather than at a refresh-token deadline. REST sessions
+/// are bounded by `refresh_expires_at` and ignore this.
+pub const INTRINSIC_SESSION_IDLE_TTL_SECS: u64 = 86_400; // 24h
+
+/// Resolve the canonical session for an intrinsic-sender (DIDComm/TSP) caller,
+/// creating it on first sight. Keyed on the authenticated `did` so the same
+/// identity resolves **one** persistent session across messages and transports.
+/// That persistence is what lets a step-up elevation performed while handling
+/// one message be observed by the caller's subsequent messages — the whole
+/// point of a transport-agnostic session.
+///
+/// Semantics:
+/// - **Absent** → create an `Authenticated`, `aal1` session (single `did`
+///   factor), stamped `created_at = last_seen = now`, no refresh token.
+/// - **Present** → bump `last_seen`; if a step-up elevation has lapsed
+///   (`acr_expires_at` now in the past) downgrade `acr` back to `aal1` and drop
+///   the elevated factors, so the caller must re-step-up.
+///
+/// Returns the session as the caller should be seen *now* (post-downgrade) and
+/// persists any mutation. The returned `acr`/`amr` are what the AAL-gating
+/// handlers must trust — not a hardcoded `aal1`.
+pub async fn resolve_did_session(
+    sessions: &KeyspaceHandle,
+    did: &str,
+    now: u64,
+) -> Result<Session, AppError> {
+    if let Some(mut session) = get_session(sessions, did).await? {
+        session.last_seen = now;
+        if let Some(deadline) = session.acr_expires_at
+            && now >= deadline
+        {
+            session.acr = "aal1".to_string();
+            session.acr_expires_at = None;
+            session.amr = vec!["did".to_string()];
+        }
+        update_session(sessions, &session).await?;
+        Ok(session)
+    } else {
+        let session = Session {
+            session_id: did.to_string(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now,
+            last_seen: now,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["did".to_string()],
+            acr: "aal1".to_string(),
+            acr_expires_at: None,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+        store_session(sessions, &session).await?;
+        Ok(session)
+    }
 }
 
 /// Store a reverse index from refresh token to session_id.
@@ -276,7 +357,14 @@ pub async fn list_sessions(sessions: &KeyspaceHandle) -> Result<Vec<Session>, Ap
 /// Remove expired sessions from the store.
 ///
 /// - `ChallengeSent` sessions expire after `challenge_ttl` seconds from `created_at`.
-/// - `Authenticated` sessions expire when `refresh_expires_at` has passed.
+/// - `Authenticated` **REST** sessions (UUID `session_id`) expire when
+///   `refresh_expires_at` has passed — unchanged.
+/// - `Authenticated` **intrinsic-sender** sessions (DIDComm/TSP), identified by
+///   `session_id == did`, expire after [`INTRINSIC_SESSION_IDLE_TTL_SECS`] of
+///   idle since `last_seen` (falling back to `created_at` for rows written
+///   before the `last_seen` field existed). Without this branch such a session
+///   — which has `refresh_expires_at == None` — would hit the REST rule and be
+///   swept on the very next pass.
 pub async fn cleanup_expired_sessions(
     sessions: &KeyspaceHandle,
     challenge_ttl: u64,
@@ -295,9 +383,24 @@ pub async fn cleanup_expired_sessions(
 
         let expired = match session.state {
             SessionState::ChallengeSent => now.saturating_sub(session.created_at) > challenge_ttl,
-            SessionState::Authenticated => session
-                .refresh_expires_at
-                .is_none_or(|expires| now > expires),
+            SessionState::Authenticated => {
+                if session.session_id == session.did {
+                    // Intrinsic-sender (DIDComm/TSP) canonical session — keyed on
+                    // the DID itself (session_id == did), no refresh token,
+                    // reaped on idle. Fall back to created_at for pre-migration
+                    // rows whose last_seen is unset (0).
+                    let last = session.last_seen.max(session.created_at);
+                    now.saturating_sub(last) > INTRINSIC_SESSION_IDLE_TTL_SECS
+                } else {
+                    // REST/JWT session (UUID session_id): bounded by its
+                    // refresh-token deadline. Unchanged behaviour, including
+                    // recognise-style sessions with no refresh token, which
+                    // still expire on the next pass.
+                    session
+                        .refresh_expires_at
+                        .is_none_or(|expires| now > expires)
+                }
+            }
         };
 
         if expired {
@@ -367,11 +470,13 @@ mod tests {
             challenge: "test-challenge-hex".into(),
             state,
             created_at: now_epoch(),
+            last_seen: now_epoch(),
             refresh_token: None,
             refresh_expires_at: None,
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
         }
@@ -770,6 +875,106 @@ mod tests {
 
         let loaded = get_session(&ks, "sess-live").await.unwrap();
         assert!(loaded.is_some(), "live session must not be cleaned up");
+    }
+
+    // ── resolve_did_session (intrinsic-sender / DIDComm-TSP) ─────────
+
+    #[tokio::test]
+    async fn resolve_did_session_creates_aal1_keyed_on_did() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zResolveNew";
+        let now = now_epoch();
+        let s = resolve_did_session(&ks, did, now).await.unwrap();
+        assert_eq!(s.session_id, did, "canonical session_id is the DID itself");
+        assert_eq!(s.did, did);
+        assert_eq!(s.state, SessionState::Authenticated);
+        assert_eq!(s.acr, "aal1");
+        assert_eq!(s.amr, vec!["did".to_string()]);
+        assert!(
+            s.refresh_token.is_none(),
+            "intrinsic session has no refresh token"
+        );
+        assert_eq!(s.last_seen, now);
+        // Persisted under session:{did}: a second resolve reads the same row.
+        assert!(get_session(&ks, did).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn resolve_did_session_reports_elevation_within_window() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zResolveElevated";
+        let now = now_epoch();
+        // Create, then elevate the row exactly as the step-up handler does.
+        let mut s = resolve_did_session(&ks, did, now).await.unwrap();
+        s.acr = "aal2".into();
+        s.amr.push("did-signed".into());
+        s.acr_expires_at = Some(now + 900);
+        update_session(&ks, &s).await.unwrap();
+        // A later message (within the window) observes the elevation — the
+        // property that makes intrinsic-sender step-up take effect at all.
+        let seen = resolve_did_session(&ks, did, now + 60).await.unwrap();
+        assert_eq!(seen.acr, "aal2");
+        assert!(seen.amr.iter().any(|m| m == "did-signed"));
+    }
+
+    #[tokio::test]
+    async fn resolve_did_session_downgrades_after_window() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zResolveLapsed";
+        let now = now_epoch();
+        let mut s = resolve_did_session(&ks, did, now).await.unwrap();
+        s.acr = "aal2".into();
+        s.amr = vec!["did".into(), "did-signed".into()];
+        s.acr_expires_at = Some(now + 900);
+        update_session(&ks, &s).await.unwrap();
+        // Past the deadline → downgraded to aal1, factors reset, downgrade
+        // persisted so a single approval can't grant permanent aal2.
+        let seen = resolve_did_session(&ks, did, now + 901).await.unwrap();
+        assert_eq!(seen.acr, "aal1");
+        assert_eq!(seen.acr_expires_at, None);
+        assert_eq!(seen.amr, vec!["did".to_string()]);
+        let stored = get_session(&ks, did).await.unwrap().unwrap();
+        assert_eq!(stored.acr, "aal1");
+        assert_eq!(stored.acr_expires_at, None);
+    }
+
+    #[tokio::test]
+    async fn intrinsic_session_reaped_only_after_idle_ttl() {
+        let (ks, _dir) = temp_sessions_ks();
+        let did = "did:key:zIdle";
+        let mut s = resolve_did_session(&ks, did, now_epoch()).await.unwrap();
+        // Fresh: survives a sweep (session_id == did → idle-TTL branch).
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+        assert!(
+            get_session(&ks, did).await.unwrap().is_some(),
+            "a just-seen intrinsic session must not be reaped"
+        );
+        // Idle beyond the TTL: reaped.
+        s.last_seen = now_epoch().saturating_sub(INTRINSIC_SESSION_IDLE_TTL_SECS + 10);
+        s.created_at = s.last_seen;
+        update_session(&ks, &s).await.unwrap();
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+        assert!(
+            get_session(&ks, did).await.unwrap().is_none(),
+            "an idle intrinsic session must be reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn rest_session_sweep_rule_unchanged_for_uuid_sessions() {
+        let (ks, _dir) = temp_sessions_ks();
+        // UUID session_id != did → REST branch, bounded by refresh deadline.
+        let mut live = sample_session("uuid-live", "did:key:zRest", SessionState::Authenticated);
+        live.refresh_token = Some("rt-live".into());
+        live.refresh_expires_at = Some(now_epoch() + 3600);
+        store_session(&ks, &live).await.unwrap();
+        let mut dead = sample_session("uuid-dead", "did:key:zRest", SessionState::Authenticated);
+        dead.refresh_token = Some("rt-dead".into());
+        dead.refresh_expires_at = Some(now_epoch().saturating_sub(10));
+        store_session(&ks, &dead).await.unwrap();
+        cleanup_expired_sessions(&ks, 60).await.unwrap();
+        assert!(get_session(&ks, "uuid-live").await.unwrap().is_some());
+        assert!(get_session(&ks, "uuid-dead").await.unwrap().is_none());
     }
 
     // ── now_epoch ───────────────────────────────────────────────────

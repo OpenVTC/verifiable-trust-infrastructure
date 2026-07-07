@@ -68,11 +68,13 @@ async fn authed(ctx: &TestAppContext, role: &str, allowed_contexts: &[&str]) -> 
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: now_epoch(),
+        last_seen: now_epoch(),
         refresh_token: None,
         refresh_expires_at: Some(now_epoch() + 86_400),
         tee_attested: false,
         amr: vec!["did".to_string()],
         acr: "aal1".to_string(),
+        acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
     };

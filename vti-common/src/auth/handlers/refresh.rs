@@ -143,11 +143,13 @@ pub async fn handle_refresh<B: AuthBackend>(
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: now,
+        last_seen: now,
         refresh_token: Some(new_refresh_token.clone()),
         refresh_expires_at: Some(new_refresh_expires_at),
         tee_attested: old_session.tee_attested,
         amr: amr.clone(),
         acr: acr.clone(),
+        acr_expires_at: old_session.acr_expires_at,
         // Inherit the per-session ephemeral pubkey across rotation;
         // the holder's DI-proof key didn't change.
         token_id: None,

@@ -370,11 +370,13 @@ async fn emergency_bootstrap_clears_all_sessions_and_their_refresh_index() {
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: 0,
+        last_seen: 0,
         refresh_token: Some("refresh-token-1".into()),
         refresh_expires_at: Some(9_999_999_999),
         tee_attested: false,
         amr: vec![],
         acr: String::new(),
+        acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
     };

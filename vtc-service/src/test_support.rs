@@ -415,11 +415,13 @@ impl TestVtc {
             challenge: "test".into(),
             state: SessionState::Authenticated,
             created_at: now_epoch(),
+            last_seen: now_epoch(),
             refresh_token: None,
             refresh_expires_at: None,
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            acr_expires_at: None,
             token_id: None,
             session_pubkey_b58btc: None,
         };

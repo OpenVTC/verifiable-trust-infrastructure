@@ -29,11 +29,13 @@ async fn seed_session(
         challenge: String::new(),
         state: SessionState::Authenticated,
         created_at: now_epoch(),
+        last_seen: now_epoch(),
         refresh_token: Some(format!("rt-{session_id}")),
         refresh_expires_at,
         tee_attested: false,
         amr,
         acr: acr.into(),
+        acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: None,
     };

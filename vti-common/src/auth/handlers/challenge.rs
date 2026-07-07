@@ -68,11 +68,13 @@ pub async fn handle_challenge<B: AuthBackend>(
         challenge: challenge.clone(),
         state: SessionState::ChallengeSent,
         created_at,
+        last_seen: created_at,
         refresh_token: None,
         refresh_expires_at: None,
         tee_attested: attestation.attested,
         amr: Vec::new(),
         acr: String::new(),
+        acr_expires_at: None,
         token_id: None,
         session_pubkey_b58btc: input.session_pubkey_b58btc,
     };

@@ -95,7 +95,7 @@ fn problem_report_unauthorized(msg: impl Into<String>) -> DIDCommResponse {
 /// 4-line `match` each one repeated.
 macro_rules! protocol_auth {
     ($state:expr, $message:expr) => {
-        match auth_from_message(&$message, &$state.acl_ks).await {
+        match auth_from_message(&$message, &$state.acl_ks, &$state.sessions_ks).await {
             Ok(a) => a,
             Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
         }

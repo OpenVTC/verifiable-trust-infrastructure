@@ -155,7 +155,7 @@ where
     B: serde::de::DeserializeOwned,
     R: serde::Serialize,
 {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(gate.check(&auth));
     let body: B = serde_json::from_value(message.body).map_err(handler_err)?;
     let result = app_try!(op(auth, body).await);
@@ -174,7 +174,7 @@ async fn dispatch_no_body<R>(
 where
     R: serde::Serialize,
 {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(gate.check(&auth));
     let result = app_try!(op(auth).await);
     response(result_type, &result)
@@ -277,7 +277,9 @@ pub async fn handle_trust_task(
     // failure (e.g. the peer has no ACL entry) reply with a Trust-Task
     // `permission_denied` *envelope*, not a DIDComm problem-report — a
     // conformant Trust-Task client only understands binding envelopes.
-    let response = match auth_from_message(&message, &app_state.acl_ks).await {
+    let response = match auth_from_message(&message, &app_state.acl_ks, &app_state.sessions_ks)
+        .await
+    {
         Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await,
         Err(e) => crate::trust_tasks::reject_trust_task(
             &body,
@@ -611,7 +613,7 @@ pub async fn handle_swap_acl(
     let is_canonical = message.typ == acl_management::ACL_SWAP_KEY;
 
     // No require_manage(): self-service rotation of the caller's own entry.
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
 
     let (presentation, claimed_new_subject) = if is_canonical {
         let body: vta_sdk::protocols::acl_management::swap::SwapKeyBody =
@@ -1086,7 +1088,7 @@ pub async fn handle_restart(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(auth.require_super_admin());
     let _ = crate::audit::record(
         &state.audit_ks,
@@ -1116,7 +1118,7 @@ pub async fn handle_backup_export(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(auth.require_super_admin());
     let body: vta_sdk::protocols::backup_management::types::ExportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
@@ -1158,7 +1160,7 @@ pub async fn handle_backup_import(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     app_try!(auth.require_super_admin());
     let body: vta_sdk::protocols::backup_management::types::ImportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
@@ -1319,7 +1321,7 @@ pub async fn handle_provision_integration(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
 
     // Capture the VP exactly as received, before `message.body` is moved
     // into the typed deserialize. Verification must run over the holder's
@@ -1512,7 +1514,7 @@ pub async fn handle_update_did_webvh(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     let env: WebvhUpdateEnvelope<vta_sdk::protocols::did_management::update::UpdateDidWebvhBody> =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let did_resolver = state
@@ -1573,7 +1575,7 @@ pub async fn handle_rotate_did_webvh_keys(
     message: Message,
     Extension(state): Extension<Arc<VtaState>>,
 ) -> HandlerResult {
-    let auth = app_try!(auth_from_message(&message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &state.acl_ks, &state.sessions_ks).await);
     let env: WebvhUpdateEnvelope<
         vta_sdk::protocols::did_management::update::RotateDidWebvhKeysBody,
     > = serde_json::from_value(message.body).map_err(handler_err)?;
