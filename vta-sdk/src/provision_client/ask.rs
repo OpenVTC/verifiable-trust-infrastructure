@@ -32,6 +32,8 @@ pub const BUILTIN_VTA_ADMIN_TEMPLATE: &str = "vta-admin";
 pub const BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE: &str = "did-host-http-didcomm";
 pub const BUILTIN_DID_HOST_HTTP_TEMPLATE: &str = "did-host-http";
 pub const BUILTIN_DID_HOST_DIDCOMM_TEMPLATE: &str = "did-host-didcomm";
+pub const BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE: &str = "did-host-http-tsp";
+pub const BUILTIN_DID_HOST_TSP_TEMPLATE: &str = "did-host-tsp";
 
 /// Default validity on a wizard-issued VP for the online path — chosen to
 /// comfortably cover the round-trip with the verifier's ±5min skew margin
@@ -140,6 +142,40 @@ impl ProvisionAsk {
             Value::String(mediator_did.into()),
         );
         Self::for_template(BUILTIN_DID_HOST_DIDCOMM_TEMPLATE, vars, context)
+    }
+
+    /// Curated builder for the built-in `did-host-http-tsp` template.
+    /// Mints a node's DID with both a `WebVHHosting` service (HTTP
+    /// resolution endpoint) at `host_url` and a `TSPTransport` service
+    /// routed through `mediator_did` — but no DIDComm. Use for a TSP-only
+    /// node that also publishes DID logs over HTTP. Use
+    /// [`Self::did_host_http_didcomm`] if the node must also accept DIDComm.
+    pub fn did_host_http_tsp(
+        context: impl Into<String>,
+        host_url: impl Into<String>,
+        mediator_did: impl Into<String>,
+    ) -> Self {
+        let mut vars = BTreeMap::new();
+        vars.insert("URL".to_string(), Value::String(host_url.into()));
+        vars.insert(
+            "MEDIATOR_DID".to_string(),
+            Value::String(mediator_did.into()),
+        );
+        Self::for_template(BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE, vars, context)
+    }
+
+    /// Curated builder for the built-in `did-host-tsp` template.
+    /// Mints a witness/watcher/server DID that talks TSP through
+    /// `mediator_did` and exposes neither an HTTP resolution endpoint nor
+    /// DIDComm. The DID document carries only a `TSPTransport` service.
+    /// Use [`Self::did_host_didcomm`] if the node needs DIDComm instead.
+    pub fn did_host_tsp(context: impl Into<String>, mediator_did: impl Into<String>) -> Self {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "MEDIATOR_DID".to_string(),
+            Value::String(mediator_did.into()),
+        );
+        Self::for_template(BUILTIN_DID_HOST_TSP_TEMPLATE, vars, context)
     }
 
     /// Curated builder for the built-in `vta-admin` template — mint a

@@ -14,6 +14,8 @@ pub const BUILTIN_NAMES: &[&str] = &[
     "did-host-didcomm",
     "did-host-http",
     "did-host-http-didcomm",
+    "did-host-http-tsp",
+    "did-host-tsp",
     "didcomm-mediator",
     "push-gateway",
     "vta-admin",
@@ -29,6 +31,8 @@ const VTC_HOST: &str = include_str!("../../templates/vtc-host.json");
 const DID_HOST_HTTP_DIDCOMM: &str = include_str!("../../templates/did-host-http-didcomm.json");
 const DID_HOST_HTTP: &str = include_str!("../../templates/did-host-http.json");
 const DID_HOST_DIDCOMM: &str = include_str!("../../templates/did-host-didcomm.json");
+const DID_HOST_HTTP_TSP: &str = include_str!("../../templates/did-host-http-tsp.json");
+const DID_HOST_TSP: &str = include_str!("../../templates/did-host-tsp.json");
 
 /// Load a built-in template by name. Returns [`TemplateError::BuiltinNotFound`]
 /// for any name not in [`BUILTIN_NAMES`]. The legacy `webvh-*` / `did-hosting-*`
@@ -45,6 +49,8 @@ pub fn load_embedded(name: &str) -> Result<DidTemplate, TemplateError> {
         "did-host-http-didcomm" => DID_HOST_HTTP_DIDCOMM,
         "did-host-http" => DID_HOST_HTTP,
         "did-host-didcomm" => DID_HOST_DIDCOMM,
+        "did-host-http-tsp" => DID_HOST_HTTP_TSP,
+        "did-host-tsp" => DID_HOST_TSP,
         _ => return Err(TemplateError::BuiltinNotFound(name.to_string())),
     };
     let value: serde_json::Value = serde_json::from_str(raw)?;

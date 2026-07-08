@@ -1002,3 +1002,183 @@ fn ai_agent_builtin_missing_mediator_did_errors() {
         "got: {err}"
     );
 }
+
+// ─── did-host-http-tsp built-in ──────────────────────────────────────
+//
+// TSP-only sibling of did-host-http-didcomm: advertises WebVHHosting +
+// TSPTransport but NO DIDCommMessaging, for nodes that speak TSP over the
+// mediator and publish DID logs over HTTP.
+
+fn did_host_http_tsp_fixture_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmTEST:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkTESTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSTESTka");
+    vars.insert_string("URL", "https://host.example.com");
+    vars.insert_string(
+        "MEDIATOR_DID",
+        "did:webvh:QmMED:mediator.example.com:mediator",
+    );
+    vars
+}
+
+#[test]
+fn did_host_http_tsp_builtin_loads_and_validates() {
+    let tpl = load_embedded("did-host-http-tsp").expect("load_embedded");
+    assert_eq!(tpl.name, "did-host-http-tsp");
+    assert_eq!(tpl.kind, "did-host-http-tsp");
+    assert_eq!(tpl.methods, vec!["webvh", "web"]);
+    assert_eq!(tpl.required_vars, vec!["URL", "MEDIATOR_DID"]);
+    tpl.validate().expect("validate after load");
+}
+
+#[test]
+fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
+    let tpl = load_embedded("did-host-http-tsp").unwrap();
+    let doc = tpl.render(&did_host_http_tsp_fixture_vars()).unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    assert_eq!(
+        services.len(),
+        2,
+        "expected exactly two service entries (hosting + tsp), got {}: {services:?}",
+        services.len()
+    );
+    // HTTP resolution endpoint first, then TSP; no DIDComm entry.
+    assert_eq!(services[0]["type"], "WebVHHosting");
+    assert_eq!(
+        services[0]["serviceEndpoint"]["hostingPath"],
+        "/webvh",
+        "default hosting path applied"
+    );
+    assert_eq!(services[1]["id"], "did:webvh:QmTEST:example.com#tsp");
+    assert_eq!(services[1]["type"], "TSPTransport");
+    assert_eq!(
+        services[1]["serviceEndpoint"],
+        "did:webvh:QmMED:mediator.example.com:mediator"
+    );
+    assert!(
+        !services
+            .iter()
+            .any(|s| s["type"] == "DIDCommMessaging"
+                || s["type"] == json!(["DIDCommMessaging"])),
+        "did-host-http-tsp must not advertise DIDComm"
+    );
+}
+
+#[test]
+fn did_host_http_tsp_missing_mediator_did_errors() {
+    let tpl = load_embedded("did-host-http-tsp").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmTEST:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkTESTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSTESTka");
+    vars.insert_string("URL", "https://host.example.com");
+    // MEDIATOR_DID deliberately omitted.
+
+    let err = tpl
+        .render(&vars)
+        .expect_err("missing MEDIATOR_DID must error");
+    assert!(
+        matches!(&err, TemplateError::MissingVars(m) if m.contains("MEDIATOR_DID")),
+        "got: {err}"
+    );
+}
+
+// ─── did-host-tsp built-in ───────────────────────────────────────────
+//
+// TSP-only sibling of did-host-didcomm: a single TSPTransport service,
+// no HTTP and no DIDComm. The rendered-fixture comparison is a shape
+// regression guard — downstream services build against this exact shape.
+
+const DID_HOST_TSP_RENDERED_FIXTURE: &str =
+    include_str!("../../tests/fixtures/did-host-tsp.rendered.json");
+
+fn did_host_tsp_fixture_vars() -> TemplateVars {
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmTEST:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkTESTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSTESTka");
+    vars.insert_string(
+        "MEDIATOR_DID",
+        "did:webvh:QmMED:mediator.example.com:mediator",
+    );
+    vars
+}
+
+#[test]
+fn did_host_tsp_builtin_loads_and_validates() {
+    let tpl = load_embedded("did-host-tsp").expect("load_embedded");
+    assert_eq!(tpl.name, "did-host-tsp");
+    assert_eq!(tpl.kind, "did-host-tsp");
+    assert_eq!(tpl.methods, vec!["webvh"]);
+    assert_eq!(tpl.required_vars, vec!["MEDIATOR_DID"]);
+    tpl.validate().expect("validate after load");
+}
+
+#[test]
+fn did_host_tsp_builtin_renders_exact_document_shape() {
+    let tpl = load_embedded("did-host-tsp").unwrap();
+    let out = tpl.render(&did_host_tsp_fixture_vars()).unwrap();
+    let expected: Value =
+        serde_json::from_str(DID_HOST_TSP_RENDERED_FIXTURE).expect("fixture parses as JSON");
+    assert_eq!(
+        out, expected,
+        "rendered document diverged from fixture — if intentional, update tests/fixtures/did-host-tsp.rendered.json"
+    );
+}
+
+#[test]
+fn did_host_tsp_builtin_advertises_single_tsp_transport() {
+    // Exactly one service: TSP via the mediator. No HTTP, no DIDComm.
+    let tpl = load_embedded("did-host-tsp").unwrap();
+    let doc = tpl.render(&did_host_tsp_fixture_vars()).unwrap();
+    let services = doc["service"].as_array().expect("service is array");
+    assert_eq!(
+        services.len(),
+        1,
+        "expected exactly one service entry (tsp), got {}: {services:?}",
+        services.len()
+    );
+    assert_eq!(services[0]["id"], "did:webvh:QmTEST:example.com#tsp");
+    assert_eq!(services[0]["type"], "TSPTransport");
+    assert_eq!(
+        services[0]["serviceEndpoint"],
+        "did:webvh:QmMED:mediator.example.com:mediator"
+    );
+    assert!(
+        !services.iter().any(|s| s["type"] == "DIDCommMessaging"
+            || s["type"] == "WebVHHosting"),
+        "did-host-tsp must advertise neither DIDComm nor HTTP hosting"
+    );
+}
+
+#[test]
+fn did_host_tsp_builtin_context_is_did_v1_plus_cid_v1() {
+    let tpl = load_embedded("did-host-tsp").unwrap();
+    let doc = tpl.render(&did_host_tsp_fixture_vars()).unwrap();
+    assert_eq!(
+        doc["@context"],
+        json!([
+            "https://www.w3.org/ns/did/v1",
+            "https://www.w3.org/ns/cid/v1"
+        ])
+    );
+}
+
+#[test]
+fn did_host_tsp_builtin_missing_mediator_did_errors() {
+    let tpl = load_embedded("did-host-tsp").unwrap();
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "did:webvh:QmTEST:example.com");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkTESTsigning");
+    vars.insert_string("KA_KEY_MB", "z6LSTESTka");
+    // MEDIATOR_DID deliberately omitted.
+
+    let err = tpl
+        .render(&vars)
+        .expect_err("missing MEDIATOR_DID must error");
+    assert!(
+        matches!(&err, TemplateError::MissingVars(m) if m.contains("MEDIATOR_DID")),
+        "got: {err}"
+    );
+}

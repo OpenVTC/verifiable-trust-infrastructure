@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "name": "did-host-http-tsp",
+  "kind": "did-host-http-tsp",
+  "description": "DID-hosting node whose DID advertises both an HTTP resolution endpoint (WebVHHosting) AND a TSP endpoint (TSPTransport via a shared mediator) — but NO DIDComm. Use this for a TSP-only node that also publishes DID logs over HTTP (admin RPC, witness coordination, control-plane traffic all carried over TSP). A node that must also accept DIDComm should use 'did-host-http-didcomm'; a TSP-only node with no public URL should use 'did-host-tsp'; an HTTP-only node with no messaging transport should use 'did-host-http'.",
+  "methods": ["webvh", "web"],
+  "requiredVars": ["URL", "MEDIATOR_DID"],
+  "optionalVars": {
+    "HOSTING_PATH": "/webvh",
+    "WEBVH_SERVER": null
+  },
+  "defaults": {
+    "preRotationCount": 2,
+    "portable": false,
+    "addMediatorService": false
+  },
+  "document": {
+    "@context": [
+      "https://www.w3.org/ns/did/v1",
+      "https://www.w3.org/ns/cid/v1",
+      "https://w3id.org/security/multikey/v1"
+    ],
+    "id": "{DID}",
+    "verificationMethod": [
+      {
+        "id": "{DID}#key-0",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{SIGNING_KEY_MB}"
+      },
+      {
+        "id": "{DID}#key-1",
+        "type": "Multikey",
+        "controller": "{DID}",
+        "publicKeyMultibase": "{KA_KEY_MB}"
+      }
+    ],
+    "assertionMethod": ["{DID}#key-0"],
+    "authentication": ["{DID}#key-0"],
+    "keyAgreement": ["{DID}#key-1"],
+    "service": [
+      {
+        "id": "{DID}#webvh-hosting",
+        "type": "WebVHHosting",
+        "serviceEndpoint": {
+          "uri": "{URL}",
+          "hostingPath": "{HOSTING_PATH}"
+        }
+      },
+      {
+        "id": "{DID}#tsp",
+        "type": "TSPTransport",
+        "serviceEndpoint": "{MEDIATOR_DID}"
+      }
+    ]
+  }
+}

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### vta-sdk (0.18.18) — did-host TSP-only DID templates
+
+Two new built-in `did-host-*` templates let a VTA provision a node whose DID
+advertises **TSP without DIDComm**, closing the gap where the only
+mediator-carrying `did-host-*` templates advertised both transports
+unconditionally.
+
+Highlights:
+- Added `did-host-http-tsp` (WebVHHosting + TSPTransport, no DIDComm) and
+  `did-host-tsp` (TSPTransport only — no HTTP, no DIDComm), the TSP-only
+  siblings of `did-host-http-didcomm` / `did-host-didcomm`.
+- Registered both as built-ins (`BUILTIN_NAMES`, `load_embedded`) and exposed
+  curated `ProvisionAsk::did_host_http_tsp` / `did_host_tsp` builders plus
+  `BUILTIN_DID_HOST_HTTP_TSP_TEMPLATE` / `BUILTIN_DID_HOST_TSP_TEMPLATE`
+  constants.
+- The `#tsp` `TSPTransport` service points at the shared mediator, matching the
+  existing dual-transport templates; a rendered-shape fixture
+  (`did-host-tsp.rendered.json`) and per-template tests lock the document shape.
+- Purely additive — existing templates, names, and rendered shapes are
+  unchanged.
+
 ### vta-service (0.10.22) — self DID resolver refresh after runtime DID-log mutations
 
 `vta-service` now keeps its in-process resolver cache for the VTA's own DID in

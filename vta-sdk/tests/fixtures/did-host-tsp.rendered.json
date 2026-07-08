@@ -1,0 +1,31 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://www.w3.org/ns/cid/v1"
+  ],
+  "id": "did:webvh:QmTEST:example.com",
+  "verificationMethod": [
+    {
+      "id": "did:webvh:QmTEST:example.com#key-0",
+      "type": "Multikey",
+      "controller": "did:webvh:QmTEST:example.com",
+      "publicKeyMultibase": "z6MkTESTsigning"
+    },
+    {
+      "id": "did:webvh:QmTEST:example.com#key-1",
+      "type": "Multikey",
+      "controller": "did:webvh:QmTEST:example.com",
+      "publicKeyMultibase": "z6LSTESTka"
+    }
+  ],
+  "assertionMethod": ["did:webvh:QmTEST:example.com#key-0"],
+  "authentication": ["did:webvh:QmTEST:example.com#key-0"],
+  "keyAgreement": ["did:webvh:QmTEST:example.com#key-1"],
+  "service": [
+    {
+      "id": "did:webvh:QmTEST:example.com#tsp",
+      "type": "TSPTransport",
+      "serviceEndpoint": "did:webvh:QmMED:mediator.example.com:mediator"
+    }
+  ]
+}
