@@ -1046,8 +1046,7 @@ fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
     // HTTP resolution endpoint first, then TSP; no DIDComm entry.
     assert_eq!(services[0]["type"], "WebVHHosting");
     assert_eq!(
-        services[0]["serviceEndpoint"]["hostingPath"],
-        "/webvh",
+        services[0]["serviceEndpoint"]["hostingPath"], "/webvh",
         "default hosting path applied"
     );
     assert_eq!(services[1]["id"], "did:webvh:QmTEST:example.com#tsp");
@@ -1059,8 +1058,7 @@ fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
     assert!(
         !services
             .iter()
-            .any(|s| s["type"] == "DIDCommMessaging"
-                || s["type"] == json!(["DIDCommMessaging"])),
+            .any(|s| s["type"] == "DIDCommMessaging" || s["type"] == json!(["DIDCommMessaging"])),
         "did-host-http-tsp must not advertise DIDComm"
     );
 }
@@ -1146,8 +1144,9 @@ fn did_host_tsp_builtin_advertises_single_tsp_transport() {
         "did:webvh:QmMED:mediator.example.com:mediator"
     );
     assert!(
-        !services.iter().any(|s| s["type"] == "DIDCommMessaging"
-            || s["type"] == "WebVHHosting"),
+        !services
+            .iter()
+            .any(|s| s["type"] == "DIDCommMessaging" || s["type"] == "WebVHHosting"),
         "did-host-tsp must advertise neither DIDComm nor HTTP hosting"
     );
 }
