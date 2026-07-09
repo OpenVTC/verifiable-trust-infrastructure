@@ -232,7 +232,13 @@ pub struct StartupResult {
     pub source: SecretSource,
     /// The authenticated VTA client, if secrets were fetched live.
     /// `None` when secrets came from the local cache.
-    /// Services can use this for additional VTA calls (e.g., health checks).
+    ///
+    /// Its live DIDComm mediator session (if any) has **already been shut
+    /// down** by [`startup`] — the client is retained only for
+    /// REST-backed follow-up calls such as [`health`](crate::client::VtaClient::health),
+    /// which never touch the live session. Do **not** rely on it for
+    /// further DIDComm round-trips; open a fresh scoped client
+    /// ([`with_didcomm`](crate::client::VtaClient::with_didcomm)) for those.
     pub client: Option<crate::client::VtaClient>,
 }
 
@@ -285,6 +291,10 @@ impl From<VtaError> for VtaIntegrationError {
 ///
 /// Returns a [`StartupResult`] containing the service DID, secrets bundle,
 /// and whether the secrets are fresh or cached.
+///
+/// The DIDComm session used to fetch the bundle is **transient**: it is
+/// shut down before this function returns, so no auto-reconnecting
+/// mediator socket outlives the call. See [`StartupResult::client`].
 pub async fn startup(
     config: &VtaServiceConfig,
     cache: &(impl SecretCache + ?Sized),
@@ -305,6 +315,10 @@ pub async fn startup(
     match vta_result {
         Ok(Ok((client, bundle))) => {
             if bundle.secrets.is_empty() {
+                // Tear the transient session down before bailing — the
+                // early return would otherwise drop `client` without
+                // `shutdown()`, leaking a live session (see below).
+                client.shutdown().await;
                 return Err(VtaIntegrationError::EmptySecretsBundle(context_id.clone()));
             }
             if let Err(e) = cache.store(&bundle).await {
@@ -315,6 +329,20 @@ pub async fn startup(
                 secrets = bundle.secrets.len(),
                 "Loaded fresh secrets from VTA",
             );
+            // The bundle fetch is the only thing that needs the live
+            // DIDComm session. Shut it down here, at the source, so the
+            // auto-reconnecting mediator socket a DIDComm `VtaClient` owns
+            // can never outlive this call — regardless of whether the
+            // caller remembers to `shutdown()`. Callers (mediator boot +
+            // hourly `vta_refresh`) that drop `StartupResult.client`
+            // without shutting it down were leaking one live session per
+            // `startup()`; two live sessions for the same DID displace
+            // each other forever at the mediator's one-socket-per-DID
+            // gate, producing an endless duplicate-WebSocket churn storm.
+            // `shutdown()` is a no-op for REST and idempotent, so the
+            // returned client stays usable for REST-backed follow-ups
+            // (e.g. `health()`, which never uses the live session).
+            client.shutdown().await;
             Ok(StartupResult {
                 did: bundle.did.clone(),
                 bundle,
