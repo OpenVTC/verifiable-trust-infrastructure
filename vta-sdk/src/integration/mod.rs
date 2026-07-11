@@ -222,6 +222,41 @@ pub enum SecretSource {
     Cache,
 }
 
+/// Why [`startup`] fell back to the local cache instead of loading fresh
+/// secrets from the VTA. Present only when [`SecretSource::Cache`].
+///
+/// Callers use this to log the right severity and take the right action:
+/// [`AuthDenied`](Self::AuthDenied) is an authorization problem the
+/// operator must fix (the VTA rejected an otherwise-reachable request),
+/// whereas [`Unreachable`](Self::Unreachable)/[`Timeout`](Self::Timeout)
+/// are transient connectivity that a later refresh clears on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// The VTA answered but **rejected** the request — HTTP 401/403 or the
+    /// DIDComm `unauthorized`/`forbidden` problem-report. The credential or
+    /// its authorization (e.g. an expired ACL entry) needs attention;
+    /// re-fetching won't self-heal until that's resolved.
+    AuthDenied,
+    /// The VTA could not be reached (network/transport error, DIDComm
+    /// session failure, non-auth VTA error). Typically transient.
+    Unreachable,
+    /// The startup round-trip exceeded the configured timeout.
+    Timeout,
+}
+
+impl FallbackReason {
+    /// Classify a [`VtaError`] surfaced by a failed VTA round-trip into the
+    /// reason `startup` fell back to cache. `Auth` (401 / `unauthorized`)
+    /// and `Forbidden` (403 / `forbidden`) are authorization denials;
+    /// everything else is treated as unreachable.
+    fn from_vta_error(err: &VtaIntegrationError) -> Self {
+        match err {
+            VtaIntegrationError::Vta(e) if e.is_auth() => FallbackReason::AuthDenied,
+            _ => FallbackReason::Unreachable,
+        }
+    }
+}
+
 /// Successful result from [`startup`].
 pub struct StartupResult {
     /// The service's DID, as recorded in the VTA context.
@@ -240,6 +275,14 @@ pub struct StartupResult {
     /// further DIDComm round-trips; open a fresh scoped client
     /// ([`with_didcomm`](crate::client::VtaClient::with_didcomm)) for those.
     pub client: Option<crate::client::VtaClient>,
+    /// Why a VTA round-trip *failed* and forced the cached bundle. `Some`
+    /// only with [`SecretSource::Cache`], distinguishing an authorization
+    /// denial ([`FallbackReason::AuthDenied`]) from transient
+    /// unreachability so callers can log/alert appropriately. `None` when
+    /// secrets are fresh from the VTA ([`SecretSource::Vta`]) **or** when a
+    /// caller loaded the cache without attempting the VTA at all (no
+    /// failure to report).
+    pub fallback: Option<FallbackReason>,
 }
 
 /// Errors from the VTA integration startup flow.
@@ -348,15 +391,18 @@ pub async fn startup(
                 bundle,
                 source: SecretSource::Vta,
                 client: Some(client),
+                fallback: None,
             })
         }
         Ok(Err(e)) => {
+            let reason = FallbackReason::from_vta_error(&e);
             tracing::warn!(
                 context = context_id,
                 error = %e,
+                reason = ?reason,
                 "VTA call failed; attempting fallback to last-known cached bundle",
             );
-            load_from_cache(cache, context_id).await
+            load_from_cache(cache, context_id, reason).await
         }
         Err(_elapsed) => {
             tracing::warn!(
@@ -364,7 +410,7 @@ pub async fn startup(
                 timeout_secs = timeout.as_secs(),
                 "VTA startup timed out; attempting fallback to last-known cached bundle",
             );
-            load_from_cache(cache, context_id).await
+            load_from_cache(cache, context_id, FallbackReason::Timeout).await
         }
     }
 }
@@ -372,6 +418,7 @@ pub async fn startup(
 async fn load_from_cache(
     cache: &(impl SecretCache + ?Sized),
     context: &str,
+    reason: FallbackReason,
 ) -> Result<StartupResult, VtaIntegrationError> {
     match cache.load().await {
         Ok(Some(bundle)) => {
@@ -389,6 +436,7 @@ async fn load_from_cache(
                 bundle,
                 source: SecretSource::Cache,
                 client: None,
+                fallback: Some(reason),
             })
         }
         Ok(None) => {
@@ -494,22 +542,56 @@ mod tests {
     #[tokio::test]
     async fn load_from_cache_returns_fresh_bundle_when_present() {
         let cache = MockSecretCache::with_cached(sample_bundle());
-        let result = load_from_cache(&cache, "prod-mediator")
+        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::AuthDenied)
             .await
             .expect("cache hit returns StartupResult");
         assert_eq!(result.source, SecretSource::Cache);
         assert_eq!(result.did, "did:key:z6MkSampleIntegration");
         assert_eq!(result.bundle.secrets.len(), 1);
+        assert_eq!(
+            result.fallback,
+            Some(FallbackReason::AuthDenied),
+            "cache fallback carries the reason it was triggered",
+        );
         assert!(
             result.client.is_none(),
             "Cache-source startup never carries a live VtaClient",
         );
     }
 
+    #[test]
+    fn fallback_reason_classifies_auth_errors() {
+        use crate::error::VtaError;
+        // 401 / 403 → the VTA rejected the request: an authorization problem.
+        assert_eq!(
+            FallbackReason::from_vta_error(&VtaIntegrationError::Vta(VtaError::Forbidden(
+                "acl expired".into()
+            ))),
+            FallbackReason::AuthDenied,
+        );
+        assert_eq!(
+            FallbackReason::from_vta_error(&VtaIntegrationError::Vta(VtaError::Auth(
+                "token rejected".into()
+            ))),
+            FallbackReason::AuthDenied,
+        );
+        // Anything else is treated as (transient) unreachability.
+        assert_eq!(
+            FallbackReason::from_vta_error(&VtaIntegrationError::Vta(VtaError::NotFound(
+                "no context".into()
+            ))),
+            FallbackReason::Unreachable,
+        );
+        assert_eq!(
+            FallbackReason::from_vta_error(&VtaIntegrationError::NoCachedSecrets),
+            FallbackReason::Unreachable,
+        );
+    }
+
     #[tokio::test]
     async fn load_from_cache_empty_returns_no_cached_secrets() {
         let cache = MockSecretCache::empty();
-        let result = load_from_cache(&cache, "prod-mediator").await;
+        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Unreachable).await;
         match result {
             Err(VtaIntegrationError::NoCachedSecrets) => {}
             Err(other) => panic!("expected NoCachedSecrets, got {other:?}"),
@@ -520,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn load_from_cache_io_error_becomes_cache_error() {
         let cache = MockSecretCache::failing("keyring unavailable");
-        let result = load_from_cache(&cache, "prod-mediator").await;
+        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Unreachable).await;
         match result {
             Err(VtaIntegrationError::CacheError(msg)) => {
                 assert!(msg.contains("keyring unavailable"), "got: {msg}")
@@ -539,7 +621,7 @@ mod tests {
             did: "did:key:zEmpty".into(),
             secrets: vec![],
         });
-        let result = load_from_cache(&cache, "prod-mediator").await;
+        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Timeout).await;
         match result {
             Err(VtaIntegrationError::EmptySecretsBundle(ctx)) => {
                 assert_eq!(ctx, "prod-mediator")

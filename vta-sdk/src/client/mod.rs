@@ -15,6 +15,7 @@ use reqwest::{Client, RequestBuilder};
 // ── Internal transport ──────────────────────────────────────────────
 
 /// Stored credential for automatic token refresh.
+#[derive(Clone)]
 pub(super) struct AuthCredential {
     pub(super) did: String,
     pub(super) private_key_multibase: String,
@@ -538,6 +539,107 @@ impl VtaClient {
         Ok(())
     }
 
+    /// Force a **full** re-authentication (challenge-response), discarding
+    /// the cached access token *and* the refresh token. Unlike
+    /// [`ensure_token_valid`](Self::ensure_token_valid) — which trusts the
+    /// locally stored expiry — this is the reaction to the VTA actually
+    /// rejecting a request (401/403): the token the local clock believed
+    /// valid is stale server-side (clock skew, a VTA restart, or a
+    /// refresh-rotation desync), so both cached tokens are cleared before
+    /// re-authenticating from the stored credential.
+    ///
+    /// Returns `Ok(true)` if a re-auth ran, `Ok(false)` if no credential is
+    /// stored (nothing to retry with — e.g. a client given only a bare
+    /// token via [`set_token`](Self::set_token)).
+    pub(super) async fn force_reauth(
+        client: &Client,
+        base_url: &str,
+        auth: &tokio::sync::Mutex<RestAuth>,
+    ) -> Result<bool, VtaError> {
+        let cred = {
+            let mut guard = auth.lock().await;
+            let Some(cred) = guard.credential.clone() else {
+                return Ok(false);
+            };
+            // Invalidate every cached token up front so a racing
+            // `ensure_token_valid` can't hand back the just-rejected token.
+            guard.token = None;
+            guard.expires_at = None;
+            guard.refresh_token = None;
+            guard.refresh_expires_at = None;
+            cred
+        };
+
+        let result = crate::auth_light::challenge_response_light(
+            client,
+            base_url,
+            &cred.did,
+            &cred.private_key_multibase,
+            &cred.vta_did,
+        )
+        .await?;
+
+        let mut guard = auth.lock().await;
+        guard.token = Some(result.access_token);
+        guard.expires_at = Some(result.access_expires_at);
+        guard.refresh_token = result.refresh_token;
+        guard.refresh_expires_at = result.refresh_expires_at;
+        Ok(true)
+    }
+
+    /// Send an authenticated REST request, with a single reactive
+    /// re-auth-and-retry on a 401/403.
+    ///
+    /// Proactive refresh ([`ensure_token_valid`](Self::ensure_token_valid))
+    /// only reacts to the *local* clock; it can't catch a token the VTA
+    /// invalidated out-of-band. So if the response is `401`/`403`, we
+    /// [`force_reauth`](Self::force_reauth) once and replay the request,
+    /// turning a transient auth rejection into a self-heal instead of a
+    /// propagated error. The retry needs a cloneable request body
+    /// ([`RequestBuilder::try_clone`]); JSON bodies clone fine, streaming
+    /// bodies don't and simply skip the retry. A persistent denial (e.g. an
+    /// expired ACL entry) still surfaces — the replay is rejected too.
+    ///
+    /// `req` must be the request **before** the bearer token is attached;
+    /// this helper attaches it (and re-attaches the fresh one on retry).
+    pub(super) async fn send_authed(
+        client: &Client,
+        base_url: &str,
+        auth: &tokio::sync::Mutex<RestAuth>,
+        req: RequestBuilder,
+    ) -> Result<reqwest::Response, VtaError> {
+        Self::ensure_token_valid(client, base_url, auth).await?;
+        let retry_req = req.try_clone();
+        let token = auth.lock().await.token.clone();
+        let resp = Self::with_auth_token(req, &token).send().await?;
+
+        let status = resp.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) && let Some(retry_req) = retry_req
+        {
+            match Self::force_reauth(client, base_url, auth).await {
+                Ok(true) => {
+                    let token = auth.lock().await.token.clone();
+                    return Ok(Self::with_auth_token(retry_req, &token).send().await?);
+                }
+                // No credential to re-auth with — surface the original 401/403.
+                Ok(false) => {}
+                // Re-auth itself failed — keep the original response rather
+                // than masking the server's verdict with a transport error.
+                Err(e) => {
+                    tracing::debug!(
+                        %status,
+                        error = %e,
+                        "re-auth after auth rejection failed; surfacing original response"
+                    );
+                }
+            }
+        }
+        Ok(resp)
+    }
+
     /// Dispatch an RPC call via REST (using `build_rest`) or DIDComm (using
     /// `msg_type`/`body`/`result_type`), returning a deserialized response.
     #[allow(unused_variables)]
@@ -555,10 +657,8 @@ impl VtaClient {
                 base_url,
                 auth,
             } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth_token(req, &token).send().await?;
+                let resp = Self::send_authed(client, base_url, auth, req).await?;
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
@@ -586,10 +686,8 @@ impl VtaClient {
                 base_url,
                 auth,
             } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth_token(req, &token).send().await?;
+                let resp = Self::send_authed(client, base_url, auth, req).await?;
                 Self::handle_delete_response(resp).await
             }
             #[cfg(feature = "session")]
@@ -624,10 +722,8 @@ impl VtaClient {
                 base_url,
                 auth,
             } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth_token(req, &token).send().await?;
+                let resp = Self::send_authed(client, base_url, auth, req).await?;
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
@@ -655,10 +751,8 @@ impl VtaClient {
                 base_url,
                 auth,
             } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
                 let req = build_rest(client, base_url);
-                let resp = Self::with_auth_token(req, &token).send().await?;
+                let resp = Self::send_authed(client, base_url, auth, req).await?;
                 Self::handle_delete_response(resp).await
             }
             #[cfg(feature = "session")]
@@ -705,12 +799,10 @@ impl VtaClient {
                 base_url,
                 auth,
             } => {
-                Self::ensure_token_valid(client, base_url, auth).await?;
-                let token = auth.lock().await.token.clone();
                 let req = client
                     .post(format!("{base_url}/api/trust-tasks"))
                     .json(&doc);
-                let resp = Self::with_auth_token(req, &token).send().await?;
+                let resp = Self::send_authed(client, base_url, auth, req).await?;
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
