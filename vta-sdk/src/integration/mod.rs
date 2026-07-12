@@ -222,8 +222,9 @@ pub enum SecretSource {
     Cache,
 }
 
-/// Why [`startup`] fell back to the local cache instead of loading fresh
-/// secrets from the VTA. Present only when [`SecretSource::Cache`].
+/// Why [`startup_with_reason`] fell back to the local cache instead of
+/// loading fresh secrets from the VTA. Returned alongside a
+/// [`SecretSource::Cache`] result.
 ///
 /// Callers use this to log the right severity and take the right action:
 /// [`AuthDenied`](Self::AuthDenied) is an authorization problem the
@@ -275,14 +276,6 @@ pub struct StartupResult {
     /// further DIDComm round-trips; open a fresh scoped client
     /// ([`with_didcomm`](crate::client::VtaClient::with_didcomm)) for those.
     pub client: Option<crate::client::VtaClient>,
-    /// Why a VTA round-trip *failed* and forced the cached bundle. `Some`
-    /// only with [`SecretSource::Cache`], distinguishing an authorization
-    /// denial ([`FallbackReason::AuthDenied`]) from transient
-    /// unreachability so callers can log/alert appropriately. `None` when
-    /// secrets are fresh from the VTA ([`SecretSource::Vta`]) **or** when a
-    /// caller loaded the cache without attempting the VTA at all (no
-    /// failure to report).
-    pub fallback: Option<FallbackReason>,
 }
 
 /// Errors from the VTA integration startup flow.
@@ -333,7 +326,10 @@ impl From<VtaError> for VtaIntegrationError {
 /// If the VTA is unreachable, falls back to the last cached bundle.
 ///
 /// Returns a [`StartupResult`] containing the service DID, secrets bundle,
-/// and whether the secrets are fresh or cached.
+/// and whether the secrets are fresh or cached. Callers that need to know
+/// *why* a cache fallback happened (to log/alert differently for an
+/// authorization denial vs. transient unreachability) should use
+/// [`startup_with_reason`].
 ///
 /// The DIDComm session used to fetch the bundle is **transient**: it is
 /// shut down before this function returns, so no auto-reconnecting
@@ -342,6 +338,28 @@ pub async fn startup(
     config: &VtaServiceConfig,
     cache: &(impl SecretCache + ?Sized),
 ) -> Result<StartupResult, VtaIntegrationError> {
+    startup_with_reason(config, cache)
+        .await
+        .map(|(result, _reason)| result)
+}
+
+/// Like [`startup`], but also reports **why** it fell back to the cache.
+///
+/// On success the second tuple element is `None`. When the VTA round-trip
+/// fails and a cached bundle is served, it is `Some(reason)` —
+/// [`FallbackReason::AuthDenied`] for a 401/403, [`FallbackReason::Timeout`]
+/// when the round-trip timed out, or [`FallbackReason::Unreachable`] for any
+/// other transport/VTA error. Lets a caller (e.g. the mediator's periodic
+/// refresh) warn loudly on a standing authorization problem while keeping
+/// transient unreachability quiet.
+///
+/// Split out from [`startup`] rather than added to [`StartupResult`] so the
+/// struct's public shape is unchanged — adding a required field would break
+/// every downstream crate that constructs a `StartupResult`.
+pub async fn startup_with_reason(
+    config: &VtaServiceConfig,
+    cache: &(impl SecretCache + ?Sized),
+) -> Result<(StartupResult, Option<FallbackReason>), VtaIntegrationError> {
     let timeout = config.auth.timeout.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
     let context_id = &config.context.id;
 
@@ -386,13 +404,15 @@ pub async fn startup(
             // returned client stays usable for REST-backed follow-ups
             // (e.g. `health()`, which never uses the live session).
             client.shutdown().await;
-            Ok(StartupResult {
-                did: bundle.did.clone(),
-                bundle,
-                source: SecretSource::Vta,
-                client: Some(client),
-                fallback: None,
-            })
+            Ok((
+                StartupResult {
+                    did: bundle.did.clone(),
+                    bundle,
+                    source: SecretSource::Vta,
+                    client: Some(client),
+                },
+                None,
+            ))
         }
         Ok(Err(e)) => {
             let reason = FallbackReason::from_vta_error(&e);
@@ -402,7 +422,9 @@ pub async fn startup(
                 reason = ?reason,
                 "VTA call failed; attempting fallback to last-known cached bundle",
             );
-            load_from_cache(cache, context_id, reason).await
+            load_from_cache(cache, context_id)
+                .await
+                .map(|result| (result, Some(reason)))
         }
         Err(_elapsed) => {
             tracing::warn!(
@@ -410,7 +432,9 @@ pub async fn startup(
                 timeout_secs = timeout.as_secs(),
                 "VTA startup timed out; attempting fallback to last-known cached bundle",
             );
-            load_from_cache(cache, context_id, FallbackReason::Timeout).await
+            load_from_cache(cache, context_id)
+                .await
+                .map(|result| (result, Some(FallbackReason::Timeout)))
         }
     }
 }
@@ -418,7 +442,6 @@ pub async fn startup(
 async fn load_from_cache(
     cache: &(impl SecretCache + ?Sized),
     context: &str,
-    reason: FallbackReason,
 ) -> Result<StartupResult, VtaIntegrationError> {
     match cache.load().await {
         Ok(Some(bundle)) => {
@@ -436,7 +459,6 @@ async fn load_from_cache(
                 bundle,
                 source: SecretSource::Cache,
                 client: None,
-                fallback: Some(reason),
             })
         }
         Ok(None) => {
@@ -542,17 +564,12 @@ mod tests {
     #[tokio::test]
     async fn load_from_cache_returns_fresh_bundle_when_present() {
         let cache = MockSecretCache::with_cached(sample_bundle());
-        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::AuthDenied)
+        let result = load_from_cache(&cache, "prod-mediator")
             .await
             .expect("cache hit returns StartupResult");
         assert_eq!(result.source, SecretSource::Cache);
         assert_eq!(result.did, "did:key:z6MkSampleIntegration");
         assert_eq!(result.bundle.secrets.len(), 1);
-        assert_eq!(
-            result.fallback,
-            Some(FallbackReason::AuthDenied),
-            "cache fallback carries the reason it was triggered",
-        );
         assert!(
             result.client.is_none(),
             "Cache-source startup never carries a live VtaClient",
@@ -591,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn load_from_cache_empty_returns_no_cached_secrets() {
         let cache = MockSecretCache::empty();
-        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Unreachable).await;
+        let result = load_from_cache(&cache, "prod-mediator").await;
         match result {
             Err(VtaIntegrationError::NoCachedSecrets) => {}
             Err(other) => panic!("expected NoCachedSecrets, got {other:?}"),
@@ -602,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn load_from_cache_io_error_becomes_cache_error() {
         let cache = MockSecretCache::failing("keyring unavailable");
-        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Unreachable).await;
+        let result = load_from_cache(&cache, "prod-mediator").await;
         match result {
             Err(VtaIntegrationError::CacheError(msg)) => {
                 assert!(msg.contains("keyring unavailable"), "got: {msg}")
@@ -621,7 +638,7 @@ mod tests {
             did: "did:key:zEmpty".into(),
             secrets: vec![],
         });
-        let result = load_from_cache(&cache, "prod-mediator", FallbackReason::Timeout).await;
+        let result = load_from_cache(&cache, "prod-mediator").await;
         match result {
             Err(VtaIntegrationError::EmptySecretsBundle(ctx)) => {
                 assert_eq!(ctx, "prod-mediator")
