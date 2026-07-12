@@ -11,6 +11,19 @@ pub use vti_common::config::{
 // and every `crate::config::SecretsConfig` reference are unchanged.
 pub use vti_secrets::SecretsConfig;
 
+/// Policy Decision Point configuration.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct PolicyConfig {
+    /// When true, every dispatched Trust Task is evaluated by the PDP before its
+    /// handler runs, and a non-`allow` decision rejects the task. **Default
+    /// false** — enforcement is opt-in so a deployment turns it on deliberately,
+    /// after authoring policies. The boot-installed baseline allows current
+    /// flows, so enabling this changes nothing until an operator adds a
+    /// restrictive, higher-priority policy (expand-before-contract).
+    #[serde(default)]
+    pub enforcement: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
     pub vta_did: Option<String>,
@@ -41,6 +54,9 @@ pub struct AppConfig {
     /// password vault and the credential store.
     #[serde(default)]
     pub vault: VaultConfig,
+    /// Policy Decision Point settings (enforcement toggle).
+    #[serde(default)]
+    pub policy: PolicyConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
     /// Verifier DIDs the holder **auto-consents** to when answering a

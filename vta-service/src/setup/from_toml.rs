@@ -827,6 +827,7 @@ pub async fn apply_inputs(
         },
         audit: inputs.audit.clone(),
         vault: Default::default(),
+        policy: Default::default(),
         secrets: secrets_config,
         #[cfg(feature = "tee")]
         tee: Default::default(),
@@ -1277,6 +1278,7 @@ fn scratch_config_for_seed_store(
         auth: AuthConfig::default(),
         audit: Default::default(),
         vault: Default::default(),
+        policy: Default::default(),
         secrets,
         #[cfg(feature = "tee")]
         tee: Default::default(),

@@ -64,6 +64,7 @@ mod memory;
 mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+mod policy_gate;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod replay;
@@ -413,20 +414,29 @@ pub(crate) async fn dispatch_trust_task_core(
         (action, resource, context_id, detail)
     });
 
-    let outcome = if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
-        let mut doc = doc;
-        wire_v0_2::downconvert_request(&mut doc.payload, spec);
-        if let Ok(uri_0_1) = spec.uri_0_1.parse() {
-            doc.type_uri = uri_0_1;
+    // Policy Decision Point gate — evaluated before dispatch. A no-op unless
+    // `config.policy.enforcement` is on; when a policy denies (or demands
+    // step-up/consent), the task is rejected here and never reaches its handler.
+    // A rejected task still flows through the audit tail below.
+    let outcome = match policy_gate::policy_gate(state, auth, &type_uri, &doc.payload).await {
+        Err(reason) => reject_with(&doc, reason),
+        Ok(()) => {
+            if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
+                let mut doc = doc;
+                wire_v0_2::downconvert_request(&mut doc.payload, spec);
+                if let Ok(uri_0_1) = spec.uri_0_1.parse() {
+                    doc.type_uri = uri_0_1;
+                }
+                let outcome = WIRE_VERSION
+                    .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
+                    .await;
+                wire_v0_2::upconvert_response(outcome, spec)
+            } else {
+                WIRE_VERSION
+                    .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
+                    .await
+            }
         }
-        let outcome = WIRE_VERSION
-            .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
-            .await;
-        wire_v0_2::upconvert_response(outcome, spec)
-    } else {
-        WIRE_VERSION
-            .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
-            .await
     };
 
     if let Some((action, resource, context_id, detail)) = vault_audit {
