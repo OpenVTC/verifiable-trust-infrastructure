@@ -114,7 +114,13 @@ mod tests {
         (ks, dir)
     }
 
-    fn module(id: &str, priority: i32, enabled: bool, applies_to: Vec<String>, rego: &str) -> PolicyModule {
+    fn module(
+        id: &str,
+        priority: i32,
+        enabled: bool,
+        applies_to: Vec<String>,
+        rego: &str,
+    ) -> PolicyModule {
         PolicyModule {
             id: id.into(),
             name: id.into(),
@@ -146,10 +152,18 @@ mod tests {
     #[tokio::test]
     async fn load_active_filters_disabled_and_context() {
         let (ks, _dir) = temp_policy_ks().await;
-        store_policy(&ks, &module("global", 0, true, vec![], ALLOW)).await.unwrap();
-        store_policy(&ks, &module("disabled", 0, false, vec![], ALLOW)).await.unwrap();
-        store_policy(&ks, &module("ctxA", 5, true, vec!["ctxA".into()], ALLOW)).await.unwrap();
-        store_policy(&ks, &module("ctxB", 5, true, vec!["ctxB".into()], ALLOW)).await.unwrap();
+        store_policy(&ks, &module("global", 0, true, vec![], ALLOW))
+            .await
+            .unwrap();
+        store_policy(&ks, &module("disabled", 0, false, vec![], ALLOW))
+            .await
+            .unwrap();
+        store_policy(&ks, &module("ctxA", 5, true, vec!["ctxA".into()], ALLOW))
+            .await
+            .unwrap();
+        store_policy(&ks, &module("ctxB", 5, true, vec!["ctxB".into()], ALLOW))
+            .await
+            .unwrap();
 
         let active = load_active_for_context(&ks, "ctxA").await.unwrap();
         // global (all contexts) + ctxA — not disabled, not ctxB.
@@ -159,8 +173,21 @@ mod tests {
     #[tokio::test]
     async fn load_active_skips_uncompilable_policy() {
         let (ks, _dir) = temp_policy_ks().await;
-        store_policy(&ks, &module("good", 0, true, vec![], ALLOW)).await.unwrap();
-        store_policy(&ks, &module("broken", 0, true, vec![], "package vta.policy\ndecision := {")).await.unwrap();
+        store_policy(&ks, &module("good", 0, true, vec![], ALLOW))
+            .await
+            .unwrap();
+        store_policy(
+            &ks,
+            &module(
+                "broken",
+                0,
+                true,
+                vec![],
+                "package vta.policy\ndecision := {",
+            ),
+        )
+        .await
+        .unwrap();
         // The broken row is skipped (logged), not fatal.
         let active = load_active_for_context(&ks, "any").await.unwrap();
         assert_eq!(active.len(), 1, "only the compilable policy loads");

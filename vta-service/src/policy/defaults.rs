@@ -50,7 +50,10 @@ pub async fn install_default_policy(
         updated_at: now_rfc3339.to_string(),
     };
     storage::store_policy(policy_ks, &baseline).await?;
-    tracing::info!(policy = DEFAULT_POLICY_ID, "installed default PDP baseline policy");
+    tracing::info!(
+        policy = DEFAULT_POLICY_ID,
+        "installed default PDP baseline policy"
+    );
     Ok(())
 }
 
@@ -72,19 +75,24 @@ mod tests {
     #[test]
     fn embedded_default_compiles() {
         // The shipped baseline must always be valid Rego.
-        super::super::engine::compile(DEFAULT_POLICY_REGO, "default").expect("default.rego compiles");
+        super::super::engine::compile(DEFAULT_POLICY_REGO, "default")
+            .expect("default.rego compiles");
     }
 
     #[tokio::test]
     async fn installs_when_empty_and_is_idempotent() {
         let (ks, _dir) = temp_ks().await;
-        install_default_policy(&ks, "2026-01-01T00:00:00Z").await.unwrap();
+        install_default_policy(&ks, "2026-01-01T00:00:00Z")
+            .await
+            .unwrap();
         let after_first = storage::list_policies(&ks).await.unwrap();
         assert_eq!(after_first.len(), 1);
         assert_eq!(after_first[0].id, DEFAULT_POLICY_ID);
 
         // Second call is a no-op.
-        install_default_policy(&ks, "2026-02-02T00:00:00Z").await.unwrap();
+        install_default_policy(&ks, "2026-02-02T00:00:00Z")
+            .await
+            .unwrap();
         assert_eq!(storage::list_policies(&ks).await.unwrap().len(), 1);
     }
 
@@ -95,7 +103,8 @@ mod tests {
             id: "operator".into(),
             name: "op".into(),
             description: None,
-            module: "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\"}".into(),
+            module: "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\"}"
+                .into(),
             applies_to: vec![],
             priority: 100,
             enabled: true,
@@ -104,7 +113,9 @@ mod tests {
             updated_at: "x".into(),
         };
         storage::store_policy(&ks, &op).await.unwrap();
-        install_default_policy(&ks, "2026-01-01T00:00:00Z").await.unwrap();
+        install_default_policy(&ks, "2026-01-01T00:00:00Z")
+            .await
+            .unwrap();
         // Non-empty keyspace ⇒ baseline NOT installed.
         let all = storage::list_policies(&ks).await.unwrap();
         assert_eq!(all.len(), 1);

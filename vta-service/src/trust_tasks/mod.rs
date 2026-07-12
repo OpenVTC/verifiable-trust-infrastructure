@@ -854,7 +854,10 @@ mod tests {
 
         let proxy = class_for(vta_sdk::trust_tasks::TASK_VAULT_PROXY_LOGIN_0_1)
             .expect("proxy-login is classified");
-        assert!(proxy.exposure.acts_as_subject, "proxy-login acts as the subject");
+        assert!(
+            proxy.exposure.acts_as_subject,
+            "proxy-login acts as the subject"
+        );
 
         let seed = class_for(vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0)
             .expect("seed export is classified");

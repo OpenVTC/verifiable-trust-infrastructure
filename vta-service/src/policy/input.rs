@@ -77,7 +77,11 @@ mod tests {
     #[test]
     fn uses_supplied_class_and_extracts_subject_and_context() {
         let payload = json!({ "did": "did:webvh:abc", "contextId": "ctxA", "foo": 1 });
-        let class = Some(TaskClass::new(SideEffectLevel::Destructive, Discloses::None, false));
+        let class = Some(TaskClass::new(
+            SideEffectLevel::Destructive,
+            Discloses::None,
+            false,
+        ));
         let input = build_policy_input("https://…/delete/0.1", &payload, "did:key:zCaller", class);
 
         assert_eq!(input.request.side_effects, SideEffectLevel::Destructive);
@@ -93,7 +97,10 @@ mod tests {
         assert_eq!(input.request.side_effects, SideEffectLevel::Mutating);
         assert_eq!(input.request.exposure.discloses, Discloses::Secret);
         assert!(input.request.exposure.acts_as_subject);
-        assert_eq!(input.context_id, "default", "missing context falls back to default");
+        assert_eq!(
+            input.context_id, "default",
+            "missing context falls back to default"
+        );
         assert!(input.request.subject.is_none());
     }
 

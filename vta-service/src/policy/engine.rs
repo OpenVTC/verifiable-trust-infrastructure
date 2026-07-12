@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use regorus::utils::limits::{ExecutionTimerConfig, LimitError};
 use regorus::{Engine, Value as RegoValue};
-use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use vti_common::error::AppError;
 
@@ -149,7 +148,9 @@ pub fn evaluate_decision(
     let value = raw.pointer("/result/0/expressions/0/value");
     match value {
         None => Ok(None),
-        Some(v) if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) => {
+        Some(v)
+            if v.is_null() || (v.is_object() && v.as_object().is_some_and(|m| m.is_empty())) =>
+        {
             Ok(None)
         }
         Some(v) => {

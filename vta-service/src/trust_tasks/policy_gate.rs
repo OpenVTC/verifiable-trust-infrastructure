@@ -40,7 +40,8 @@ pub(super) async fn policy_gate(
     let class = super::class_for(type_uri);
     let input = policy::build_policy_input(type_uri, payload, &auth.did, class);
 
-    let policies = match policy::load_active_for_context(&state.policy_ks, &input.context_id).await {
+    let policies = match policy::load_active_for_context(&state.policy_ks, &input.context_id).await
+    {
         Ok(p) => p,
         Err(e) => {
             // Fail closed: if we can't load policy, we don't dispatch.
@@ -66,13 +67,19 @@ pub(super) async fn policy_gate(
         Disposition::RequireStepUp => Err(RejectReason::PermissionDenied {
             reason: format!(
                 "step-up required: {}",
-                decision.explanation.as_deref().unwrap_or("policy requires step-up")
+                decision
+                    .explanation
+                    .as_deref()
+                    .unwrap_or("policy requires step-up")
             ),
         }),
         Disposition::RequireConsent => Err(RejectReason::PermissionDenied {
             reason: format!(
                 "consent required: {}",
-                decision.explanation.as_deref().unwrap_or("policy requires approver consent")
+                decision
+                    .explanation
+                    .as_deref()
+                    .unwrap_or("policy requires approver consent")
             ),
         }),
     }
@@ -98,8 +105,7 @@ mod tests {
         }
     }
 
-    const DENY_ALL: &str =
-        "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\", \"explanation\": \"blocked\"}";
+    const DENY_ALL: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"deny\", \"explanation\": \"blocked\"}";
     const ALLOW_ALL: &str =
         "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"allow\"}";
 
@@ -120,7 +126,9 @@ mod tests {
         // Turn enforcement ON. Empty policy set now default-denies.
         state.config.write().await.policy.enforcement = true;
         assert!(
-            policy_gate(&state, &auth, type_uri, &payload).await.is_err(),
+            policy_gate(&state, &auth, type_uri, &payload)
+                .await
+                .is_err(),
             "enabled + no policy must default-deny"
         );
 
@@ -128,7 +136,11 @@ mod tests {
         crate::policy::storage::store_policy(&state.policy_ks, &module("deny", 0, DENY_ALL))
             .await
             .unwrap();
-        assert!(policy_gate(&state, &auth, type_uri, &payload).await.is_err());
+        assert!(
+            policy_gate(&state, &auth, type_uri, &payload)
+                .await
+                .is_err()
+        );
 
         // A higher-priority allow overrides it → proceeds.
         crate::policy::storage::store_policy(&state.policy_ks, &module("allow", 10, ALLOW_ALL))

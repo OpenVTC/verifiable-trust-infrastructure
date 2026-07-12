@@ -38,7 +38,7 @@ pub mod storage;
 pub mod types;
 
 pub use defaults::install_default_policy;
-pub use engine::{compile, evaluate_decision, CompiledPolicy};
+pub use engine::{CompiledPolicy, compile, evaluate_decision};
 pub use input::build_policy_input;
 pub use storage::load_active_for_context;
 pub use types::{
@@ -58,7 +58,7 @@ pub use types::{
 pub fn decide(policies: &[(i32, CompiledPolicy)], input: &PolicyInput) -> PolicyDecision {
     let mut ordered: Vec<&(i32, CompiledPolicy)> = policies.iter().collect();
     // Descending priority; ties keep input order (stable sort).
-    ordered.sort_by(|a, b| b.0.cmp(&a.0));
+    ordered.sort_by_key(|(priority, _)| std::cmp::Reverse(*priority));
 
     for (_priority, compiled) in ordered {
         match engine::evaluate_decision(compiled, input) {

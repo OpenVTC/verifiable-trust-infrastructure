@@ -51,7 +51,11 @@ pub struct TaskClass {
 }
 
 impl TaskClass {
-    pub const fn new(side_effects: SideEffectLevel, discloses: Discloses, acts_as_subject: bool) -> Self {
+    pub const fn new(
+        side_effects: SideEffectLevel,
+        discloses: Discloses,
+        acts_as_subject: bool,
+    ) -> Self {
         Self {
             side_effects,
             exposure: Exposure {
@@ -83,7 +87,11 @@ pub struct PolicyRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     /// Salted digest binding a delegated-execution consent flow to this payload.
-    #[serde(rename = "payloadDigest", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "payloadDigest",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub payload_digest: Option<String>,
     #[serde(rename = "sideEffects")]
     pub side_effects: SideEffectLevel,
@@ -100,9 +108,17 @@ pub struct Consumer {
     pub kind: Option<serde_json::Value>,
     #[serde(rename = "deviceId", default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
-    #[serde(rename = "lastUserVerificationAt", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastUserVerificationAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub last_user_verification_at: Option<String>,
-    #[serde(rename = "networkClass", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "networkClass",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub network_class: Option<String>,
 }
 
@@ -138,7 +154,11 @@ pub enum Disposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepUp {
     pub method: String,
-    #[serde(rename = "ttlSeconds", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ttlSeconds",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ttl_seconds: Option<u32>,
 }
 
@@ -166,9 +186,17 @@ pub struct PolicyDecision {
     pub mode: Option<String>,
     #[serde(rename = "stepUp", default, skip_serializing_if = "Option::is_none")]
     pub step_up: Option<StepUp>,
-    #[serde(rename = "requireConsent", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "requireConsent",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub require_consent: Option<RequireConsent>,
-    #[serde(rename = "ttlSecondsCap", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "ttlSecondsCap",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub ttl_seconds_cap: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
