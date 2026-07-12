@@ -200,6 +200,12 @@ dialoguer = { workspace = true }
 # override with `--seed-dir`.
 dirs = { workspace = true }
 sha2 = { workspace = true }
+# Rego (OPA policy language) interpreter — the Policy Decision Point runs
+# in-process (no OPA sidecar), mirroring vtc-service's engine. `arc` (workspace
+# default) makes `regorus::Engine` Send + Sync so a compiled policy is shareable
+# and cloned cheaply per evaluation; `full-opa` brings the stdlib builtins real
+# policies lean on (regex, time).
+regorus = { workspace = true }
 # Constant-time byte equality. Used by `backup_bundle_store` to
 # verify backup-bundle bearer tokens against their stored
 # `SHA-256(token)` hash without leaking byte-position via timing.

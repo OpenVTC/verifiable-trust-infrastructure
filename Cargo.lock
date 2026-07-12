@@ -10215,6 +10215,7 @@ dependencies = [
  "multibase",
  "p256",
  "rand 0.10.1",
+ "regorus",
  "reqwest 0.13.4",
  "serde",
  "serde_ignored",

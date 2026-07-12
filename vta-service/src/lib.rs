@@ -31,6 +31,7 @@ pub mod messaging;
 #[cfg(feature = "rest")]
 pub mod metrics;
 pub mod operations;
+pub mod policy;
 #[cfg(feature = "rest")]
 pub mod routes;
 pub mod seal;
