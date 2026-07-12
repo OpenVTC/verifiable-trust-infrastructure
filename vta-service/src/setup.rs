@@ -174,10 +174,11 @@ pub(crate) fn build_vta_additional_services(
 pub(crate) fn derive_ws_url(http_url: &str) -> Option<String> {
     let scheme_swapped = if let Some(rest) = http_url.strip_prefix("https://") {
         format!("wss://{rest}")
-    } else if let Some(rest) = http_url.strip_prefix("http://") {
-        format!("ws://{rest}")
     } else {
-        return None;
+        // `?` yields `None` for any scheme that is neither https:// nor
+        // http://, matching the previous explicit `return None`.
+        let rest = http_url.strip_prefix("http://")?;
+        format!("ws://{rest}")
     };
     Some(format!("{}/ws", scheme_swapped.trim_end_matches('/')))
 }

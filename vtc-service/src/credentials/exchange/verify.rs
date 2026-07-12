@@ -645,7 +645,7 @@ async fn verify_bbs_presentation(
         .and_then(|p| p.get("verificationMethod"))
         .and_then(Value::as_str)
         .ok_or_else(|| AppError::Validation("bbs-2023 proof has no `verificationMethod`".into()))?;
-    check_issuer_binding(vm, issuer_did)?;
+    check_issuer_binding(vm, &issuer_did)?;
     let g2 = DidVmResolver::new(did_resolver.cloned())
         .resolve_bbs_g2(vm)
         .await?;

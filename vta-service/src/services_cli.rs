@@ -637,7 +637,7 @@ pub async fn run_services_didcomm_drain_list(config_path: Option<PathBuf>) -> Cl
     let header_until = "DRAIN UNTIL";
     println!("  {header_did:<60}  {header_until}");
     for e in &response.entries {
-        println!("  {:<60}  {}", &e.mediator_did, e.drains_until);
+        println!("  {:<60}  {}", e.mediator_did, e.drains_until);
     }
     Ok(())
 }
@@ -714,7 +714,7 @@ pub async fn run_services_report(
                 for m in &report.mediators {
                     println!(
                         "    {}  {:>10}  {}",
-                        &m.mediator_did, m.inbound_count, m.last_seen
+                        m.mediator_did, m.inbound_count, m.last_seen
                     );
                 }
             }
