@@ -1046,7 +1046,13 @@ impl StubWebvhHost {
                 post(|headers: axum::http::HeaderMap| async move {
                     require_bearer(&headers)?;
                     Ok::<_, axum::http::StatusCode>(axum::Json(
-                        json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
+                        // camelCase `didUrl` — the real daemon
+                        // (`did-hosting-common::RequestUriResponse`) serializes
+                        // camelCase, and the client deserializes with
+                        // `rename_all = "camelCase"`. Emitting snake_case here
+                        // made the stub diverge from the wire shape it exists to
+                        // imitate, so the round-trip failed to decode.
+                        json!({ "didUrl": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
                     ))
                 }),
             )
@@ -1055,7 +1061,13 @@ impl StubWebvhHost {
                 post(|headers: axum::http::HeaderMap| async move {
                     require_bearer(&headers)?;
                     Ok::<_, axum::http::StatusCode>(axum::Json(
-                        json!({ "did_url": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
+                        // camelCase `didUrl` — the real daemon
+                        // (`did-hosting-common::RequestUriResponse`) serializes
+                        // camelCase, and the client deserializes with
+                        // `rename_all = "camelCase"`. Emitting snake_case here
+                        // made the stub diverge from the wire shape it exists to
+                        // imitate, so the round-trip failed to decode.
+                        json!({ "didUrl": STUB_WEBVH_DID_URL, "mnemonic": "stub-mnemonic" }),
                     ))
                 }),
             )
