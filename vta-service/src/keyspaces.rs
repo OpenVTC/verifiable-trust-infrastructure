@@ -67,6 +67,13 @@ pub const ISSUED_CREDENTIALS: &str = "issued_credentials";
 /// user data → in [`BACKED_UP`].
 pub const MEMORY: &str = "memory";
 
+/// Rego policy modules for the Policy Decision Point (`policy/{upsert,list,
+/// delete,evaluate}`). One [`crate::policy::PolicyModule`] per id, keyed
+/// `policy:<id>`; the active set is every enabled row, priority-ordered.
+/// Durable operator security config → in [`BACKED_UP`] (a lost policy set
+/// would silently drop enforcement on restore).
+pub const POLICY: &str = "policy";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -93,6 +100,7 @@ pub const ALL: &[&str] = &[
     CONSENT_APPROVERS,
     ISSUED_CREDENTIALS,
     MEMORY,
+    POLICY,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -108,6 +116,9 @@ pub const BACKED_UP: &[&str] = &[
     CONSENT_APPROVERS,
     // Durable agent memory is user data and must survive a restore.
     MEMORY,
+    // Operator security policy — must survive a restore, else enforcement
+    // silently reverts to whatever defaults boot-install provides.
+    POLICY,
 ];
 
 /// Keyspaces deliberately **not** in a backup.

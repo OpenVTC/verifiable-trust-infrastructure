@@ -32,9 +32,11 @@
 //! policies land alongside this in the same PR series.
 
 pub mod engine;
+pub mod storage;
 pub mod types;
 
 pub use engine::{compile, evaluate_decision, CompiledPolicy};
+pub use storage::load_active_for_context;
 pub use types::{
     Consumer, Discloses, Disposition, Exposure, PolicyDecision, PolicyInput, PolicyModule,
     PolicyRequest, RequireConsent, SideEffectLevel, StepUp, TaskClass,
