@@ -128,6 +128,11 @@ pub struct AppState {
     /// delete}/0.1`). Entries keyed `mem:<contextId>:<key>`; gated on context
     /// access. Durable user data.
     pub memory_ks: KeyspaceHandle,
+    /// Rego policy modules for the Policy Decision Point (`policy/*`). One
+    /// [`crate::policy::PolicyModule`] per id; the active set is every enabled
+    /// row, priority-ordered. A migration-safe baseline is boot-installed if
+    /// empty. Durable operator security config.
+    pub policy_ks: KeyspaceHandle,
     /// Persisted drain set for the protocol-management feature
     /// (`docs/05-design-notes/didcomm-protocol-management.md`).
     /// Keyed by mediator DID; replayed at boot.
@@ -321,6 +326,7 @@ pub async fn build_app_state(
     let issued_credentials_ks =
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
+    let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -387,6 +393,7 @@ pub async fn build_app_state(
         consent_approvers_ks,
         issued_credentials_ks,
         memory_ks,
+        policy_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
         #[cfg(feature = "webvh")]
@@ -798,6 +805,14 @@ pub async fn run(
         // just constructs the cache); arm it on the live state.
         #[cfg(any(feature = "rest", feature = "didcomm"))]
         app_state.wrapping_cache.clone().spawn_reaper();
+
+        // Boot-install the migration-safe default PDP baseline if the operator
+        // has no policy yet. Idempotent; never clobbers an operator upload.
+        crate::policy::install_default_policy(
+            &app_state.policy_ks,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await?;
 
         // Fail-closed on missing identity (P0.9b). `init_auth` (inside
         // build_app_state) yields `jwt_keys: Some` only when the VTA has a

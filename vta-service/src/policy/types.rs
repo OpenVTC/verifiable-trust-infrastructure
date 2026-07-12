@@ -60,6 +60,14 @@ impl TaskClass {
             },
         }
     }
+
+    /// The fail-safe floor a consumer applies to an unclassified or unresolvable
+    /// task (SPEC §7.3 items 13–14): no weaker than `mutating`, no less exposed
+    /// than a secret-disclosing act-as-subject. An unknown task is treated as
+    /// maximally consequential so nothing slips through unprompted.
+    pub const fn floor() -> Self {
+        Self::new(SideEffectLevel::Mutating, Discloses::Secret, true)
+    }
 }
 
 /// `PolicyInput.request` — what task is being authorized. Generalised in 0.3

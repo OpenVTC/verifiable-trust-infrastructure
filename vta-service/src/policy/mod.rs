@@ -31,11 +31,15 @@
 //! per-request [`types::PolicyInput`] construction, and boot-installed default
 //! policies land alongside this in the same PR series.
 
+pub mod defaults;
 pub mod engine;
+pub mod input;
 pub mod storage;
 pub mod types;
 
+pub use defaults::install_default_policy;
 pub use engine::{compile, evaluate_decision, CompiledPolicy};
+pub use input::build_policy_input;
 pub use storage::load_active_for_context;
 pub use types::{
     Consumer, Discloses, Disposition, Exposure, PolicyDecision, PolicyInput, PolicyModule,
