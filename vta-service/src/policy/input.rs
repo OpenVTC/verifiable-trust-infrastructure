@@ -27,6 +27,27 @@ pub fn subject_of(payload: &Value) -> Option<String> {
     first_string(payload, SUBJECT_FIELDS).map(str::to_string)
 }
 
+/// Framework `ext` key under which an enrolled consumer records the origin of the
+/// page that proposed a task. Written by the *device*, from the value its runtime
+/// attested — never by the page about itself.
+pub const ORIGIN_EXT_KEY: &str = "openvtc.origin";
+
+/// The web origin that proposed this task, if it came from a relying party.
+///
+/// Read from `payload.ext`, which means it is inside the payload digest: the
+/// origin an approver is shown is bound to the payload that executes, and cannot
+/// be swapped after the approval. It is only as trustworthy as the enrolled
+/// device that stamped it — which is exactly the trust the VTA already places in
+/// that device by authenticating it, and no more.
+pub fn origin_of(payload: &Value) -> Option<String> {
+    payload
+        .get("ext")
+        .and_then(|e| e.get(ORIGIN_EXT_KEY))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 fn first_string<'a>(payload: &'a Value, fields: &[&str]) -> Option<&'a str> {
     fields
         .iter()

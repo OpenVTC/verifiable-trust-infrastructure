@@ -327,6 +327,11 @@ async fn consent_gate(
 
     let class = super::class_for(type_uri).unwrap_or_else(crate::policy::TaskClass::floor);
     let subject = crate::policy::input::subject_of(&doc.payload);
+    // The page that proposed this, when one did. Stamped into `payload.ext` by the
+    // enrolled device from the origin its browser attested — so the approver is
+    // told *which site* is asking, and told it by the only party in the chain with
+    // any standing to say.
+    let origin = crate::policy::input::origin_of(&doc.payload);
     let requests = match super::consent_request::mint_signed_requests(
         state,
         &pending,
@@ -334,7 +339,7 @@ async fn consent_gate(
         class,
         &effects,
         subject.as_deref(),
-        None,
+        origin.as_deref(),
     )
     .await
     {
@@ -614,6 +619,74 @@ mod tests {
             "a handler with no dry-run yields no effects"
         );
         assert_eq!(req["payload"]["taskType"], serde_json::json!(UNGATED_URI));
+    }
+
+    /// The approver is told which site is asking — and told it by the device,
+    /// which is the only party in the chain with any standing to say.
+    ///
+    /// The origin rides in `payload.ext`, so it is inside the digest the approver
+    /// signs: the site shown to the human is bound to the payload that executes
+    /// and cannot be swapped after the fact.
+    #[tokio::test]
+    async fn the_consent_request_names_the_origin_that_proposed_the_task() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+
+        let mut d = doc(UNGATED_URI);
+        d.payload["ext"] = json!({ "openvtc.origin": "https://control.example.com" });
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d).await.unwrap();
+        let body: Value = serde_json::from_slice(&outcome.body).unwrap();
+        let req = &body.pointer("/payload/details/consentRequests").unwrap()[0];
+
+        assert_eq!(
+            req["payload"]["origin"],
+            json!("https://control.example.com"),
+            "the approver must be able to see which site asked"
+        );
+    }
+
+    /// A task nobody proposed from a page carries no origin — and we do not invent
+    /// one. An origin the approver cannot rely on is worse than none: it invites
+    /// them to weigh a fact that is not a fact.
+    #[tokio::test]
+    async fn a_task_with_no_page_behind_it_carries_no_origin() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d).await.unwrap();
+        let body: Value = serde_json::from_slice(&outcome.body).unwrap();
+        let req = &body.pointer("/payload/details/consentRequests").unwrap()[0];
+        assert!(req["payload"].get("origin").is_none());
     }
 
     /// The approver named by `excludeRequester` is dropped before we ask, rather
