@@ -19,6 +19,15 @@ pub(crate) enum TransportOpt {
     Rest,
 }
 
+impl From<TransportOpt> for vta_sdk::session::TransportChoice {
+    fn from(opt: TransportOpt) -> Self {
+        match opt {
+            TransportOpt::Auto => Self::Auto,
+            TransportOpt::Rest => Self::Rest,
+        }
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "pnm-cli",

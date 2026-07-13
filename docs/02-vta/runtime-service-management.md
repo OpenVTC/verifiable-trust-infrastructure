@@ -660,6 +660,58 @@ The `mediator-management/1.0` namespace is retained for
 the active mediator advertisement, so the original naming is still
 accurate.
 
+## Recovery: the mediator is unreachable
+
+DIDComm is the preferred transport, so `pnm` picks it whenever the
+VTA's DID document advertises it. If that mediator then goes away —
+wrong DID at enable time, mediator decommissioned, network partition —
+every `pnm` command against that VTA tries to reach it. That includes
+the very commands you would use to fix the situation (`services list`,
+`services didcomm disable`), so the VTA looks bricked when it is only
+unreachable *over DIDComm*. Its REST surface is still up.
+
+Two things break the loop.
+
+**The connect is bounded.** An auto-selected DIDComm connect gives the
+mediator 30 seconds and then fails with the recovery command rather than
+retrying forever. Raise the ceiling on slow links with
+`VTA_DIDCOMM_CONNECT_TIMEOUT_SECS`.
+
+**`--transport rest` forces REST.** A global flag on both `pnm` and
+`cnm`. It skips DIDComm even when the DID document advertises it, and
+even when the local config pins a `mediator_did`:
+
+```bash
+# Confirm what the VTA currently advertises.
+pnm --transport rest services list
+
+# Point DIDComm at a mediator that answers …
+pnm --transport rest services didcomm update --to did:web:new-mediator.example.com
+
+# … or stop advertising DIDComm altogether.
+pnm --transport rest services didcomm disable --drain-ttl 0
+```
+
+`--drain-ttl 0` (immediate teardown) is only accepted over REST — which
+is exactly the transport you are on. Over DIDComm the server enforces a
+1h minimum so the response doesn't die with the listener carrying it.
+
+Notes:
+
+- Forcing REST needs a REST endpoint to force. `pnm` uses `--url` if
+  given, else the `#vta-rest` service on the VTA's DID document. If the
+  VTA advertises neither, the command errors and asks for `--url` — it
+  will not guess a URL from the DID's domain, which for a hosted
+  `did:webvh` is the DID host, not the VTA.
+- If your config pins a `mediator_did` (`pnm vta add --mediator-did …`),
+  that pin is priority 1 of transport selection and never re-reads the
+  DID document. A successful `services didcomm enable|update|disable`
+  reconciles the pin for you — disable clears it, enable/update repoint
+  it — so the next command doesn't dial a mediator that is gone.
+- Once DIDComm is disabled, plain `pnm services list` works again; the
+  DID document no longer advertises a mediator, so auto-selection lands
+  on REST on its own.
+
 ## Failure modes
 
 The CLI's error renderer surfaces the typed `VtaError` variant

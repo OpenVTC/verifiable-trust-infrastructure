@@ -2,20 +2,39 @@
 
 ## Unreleased
 
-### pnm-cli (0.10.7) — `--transport rest` recovery flag
+### pnm-cli (0.10.7) / cnm-cli (0.10.7) — `--transport rest` recovery flag
 
-Adds a global `--transport <auto|rest>` flag. `rest` forces the REST transport,
-skipping DIDComm even when the VTA advertises it — the recovery path when a
-VTA's mediator is unreachable (auto-selection picks DIDComm and hangs with no
-fallback, locking the operator out). Example: `pnm --transport rest services
-didcomm disable` recovers a VTA that force-enabled DIDComm against a mediator it
-can't reach.
+Adds a global `--transport <auto|rest>` flag to both CLIs. `rest` forces the
+REST transport, skipping DIDComm even when the VTA advertises it and even when
+the local config pins a `mediator_did` — the recovery path when a VTA's mediator
+is unreachable and auto-selection would keep dialling it. Example: `pnm
+--transport rest services didcomm disable` recovers a VTA that enabled DIDComm
+against a mediator it can't reach.
 
-### vta-sdk (0.19.1) — force-REST connect path
+`pnm` also reconciles a pinned `mediator_did` after a successful `services
+didcomm enable|update|disable` (repoint on enable/update, clear on disable). The
+pin is priority 1 of transport selection and never re-reads the DID document, so
+a stale one would keep forcing DIDComm at a mediator that is gone.
+
+Docs: `docs/02-vta/runtime-service-management.md` gains a "Recovery: the mediator
+is unreachable" section.
+
+### vta-sdk (0.19.1) — force-REST connect path + bounded DIDComm connect
 
 - `SessionStore::connect_with_transport` + `TransportChoice { Auto, Rest }`:
   force REST regardless of advertised DIDComm. The existing `connect` is
-  unchanged and delegates with `Auto`. Purely additive.
+  unchanged and delegates with `Auto`. Purely additive. `TransportChoice` is
+  `#[non_exhaustive]` — TSP will land as a variant.
+- Auto-selected DIDComm connects are now bounded (30s default, override with
+  `VTA_DIDCOMM_CONNECT_TIMEOUT_SECS`). The mediator client owns a
+  reconnect/backoff loop, so an unreachable mediator previously hung the CLI
+  indefinitely instead of failing; the timeout error now names
+  `--transport rest`, which is what makes the flag above discoverable.
+- Forced REST resolves `url_override`, else the `#vta-rest` service on the VTA's
+  DID document, and errors asking for `--url` if it finds neither. It
+  deliberately does not fall back to a URL synthesized from the DID's own domain
+  (`resolve_vta_url`'s last resort): for a hosted `did:webvh` that is the DID
+  host, not the VTA, and authenticating against it fails undiagnosably.
 
 ### vta-sdk (0.18.18) — did-host TSP-only DID templates
 

@@ -116,9 +116,15 @@ pub async fn ensure_authenticated(
 ///
 /// If `url_override` is provided, always uses REST.
 /// Otherwise resolves the VTA DID and prefers DIDComm when available.
+///
+/// `transport` overrides that: [`TransportChoice::Rest`] forces REST even when
+/// the VTA advertises DIDComm (the recovery path for an unreachable mediator).
 pub async fn connect(
     url_override: Option<&str>,
+    transport: vta_sdk::session::TransportChoice,
     keyring_key: &str,
 ) -> Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>> {
-    store().connect(keyring_key, url_override, None).await
+    store()
+        .connect_with_transport(keyring_key, url_override, None, transport)
+        .await
 }

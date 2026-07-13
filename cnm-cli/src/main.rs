@@ -3,7 +3,7 @@ mod backup;
 mod config;
 mod setup;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use config::{community_keyring_key, resolve_community};
 use vta_sdk::client::VtaClient;
 
@@ -52,8 +52,35 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Force a transport instead of auto-selecting. `rest` skips DIDComm even
+    /// when the VTA advertises it — the recovery path when a mediator is
+    /// unreachable.
+    #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
+    transport: TransportOpt,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+/// Transport to use when connecting to the VTA. Mirrors pnm's flag; maps onto
+/// [`vta_sdk::session::TransportChoice`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TransportOpt {
+    /// Prefer DIDComm when the VTA advertises it, else REST.
+    #[default]
+    Auto,
+    /// Force REST even when DIDComm is advertised — recovers a VTA whose
+    /// mediator is unreachable.
+    Rest,
+}
+
+impl From<TransportOpt> for vta_sdk::session::TransportChoice {
+    fn from(opt: TransportOpt) -> Self {
+        match opt {
+            TransportOpt::Auto => Self::Auto,
+            TransportOpt::Rest => Self::Rest,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -957,7 +984,7 @@ async fn main() {
             std::process::exit(1);
         }
 
-        match auth::connect(url_override.as_deref(), &keyring_key).await {
+        match auth::connect(url_override.as_deref(), cli.transport.into(), &keyring_key).await {
             Ok(c) => c,
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());

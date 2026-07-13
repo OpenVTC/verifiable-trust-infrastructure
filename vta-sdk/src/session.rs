@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_tdk::didcomm::Message;
@@ -633,9 +633,18 @@ impl SessionStore {
     /// Like [`connect`](Self::connect) but with an explicit transport choice.
     ///
     /// [`TransportChoice::Auto`] keeps the priority order documented on
-    /// [`connect`]. [`TransportChoice::Rest`] forces REST — ignoring the
-    /// mediator hint and any advertised DIDComm — resolving `#vta-rest` (or
-    /// `url_override`). The recovery path for an unreachable mediator.
+    /// [`connect`]. Its DIDComm connects are bounded (see
+    /// [`DIDCOMM_CONNECT_TIMEOUT_DEFAULT`]): an unreachable mediator errors out
+    /// pointing at `--transport rest` rather than hanging.
+    ///
+    /// [`TransportChoice::Rest`] forces REST — ignoring the mediator hint and
+    /// any advertised DIDComm — using `url_override`, else the `#vta-rest`
+    /// service on the VTA's DID document. Errors if the VTA advertises neither
+    /// and no `url_override` was given; unlike the auto path it will *not* fall
+    /// back to a URL synthesized from the DID's domain, which for a hosted
+    /// `did:webvh` points at the DID host rather than the VTA.
+    ///
+    /// This is the recovery path for an unreachable mediator.
     pub async fn connect_with_transport(
         &self,
         key: &str,
@@ -654,7 +663,15 @@ impl SessionStore {
         if transport == TransportChoice::Rest {
             let url = match url_override {
                 Some(u) => u.to_string(),
-                None => resolve_vta_url(&session_vta_did).await?,
+                // Deliberately *not* `resolve_vta_url` — that falls back to a
+                // URL synthesized from the DID's own domain, which for a
+                // `did:webvh` is the DID *host*, not the VTA. Authenticating
+                // against the wrong origin fails in a way no operator can
+                // diagnose, so demand a real advertisement or an explicit
+                // `--url`.
+                None => rest_url_from_did_doc(&session_vta_did)
+                    .await
+                    .ok_or_else(|| no_rest_endpoint_error(&session_vta_did))?,
             };
             debug!(url = %url, "connecting via REST (forced --transport rest)");
             let token = self.ensure_authenticated(&url, key).await?;
@@ -666,7 +683,7 @@ impl SessionStore {
         // Priority 1: Explicit mediator DID from config → DIDComm directly
         if let Some(mediator_did) = mediator_did_hint {
             debug!(mediator_did, "connecting via DIDComm (config mediator_did)");
-            let client = crate::client::VtaClient::connect_didcomm(
+            let client = connect_didcomm_bounded(
                 &session.client_did,
                 &session.private_key,
                 &session_vta_did,
@@ -685,7 +702,7 @@ impl SessionStore {
                 rest_url,
             }) => {
                 debug!("connecting via DIDComm");
-                let client = crate::client::VtaClient::connect_didcomm(
+                let client = connect_didcomm_bounded(
                     &session.client_did,
                     &session.private_key,
                     &vta_did,
@@ -721,7 +738,7 @@ impl SessionStore {
             // Priority 3: DIDComm discovery via the authenticated status endpoint.
             if let Some(mediator_did) = discover_mediator_via_status(&rest_client).await {
                 debug!(mediator_did = %mediator_did, "connecting via DIDComm (REST discovery)");
-                let client = crate::client::VtaClient::connect_didcomm(
+                let client = connect_didcomm_bounded(
                     &session.client_did,
                     &session.private_key,
                     &session_vta_did,
@@ -1106,7 +1123,12 @@ pub enum VtaEndpoint {
 
 /// Operator transport selection for
 /// [`SessionStore::connect_with_transport`] (the `pnm`/`cnm` connect path).
+///
+/// `#[non_exhaustive]`: TSP is the workspace's preferred transport
+/// (TSP > DIDComm > REST) and will land here as a variant, as may an
+/// explicit `Didcomm`. Match with a `_` arm.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransportChoice {
     /// Prefer DIDComm when advertised, else REST. The default.
     #[default]
@@ -1114,6 +1136,92 @@ pub enum TransportChoice {
     /// Force REST, ignoring any advertised DIDComm. Recovery path when a VTA's
     /// mediator is unreachable (auto would pick DIDComm and hang).
     Rest,
+}
+
+/// How long an auto-selected DIDComm connect may take before we give up and
+/// tell the operator how to reach the VTA over REST instead.
+///
+/// The mediator client owns a reconnect/backoff loop, so a DIDComm connect
+/// against an unreachable mediator does not fail — it retries, and the CLI
+/// hangs with no output. `pnm health` already caps its DIDComm probes for this
+/// reason; the connect path needs the same ceiling, otherwise
+/// [`TransportChoice::Rest`] is a recovery flag nobody ever gets told about.
+///
+/// Override with `VTA_DIDCOMM_CONNECT_TIMEOUT_SECS` for links slower than the
+/// 30s default.
+const DIDCOMM_CONNECT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
+
+fn didcomm_connect_timeout() -> Duration {
+    parse_connect_timeout(std::env::var("VTA_DIDCOMM_CONNECT_TIMEOUT_SECS").ok())
+}
+
+/// Env-var parsing for [`didcomm_connect_timeout`], split out so it is
+/// testable without touching process environment. Garbage and `0` fall back to
+/// the default — a zero deadline would fail every connect instantly, which is
+/// worse than the hang it replaces.
+fn parse_connect_timeout(raw: Option<String>) -> Duration {
+    raw.and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DIDCOMM_CONNECT_TIMEOUT_DEFAULT)
+}
+
+/// [`crate::client::VtaClient::connect_didcomm`] under a deadline.
+///
+/// Every auto-transport DIDComm connect goes through here so an unreachable
+/// mediator surfaces as an error naming the recovery flag rather than as an
+/// indefinite hang. See [`DIDCOMM_CONNECT_TIMEOUT_DEFAULT`].
+async fn connect_didcomm_bounded(
+    client_did: &str,
+    private_key: &str,
+    vta_did: &str,
+    mediator_did: &str,
+    rest_url: Option<String>,
+) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
+    let timeout = didcomm_connect_timeout();
+    match tokio::time::timeout(
+        timeout,
+        crate::client::VtaClient::connect_didcomm(
+            client_did,
+            private_key,
+            vta_did,
+            mediator_did,
+            rest_url,
+        ),
+    )
+    .await
+    {
+        Ok(result) => Ok(result?),
+        Err(_) => Err(mediator_unreachable_error(mediator_did, timeout).into()),
+    }
+}
+
+/// The message an operator sees when their VTA's mediator is down.
+///
+/// Names the recovery command verbatim, per the workspace's "operator errors
+/// should suggest the fix" rule.
+fn mediator_unreachable_error(mediator_did: &str, timeout: Duration) -> String {
+    format!(
+        "Timed out after {}s connecting to the VTA's mediator:\n  {mediator_did}\n\n\
+         The VTA advertises DIDComm, but its mediator did not answer. Reach the VTA \
+         over REST instead:\n  \
+         <cli> --transport rest <command>\n\n\
+         If the mediator is gone for good, stop advertising it:\n  \
+         pnm --transport rest services didcomm disable",
+        timeout.as_secs()
+    )
+}
+
+/// The message an operator sees when `--transport rest` has no REST endpoint
+/// to force.
+fn no_rest_endpoint_error(vta_did: &str) -> Box<dyn std::error::Error> {
+    format!(
+        "--transport rest: VTA '{vta_did}' does not advertise a REST service \
+         (`#vta-rest`) in its DID document, so there is no REST endpoint to \
+         force.\n\nPass the VTA's base URL explicitly:\n  \
+         <cli> --transport rest --url https://vta.example.com <command>"
+    )
+    .into()
 }
 
 /// Resolve a VTA DID to discover available transport endpoints.
@@ -1202,6 +1310,39 @@ async fn discover_mediator_via_status(client: &crate::client::VtaClient) -> Opti
     }
 }
 
+/// The `#vta-rest` service endpoint from the VTA's DID document, if it
+/// advertises one. `None` covers both "resolution failed" and "no REST service"
+/// — neither yields a REST URL we can stand behind.
+///
+/// Strict counterpart of [`resolve_vta_url`], which additionally guesses a URL
+/// from the DID's own domain. That guess is right for a self-hosted `did:web`
+/// VTA and wrong for a `did:webvh` whose DID lives on a hosting server, so the
+/// force-REST path uses this instead.
+async fn rest_url_from_did_doc(vta_did: &str) -> Option<String> {
+    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
+        .await
+        .inspect_err(|e| debug!(error = %e, "DID resolver init failed"))
+        .ok()?;
+
+    let resolved = did_resolver
+        .resolve(vta_did)
+        .await
+        .inspect_err(|e| debug!(error = %e, "DID resolution failed"))
+        .ok()?;
+
+    let url = resolved
+        .doc
+        .find_service("vta-rest")?
+        .service_endpoint
+        .get_uri()?
+        .trim_matches('"')
+        .trim_end_matches('/')
+        .to_string();
+
+    debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
+    Some(url)
+}
+
 /// Resolve a VTA DID to discover its service URL.
 ///
 /// Resolves the DID document and looks for the `#vta-rest` service endpoint.
@@ -1209,25 +1350,10 @@ async fn discover_mediator_via_status(client: &crate::client::VtaClient) -> Opti
 pub async fn resolve_vta_url(vta_did: &str) -> Result<String, Box<dyn std::error::Error>> {
     debug!(vta_did, "resolving VTA DID to discover service URL");
 
-    let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
-        .await
-        .map_err(|e| format!("DID resolver init failed: {e}"))?;
-
-    match did_resolver.resolve(vta_did).await {
-        Ok(resolved) => {
-            if let Some(svc) = resolved.doc.find_service("vta-rest")
-                && let Some(url) = svc.service_endpoint.get_uri()
-            {
-                let url = url.trim_matches('"').trim_end_matches('/').to_string();
-                debug!(url = %url, "found VTA URL from #vta-rest service endpoint");
-                return Ok(url);
-            }
-            debug!("no #vta-rest service found in DID document, falling back to DID parsing");
-        }
-        Err(e) => {
-            debug!(error = %e, "DID resolution failed, falling back to DID parsing");
-        }
+    if let Some(url) = rest_url_from_did_doc(vta_did).await {
+        return Ok(url);
     }
+    debug!("no #vta-rest service resolved, falling back to DID parsing");
 
     // Fallback: parse domain from did:web or did:webvh DID strings
     url_from_did(vta_did)
@@ -1827,5 +1953,54 @@ mod tests {
         };
         let err = require_vta_did(&pending).unwrap_err();
         assert!(err.to_string().contains("pnm setup continue"));
+    }
+
+    // ── Transport selection ───────────────────────────────────────
+
+    #[test]
+    fn transport_choice_defaults_to_auto() {
+        assert_eq!(TransportChoice::default(), TransportChoice::Auto);
+    }
+
+    #[test]
+    fn connect_timeout_defaults_when_unset_or_junk() {
+        assert_eq!(parse_connect_timeout(None), DIDCOMM_CONNECT_TIMEOUT_DEFAULT);
+        assert_eq!(
+            parse_connect_timeout(Some("not-a-number".into())),
+            DIDCOMM_CONNECT_TIMEOUT_DEFAULT
+        );
+        // Zero would fail every connect instantly — worse than the hang.
+        assert_eq!(
+            parse_connect_timeout(Some("0".into())),
+            DIDCOMM_CONNECT_TIMEOUT_DEFAULT
+        );
+    }
+
+    #[test]
+    fn connect_timeout_honours_env_override() {
+        assert_eq!(
+            parse_connect_timeout(Some(" 90 ".into())),
+            Duration::from_secs(90)
+        );
+    }
+
+    /// The whole point of bounding the connect is that the operator learns the
+    /// recovery flag exists. If this message stops naming it, the timeout is
+    /// just a faster dead end.
+    #[test]
+    fn mediator_timeout_error_names_the_recovery_flag() {
+        let msg =
+            mediator_unreachable_error("did:web:mediator.example.com", Duration::from_secs(30));
+        assert!(msg.contains("--transport rest"));
+        assert!(msg.contains("services didcomm disable"));
+        assert!(msg.contains("did:web:mediator.example.com"));
+        assert!(msg.contains("30s"));
+    }
+
+    #[test]
+    fn no_rest_endpoint_error_tells_operator_to_pass_url() {
+        let msg = no_rest_endpoint_error("did:webvh:scid:host.example.com").to_string();
+        assert!(msg.contains("--url"));
+        assert!(msg.contains("did:webvh:scid:host.example.com"));
     }
 }

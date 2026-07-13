@@ -26,8 +26,8 @@ use vta_sdk::client::VtaClient;
 use vta_cli_common::render::{DIM, RESET};
 
 use crate::cli::{
-    Cli, Commands, VtaCommands, install_force_exit_handler, is_online_template_cmd, print_banner,
-    requires_auth, retired_mediator_redirect,
+    Cli, Commands, DidcommCommands, ServicesCommands, VtaCommands, install_force_exit_handler,
+    is_online_template_cmd, print_banner, requires_auth, retired_mediator_redirect,
 };
 use clap::Parser;
 
@@ -198,9 +198,11 @@ async fn main() {
         }
     }
 
-    // Resolve active VTA
+    // Resolve active VTA. Cloned so the immutable borrow of `pnm_config` ends
+    // here — the post-dispatch mediator-hint reconciliation below writes back
+    // into it.
     let (slug, vta_config) = match config::resolve_vta(vta_override.as_deref(), &pnm_config) {
-        Ok(v) => v,
+        Ok((slug, cfg)) => (slug, cfg.clone()),
         Err(e) => {
             eprintln!("Error: {e}");
             std::process::exit(1);
@@ -219,16 +221,12 @@ async fn main() {
     // For did:key VTAs, use the persisted URL as fallback (DID has no service endpoint).
     let effective_url_override = url_override.as_deref().or(vta_config.url.as_deref());
     let mediator_did_hint = vta_config.mediator_did.as_deref();
-    let transport = match transport_override {
-        cli::TransportOpt::Auto => vta_sdk::session::TransportChoice::Auto,
-        cli::TransportOpt::Rest => vta_sdk::session::TransportChoice::Rest,
-    };
 
     let client = if needs_auth {
         match auth::connect(
             effective_url_override,
             mediator_did_hint,
-            transport,
+            transport_override.into(),
             &keyring_key,
         )
         .await
@@ -251,6 +249,13 @@ async fn main() {
         let url = effective_url_override.unwrap_or_default().to_string();
         VtaClient::new(&url)
     };
+
+    // A pinned `mediator_did` in the config is priority 1 of the connect path
+    // and never re-reads the DID document — so after the operator turns DIDComm
+    // off (or repoints it), a stale hint would keep dialling the old mediator
+    // forever, and `--transport rest` would be needed on every subsequent
+    // command. Work out the hint's fate before `command` is moved into dispatch.
+    let mediator_hint_update = pending_mediator_hint(&command, &vta_config);
 
     // ── Post-auth dispatch ────────────────────────────────────────
     let result = match command {
@@ -284,9 +289,73 @@ async fn main() {
 
     client.shutdown().await;
 
+    if result.is_ok()
+        && let Some(new_hint) = mediator_hint_update
+    {
+        apply_mediator_hint(&mut pnm_config, &slug, new_hint);
+    }
+
     if let Err(e) = result {
         vta_cli_common::render::print_cli_error(e.as_ref());
         std::process::exit(1);
+    }
+}
+
+/// What the locally-pinned `mediator_did` should become once `command`
+/// succeeds: `None` = leave it alone, `Some(None)` = clear it, `Some(Some(did))`
+/// = repoint it.
+///
+/// Only VTAs that actually pin a mediator are affected — we never *introduce* a
+/// hint for a VTA that was happily discovering its mediator from the DID doc.
+fn pending_mediator_hint(
+    command: &Commands,
+    vta_config: &config::VtaConfig,
+) -> Option<Option<String>> {
+    vta_config.mediator_did.as_ref()?;
+
+    match command {
+        Commands::Services {
+            command: ServicesCommands::Didcomm { command },
+        } => match command {
+            DidcommCommands::Disable { .. } => Some(None),
+            DidcommCommands::Update {
+                new_mediator_did, ..
+            } => Some(Some(new_mediator_did.clone())),
+            DidcommCommands::Enable { mediator_did, .. } => Some(Some(mediator_did.clone())),
+            // Rollback lands on whichever mediator the snapshot held — the CLI
+            // doesn't know which — and drain list/cancel change nothing. Leave
+            // the pin; `--transport rest` remains the escape hatch.
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Write the reconciled hint back to `~/.config/pnm/config.toml`.
+///
+/// Best-effort: the VTA-side change already succeeded, so a config-write
+/// failure is a warning, not an error — but it has to be loud, because the
+/// operator's next command would otherwise dial a mediator that is gone.
+fn apply_mediator_hint(pnm_config: &mut config::PnmConfig, slug: &str, new_hint: Option<String>) {
+    let Some(cfg) = pnm_config.vtas.get_mut(slug) else {
+        return;
+    };
+    cfg.mediator_did = new_hint.clone();
+
+    if let Err(e) = config::save_config(pnm_config) {
+        eprintln!(
+            "\n  Warning: could not update the pinned mediator DID for '{slug}': {e}\n  \
+             Edit `mediator_did` under [vtas.{slug}] in the PNM config by hand, or \
+             later commands will keep using the old mediator."
+        );
+        return;
+    }
+
+    match new_hint {
+        Some(did) => eprintln!("  {DIM}Repointed pinned mediator DID for '{slug}' → {did}{RESET}"),
+        None => eprintln!(
+            "  {DIM}Cleared the pinned mediator DID for '{slug}' (DIDComm is no longer advertised){RESET}"
+        ),
     }
 }
 
@@ -466,6 +535,83 @@ mod tests {
             command: ConfigCommands::Get,
         };
         assert!(requires_auth(&cmd));
+    }
+
+    // ── Pinned mediator hint reconciliation ───────────────────────
+
+    fn vta_config(mediator_did: Option<&str>) -> config::VtaConfig {
+        config::VtaConfig {
+            name: "test".into(),
+            vta_did: Some("did:webvh:scid:vta.example.com".into()),
+            url: None,
+            mediator_did: mediator_did.map(str::to_string),
+        }
+    }
+
+    fn didcomm(command: DidcommCommands) -> Commands {
+        Commands::Services {
+            command: ServicesCommands::Didcomm { command },
+        }
+    }
+
+    #[test]
+    fn disable_clears_a_pinned_mediator_hint() {
+        let cmd = didcomm(DidcommCommands::Disable { drain_ttl: 0 });
+        assert_eq!(
+            pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn update_repoints_a_pinned_mediator_hint() {
+        let cmd = didcomm(DidcommCommands::Update {
+            new_mediator_did: "did:web:new-mediator".into(),
+            drain_ttl: 86_400,
+            force: false,
+            handshake_timeout: None,
+        });
+        assert_eq!(
+            pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
+            Some(Some("did:web:new-mediator".into()))
+        );
+    }
+
+    /// A VTA that discovers its mediator from the DID doc must not acquire a
+    /// pin as a side effect of an unrelated `services didcomm` command.
+    #[test]
+    fn unpinned_vta_never_gains_a_hint() {
+        let cmd = didcomm(DidcommCommands::Update {
+            new_mediator_did: "did:web:new-mediator".into(),
+            drain_ttl: 86_400,
+            force: false,
+            handshake_timeout: None,
+        });
+        assert_eq!(pending_mediator_hint(&cmd, &vta_config(None)), None);
+    }
+
+    #[test]
+    fn enable_repoints_a_pinned_mediator_hint() {
+        let cmd = didcomm(DidcommCommands::Enable {
+            mediator_did: "did:web:new-mediator".into(),
+            force: false,
+            handshake_timeout: None,
+        });
+        assert_eq!(
+            pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
+            Some(Some("did:web:new-mediator".into()))
+        );
+    }
+
+    #[test]
+    fn read_only_commands_leave_the_hint_alone() {
+        let cmd = Commands::Services {
+            command: ServicesCommands::List,
+        };
+        assert_eq!(
+            pending_mediator_hint(&cmd, &vta_config(Some("did:web:old-mediator"))),
+            None
+        );
     }
 
     #[test]
