@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_messaging_didcomm::{Message, UnpackMetadata};
 use affinidi_messaging_didcomm_service::{
     DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
@@ -54,6 +55,73 @@ pub const VTC_LISTENER_ID: &str = "vtc-main";
 /// rows into the keyspaces + audit log — same shared
 /// `AppState` the REST surface holds. Passed as a `Router`
 /// extension so handlers extract it via `Extension<AppState>`.
+/// The VTC's signing + key-agreement verification-method ids, read from its
+/// **own DID document** rather than assumed.
+///
+/// The VTC mints itself a `did:webvh` whose keys land at `#key-0` (signing)
+/// and `#key-1` (key agreement) — `status.rs` assigns exactly those ids. But
+/// that numbering is a property of *that minting path*, not of DIDs in
+/// general: a `did:peer`, for instance, numbers from `#key-1` (Ed25519) and
+/// `#key-2` (X25519). Hardcoding `#key-0`/`#key-1` meant a VTC on any other
+/// method failed the secret lookup in [`run_didcomm_service`] and silently
+/// ran with **messaging disabled** — an easy trap, since the only symptom is
+/// a single warn line and outbound `send_to_member` failing forever after.
+///
+/// Resolution order: the document's first `authentication` relationship (then
+/// any bare `verificationMethod`) for signing, and its first `keyAgreement`
+/// for key agreement. The historical `#key-0`/`#key-1` convention remains the
+/// fallback when no resolver is configured or the DID can't be resolved, so
+/// the production `did:webvh` path is unchanged either way — a `did:webvh`
+/// document lists those exact ids, so resolution returns them anyway.
+async fn vtc_key_ids(
+    did_resolver: Option<&DIDCacheClient>,
+    vtc_did: &str,
+) -> (String, Option<String>) {
+    let conventional = || (format!("{vtc_did}#key-0"), Some(format!("{vtc_did}#key-1")));
+
+    let Some(resolver) = did_resolver else {
+        return conventional();
+    };
+    let resolved = match resolver.resolve(vtc_did).await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                %vtc_did,
+                error = %e,
+                "could not resolve the VTC DID for its key ids — falling back to #key-0/#key-1",
+            );
+            return conventional();
+        }
+    };
+
+    // A relationship id may be a bare fragment (`"#key-1"`) rather than an
+    // absolute DID URL; the secrets resolver is keyed by the absolute id, so
+    // re-attach the DID before looking it up.
+    let absolutize = |id: &str| -> String {
+        match id.strip_prefix('#') {
+            Some(fragment) => format!("{vtc_did}#{fragment}"),
+            None => id.to_string(),
+        }
+    };
+
+    let doc = &resolved.doc;
+    let signing = doc
+        .authentication
+        .first()
+        .map(|vr| vr.get_id())
+        .or_else(|| doc.verification_method.first().map(|vm| vm.id.as_str()))
+        .map(&absolutize);
+    let ka = doc.key_agreement.first().map(|vr| absolutize(vr.get_id()));
+
+    match signing {
+        Some(signing) => (signing, ka),
+        // A document with no usable verification method at all — keep the old
+        // behaviour so the failure surfaces as the existing "signing secret
+        // not found" warn rather than some new path.
+        None => conventional(),
+    }
+}
+
 pub async fn run_didcomm_service(
     config: &AppConfig,
     secrets_resolver: &Arc<ThreadedSecretsResolver>,
@@ -74,18 +142,20 @@ pub async fn run_didcomm_service(
         }
     };
 
-    // Collect secrets for the TDKProfile
-    let signing_id = format!("{vtc_did}#key-0");
-    let ka_id = format!("{vtc_did}#key-1");
+    // Collect secrets for the TDKProfile, keyed by the verification-method ids
+    // the VTC's own DID document actually declares (see `vtc_key_ids`).
+    let (signing_id, ka_id) = vtc_key_ids(state.did_resolver.as_ref(), vtc_did).await;
     let mut secrets = Vec::new();
     if let Some(s) = secrets_resolver.get_secret(&signing_id).await {
         secrets.push(s);
     } else {
-        warn!("VTC signing secret not found — messaging disabled");
+        warn!(%signing_id, "VTC signing secret not found — messaging disabled");
         let _ = shutdown_rx.changed().await;
         return;
     }
-    if let Some(s) = secrets_resolver.get_secret(&ka_id).await {
+    if let Some(ka_id) = ka_id.as_deref()
+        && let Some(s) = secrets_resolver.get_secret(ka_id).await
+    {
         secrets.push(s);
     }
 

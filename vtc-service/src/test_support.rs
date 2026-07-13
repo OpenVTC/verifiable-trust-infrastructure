@@ -573,15 +573,14 @@ mod didcomm_harness {
     use affinidi_tdk::messaging::ATM;
     use affinidi_tdk::messaging::config::ATMConfig;
     use affinidi_tdk::messaging::profiles::ATMProfile;
-    use affinidi_tdk::secrets_resolver::SecretsResolver;
     use affinidi_tdk::secrets_resolver::secrets::Secret;
+    use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
     use serde_json::{Value, json};
-    use tokio::sync::{Mutex, oneshot};
+    use tokio::sync::{Mutex, watch};
     use uuid::Uuid;
     use vta_sdk::protocols::extract_problem_report;
 
     use crate::server::AppState;
-    use crate::trust_tasks::{JoinAuthCtx, dispatch_trust_task_core};
 
     use super::TestVtc;
 
@@ -914,8 +913,24 @@ mod didcomm_harness {
         pub vtc: TestVtc,
         /// The connected applicant.
         pub client: TestJoinClient,
-        shutdown_tx: Option<oneshot::Sender<()>>,
+        shutdown_tx: Option<watch::Sender<bool>>,
         loop_handle: Option<tokio::task::JoinHandle<()>>,
+    }
+
+    /// Block until the production DIDComm listener has published itself into
+    /// `AppState.didcomm` — i.e. until outbound `send_to_member` can actually
+    /// send. Bounded so a genuine wiring failure fails the test loudly instead
+    /// of hanging.
+    async fn await_listener(state: &AppState) {
+        const LIMIT: Duration = Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now() + LIMIT;
+        while tokio::time::Instant::now() < deadline {
+            if state.didcomm.get().is_some() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("VTC DIDComm listener did not start within {LIMIT:?}");
     }
 
     impl MockVtcDidcomm {
@@ -938,29 +953,32 @@ mod didcomm_harness {
                 .expect("spawn test mediator");
             let mediator_did = mediator.did().to_string();
 
-            // VTC messaging side: an ATM holding the VTC transport keys, a
-            // profile + inbound websocket on the shared mediator.
+            // The VTC's transport keys, in the resolver the production DIDComm
+            // listener loads its profile from. `run_didcomm_service` reads the
+            // key ids out of the VTC's own DID document, so the did:peer
+            // `#key-1`/`#key-2` numbering resolves without special-casing.
+            let (secrets_resolver, _sr_task) = ThreadedSecretsResolver::new(None).await;
+            secrets_resolver.insert_vec(&vtc_secrets).await;
+            let secrets_resolver = Arc::new(secrets_resolver);
+
+            // An ATM purely for `AppState.atm` (the REST/auth paths read it).
+            // Deliberately **without** a websocket: the production listener
+            // below owns the one connection this DID may hold — a second would
+            // be terminated by the mediator as `w.websocket.duplicate-channel`.
             let vtc_atm = build_atm(&vtc_secrets).await;
-            let vtc_profile = Arc::new(
-                ATMProfile::new(&vtc_atm, None, vtc_did.clone(), Some(mediator_did.clone()))
-                    .await
-                    .expect("VTC ATM profile"),
-            );
-            vtc_atm
-                .profile_enable_websocket(&vtc_profile)
-                .await
-                .expect("VTC websocket");
 
             // VTC state: the transport did:peer is also the configured `vtc_did`
-            // (so credential delivery packs from a resolvable sender), with the
-            // ATM + mediator wired so `push_to_holder` can forward issued VMCs.
+            // (so credential delivery packs from a resolvable sender). The DID
+            // resolver is required — `run_didcomm_service` resolves the VTC's
+            // document to learn its verification-method ids.
             let vtc = TestVtc::builder()
                 .vtc_did(vtc_did.clone())
                 .with_audit(true)
                 .with_signers(true)
+                .with_did_resolver(true)
                 .with_public_url("https://vtc.test")
                 .messaging_mediator(mediator_did.clone())
-                .with_atm(vtc_atm.clone())
+                .with_atm(vtc_atm)
                 .build()
                 .await;
 
@@ -974,20 +992,33 @@ mod didcomm_harness {
             )
             .await;
 
-            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            // Run the **production** DIDComm listener rather than a hand-rolled
+            // dispatch loop. Two things fall out of that, and the second is the
+            // whole point: it serves the real router (submit / manifest /
+            // status / …), and it publishes `AppState.didcomm` — the slot
+            // outbound `send_to_member` reads. The old loop populated neither,
+            // so `push_to_holder` always failed with "DIDComm listener not
+            // running", was swallowed by the best-effort `warn!` on the
+            // delivery path, and no issued credential ever reached the holder.
+            let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+            let config = vtc.state.config.read().await.clone();
             let state = vtc.state.clone();
-            let loop_did = vtc_did.clone();
+            let listener_did = vtc_did.clone();
             let loop_handle = tokio::spawn(async move {
-                run_vtc_join_loop(
-                    vtc_atm,
-                    vtc_profile,
-                    mediator_did,
-                    loop_did,
+                crate::messaging::run_didcomm_service(
+                    &config,
+                    &secrets_resolver,
+                    &listener_did,
                     state,
-                    shutdown_rx,
+                    &mut shutdown_rx,
                 )
                 .await;
             });
+
+            // Don't hand back a harness whose listener hasn't bound yet: the
+            // `didcomm` slot is published once the service is up, so waiting on
+            // it makes `start()` mean "ready to send and receive".
+            await_listener(&vtc.state).await;
 
             MockVtcDidcomm {
                 mediator,
@@ -1012,7 +1043,7 @@ mod didcomm_harness {
         /// Stop the dispatch loop + mediator and wait for a clean wind-down.
         pub async fn shutdown(mut self) {
             if let Some(tx) = self.shutdown_tx.take() {
-                let _ = tx.send(());
+                let _ = tx.send(true);
             }
             if let Some(handle) = self.loop_handle.take() {
                 let _ = handle.await;
@@ -1031,96 +1062,5 @@ mod didcomm_harness {
             .expect("holder pubkey multibase");
         secret.id = format!("did:key:{pub_mb}#{pub_mb}");
         secret
-    }
-
-    /// The VTC dispatch loop: receive → call the real handler → reply, until
-    /// shutdown. Mirrors the e2e responder's two-hop reply path (authcrypt the
-    /// inner reply to the applicant, forward through the mediator).
-    async fn run_vtc_join_loop(
-        atm: ATM,
-        profile: Arc<ATMProfile>,
-        mediator_did: String,
-        vtc_did: String,
-        state: AppState,
-        mut shutdown_rx: oneshot::Receiver<()>,
-    ) {
-        loop {
-            if shutdown_rx.try_recv().is_ok() {
-                break;
-            }
-            let next = atm
-                .message_pickup()
-                .live_stream_next(&profile, Some(POLL), true)
-                .await;
-            let Ok(Some((msg, _meta))) = next else {
-                continue;
-            };
-            if msg.typ.contains("problem-report")
-                || msg.typ == "https://didcomm.org/routing/2.0/forward"
-            {
-                continue;
-            }
-            let Some(sender) = msg.from.clone() else {
-                continue;
-            };
-
-            // Drive the real Trust Task dispatcher: the message body is the
-            // Trust Task document, the authcrypt sender is the proven holder.
-            // The reply document is self-describing (its own `type` — a
-            // `#response` or a `trust-task-error`).
-            let Some((reply_type, reply_body)) = dispatch_join(&state, &sender, &msg).await else {
-                continue;
-            };
-
-            let reply_id = Uuid::new_v4().to_string();
-            let reply_msg = Message::build(reply_id.clone(), reply_type, reply_body)
-                .from(vtc_did.clone())
-                .to(sender.clone())
-                .thid(msg.id.clone())
-                .finalize();
-            let Ok((inner_jwe, _)) = atm
-                .pack_encrypted(&reply_msg, &sender, Some(&vtc_did), Some(&vtc_did))
-                .await
-            else {
-                continue;
-            };
-            let _ = atm
-                .forward_and_send_message(
-                    &profile,
-                    false,
-                    &inner_jwe,
-                    Some(&reply_id),
-                    &mediator_did,
-                    &sender,
-                    None,
-                    None,
-                    false,
-                )
-                .await;
-        }
-        atm.graceful_shutdown().await;
-    }
-
-    /// Dispatch an inbound join Trust Task document through the **real**
-    /// [`dispatch_trust_task_core`] (the same spine the production DIDComm
-    /// handler uses) and return the `(reply_type, reply_document)` to thread
-    /// back. The reply document is self-describing — a `#response` on success
-    /// or a `trust-task-error` on rejection — so there is no separate error
-    /// channel. `None` only if the reply document can't be parsed.
-    async fn dispatch_join(
-        state: &AppState,
-        sender: &str,
-        msg: &Message,
-    ) -> Option<(String, Value)> {
-        let bytes = serde_json::to_vec(&msg.body).ok()?;
-        let ctx = JoinAuthCtx::didcomm(sender.to_string());
-        let outcome = dispatch_trust_task_core(state, &ctx, &bytes).await;
-        let doc: Value = serde_json::from_slice(&outcome.body).ok()?;
-        let typ = doc
-            .get("type")
-            .and_then(|t| t.as_str())
-            .unwrap_or("https://trusttasks.org/spec/trust-task-error/0.1")
-            .to_string();
-        Some((typ, doc))
     }
 }
