@@ -123,9 +123,7 @@ pub(crate) async fn run(
         }
         WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(client, &did).await,
         WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(client, &did).await,
-        WebvhCommands::DidLog { did, out } => {
-            webvh::cmd_webvh_did_log(client.base_url(), &did, out).await
-        }
+        WebvhCommands::DidLog { did, out } => webvh::cmd_webvh_did_log(client, &did, out).await,
         WebvhCommands::ListDomains { server } => cmd_list_domains(client, &server).await,
     }
 }
