@@ -1,5 +1,5 @@
-//! Inbound `task-consent/decision/1.0` — an approver signs off on a specific
-//! privileged task execution, bound to its payload digest.
+//! Inbound `task-consent/decision/0.1` — an approver signs off on a specific
+//! privileged task execution, bound to the payload digest they were shown.
 //!
 //! This is the decision half of the PDP's `requireConsent` flow (the gate mints
 //! the pending request and wakes approvers). The approver's authority is the
@@ -21,16 +21,32 @@ use crate::server::AppState;
 /// How long a completed grant stays valid for the requester's re-submit.
 const GRANT_TTL_SECS: u64 = 600;
 
+/// `task-consent/decision/0.1`.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DecisionPayload {
-    /// Payload digest of the task being approved (echoes the pending request).
-    digest: String,
-    /// Nonce echoed from the pending request — binds this decision to it.
+    /// Nonce echoed from the request — binds this decision to it.
     challenge: String,
-    /// True to approve, false to deny (a denial aborts the request).
+    /// The **salted** digest the approver was shown and signed. This is the only
+    /// digest that ever leaves the executor; the internal one it indexes is
+    /// resolved from it.
+    payload_digest: String,
+    /// The human's answer. An explicit enum rather than a bool, so that a missing
+    /// or falsy value can never read as assent — silence, timeouts and dismissals
+    /// are denials, and a wire form that lets them decode as approval is a bug
+    /// waiting for a serializer change.
+    decision: Decision,
+    /// Optional note, most useful on a denial.
+    #[allow(dead_code)]
     #[serde(default)]
-    approve: bool,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum Decision {
+    Approve,
+    Deny,
 }
 
 fn now_secs() -> u64 {
@@ -68,14 +84,14 @@ pub(super) async fn handle_decision(
 
     let ks = &state.task_consent_ks;
     // An expired pending reads as absent, so a lapsed request can't be approved.
-    let pending = match consent::get_pending(ks, &payload.digest, now).await {
+    let pending = match consent::pending_by_wire_digest(ks, &payload.payload_digest, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "task-consent:no_pending".into(),
-                    details: Some(json!({ "digest": payload.digest })),
+                    reason: "task-consent/decision:no_pending".into(),
+                    details: Some(json!({ "payloadDigest": payload.payload_digest })),
                 },
             );
         }
@@ -124,22 +140,22 @@ pub(super) async fn handle_decision(
     }
 
     // A denial aborts the request.
-    if !payload.approve {
-        let _ = consent::delete_pending(ks, &payload.digest).await;
+    if payload.decision == Decision::Deny {
+        let _ = consent::delete_pending(ks, &pending).await;
         return success_response(
             &doc,
-            json!({ "status": "denied", "digest": payload.digest }),
+            json!({ "status": "denied", "payloadDigest": payload.payload_digest }),
         );
     }
 
     // Accumulate the approval; at the threshold, issue a single-use grant.
-    let updated = match consent::add_approval(ks, &payload.digest, &approver, now).await {
+    let updated = match consent::add_approval(ks, &pending.digest, &approver, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
-                    reason: "task-consent:no_pending".into(),
+                    reason: "task-consent/decision:no_pending".into(),
                     details: None,
                 },
             );
@@ -153,18 +169,25 @@ pub(super) async fn handle_decision(
             requester_did: updated.requester_did.clone(),
             type_uri: updated.type_uri.clone(),
             approvers: updated.approvals.clone(),
+            // Carry what the approvers were shown through to execution, which
+            // re-asserts it before committing. Without this the grant would
+            // authorize the payload but say nothing about the state it was
+            // approved against — and a human in the loop makes that window
+            // minutes wide.
+            state_pin: updated.state_pin.clone(),
+            guards: updated.guards.clone(),
             granted_at: now,
             expires_at: now + GRANT_TTL_SECS,
         };
         if let Err(e) = consent::store_grant(ks, &grant).await {
             return app_error_to_reject(&doc, e);
         }
-        let _ = consent::delete_pending(ks, &payload.digest).await;
+        let _ = consent::delete_pending(ks, &updated).await;
         return success_response(
             &doc,
             json!({
                 "status": "granted",
-                "digest": payload.digest,
+                "payloadDigest": payload.payload_digest,
                 "approvals": updated.approvals.len(),
             }),
         );
@@ -174,7 +197,7 @@ pub(super) async fn handle_decision(
         &doc,
         json!({
             "status": "pending",
-            "digest": payload.digest,
+            "payloadDigest": payload.payload_digest,
             "approvals": updated.approvals.len(),
             "needed": updated.min_approvals,
         }),

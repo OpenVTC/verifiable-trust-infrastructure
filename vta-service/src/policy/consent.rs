@@ -25,6 +25,7 @@ use vti_common::store::KeyspaceHandle;
 
 const PENDING_PREFIX: &[u8] = b"pending:";
 const GRANT_PREFIX: &[u8] = b"grant:";
+const WIRE_INDEX_PREFIX: &[u8] = b"wire:";
 
 /// Domain-separation tag: keeps these digests from colliding with any other
 /// SHA-256 over a canonical payload elsewhere in the system.
@@ -41,22 +42,61 @@ const DIGEST_DOMAIN: &[u8] = b"vta/task-consent/v1\0";
 /// digest, and an approval for the benign one would authorize the destructive
 /// one. The approver only ever sees an opaque digest, so nothing downstream
 /// could catch the substitution.
+/// This digest is **executor-internal**. It never leaves the process: it is the
+/// key under which a pending request and its grant are stored, and the gate must
+/// be able to recompute it on a re-submit *before* it knows the challenge — which
+/// is precisely why it cannot be the salted one. See [`wire_digest`].
 pub fn payload_digest(type_uri: &str, payload: &serde_json::Value) -> Result<String, AppError> {
+    digest_with(type_uri, payload, None)
+}
+
+/// The digest the approver signs, the requester echoes, and the two screens
+/// match: [`payload_digest`] salted with the per-request `challenge`.
+///
+/// Salted because an unsalted digest over a low-entropy payload is a confirmation
+/// oracle. "Deactivate `did:webvh:abc…`" has essentially one canonical form, so
+/// anyone who observes the digest in transit — a compromised, subpoenaed, or
+/// retrospectively-decrypted mediator — can guess the operation and hash to check.
+/// Both screens still derive the same value because both hold the challenge.
+///
+/// The salt is why there are two digests rather than one. Keying storage by the
+/// salted value would be circular: the gate would need the challenge to compute
+/// the key under which the challenge is stored.
+pub fn wire_digest(
+    type_uri: &str,
+    payload: &serde_json::Value,
+    challenge: &str,
+) -> Result<String, AppError> {
+    digest_with(type_uri, payload, Some(challenge))
+}
+
+fn digest_with(
+    type_uri: &str,
+    payload: &serde_json::Value,
+    challenge: Option<&str>,
+) -> Result<String, AppError> {
     let canonical = serde_json_canonicalizer::to_string(payload)
         .map_err(|e| AppError::Internal(format!("payload JCS canonicalization failed: {e}")))?;
     let mut h = Sha256::new();
     h.update(DIGEST_DOMAIN);
     h.update((type_uri.len() as u64).to_be_bytes());
     h.update(type_uri.as_bytes());
+    h.update((canonical.len() as u64).to_be_bytes());
     h.update(canonical.as_bytes());
+    if let Some(c) = challenge {
+        h.update(c.as_bytes());
+    }
     Ok(hex::encode(h.finalize()))
 }
 
 /// An in-flight consent request accumulating approver signatures.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingTaskConsent {
-    /// `payload_digest` of the task awaiting consent.
+    /// Internal [`payload_digest`] of the task awaiting consent.
     pub digest: String,
+    /// The salted [`wire_digest`] the approver signs. Stored so a decision can be
+    /// matched without re-deriving it from a payload we deliberately do not keep.
+    pub wire_digest: String,
     /// Type URI of the task (for the approver's display + audit).
     pub type_uri: String,
     /// The DID that submitted the task.
@@ -71,6 +111,18 @@ pub struct PendingTaskConsent {
     pub challenge: String,
     /// Distinct approver DIDs who have approved so far.
     pub approvals: Vec<String>,
+    /// The prior state the effects shown to the approver were computed against.
+    ///
+    /// The payload itself is **not** stored — the requester re-submits it, and the
+    /// digest proves it is the same one. What must be kept is the state the
+    /// effects were computed against, because that is what execution has to
+    /// re-assert: a human in the loop makes the window minutes wide, so the world
+    /// can move underneath an approval.
+    #[serde(default)]
+    pub state_pin: Option<crate::policy::effects::StatePin>,
+    /// Executor-internal preconditions to re-assert at execution.
+    #[serde(default)]
+    pub guards: crate::trust_tasks::planner::Guards,
     pub created_at: u64,
     pub expires_at: u64,
 }
@@ -83,12 +135,28 @@ pub struct TaskConsentGrant {
     pub type_uri: String,
     /// The approver DIDs whose signatures produced this grant.
     pub approvers: Vec<String>,
+    /// Carried from the pending request: what the approvers were shown, and what
+    /// execution must still find true.
+    #[serde(default)]
+    pub state_pin: Option<crate::policy::effects::StatePin>,
+    #[serde(default)]
+    pub guards: crate::trust_tasks::planner::Guards,
     pub granted_at: u64,
     pub expires_at: u64,
 }
 
 fn pending_key(digest: &str) -> Vec<u8> {
     [PENDING_PREFIX, digest.as_bytes()].concat()
+}
+
+/// Index from the salted wire digest back to the internal one.
+///
+/// The approver's decision carries only the wire digest — it is the only digest
+/// that ever left the process — but the pending request is keyed by the internal
+/// one, because the gate has to find it on a re-submit before it knows the
+/// challenge. This index closes that loop.
+fn wire_index_key(wire_digest: &str) -> Vec<u8> {
+    [WIRE_INDEX_PREFIX, wire_digest.as_bytes()].concat()
 }
 
 fn grant_key(requester_did: &str, digest: &str) -> Vec<u8> {
@@ -113,7 +181,30 @@ fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, AppError> {
 pub async fn store_pending(ks: &KeyspaceHandle, p: &PendingTaskConsent) -> Result<(), AppError> {
     let key = String::from_utf8(pending_key(&p.digest))
         .map_err(|e| AppError::Internal(format!("pending key not utf-8: {e}")))?;
-    ks.insert(key, p).await
+    ks.insert(key, p).await?;
+    // Index the wire digest, since that is the only one an approver's decision
+    // can carry back to us.
+    ks.insert_raw(
+        String::from_utf8(wire_index_key(&p.wire_digest))
+            .map_err(|e| AppError::Internal(format!("wire index key not utf-8: {e}")))?,
+        p.digest.as_bytes().to_vec(),
+    )
+    .await
+}
+
+/// Resolve the salted wire digest an approver signed back to the internal digest
+/// the pending request is keyed by.
+pub async fn pending_by_wire_digest(
+    ks: &KeyspaceHandle,
+    wire_digest: &str,
+    now: u64,
+) -> Result<Option<PendingTaskConsent>, AppError> {
+    let Some(bytes) = ks.get_raw(wire_index_key(wire_digest)).await? else {
+        return Ok(None);
+    };
+    let internal = String::from_utf8(bytes)
+        .map_err(|e| AppError::Internal(format!("wire index value not utf-8: {e}")))?;
+    get_pending(ks, &internal, now).await
 }
 
 /// Fetch a live pending consent. An expired one is treated as absent and swept
@@ -131,13 +222,18 @@ pub async fn get_pending(
     let p: PendingTaskConsent = decode(&b)?;
     if p.expires_at <= now {
         ks.remove(key).await?;
+        ks.remove(wire_index_key(&p.wire_digest)).await?;
         return Ok(None);
     }
     Ok(Some(p))
 }
 
-pub async fn delete_pending(ks: &KeyspaceHandle, digest: &str) -> Result<(), AppError> {
-    ks.remove(pending_key(digest)).await
+/// Delete a pending request and its wire index. Takes the record rather than a
+/// digest so both keys are always removed together — an orphaned index would
+/// resolve to a pending that no longer exists.
+pub async fn delete_pending(ks: &KeyspaceHandle, p: &PendingTaskConsent) -> Result<(), AppError> {
+    ks.remove(pending_key(&p.digest)).await?;
+    ks.remove(wire_index_key(&p.wire_digest)).await
 }
 
 /// Record an approval (idempotent per approver) and return the updated pending.
@@ -168,6 +264,7 @@ pub async fn sweep_expired(ks: &KeyspaceHandle, now: u64) -> Result<usize, AppEr
         match serde_json::from_slice::<PendingTaskConsent>(&value) {
             Ok(p) if p.expires_at <= now => {
                 ks.remove(key).await?;
+                ks.remove(wire_index_key(&p.wire_digest)).await?;
                 pruned += 1;
             }
             Ok(_) => {}
@@ -274,6 +371,73 @@ mod tests {
         );
     }
 
+    /// The wire digest is the one that leaves the process, and it is salted with
+    /// the challenge so it cannot be used as a confirmation oracle: a payload
+    /// like "deactivate did:webvh:abc…" has essentially one canonical form, so an
+    /// unsalted digest is guessable by anyone who observes it in transit.
+    #[test]
+    fn wire_digest_is_salted_and_distinct_from_the_internal_one() {
+        let p = json!({ "did": "did:webvh:example.com:acme" });
+        let internal = payload_digest(T_UPDATE, &p).unwrap();
+        let a = wire_digest(T_UPDATE, &p, "challenge-aaaa").unwrap();
+        let b = wire_digest(T_UPDATE, &p, "challenge-bbbb").unwrap();
+
+        assert_ne!(
+            internal, a,
+            "the wire digest must not equal the storage key"
+        );
+        assert_ne!(
+            a, b,
+            "a different challenge must yield a different wire digest"
+        );
+        // …and it is still deterministic for a given challenge, or the approver's
+        // echo could never be matched.
+        assert_eq!(a, wire_digest(T_UPDATE, &p, "challenge-aaaa").unwrap());
+    }
+
+    /// The wire digest binds the type URI too — the same reason the internal one
+    /// does, and the approver only ever sees this one.
+    #[test]
+    fn wire_digest_binds_the_type_uri() {
+        let p = json!({ "did": "did:webvh:example.com:acme" });
+        assert_ne!(
+            wire_digest(T_UPDATE, &p, "c").unwrap(),
+            wire_digest(T_ROTATE, &p, "c").unwrap()
+        );
+    }
+
+    /// The decision an approver signs carries only the wire digest, so the
+    /// pending request has to be reachable from it.
+    #[tokio::test]
+    async fn a_decision_resolves_its_pending_by_wire_digest() {
+        let (ks, _d) = temp_ks().await;
+        let p = pending("deadbeef", 1);
+        store_pending(&ks, &p).await.unwrap();
+
+        let found = pending_by_wire_digest(&ks, &p.wire_digest, 200)
+            .await
+            .unwrap()
+            .expect("resolved via the wire index");
+        assert_eq!(found.digest, "deadbeef");
+
+        assert!(
+            pending_by_wire_digest(&ks, "not-a-digest", 200)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Deleting the pending must take its index with it — an orphaned index
+        // would resolve to a request that no longer exists.
+        delete_pending(&ks, &p).await.unwrap();
+        assert!(
+            pending_by_wire_digest(&ks, &p.wire_digest, 200)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     /// Length-prefixing the URI stops a boundary shift between the URI and the
     /// canonical payload from producing the same preimage.
     #[test]
@@ -287,6 +451,9 @@ mod tests {
     fn pending(digest: &str, min: u32) -> PendingTaskConsent {
         PendingTaskConsent {
             digest: digest.into(),
+            wire_digest: format!("wire-{digest}"),
+            state_pin: None,
+            guards: Default::default(),
             type_uri: "https://…/dids/update/1.0".into(),
             requester_did: "did:key:zReq".into(),
             approver_set: "operators".into(),
@@ -371,6 +538,8 @@ mod tests {
     fn grant(digest: &str, expires_at: u64) -> TaskConsentGrant {
         TaskConsentGrant {
             digest: digest.into(),
+            state_pin: None,
+            guards: Default::default(),
             requester_did: "did:key:zReq".into(),
             type_uri: T_UPDATE.into(),
             approvers: vec!["did:key:zA".into()],

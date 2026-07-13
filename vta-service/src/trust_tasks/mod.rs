@@ -50,6 +50,7 @@ mod auth;
 mod backup;
 mod config;
 mod consent;
+mod consent_request;
 mod contexts;
 mod cred_vault;
 mod credential_exchange;
@@ -64,6 +65,7 @@ mod memory;
 mod messaging;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 mod passkey_vms;
+pub(crate) mod planner;
 mod policy_gate;
 #[cfg(feature = "webvh")]
 mod provision_integration;
@@ -566,7 +568,7 @@ dispatch_table! {
     // Task-execution consent decision (PDP requireConsent). Records approver
     // signatures; the gate exempts it from re-gating (see policy_gate) so
     // approving a task can't itself require consent.
-    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_1_0 => task_consent::handle_decision
+    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list

@@ -1152,15 +1152,15 @@ pub const TASK_CONSENT_REQUEST_1_0: &str = "https://trusttasks.org/spec/consent/
 /// bridge-attested).
 pub const TASK_CONSENT_DECISION_1_0: &str = "https://trusttasks.org/spec/consent/decision/1.0";
 
-/// `task-consent/decision/1.0` — an approver signs approval (or denial) of a
+/// `task-consent/decision/0.1` — an approver signs approval (or denial) of a
 /// specific privileged **task execution**, bound to the task's payload digest.
 /// Distinct from `consent/decision` (messaging-bridge conversation consent):
 /// this feeds the Policy Decision Point's `requireConsent` disposition. The
 /// proof's signer must belong to the policy-named approver set; at the required
 /// threshold the VTA issues a single-use grant the requester's re-submit
 /// consumes. Auth: a member of the approver set (Data-Integrity signed).
-pub const TASK_TASK_CONSENT_DECISION_1_0: &str =
-    "https://trusttasks.org/spec/task-consent/decision/1.0";
+pub const TASK_TASK_CONSENT_DECISION_0_1: &str =
+    "https://trusttasks.org/spec/task-consent/decision/0.1";
 
 /// `consent/revoke/1.0` — an operator withdraws a standing grant, reverting the
 /// conversation to default-deny.
@@ -1364,7 +1364,7 @@ pub const ALL_URIS: &[&str] = &[
     // Consent slice
     TASK_CONSENT_REQUEST_1_0,
     TASK_CONSENT_DECISION_1_0,
-    TASK_TASK_CONSENT_DECISION_1_0,
+    TASK_TASK_CONSENT_DECISION_0_1,
     TASK_CONSENT_REVOKE_1_0,
     TASK_CONSENT_LIST_1_0,
     TASK_CONSENT_APPROVER_SET_1_0,
@@ -1482,6 +1482,11 @@ mod tests {
             // ToIP messaging protocol — the transport-agnostic `messaging/ping`
             // liveness/capability probe (`TASK_MESSAGING_PING_0_1`).
             "https://trusttasks.org/spec/messaging/",
+            // Delegated task-execution consent. A separate family from
+            // `consent/*`, which gates an inbound messaging conversation for an
+            // AI agent and whose subject is a platform/conversation pair — it
+            // cannot express "approve this task payload".
+            "https://trusttasks.org/spec/task-consent/",
         ];
         for uri in ALL_URIS {
             assert!(

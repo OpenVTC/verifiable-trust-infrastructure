@@ -21,6 +21,12 @@ const SUBJECT_FIELDS: &[&str] = &["did", "mnemonic", "subject", "target", "crede
 /// Payload fields that carry the trust-context id.
 const CONTEXT_FIELDS: &[&str] = &["contextId", "context_id"];
 
+/// The identifier the task acts on, by the same precedence `PolicyInput` uses —
+/// so the subject a policy authorized is the subject an approver is shown.
+pub fn subject_of(payload: &Value) -> Option<String> {
+    first_string(payload, SUBJECT_FIELDS).map(str::to_string)
+}
+
 fn first_string<'a>(payload: &'a Value, fields: &[&str]) -> Option<&'a str> {
     fields
         .iter()

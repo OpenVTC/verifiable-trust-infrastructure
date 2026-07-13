@@ -485,7 +485,9 @@ fn map_register_err(e: RegisterDidWithServerError) -> AppError {
 
 // ─── Helpers internal to this slice ─────────────────────────────────────
 
-fn update_body_to_options(body: UpdateDidWebvhBody) -> Result<UpdateDidWebvhOptions, RejectReason> {
+pub(super) fn update_body_to_options(
+    body: UpdateDidWebvhBody,
+) -> Result<UpdateDidWebvhOptions, RejectReason> {
     let witnesses = match body.witnesses {
         Some(v) => match serde_json::from_value::<Witnesses>(v) {
             Ok(w) => Some(w),
@@ -521,8 +523,8 @@ struct RotateKeysWithDid {
 /// Wrapper carrying `UpdateDidWebvhBody` plus the target `did`. Same
 /// rationale as [`RotateKeysWithDid`].
 #[derive(Debug, serde::Deserialize)]
-struct UpdateDidWithDid {
-    did: String,
+pub(super) struct UpdateDidWithDid {
+    pub(super) did: String,
     #[serde(flatten)]
-    body: UpdateDidWebvhBody,
+    pub(super) body: UpdateDidWebvhBody,
 }

@@ -103,7 +103,7 @@ pub async fn issue_credential(
             AppError::Internal("VTA DID not configured; cannot issue".to_string())
         })?;
 
-    let issuer_secret = load_vta_issuer_secret(state, &vta_did).await?;
+    let issuer_secret = load_vta_issuer_secret(state, &vta_did, "credentials-issue").await?;
 
     let now = Utc::now();
     let expires = now + Duration::seconds(params.validity_seconds as i64);
@@ -197,9 +197,13 @@ pub async fn revoke_credential(
 /// [`InternalAuthority`]-gated `get_key_secret_internal`, then reconstruct the
 /// `Secret` from the multibase private key with `id = {vta_did}#key-0` so the
 /// Data-Integrity proof's `verificationMethod` resolves under the VTA DID.
-async fn load_vta_issuer_secret(state: &AppState, vta_did: &str) -> Result<Secret, AppError> {
+pub(crate) async fn load_vta_issuer_secret(
+    state: &AppState,
+    vta_did: &str,
+    purpose: &'static str,
+) -> Result<Secret, AppError> {
     let key_id = format!("{vta_did}#key-0");
-    let authority = InternalAuthority::new("credentials-issue");
+    let authority = InternalAuthority::new(purpose);
     let resp = crate::operations::keys::get_key_secret_internal(
         &state.keys_ks,
         &state.imported_ks,
@@ -207,7 +211,7 @@ async fn load_vta_issuer_secret(state: &AppState, vta_did: &str) -> Result<Secre
         &state.audit_ks,
         authority,
         &key_id,
-        "credentials-issue-internal",
+        purpose,
     )
     .await?;
     // Validate the multibase decodes to a 32-byte Ed25519 seed before
