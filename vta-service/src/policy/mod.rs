@@ -101,6 +101,8 @@ mod tests {
                 device_id: None,
                 last_user_verification_at: None,
                 network_class: None,
+                acr: None,
+                amr: vec![],
             },
         }
     }

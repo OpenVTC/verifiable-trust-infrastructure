@@ -59,12 +59,7 @@ pub(super) async fn handle_create(
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL grant is gated per the `acl/grant` step-up floor (operator policy).
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_GRANT, &doc).await
-    {
-        return resp;
-    }
+    // Step-up (acl/grant floor) is enforced centrally by the PDP gate.
     let req: CreateAclBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -130,13 +125,7 @@ pub(super) async fn handle_update(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL change-role is gated per the `acl/change-role` step-up floor.
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_CHANGE_ROLE, &doc)
-            .await
-    {
-        return resp;
-    }
+    // Step-up (acl/change-role floor) is enforced centrally by the PDP gate.
     let req: UpdateAclBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -186,12 +175,7 @@ pub(super) async fn handle_delete(
     if let Err(e) = auth.require_manage() {
         return app_error_to_reject(&doc, e);
     }
-    // ACL revoke is gated per the `acl/revoke` step-up floor (operator policy).
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::ACL_REVOKE, &doc).await
-    {
-        return resp;
-    }
+    // Step-up (acl/revoke floor) is enforced centrally by the PDP gate.
     let req: DeleteAclBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

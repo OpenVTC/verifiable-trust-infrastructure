@@ -918,6 +918,57 @@ pub(super) async fn require_step_up(
     Some(reject_with(doc, reject))
 }
 
+/// Initiate a **self-approve** step-up for a task the Policy Decision Point
+/// decided requires it (a Rego `requireStepUp`), independent of the config
+/// floors. Mints a `PendingStepUp` whose approver is the subject itself and
+/// rejects the task with the `approve-request` — the caller elevates their own
+/// session (via a stronger factor) and re-submits.
+///
+/// This is the policy-driven analogue of [`require_step_up`], which resolves the
+/// approver from config/ACL. Delegated (someone-else-approves) approval is the
+/// job of the consent flow, not step-up.
+pub(super) async fn initiate_self_step_up(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .unwrap_or_default();
+    let (reason, authorization_context) = reason_and_context(&doc.payload);
+    let reject = match mint_pending_step_up(
+        &state.sessions_ks,
+        &vta_did,
+        &auth.did,
+        &auth.did, // self-approve: the subject is its own approver
+        false,
+        &auth.session_id,
+        reason,
+        authorization_context,
+    )
+    .await
+    {
+        Ok(approve_request) => {
+            maybe_push_step_up(state, &auth.did, &auth.did, &approve_request).await;
+            RejectReason::TaskFailed {
+                reason: "auth:step_up_required".to_string(),
+                details: Some(json!({
+                    "requiredAcr": STEP_UP_TARGET_ACR,
+                    "approveRequest": approve_request,
+                })),
+            }
+        }
+        Err(()) => RejectReason::InternalError {
+            reason: "failed to initiate step-up".to_string(),
+        },
+    };
+    reject_with(doc, reject)
+}
+
 /// Stable operation-class identifiers used to resolve step-up floors.
 /// These are the gated VTA operations; they mirror the canonical
 /// `acl/*` / `context/*` / `key/*` slugs the `auth/step-up/policy` spec uses for

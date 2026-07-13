@@ -145,12 +145,7 @@ pub(super) async fn handle_revoke(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // Revoking (deleting) a key is gated per the `key/revoke` step-up floor.
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::KEY_REVOKE, &doc).await
-    {
-        return resp;
-    }
+    // Step-up (key/revoke floor) is enforced centrally by the PDP gate.
     let req: RevokeKeyBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,

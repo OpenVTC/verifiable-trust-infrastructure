@@ -120,6 +120,17 @@ pub struct Consumer {
         skip_serializing_if = "Option::is_none"
     )]
     pub network_class: Option<String>,
+    /// The session's OIDC assurance level (`aal1` / `aal2`), so a policy can
+    /// gate on step-up state — e.g. `sideEffects == "destructive" and
+    /// consumer.acr != "aal2" => requireStepUp`. Extension beyond the 0.3
+    /// schema (which carries `lastUserVerificationAt` as a coarser proxy); to
+    /// be added to the schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acr: Option<String>,
+    /// RFC 8176 authentication method references on the session
+    /// (`did`, `passkey`, …). Lets a policy require a specific factor.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub amr: Vec<String>,
 }
 
 /// The structured input fed to the evaluator before dispatching a task.
@@ -293,6 +304,8 @@ mod tests {
                 device_id: Some("dev-1".into()),
                 last_user_verification_at: None,
                 network_class: None,
+                acr: None,
+                amr: vec![],
             },
         };
         let v = serde_json::to_value(&input).unwrap();

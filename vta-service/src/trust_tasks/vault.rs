@@ -1437,14 +1437,7 @@ pub(super) async fn handle_release(
     }
 
     // Step-up gate (P0.13): honour an operator-configured `vault/release`
-    // floor before disclosing a stored secret. Placed after the role + scope
-    // checks so a caller lacking permission gets that error first, not a
-    // step-up prompt. Inert under the shipping default (step-up disabled).
-    if let Some(reject) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::VAULT_RELEASE, &doc).await
-    {
-        return reject;
-    }
+    // Step-up (vault/release floor) is enforced centrally by the PDP gate.
 
     // ATM + vta_did readiness — checked here so the error is clearly
     // "infrastructure not configured" rather than a packing failure mid-flow.
@@ -1578,14 +1571,7 @@ pub(super) async fn handle_proxy_login(
         return reject;
     }
 
-    // Step-up gate (P0.13): honour a `vault/proxy-login` floor before
-    // minting a session credential for the site. Inert by default.
-    if let Some(reject) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::VAULT_PROXY_LOGIN, &doc)
-            .await
-    {
-        return reject;
-    }
+    // Step-up (vault/proxy-login floor) is enforced centrally by the PDP gate.
 
     // ATM + vta_did readiness — checked here so the error is clearly
     // "infrastructure not configured" rather than a packing failure mid-flow.
@@ -1766,18 +1752,7 @@ pub(super) async fn handle_sign_trust_task(
         return reject;
     }
 
-    // Step-up gate (P0.13): honour a `vault/sign-trust-task` floor before
-    // signing as the entry's principal DID. Inert by default.
-    if let Some(reject) = super::step_up::require_step_up(
-        state,
-        auth,
-        super::step_up::op::VAULT_SIGN_TRUST_TASK,
-        &doc,
-    )
-    .await
-    {
-        return reject;
-    }
+    // Step-up (vault/sign-trust-task floor) is enforced centrally by the PDP gate.
 
     // Validate the envelope against the entry's principal identity and sign
     // (operations layer; P2.4). The typed `SignTrustTaskError` maps back to the

@@ -418,9 +418,9 @@ pub(crate) async fn dispatch_trust_task_core(
     // `config.policy.enforcement` is on; when a policy denies (or demands
     // step-up/consent), the task is rejected here and never reaches its handler.
     // A rejected task still flows through the audit tail below.
-    let outcome = match policy_gate::policy_gate(state, auth, &type_uri, &doc.payload).await {
-        Err(reason) => reject_with(&doc, reason),
-        Ok(()) => {
+    let outcome = match policy_gate::policy_gate(state, auth, &type_uri, &doc).await {
+        Some(reject_outcome) => reject_outcome,
+        None => {
             if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
                 let mut doc = doc;
                 wire_v0_2::downconvert_request(&mut doc.payload, spec);

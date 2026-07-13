@@ -44,13 +44,7 @@ pub(super) async fn handle_issue(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    // 2. Operator step-up (AAL2) gate.
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::CREDENTIALS_ISSUE, &doc)
-            .await
-    {
-        return resp;
-    }
+    // 2. Operator step-up (credentials/issue floor) — enforced centrally by the PDP gate.
     // 3. Parse the request body.
     let req: IssueCredentialBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -109,12 +103,7 @@ pub(super) async fn handle_revoke(
     if let Err(e) = auth.require_admin() {
         return app_error_to_reject(&doc, e);
     }
-    if let Some(resp) =
-        super::step_up::require_step_up(state, auth, super::step_up::op::CREDENTIALS_REVOKE, &doc)
-            .await
-    {
-        return resp;
-    }
+    // Step-up (credentials/revoke floor) is enforced centrally by the PDP gate.
     let req: RevokeCredentialBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -204,8 +193,12 @@ mod tests {
         });
     }
 
+    // Step-up is now enforced by the central PDP gate, not inline in the
+    // handler (the inline require_step_up was removed). This exercises the
+    // config-floor step-up path through the gate for credentials/issue.
     #[tokio::test]
-    async fn issue_without_step_up_is_rejected() {
+    #[allow(deprecated)]
+    async fn issue_at_aal1_is_rejected_by_the_gate() {
         let (state, _dir) = build_signing_test_app_state().await;
         require_issue_step_up(&state).await;
         // AAL1 admin (acr empty) — capability passes, step-up gate must fire.
@@ -215,12 +208,15 @@ mod tests {
             "claims": { "role": "member" },
             "validitySeconds": 3600u64,
         }));
-        let out = handle_issue(&state, &auth, doc).await;
-        assert!(
-            !out.status.is_success(),
-            "issue at AAL1 must be rejected by the step-up gate, got {}",
-            out.status
-        );
+        let out = super::super::policy_gate::policy_gate(
+            &state,
+            &auth,
+            vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1,
+            &doc,
+        )
+        .await
+        .expect("the credentials/issue floor must reject an AAL1 caller at the gate");
+        assert!(!out.status.is_success(), "got {}", out.status);
         let body = String::from_utf8_lossy(&out.body);
         assert!(
             body.contains("step_up_required"),

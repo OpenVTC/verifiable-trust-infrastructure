@@ -33,11 +33,16 @@ fn first_string<'a>(payload: &'a Value, fields: &[&str]) -> Option<&'a str> {
 /// - `class` is the authoritative classification from `class_for`; `None`
 ///   applies the fail-safe [`TaskClass::floor`].
 /// - `caller_did` is the authenticated consumer's DID (from the auth claims).
+/// - `caller_acr` / `caller_amr` are the session's assurance level + method
+///   references (from the auth claims), so a policy can gate on step-up state.
+///   An empty `caller_acr` is treated as "unset" (omitted).
 /// - `payload` is the inbound task payload, probed for subject + context.
 pub fn build_policy_input(
     type_uri: &str,
     payload: &Value,
     caller_did: &str,
+    caller_acr: &str,
+    caller_amr: &[String],
     class: Option<TaskClass>,
 ) -> PolicyInput {
     let class = class.unwrap_or_else(TaskClass::floor);
@@ -64,6 +69,8 @@ pub fn build_policy_input(
             device_id: None,
             last_user_verification_at: None,
             network_class: None,
+            acr: (!caller_acr.is_empty()).then(|| caller_acr.to_string()),
+            amr: caller_amr.to_vec(),
         },
     }
 }
@@ -82,7 +89,14 @@ mod tests {
             Discloses::None,
             false,
         ));
-        let input = build_policy_input("https://…/delete/0.1", &payload, "did:key:zCaller", class);
+        let input = build_policy_input(
+            "https://…/delete/0.1",
+            &payload,
+            "did:key:zCaller",
+            "",
+            &[],
+            class,
+        );
 
         assert_eq!(input.request.side_effects, SideEffectLevel::Destructive);
         assert_eq!(input.request.subject.as_deref(), Some("did:webvh:abc"));
@@ -92,7 +106,14 @@ mod tests {
 
     #[test]
     fn unclassified_task_gets_the_fail_safe_floor() {
-        let input = build_policy_input("https://…/unknown/0.1", &json!({}), "did:key:z", None);
+        let input = build_policy_input(
+            "https://…/unknown/0.1",
+            &json!({}),
+            "did:key:z",
+            "",
+            &[],
+            None,
+        );
         // floor = mutating / secret / actsAsSubject — maximally consequential.
         assert_eq!(input.request.side_effects, SideEffectLevel::Mutating);
         assert_eq!(input.request.exposure.discloses, Discloses::Secret);
@@ -107,7 +128,7 @@ mod tests {
     #[test]
     fn subject_precedence_prefers_did_over_mnemonic() {
         let payload = json!({ "mnemonic": "alice", "did": "did:webvh:xyz" });
-        let input = build_policy_input("t", &payload, "c", Some(TaskClass::floor()));
+        let input = build_policy_input("t", &payload, "c", "", &[], Some(TaskClass::floor()));
         assert_eq!(input.request.subject.as_deref(), Some("did:webvh:xyz"));
     }
 }
