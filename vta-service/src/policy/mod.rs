@@ -33,6 +33,7 @@
 
 pub mod consent;
 pub mod defaults;
+pub mod effects;
 pub mod engine;
 pub mod input;
 pub mod storage;

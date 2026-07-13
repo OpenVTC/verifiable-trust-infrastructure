@@ -40,15 +40,7 @@ static COUNTER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// infrequent; the fsync cost is acceptable.
 pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32, AppError> {
     let _guard = COUNTER_LOCK.lock().await;
-    let current: u32 = match ks.get_raw(counter_key).await? {
-        Some(bytes) => {
-            let arr: [u8; 4] = bytes
-                .try_into()
-                .map_err(|_| AppError::Internal(format!("corrupt counter at {counter_key}")))?;
-            u32::from_le_bytes(arr)
-        }
-        None => 0,
-    };
+    let current = read_u32(ks, counter_key).await?;
     ks.insert_raw(counter_key, (current + 1).to_le_bytes().to_vec())
         .await?;
     ks.persist().await?;
@@ -57,6 +49,34 @@ pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32,
     // No-op unless running in a TEE.
     crate::integrity::reseal_if_active().await?;
     Ok(current)
+}
+
+/// Read the counter at `counter_key` **without** allocating (a missing key reads
+/// as 0) — the value [`allocate_u32`] would return next.
+///
+/// This exists so a caller can compute what it *would* derive without consuming
+/// an index: a dry-run that allocated would both burn a path and, worse, cause
+/// the real run to derive a *different* key than the one the dry-run reported.
+///
+/// A peeked value is a prediction, not a reservation. Nothing stops another
+/// allocation landing in between, so a caller that must guarantee the prediction
+/// held has to pin the counter and re-check it at the point of use.
+pub async fn peek_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32, AppError> {
+    let _guard = COUNTER_LOCK.lock().await;
+    read_u32(ks, counter_key).await
+}
+
+/// Decode the stored counter. Callers hold `COUNTER_LOCK`.
+async fn read_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32, AppError> {
+    match ks.get_raw(counter_key).await? {
+        Some(bytes) => {
+            let arr: [u8; 4] = bytes
+                .try_into()
+                .map_err(|_| AppError::Internal(format!("corrupt counter at {counter_key}")))?;
+            Ok(u32::from_le_bytes(arr))
+        }
+        None => Ok(0),
+    }
 }
 
 #[cfg(test)]

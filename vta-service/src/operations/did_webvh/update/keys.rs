@@ -16,16 +16,20 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use super::errors::UpdateDidWebvhError;
 use super::legacy::{legacy_lookup_by_public_key, legacy_lookup_pre_rotation_by_hash};
 use super::options::DerivedWebvhKey;
-use crate::keys::paths::allocate_path;
+use crate::keys::paths::{allocate_path, peek_paths};
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
 use crate::store::KeyspaceHandle;
 
 /// Derive `count` Ed25519 keys via BIP-32 under `base_path`. Pure —
-/// no keyspace writes. Pair with [`install_derived_webvh_keys`] to
-/// persist once the consuming `update_did` call has produced the
-/// new log entry's `version_id`.
+/// **allocates** `count` derivation paths, consuming them from the group's
+/// counter. Pair with [`install_derived_webvh_keys`] to persist once the
+/// consuming `update_did` call has produced the new log entry's `version_id`.
+///
+/// For a read-only prediction of what this *would* derive, use
+/// [`peek_webvh_keys`] — it shares the derivation below, so the two cannot
+/// disagree about the key at a given path.
 pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
     keys_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
@@ -35,7 +39,52 @@ pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
     if count == 0 {
         return Ok(vec![]);
     }
+    let mut paths = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        paths.push(
+            allocate_path(keys_ks, base_path)
+                .await
+                .map_err(|e| UpdateDidWebvhError::Persistence(format!("allocate_path: {e}")))?,
+        );
+    }
+    derive_webvh_keys_at(keys_ks, seed_store, &paths).await
+}
 
+/// Predict the keys [`derive_webvh_keys`] would produce, **without** allocating.
+/// Genuinely pure: no keyspace writes.
+///
+/// This is what lets a caller show someone which key a rotation will install
+/// before committing to it. Deriving via [`derive_webvh_keys`] to do that would
+/// be self-defeating — it consumes the path, so the subsequent real run
+/// allocates the *next* one and installs a **different** key than the one that
+/// was shown, while every signature over it still verifies.
+///
+/// A peek reserves nothing. A caller whose correctness depends on the prediction
+/// holding must pin the counter ([`crate::keys::paths::peek_path_counter`]) and
+/// re-check it before committing.
+pub(in crate::operations::did_webvh) async fn peek_webvh_keys(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    base_path: &str,
+    count: u32,
+) -> Result<Vec<DerivedWebvhKey>, UpdateDidWebvhError> {
+    if count == 0 {
+        return Ok(vec![]);
+    }
+    let paths = peek_paths(keys_ks, base_path, count)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("peek_paths: {e}")))?;
+    derive_webvh_keys_at(keys_ks, seed_store, &paths).await
+}
+
+/// The derivation itself: seed → BIP-32 root → one key per path. Shared by the
+/// allocating and peeking entry points above so a prediction and the run it
+/// predicts cannot drift apart. Pure with respect to the keyspace.
+async fn derive_webvh_keys_at(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    paths: &[String],
+) -> Result<Vec<DerivedWebvhKey>, UpdateDidWebvhError> {
     let seed_id = get_active_seed_id(keys_ks).await.map_err(|e| {
         UpdateDidWebvhError::Persistence(format!("could not load active seed id: {e}"))
     })?;
@@ -46,11 +95,8 @@ pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
     let root = ExtendedSigningKey::from_seed(&seed)
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("BIP-32 root derivation: {e}")))?;
 
-    let mut derived = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        let path = allocate_path(keys_ks, base_path)
-            .await
-            .map_err(|e| UpdateDidWebvhError::Persistence(format!("allocate_path: {e}")))?;
+    let mut derived = Vec::with_capacity(paths.len());
+    for path in paths {
         let parsed: DerivationPath = path.parse().map_err(|e| {
             UpdateDidWebvhError::Persistence(format!("parse derivation path `{path}`: {e}"))
         })?;
@@ -67,7 +113,7 @@ pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
         derived.push(DerivedWebvhKey {
             public_key,
             hash,
-            derivation_path: path,
+            derivation_path: path.clone(),
             seed_id,
         });
     }

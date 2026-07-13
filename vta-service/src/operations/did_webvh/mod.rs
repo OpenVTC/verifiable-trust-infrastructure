@@ -36,7 +36,8 @@ pub use servers::{
 };
 pub use update::{
     RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions, UpdateDidWebvhResult,
-    rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
+    UpdatePlan, plan_did_webvh_update, rotate_did_webvh_keys, state_from_jsonl_pub,
+    update_did_webvh,
 };
 
 use std::sync::Arc;

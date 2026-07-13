@@ -23,6 +23,33 @@ pub async fn allocate_path(keys_ks: &KeyspaceHandle, base: &str) -> Result<Strin
     Ok(path)
 }
 
+/// Read a group's path counter **without** allocating.
+///
+/// Pair with [`peek_paths`] to predict what a subsequent allocation would
+/// derive, and pin this value so the prediction can be re-checked at the point
+/// of use — a peek reserves nothing, so an allocation elsewhere in the same
+/// group moves it.
+pub async fn peek_path_counter(keys_ks: &KeyspaceHandle, base: &str) -> Result<u32, AppError> {
+    counter::peek_u32(keys_ks, &format!("path_counter:{base}")).await
+}
+
+/// The next `count` derivation paths [`allocate_path`] *would* hand out, without
+/// consuming any of them.
+///
+/// This is what makes a read-only dry-run of a key-rotating operation possible.
+/// Deriving via `allocate_path` in order to *show* someone which key would be
+/// used both burns an index and defeats the purpose: the subsequent real run
+/// allocates the *next* index and derives a **different** key than the one that
+/// was shown.
+pub async fn peek_paths(
+    keys_ks: &KeyspaceHandle,
+    base: &str,
+    count: u32,
+) -> Result<Vec<String>, AppError> {
+    let next = peek_path_counter(keys_ks, base).await?;
+    Ok((0..count).map(|i| path_at(base, next + i)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

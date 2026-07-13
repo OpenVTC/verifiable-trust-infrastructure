@@ -447,7 +447,10 @@ pub async fn run_edit_did(
         prompt_webvh_params(edited, Some(&pre_rotation_status))?
     };
 
-    confirm_publish(&body, no_confirm)?;
+    // `confirm_publish` needs the body, but building `opts` below moves out of
+    // it — and the confirmation has to come after the plan, since the plan is
+    // what the operator is confirming.
+    let body_for_confirm = body.clone();
 
     // Convert the wire body into the op-layer options shape. The
     // SDK type carries `witnesses` as opaque JSON to stay
@@ -484,6 +487,37 @@ pub async fn run_edit_did(
         didcomm_bridge: &didcomm_bridge,
         auth_locks: &auth_locks,
     };
+    // Dry-run the real update and show the operator what it will actually do.
+    //
+    // The document diff shown during editing cannot answer this. It is computed
+    // from the document alone, so it can say "you changed `service`" but it has
+    // no way to know that changing *anything* rotates this DID's update key —
+    // that consequence lives in the update handler's semantics, not in the
+    // document's shape. An operator confirming on the strength of the diff is
+    // being asked to approve a key rotation they were never shown.
+    //
+    // So the confirmation is driven by a plan produced by the update code
+    // itself, run up to (and not through) its first write.
+    let plan =
+        crate::operations::did_webvh::plan_did_webvh_update(&deps, &auth, &scid, opts.clone())
+            .await?;
+
+    eprintln!("\nPlanned changes to {}:", plan.did);
+    eprintln!(
+        "  Version: {} → {}",
+        plan.prior_version_id, plan.new_version_id
+    );
+    eprintln!();
+    for effect in plan.to_effects() {
+        eprintln!("  • {}", effect.summary);
+    }
+    if plan.to_effects().is_empty() {
+        eprintln!("  (no effects — this update would change nothing)");
+    }
+    eprintln!();
+
+    confirm_publish(&body_for_confirm, no_confirm)?;
+
     let result = crate::operations::did_webvh::update_did_webvh(
         &deps,
         &auth,

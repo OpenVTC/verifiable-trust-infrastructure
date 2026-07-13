@@ -14,28 +14,53 @@ use didwebvh_rs::update::{UpdateDIDConfig, update_did};
 use super::errors::UpdateDidWebvhError;
 use super::keys::{
     derive_secret_for_handle, derive_webvh_keys, install_derived_webvh_keys,
-    load_active_update_key, load_pre_rotation_signing_key,
+    load_active_update_key, load_pre_rotation_signing_key, peek_webvh_keys,
 };
 use super::options::{UpdateDidWebvhOptions, UpdateDidWebvhResult};
+use super::plan::UpdatePlan;
 use super::state::{find_record_by_scid, state_from_jsonl, state_to_jsonl};
 use super::validate::{validate_document_for_update, validate_watchers, validate_witnesses};
 use crate::audit;
 use crate::auth::AuthClaims;
+use crate::keys::paths::peek_path_counter;
 use crate::operations::did_webvh::concurrency::RecordSnapshot;
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
 use crate::webvh_store;
 
+/// Plan an update without performing it: run the real path up to — and not
+/// through — its first write, and report what it *would* do.
+///
+/// This exists so a human can be shown the consequences of an update before
+/// authorizing it. It must be the same code as the update itself: a separate
+/// implementation that described the update would drift, and a drifted
+/// description is worse than none, because it misinforms with a straight face.
+///
+/// Read-only. In particular the key derivation *peeks* the BIP-32 path counter
+/// rather than allocating from it — allocating here would both burn an index
+/// and, far worse, cause the subsequent real run to derive a **different** key
+/// than the one reported, which is exactly the deception the plan exists to
+/// prevent. Because a peek reserves nothing, the plan carries
+/// [`UpdatePlan::path_counter_pin`], and a caller that acts on the plan must
+/// re-check it.
+pub async fn plan_did_webvh_update(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+) -> Result<UpdatePlan, UpdateDidWebvhError> {
+    match run_update(deps, auth, scid, opts, None, "plan", Mode::Plan).await? {
+        Outcome::Planned(plan) => Ok(plan),
+        Outcome::Executed(_) => Err(UpdateDidWebvhError::Library(
+            "plan mode committed an update".into(),
+        )),
+    }
+}
+
 /// Drive a webvh DID update end-to-end. See module docs.
 ///
-/// New parameters compared with the pre-PR-113 signature:
-/// - `imported_ks` — needed by the daemon-REST auth flow (step 13)
-///   to load the VTA's signing key via `get_key_secret_internal`.
-/// - `vta_did` — the running VTA's DID (read from `AppConfig::
-///   vta_did` at the call site). `None` means "no VTA identity
-///   configured" — server-managed DID publishes will fail loudly
-///   with `Publish("…")` rather than silently 401.
-/// - `auth_locks` — per-server async mutex for serialising
-///   auth-cache reads. Lives on `AppState`.
+/// - `vta_did` — the running VTA's DID (read from `AppConfig::vta_did` at the
+///   call site). `None` means "no VTA identity configured" — server-managed DID
+///   publishes fail loudly with `Publish("…")` rather than silently 401.
 pub async fn update_did_webvh(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -44,6 +69,35 @@ pub async fn update_did_webvh(
     vta_did: Option<&str>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
+    match run_update(deps, auth, scid, opts, vta_did, channel, Mode::Execute).await? {
+        Outcome::Executed(result) => Ok(result),
+        Outcome::Planned(_) => Err(UpdateDidWebvhError::Library(
+            "execute mode returned a plan".into(),
+        )),
+    }
+}
+
+/// Whether [`run_update`] stops at the last read or goes on to commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Plan,
+    Execute,
+}
+
+enum Outcome {
+    Planned(UpdatePlan),
+    Executed(UpdateDidWebvhResult),
+}
+
+async fn run_update(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    scid: &str,
+    opts: UpdateDidWebvhOptions,
+    vta_did: Option<&str>,
+    channel: &str,
+    mode: Mode,
+) -> Result<Outcome, UpdateDidWebvhError> {
     // Re-bind the bundled deps to the historical local names so the (large) body
     // below is unchanged. All fields are `Copy` references — this copies the
     // borrows out of `*deps`; `deps` itself stays usable (the publish step below
@@ -133,6 +187,11 @@ pub async fn update_did_webvh(
         .as_ref()
         .map(|arc| (**arc).clone())
         .unwrap_or_default();
+    // Owned snapshot of the prior state. Taken here because `state` is moved
+    // into the update config below, which ends `last_state`'s borrow — and a
+    // plan needs the before-picture after that point.
+    let prior_version_id = last_state.get_version_id().to_string();
+    let prior_document = last_state.log_entry.get_state().clone();
     // Pre-rotation is "active" when the previous entry committed
     // `next_key_hashes`. The library's `check_signing_key` consults
     // `previous.next_key_hashes` (not `previous.update_keys`) for the
@@ -164,13 +223,47 @@ pub async fn update_did_webvh(
     //    With pre-rotation active, the "auth" key for the new entry is
     //    the *revealed* pre-rotation candidate from the previous entry,
     //    not a freshly-minted key. We pick that handle in step 8 below.
-    let derived_auth = if new_doc.is_some() && !pre_rotation_active {
-        derive_webvh_keys(keys_ks, seed_store, &context.base_path, 1).await?
-    } else {
-        vec![]
+    //
+    //    In Plan mode we *peek* the derivation-path counter instead of
+    //    allocating from it. Allocating would make the plan a mutation —
+    //    and would mean the real run derived a different key than the one
+    //    the plan reported, since it would allocate the *next* index. The
+    //    peeked counter is pinned into the plan so the caller can detect a
+    //    concurrent allocation before acting on it.
+    let path_counter_pin = peek_path_counter(keys_ks, &context.base_path)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("peek_path_counter: {e}")))?;
+    let auth_count: u32 = u32::from(new_doc.is_some() && !pre_rotation_active);
+    let (derived_auth, derived_pre_rotation) = match mode {
+        // Execute allocates, advancing the counter between the two calls: the
+        // auth key takes index n, the pre-rotation keys take n+1, n+2, …
+        Mode::Execute => {
+            let auth = if auth_count > 0 {
+                derive_webvh_keys(keys_ks, seed_store, &context.base_path, 1).await?
+            } else {
+                vec![]
+            };
+            let pre =
+                derive_webvh_keys(keys_ks, seed_store, &context.base_path, pre_rotation_count)
+                    .await?;
+            (auth, pre)
+        }
+        // Plan must predict exactly that. Peeking twice would not: both peeks
+        // read the same un-advanced counter and would hand back overlapping
+        // paths. Peek the whole contiguous block once and split it where the
+        // allocations would have fallen.
+        Mode::Plan => {
+            let all = peek_webvh_keys(
+                keys_ks,
+                seed_store,
+                &context.base_path,
+                auth_count + pre_rotation_count,
+            )
+            .await?;
+            let (auth, pre) = all.split_at(auth_count as usize);
+            (auth.to_vec(), pre.to_vec())
+        }
     };
-    let derived_pre_rotation =
-        derive_webvh_keys(keys_ks, seed_store, &context.base_path, pre_rotation_count).await?;
 
     // 8. Resolve the signing key.
     //
@@ -209,30 +302,52 @@ pub async fn update_did_webvh(
         // Backdated, index-spaced timestamp so a back-to-back update doesn't
         // collide with the previous entry's second — see `backdated_version_time`.
         .version_time(super::super::backdated_version_time(new_entry_index));
-    if let Some(doc) = new_doc {
-        builder = builder.document(doc);
-        let new_keys: Vec<Multibase> = if pre_rotation_active {
-            // Reveal the pre-rotation key as the new update_keys entry.
-            // `validate_pre_rotation_keys` requires every key in the new
-            // update_keys to have its hash committed in
-            // previous.next_key_hashes — `signing_handle.public_key`
-            // satisfies that by construction (we picked it BY hash).
-            vec![Multibase::from(signing_handle.public_key.clone())]
-        } else {
+    // The update_keys this entry sets, or `None` to leave the previous entry's
+    // in force — webvh parameters are a delta, so "not restated" means
+    // "unchanged", NOT "removed".
+    //
+    // Computed once, here, and consumed by both the builder below and the plan.
+    // Deriving it twice would be the same mistake this whole plan/apply split
+    // exists to avoid: a second implementation of the handler's semantics that
+    // is free to drift from the first.
+    let set_update_keys: Option<Vec<Multibase>> = if new_doc.is_some() && !pre_rotation_active {
+        Some(
             derived_auth
                 .iter()
                 .map(|k| Multibase::from(k.public_key.clone()))
-                .collect()
-        };
-        builder = builder.update_keys(new_keys);
+                .collect(),
+        )
     } else if pre_rotation_active {
-        // Metadata-only update under pre-rotation: still rotate
-        // update_keys to the revealed pre-rotation pubkey so the chain's
-        // active update-keys keep moving forward in lockstep with the
-        // signing-key reveal. Otherwise the next entry's
-        // `previous.next_key_hashes` carries an unused commitment while
-        // the active key on record stays stale.
-        builder = builder.update_keys(vec![Multibase::from(signing_handle.public_key.clone())]);
+        // Reveal the pre-rotation key as the new update_keys entry.
+        // `validate_pre_rotation_keys` requires every key in the new update_keys
+        // to have its hash committed in previous.next_key_hashes —
+        // `signing_handle.public_key` satisfies that by construction (we picked
+        // it BY hash).
+        //
+        // This also covers the metadata-only update under pre-rotation: the
+        // active update-keys must keep moving forward in lockstep with the
+        // signing-key reveal, or the next entry's `previous.next_key_hashes`
+        // carries an unused commitment while the key on record goes stale.
+        Some(vec![Multibase::from(signing_handle.public_key.clone())])
+    } else {
+        None
+    };
+
+    /// The update keys in force *after* this entry: what it sets, or what the
+    /// previous entry left standing.
+    fn effective_update_keys(set: &Option<Vec<Multibase>>, previous: &[Multibase]) -> Vec<String> {
+        set.as_deref()
+            .unwrap_or(previous)
+            .iter()
+            .map(|k| k.as_ref().to_string())
+            .collect()
+    }
+
+    if let Some(doc) = new_doc {
+        builder = builder.document(doc);
+    }
+    if let Some(ref keys) = set_update_keys {
+        builder = builder.update_keys(keys.clone());
     }
     // Always pass next_key_hashes when caller toggled pre-rotation OR
     // when the DID currently uses pre-rotation — keeps the commitment
@@ -289,6 +404,35 @@ pub async fn update_did_webvh(
     snapshot
         .assert_unchanged(&current)
         .map_err(|race| UpdateDidWebvhError::Conflict(race.to_string()))?;
+
+    // ── The seam. Everything above is read-only; everything below commits. ──
+    //
+    // A plan stops here, having run the real path: the same chain load, the
+    // same key derivation, the same `didwebvh_rs::update_did` that minted the
+    // actual next log entry above. What it reports is not a description of the
+    // update — it is the update, uncommitted.
+    if mode == Mode::Plan {
+        return Ok(Outcome::Planned(UpdatePlan {
+            did: record.did.clone(),
+            scid: scid.to_string(),
+            prior_version_id,
+            new_version_id: new_version_id.clone(),
+            prior_document,
+            new_document: new_log_entry.get_state().clone(),
+            prior_update_keys: last_update_keys
+                .iter()
+                .map(|k| k.as_ref().to_string())
+                .collect(),
+            new_update_keys: effective_update_keys(&set_update_keys, &last_update_keys),
+            pre_rotation_count,
+            new_next_key_hashes: derived_pre_rotation
+                .iter()
+                .map(|k| k.hash.clone())
+                .collect(),
+            base_path: context.base_path.clone(),
+            path_counter_pin,
+        }));
+    }
 
     // 12. Persist new log + new key handles + updated record.
     let new_log_jsonl = state_to_jsonl(result.state())?;
@@ -463,16 +607,9 @@ pub async fn update_did_webvh(
         "did:webvh updated"
     );
 
-    let update_keys_count = if !derived_auth.is_empty() {
-        derived_auth.len() as u32
-    } else if pre_rotation_active {
-        // Reveal-only path: we set update_keys = [revealed_pubkey].
-        1
-    } else {
-        last_update_keys.len() as u32
-    };
+    let update_keys_count = effective_update_keys(&set_update_keys, &last_update_keys).len() as u32;
 
-    Ok(UpdateDidWebvhResult {
+    Ok(Outcome::Executed(UpdateDidWebvhResult {
         did: record.did.clone(),
         new_version_id,
         new_scid,
@@ -486,5 +623,5 @@ pub async fn update_did_webvh(
         // gates on and that step 13 above used to decide whether
         // to call the host transport.
         serverless: record.server_id == "serverless",
-    })
+    }))
 }

@@ -36,13 +36,15 @@ mod keys;
 mod legacy;
 mod options;
 mod orchestrator;
+mod plan;
 mod rotate;
 mod state;
 mod validate;
 
 pub use errors::UpdateDidWebvhError;
 pub use options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
-pub use orchestrator::update_did_webvh;
+pub use orchestrator::{plan_did_webvh_update, update_did_webvh};
+pub use plan::UpdatePlan;
 pub use rotate::rotate_did_webvh_keys;
 
 /// Cross-module accessor for `state_from_jsonl`. `passkey_vms` uses
@@ -583,7 +585,8 @@ mod pre_rotation_e2e_tests {
 
     use super::state::state_from_jsonl;
     use super::{
-        RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, rotate_did_webvh_keys, update_did_webvh,
+        RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, plan_did_webvh_update,
+        rotate_did_webvh_keys, update_did_webvh,
     };
     use crate::auth::AuthClaims;
     use crate::config::AppConfig;
@@ -1710,5 +1713,359 @@ mod pre_rotation_e2e_tests {
         let svc = current_didcomm_service(&final_doc)
             .expect("DIDCommMessaging service advertised after enable");
         assert_eq!(svc.mediator_did, mediator_did);
+    }
+
+    // ── plan/apply: what the plan reports must be what the execution does ────
+    //
+    // If a plan predicts one key and the real run installs another, a human
+    // approved a rotation that never happened — and every signature over that
+    // approval still verifies, so nothing downstream can tell. That is not
+    // hypothetical: `derive_webvh_keys` allocates from a BIP-32 path counter, so
+    // a plan that derived keys the way the real run does would consume an index,
+    // and the real run would then allocate the *next* one and install a
+    // different key than the one shown. Hence `peek_webvh_keys`, and hence these
+    // tests.
+
+    /// A plan must not move any state it reads — no burned derivation path, no
+    /// appended log entry — and must therefore be repeatable.
+    #[tokio::test]
+    async fn planning_is_read_only_and_repeatable() {
+        let (ts, seed_store) = setup("ctx-plan-ro").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-plan-ro",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let base_path = crate::contexts::get_context(&ts.contexts_ks, "ctx-plan-ro")
+            .await
+            .expect("get_context")
+            .expect("context")
+            .base_path;
+        let opts = || UpdateDidWebvhOptions {
+            document: Some(doc_patch(&did, "planned")),
+            ..Default::default()
+        };
+
+        let counter_before = crate::keys::paths::peek_path_counter(&ts.keys_ks, &base_path)
+            .await
+            .expect("peek");
+        let log_before = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("log");
+
+        let first = plan_did_webvh_update(&deps, &auth, &scid, opts())
+            .await
+            .expect("plan");
+
+        assert_eq!(
+            counter_before,
+            crate::keys::paths::peek_path_counter(&ts.keys_ks, &base_path)
+                .await
+                .expect("peek"),
+            "planning must not consume a derivation path"
+        );
+        assert_eq!(
+            log_before,
+            crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+                .await
+                .expect("log"),
+            "planning must not append a log entry"
+        );
+
+        let second = plan_did_webvh_update(&deps, &auth, &scid, opts())
+            .await
+            .expect("re-plan");
+        assert_eq!(
+            first.new_update_keys, second.new_update_keys,
+            "re-planning the same update must predict the same keys, not slide \
+             down the counter"
+        );
+    }
+
+    /// The one that matters. Plan an update, execute it, and assert the update
+    /// keys the chain actually committed are the ones the plan showed.
+    #[tokio::test]
+    async fn plan_predicts_the_update_key_that_execution_installs() {
+        let (ts, seed_store) = setup("ctx-plan-keys").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-plan-keys",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let opts = || UpdateDidWebvhOptions {
+            document: Some(doc_patch(&did, "v2")),
+            ..Default::default()
+        };
+
+        let plan = plan_did_webvh_update(&deps, &auth, &scid, opts())
+            .await
+            .expect("plan");
+        assert!(
+            plan.rotates_update_keys(),
+            "a document change rotates the update key — the effect the payload \
+             never mentions and the plan exists to surface"
+        );
+
+        update_did_webvh(&deps, &auth, &scid, opts(), None, "test")
+            .await
+            .expect("execute");
+
+        let (installed_keys, _) = committed_params(&ts, &did).await;
+        assert_eq!(
+            plan.new_update_keys, installed_keys,
+            "the update key the plan showed the approver MUST be the key the \
+             execution installed — otherwise the approval authorized a rotation \
+             that never happened"
+        );
+    }
+
+    /// Same property, under pre-rotation — where the freshly-derived keys land
+    /// in `next_key_hashes` rather than `update_keys` (the new update key is the
+    /// one *revealed* from the previous entry's commitment). This is the case
+    /// that actually exercises a multi-key peek against a multi-key allocation:
+    /// a planner reading the counter without care would predict the wrong
+    /// commitments here and nothing else in the system would notice.
+    #[tokio::test]
+    async fn plan_predicts_the_pre_rotation_commitments_execution_publishes() {
+        let (ts, seed_store) = setup("ctx-plan-pre").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-plan-pre",
+            2,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let opts = || UpdateDidWebvhOptions {
+            document: Some(doc_patch(&did, "pre")),
+            ..Default::default()
+        };
+
+        let plan = plan_did_webvh_update(&deps, &auth, &scid, opts())
+            .await
+            .expect("plan");
+        assert_eq!(
+            plan.new_next_key_hashes.len(),
+            2,
+            "expected two fresh pre-rotation commitments"
+        );
+
+        update_did_webvh(&deps, &auth, &scid, opts(), None, "test")
+            .await
+            .expect("execute");
+
+        let (installed_keys, installed_hashes) = committed_params(&ts, &did).await;
+        assert_eq!(
+            plan.new_next_key_hashes, installed_hashes,
+            "the pre-rotation commitments the plan predicted MUST be the ones the \
+             execution published — they authorize the next rotation, so a wrong \
+             prediction means the approver saw a different future than the one \
+             that now exists"
+        );
+        assert_eq!(
+            plan.new_update_keys, installed_keys,
+            "and the revealed update key must match too"
+        );
+    }
+
+    /// The plan's effects must name the key rotation, not just the document edit.
+    /// A surface rendering only the payload diff would show the verification
+    /// method and hide the fact that the DID's controlling key is changing.
+    #[tokio::test]
+    async fn effects_surface_the_rotation_hidden_in_the_payload() {
+        let (ts, seed_store) = setup("ctx-plan-fx").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-plan-fx",
+            2,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let plan = plan_did_webvh_update(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "fx")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("plan");
+
+        let effects = plan.to_effects();
+        let kinds: Vec<&str> = effects.iter().map(|e| e.kind.as_str()).collect();
+        assert!(
+            kinds.contains(&"documentChange"),
+            "expected the document edit: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"keyRotation"),
+            "the rotation is invisible in the payload — the plan must surface it: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&"preRotationRefresh"),
+            "expected the pre-rotation commitments: {kinds:?}"
+        );
+
+        let rotation = effects
+            .iter()
+            .find(|e| e.kind == "keyRotation")
+            .expect("rotation effect");
+        assert_eq!(
+            rotation.before,
+            Some(serde_json::json!(plan.prior_update_keys))
+        );
+        assert_eq!(
+            rotation.after,
+            Some(serde_json::json!(plan.new_update_keys))
+        );
+        assert_ne!(
+            rotation.before, rotation.after,
+            "a rotation whose before equals its after is not a rotation"
+        );
+
+        // `summary` is the only member a consent surface is guaranteed able to
+        // render, so an effect without one is an effect that can go unseen.
+        for e in &effects {
+            assert!(!e.summary.is_empty(), "effect `{}` has no summary", e.kind);
+        }
+
+        assert_eq!(plan.state_pin().resource, did);
+        assert_eq!(plan.state_pin().version, plan.prior_version_id);
+    }
+
+    /// An update that changes no document, on a DID with no pre-rotation,
+    /// rotates no key — so the plan must not claim it does.
+    #[tokio::test]
+    async fn no_document_change_means_no_rotation() {
+        let (ts, seed_store) = setup("ctx-plan-noop").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (_did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-plan-noop",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let plan = plan_did_webvh_update(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                ttl: Some(600),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("plan");
+
+        assert!(
+            !plan.rotates_update_keys(),
+            "a metadata-only update with no pre-rotation must not rotate the update key"
+        );
+        assert!(
+            !plan.to_effects().iter().any(|e| e.kind == "keyRotation"),
+            "no rotation effect when nothing rotates"
+        );
+    }
+
+    /// Read back the update keys and pre-rotation commitments actually in force
+    /// after the last entry.
+    ///
+    /// webvh parameters are a *delta* — an entry that does not restate
+    /// `update_keys` leaves the previous entry's standing. So "what is in force"
+    /// is the last entry that restated them, walking backwards, not whatever the
+    /// final entry happens to carry.
+    async fn committed_params(ts: &TestStore, did: &str) -> (Vec<String>, Vec<String>) {
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let state = state_from_jsonl(&log).expect("chain validates");
+
+        let mut keys: Vec<String> = vec![];
+        let mut hashes: Vec<String> = vec![];
+        for entry in state.log_entries() {
+            // The entry's *own* parameters, not `validated_parameters` — the
+            // latter records the delta as resolved during validation and reads
+            // `None` on an entry that restated a value, which is the opposite of
+            // what "in force" means here.
+            let p = didwebvh_rs::log_entry::LogEntryMethods::get_parameters(&entry.log_entry);
+            if let Some(arc) = p.update_keys.as_ref() {
+                keys = arc.iter().map(|k| k.as_ref().to_string()).collect();
+            }
+            if let Some(arc) = p.next_key_hashes.as_ref() {
+                hashes = arc.iter().map(|h| h.as_ref().to_string()).collect();
+            }
+        }
+        (keys, hashes)
     }
 }

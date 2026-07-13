@@ -87,6 +87,7 @@ pub struct UpdateDidWebvhOptions {
 /// re-derivable from `(seed_id, derivation_path)`, so the caller gets
 /// what it needs to persist the handle without holding key material
 /// across the async boundary.
+#[derive(Clone)]
 pub(in crate::operations::did_webvh) struct DerivedWebvhKey {
     pub public_key: String,
     pub hash: String,
