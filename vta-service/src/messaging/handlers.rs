@@ -1030,7 +1030,10 @@ fn register_err_to_app_error(e: operations::did_webvh::RegisterDidWithServerErro
             AppError::NotFound(msg)
         }
         E::AlreadyServerManaged { .. } | E::Conflict(_) => AppError::Conflict(e.to_string()),
-        E::Transport(msg) | E::Publish(msg) => AppError::Internal(format!("publish: {msg}")),
+        E::Transport(msg) => AppError::Internal(format!("publish: {msg}")),
+        // Pass the host's typed rejection through untouched — see
+        // `RegisterDidWithServerError::Publish`.
+        E::Publish(e) => e,
         E::DidUrlParse { .. } => AppError::Validation(e.to_string()),
         E::Storage(msg) => AppError::Internal(msg),
     }

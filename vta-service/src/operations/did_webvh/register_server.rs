@@ -85,8 +85,14 @@ pub enum RegisterDidWithServerError {
     LogMissing(String),
     #[error("transport setup failed: {0}")]
     Transport(String),
+    /// The hosting server rejected the publish. Carries the typed
+    /// [`AppError`] the bridge built from the remote's problem report, so
+    /// its status survives to the operator: a remote "invalid path" stays a
+    /// 400 and a remote "needs force" stays a 409, instead of every upstream
+    /// rejection flattening into a 500 "VTA-side failure". Stringifying this
+    /// is what made the real cause unreachable.
     #[error("publish to server failed: {0}")]
-    Publish(String),
+    Publish(AppError),
     #[error("storage error: {0}")]
     Storage(String),
     #[error("could not derive URL from DID `{did}`: {reason}")]
@@ -196,7 +202,7 @@ pub async fn register_did_with_server(
         params.domain.as_deref(),
     )
     .await
-    .map_err(|e| RegisterDidWithServerError::Publish(e.to_string()))?;
+    .map_err(RegisterDidWithServerError::Publish)?;
 
     // 6. Optimistic-concurrency check. Re-load the record and assert
     //    nothing changed between the initial read and now (where we're

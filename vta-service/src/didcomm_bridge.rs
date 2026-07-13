@@ -12,6 +12,43 @@ use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
 /// Map of pending request IDs to oneshot senders for response routing.
 pub type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Message>>>>;
 
+/// Translate a remote peer's DIDComm problem-report into a typed [`AppError`].
+///
+/// Every problem report used to collapse into a 502, which made a remote's
+/// "you sent an invalid path" indistinguishable from a genuine upstream
+/// outage: both reached the operator as a 5xx, and the SDK maps *any* 5xx to
+/// `VtaError::Server`, whose CLI hint reads "This is a VTA-side failure.
+/// Check server logs or contact the operator." That is precisely the wrong
+/// thing to tell someone whose request the *host* rejected for a reason they
+/// can act on.
+///
+/// Codes are namespaced per protocol (`e.p.did.*`, `e.p.registration.*`,
+/// `e.p.msg.*`) but the trailing segment is the shared vocabulary, so match
+/// on that. The did-hosting service's `AppError::didcomm_code()` is the
+/// authoritative producer for the `e.p.did.*` arm; this is its inverse.
+///
+/// Unrecognised codes — and every `internal-error` — stay a 502. A failure we
+/// can't attribute to the caller *is* a gateway failure, and silently
+/// re-labelling an upstream crash as a 400 would be a worse lie than the one
+/// being fixed.
+///
+/// Remote auth denials map to [`AppError::Forbidden`] (403), never
+/// `Unauthorized` (401): the caller's credential to *this* VTA is valid — it
+/// is the VTA's own DID that lacks rights on the host. A 401 would make the
+/// CLI print a misleading "token may be expired" hint (see the
+/// `e.p.msg.forbidden` note in the workspace CLAUDE.md).
+fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
+    let detail = format!("remote peer rejected the request: {comment} [{code}]");
+    match code.rsplit('.').next().unwrap_or_default() {
+        "unauthorized" | "forbidden" => AppError::Forbidden(detail),
+        "path-unavailable" | "conflict" => AppError::Conflict(detail),
+        "mnemonic-not-found" | "not-found" => AppError::NotFound(detail),
+        "path-invalid" | "invalid-log" | "witness-invalid" | "validation-error" | "bad-request"
+        | "replay-detected" | "size-exceeded" | "quota-exceeded" => AppError::Validation(detail),
+        _ => bad_gateway_error(detail),
+    }
+}
+
 /// Bridge between REST/DIDComm handlers and the DIDComm service's outbound
 /// send capability.
 ///
@@ -164,7 +201,7 @@ impl DIDCommBridge {
 
         if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
             let (code, comment) = extract_problem_report(&response.body);
-            return Err(bad_gateway_error(format!("{code}: {comment}")));
+            return Err(problem_report_to_app_error(&code, &comment));
         }
 
         if response.typ != expected_type {
@@ -258,7 +295,7 @@ impl DIDCommBridge {
         // Check for problem report
         if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
             let (code, comment) = extract_problem_report(&response.body);
-            return Err(bad_gateway_error(format!("{code}: {comment}")));
+            return Err(problem_report_to_app_error(&code, &comment));
         }
 
         // Verify expected type
@@ -270,5 +307,96 @@ impl DIDCommBridge {
         }
 
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    /// The status the operator actually receives — drive the real
+    /// `IntoResponse` rather than re-asserting the variant, so a future
+    /// change to `AppError`'s status mapping can't quietly re-break this.
+    fn status_of(code: &str) -> StatusCode {
+        problem_report_to_app_error(code, "boom")
+            .into_response()
+            .status()
+    }
+
+    /// The did-hosting service's `AppError::didcomm_code()` is the
+    /// authoritative producer of these codes; this pins our inverse of it.
+    /// The bug this fixes: every one of these used to come back 502, and the
+    /// SDK maps any 5xx to `VtaError::Server` → "This is a VTA-side failure",
+    /// which is a lie when the *host* rejected an actionable request.
+    #[test]
+    fn remote_client_errors_keep_their_meaning() {
+        // The exact code from the root-DID register failure.
+        assert_eq!(status_of("e.p.did.path-invalid"), StatusCode::BAD_REQUEST);
+        assert_eq!(status_of("e.p.did.invalid-log"), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status_of("e.p.did.witness-invalid"),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            status_of("e.p.did.validation-error"),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(status_of("e.p.did.quota-exceeded"), StatusCode::BAD_REQUEST);
+        assert_eq!(status_of("e.p.did.size-exceeded"), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status_of("e.p.did.replay-detected"),
+            StatusCode::BAD_REQUEST
+        );
+
+        // Slot taken → the operator needs `--force`, not a bug report.
+        assert_eq!(status_of("e.p.did.path-unavailable"), StatusCode::CONFLICT);
+        assert_eq!(
+            status_of("e.p.did.mnemonic-not-found"),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    /// Remote auth denials are 403, never 401 — the caller's token for *this*
+    /// VTA is fine; it's the VTA's DID that lacks rights on the host. A 401
+    /// would make the CLI print a misleading "token may be expired" hint.
+    #[test]
+    fn remote_auth_denial_is_forbidden_not_unauthorized() {
+        for code in [
+            "e.p.did.unauthorized",
+            "e.p.registration.unauthorized",
+            "e.p.stats.unauthorized",
+            "e.p.msg.forbidden",
+        ] {
+            assert_eq!(status_of(code), StatusCode::FORBIDDEN, "code {code}");
+        }
+    }
+
+    /// A genuine upstream failure stays a 502. Re-labelling an upstream crash
+    /// as a caller error would be a worse lie than the one being fixed.
+    #[test]
+    fn upstream_failures_and_unknown_codes_stay_bad_gateway() {
+        for code in [
+            "e.p.did.internal-error",
+            "e.p.registration.internal-error",
+            "e.p.did.some-code-we-have-never-seen",
+            "",
+        ] {
+            assert_eq!(status_of(code), StatusCode::BAD_GATEWAY, "code {code}");
+        }
+    }
+
+    /// The remote's comment and code both survive into the operator-visible
+    /// message — without them the error is unactionable.
+    #[test]
+    fn detail_carries_remote_comment_and_code() {
+        let err = problem_report_to_app_error(
+            "e.p.did.path-invalid",
+            "path segments must contain only lowercase letters, digits, and hyphens",
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("lowercase letters"), "lost comment: {msg}");
+        assert!(msg.contains("e.p.did.path-invalid"), "lost code: {msg}");
     }
 }

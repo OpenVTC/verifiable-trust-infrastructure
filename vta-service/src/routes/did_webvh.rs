@@ -508,7 +508,12 @@ fn map_register_err(e: RegisterDidWithServerError) -> AppError {
             AppError::NotFound(msg)
         }
         E::AlreadyServerManaged { .. } | E::Conflict(_) => AppError::Conflict(e.to_string()),
-        E::Transport(msg) | E::Publish(msg) => AppError::Internal(format!("publish: {msg}")),
+        E::Transport(msg) => AppError::Internal(format!("publish: {msg}")),
+        // Pass the host's typed rejection through untouched. Wrapping it in
+        // `Internal` told the operator the VTA had failed when in fact the
+        // hosting server had refused their request for a reason they can act
+        // on. See `RegisterDidWithServerError::Publish`.
+        E::Publish(e) => e,
         E::DidUrlParse { .. } => AppError::Validation(e.to_string()),
         E::Storage(msg) => AppError::Internal(msg),
     }
