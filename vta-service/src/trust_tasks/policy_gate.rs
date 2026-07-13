@@ -276,8 +276,14 @@ async fn consent_gate(
         Ok(p) => p,
         Err(e) => return Some(app_error_to_reject(doc, e)),
     };
+    // Whether this submit *raised* a new question, as opposed to re-asking one
+    // already outstanding. Only a new question is pushed — see below.
+    let mut newly_raised = true;
     let pending = match existing {
-        Some(p) if p.state_pin == state_pin && p.guards == guards => p,
+        Some(p) if p.state_pin == state_pin && p.guards == guards => {
+            newly_raised = false;
+            p
+        }
         Some(stale) => {
             if let Err(e) = consent::delete_pending(&state.task_consent_ks, &stale).await {
                 return Some(app_error_to_reject(doc, e));
@@ -335,6 +341,21 @@ async fn consent_gate(
         Ok(r) => r,
         Err(e) => return Some(app_error_to_reject(doc, e)),
     };
+
+    // Wake the approvers — but only for a question we have not already asked.
+    //
+    // The reject is deliberately idempotent: a requester re-submitting the same
+    // payload gets the same challenge back, so it can retry without invalidating
+    // an approval already in flight. Pushing on every re-submit would turn that
+    // into a weapon: a relying party could ring an approver's phone as fast as it
+    // can retry a task it knows will be rejected. Consent designs die to
+    // habituation long before they die to cryptography, and an attacker who can
+    // make the prompt appear on demand is the one holding the habituation lever.
+    //
+    // So the push follows the *question*, not the submit.
+    if newly_raised {
+        super::consent_request::push_signed_requests(state, &requests).await;
+    }
 
     Some(reject_with(
         doc,
@@ -632,6 +653,85 @@ mod tests {
     }
 
     const REQUIRE_CONSENT_EXCLUDE_REQUESTER: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\", \"excludeRequester\": true}}";
+
+    /// The push must follow the *question*, not the submit.
+    ///
+    /// The reject is deliberately idempotent — a requester re-submitting the same
+    /// payload gets the same challenge back, so a retry cannot invalidate an
+    /// approval already in flight. Pushing on every re-submit would turn that into
+    /// a weapon: a relying party could ring an approver's phone as fast as it can
+    /// retry a task it knows will be rejected. Consent designs die to habituation
+    /// long before they die to cryptography, and an attacker who can summon the
+    /// prompt at will is the one holding that lever.
+    #[cfg(feature = "didcomm")]
+    #[tokio::test]
+    async fn a_resubmit_re_asks_nobody() {
+        use crate::messaging::registry::MediatorBinding;
+
+        const MEDIATOR: &str = "did:example:mediator";
+        const APPROVER: &str = "did:key:zApprover";
+
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        // A live mediator the approver routes through, so the push actually lands
+        // somewhere we can observe.
+        state
+            .mediator_registry
+            .record_activate(MediatorBinding {
+                mediator_did: MEDIATOR.into(),
+                endpoint: "https://mediator.test".into(),
+            })
+            .await;
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec![APPROVER.into()]);
+            cfg.messaging = Some(vti_common::config::MessagingConfig {
+                mediator_url: String::new(),
+                mediator_did: MEDIATOR.into(),
+                mediator_host: None,
+            });
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        // First submit raises the question — the approver is asked.
+        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
+        assert_eq!(pushed.len(), 1, "the approver is asked exactly once");
+        assert_eq!(
+            pushed[0].message_type,
+            super::super::consent_request::TASK_CONSENT_REQUEST_0_1
+        );
+        assert_eq!(pushed[0].recipient_did, APPROVER);
+        assert!(
+            pushed[0].body.get("proof").is_some(),
+            "the pushed document is the same signed one the reject carries — one \
+             document on two transports, so a device cannot be shown different \
+             effects depending on how it arrived"
+        );
+
+        // Re-submitting the identical payload re-asks the same question, and must
+        // not ring the phone again.
+        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        assert!(
+            state
+                .mediator_registry
+                .take_outbound(MEDIATOR)
+                .await
+                .is_empty(),
+            "a re-submit must not re-push — otherwise a relying party can spam an \
+             approver by retrying a task it knows will be rejected"
+        );
+    }
 
     /// A grant approved for one task URI must not authorize a *different* task
     /// URI that happens to carry an identical payload. The approver only ever

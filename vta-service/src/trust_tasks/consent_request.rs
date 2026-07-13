@@ -115,3 +115,92 @@ pub(super) async fn mint_signed_requests(
 
     Ok(signed)
 }
+
+/// Deliver the signed requests to the approvers' devices.
+///
+/// **The same document the reject carries.** The relay fallback and the push are
+/// two transports for one signed object, not two descriptions of one event — a
+/// device must not be able to see different effects depending on how the request
+/// reached it.
+///
+/// Best-effort and fire-and-forget: an approver replies later with a separate
+/// `task-consent/decision`, and the requester still holds the relay copy if none
+/// of this works. A push failure must never turn into a task failure.
+///
+/// Mirrors [`super::step_up::maybe_push_step_up`]: buffer at the approver's
+/// mediator, send it, then ring the doorbell. The buffer alone does not reach a
+/// device, and the wake alone has nothing to collect.
+pub(super) async fn push_signed_requests(state: &AppState, requests: &[Value]) {
+    for request in requests {
+        let Some(approver) = request.get("recipient").and_then(Value::as_str) else {
+            continue;
+        };
+        push_one(state, approver, request).await;
+    }
+}
+
+async fn push_one(
+    state: &AppState,
+    approver: &str,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] request: &Value,
+) {
+    let mediator_did = {
+        let cfg = state.config.read().await;
+        super::step_up::approver_mediator(
+            approver,
+            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
+        )
+    };
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
+    let Some(mediator_did) = mediator_did else {
+        tracing::debug!(
+            approver = %approver,
+            "no mediator route for consent approver; the relay fallback applies"
+        );
+        return;
+    };
+
+    #[cfg(feature = "didcomm")]
+    {
+        let pending = crate::messaging::registry::PendingResponse {
+            recipient_did: approver.to_string(),
+            message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
+            body: request.clone(),
+            thread_id: request
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        if let Err(e) = state
+            .mediator_registry
+            .buffer_outbound(&mediator_did, pending)
+            .await
+        {
+            tracing::warn!(
+                error = %e, approver = %approver, mediator = %mediator_did,
+                "failed to buffer task-consent request; relay fallback applies"
+            );
+        }
+
+        if let Err(e) = state
+            .didcomm_bridge
+            .send_oneway(
+                "vta-main",
+                approver,
+                TASK_CONSENT_REQUEST_0_1,
+                request.clone(),
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %e, approver = %approver,
+                "task-consent request send failed; relay fallback applies"
+            );
+        }
+
+        // Ring the doorbell so a backgrounded device rouses now rather than on
+        // its next voluntary pickup. Contentless by design — the wake says only
+        // "you have mail", never what the task is or who is asking.
+        super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+    }
+}
