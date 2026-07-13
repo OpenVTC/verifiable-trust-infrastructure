@@ -105,7 +105,7 @@ pub async fn cmd_key_import(
             "failed to fetch ephemeral wrapping key from {}/keys/import/wrapping-key: {e} \
              — the VTA must support sealed-transfer key import (vta-sdk ≥ 0.8); \
              raw `private_key_multibase` over REST is no longer accepted",
-            client.base_url()
+            client.endpoint_label()
         )
     })?;
     let sealed = seal_private_key(&wrapping_key.x, &key_type, &private_key_multibase).await?;

@@ -320,7 +320,7 @@ async fn from_credential_authenticates_and_exposes_token() {
 
     let client = VtaClient::from_credential(&cred, None).await.unwrap();
     assert_eq!(client.token_expires_at().await, Some(1_700_001_000));
-    assert_eq!(client.base_url(), server.uri().trim_end_matches('/'));
+    assert_eq!(client.rest_url(), Some(server.uri().trim_end_matches('/')));
 }
 
 #[tokio::test]
@@ -336,7 +336,7 @@ async fn from_credential_url_override_wins_over_bundle() {
     let client = VtaClient::from_credential(&cred, Some(&server.uri()))
         .await
         .unwrap();
-    assert_eq!(client.base_url(), server.uri().trim_end_matches('/'));
+    assert_eq!(client.rest_url(), Some(server.uri().trim_end_matches('/')));
 }
 
 /// Exercise `client::ensure_token_valid`'s refresh-on-expiry path:

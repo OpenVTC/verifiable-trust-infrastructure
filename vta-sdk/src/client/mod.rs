@@ -395,12 +395,51 @@ impl VtaClient {
         }
     }
 
-    /// Returns the base URL (REST) or VTA DID (DIDComm).
-    pub fn base_url(&self) -> &str {
+    /// The VTA's HTTP base URL, or `None` if this client has none.
+    ///
+    /// **This is the only accessor you may build an HTTP request from.**
+    /// `Some` on the REST transport. On DIDComm it yields the optional
+    /// REST side-channel (`None` unless the client was constructed with
+    /// one) — a DIDComm client is not guaranteed to know an HTTP URL at
+    /// all, so callers must handle `None` rather than assume one exists.
+    ///
+    /// Replaces the former `base_url()`, which returned the VTA *DID* on
+    /// DIDComm and so silently produced `did:…/some/path` when
+    /// interpolated into a URL.
+    pub fn rest_url(&self) -> Option<&str> {
+        match &self.transport {
+            Transport::Rest { base_url, .. } => Some(base_url),
+            #[cfg(feature = "session")]
+            Transport::DIDComm { rest_url, .. } => rest_url.as_deref(),
+        }
+    }
+
+    /// The VTA's DID, or `None` if this client doesn't know it.
+    ///
+    /// `Some` on the DIDComm transport (the session is established
+    /// against it). `None` on REST — a REST client is never told the
+    /// VTA's DID.
+    pub fn vta_did(&self) -> Option<&str> {
+        match &self.transport {
+            Transport::Rest { .. } => None,
+            #[cfg(feature = "session")]
+            Transport::DIDComm { session, .. } => Some(&session.vta_did),
+        }
+    }
+
+    /// Human-readable identifier for the VTA this client talks to — the
+    /// REST URL, or the VTA DID on a DIDComm client with no REST URL.
+    ///
+    /// **Display and diagnostics only.** The value is a URL on one
+    /// transport and a DID on the other, so never interpolate it into a
+    /// request — use [`rest_url`](Self::rest_url) for that.
+    pub fn endpoint_label(&self) -> &str {
         match &self.transport {
             Transport::Rest { base_url, .. } => base_url,
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => &session.vta_did,
+            Transport::DIDComm {
+                session, rest_url, ..
+            } => rest_url.as_deref().unwrap_or(&session.vta_did),
         }
     }
 
@@ -1131,19 +1170,19 @@ mod tests {
     #[test]
     fn test_new_strips_trailing_slash() {
         let client = VtaClient::new("http://localhost:3000/");
-        assert_eq!(client.base_url(), "http://localhost:3000");
+        assert_eq!(client.rest_url(), Some("http://localhost:3000"));
     }
 
     #[test]
     fn test_new_strips_multiple_trailing_slashes() {
         let client = VtaClient::new("http://localhost:3000///");
-        assert_eq!(client.base_url(), "http://localhost:3000");
+        assert_eq!(client.rest_url(), Some("http://localhost:3000"));
     }
 
     #[test]
     fn test_new_no_trailing_slash_unchanged() {
         let client = VtaClient::new("http://localhost:3000");
-        assert_eq!(client.base_url(), "http://localhost:3000");
+        assert_eq!(client.rest_url(), Some("http://localhost:3000"));
     }
 
     #[tokio::test]

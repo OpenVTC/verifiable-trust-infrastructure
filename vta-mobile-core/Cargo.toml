@@ -61,7 +61,7 @@ affinidi-messaging-didcomm = "0.15"
 # `vta-sdk::DIDCommSession` (connect + receive_next) so the mobile approver can
 # pull VTA-pushed step-up approve-requests off the mediator — reusing the SDK
 # the VTA uses rather than reimplementing the affinidi mediator protocol.
-vta-sdk = { path = "../vta-sdk", version = "0.18", features = ["session"] }
+vta-sdk = { path = "../vta-sdk", version = "0.19", features = ["session"] }
 # iOS has no native trust store that `rustls-native-certs` can read, so the
 # mediator WebSocket (tokio-tungstenite, via affinidi-messaging-sdk) fails with
 # "no native root CA certificates found". Declaring tokio-tungstenite here with

@@ -1583,12 +1583,12 @@ async fn network_error_when_server_unreachable() {
     assert!(err.is_network(), "got {err:?}");
 }
 
-// ── Base URL accessors ──────────────────────────────────────────────
+// ── REST URL accessors ──────────────────────────────────────────────
 
 #[tokio::test]
-async fn base_url_returned_after_construction() {
+async fn rest_url_returned_after_construction() {
     let c = VtaClient::new("https://vta.example.com");
-    assert_eq!(c.base_url(), "https://vta.example.com");
+    assert_eq!(c.rest_url(), Some("https://vta.example.com"));
 }
 
 #[tokio::test]

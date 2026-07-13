@@ -10,7 +10,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-vta-sdk = { path = "../vta-sdk", version = "0.18", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider"] }
+vta-sdk = { path = "../vta-sdk", version = "0.19", features = ["client", "session", "sealed-transfer", "didcomm", "vp", "crypto-provider"] }
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros", "schemars"] }
 schemars = "1"
 tokio = { workspace = true }

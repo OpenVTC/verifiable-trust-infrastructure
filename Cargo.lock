@@ -393,7 +393,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.18.21 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vta-sdk 0.18.21",
 ]
 
 [[package]]
@@ -2438,7 +2438,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -2452,7 +2452,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
@@ -3254,7 +3254,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
@@ -6692,7 +6692,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.10.5"
+version = "0.10.6"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -6714,7 +6714,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
@@ -9998,7 +9998,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.4"
+version = "0.10.5"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10016,7 +10016,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "vti-common",
  "x25519-dalek",
 ]
@@ -10049,7 +10049,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
@@ -10072,12 +10072,42 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
 name = "vta-sdk"
 version = "0.18.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "feff04a721d51bbfdd5952b2d8d86b17ce24ad7d9891e2a4e5fce2936543218a"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
+ "affinidi-openid4vp",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "vta-sdk"
+version = "0.19.0"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10133,38 +10163,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "vta-sdk"
-version = "0.18.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feff04a721d51bbfdd5952b2d8d86b17ce24ad7d9891e2a4e5fce2936543218a"
-dependencies = [
- "affinidi-crypto",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "getrandom 0.4.3",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "vta-service"
-version = "0.10.23"
+version = "0.10.24"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10241,7 +10241,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10255,7 +10255,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-client"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "chrono",
  "reqwest 0.13.4",
@@ -10263,12 +10263,12 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
 ]
 
 [[package]]
 name = "vtc-service"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10335,7 +10335,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10348,7 +10348,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
@@ -10383,7 +10383,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10410,14 +10410,14 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "vta-service",
  "vti-common",
 ]
 
 [[package]]
 name = "vti-secrets"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aws-config",
  "aws-sdk-secretsmanager",
@@ -10439,7 +10439,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.18.21",
+ "vta-sdk 0.19.0",
  "vti-common",
 ]
 

@@ -663,7 +663,10 @@ async fn auth_login_sealed(
         opened.bundle_id_hex, opened.digest
     );
     let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
-    auth::login(&bundle, client.base_url(), keyring_key).await
+    let base = client
+        .rest_url()
+        .ok_or("login requires a REST connection to the VTC")?;
+    auth::login(&bundle, base, keyring_key).await
 }
 
 /// Resolve CLI `--recipient` / `--recipient-did` / `--recipient-nonce`
@@ -1424,7 +1427,7 @@ async fn cmd_health(
             return Ok(());
         }
     }
-    println!("  {CYAN}{:<13}{RESET} {}", "URL", client.base_url());
+    println!("  {CYAN}{:<13}{RESET} {}", "URL", client.endpoint_label());
 
     // Create a shared DID resolver for both sections
     let resolver = match DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await {

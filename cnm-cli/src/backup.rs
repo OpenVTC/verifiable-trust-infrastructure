@@ -26,7 +26,7 @@ const TRUST_TASK_HEADER: &str = "Trust-Task";
 const EXPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/backup/export/1.0";
 const IMPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/backup/import/1.0";
 
-/// Authenticated REST POST to a VTC `/v1/backup/*` route. `client.base_url()`
+/// Authenticated REST POST to a VTC `/v1/backup/*` route. `client.rest_url()`
 /// already carries the `/v1` mount, so the path here is relative to it.
 async fn authed_post(
     client: &VtaClient,
@@ -35,10 +35,13 @@ async fn authed_post(
     task: &str,
     body: Value,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    let base = client
+        .rest_url()
+        .ok_or("VTC backup requires a REST connection to the VTC")?;
     // Refresh / mint a REST bearer token for the VTC (aud = "VTC").
-    let token = auth::ensure_authenticated(client.base_url(), keyring_key).await?;
+    let token = auth::ensure_authenticated(base, keyring_key).await?;
     let resp = reqwest::Client::new()
-        .post(format!("{}{path}", client.base_url()))
+        .post(format!("{base}{path}"))
         .bearer_auth(&token)
         .header(TRUST_TASK_HEADER, task)
         .json(&body)

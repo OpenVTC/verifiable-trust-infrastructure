@@ -263,7 +263,7 @@ async fn try_rest(
         Ok(client) => {
             tracing::info!(
                 context = context_id,
-                vta_url = client.base_url(),
+                vta_url = client.endpoint_label(),
                 "Connected to VTA (REST, auto-refresh enabled)",
             );
             Ok(client)

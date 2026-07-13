@@ -500,7 +500,7 @@ pub async fn run_provision_integration(
 
     eprintln!(
         "Integration provisioned via {} — sealed bundle written to {}",
-        client.base_url(),
+        client.endpoint_label(),
         out.display()
     );
     eprintln!();
