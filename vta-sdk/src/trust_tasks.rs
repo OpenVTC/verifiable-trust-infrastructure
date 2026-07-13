@@ -1441,13 +1441,16 @@ mod tests {
     #[test]
     fn every_uri_in_canonical_namespace() {
         // VTA's wire surface canonically lives under
-        // `https://trusttasks.org/spec/<family>/`. Five families are
-        // currently represented:
+        // `https://trusttasks.org/spec/<family>/`. This list IS the census:
+        // a new family is a wire-visible, spec-registry-visible decision, so
+        // adding a URI under an undeclared family fails here until someone
+        // declares the family (and says why) below.
         //
         // - `spec/vta/`            — VTA-specific operations (this
         //                            module is the source of truth).
         // - `spec/auth/`           — cross-cutting auth primitives
         //                            shared with did-hosting / VTC.
+        // - `spec/device/`         — device enrolment / lifecycle.
         // - `spec/did-management/` — canonical DID-hosting protocol
         //                            (PR #139 added the constants;
         //                            Phase 3 migration consumed them).
@@ -1462,7 +1465,17 @@ mod tests {
             "https://trusttasks.org/spec/did-management/",
             "https://trusttasks.org/spec/vault/",
             "https://trusttasks.org/spec/webvh/",
+            // Messaging-bridge consent — gating an inbound *conversation*
+            // (DM / group / channel) before it reaches an agent.
             "https://trusttasks.org/spec/consent/",
+            // Task-execution consent (PR #645) — approvers sign off on a
+            // specific privileged *task*, bound to its payload digest, feeding
+            // the PDP's `requireConsent` disposition. Deliberately its own
+            // family, not a member of `consent/`: different subject (a task,
+            // not a conversation), different authority (the Data-Integrity
+            // proof's signer against a policy-named approver set, not a bridge
+            // enrolment), different lifetime (single-use grant, not standing).
+            "https://trusttasks.org/spec/task-consent/",
             // Framework ACL protocol — the `acl/swap-key` self-service key
             // rotation task (`TASK_ACL_SWAP_KEY_1_0`), now dispatcher-routed.
             "https://trusttasks.org/spec/acl/",

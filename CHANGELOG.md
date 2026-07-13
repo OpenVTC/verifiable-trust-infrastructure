@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### vta-sdk (0.19.2) — declare the `task-consent` Trust Task family
+
+`task-consent/decision/1.0` (PR #645) introduced a new Trust Task family, but
+the `every_uri_in_canonical_namespace` census — which exists to force exactly
+that declaration — was never updated, so it has been failing on `main` since.
+Declares `https://trusttasks.org/spec/task-consent/` with the rationale for it
+being its own family rather than a member of messaging `consent/*` (different
+subject, authority, and grant lifetime), and refreshes the census preamble,
+which had drifted (it claimed five families and omitted `spec/device/`).
+
+Test-only change; no wire or API surface moves.
+
 ### pnm-cli (0.10.7) / cnm-cli (0.10.7) — `--transport rest` recovery flag
 
 Adds a global `--transport <auto|rest>` flag to both CLIs. `rest` forces the
