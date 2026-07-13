@@ -289,6 +289,7 @@ mod holder_binding {
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
+    use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
     use vtc_service::test_support::TestVtc;
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
@@ -360,7 +361,20 @@ mod holder_binding {
         let subject_did = did_for(subject_seed);
         let holder_did = did_for(holder_seed);
         let vec = sign_vc(issuer_seed, "VerifiableEndorsementCredential", &subject_did).await;
-        let vmc = sign_vc(issuer_seed, "VerifiableMembershipCredential", &subject_did).await;
+        // The VMC's wire tag is `MembershipCredential` — NOT
+        // `VerifiableMembershipCredential`. The `VERIFIABLE_` prefix lives in the
+        // constant's *name* only (it's historical); the tag is what
+        // `dtg-credentials` emits and what the VTC stamps, and it's what
+        // `routes::recognise` matches on. Hand-rolling the wrong string here made
+        // every VP that got as far as the credential lookup 400 with
+        // "presentation has no MembershipCredential" — so the three holder-binding
+        // assertions below could never be reached. Use the constant, not a literal.
+        let vmc = sign_vc(
+            issuer_seed,
+            VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE,
+            &subject_did,
+        )
+        .await;
         let mut vp = json!({
             "@context": ["https://www.w3.org/ns/credentials/v2"],
             "type": ["VerifiablePresentation"],
