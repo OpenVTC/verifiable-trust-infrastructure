@@ -146,6 +146,29 @@ jobs:
         with:
           command: check advisories bans sources licenses
 
+  release-guards:
+    # Fail a PR that edits a published crate's source without bumping its
+    # version. The publish workflow SKIPS any crate whose version is already
+    # on crates.io, so an unbumped source edit leaves the registry holding
+    # stale code — and the next crate published against it fails its
+    # registry-resolved verify build. That is exactly how vti-common 0.11.2
+    # and vtc-service 0.11.0 went stale and kept Publish red, while the
+    # path-dep workspace build stayed green and hid it. See the script header.
+    #
+    # PR-only: the guard diffs against the PR base, which a push to main has
+    # no meaningful equivalent of.
+    name: release guards
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history so the guard can diff against, and read manifests
+          # from, the PR's base commit.
+          fetch-depth: 0
+      - name: Version-bump guard for changed publishable crates
+        run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
+
   features:
     # Build the most-used non-default feature combinations so a misuse
     # of `cfg(feature = "...")` doesn't silently rot. Default-feature

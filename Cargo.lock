@@ -393,7 +393,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.18.14",
+ "vta-sdk 0.18.21 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -10077,36 +10077,6 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.18.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bab5ab7ffa4362d8362ef3f9767e965395d54c9f7e0512071231aeb7db6656b"
-dependencies = [
- "affinidi-crypto",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "getrandom 0.4.3",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "vta-sdk"
 version = "0.18.21"
 dependencies = [
  "affinidi-bbs",
@@ -10160,6 +10130,36 @@ dependencies = [
  "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
+]
+
+[[package]]
+name = "vta-sdk"
+version = "0.18.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "feff04a721d51bbfdd5952b2d8d86b17ce24ad7d9891e2a4e5fce2936543218a"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
+ "affinidi-openid4vp",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -10268,7 +10268,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10348,7 +10348,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
