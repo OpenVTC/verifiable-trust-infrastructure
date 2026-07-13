@@ -188,14 +188,14 @@ async fn consent_gate(
         ));
     };
 
-    let digest = match consent::payload_digest(&doc.payload) {
+    let digest = match consent::payload_digest(type_uri, &doc.payload) {
         Ok(d) => d,
         Err(e) => return Some(app_error_to_reject(doc, e)),
     };
     let now = gate_now_secs();
 
     // Existing valid grant → authorized; consume single-use and proceed.
-    match consent::consume_grant(&state.task_consent_ks, &auth.did, &digest, now).await {
+    match consent::consume_grant(&state.task_consent_ks, &auth.did, type_uri, &digest, now).await {
         Ok(Some(_)) => return None,
         Ok(None) => {}
         Err(e) => return Some(app_error_to_reject(doc, e)),
@@ -225,7 +225,7 @@ async fn consent_gate(
 
     // Reuse an existing pending challenge (idempotent re-submit) or mint one.
     let min_approvals = require.min_approvals.max(1);
-    let challenge = match consent::get_pending(&state.task_consent_ks, &digest).await {
+    let challenge = match consent::get_pending(&state.task_consent_ks, &digest, now).await {
         Ok(Some(p)) => p.challenge,
         Ok(None) => {
             let challenge = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -362,7 +362,76 @@ mod tests {
         );
     }
 
+    // A second ungated URI. `doc()` gives both the *same* payload, which is the
+    // whole point: without a type binding in the digest they collide.
+    const OTHER_UNGATED_URI: &str = "https://trusttasks.org/spec/vta/memory/delete/0.1";
+
     const REQUIRE_CONSENT: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\"}}";
+
+    /// A grant approved for one task URI must not authorize a *different* task
+    /// URI that happens to carry an identical payload. The approver only ever
+    /// sees an opaque digest, so if the digest didn't bind the type URI, consent
+    /// for a benign task would silently authorize a destructive one.
+    #[tokio::test]
+    async fn grant_for_one_task_uri_does_not_authorize_another() {
+        use crate::policy::consent;
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+
+        let approved = doc(UNGATED_URI);
+        let substituted = doc(OTHER_UNGATED_URI);
+        assert_eq!(
+            approved.payload, substituted.payload,
+            "the two tasks must share a payload for this test to mean anything"
+        );
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        // Approvers sign off on UNGATED_URI: mint the grant the gate would consume.
+        let now = super::gate_now_secs();
+        let digest = consent::payload_digest(UNGATED_URI, &approved.payload).unwrap();
+        consent::store_grant(
+            &state.task_consent_ks,
+            &consent::TaskConsentGrant {
+                digest: digest.clone(),
+                requester_did: auth.did.clone(),
+                type_uri: UNGATED_URI.into(),
+                approvers: vec!["did:key:zApprover".into()],
+                granted_at: now,
+                expires_at: now + 600,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The substituted task must NOT ride that grant through.
+        assert!(
+            policy_gate(&state, &auth, OTHER_UNGATED_URI, &substituted)
+                .await
+                .is_some(),
+            "a grant for a different task URI must not authorize this one"
+        );
+
+        // …while the task actually approved still passes.
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &approved)
+                .await
+                .is_none(),
+            "the approved task must still consume its own grant"
+        );
+    }
 
     #[tokio::test]
     async fn require_consent_records_pending_then_grant_lets_resubmit_through() {
@@ -390,9 +459,10 @@ mod tests {
             policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
             "first submit must be rejected pending consent"
         );
-        let digest = consent::payload_digest(&d.payload).unwrap();
+        let digest = consent::payload_digest(UNGATED_URI, &d.payload).unwrap();
+        let now = super::gate_now_secs();
         assert!(
-            consent::get_pending(&state.task_consent_ks, &digest)
+            consent::get_pending(&state.task_consent_ks, &digest, now)
                 .await
                 .unwrap()
                 .is_some(),
@@ -400,7 +470,6 @@ mod tests {
         );
 
         // Simulate approvers reaching threshold: store a grant.
-        let now = super::gate_now_secs();
         consent::store_grant(
             &state.task_consent_ks,
             &consent::TaskConsentGrant {

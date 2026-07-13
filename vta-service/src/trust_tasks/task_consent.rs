@@ -64,8 +64,11 @@ pub(super) async fn handle_decision(
         }
     };
 
+    let now = now_secs();
+
     let ks = &state.task_consent_ks;
-    let pending = match consent::get_pending(ks, &payload.digest).await {
+    // An expired pending reads as absent, so a lapsed request can't be approved.
+    let pending = match consent::get_pending(ks, &payload.digest, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return reject_with(
@@ -120,8 +123,6 @@ pub(super) async fn handle_decision(
         );
     }
 
-    let now = now_secs();
-
     // A denial aborts the request.
     if !payload.approve {
         let _ = consent::delete_pending(ks, &payload.digest).await;
@@ -132,7 +133,7 @@ pub(super) async fn handle_decision(
     }
 
     // Accumulate the approval; at the threshold, issue a single-use grant.
-    let updated = match consent::add_approval(ks, &payload.digest, &approver).await {
+    let updated = match consent::add_approval(ks, &payload.digest, &approver, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
             return reject_with(

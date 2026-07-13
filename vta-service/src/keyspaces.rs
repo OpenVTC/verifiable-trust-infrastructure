@@ -78,7 +78,7 @@ pub const POLICY: &str = "policy";
 /// approvals keyed by payload digest, and granted consents a re-submitted task
 /// consumes. Distinct from [`CONSENT`] (messaging-bridge conversation consent).
 /// One [`crate::policy::consent::PendingTaskConsent`] per `pending:<digest>` and
-/// [`crate::policy::consent::TaskConsentGrant`] per `grant:<requester>:<digest>`.
+/// [`crate::policy::consent::TaskConsentGrant`] per `grant:<digest>:<requester>`.
 /// Durable operator-facing security state → [`BACKED_UP`].
 pub const TASK_CONSENT: &str = "task_consent";
 

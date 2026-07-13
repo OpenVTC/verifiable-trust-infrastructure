@@ -684,6 +684,7 @@ pub async fn run(
         let acl_ks = apply_encryption(store.keyspace(crate::keyspaces::ACL)?);
         let audit_ks = apply_encryption(store.keyspace(crate::keyspaces::AUDIT)?);
         let consent_ks = apply_encryption(store.keyspace(crate::keyspaces::CONSENT)?);
+        let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
         let vault_ks = apply_encryption(store.keyspace(crate::keyspaces::VAULT)?);
         let backup_bundles_ks = apply_encryption(store.keyspace(crate::keyspaces::BACKUP_BUNDLES)?);
         let backup_blob_dir = config.store.data_dir.join("backups");
@@ -765,6 +766,7 @@ pub async fn run(
         let storage_audit_ks = audit_ks.clone();
         let storage_acl_ks = acl_ks.clone();
         let storage_consent_ks = consent_ks.clone();
+        let storage_task_consent_ks = task_consent_ks.clone();
         let storage_vault_ks = vault_ks.clone();
         let storage_backup_bundles_ks = backup_bundles_ks.clone();
         let storage_backup_blob_dir = backup_blob_dir.clone();
@@ -1141,6 +1143,7 @@ pub async fn run(
                     storage_audit_ks,
                     storage_acl_ks,
                     storage_consent_ks,
+                    storage_task_consent_ks,
                     storage_vault_ks,
                     storage_backup_bundles_ks,
                     storage_backup_blob_dir,
@@ -1239,6 +1242,7 @@ fn run_storage_thread(
     audit_ks: KeyspaceHandle,
     acl_ks: KeyspaceHandle,
     consent_ks: KeyspaceHandle,
+    task_consent_ks: KeyspaceHandle,
     vault_ks: KeyspaceHandle,
     backup_bundles_ks_storage: KeyspaceHandle,
     backup_blob_dir_storage: std::path::PathBuf,
@@ -1290,6 +1294,18 @@ fn run_storage_thread(
                             crate::consent_sweeper::sweep_expired(&consent_ks, &audit_ks).await
                         {
                             warn!("consent sweeper error: {e}");
+                        }
+                        // Same for task-execution consent: an unanswered pending
+                        // would otherwise sit in the keyspace forever, since the
+                        // gate only expires one lazily when its digest is re-read.
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        match crate::policy::consent::sweep_expired(&task_consent_ks, now).await {
+                            Ok(n) if n > 0 => debug!("task-consent sweeper pruned {n} rows"),
+                            Ok(_) => {}
+                            Err(e) => warn!("task-consent sweeper error: {e}"),
                         }
                         // Expire & retention-prune in-flight backup
                         // bundles (descriptor-pattern slice). TTL
