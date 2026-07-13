@@ -28,14 +28,37 @@
 //! The Rego arm is inert unless enforcement is enabled; the config-floor arm
 //! preserves existing behaviour. Any failure to load the policy set denies.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
+use uuid::Uuid;
 
 use super::TrustTaskOutcome;
-use super::helpers::reject_with;
+use super::helpers::{app_error_to_reject, reject_with};
 use crate::auth::AuthClaims;
-use crate::policy::{self, Disposition};
+use crate::policy::{self, Disposition, RequireConsent, consent};
 use crate::server::AppState;
+
+/// How long a pending consent request stays open for approvals.
+const CONSENT_PENDING_TTL_SECS: u64 = 900;
+
+fn gate_now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Ceremony tasks carry their own authority (an approver's proof, a step-up
+/// approve-response) and must NOT themselves be gated — else approving a task
+/// could itself require consent/step-up, ad infinitum.
+#[allow(deprecated)]
+fn is_ceremony_task(type_uri: &str) -> bool {
+    use vta_sdk::trust_tasks as t;
+    type_uri == t::TASK_TASK_CONSENT_DECISION_1_0
+        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
+        || type_uri == t::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2
+}
 
 /// The ACR a satisfied step-up reaches. Mirrors `step_up::STEP_UP_TARGET_ACR`.
 const STEP_UP_TARGET_ACR: &str = "aal2";
@@ -73,6 +96,11 @@ pub(super) async fn policy_gate(
     type_uri: &str,
     doc: &TrustTask<Value>,
 ) -> Option<TrustTaskOutcome> {
+    // Ceremony tasks are the mechanism, not a gated operation — never gate them.
+    if is_ceremony_task(type_uri) {
+        return None;
+    }
+
     // (1) Config-floor step-up (subsumes the inline require_step_up).
     if let Some(op_class) = op_class_for(type_uri)
         && let Some(reject) = super::step_up::require_step_up(state, auth, op_class, doc).await
@@ -128,21 +156,111 @@ pub(super) async fn policy_gate(
                 Some(super::step_up::initiate_self_step_up(state, auth, doc).await)
             }
         }
-        // Task-execution consent (approver-set + payload-digest binding) is
-        // Phase B; until then surface it as a denial with a clear reason.
-        Disposition::RequireConsent => Some(reject_with(
+        Disposition::RequireConsent => {
+            consent_gate(state, auth, doc, type_uri, decision.require_consent).await
+        }
+    }
+}
+
+/// Resolve the PDP `requireConsent` disposition.
+///
+/// Proceeds (`None`) if a valid grant for this exact payload already exists
+/// (single-use consume). Otherwise records a pending request and rejects with
+/// the challenge for approvers to sign — the reject carries `{digest, challenge,
+/// approverSet}` so the requester can relay it to the approver set, mirroring
+/// step-up's carried `approve-request` (active push to approver devices is a
+/// follow-up). The approver's signed `task-consent/decision` produces the grant;
+/// the requester re-submits and this consumes it.
+async fn consent_gate(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: &TrustTask<Value>,
+    type_uri: &str,
+    require: Option<RequireConsent>,
+) -> Option<TrustTaskOutcome> {
+    // A requireConsent naming no approver set can never be satisfied — fail closed.
+    let Some(require) = require else {
+        return Some(reject_with(
+            doc,
+            RejectReason::PermissionDenied {
+                reason: "policy requires consent but named no approver set".into(),
+            },
+        ));
+    };
+
+    let digest = match consent::payload_digest(&doc.payload) {
+        Ok(d) => d,
+        Err(e) => return Some(app_error_to_reject(doc, e)),
+    };
+    let now = gate_now_secs();
+
+    // Existing valid grant → authorized; consume single-use and proceed.
+    match consent::consume_grant(&state.task_consent_ks, &auth.did, &digest, now).await {
+        Ok(Some(_)) => return None,
+        Ok(None) => {}
+        Err(e) => return Some(app_error_to_reject(doc, e)),
+    }
+
+    // No grant: the approver set must be defined and non-empty.
+    let members = state
+        .config
+        .read()
+        .await
+        .policy
+        .approver_sets
+        .get(&require.approver_set)
+        .cloned()
+        .unwrap_or_default();
+    if members.is_empty() {
+        return Some(reject_with(
             doc,
             RejectReason::PermissionDenied {
                 reason: format!(
-                    "consent required: {}",
-                    decision
-                        .explanation
-                        .as_deref()
-                        .unwrap_or("policy requires approver consent")
+                    "approver set '{}' is unknown or empty",
+                    require.approver_set
                 ),
             },
-        )),
+        ));
     }
+
+    // Reuse an existing pending challenge (idempotent re-submit) or mint one.
+    let min_approvals = require.min_approvals.max(1);
+    let challenge = match consent::get_pending(&state.task_consent_ks, &digest).await {
+        Ok(Some(p)) => p.challenge,
+        Ok(None) => {
+            let challenge = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+            let pending = consent::PendingTaskConsent {
+                digest: digest.clone(),
+                type_uri: type_uri.to_string(),
+                requester_did: auth.did.clone(),
+                approver_set: require.approver_set.clone(),
+                min_approvals,
+                exclude_requester: require.exclude_requester,
+                challenge: challenge.clone(),
+                approvals: vec![],
+                created_at: now,
+                expires_at: now + CONSENT_PENDING_TTL_SECS,
+            };
+            if let Err(e) = consent::store_pending(&state.task_consent_ks, &pending).await {
+                return Some(app_error_to_reject(doc, e));
+            }
+            challenge
+        }
+        Err(e) => return Some(app_error_to_reject(doc, e)),
+    };
+
+    Some(reject_with(
+        doc,
+        RejectReason::TaskFailed {
+            reason: "auth:consent_required".into(),
+            details: Some(json!({
+                "digest": digest,
+                "challenge": challenge,
+                "approverSet": require.approver_set,
+                "minApprovals": min_approvals,
+            })),
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -241,6 +359,71 @@ mod tests {
         assert!(
             policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
             "aal2 session must pass the step-up gate"
+        );
+    }
+
+    const REQUIRE_CONSENT: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\"}}";
+
+    #[tokio::test]
+    async fn require_consent_records_pending_then_grant_lets_resubmit_through() {
+        use crate::policy::consent;
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        // First submit → consent required (rejected) + a pending is recorded.
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            "first submit must be rejected pending consent"
+        );
+        let digest = consent::payload_digest(&d.payload).unwrap();
+        assert!(
+            consent::get_pending(&state.task_consent_ks, &digest)
+                .await
+                .unwrap()
+                .is_some(),
+            "a pending consent record must exist"
+        );
+
+        // Simulate approvers reaching threshold: store a grant.
+        let now = super::gate_now_secs();
+        consent::store_grant(
+            &state.task_consent_ks,
+            &consent::TaskConsentGrant {
+                digest: digest.clone(),
+                requester_did: auth.did.clone(),
+                type_uri: UNGATED_URI.into(),
+                approvers: vec!["did:key:zApprover".into()],
+                granted_at: now,
+                expires_at: now + 600,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Re-submit → grant consumed → proceed.
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
+            "a valid grant must let the re-submit proceed"
+        );
+        // Grant was single-use → the next submit needs consent again.
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            "grant is single-use; a further submit re-requires consent"
         );
     }
 }

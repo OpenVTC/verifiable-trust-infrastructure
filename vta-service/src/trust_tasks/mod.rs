@@ -69,6 +69,7 @@ mod policy_gate;
 mod provision_integration;
 mod replay;
 mod seeds;
+mod task_consent;
 // `pub(crate)` so the REST routes (`routes::acl`, `routes::contexts`) can
 // reach the `RequireStepUp` extractor + op markers. The step-up *engine* lives
 // in `operations::step_up` (P2.4); this module holds only the transport
@@ -562,6 +563,11 @@ dispatch_table! {
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_CONSENT_APPROVER_LIST_1_0 => consent::handle_approver_list
         [ None Metadata false ],
+    // Task-execution consent decision (PDP requireConsent). Records approver
+    // signatures; the gate exempts it from re-gating (see policy_gate) so
+    // approving a task can't itself require consent.
+    vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_1_0 => task_consent::handle_decision
+        [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list
         [ None Metadata false ],
