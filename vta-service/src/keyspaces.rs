@@ -74,6 +74,14 @@ pub const MEMORY: &str = "memory";
 /// would silently drop enforcement on restore).
 pub const POLICY: &str = "policy";
 
+/// Task-execution consent for the PDP's `requireConsent` disposition: pending
+/// approvals keyed by payload digest, and granted consents a re-submitted task
+/// consumes. Distinct from [`CONSENT`] (messaging-bridge conversation consent).
+/// One [`crate::policy::consent::PendingTaskConsent`] per `pending:<digest>` and
+/// [`crate::policy::consent::TaskConsentGrant`] per `grant:<requester>:<digest>`.
+/// Durable operator-facing security state → [`BACKED_UP`].
+pub const TASK_CONSENT: &str = "task_consent";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -101,6 +109,7 @@ pub const ALL: &[&str] = &[
     ISSUED_CREDENTIALS,
     MEMORY,
     POLICY,
+    TASK_CONSENT,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -119,6 +128,9 @@ pub const BACKED_UP: &[&str] = &[
     // Operator security policy — must survive a restore, else enforcement
     // silently reverts to whatever defaults boot-install provides.
     POLICY,
+    // Task-consent grants are durable authorizations a re-submitted task
+    // consumes; losing them on restore would strand in-flight approvals.
+    TASK_CONSENT,
 ];
 
 /// Keyspaces deliberately **not** in a backup.

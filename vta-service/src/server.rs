@@ -133,6 +133,9 @@ pub struct AppState {
     /// row, priority-ordered. A migration-safe baseline is boot-installed if
     /// empty. Durable operator security config.
     pub policy_ks: KeyspaceHandle,
+    /// Task-execution consent: pending approvals + granted consents the PDP's
+    /// `requireConsent` disposition uses. Distinct from `consent_ks` (messaging).
+    pub task_consent_ks: KeyspaceHandle,
     /// Persisted drain set for the protocol-management feature
     /// (`docs/05-design-notes/didcomm-protocol-management.md`).
     /// Keyed by mediator DID; replayed at boot.
@@ -327,6 +330,7 @@ pub async fn build_app_state(
         apply_encryption(store.keyspace(crate::keyspaces::ISSUED_CREDENTIALS)?);
     let memory_ks = apply_encryption(store.keyspace(crate::keyspaces::MEMORY)?);
     let policy_ks = apply_encryption(store.keyspace(crate::keyspaces::POLICY)?);
+    let task_consent_ks = apply_encryption(store.keyspace(crate::keyspaces::TASK_CONSENT)?);
     #[cfg(feature = "webvh")]
     let drains_ks = apply_encryption(store.keyspace(crate::keyspaces::DRAINS)?);
     #[cfg(feature = "webvh")]
@@ -394,6 +398,7 @@ pub async fn build_app_state(
         issued_credentials_ks,
         memory_ks,
         policy_ks,
+        task_consent_ks,
         #[cfg(feature = "webvh")]
         drains_ks,
         #[cfg(feature = "webvh")]

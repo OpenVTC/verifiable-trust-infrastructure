@@ -22,6 +22,12 @@ pub struct PolicyConfig {
     /// restrictive, higher-priority policy (expand-before-contract).
     #[serde(default)]
     pub enforcement: bool,
+    /// Named approver sets a policy's `requireConsent` references by name; each
+    /// maps to the DIDs permitted to approve a task's execution. Empty by
+    /// default — a `requireConsent` naming an unknown or empty set can never be
+    /// satisfied (fail-closed), so operators define sets before using them.
+    #[serde(default)]
+    pub approver_sets: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

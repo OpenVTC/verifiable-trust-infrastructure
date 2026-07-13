@@ -31,6 +31,7 @@
 //! per-request [`types::PolicyInput`] construction, and boot-installed default
 //! policies land alongside this in the same PR series.
 
+pub mod consent;
 pub mod defaults;
 pub mod engine;
 pub mod input;
