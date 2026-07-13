@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### pnm-cli (0.10.7) — `--transport rest` recovery flag
+
+Adds a global `--transport <auto|rest>` flag. `rest` forces the REST transport,
+skipping DIDComm even when the VTA advertises it — the recovery path when a
+VTA's mediator is unreachable (auto-selection picks DIDComm and hangs with no
+fallback, locking the operator out). Example: `pnm --transport rest services
+didcomm disable` recovers a VTA that force-enabled DIDComm against a mediator it
+can't reach.
+
+### vta-sdk (0.19.1) — force-REST connect path
+
+- `SessionStore::connect_with_transport` + `TransportChoice { Auto, Rest }`:
+  force REST regardless of advertised DIDComm. The existing `connect` is
+  unchanged and delegates with `Auto`. Purely additive.
+
 ### vta-sdk (0.18.18) — did-host TSP-only DID templates
 
 Two new built-in `did-host-*` templates let a VTA provision a node whose DID

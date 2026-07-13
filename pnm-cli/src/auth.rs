@@ -199,13 +199,17 @@ pub async fn show_token(keyring_key: &str) -> Result<(), Box<dyn std::error::Err
 /// 2. VTA DID doc DIDCommMessaging service → DIDComm (resolved).
 /// 3. `url_override` + REST discovery → DIDComm if available.
 /// 4. `url_override` → REST-only fallback.
+///
+/// `transport` overrides the above: `TransportChoice::Rest` forces REST and
+/// skips priorities 1 & 2 (the recovery path for an unreachable mediator).
 pub async fn connect(
     url_override: Option<&str>,
     mediator_did_hint: Option<&str>,
+    transport: vta_sdk::session::TransportChoice,
     keyring_key: &str,
 ) -> Result<vta_sdk::client::VtaClient, Box<dyn std::error::Error>> {
     store()
-        .connect(keyring_key, url_override, mediator_did_hint)
+        .connect_with_transport(keyring_key, url_override, mediator_did_hint, transport)
         .await
 }
 

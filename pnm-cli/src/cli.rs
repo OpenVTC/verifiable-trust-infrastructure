@@ -6,7 +6,18 @@
 //! parser-adjacent — they decide *which* dispatcher to call, never *how*
 //! the call is performed.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Transport to use when connecting to the VTA.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum TransportOpt {
+    /// Prefer DIDComm when the VTA advertises it, else REST.
+    #[default]
+    Auto,
+    /// Force REST even when DIDComm is advertised — recovers a VTA whose
+    /// mediator is unreachable.
+    Rest,
+}
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +47,12 @@ pub(crate) struct Cli {
     /// Use this for automation: `pnm acl list --json | jq …`.
     #[arg(long, global = true)]
     pub(crate) json: bool,
+
+    /// Force a transport instead of auto-selecting. `rest` skips DIDComm even
+    /// when the VTA advertises it — the recovery path when a mediator is
+    /// unreachable.
+    #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
+    pub(crate) transport: TransportOpt,
 
     #[command(subcommand)]
     pub(crate) command: Commands,
@@ -2273,4 +2290,27 @@ pub(crate) fn install_force_exit_handler() {
             eprintln!("\nShutting down — press Ctrl-C again to force exit.");
         }
     });
+}
+
+#[cfg(test)]
+mod transport_flag_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn transport_defaults_to_auto() {
+        let cli = Cli::try_parse_from(["pnm", "health"]).unwrap();
+        assert_eq!(cli.transport, TransportOpt::Auto);
+    }
+
+    #[test]
+    fn transport_rest_parses() {
+        let cli = Cli::try_parse_from(["pnm", "--transport", "rest", "health"]).unwrap();
+        assert_eq!(cli.transport, TransportOpt::Rest);
+    }
+
+    #[test]
+    fn transport_rejects_unknown_value() {
+        assert!(Cli::try_parse_from(["pnm", "--transport", "bogus", "health"]).is_err());
+    }
 }

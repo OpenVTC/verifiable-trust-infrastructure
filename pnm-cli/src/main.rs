@@ -123,6 +123,7 @@ async fn main() {
     // borrow-vs-move dance against `cli.command`).
     let url_override = cli.url;
     let vta_override = cli.vta;
+    let transport_override = cli.transport;
     let mut command = cli.command;
 
     // ── Pre-auth dispatch ─────────────────────────────────────────
@@ -218,9 +219,20 @@ async fn main() {
     // For did:key VTAs, use the persisted URL as fallback (DID has no service endpoint).
     let effective_url_override = url_override.as_deref().or(vta_config.url.as_deref());
     let mediator_did_hint = vta_config.mediator_did.as_deref();
+    let transport = match transport_override {
+        cli::TransportOpt::Auto => vta_sdk::session::TransportChoice::Auto,
+        cli::TransportOpt::Rest => vta_sdk::session::TransportChoice::Rest,
+    };
 
     let client = if needs_auth {
-        match auth::connect(effective_url_override, mediator_did_hint, &keyring_key).await {
+        match auth::connect(
+            effective_url_override,
+            mediator_did_hint,
+            transport,
+            &keyring_key,
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 vta_cli_common::render::print_cli_error(e.as_ref());

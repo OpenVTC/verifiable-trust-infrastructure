@@ -616,18 +616,52 @@ impl SessionStore {
     /// Note `url_override` is a *fallback hint*, not a force-REST switch: a VTA
     /// DID that resolves to a DIDComm endpoint (priority 2) still uses DIDComm
     /// even when `--url` is supplied. The override only takes effect when DID
-    /// resolution yields nothing usable (e.g. `did:key`).
+    /// resolution yields nothing usable (e.g. `did:key`). To force REST
+    /// regardless of what the DID document advertises, use
+    /// [`connect_with_transport`](Self::connect_with_transport) with
+    /// [`TransportChoice::Rest`].
     pub async fn connect(
         &self,
         key: &str,
         url_override: Option<&str>,
         mediator_did_hint: Option<&str>,
     ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
+        self.connect_with_transport(key, url_override, mediator_did_hint, TransportChoice::Auto)
+            .await
+    }
+
+    /// Like [`connect`](Self::connect) but with an explicit transport choice.
+    ///
+    /// [`TransportChoice::Auto`] keeps the priority order documented on
+    /// [`connect`]. [`TransportChoice::Rest`] forces REST — ignoring the
+    /// mediator hint and any advertised DIDComm — resolving `#vta-rest` (or
+    /// `url_override`). The recovery path for an unreachable mediator.
+    pub async fn connect_with_transport(
+        &self,
+        key: &str,
+        url_override: Option<&str>,
+        mediator_did_hint: Option<&str>,
+        transport: TransportChoice,
+    ) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
         let session = self.load_session(key).ok_or(
             "Not authenticated.\n\nTo authenticate, import a credential:\n  <cli> auth login <credential-string>",
         )?;
 
         let session_vta_did = require_vta_did(&session)?.to_string();
+
+        // Forced REST: skip DIDComm (priorities 1 & 2). Resolve the REST
+        // endpoint (`--url`, else the DID doc's `#vta-rest`) and auth over HTTP.
+        if transport == TransportChoice::Rest {
+            let url = match url_override {
+                Some(u) => u.to_string(),
+                None => resolve_vta_url(&session_vta_did).await?,
+            };
+            debug!(url = %url, "connecting via REST (forced --transport rest)");
+            let token = self.ensure_authenticated(&url, key).await?;
+            let client = crate::client::VtaClient::new(&url);
+            client.set_token(token);
+            return Ok(client);
+        }
 
         // Priority 1: Explicit mediator DID from config → DIDComm directly
         if let Some(mediator_did) = mediator_did_hint {
@@ -1068,6 +1102,18 @@ pub enum VtaEndpoint {
         mediator_did: String,
         rest_url: Option<String>,
     },
+}
+
+/// Operator transport selection for
+/// [`SessionStore::connect_with_transport`] (the `pnm`/`cnm` connect path).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TransportChoice {
+    /// Prefer DIDComm when advertised, else REST. The default.
+    #[default]
+    Auto,
+    /// Force REST, ignoring any advertised DIDComm. Recovery path when a VTA's
+    /// mediator is unreachable (auto would pick DIDComm and hang).
+    Rest,
 }
 
 /// Resolve a VTA DID to discover available transport endpoints.
