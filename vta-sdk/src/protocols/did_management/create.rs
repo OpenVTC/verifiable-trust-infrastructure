@@ -86,10 +86,12 @@ impl From<String> for WebvhPathMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateDidWebvhBody {
+    #[serde(alias = "context_id")]
     pub context_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "server_id")]
     pub server_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -103,7 +105,7 @@ pub struct CreateDidWebvhBody {
     pub path: Option<String>,
     /// Explicit path-selection mode for server-managed DIDs. When set it
     /// overrides [`path`](Self::path). Absent → fall back to `path`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "path_mode")]
     pub path_mode: Option<WebvhPathMode>,
     /// Optional explicit hosting domain on the target server. When
     /// the server hosts multiple tenant domains, the caller may
@@ -118,34 +120,58 @@ pub struct CreateDidWebvhBody {
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portable: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "add_mediator_service"
+    )]
     pub add_mediator_service: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "additional_services"
+    )]
     pub additional_services: Option<Vec<serde_json::Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "pre_rotation_count"
+    )]
     pub pre_rotation_count: Option<u32>,
     /// Client-provided DID Document template. When set, the VTA uses this
     /// instead of building the document internally. `{DID}` placeholders are
     /// resolved by `didwebvh-rs`. Mutually exclusive with `did_log`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "did_document"
+    )]
     pub did_document: Option<serde_json::Value>,
     /// Complete, pre-signed did.jsonl log entry. When set, the VTA publishes
     /// it as-is without deriving keys or creating a log entry. Mutually
     /// exclusive with `did_document`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "did_log")]
     pub did_log: Option<String>,
     /// Whether to set this DID as the primary DID for the context.
     /// Defaults to `true` for backwards compatibility.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "set_primary"
+    )]
     pub set_primary: Option<bool>,
     /// Use an existing key as the signing (Ed25519) verification method.
     /// When set, the VTA skips key derivation and uses this key instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "signing_key_id"
+    )]
     pub signing_key_id: Option<String>,
     /// Use an existing key as the key-agreement (X25519) verification method.
     /// Required when the DID document includes DIDCommMessaging services.
     /// Requires `signing_key_id` to also be set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "ka_key_id")]
     pub ka_key_id: Option<String>,
     /// Stored DID template name to render as the DID document. Mutually
     /// exclusive with `did_document` and `did_log`.
@@ -153,12 +179,20 @@ pub struct CreateDidWebvhBody {
     pub template: Option<String>,
     /// Scope to look the template up in. `None` means "global only"; `Some(ctx)`
     /// means "this context first, then global, then builtin".
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "template_context"
+    )]
     pub template_context: Option<String>,
     /// Caller-supplied template variables. Server injects `DID`,
     /// `SIGNING_KEY_MB`, `KA_KEY_MB`, `VTA_DID`, `VTA_URL`, `CONTEXT_ID`,
     /// `CONTEXT_DID`, `NOW` automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "template_vars"
+    )]
     pub template_vars: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
@@ -293,5 +327,30 @@ mod webvh_path_mode_tests {
             serde_json::to_value(WebvhPathMode::AutoAssign).unwrap(),
             serde_json::json!({ "mode": "auto_assign" })
         );
+    }
+}
+
+#[cfg(test)]
+mod casing_tests {
+    use super::*;
+
+    /// camelCase is the framework wire convention; snake_case stays accepted as
+    /// an alias so callers written against the old shape keep working.
+    ///
+    /// The bug this closes is the one an end-to-end harness caught the first time
+    /// it posted a real create over the wire: the body expected `context_id`, a
+    /// framework-conventional client sent `contextId`, and with no
+    /// `deny_unknown_fields` the required field simply read as missing.
+    #[test]
+    fn create_body_reads_both_casings() {
+        let camel: CreateDidWebvhBody =
+            serde_json::from_str(r#"{"contextId":"default","preRotationCount":2}"#).unwrap();
+        assert_eq!(camel.context_id, "default");
+        assert_eq!(camel.pre_rotation_count, Some(2));
+
+        let snake: CreateDidWebvhBody =
+            serde_json::from_str(r#"{"context_id":"default","pre_rotation_count":2}"#).unwrap();
+        assert_eq!(snake.context_id, "default");
+        assert_eq!(snake.pre_rotation_count, Some(2));
     }
 }

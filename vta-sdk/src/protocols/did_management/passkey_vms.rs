@@ -122,6 +122,7 @@ pub struct EnrollPasskeyChallengeResponse {
 /// mismatch with `public_key_multibase` — the browser's value is
 /// **not** trusted as the authoritative public key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct EnrollPasskeySubmitBody {
     /// DID the new VM is to be added to. Must match the DID
@@ -129,32 +130,32 @@ pub struct EnrollPasskeySubmitBody {
     pub did: String,
 
     /// Ceremony id returned by the challenge endpoint.
-    #[serde(rename = "ceremonyId")]
+    #[serde(rename = "ceremonyId", alias = "ceremony_id")]
     pub ceremony_id: String,
 
     /// WebAuthn `credential.id` (base64url).
-    #[serde(rename = "credentialId")]
+    #[serde(rename = "credentialId", alias = "credential_id")]
     pub credential_id: String,
 
     /// Browser-computed Multikey. Re-derived server-side and
     /// rejected on mismatch.
-    #[serde(rename = "publicKeyMultibase")]
+    #[serde(rename = "publicKeyMultibase", alias = "public_key_multibase")]
     pub public_key_multibase: String,
 
     /// COSE algorithm identifier (`-7` ES256, `-8` EdDSA, etc.).
-    #[serde(rename = "coseAlgorithm")]
+    #[serde(rename = "coseAlgorithm", alias = "cose_algorithm")]
     pub cose_algorithm: i64,
 
     /// Raw WebAuthn attestationObject (base64url-encoded CBOR).
-    #[serde(rename = "attestationObject")]
+    #[serde(rename = "attestationObject", alias = "attestation_object")]
     pub attestation_object: String,
 
     /// Raw WebAuthn clientDataJSON (base64url).
-    #[serde(rename = "clientDataJson")]
+    #[serde(rename = "clientDataJson", alias = "client_data_json")]
     pub client_data_json: String,
 
     /// Raw WebAuthn authenticatorData (base64url).
-    #[serde(rename = "authenticatorData")]
+    #[serde(rename = "authenticatorData", alias = "authenticator_data")]
     pub authenticator_data: String,
 
     /// Transport hints reported by the authenticator (e.g.
