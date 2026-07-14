@@ -178,7 +178,7 @@ aws-lc-rs = "1.16"
 # (camelCase wire enums + `/0.2` TYPE_URIs) alongside the retained
 # `v0_1` modules — the VTA dual-accepts both during the migration.
 # Bump in lockstep with affinidi-webvh-service when upstream publishes.
-trust-tasks-rs = { version = "0.2", default-features = false }
+trust-tasks-rs = { version = "0.2.16", default-features = false, features = ["validate"] }
 trust-tasks-https = { version = "0.2", default-features = false, features = ["server", "client", "jwt"] }
 trust-tasks-proof = { version = "0.2", default-features = false, features = ["affinidi"] }
 

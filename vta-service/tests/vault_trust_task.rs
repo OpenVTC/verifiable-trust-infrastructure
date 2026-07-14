@@ -26,6 +26,34 @@ use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
 use multibase::Base;
 use serde_json::{Value, json};
+
+/// A vault entry binds to at least one site.
+///
+/// These tests used to send `targets: []`, which the handler accepted because it
+/// never checked. But `vault/upsert`'s schema requires `minItems: 1`, and it is
+/// right to: a `SiteTarget` is "a single binding target", so an entry that binds
+/// to nothing can never be selected for anything. The payload is now validated
+/// against the published schema at the gate, so the tests have to mean what they
+/// say.
+fn site_target() -> Value {
+    json!({ "kind": "web-origin", "origin": "https://rp.example" })
+}
+
+/// A well-formed Trust Task for `vault/sign-trust-task` to be asked to sign.
+///
+/// `{}` used to do, because nothing checked. The schema requires a real envelope,
+/// and a test that hands the wallet an empty object was never testing signing.
+fn unsigned_envelope() -> Value {
+    json!({
+        "id": "urn:uuid:00000000-0000-0000-0000-0000000000aa",
+        "type": "https://trusttasks.org/spec/acl/list/0.1",
+        "issuer": "did:key:zTestIssuer",
+        "recipient": "did:key:zTestRecipient",
+        "issuedAt": "2026-07-14T00:00:00Z",
+        "payload": {}
+    })
+}
+
 use tower::ServiceExt;
 
 use vta_service::test_support::{TestAppContext, build_test_app};
@@ -166,14 +194,22 @@ async fn every_vault_uri_denied_without_capability() {
     let (router, ctx) = build_test_app().await;
     let token = authed(&ctx, "monitor", &[]).await;
 
-    // (uri, minimal-but-parseable payload). The capability gate runs before
-    // payload parsing, so even an empty/partial payload must be denied.
+    // (uri, schema-valid payload).
+    //
+    // The payloads must now conform to their published schemas, because payload
+    // validation runs *before* the capability gate — and it has to. The policy
+    // gate reads the payload to derive the task's class, and where a planner
+    // exists it DRY-RUNS THE REAL HANDLER against it to work out what the task
+    // would do. Neither is a thing to do with a payload nobody has checked.
+    //
+    // So these payloads are valid, and what denies them is the capability gate —
+    // which is what this test is actually about.
     let cases: Vec<(&str, Value)> = vec![
         (LIST, json!({})),
         (GET, json!({ "id": "entry-1" })),
         (
             UPSERT,
-            json!({ "contextId": "ctx1", "targets": [], "label": "x", "secretKind": "password" }),
+            json!({ "contextId": "ctx1", "targets": [site_target()], "label": "x", "secretKind": "password" }),
         ),
         (DELETE, json!({ "id": "entry-1" })),
         (ARCHIVE, json!({ "id": "entry-1" })),
@@ -184,7 +220,7 @@ async fn every_vault_uri_denied_without_capability() {
         (PROXY_LOGIN, json!({ "entryId": "entry-1" })),
         (
             SIGN_TT,
-            json!({ "entryId": "entry-1", "unsignedEnvelope": {} }),
+            json!({ "entryId": "entry-1", "unsignedEnvelope": unsigned_envelope() }),
         ),
     ];
 
@@ -221,7 +257,7 @@ async fn reader_passes_read_gates_but_not_the_others() {
     for (uri, payload) in [
         (
             UPSERT,
-            json!({ "contextId": "ctx1", "targets": [], "label": "x", "secretKind": "password" }),
+            json!({ "contextId": "ctx1", "targets": [site_target()], "label": "x", "secretKind": "password" }),
         ),
         (DELETE, json!({ "id": "entry-1" })),
         (ARCHIVE, json!({ "id": "entry-1" })),
@@ -232,7 +268,7 @@ async fn reader_passes_read_gates_but_not_the_others() {
         (PROXY_LOGIN, json!({ "entryId": "entry-1" })),
         (
             SIGN_TT,
-            json!({ "entryId": "entry-1", "unsignedEnvelope": {} }),
+            json!({ "entryId": "entry-1", "unsignedEnvelope": unsigned_envelope() }),
         ),
     ] {
         let (status, body) = post_vault(&router, &token, uri, payload).await;
@@ -467,7 +503,7 @@ async fn upsert_cross_context_denied() {
         &router,
         &token,
         UPSERT,
-        json!({ "contextId": "ctx-other", "targets": [], "label": "x", "secretKind": "password" }),
+        json!({ "contextId": "ctx-other", "targets": [site_target()], "label": "x", "secretKind": "password" }),
     )
     .await;
     assert_ne!(status, StatusCode::OK);

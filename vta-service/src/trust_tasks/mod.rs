@@ -318,6 +318,56 @@ pub async fn dispatch_trust_task(
 ///
 /// `body` is the full `TrustTask<Value>` envelope JSON — the HTTP POST
 /// body on REST, the DIDComm message body on DIDComm.
+/// Validate `doc.payload` against the published schema for its Type URI.
+///
+/// `Some(outcome)` rejects; `None` proceeds.
+///
+/// Ceremony tasks are exempt for the same reason the policy gate exempts them:
+/// they are the mechanism, not the operation, and a `task-consent/decision` that
+/// could not be delivered because its own payload failed a check would strand
+/// every task waiting on it.
+async fn validate_payload(
+    state: &AppState,
+    type_uri: &str,
+    doc: &TrustTask<Value>,
+) -> Option<TrustTaskOutcome> {
+    let Some(schema) = trust_tasks_rs::schema_index::schema_for(type_uri) else {
+        // No published spec for this task. Many of the tasks this VTA dispatches
+        // are in that position, so refusing them outright would break them — but
+        // the gap is real, and an operator may prefer to fail closed.
+        if state.config.read().await.policy.require_payload_schema {
+            return Some(helpers::reject_with(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: format!(
+                        "no payload schema is known for `{type_uri}`, and this VTA is configured \
+                         to refuse tasks it cannot validate"
+                    ),
+                },
+            ));
+        }
+        tracing::debug!(
+            type_uri,
+            "no payload schema known — dispatching unvalidated (set \
+             policy.require_payload_schema to refuse instead)"
+        );
+        return None;
+    };
+
+    match trust_tasks_rs::validate::against_schema(schema, &doc.payload) {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::info!(type_uri, error = %e, "payload failed schema validation");
+            Some(helpers::reject_with(
+                doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("payload does not conform to {type_uri}: {e}"),
+                },
+            ))
+        }
+    }
+}
+
 pub(crate) async fn dispatch_trust_task_core(
     state: &AppState,
     auth: &AuthClaims,
@@ -416,6 +466,29 @@ pub(crate) async fn dispatch_trust_task_core(
             .map(str::to_string);
         (action, resource, context_id, detail)
     });
+
+    // Payload schema validation — before the policy gate, and deliberately not
+    // behind `policy.enforcement`.
+    //
+    // This is not a policy decision. It is the question of whether the document
+    // means what its sender thinks it means, and it has to be answered before
+    // anything else reads the payload: before the class is derived from it, before
+    // a policy is evaluated on it, before a handler is dry-run against it to tell
+    // a human what it will do.
+    //
+    // The bug that put this here: a caller sent `expectedVersionId` — the
+    // optimistic-concurrency precondition — and the handler's type expected
+    // `expected_version_id`. Serde matched no field, nothing rejected the unknown
+    // member, and the precondition simply never applied. Updates published with no
+    // lost-update protection while the caller's own source read as though the
+    // danger were handled. The member was not *wrong*; it was **unrecognised**,
+    // and nothing was watching for that.
+    //
+    // A silently-ignored member is worse than a rejected one. A rejected one you
+    // find out about.
+    if let Some(reject) = validate_payload(state, &type_uri, &doc).await {
+        return reject;
+    }
 
     // Policy Decision Point gate — evaluated before dispatch. A no-op unless
     // `config.policy.enforcement` is on; when a policy denies (or demands
@@ -1041,5 +1114,131 @@ mod tests {
                  a URI must live on exactly one transport"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "webvh"))]
+mod payload_validation_tests {
+    //! Payload schema validation at the gate.
+    //!
+    //! The defect that put this here: a caller sent `expectedVersionId` — the
+    //! optimistic-concurrency precondition — and the handler's type expected
+    //! `expected_version_id`. Serde matched no field, nothing rejected the unknown
+    //! member, and the precondition never applied. DID updates published with no
+    //! lost-update protection, while the caller's own source read as though the
+    //! danger were handled.
+    //!
+    //! The member was not *wrong*. It was **unrecognised**, and nothing was
+    //! watching for that.
+
+    use serde_json::{Value, json};
+    use trust_tasks_rs::TrustTask;
+
+    const WEBVH_UPDATE: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+
+    fn doc(payload: Value) -> TrustTask<Value> {
+        serde_json::from_value(json!({
+            "id": "urn:uuid:00000000-0000-0000-0000-000000000042",
+            "type": WEBVH_UPDATE,
+            "issuer": "did:key:zTestAdmin",
+            "recipient": "did:example:vta",
+            "issuedAt": "2026-07-14T00:00:00Z",
+            "payload": payload,
+        }))
+        .expect("valid trust task")
+    }
+
+    /// The bug, pinned. A safety precondition in the wrong case is now REFUSED,
+    /// where before it was silently dropped.
+    #[tokio::test]
+    async fn a_precondition_in_the_wrong_case_is_refused_not_ignored() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let d = doc(json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "expected_version_id": "3-QmPrior"
+        }));
+
+        let reject = super::validate_payload(&state, WEBVH_UPDATE, &d)
+            .await
+            .expect("an unrecognised member must be refused");
+
+        let body: Value = serde_json::from_slice(&reject.body).unwrap();
+        let msg = body.to_string();
+        assert!(
+            msg.contains("does not conform"),
+            "expected a schema-conformance refusal, got: {msg}"
+        );
+    }
+
+    /// The correct casing passes — the fix must refuse the typo without breaking
+    /// the thing it was a typo of.
+    #[tokio::test]
+    async fn the_correct_casing_passes() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let d = doc(json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "document": { "id": "did:webvh:QmScid:example.com:acme" },
+            "expectedVersionId": "3-QmPrior"
+        }));
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &d)
+                .await
+                .is_none()
+        );
+    }
+
+    /// The relay stamps the browser-attested origin into `payload.ext`. A closed
+    /// payload that refused the framework's own extension slot would break it.
+    #[tokio::test]
+    async fn the_ext_slot_the_relay_stamps_an_origin_into_is_permitted() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let d = doc(json!({
+            "did": "did:webvh:QmScid:example.com:acme",
+            "ext": { "openvtc.origin": "https://control.example.com" }
+        }));
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &d)
+                .await
+                .is_none(),
+            "closed payloads must still admit `ext`, or the relay cannot stamp an origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invented_member_is_refused() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let d = doc(json!({ "did": "did:webvh:x", "skipApproval": true }));
+        assert!(
+            super::validate_payload(&state, WEBVH_UPDATE, &d)
+                .await
+                .is_some()
+        );
+    }
+
+    /// A task with no published spec dispatches unvalidated by default — many do —
+    /// but an operator can choose to fail closed.
+    #[tokio::test]
+    async fn an_unspecced_task_proceeds_by_default_and_can_be_refused() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        // No published spec — one of many. (`vta/memory/list` HAS one, which is
+        // itself the point: the set of validatable tasks is growing.)
+        const UNSPECCED: &str = "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
+        let d = doc(json!({ "contextId": "default" }));
+
+        assert!(
+            super::validate_payload(&state, UNSPECCED, &d)
+                .await
+                .is_none(),
+            "by default an unvalidatable task still dispatches — refusing it would \
+             break the many tasks that have no spec yet"
+        );
+
+        state.config.write().await.policy.require_payload_schema = true;
+        assert!(
+            super::validate_payload(&state, UNSPECCED, &d)
+                .await
+                .is_some(),
+            "an operator who would rather fail closed can"
+        );
     }
 }

@@ -9505,12 +9505,13 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.12"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccbddb304248cc6cb1e2e6385bd2f7042df71c805d9e128d6cb40125322a9274"
+checksum = "2998e4384fc850bfd61ed6dc648a05d8d940d6b304a102eeabaf7c129cbdf16a"
 dependencies = [
  "async-trait",
  "chrono",
+ "jsonschema",
  "regress",
  "serde",
  "serde_json",

@@ -28,6 +28,22 @@ pub struct PolicyConfig {
     /// satisfied (fail-closed), so operators define sets before using them.
     #[serde(default)]
     pub approver_sets: std::collections::HashMap<String, Vec<String>>,
+    /// Refuse any task for which this build knows no payload schema.
+    ///
+    /// Payload validation always runs where a schema *is* known — that is not
+    /// optional and has no switch. This governs the other case: 62 of the tasks
+    /// this VTA dispatches have no published spec yet, and refusing them outright
+    /// would break them.
+    ///
+    /// So the default is to validate what we can, warn about what we cannot, and
+    /// proceed. An operator who would rather fail closed sets this — and should
+    /// understand what they are choosing: "no schema" currently means "no spec has
+    /// been written", not "this task is suspicious".
+    ///
+    /// **Default false.** It is a stopgap, and the honest fix is to write the
+    /// missing specs.
+    #[serde(default)]
+    pub require_payload_schema: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
