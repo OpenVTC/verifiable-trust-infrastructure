@@ -561,6 +561,13 @@ pub struct TestAppContext {
     /// via [`seed_webvh_server`] before driving a DID-mint / join flow.
     #[cfg(feature = "webvh")]
     pub webvh_ks: KeyspaceHandle,
+    /// The policy keyspace — exposed so an end-to-end harness can install the
+    /// Rego a deployment would, rather than reach past the Policy Decision Point
+    /// it is trying to exercise.
+    pub policy_ks: KeyspaceHandle,
+    /// The contexts keyspace — exposed so a harness can seed the trust context a
+    /// DID mint requires, the way a provisioning flow would.
+    pub contexts_ks: KeyspaceHandle,
     /// The VTA DID this app is configured with — the `did:key:z6MkTestVTA`
     /// sentinel for [`build_test_app`], or a real, self-resolving `did:key`
     /// for [`build_provisionable_test_app`]. A harness driving a URL-direct
@@ -815,11 +822,12 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         resolver
     };
 
+    let policy_ks = store.keyspace(crate::keyspaces::POLICY).unwrap();
     let state = crate::server::AppState {
         keys_ks: keys_ks.clone(),
         sessions_ks: sessions_ks.clone(),
         acl_ks: acl_ks.clone(),
-        contexts_ks,
+        contexts_ks: contexts_ks.clone(),
         did_templates_ks,
         audit_ks,
         imported_ks,
@@ -831,7 +839,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
             .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
             .unwrap(),
         memory_ks: store.keyspace(crate::keyspaces::MEMORY).unwrap(),
-        policy_ks: store.keyspace(crate::keyspaces::POLICY).unwrap(),
+        policy_ks: policy_ks.clone(),
         task_consent_ks: store.keyspace(crate::keyspaces::TASK_CONSENT).unwrap(),
         service_state_ks,
         sealed_nonces_ks,
@@ -898,6 +906,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         backup_blob_dir,
         #[cfg(feature = "webvh")]
         webvh_ks,
+        policy_ks,
+        contexts_ks: contexts_ks.clone(),
         vta_did,
         config,
         _dir: dir,
