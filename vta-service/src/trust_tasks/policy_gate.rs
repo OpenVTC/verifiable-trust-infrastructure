@@ -198,40 +198,9 @@ async fn consent_gate(
     };
     let now = gate_now_secs();
 
-    // An existing grant authorizes this payload — but it was minted minutes ago,
-    // against a world that may have moved. Policy has already been re-evaluated
-    // (this gate runs on every submit, including the re-submit that consumes the
-    // grant); what has not been re-checked is the *data*.
-    match consent::consume_grant(&state.task_consent_ks, &auth.did, type_uri, &digest, now).await {
-        Ok(Some(grant)) => {
-            if let Err(why) = super::planner::assert_plan_still_holds(
-                state,
-                auth,
-                type_uri,
-                &doc.payload,
-                grant.state_pin.as_ref(),
-                &grant.guards,
-            )
-            .await
-            {
-                // The grant is already consumed — single-use is single-use, even
-                // when we refuse. Re-submitting mints a fresh request and the
-                // approver sees the effects as they now are.
-                return Some(reject_with(
-                    doc,
-                    RejectReason::TaskFailed {
-                        reason: "auth:consent_stale".into(),
-                        details: Some(json!({ "explanation": why })),
-                    },
-                ));
-            }
-            return None;
-        }
-        Ok(None) => {}
-        Err(e) => return Some(app_error_to_reject(doc, e)),
-    }
-
-    // No grant: the approver set must be defined and non-empty.
+    // The approver set as it stands *now*, not as it stood when the request was
+    // raised. This is resolved before the grant is consumed, because a grant
+    // cannot be honoured against a set that no longer exists.
     let members = state
         .config
         .read()
@@ -251,6 +220,53 @@ async fn consent_gate(
                 ),
             },
         ));
+    }
+
+    // An existing grant authorizes this payload — but it was minted minutes ago,
+    // against a world that may have moved. Three things get re-checked here, and
+    // all three used to be one:
+    //
+    //   1. **Policy.** Already covered: this gate runs on every submit, including
+    //      the re-submit that consumes the grant, so `require` below is the
+    //      *current* decision — a policy tightened during the approval window
+    //      applies.
+    //   2. **Enrolment.** The approvers who signed must STILL be members of the
+    //      set the current policy names, and must still meet its threshold.
+    //   3. **Data.** The state the effects were computed against, and the
+    //      executor's own preconditions.
+    match consent::consume_grant(&state.task_consent_ks, &auth.did, type_uri, &digest, now).await {
+        Ok(Some(grant)) => {
+            // The grant is consumed by now — single-use is single-use, even when
+            // we go on to refuse. Re-submitting mints a fresh request, and the
+            // approver is asked again against the world as it now is.
+            if let Err(why) = approvals_still_authorize(&require, &members, &grant, &auth.did) {
+                return Some(reject_with(
+                    doc,
+                    RejectReason::PermissionDenied { reason: why },
+                ));
+            }
+            if let Err(why) = super::planner::assert_plan_still_holds(
+                state,
+                auth,
+                type_uri,
+                &doc.payload,
+                grant.state_pin.as_ref(),
+                &grant.guards,
+            )
+            .await
+            {
+                return Some(reject_with(
+                    doc,
+                    RejectReason::TaskFailed {
+                        reason: "auth:consent_stale".into(),
+                        details: Some(json!({ "explanation": why })),
+                    },
+                ));
+            }
+            return None;
+        }
+        Ok(None) => {}
+        Err(e) => return Some(app_error_to_reject(doc, e)),
     }
 
     // Dry-run the handler we are about to gate. `None` means this executor has no
@@ -378,6 +394,62 @@ async fn consent_gate(
                 // rather than to whoever handed it the document.
                 "consentRequests": requests,
             })),
+        },
+    ))
+}
+
+/// Do the approvals on this grant *still* authorize the task?
+///
+/// A grant records who approved. It does not record that they are still allowed
+/// to. Between an approval and the execution it authorizes there is a human-sized
+/// gap — minutes — and `device/disable`, `device/wipe`, or an operator editing the
+/// approver set all land inside it.
+///
+/// Without this, revoking a compromised approver does not stop the approvals
+/// already in flight from it: the grant is keyed by payload and requester, both
+/// of which are unchanged, so it consumes cleanly and the task runs on the
+/// authority of someone who is no longer trusted to give it. Revocation that does
+/// not reach in-flight approvals is not revocation.
+///
+/// Checked against the **current** policy decision and the **current** set —
+/// never the ones captured when the request was raised, which is the whole point.
+fn approvals_still_authorize(
+    require: &RequireConsent,
+    members: &[String],
+    grant: &consent::TaskConsentGrant,
+    requester_did: &str,
+) -> Result<(), String> {
+    let min_approvals = require.min_approvals.max(1);
+
+    let still_valid: Vec<&String> = grant
+        .approvers
+        .iter()
+        .filter(|a| members.iter().any(|m| m == *a))
+        // A policy that has *since* excluded the requester retroactively
+        // disqualifies their own approval, exactly as it would a fresh one.
+        .filter(|a| !(require.exclude_requester && a.as_str() == requester_did))
+        .collect();
+
+    if (still_valid.len() as u32) >= min_approvals {
+        return Ok(());
+    }
+
+    let revoked: Vec<&str> = grant
+        .approvers
+        .iter()
+        .filter(|a| !still_valid.contains(a))
+        .map(String::as_str)
+        .collect();
+
+    Err(format!(
+        "the approval for this task is no longer valid: {} of the {} required approver(s) are no \
+         longer permitted to approve it ({}). Re-submit to ask the current approver set.",
+        min_approvals as usize - still_valid.len(),
+        min_approvals,
+        if revoked.is_empty() {
+            "the approver set or its threshold changed".to_string()
+        } else {
+            revoked.join(", ")
         },
     ))
 }
@@ -805,6 +877,166 @@ mod tests {
              approver by retrying a task it knows will be rejected"
         );
     }
+
+    /// Revocation must reach approvals already in flight.
+    ///
+    /// A grant records who approved. It does not record that they are *still*
+    /// allowed to — and between the approval and the execution it authorizes
+    /// there is a human-sized gap. Without a re-check, disabling a compromised
+    /// approver leaves every approval it already signed executable: the grant is
+    /// keyed by payload and requester, both unchanged, so it consumes cleanly and
+    /// the task runs on the authority of someone no longer trusted to give it.
+    ///
+    /// Revocation that does not reach in-flight approvals is not revocation.
+    #[tokio::test]
+    async fn a_revoked_approver_cannot_carry_a_grant_through() {
+        use crate::policy::consent;
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        // The approver signs off: a grant lands.
+        let now = super::gate_now_secs();
+        let digest = consent::payload_digest(UNGATED_URI, &d.payload).unwrap();
+        let grant = consent::TaskConsentGrant {
+            digest: digest.clone(),
+            requester_did: auth.did.clone(),
+            type_uri: UNGATED_URI.into(),
+            approvers: vec!["did:key:zApprover".into()],
+            state_pin: None,
+            guards: Default::default(),
+            granted_at: now,
+            expires_at: now + 600,
+        };
+        consent::store_grant(&state.task_consent_ks, &grant)
+            .await
+            .unwrap();
+
+        // …and is then revoked, while the requester is still holding the grant.
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zSomeoneElse".into()]);
+        }
+
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            "a grant signed by a now-revoked approver must NOT carry the task through"
+        );
+    }
+
+    /// The same grant, with the approver still enrolled, still works — the check
+    /// must refuse the revoked case without breaking the ordinary one.
+    #[tokio::test]
+    async fn a_still_enrolled_approver_carries_the_grant_through() {
+        use crate::policy::consent;
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zApprover".into()]);
+        }
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT),
+        )
+        .await
+        .unwrap();
+
+        let now = super::gate_now_secs();
+        let digest = consent::payload_digest(UNGATED_URI, &d.payload).unwrap();
+        consent::store_grant(
+            &state.task_consent_ks,
+            &consent::TaskConsentGrant {
+                digest,
+                requester_did: auth.did.clone(),
+                type_uri: UNGATED_URI.into(),
+                approvers: vec!["did:key:zApprover".into()],
+                state_pin: None,
+                guards: Default::default(),
+                granted_at: now,
+                expires_at: now + 600,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
+            "an approver still in the set must carry the task through"
+        );
+    }
+
+    /// A threshold raised during the approval window applies to the grant already
+    /// in flight. One approval no longer authorizes a task that now needs two.
+    #[tokio::test]
+    async fn a_threshold_raised_mid_flight_invalidates_the_grant() {
+        use crate::policy::consent;
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        let auth = crate::test_support::super_admin_claims();
+        let d = doc(UNGATED_URI);
+
+        {
+            let mut cfg = state.config.write().await;
+            cfg.policy.enforcement = true;
+            cfg.policy
+                .approver_sets
+                .insert("ops".into(), vec!["did:key:zA".into(), "did:key:zB".into()]);
+        }
+        // The policy now demands two approvals.
+        crate::policy::storage::store_policy(
+            &state.policy_ks,
+            &module("consent", 0, REQUIRE_CONSENT_MIN_TWO),
+        )
+        .await
+        .unwrap();
+
+        // The grant carries only one.
+        let now = super::gate_now_secs();
+        let digest = consent::payload_digest(UNGATED_URI, &d.payload).unwrap();
+        consent::store_grant(
+            &state.task_consent_ks,
+            &consent::TaskConsentGrant {
+                digest,
+                requester_did: auth.did.clone(),
+                type_uri: UNGATED_URI.into(),
+                approvers: vec!["did:key:zA".into()],
+                state_pin: None,
+                guards: Default::default(),
+                granted_at: now,
+                expires_at: now + 600,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            "a single approval must not satisfy a threshold that has since risen to two"
+        );
+    }
+
+    const REQUIRE_CONSENT_MIN_TWO: &str = "package vta.policy\nimport rego.v1\ndecision := {\"decision\": \"requireConsent\", \"requireConsent\": {\"approverSet\": \"ops\", \"minApprovals\": 2}}";
 
     /// A grant approved for one task URI must not authorize a *different* task
     /// URI that happens to carry an identical payload. The approver only ever
