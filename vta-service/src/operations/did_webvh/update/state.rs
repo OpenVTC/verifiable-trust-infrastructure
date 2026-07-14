@@ -8,17 +8,38 @@ use super::errors::UpdateDidWebvhError;
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 
-/// Find a `WebvhDidRecord` by SCID. The store is DID-keyed; this scans
-/// `list_dids` and filters. Acceptable since updates are infrequent
-/// (operator-driven). Optimise later with an SCID→DID index if needed.
+/// Find a `WebvhDidRecord` by its SCID **or** its full DID.
+///
+/// The parameter is nominally a SCID — the CLI resolves its `did` argument to a
+/// record and passes `record.scid`. But a *remote* caller does not have the SCID:
+/// it holds the DID (`did:webvh:<scid>:<host>:<path>`), which is the only
+/// identifier it was ever given. The trust-task handler passes that DID straight
+/// through, so a lookup that matched SCID alone silently failed for every remote
+/// update — the exact case delegated execution exists for.
+///
+/// So accept both. A full DID carries its SCID as the segment after the method
+/// prefix; match on either, and a caller that has one but not the other still
+/// resolves. The store is DID-keyed, so a full DID also takes the fast path.
 pub(in crate::operations::did_webvh) async fn find_record_by_scid(
     webvh_ks: &KeyspaceHandle,
-    scid: &str,
+    scid_or_did: &str,
 ) -> Result<Option<WebvhDidRecord>, UpdateDidWebvhError> {
+    // Fast path: the store is keyed by DID, so if the caller gave us one, use it.
+    if scid_or_did.starts_with("did:webvh:")
+        && let Some(record) = webvh_store::get_did(webvh_ks, scid_or_did)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did: {e}")))?
+    {
+        return Ok(Some(record));
+    }
+
     let all = webvh_store::list_dids(webvh_ks)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("list_dids: {e}")))?;
-    Ok(all.into_iter().find(|r| r.scid == scid))
+    // Match a bare SCID, or a full DID whose SCID segment matches.
+    Ok(all.into_iter().find(|r| {
+        r.scid == scid_or_did || r.did == scid_or_did
+    }))
 }
 
 /// Build a [`DIDWebVHState`] from a stored JSONL log string. Splits on
