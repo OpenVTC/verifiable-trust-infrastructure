@@ -1990,6 +1990,72 @@ mod pre_rotation_e2e_tests {
         assert_eq!(plan.state_pin().version, plan.prior_version_id);
     }
 
+    /// The classification must agree with what the handler actually does.
+    ///
+    /// This is "code decides, not the registry" turned into a test. The planner
+    /// runs the real handler and reports a key rotation. SPEC §7.3 item 13 calls
+    /// rotation of a sole controlling key *authority-shifting*, and
+    /// authority-shifting is `destructive`. So if the plan says the key rotates,
+    /// the compiled class must say `destructive` — otherwise the value the policy
+    /// engine gates on is contradicted by the code it is gating.
+    ///
+    /// It matters concretely: an approver's device demands a typed digest match
+    /// only for a `destructive` task. Under-classifying this one meant the
+    /// flagship flow — edit a DID document — got a tap where it should have got a
+    /// ceremony.
+    #[tokio::test]
+    async fn the_compiled_class_agrees_with_the_rotation_the_plan_reports() {
+        let (ts, seed_store) = setup("ctx-class").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+        let auth_locks = crate::operations::did_webvh::WebvhAuthLocks::new();
+        let deps = webvh_deps(&ts, &seed_store, &resolver, &bridge, &auth_locks);
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-class",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let plan = plan_did_webvh_update(
+            &deps,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "class")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("plan");
+
+        assert!(
+            plan.rotates_update_keys(),
+            "a document change rotates the update key — if that ever stops being \
+             true, the classification should be revisited, not this assert"
+        );
+
+        let class = crate::trust_tasks::class_for(vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0)
+            .expect("the update task is in the dispatch table");
+
+        assert_eq!(
+            class.side_effects,
+            crate::policy::SideEffectLevel::Destructive,
+            "the plan says this rotates the DID's controlling key, which SPEC §7.3 \
+             calls authority-shifting; the compiled class must say so too, or the \
+             policy engine gates on a value the code contradicts"
+        );
+    }
+
     /// An update that changes no document, on a DID with no pre-rotation,
     /// rotates no key — so the plan must not claim it does.
     #[tokio::test]

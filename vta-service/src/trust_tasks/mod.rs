@@ -821,9 +821,20 @@ dispatch_table! {
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0 => webvh::handle_dids_delete
         [ Destructive None false ],
+    // Destructive, not mutating — and the line below is why. A document update
+    // ROTATES the DID's update key: the key that could authorize changes before
+    // this entry cannot afterwards. SPEC §7.3 item 13 names exactly that —
+    // "rotation of a sole controlling key" — as authority-shifting, and
+    // authority-shifting is destructive.
+    //
+    // `dids/rotate-keys` two lines down has always been Destructive. It rotates
+    // the same key. Classing an update as merely `Mutating` said that the same
+    // effect was destructive when you asked for it and recoverable when you got
+    // it as a side effect, which is precisely backwards: the side effect is the
+    // dangerous one, because it is the one nobody asked for.
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => webvh::handle_dids_update
-        [ Mutating None false ],
+        [ Destructive None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => webvh::handle_dids_rotate_keys
         [ Destructive None false ],
