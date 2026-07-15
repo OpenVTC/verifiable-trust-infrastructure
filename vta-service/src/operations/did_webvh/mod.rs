@@ -664,6 +664,23 @@ pub async fn create_did_webvh(
 
     // ── Final mode: client-provided pre-signed log entry ────────────
     if let Some(ref did_log) = params.did_log {
+        // Final mode (a client-provided, pre-signed did.jsonl) is serverless-only.
+        // Publishing a pre-signed log to a hosting server would use the SCID as the
+        // mnemonic path segment with no prior slot reservation — which the host
+        // rejects (a base58 SCID is mixed-case, and the slot was never registered)
+        // — so a server-managed final-mode create can never succeed. No first-party
+        // flow uses it (setup's advanced `did_log` path is always serverless). Fail
+        // fast, before parsing the log, with an actionable error instead of a
+        // confusing downstream mnemonic-validation failure at the host. (D4-F2)
+        if !serverless {
+            return Err(AppError::Validation(
+                "final-mode create (a pre-signed `did_log`) is only supported \
+                 serverless — `server_id` must be unset. To create a server-hosted \
+                 DID, use template or did_document mode instead."
+                    .into(),
+            ));
+        }
+
         let log_entry = LogEntry::deserialize_string(did_log, None)
             .map_err(|e| AppError::Validation(format!("invalid did_log: {e}")))?;
 
@@ -675,38 +692,6 @@ pub async fn create_did_webvh(
             .ok_or_else(|| AppError::Validation("DID document missing 'id' field".into()))?
             .to_string();
         let scid = log_entry.get_scid().unwrap_or_default().to_string();
-
-        // Publish to server if not serverless
-        if !serverless {
-            let server_id = params.server_id.as_ref().ok_or_else(|| {
-                AppError::Validation(
-                    "server_id is required when serverless=false (final-mode publish path)".into(),
-                )
-            })?;
-            let server = webvh_store::get_server(webvh_ks, server_id)
-                .await?
-                .ok_or_else(|| {
-                    AppError::NotFound(format!("webvh server not found: {server_id}"))
-                })?;
-            let transport = authenticated_server_transport(
-                keys_ks,
-                imported_ks,
-                seed_store,
-                audit_ks,
-                webvh_ks,
-                did_resolver,
-                didcomm_bridge,
-                auth_locks,
-                config.vta_did.as_deref(),
-                &server,
-            )
-            .await?;
-            // Final mode has no mnemonic from a server request — use the SCID as identifier
-            // Background publish (final-mode rotation push): no
-            // domain override; the remote uses the slot's recorded
-            // domain on lookup.
-            transport.publish_did(&scid, did_log, None).await?;
-        }
 
         // Optionally set as primary DID
         if params.set_primary {

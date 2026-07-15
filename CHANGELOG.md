@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### vta-service (0.11.5) — final-mode create fails fast when it can't succeed
+
+* Final-mode `create-did-webvh` (a client-provided, pre-signed `did_log`) is
+  serverless-only. Combined with a hosting `server_id` it published using the
+  base58 SCID as the mnemonic path with no prior slot reservation, which the
+  host always rejects (mixed-case mnemonic + unreserved slot) — so it could
+  never succeed. No first-party flow uses that combination (`vta setup`'s
+  advanced `did_log` path is always serverless). The VTA now rejects it up front
+  with an actionable error ("…only supported serverless… use template or
+  did_document mode") instead of a confusing downstream host failure. (D4-F2)
+
 ### vta-service (0.11.4) — webvh update keys off the canonical SCID
 
 * Fixed a keyspace bifurcation (#659 regression): `run_update` accepted a full
