@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### vta-enclave — retry the vsock storage-proxy connect on boot (D9)
+
+* On a cold boot the enclave and the parent-side vsock storage proxy start
+  concurrently; a single `VsockStore::connect` that lost the race would
+  `exit(1)`, and Nitro does not restart the enclave — so a benign ordering race
+  became an outage on every unattended host reboot. The connect now retries with
+  bounded backoff (~80s wait-for-dependency) before giving up. (`publish = false`;
+  no version bump.)
+
+### vtc-service (0.11.4) — website file-list is off-runtime and hashes only the page (D9)
+
+* `GET /v1/website/files` walked the whole site tree and `std::fs::read` +
+  SHA-256'd every file **on the async runtime**, even though the response is
+  paginated to ≤200 entries — pinning a tokio worker with O(total-site-bytes)
+  work on large media bundles, and `TimeoutLayer` couldn't cancel the blocking
+  code. It now walks metadata off the runtime (`spawn_blocking`, O(files), no
+  reads), paginates on that cheap metadata, and hashes **only the returned
+  window** off the runtime.
+
 ### vta-service (0.11.5) — final-mode create fails fast when it can't succeed
 
 * Final-mode `create-did-webvh` (a client-provided, pre-signed `did_log`) is

@@ -37,6 +37,45 @@ struct Cli {
     config: Option<std::path::PathBuf>,
 }
 
+/// Connect to the parent instance's vsock storage proxy, retrying with bounded
+/// backoff so a boot-ordering race isn't an outage.
+///
+/// On a cold boot the enclave and the parent-side storage proxy start
+/// concurrently; if the enclave's connect races ahead of the proxy binding its
+/// vsock port, a single attempt would `exit(1)` — and Nitro does **not** restart
+/// the enclave, so a benign ordering race becomes an outage on every unattended
+/// host reboot. Wait for the dependency instead, giving up only after the proxy
+/// is clearly not coming up (~80s total).
+#[cfg(feature = "vsock-store")]
+async fn connect_vsock_with_retry() -> Result<store::VsockStore, String> {
+    use std::time::Duration;
+    const MAX_ATTEMPTS: u32 = 30;
+    const BASE_DELAY: Duration = Duration::from_millis(250);
+    const MAX_DELAY: Duration = Duration::from_secs(3);
+
+    let mut delay = BASE_DELAY;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match store::VsockStore::connect(None).await {
+            Ok(vs) => {
+                if attempt > 1 {
+                    tracing::info!("connected to vsock storage proxy on attempt {attempt}");
+                }
+                return Ok(vs);
+            }
+            Err(e) if attempt < MAX_ATTEMPTS => {
+                tracing::warn!(
+                    "vsock storage proxy not ready (attempt {attempt}/{MAX_ATTEMPTS}): {e}; \
+                     retrying in {delay:?}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_DELAY);
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    unreachable!("the loop returns on the final attempt")
+}
+
 #[tokio::main]
 async fn main() {
     // Pin rustls to the aws-lc-rs backend before any TLS object is built;
@@ -109,10 +148,10 @@ async fn main() {
     // ── Open store (vsock-proxied or local) ──
     #[cfg(feature = "vsock-store")]
     let store = if config.tee.kms.is_some() {
-        match store::VsockStore::connect(None).await {
+        match connect_vsock_with_retry().await {
             Ok(vs) => store::Store::Vsock(vs),
             Err(e) => {
-                tracing::error!("failed to connect to vsock storage proxy: {e}");
+                tracing::error!("failed to connect to vsock storage proxy after retries: {e}");
                 std::process::exit(1);
             }
         }

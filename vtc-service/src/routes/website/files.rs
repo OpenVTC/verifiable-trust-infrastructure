@@ -69,31 +69,58 @@ pub async fn list(
     let limit = query.limit.unwrap_or(50).clamp(1, 200) as usize;
     let cursor = query.cursor.unwrap_or_default();
 
-    let mut entries = collect_entries(&serve_root, &blocklist)?;
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    // Walk the tree off the async runtime — O(number of files) stats, with NO
+    // file reads or hashing. Hashing (a SHA-256 over each file's full contents)
+    // is deferred to only the paginated window below, so a large media bundle
+    // no longer costs O(total-site-bytes) on every list — and none of the
+    // blocking I/O pins a tokio worker (the previous version did both).
+    let root_for_walk = serve_root.clone();
+    let bl = blocklist.clone();
+    let mut metas = tokio::task::spawn_blocking(move || collect_file_meta(&root_for_walk, &bl))
+        .await
+        .map_err(|e| AppError::Internal(format!("website file walk task panicked: {e}")))??;
+    metas.sort_by(|a, b| a.rel.cmp(&b.rel));
 
-    // Cursor is an opaque path string — next page starts at the
-    // first entry whose path > cursor.
-    let start_idx = match entries.binary_search_by(|e| e.path.as_str().cmp(cursor.as_str())) {
+    // Cursor is an opaque path string — next page starts at the first entry
+    // whose path > cursor. Paginate on cheap metadata; take one extra to compute
+    // next_cursor, then hash ONLY the window that is actually returned.
+    let start_idx = match metas.binary_search_by(|m| m.rel.as_str().cmp(cursor.as_str())) {
         Ok(i) => i + 1,
         Err(i) => i,
     };
-    let slice = entries
-        .into_iter()
-        .skip(start_idx)
-        .take(limit + 1)
-        .collect::<Vec<_>>();
-    let next_cursor = if slice.len() > limit {
-        Some(slice[limit - 1].path.clone())
+    let mut window: Vec<FileMeta> = metas.into_iter().skip(start_idx).take(limit + 1).collect();
+    let next_cursor = if window.len() > limit {
+        Some(window[limit - 1].rel.clone())
     } else {
         None
     };
-    let items: Vec<FileEntry> = slice.into_iter().take(limit).collect();
+    window.truncate(limit);
+
+    // Read + SHA-256 exactly the returned window, off the runtime.
+    let items = tokio::task::spawn_blocking(move || hash_window(window))
+        .await
+        .map_err(|e| AppError::Internal(format!("website file hash task panicked: {e}")))?;
 
     Ok(Json(ListResponse { items, next_cursor }))
 }
 
-fn collect_entries(root: &Path, blocklist: &[String]) -> Result<Vec<FileEntry>, AppError> {
+/// Per-file metadata gathered by the (blocking) tree walk — everything a listing
+/// needs EXCEPT the etag. The etag is a SHA-256 over the file's full contents, so
+/// it is computed only for the paginated window (see [`hash_window`]), never for
+/// the whole tree.
+struct FileMeta {
+    /// Path relative to the serve root, forward-slashed — the listing key.
+    rel: String,
+    /// Absolute path, for reading the file when its etag is finally computed.
+    abs: PathBuf,
+    size_bytes: u64,
+    modified_at: u64,
+}
+
+/// Walk `root` and collect metadata for every servable file. Blocking (one
+/// `stat` per entry) but **O(number of files), not O(bytes)** — no file is read
+/// here. Call under `spawn_blocking`.
+fn collect_file_meta(root: &Path, blocklist: &[String]) -> Result<Vec<FileMeta>, AppError> {
     use std::time::UNIX_EPOCH;
 
     let mut out = Vec::new();
@@ -133,25 +160,40 @@ fn collect_entries(root: &Path, blocklist: &[String]) -> Result<Vec<FileEntry>, 
             }
             let rel = path.strip_prefix(root).unwrap_or(&path);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let etag = match std::fs::read(&path) {
-                Ok(bytes) => hex::encode(Sha256::digest(&bytes)),
-                Err(_) => continue,
-            };
             let modified_at = meta
                 .modified()
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            out.push(FileEntry {
-                path: rel_str,
+            out.push(FileMeta {
+                rel: rel_str,
+                abs: path,
                 size_bytes: meta.len(),
-                etag,
                 modified_at,
             });
         }
     }
     Ok(out)
+}
+
+/// Read + SHA-256 exactly the files in `window`, producing the `FileEntry` rows.
+/// Blocking (file reads + hashing); call under `spawn_blocking`. A file that
+/// can't be read is dropped from the page — the same skip-on-read-error
+/// behaviour the previous single-pass handler had.
+fn hash_window(window: Vec<FileMeta>) -> Vec<FileEntry> {
+    window
+        .into_iter()
+        .filter_map(|m| {
+            let bytes = std::fs::read(&m.abs).ok()?;
+            Some(FileEntry {
+                path: m.rel,
+                size_bytes: m.size_bytes,
+                etag: hex::encode(Sha256::digest(&bytes)),
+                modified_at: m.modified_at,
+            })
+        })
+        .collect()
 }
 
 /// `GET /v1/website/files/{*path}`
@@ -375,3 +417,46 @@ async fn resolve_or_400(state: &AppState, path: &str) -> Result<PathBuf, AppErro
 // `Json::into_response` implicitly via the `?` mapping.
 #[allow(dead_code)]
 fn _unused(_x: impl IntoResponse) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// The D9 fix's core: the tree walk gathers metadata WITHOUT reading/hashing
+    /// files (hidden + blocklisted still excluded), and `hash_window` computes the
+    /// SHA-256 etag only for the files handed to it — never the whole tree.
+    #[test]
+    fn walk_gathers_metadata_and_hash_window_hashes_only_the_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        fs::write(root.join("index.html"), b"<h1>hi</h1>").unwrap();
+        fs::create_dir(root.join("assets")).unwrap();
+        fs::write(root.join("assets").join("app.js"), b"console.log(1)").unwrap();
+        fs::write(root.join("deploy.sh"), b"#!/bin/sh").unwrap(); // blocklisted
+        fs::write(root.join(".hidden"), b"secret").unwrap(); // hidden
+
+        let blocklist = vec![".sh".to_string()];
+        let mut metas = collect_file_meta(root, &blocklist).expect("walk");
+        metas.sort_by(|a, b| a.rel.cmp(&b.rel));
+
+        // Hidden + blocklisted excluded; rel paths forward-slashed.
+        let rels: Vec<&str> = metas.iter().map(|m| m.rel.as_str()).collect();
+        assert_eq!(rels, vec!["assets/app.js", "index.html"]);
+        assert_eq!(
+            metas
+                .iter()
+                .find(|m| m.rel == "index.html")
+                .unwrap()
+                .size_bytes,
+            11
+        );
+
+        // hash_window computes the etag only for what it's given.
+        let entries = hash_window(metas);
+        assert_eq!(entries.len(), 2);
+        let idx = entries.iter().find(|e| e.path == "index.html").unwrap();
+        assert_eq!(idx.etag, hex::encode(Sha256::digest(b"<h1>hi</h1>")));
+        assert_eq!(idx.size_bytes, 11);
+    }
+}
