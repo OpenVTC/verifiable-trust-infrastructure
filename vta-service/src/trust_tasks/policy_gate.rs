@@ -383,6 +383,11 @@ async fn consent_gate(
         RejectReason::TaskFailed {
             reason: "auth:consent_required".into(),
             details: Some(json!({
+                // The machine-readable reason, so a consumer keys on a stable
+                // field in `details` rather than the standard top-level `code`
+                // (which is `taskFailed` for this rejection) or the free-text
+                // `message`. Mirrors the `RejectReason::TaskFailed.reason` above.
+                "reason": "auth:consent_required",
                 // The salted digest: what the approver signs, and what the two
                 // screens compare. The internal one never leaves this process.
                 "payloadDigest": pending.wire_digest,
@@ -632,6 +637,15 @@ mod tests {
         let details = body
             .pointer("/payload/details")
             .expect("reject carries details");
+
+        // The machine-readable reason a consumer keys on lives in `details`,
+        // not the top-level `code` (`taskFailed`) — so clients don't string-match
+        // the free-text message.
+        assert_eq!(
+            details["reason"].as_str(),
+            Some("auth:consent_required"),
+            "consent rejects must carry a machine-readable reason in details"
+        );
 
         let requests = details["consentRequests"]
             .as_array()

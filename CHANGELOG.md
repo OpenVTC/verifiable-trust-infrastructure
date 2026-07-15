@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### vta-service (0.11.1) — consent rejects carry a machine-readable reason
+
+* The consent-required rejection (`policy_gate`) now includes an explicit
+  `"reason": "auth:consent_required"` in the trust-task-error `details`, so a
+  consumer keys on a stable structured field instead of the standard top-level
+  `code` (`taskFailed`) or the free-text `message`. Additive and
+  backward-compatible — existing `details` fields (`payloadDigest`, `challenge`,
+  `approverSet`, `minApprovals`, `consentRequests`) are unchanged.
+
 ### vta-sdk (0.19.4) — acl/create body reads camelCase, rejects unknown fields
 
 * `CreateAclBody` (the `spec/vta/acl/create/1.0` Trust Task payload) now
