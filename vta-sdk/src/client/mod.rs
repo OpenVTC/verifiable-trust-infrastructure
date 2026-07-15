@@ -211,7 +211,7 @@ impl VtaClient {
     pub fn new(base_url: &str) -> Self {
         Self {
             transport: Transport::Rest {
-                client: Client::new(),
+                client: crate::http::rest_client(),
                 base_url: base_url.trim_end_matches('/').to_string(),
                 auth: std::sync::Arc::new(tokio::sync::Mutex::new(RestAuth {
                     token: None,
@@ -306,7 +306,7 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        let rest_client = rest_url.as_ref().map(|_| Client::new());
+        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
 
         Ok(Self {
             transport: Transport::DIDComm {
@@ -356,7 +356,7 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        let rest_client = rest_url.as_ref().map(|_| Client::new());
+        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
 
         Ok(Self {
             transport: Transport::DIDComm {

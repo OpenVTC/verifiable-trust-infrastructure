@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### vta-sdk (0.19.5) — finite timeouts on all REST clients
+
+* Every SDK REST client is now built with request + connect timeouts (new
+  internal `http::rest_client`, overridable via `VTA_REST_TIMEOUT_SECS` /
+  `VTA_REST_CONNECT_TIMEOUT_SECS`) instead of `reqwest::Client::new()`, which
+  has no default timeout. A hung or blackholed VTA now surfaces as a timeout
+  error rather than hanging the caller (vtc setup, vta-mcp, the CLIs) forever.
+
+### vta-service (0.11.2) — webvh client timeout bounds the per-server auth mutex
+
+* `WebvhClient` is built with request + connect timeouts. A wedged hosting
+  daemon now fails with a timeout instead of an unbounded hang, which also
+  bounds how long `auth_cache::ensure_fresh_access_token` holds the per-server
+  auth mutex — so one dead daemon can no longer freeze all publishing for that
+  server.
+
 ### vta-service (0.11.1) — consent rejects carry a machine-readable reason
 
 * The consent-required rejection (`policy_gate`) now includes an explicit

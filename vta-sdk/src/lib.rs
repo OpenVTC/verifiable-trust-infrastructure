@@ -111,6 +111,8 @@ pub mod didcomm_session;
 // Pins rustls to the aws-lc-rs backend; every binary calls this at startup.
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;
+#[cfg(feature = "client")]
+pub(crate) mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;
 pub mod keys;

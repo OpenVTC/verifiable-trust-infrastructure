@@ -54,7 +54,7 @@ pub async fn challenge_response_di(
     private_key_multibase: &str,
     vta_did: &str,
 ) -> Result<TokenResult, Box<dyn std::error::Error>> {
-    let http = reqwest::Client::new();
+    let http = crate::http::rest_client();
 
     // Step 1 — request a challenge. Flat `{ subject }` request → canonical
     // `{ challenge, sessionId, expiresAt }` response.

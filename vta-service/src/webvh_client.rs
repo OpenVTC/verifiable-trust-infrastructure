@@ -1,5 +1,12 @@
 use serde::Deserialize;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Total-request timeout for a call to a webvh hosting daemon (auth, publish,
+/// delete, register). Generous enough for a DID-log publish, bounded so a
+/// wedged daemon can't hang the operation — or the per-server auth mutex.
+const WEBVH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// TCP/TLS connect timeout for a webvh hosting daemon.
+const WEBVH_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 use tracing::{debug, info, warn};
 use url::{Host, Url};
 
@@ -223,7 +230,17 @@ impl WebvhClient {
         })?;
         enforce_transport_security(&parsed, server_url)?;
         Ok(Self {
-            http: reqwest::Client::new(),
+            // Finite timeouts: reqwest has none by default. A wedged hosting
+            // daemon (accepts TCP, never answers) must surface as a timeout
+            // error, not an unbounded hang — which also bounds how long the
+            // per-server auth mutex (`auth_cache::ensure_fresh_access_token`)
+            // is held across `authenticate`/`refresh`, so one dead daemon can't
+            // freeze all publishing for that server.
+            http: reqwest::Client::builder()
+                .timeout(WEBVH_HTTP_TIMEOUT)
+                .connect_timeout(WEBVH_HTTP_CONNECT_TIMEOUT)
+                .build()
+                .expect("reqwest client with timeouts (TLS backend init)"),
             server_url: server_url.trim_end_matches('/').to_string(),
             server_did: server_did.to_string(),
             access_token: None,

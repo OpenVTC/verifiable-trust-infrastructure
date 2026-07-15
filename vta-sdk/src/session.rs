@@ -902,7 +902,7 @@ async fn rotate_key(
 ) -> Result<(Session, TokenResult), Box<dyn std::error::Error>> {
     use crate::protocols::acl_management::swap::{SwapAclBody, build_swap_presentation};
 
-    let http = reqwest::Client::new();
+    let http = crate::http::rest_client();
 
     // `ensure_authenticated` has already gated `vta_did.is_some()` via
     // `require_vta_did`; safe to unwrap here.
@@ -975,7 +975,7 @@ pub async fn challenge_response(
         base_url,
         client_did, vta_did, "starting challenge-response auth"
     );
-    let http = reqwest::Client::new();
+    let http = crate::http::rest_client();
 
     // Step 1: Request challenge
     let challenge_url = format!("{base_url}/auth/challenge");
