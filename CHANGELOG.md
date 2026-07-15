@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### vta-sdk (0.19.4) — acl/create body reads camelCase, rejects unknown fields
+
+* `CreateAclBody` (the `spec/vta/acl/create/1.0` Trust Task payload) now
+  deserializes **camelCase** as its canonical wire form, matching the published
+  spec convention and the sibling `acl/swap-key` body. Snake_case is still
+  accepted via per-field aliases (non-breaking for the REST client and legacy
+  senders), and unknown fields are now rejected (`deny_unknown_fields`).
+* Fixes a silent-drop hazard: a spec-conventional camelCase caller previously
+  had `allowedContexts`/`expiresAt` dropped to defaults. Because an empty
+  `allowed_contexts` on an `Admin` entry is a super-admin, a super-admin caller
+  intending a scoped, expiring grant could instead mint a permanent,
+  unrestricted admin.
+
 ### vti-common (0.11.5)
 
 * Added `setup_acl: bool` (default `false`) to `MessagingConfig`.
