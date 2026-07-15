@@ -28,8 +28,7 @@
 //! Both are injected, so `verify_foreign_vec` is unit-testable
 //! without a live DID resolver or status-list host.
 
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
+use std::sync::Arc;
 
 use affinidi_data_integrity::{DataIntegrityProof, VerificationMethodResolver, VerifyOptions};
 use affinidi_vc::VerifiableCredential;
@@ -37,6 +36,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use thiserror::Error;
+use vta_sdk::http::ForeignFetchError;
 
 use crate::credentials::vm_resolver::check_issuer_binding;
 use crate::registry::{RegistryError, TrustRegistryClient};
@@ -450,73 +450,43 @@ impl Default for HttpStatusListFetcher {
     }
 }
 
-/// Total deadline for a single foreign status-list fetch. A hostile host on the
-/// unauthenticated recognise path must not be able to stall the lone REST
-/// thread indefinitely.
-const FOREIGN_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Cap on a fetched status-list body — the shared foreign-fetch default
+/// ([`vta_sdk::http::DEFAULT_MAX_FOREIGN_BODY`], 2 MiB). The spec-minimum list
+/// is ~16 KiB compressed; the cap refuses the multi-GB body a hostile host on
+/// the unauthenticated recognise path could otherwise stream to OOM the daemon.
+const MAX_STATUS_LIST_BODY: usize = vta_sdk::http::DEFAULT_MAX_FOREIGN_BODY;
 
-/// Hard cap on a fetched status-list body. The spec-minimum list is ~16 KiB
-/// compressed; 2 MiB is generous headroom while refusing the multi-GB body a
-/// hostile host could otherwise stream to OOM the daemon.
-const MAX_STATUS_LIST_BODY: usize = 2 * 1024 * 1024;
+/// Map a shared-layer [`ForeignFetchError`] (SSRF-guard rejection, body-cap
+/// breach, mid-stream read failure) into a `RecognitionError`, tagging it with
+/// the offending `url`. The route layer surfaces `StatusListFailed` as HTTP 403.
+fn foreign_fetch_failed(url: &str, e: ForeignFetchError) -> RecognitionError {
+    RecognitionError::StatusListFailed(format!("status list {url}: {e}"))
+}
 
-/// One shared, hardened HTTP client for every outbound foreign status-list
-/// fetch on the unauthenticated recognise / present paths. `reqwest::Client`
-/// is internally ref-counted, so cloning the shared instance reuses its
-/// connection pool.
-///
-/// Hardening (P0.4 / CWE-918):
-/// - **`redirect(none)`** — [`guard_status_list_url`] runs once, on the
-///   *original* URL. Following redirects would let a public URL `302` to an
-///   internal target (`127.0.0.1`, `169.254.169.254`) past the guard. With no
-///   follow, a redirecting host yields a non-2xx response, which
-///   [`HttpStatusListFetcher::check_status_bit`] maps to `StatusListFailed` —
-///   the daemon never fetches the redirect target.
-/// - **`timeout` / `connect_timeout`** — bounded so a hung host can't pin a
-///   request open.
-///
-/// Response-body size is capped per-fetch by [`read_body_capped`] (reqwest has
-/// no built-in response-size limit).
-static FOREIGN_FETCH_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(FOREIGN_FETCH_TIMEOUT)
-        .connect_timeout(FOREIGN_FETCH_TIMEOUT)
-        .build()
-        .expect("hardened foreign-fetch client builds from static config")
-});
-
-/// A clone of the shared hardened foreign-fetch client (see
-/// [`FOREIGN_FETCH_CLIENT`]). The only client used on the attacker-controlled
-/// status-list fetch path — no bare `reqwest::Client::new()`.
+/// A clone of the shared hardened foreign-fetch client
+/// ([`vta_sdk::http::foreign_fetch_client`]) — `redirect(none)` + finite
+/// timeouts. The only client used on the attacker-controlled status-list fetch
+/// path; no bare `reqwest::Client::new()`. Not following redirects closes the
+/// SSRF-via-redirect bypass (CWE-918): a `3xx` lands as a non-2xx that
+/// [`HttpStatusListFetcher::check_status_bit`] maps to `StatusListFailed`, so
+/// the redirect target is never fetched. Consolidated with the VTA's
+/// vault-present path so both share one chokepoint.
 pub(crate) fn foreign_fetch_client() -> reqwest::Client {
-    FOREIGN_FETCH_CLIENT.clone()
+    vta_sdk::http::foreign_fetch_client()
 }
 
 /// Read a response body into memory, refusing anything larger than `max` bytes.
-/// reqwest has no built-in response-size cap and the recognise path is
-/// unauthenticated, so a hostile host could otherwise stream a multi-GB body
-/// and OOM the daemon. Reads chunk-by-chunk and aborts the moment the cap is
-/// crossed — the oversized body is never fully buffered.
+/// Delegates to the shared [`vta_sdk::http::read_body_capped`] — chunk-by-chunk,
+/// aborting the instant the cap is crossed so the oversized body is never fully
+/// buffered — and tags any failure with `url`.
 async fn read_body_capped(
-    mut resp: reqwest::Response,
+    resp: reqwest::Response,
     max: usize,
     url: &str,
 ) -> Result<Vec<u8>, RecognitionError> {
-    let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
+    vta_sdk::http::read_body_capped(resp, max)
         .await
-        .map_err(|e| RecognitionError::StatusListFailed(format!("read {url}: {e}")))?
-    {
-        if buf.len() + chunk.len() > max {
-            return Err(RecognitionError::StatusListFailed(format!(
-                "status list {url} body exceeds the {max}-byte cap"
-            )));
-        }
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
+        .map_err(|e| foreign_fetch_failed(url, e))
 }
 
 /// Verify a fetched `BitstringStatusListCredential`'s own `eddsa-jcs-2022` issuer
@@ -584,81 +554,20 @@ async fn verify_status_list_signature(
     Ok(())
 }
 
-/// Reject URLs that don't pass the SSRF allowlist. Returns `Ok(())`
-/// for safe URLs, `Err(RecognitionError::StatusListFailed)` for
-/// anything we don't want the recognise handler reaching out to:
-/// non-HTTPS schemes, IP-literal hosts (incl. RFC1918, link-local,
-/// loopback, IPv4-mapped IPv6), and credentials/userinfo embedded
-/// in the authority.
+/// Reject URLs that don't pass the SSRF allowlist before the recognise handler
+/// fetches them. Delegates to the shared [`vta_sdk::http::guard_public_url`] —
+/// one chokepoint shared with the VTA's vault-present path — which refuses
+/// non-HTTPS schemes, embedded userinfo, and IP-literal hosts in loopback /
+/// private / link-local / cloud-metadata (`169.254.169.254`) ranges for both
+/// IPv4 and IPv6. Any rejection becomes `RecognitionError::StatusListFailed`.
 ///
-/// `/v1/auth/recognise` is unauthenticated; the URL comes straight
-/// from an attacker-controlled foreign credential. Without this
-/// guard the daemon could be turned into an SSRF proxy hitting
-/// internal hosts (CWE-918).
+/// `/v1/auth/recognise` is unauthenticated and the URL comes straight from an
+/// attacker-controlled foreign credential; without this guard the daemon could
+/// be turned into an SSRF proxy hitting internal hosts (CWE-918). Reaching an
+/// internal host by *DNS name* still needs a network-level egress filter — the
+/// guard can't resolve at parse time without a TOCTOU window.
 pub(crate) fn guard_status_list_url(url: &str) -> Result<(), RecognitionError> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| RecognitionError::StatusListFailed(format!("invalid url {url}: {e}")))?;
-    if parsed.scheme() != "https" {
-        return Err(RecognitionError::StatusListFailed(format!(
-            "status-list url must be https (got scheme {})",
-            parsed.scheme()
-        )));
-    }
-    if parsed.username() != "" || parsed.password().is_some() {
-        return Err(RecognitionError::StatusListFailed(
-            "status-list url must not contain userinfo".into(),
-        ));
-    }
-    use std::net::IpAddr;
-    let host_str = parsed
-        .host_str()
-        .ok_or_else(|| RecognitionError::StatusListFailed("status-list url missing host".into()))?;
-    {
-        // Reject IP-literal hosts outright. Reaching internal
-        // services by DNS is harder to prevent here (we can't
-        // resolve at parse time without TOCTOU); operators
-        // deploying behind internal DNS must use a network-level
-        // egress filter for full protection. This guard cuts off
-        // the bulk-attack vectors: `http://10.0.0.1`, `http://127.1`,
-        // `http://[::1]`, `http://0.0.0.0`, `http://169.254.169.254`
-        // (cloud metadata) etc.
-        //
-        // `host_str()` returns IPv6 hosts in bracketed URL form
-        // (`[::1]`) which `IpAddr::parse` rejects — strip the
-        // brackets before parsing. Domain hosts get neither
-        // parse hit (correctly fall through to allow).
-        let host_normalised = host_str
-            .strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-            .unwrap_or(host_str);
-        if let Ok(ip) = host_normalised.parse::<IpAddr>() {
-            let private = match ip {
-                IpAddr::V4(v4) => {
-                    v4.is_loopback()
-                        || v4.is_private()
-                        || v4.is_link_local()
-                        || v4.is_broadcast()
-                        || v4.is_unspecified()
-                        || v4.is_multicast()
-                        || v4.is_documentation()
-                }
-                IpAddr::V6(v6) => {
-                    v6.is_loopback()
-                        || v6.is_unspecified()
-                        || v6.is_multicast()
-                        // Unique local + link-local fc00::/7, fe80::/10.
-                        || (v6.segments()[0] & 0xfe00 == 0xfc00)
-                        || (v6.segments()[0] & 0xffc0 == 0xfe80)
-                }
-            };
-            if private {
-                return Err(RecognitionError::StatusListFailed(format!(
-                    "status-list url points at non-public IP {ip}"
-                )));
-            }
-        }
-    }
-    Ok(())
+    vta_sdk::http::guard_public_url(url).map_err(|e| foreign_fetch_failed(url, e))
 }
 
 #[async_trait]
@@ -799,6 +708,8 @@ mod ssrf_guard_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::acl::VtcRole;
     use crate::credentials::{

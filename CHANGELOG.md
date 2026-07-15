@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### vtc-service (0.11.5) — foreign status-list fetch delegates to the shared SSRF chokepoint (D2)
+
+* The recognise/present path's SSRF guard, hardened HTTP client, and
+  response-body cap were a verbatim copy of the shared `vta_sdk::http` helpers.
+  `verify.rs` now delegates `guard_status_list_url` → `vta_sdk::http::guard_public_url`,
+  `foreign_fetch_client` → `vta_sdk::http::foreign_fetch_client`, and
+  `read_body_capped` → `vta_sdk::http::read_body_capped` (mapping
+  `ForeignFetchError` → `RecognitionError::StatusListFailed`), so the VTA
+  vault-present and VTC recognise paths share one CWE-918 guard implementation
+  instead of two that could drift. Behaviour and error surface are unchanged;
+  the local `FOREIGN_FETCH_CLIENT` / timeout const / body-cap const were removed.
+
 ### vta-enclave — retry the vsock storage-proxy connect on boot (D9)
 
 * On a cold boot the enclave and the parent-side vsock storage proxy start
