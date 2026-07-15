@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### vta-sdk (0.19.6) — shared hardened foreign-fetch helper
+
+* New `http::{foreign_fetch_client, read_body_capped, guard_public_url,
+  DEFAULT_MAX_FOREIGN_BODY, ForeignFetchError}`: the single hardened chokepoint
+  for fetching attacker-influenceable URLs — `redirect(none)` (blocks
+  SSRF-via-redirect), bounded timeouts, a chunked response-body cap, and an
+  SSRF URL guard (https-only, no userinfo, rejects loopback/private/link-local/
+  multicast/ULA and cloud-metadata IP targets). Ported from vtc-service's
+  reference implementation so consumers share one guard instead of each rolling
+  their own.
+
+### vta-service (0.11.3) — status-list fetch is SSRF/DoS-hardened
+
+* `HttpStatusListResolver` (the issuer-supplied status-list fetch on the
+  credential-present path) previously used `reqwest::Client::new()`: no timeout,
+  default redirect-following, and `.json()` buffering an unbounded body — a
+  tarpit / SSRF-via-redirect / OOM surface on a hot path. It now guards the URL
+  (`vta_sdk::http::guard_public_url`) before dialing, fetches through the shared
+  hardened client, and reads the body under `DEFAULT_MAX_FOREIGN_BODY`.
+
 ### vta-sdk (0.19.5) — finite timeouts on all REST clients
 
 * Every SDK REST client is now built with request + connect timeouts (new

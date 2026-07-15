@@ -112,7 +112,7 @@ pub mod didcomm_session;
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;
 #[cfg(feature = "client")]
-pub(crate) mod http;
+pub mod http;
 #[cfg(feature = "keyring")]
 pub mod keyring_init;
 pub mod keys;

@@ -157,7 +157,11 @@ impl HttpStatusListResolver {
     /// resolution of the status-list credential's signature.
     pub fn new(did_resolver: Option<DIDCacheClient>) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            // The status-list URL is issuer-supplied (attacker-influenceable) and
+            // fetched on the credential-present path. Use the shared hardened
+            // foreign-fetch client — no redirect following (SSRF-via-redirect),
+            // bounded timeout — never a bare `reqwest::Client::new()`.
+            http: vta_sdk::http::foreign_fetch_client(),
             did_resolver,
         }
     }
@@ -171,16 +175,26 @@ impl StatusListResolver for HttpStatusListResolver {
         url: &str,
         expected_issuer: Option<&str>,
     ) -> Result<ResolvedStatusList, AppError> {
-        let body: serde_json::Value = self
+        // Guard the issuer-supplied URL BEFORE dialing (https only, no userinfo,
+        // no non-public IP target), then fetch through the hardened client and
+        // read the body under a cap so a hostile host can't stream a giant
+        // response to OOM the process.
+        vta_sdk::http::guard_public_url(url)
+            .map_err(|e| AppError::Validation(format!("status list `{url}` rejected: {e}")))?;
+        let resp = self
             .http
             .get(url)
             .send()
             .await
             .map_err(|e| AppError::Internal(format!("status list fetch `{url}` failed: {e}")))?
             .error_for_status()
-            .map_err(|e| AppError::Internal(format!("status list `{url}` returned an error: {e}")))?
-            .json()
+            .map_err(|e| {
+                AppError::Internal(format!("status list `{url}` returned an error: {e}"))
+            })?;
+        let bytes = vta_sdk::http::read_body_capped(resp, vta_sdk::http::DEFAULT_MAX_FOREIGN_BODY)
             .await
+            .map_err(|e| AppError::Internal(format!("status list `{url}` body: {e}")))?;
+        let body: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|e| AppError::Internal(format!("status list `{url}` is not JSON: {e}")))?;
 
         // Verify the list credential's own issuer signature BEFORE trusting any
