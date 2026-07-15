@@ -88,3 +88,66 @@ pub(in crate::operations::did_webvh) fn state_to_jsonl(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+    use vti_common::config::StoreConfig as VtiStoreConfig;
+
+    async fn setup_ks() -> (tempfile::TempDir, KeyspaceHandle) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&VtiStoreConfig {
+            data_dir: dir.path().into(),
+        })
+        .unwrap();
+        let ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        (dir, ks)
+    }
+
+    fn record(scid: &str, did: &str) -> WebvhDidRecord {
+        WebvhDidRecord {
+            did: did.into(),
+            server_id: "serverless".into(),
+            mnemonic: "irrelevant".into(),
+            scid: scid.into(),
+            context_id: "vta".into(),
+            portable: true,
+            log_entry_count: 1,
+            pre_rotation_count: 0,
+            next_fragment_id: 0,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    /// The property `run_update`'s key-handle canonicalization relies on: whether
+    /// looked up by full DID (delegated path) or bare SCID (CLI path), the record
+    /// returned carries the SAME canonical bare `scid`. Keying `webvh_keys` off
+    /// `record.scid` therefore lands in one keyspace regardless of caller — the
+    /// fix for the #659 keyspace bifurcation.
+    #[tokio::test]
+    async fn both_identifier_forms_resolve_to_the_same_canonical_scid() {
+        let (_dir, ks) = setup_ks().await;
+        let scid = "QmScidHash";
+        let did = "did:webvh:QmScidHash:webvh.example.com:agent";
+        webvh_store::store_did(&ks, &record(scid, did))
+            .await
+            .unwrap();
+
+        let by_did = find_record_by_scid(&ks, did)
+            .await
+            .unwrap()
+            .expect("lookup by full DID resolves");
+        let by_scid = find_record_by_scid(&ks, scid)
+            .await
+            .unwrap()
+            .expect("lookup by bare SCID resolves");
+
+        // The canonical bare SCID is identical for both entry forms — so the
+        // webvh_keys prefix built from `record.scid` never bifurcates.
+        assert_eq!(by_did.scid, scid);
+        assert_eq!(by_scid.scid, scid);
+        assert_eq!(by_did.scid, by_scid.scid);
+    }
+}

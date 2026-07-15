@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### vta-service (0.11.4) — webvh update keys off the canonical SCID
+
+* Fixed a keyspace bifurcation (#659 regression): `run_update` accepted a full
+  `did:webvh:…` (delegated path) or a bare SCID (CLI) but then keyed the
+  `webvh_keys` handle store off the raw argument. A DID updated via one path
+  installed its key handles under a prefix the other path couldn't find, so a
+  delegated update left the DID un-updatable from the CLI ("no active update key
+  … restore from backup"). `run_update` now canonicalizes the identifier to the
+  record's bare SCID before any key-handle op. Adds a regression test that both
+  identifier forms resolve to the same canonical SCID.
+
 ### vta-sdk (0.19.6) — shared hardened foreign-fetch helper
 
 * New `http::{foreign_fetch_client, read_body_capped, guard_public_url,

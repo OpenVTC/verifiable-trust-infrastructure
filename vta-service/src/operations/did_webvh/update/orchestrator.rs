@@ -123,6 +123,17 @@ async fn run_update(
     let mut record = find_record_by_scid(webvh_ks, scid)
         .await?
         .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("SCID {scid} not found")))?;
+    // `scid` may arrive as a full `did:webvh:…` (the delegated-update path,
+    // `trust_tasks/webvh.rs`) or as a bare SCID (the CLI path). `find_record_by_scid`
+    // accepts either form for lookup, but the `webvh_keys` handle keyspace is
+    // ALWAYS keyed by the canonical bare SCID (`record.scid`). Keying it off the
+    // raw argument bifurcates the keyspace — a DID updated via one path installs
+    // its handles under a prefix the other path can't find, so the DID becomes
+    // un-updatable that way (#659 regression). Canonicalize the identifier here so
+    // every `webvh_keys` op below (load/install/supersede) and every derived DID
+    // string uses the SCID, whichever caller we came from.
+    let canonical_scid = record.scid.clone();
+    let scid = canonical_scid.as_str();
     let initial_log_entry_count = record.log_entry_count;
     let snapshot = RecordSnapshot::capture(&record);
 
