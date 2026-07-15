@@ -39,9 +39,56 @@ static COUNTER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 /// counters that is silent private-key reuse. Allocation is
 /// infrequent; the fsync cost is acceptable.
 pub async fn allocate_u32(ks: &KeyspaceHandle, counter_key: &str) -> Result<u32, AppError> {
+    allocate_u32_block(ks, counter_key, 1, None).await
+}
+
+/// Atomically allocate a **contiguous block** of `count` values, returning the
+/// first, and optionally assert the block starts exactly where the caller
+/// expects.
+///
+/// Two problems, one primitive.
+///
+/// **Contiguity.** A caller needing several adjacent indices cannot get them from
+/// a loop of [`allocate_u32`]: the lock is released between calls, so a concurrent
+/// allocator can land in the middle and the "block" is no longer a block. Anything
+/// that predicted those indices — a dry-run — is then wrong about all of them.
+///
+/// **Expectation.** `expected` closes the gap between predicting an allocation and
+/// performing it. A peek reserves nothing, so between a prediction and its use
+/// another allocation can move the counter and the caller silently derives
+/// something other than what it predicted. Passing the peeked value here makes
+/// that a `Conflict` instead: the check and the allocation happen under one lock
+/// acquisition, so nothing can slip between them.
+///
+/// This matters where the prediction was shown to a **human**. An approver who
+/// authorized a rotation to key `n` must not have key `n+1` installed, and
+/// "unlikely" is not the bar — the entire point of showing them the key is that
+/// it is the key that executes.
+///
+/// A failed assertion consumes nothing. Gaps are safe; reuse is not.
+pub async fn allocate_u32_block(
+    ks: &KeyspaceHandle,
+    counter_key: &str,
+    count: u32,
+    expected: Option<u32>,
+) -> Result<u32, AppError> {
     let _guard = COUNTER_LOCK.lock().await;
     let current = read_u32(ks, counter_key).await?;
-    ks.insert_raw(counter_key, (current + 1).to_le_bytes().to_vec())
+
+    if let Some(expected) = expected
+        && current != expected
+    {
+        return Err(AppError::Conflict(format!(
+            "derivation counter at `{counter_key}` moved from {expected} to {current} while a \
+             decision was pending — the keys this would derive are not the keys that were approved"
+        )));
+    }
+
+    if count == 0 {
+        return Ok(current);
+    }
+
+    ks.insert_raw(counter_key, (current + count).to_le_bytes().to_vec())
         .await?;
     ks.persist().await?;
     // Re-seal the TEE integrity manifest so the counter bump is reflected in the
@@ -122,5 +169,68 @@ mod tests {
         for expect in 0..3u32 {
             assert_eq!(allocate_u32(&ks, "counter:y").await.unwrap(), expect);
         }
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+    use crate::config::StoreConfig;
+    use crate::store::Store;
+
+    async fn ks() -> (crate::store::KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .unwrap();
+        (store.keyspace("keys").unwrap(), dir)
+    }
+
+    #[tokio::test]
+    async fn a_block_is_contiguous() {
+        let (ks, _d) = ks().await;
+        // First block of 3 starts at 0; the counter then stands at 3.
+        assert_eq!(allocate_u32_block(&ks, "c", 3, None).await.unwrap(), 0);
+        // A single allocation continues from there — no gap, no overlap.
+        assert_eq!(allocate_u32(&ks, "c").await.unwrap(), 3);
+        assert_eq!(allocate_u32_block(&ks, "c", 2, None).await.unwrap(), 4);
+    }
+
+    /// The race, closed. A caller pins the counter it peeked and passes it as
+    /// `expected`. If anything advanced the counter in the meantime, the
+    /// allocation refuses rather than handing back a block that starts somewhere
+    /// the caller did not predict.
+    #[tokio::test]
+    async fn an_expectation_that_no_longer_holds_is_refused() {
+        let (ks, _d) = ks().await;
+
+        // A caller peeks: the next value is 0. It intends to allocate a block
+        // starting there.
+        assert_eq!(peek_u32(&ks, "c").await.unwrap(), 0);
+
+        // But a concurrent allocator lands first.
+        assert_eq!(allocate_u32(&ks, "c").await.unwrap(), 0);
+
+        // The first caller's pinned expectation (0) no longer holds. It must NOT
+        // get a block — it would derive keys nobody predicted.
+        let err = allocate_u32_block(&ks, "c", 2, Some(0)).await.unwrap_err();
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "a moved counter must be a Conflict, got: {err:?}"
+        );
+
+        // And the failure consumed nothing: the counter is still where the
+        // concurrent allocator left it. Gaps are safe; a burned index would not be.
+        assert_eq!(peek_u32(&ks, "c").await.unwrap(), 1);
+
+        // Re-peeking and re-pinning to the current value succeeds.
+        assert_eq!(allocate_u32_block(&ks, "c", 2, Some(1)).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_matching_expectation_allocates() {
+        let (ks, _d) = ks().await;
+        assert_eq!(allocate_u32_block(&ks, "c", 2, Some(0)).await.unwrap(), 0);
     }
 }

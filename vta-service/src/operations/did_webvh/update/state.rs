@@ -37,9 +37,9 @@ pub(in crate::operations::did_webvh) async fn find_record_by_scid(
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("list_dids: {e}")))?;
     // Match a bare SCID, or a full DID whose SCID segment matches.
-    Ok(all.into_iter().find(|r| {
-        r.scid == scid_or_did || r.did == scid_or_did
-    }))
+    Ok(all
+        .into_iter()
+        .find(|r| r.scid == scid_or_did || r.did == scid_or_did))
 }
 
 /// Build a [`DIDWebVHState`] from a stored JSONL log string. Splits on

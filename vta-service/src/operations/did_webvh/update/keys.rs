@@ -16,7 +16,7 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use super::errors::UpdateDidWebvhError;
 use super::legacy::{legacy_lookup_by_public_key, legacy_lookup_pre_rotation_by_hash};
 use super::options::DerivedWebvhKey;
-use crate::keys::paths::{allocate_path, peek_paths};
+use crate::keys::paths::{allocate_paths, peek_paths};
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
@@ -36,17 +36,37 @@ pub(in crate::operations::did_webvh) async fn derive_webvh_keys(
     base_path: &str,
     count: u32,
 ) -> Result<Vec<DerivedWebvhKey>, UpdateDidWebvhError> {
+    derive_webvh_keys_block(keys_ks, seed_store, base_path, count, None).await
+}
+
+/// Allocate and derive `count` keys as **one contiguous block**, optionally
+/// asserting the block starts at `expected_start`.
+///
+/// This is the sound version of [`derive_webvh_keys`], and the two differences
+/// from a loop of single allocations are the two halves of the race this closes:
+///
+/// - **one block, not `count` allocations** — so a concurrent update cannot split
+///   the auth key from the pre-rotation keys, which a plan peeked as adjacent;
+/// - **`expected_start`** — so if anything moved the counter between the plan that
+///   was shown to a human and this execution, the allocation fails with a
+///   `Conflict` rather than silently installing keys the approver never saw.
+///
+/// `expected_start` is the value the plan peeked
+/// ([`crate::keys::paths::peek_path_counter`]). Passing it is what turns "the
+/// keys the approver saw are *probably* the keys that execute" into a guarantee.
+pub(in crate::operations::did_webvh) async fn derive_webvh_keys_block(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    base_path: &str,
+    count: u32,
+    expected_start: Option<u32>,
+) -> Result<Vec<DerivedWebvhKey>, UpdateDidWebvhError> {
     if count == 0 {
         return Ok(vec![]);
     }
-    let mut paths = Vec::with_capacity(count as usize);
-    for _ in 0..count {
-        paths.push(
-            allocate_path(keys_ks, base_path)
-                .await
-                .map_err(|e| UpdateDidWebvhError::Persistence(format!("allocate_path: {e}")))?,
-        );
-    }
+    let paths = allocate_paths(keys_ks, base_path, count, expected_start)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("allocate_paths: {e}")))?;
     derive_webvh_keys_at(keys_ks, seed_store, &paths).await
 }
 

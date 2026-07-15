@@ -1797,8 +1797,61 @@ mod pre_rotation_e2e_tests {
         );
     }
 
-    /// The one that matters. Plan an update, execute it, and assert the update
-    /// keys the chain actually committed are the ones the plan showed.
+    /// The race, closed at the allocation itself.
+    ///
+    /// `derive_webvh_keys_block` allocates a contiguous block in one atomic step,
+    /// and refuses if the counter it is pinned to has moved. This is the guard the
+    /// gate's re-plan cannot provide: it holds even inside a single execution, in
+    /// the window the old two-call allocation left open between deriving the auth
+    /// key and the pre-rotation keys.
+    #[tokio::test]
+    async fn a_moved_counter_refuses_to_derive_the_wrong_keys() {
+        use super::keys::derive_webvh_keys_block;
+
+        let (ts, seed_store) = setup("ctx-race").await;
+        let base_path = crate::contexts::get_context(&ts.contexts_ks, "ctx-race")
+            .await
+            .expect("get_context")
+            .expect("context")
+            .base_path;
+
+        // A caller peeks the counter, intending to derive a block starting there.
+        let pinned = crate::keys::paths::peek_path_counter(&ts.keys_ks, &base_path)
+            .await
+            .unwrap();
+
+        // A concurrent update in the same context allocates first — the exact race
+        // a human-in-the-loop approval window makes real.
+        crate::keys::paths::allocate_path(&ts.keys_ks, &base_path)
+            .await
+            .unwrap();
+
+        // The first caller now tries to derive against its stale pin. It must
+        // refuse: deriving would install a key nobody predicted.
+        let result =
+            derive_webvh_keys_block(&ts.keys_ks, &seed_store, &base_path, 2, Some(pinned)).await;
+        match result {
+            Err(e) => assert!(
+                format!("{e}").contains("moved"),
+                "expected a counter-moved conflict, got: {e}"
+            ),
+            Ok(_) => panic!("a moved counter must refuse, not derive the wrong keys"),
+        }
+
+        // The refusal consumed nothing — re-pinning to the current value works.
+        let now = crate::keys::paths::peek_path_counter(&ts.keys_ks, &base_path)
+            .await
+            .unwrap();
+        assert_eq!(
+            now,
+            pinned + 1,
+            "only the concurrent allocation advanced it"
+        );
+        derive_webvh_keys_block(&ts.keys_ks, &seed_store, &base_path, 2, Some(now))
+            .await
+            .expect("re-pinned derivation succeeds");
+    }
+
     #[tokio::test]
     async fn plan_predicts_the_update_key_that_execution_installs() {
         let (ts, seed_store) = setup("ctx-plan-keys").await;

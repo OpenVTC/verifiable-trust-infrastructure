@@ -50,6 +50,28 @@ pub async fn peek_paths(
     Ok((0..count).map(|i| path_at(base, next + i)).collect())
 }
 
+/// Allocate `count` **contiguous** paths in one atomic step, asserting the block
+/// starts at `expected_start` if given.
+///
+/// This is the allocating counterpart to [`peek_paths`], and it is what makes a
+/// plan/apply split *sound* rather than merely plausible. Allocating the paths
+/// one at a time lets a concurrent allocation split the block, and pinning the
+/// counter in a caller that then allocates separately lets one slip in between
+/// the check and the use. Both put keys nobody approved into the chain. Doing the
+/// whole thing under one lock — the assertion and the block allocation together —
+/// is the only way to promise the approver that the keys they saw are the keys
+/// that execute.
+pub async fn allocate_paths(
+    keys_ks: &KeyspaceHandle,
+    base: &str,
+    count: u32,
+    expected_start: Option<u32>,
+) -> Result<Vec<String>, AppError> {
+    let counter_key = format!("path_counter:{base}");
+    let start = counter::allocate_u32_block(keys_ks, &counter_key, count, expected_start).await?;
+    Ok((0..count).map(|i| path_at(base, start + i)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

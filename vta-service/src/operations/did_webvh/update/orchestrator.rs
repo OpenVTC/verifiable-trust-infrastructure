@@ -13,8 +13,8 @@ use didwebvh_rs::update::{UpdateDIDConfig, update_did};
 
 use super::errors::UpdateDidWebvhError;
 use super::keys::{
-    derive_secret_for_handle, derive_webvh_keys, install_derived_webvh_keys,
-    load_active_update_key, load_pre_rotation_signing_key, peek_webvh_keys,
+    derive_secret_for_handle, install_derived_webvh_keys, load_active_update_key,
+    load_pre_rotation_signing_key, peek_webvh_keys,
 };
 use super::options::{UpdateDidWebvhOptions, UpdateDidWebvhResult};
 use super::plan::UpdatePlan;
@@ -234,36 +234,32 @@ async fn run_update(
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("peek_path_counter: {e}")))?;
     let auth_count: u32 = u32::from(new_doc.is_some() && !pre_rotation_active);
-    let (derived_auth, derived_pre_rotation) = match mode {
-        // Execute allocates, advancing the counter between the two calls: the
-        // auth key takes index n, the pre-rotation keys take n+1, n+2, …
+    let total_keys = auth_count + pre_rotation_count;
+
+    // Plan and execute derive the *same contiguous block* and split it the same
+    // way — that symmetry is what makes the prediction sound.
+    //
+    // Plan peeks the block (read-only); execute allocates it in one atomic step,
+    // pinned to the counter the plan peeked. If anything advanced the counter in
+    // between — a concurrent update in the same context, minutes later, while a
+    // human was deciding — the allocation fails rather than installing keys the
+    // approver never saw. Allocating the auth and pre-rotation keys separately, as
+    // this once did, left a window for exactly that between the two calls.
+    let derived_all = match mode {
+        Mode::Plan => peek_webvh_keys(keys_ks, seed_store, &context.base_path, total_keys).await?,
         Mode::Execute => {
-            let auth = if auth_count > 0 {
-                derive_webvh_keys(keys_ks, seed_store, &context.base_path, 1).await?
-            } else {
-                vec![]
-            };
-            let pre =
-                derive_webvh_keys(keys_ks, seed_store, &context.base_path, pre_rotation_count)
-                    .await?;
-            (auth, pre)
-        }
-        // Plan must predict exactly that. Peeking twice would not: both peeks
-        // read the same un-advanced counter and would hand back overlapping
-        // paths. Peek the whole contiguous block once and split it where the
-        // allocations would have fallen.
-        Mode::Plan => {
-            let all = peek_webvh_keys(
+            super::keys::derive_webvh_keys_block(
                 keys_ks,
                 seed_store,
                 &context.base_path,
-                auth_count + pre_rotation_count,
+                total_keys,
+                Some(path_counter_pin),
             )
-            .await?;
-            let (auth, pre) = all.split_at(auth_count as usize);
-            (auth.to_vec(), pre.to_vec())
+            .await?
         }
     };
+    let (auth_slice, pre_slice) = derived_all.split_at(auth_count as usize);
+    let (derived_auth, derived_pre_rotation) = (auth_slice.to_vec(), pre_slice.to_vec());
 
     // 8. Resolve the signing key.
     //
