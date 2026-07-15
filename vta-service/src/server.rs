@@ -821,6 +821,17 @@ pub async fn run(
         )
         .await?;
 
+        // Reconcile config-declared consent rules on top of the baseline. Unlike
+        // the baseline install, this runs every boot and config is authoritative —
+        // so requiring consent for a task is a config edit and a restart, not a
+        // source edit and a rebuild.
+        crate::policy::reconcile_config_consent_policy(
+            &app_state.policy_ks,
+            &app_state.config.read().await.policy.require_consent,
+            &chrono::Utc::now().to_rfc3339(),
+        )
+        .await?;
+
         // Fail-closed on missing identity (P0.9b). `init_auth` (inside
         // build_app_state) yields `jwt_keys: Some` only when the VTA has a
         // complete, usable signing identity: a configured `vta_did`, its key

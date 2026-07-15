@@ -44,6 +44,43 @@ pub struct PolicyConfig {
     /// missing specs.
     #[serde(default)]
     pub require_payload_schema: bool,
+    /// Consent requirements declared in config, reconciled into the PDP at every
+    /// boot.
+    ///
+    /// This is the operator-facing way to require human approval for a task
+    /// *without editing and recompiling the baseline Rego*. The reference
+    /// implementation has no runtime policy-install surface; before this, turning
+    /// on consent meant editing `policies/default.rego`, rebuilding, and booting
+    /// against an empty policy keyspace. That is a source change to express an
+    /// operational choice.
+    ///
+    /// Each rule here becomes a synthesized `requireConsent` policy, installed
+    /// under a reserved id above the permissive baseline, and **reconciled on
+    /// every boot** — so config is the source of truth: add a rule and restart to
+    /// require consent, remove it and restart to stop. Anything the declarative
+    /// form cannot express is still authored as a full Rego policy; this covers
+    /// the common case, which is "a human must approve *this task*".
+    #[serde(default)]
+    pub require_consent: Vec<RequireConsentRule>,
+}
+
+/// A config-declared "this task needs a human" rule. Synthesized into Rego at
+/// boot; see [`PolicyConfig::require_consent`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RequireConsentRule {
+    /// The Type URI to gate, e.g.
+    /// `https://trusttasks.org/spec/vta/webvh/dids/update/1.0`.
+    pub task_type: String,
+    /// Named approver set (must also appear in [`PolicyConfig::approver_sets`],
+    /// or the requirement fails closed at the gate).
+    pub approver_set: String,
+    /// Distinct approvals required. Default 1.
+    #[serde(default)]
+    pub min_approvals: Option<u32>,
+    /// When true, the requesting device may not count toward the threshold,
+    /// forcing cross-device approval. Default false.
+    #[serde(default)]
+    pub exclude_requester: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

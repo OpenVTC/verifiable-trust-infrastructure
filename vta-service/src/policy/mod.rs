@@ -39,7 +39,7 @@ pub mod input;
 pub mod storage;
 pub mod types;
 
-pub use defaults::install_default_policy;
+pub use defaults::{install_default_policy, reconcile_config_consent_policy};
 pub use engine::{CompiledPolicy, compile, evaluate_decision};
 pub use input::build_policy_input;
 pub use storage::load_active_for_context;
