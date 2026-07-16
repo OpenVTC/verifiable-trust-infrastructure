@@ -723,3 +723,49 @@ Before creating new crates or clients, search the workspace and crates.io to
 check if the functionality already exists. Prefer existing SDKs over custom
 implementations. Before writing any fix, analyze the root cause and explain
 the diagnosis. Fix the cause, not the symptom — no workarounds.
+
+## Cross-service networking & integration discipline
+
+This workspace is the center of a multi-repo mesh (mediator, webvh host, push
+gateway, trust registry, cierge, browser/JS clients). Before changing any code
+that talks to another service — or any wire type — read the ecosystem doc set
+in `../design-docs/` (sibling directory of this repo):
+
+- **`vti-stack-development-guide.md`** — the binding best-practices rules
+  (R-numbers below refer to it). Load it first; paste its pre-merge checklist
+  into PRs that touch cross-service code.
+- **`vti-networking-remediation-plan.md`** — the confirmed-defect backlog
+  (deliverables **D1–D5 and D9** touch this repo).
+- **`vti-architectural-direction.md`** — the seven strategic decisions;
+  justify design-level choices against it.
+
+Rules that bite hardest in this workspace, with their known hotspots:
+
+- **R1.1 — a DIDComm send `Ok` means "accepted locally", not delivered.** The
+  messaging SDK silently drops frames during websocket reconnects. Never log
+  "delivered/sent" off a bare `Ok` (`didcomm_bridge.rs` send_oneway,
+  vtc-service `send_to_member`); delivery-critical messages need an ack or an
+  outbox record.
+- **R1.2 / R1.3 — no `reqwest::Client::new()`, no lock across an await.**
+  Known offenders being remediated: vta-sdk REST transports, `webvh_client`
+  (+ the auth-cache mutex held across its calls), the vault status-list fetch
+  (which must use the foreign-fetch profile — copy
+  `vtc-service/src/recognition/verify.rs`).
+- **R2.1 — Remote-First.** No local commit before the remote effect is durable
+  (or make the flow resumable with an idempotency key). Confirmed violations
+  live in provision-integration resume, `rotate_key`'s swap-then-persist
+  ordering, and step-up's consume-before-verify. Ask "process dies on the next
+  line — then what?" for every mutation.
+- **R3.1–R3.3 / R5.1 — wire types are camelCase, security-relevant bodies
+  `deny_unknown_fields`, every Trust Task URI gets a schema_index entry.** The
+  recurring casing-drift class (#656/#658, `CreateAclBody`) is how an empty
+  `allowed_contexts` silently minted a super-admin. Absence in any
+  scope/config field means the most restrictive interpretation.
+- **R6.2 — no latched status.** `didcomm_websocket_status` reporting
+  "connected" forever after boot is the canonical counterexample; any health
+  flag must be driven by a signal that can go false again.
+
+Note: the `vti-*` sibling directories under `~/devel` are clones of this repo
+on feature branches — this guidance reaches them when merged to `main`; until
+then, agents working in those clones should read this section from the
+canonical checkout or the design-docs directly.
