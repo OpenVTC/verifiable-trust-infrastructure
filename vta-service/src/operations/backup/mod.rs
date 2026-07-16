@@ -745,6 +745,7 @@ pub async fn apply_import(
                         mediator_did: String::new(),
                         mediator_host: None,
                         setup_acl: false,
+                        drain_inbox_on_start: false,
                     });
             if let Some(ref url) = payload.config.mediator_url {
                 messaging.mediator_url = url.clone();

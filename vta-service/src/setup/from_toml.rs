@@ -643,6 +643,7 @@ pub async fn apply_inputs(
             mediator_did: did.clone(),
             mediator_host: mediator_host.clone(),
             setup_acl: *setup_acl,
+            drain_inbox_on_start: false,
         }),
         MessagingInput::CreateMediator {
             context,
@@ -714,6 +715,7 @@ pub async fn apply_inputs(
                 mediator_did,
                 mediator_host: mediator_host.clone(),
                 setup_acl: *setup_acl,
+                drain_inbox_on_start: false,
             })
         }
     };
@@ -2004,6 +2006,7 @@ mod tests {
             mediator_did: did,
             mediator_host,
             setup_acl,
+            drain_inbox_on_start: false,
         };
         assert!(
             cfg.setup_acl,

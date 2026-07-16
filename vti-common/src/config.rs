@@ -84,6 +84,22 @@ pub struct MessagingConfig {
     /// Set `setup_acl = true` during setup to enable. Defaults to `false`.
     #[serde(default)]
     pub setup_acl: bool,
+    /// Drain this DID's mediator inbox over REST at startup, *before* the live
+    /// DIDComm/TSP listener enables live delivery.
+    ///
+    /// Recovery lever for a wedged listener: the mediator enforces one live
+    /// websocket stream per DID, and an undeliverable/poison message queued for
+    /// this DID can stall the live-delivery handshake so the listener never comes
+    /// up (taking DIDComm *and* TSP down, since they share the socket). Because
+    /// REST auth + pickup work even when the websocket stalls, the VTA can fetch
+    /// and clear its own queued messages first: each is best-effort processed,
+    /// and anything that fails to unpack/handle is logged loudly and deleted so
+    /// it can't wedge startup again.
+    ///
+    /// **Default off** — it deletes queued messages that can't be handled, so it
+    /// is opt-in. Turn it on when a mediator-side backlog is blocking boot.
+    #[serde(default)]
+    pub drain_inbox_on_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

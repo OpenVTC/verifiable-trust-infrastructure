@@ -265,6 +265,10 @@ async fn persist_didcomm_enabled(
             // Preserve the existing setup_acl setting if the config already has
             // a messaging section; otherwise default to false.
             setup_acl: cfg.messaging.as_ref().is_some_and(|m| m.setup_acl),
+            drain_inbox_on_start: cfg
+                .messaging
+                .as_ref()
+                .is_some_and(|m| m.drain_inbox_on_start),
         });
         let contents = toml::to_string_pretty(&*cfg)
             .map_err(|e| EnableDidcommError::ConfigPersistence(e.to_string()))?;

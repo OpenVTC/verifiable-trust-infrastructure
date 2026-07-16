@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### vta-service — recover from a wedged mediator listener (drain-on-start + clearer logging)
+
+* The mediator enforces one live-delivery websocket per DID, and the VTA's single
+  DIDComm listener carries **both DIDComm and TSP**. So an undeliverable/poison
+  message queued for the VTA's DID — or an active websocket left by a prior
+  process that wasn't cleanly stopped — can stall the live-delivery handshake and
+  wedge the listener indefinitely, taking both inbound paths down while REST stays
+  up. Diagnosing it previously meant dropping to `RUST_LOG` debug.
+* The `not connected after 30s` warning now explains this in the default log:
+  that auth+websocket likely connected but live-delivery didn't complete, that the
+  one listener carries DIDComm *and* TSP, the two usual causes (a lingering active
+  websocket for this DID, or a queued poison message), that the VTA keeps serving
+  REST and retrying, and how to recover.
+* New opt-in `messaging.drain_inbox_on_start` (default **false**). Because REST
+  auth + message-pickup keep working even when the websocket stalls, when set the
+  VTA drains its own mediator inbox over REST **before** enabling the live
+  listener: it fetches queued messages in bounded batches and deletes them,
+  logging each (and loudly logging + stopping if a batch can't be fetched), so a
+  mediator-side backlog can't keep startup wedged. Off by default because it
+  deletes queued messages; turn it on to recover a stuck boot without touching the
+  mediator.
+
 ### vta-service — per-task delegated capability for cross-context trust tasks
 
 * A delegated webvh update failed with `forbidden: caller has no admin role in

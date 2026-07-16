@@ -624,6 +624,7 @@ impl AppConfig {
                     mediator_did: did,
                     mediator_host: None,
                     setup_acl: false,
+                    drain_inbox_on_start: false,
                 });
             }
             (Ok(url), Err(_)) => {
@@ -632,6 +633,7 @@ impl AppConfig {
                     mediator_did: String::new(),
                     mediator_host: None,
                     setup_acl: false,
+                    drain_inbox_on_start: false,
                 });
                 messaging.mediator_url = url;
             }
@@ -641,6 +643,7 @@ impl AppConfig {
                     mediator_did: String::new(),
                     mediator_host: None,
                     setup_acl: false,
+                    drain_inbox_on_start: false,
                 });
                 messaging.mediator_did = did;
             }

@@ -919,6 +919,7 @@ mod tests {
                 mediator_did: MEDIATOR.into(),
                 mediator_host: None,
                 setup_acl: false,
+                drain_inbox_on_start: false,
             });
         }
         crate::policy::storage::store_policy(

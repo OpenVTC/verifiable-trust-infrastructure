@@ -993,6 +993,32 @@ pub async fn run(
                         AppError::Internal(format!("failed to build DIDComm handler: {e}"))
                     })?;
 
+                    // Recovery: optionally clear this DID's mediator inbox over
+                    // REST *before* enabling live delivery, so a poison /
+                    // undeliverable backlog can't stall the pickup handshake and
+                    // wedge the (shared DIDComm+TSP) listener. Best-effort, and
+                    // off unless `messaging.drain_inbox_on_start` is set.
+                    if messaging_config.drain_inbox_on_start {
+                        match app_state.atm.as_ref() {
+                            Some(atm) => {
+                                let cleared = drain_mediator_inbox(
+                                    atm,
+                                    &messaging_config.mediator_did,
+                                    vta_did,
+                                )
+                                .await;
+                                info!(
+                                    count = cleared,
+                                    mediator = %messaging_config.mediator_did,
+                                    "drain_inbox_on_start: cleared queued mediator messages before going live"
+                                );
+                            }
+                            None => warn!(
+                                "drain_inbox_on_start is set but no ATM is available; skipping drain"
+                            ),
+                        }
+                    }
+
                     // With `tsp` compiled, always register the TSP handler so
                     // inbound TSP frames off the shared socket reach the
                     // trust-task spine — independent of whether TSP is currently
@@ -1026,7 +1052,25 @@ pub async fn run(
                                     if let Err(e) = res {
                                         let mut status = app_state.didcomm_websocket_status.write().await;
                                         *status = DidcommWebsocketStatus::Disconnected;
-                                        warn!("DIDComm listener not connected after 30s: {e}");
+                                        warn!(
+                                            mediator = %messaging_config.mediator_did,
+                                            error = %e,
+                                            "DIDComm listener did not go live within 30s. Auth + \
+                                             websocket most likely connected, but live-delivery \
+                                             (message-pickup) never completed — and this single \
+                                             listener carries BOTH DIDComm and TSP, so both inbound \
+                                             paths are down. The mediator enforces one live-delivery \
+                                             websocket per DID, so the usual causes are: (1) an \
+                                             active websocket for this DID left by a prior process \
+                                             that wasn't cleanly stopped, or (2) an \
+                                             undeliverable/poison message queued for this DID that \
+                                             stalls the pickup handshake. The VTA keeps serving REST \
+                                             and retries in the background. To recover without \
+                                             touching the mediator, set \
+                                             `messaging.drain_inbox_on_start = true` and restart — \
+                                             the VTA will clear this DID's queued messages over REST \
+                                             before going live."
+                                        );
                                     } else {
                                         let mut status = app_state.didcomm_websocket_status.write().await;
                                         *status = DidcommWebsocketStatus::Connected;
@@ -1980,6 +2024,78 @@ fn decode_jwt_key(b64: &str) -> Result<JwtKeys, AppError> {
     let keys = JwtKeys::from_ed25519_bytes(&key_bytes, "VTA")?;
     debug!("JWT signing key decoded successfully");
     Ok(keys)
+}
+
+/// Best-effort REST drain of this DID's mediator inbox, run at startup when
+/// `messaging.drain_inbox_on_start` is set.
+///
+/// The mediator allows one live-delivery websocket per DID, so an
+/// undeliverable/poison message queued for this DID can stall the pickup
+/// handshake and wedge the (shared DIDComm + TSP) listener indefinitely. REST
+/// auth + message-pickup keep working even when the websocket stalls, so this
+/// fetches the queued messages over REST and deletes them, clearing the wedge
+/// before the live listener starts. Each cleared message is logged; a batch that
+/// can't be fetched is logged loudly and stops the drain (so it can't spin).
+/// Returns how many were cleared. Never panics — a failure just skips the drain.
+#[cfg(feature = "didcomm")]
+async fn drain_mediator_inbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> usize {
+    // A mediator-connected profile for REST pickup — added without live delivery
+    // (`false`), so this never opens the websocket that's the thing wedging.
+    let profile = match affinidi_tdk::messaging::profiles::ATMProfile::new(
+        atm,
+        Some("VTA-drain".to_string()),
+        vta_did.to_string(),
+        Some(mediator_did.to_string()),
+    )
+    .await
+    {
+        Ok(p) => match atm.profile_add(&p, false).await {
+            Ok(arc) => arc,
+            Err(e) => {
+                warn!(error = %e, "drain: could not register mediator profile; skipping drain");
+                return 0;
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "drain: could not build mediator profile; skipping drain");
+            return 0;
+        }
+    };
+
+    let mut cleared = 0usize;
+    // Bounded so a mediator that keeps re-queuing can never spin forever.
+    for _round in 0..200 {
+        let batch = match atm
+            .message_pickup()
+            .send_delivery_request(&profile, Some(20), true)
+            .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, cleared, "drain: delivery-request failed; stopping — a queued message may be un-fetchable, inspect the mediator");
+                break;
+            }
+        };
+        if batch.is_empty() {
+            break;
+        }
+        let ids: Vec<String> = batch.iter().map(|(msg, _meta)| msg.id.clone()).collect();
+        for (msg, _meta) in &batch {
+            warn!(id = %msg.id, msg_type = %msg.typ, "drain: clearing queued mediator message");
+        }
+        match atm
+            .message_pickup()
+            .send_messages_received(&profile, &ids, true)
+            .await
+        {
+            Ok(_) => cleared += ids.len(),
+            Err(e) => {
+                warn!(error = %e, cleared, "drain: delete failed; stopping to avoid a loop");
+                break;
+            }
+        }
+    }
+    cleared
 }
 
 /// Spawn a background task that logs DIDComm listener lifecycle events.
