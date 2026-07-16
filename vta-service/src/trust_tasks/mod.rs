@@ -494,26 +494,36 @@ pub(crate) async fn dispatch_trust_task_core(
     // `config.policy.enforcement` is on; when a policy denies (or demands
     // step-up/consent), the task is rejected here and never reaches its handler.
     // A rejected task still flows through the audit tail below.
-    let outcome = match policy_gate::policy_gate(state, auth, &type_uri, &doc).await {
-        Some(reject_outcome) => reject_outcome,
-        None => {
-            if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
-                let mut doc = doc;
-                wire_v0_2::downconvert_request(&mut doc.payload, spec);
-                if let Ok(uri_0_1) = spec.uri_0_1.parse() {
-                    doc.type_uri = uri_0_1;
+    // Filled by the gate only when a consumed consent grant *delegated* a context
+    // the requester's own token lacked. When non-empty, this dispatch — and only
+    // this dispatch — runs under the requester's identity widened to include the
+    // delegated context; the widening is never written back to the session.
+    let mut delegated_contexts: Vec<String> = Vec::new();
+    let outcome =
+        match policy_gate::policy_gate(state, auth, &type_uri, &doc, &mut delegated_contexts).await
+        {
+            Some(reject_outcome) => reject_outcome,
+            None => {
+                let delegated_auth = (!delegated_contexts.is_empty())
+                    .then(|| auth.with_delegated_contexts(&delegated_contexts));
+                let auth = delegated_auth.as_ref().unwrap_or(auth);
+                if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
+                    let mut doc = doc;
+                    wire_v0_2::downconvert_request(&mut doc.payload, spec);
+                    if let Ok(uri_0_1) = spec.uri_0_1.parse() {
+                        doc.type_uri = uri_0_1;
+                    }
+                    let outcome = WIRE_VERSION
+                        .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
+                        .await;
+                    wire_v0_2::upconvert_response(outcome, spec)
+                } else {
+                    WIRE_VERSION
+                        .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
+                        .await
                 }
-                let outcome = WIRE_VERSION
-                    .scope(WireVersion::V0_2, dispatch_typed(state, auth, doc))
-                    .await;
-                wire_v0_2::upconvert_response(outcome, spec)
-            } else {
-                WIRE_VERSION
-                    .scope(WireVersion::V0_1, dispatch_typed(state, auth, doc))
-                    .await
             }
-        }
-    };
+        };
 
     if let Some((action, resource, context_id, detail)) = vault_audit {
         let label = vault_audit_outcome_label(&outcome);

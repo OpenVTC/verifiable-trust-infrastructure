@@ -14,6 +14,7 @@ use trust_tasks_rs::{RejectReason, TrustTask};
 
 use super::TrustTaskOutcome;
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
+use crate::acl::{Role, check_acl_full};
 use crate::auth::AuthClaims;
 use crate::policy::consent;
 use crate::server::AppState;
@@ -55,6 +56,52 @@ fn now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Contexts these approvals may confer on the single execution that consumes the
+/// grant — the per-task delegation.
+///
+/// Empty unless the task was a cross-context proposal (`requester_authorized ==
+/// false`) with a known `subject_context`. When it was, an approver confers that
+/// context **only if they actually administer it**: resolved against live ACL
+/// state, requiring `Role::Admin` *and* context access (super-admin, or the
+/// context/an ancestor in `allowed_contexts`). This is attenuation — an approver
+/// can never delegate authority they do not hold, and set membership alone is
+/// not authority. The context is conferred only if enough such admins approved
+/// to meet the same `min_approvals` threshold the task required; otherwise the
+/// grant carries nothing and execution still fails the requester's own
+/// `require_context`.
+async fn compute_delegated_contexts(
+    state: &AppState,
+    pending: &consent::PendingTaskConsent,
+) -> Vec<String> {
+    if pending.requester_authorized {
+        return Vec::new();
+    }
+    let Some(ctx) = pending.subject_context.as_deref() else {
+        return Vec::new();
+    };
+    let mut context_admins = 0u32;
+    for approver in &pending.approvals {
+        // A DID absent from the ACL (or expired) resolves to an error and
+        // confers nothing — a random approver device cannot grant authority.
+        if let Ok((role, contexts)) = check_acl_full(&state.acl_ks, approver).await {
+            let claims = AuthClaims {
+                did: approver.clone(),
+                role,
+                allowed_contexts: contexts,
+                ..Default::default()
+            };
+            if claims.role == Role::Admin && claims.has_context_access(ctx) {
+                context_admins += 1;
+            }
+        }
+    }
+    if context_admins >= pending.min_approvals {
+        vec![ctx.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 pub(super) async fn handle_decision(
@@ -164,6 +211,11 @@ pub(super) async fn handle_decision(
     };
 
     if updated.approvals.len() as u32 >= updated.min_approvals {
+        // Per-task delegation. When the requester could not self-authorize the
+        // task's context, the approvals confer execution authority for it — but
+        // only if the approvers actually hold admin there. Resolved here, at the
+        // moment the grant is minted, against live ACL state.
+        let delegated_contexts = compute_delegated_contexts(state, &updated).await;
         let grant = consent::TaskConsentGrant {
             digest: updated.digest.clone(),
             requester_did: updated.requester_did.clone(),
@@ -176,6 +228,7 @@ pub(super) async fn handle_decision(
             // minutes wide.
             state_pin: updated.state_pin.clone(),
             guards: updated.guards.clone(),
+            delegated_contexts,
             granted_at: now,
             expires_at: now + GRANT_TTL_SECS,
         };
@@ -202,4 +255,141 @@ pub(super) async fn handle_decision(
             "needed": updated.min_approvals,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{build_signing_test_app_state, seed_acl_entry};
+
+    const OPENVTC: &str = "openvtc";
+    const ADMIN_A: &str = "did:key:zAdminOpenvtc";
+    const ADMIN_OTHER: &str = "did:key:zAdminElsewhere";
+    const READER: &str = "did:key:zReaderOpenvtc";
+    const STRANGER: &str = "did:key:zNotInAcl";
+
+    /// A cross-context pending awaiting `min` approvals for `OPENVTC`.
+    fn cross_context_pending(approvals: Vec<String>, min: u32) -> consent::PendingTaskConsent {
+        consent::PendingTaskConsent {
+            digest: "d".into(),
+            wire_digest: "w".into(),
+            type_uri: "https://…/dids/update/1.0".into(),
+            requester_did: "did:key:zAgent".into(),
+            approver_set: "openvtc-admins".into(),
+            min_approvals: min,
+            exclude_requester: true,
+            challenge: "nonce".into(),
+            approvals,
+            state_pin: None,
+            guards: Default::default(),
+            subject_context: Some(OPENVTC.into()),
+            requester_authorized: false,
+            created_at: 0,
+            expires_at: u64::MAX,
+        }
+    }
+
+    #[tokio::test]
+    async fn context_admin_approval_confers_the_context() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        seed_acl_entry(&state.acl_ks, ADMIN_A, Role::Admin, vec![OPENVTC.into()]).await;
+
+        let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
+        assert_eq!(
+            compute_delegated_contexts(&state, &pending).await,
+            vec![OPENVTC.to_string()],
+            "an admin of the context confers it"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_from_admin_of_another_context_confers_nothing() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        seed_acl_entry(
+            &state.acl_ks,
+            ADMIN_OTHER,
+            Role::Admin,
+            vec!["some-other-ctx".into()],
+        )
+        .await;
+
+        let pending = cross_context_pending(vec![ADMIN_OTHER.into()], 1);
+        assert!(
+            compute_delegated_contexts(&state, &pending)
+                .await
+                .is_empty(),
+            "an admin of a different context cannot delegate this one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reader_of_the_context_confers_nothing() {
+        // Attenuation: holding the context as a non-admin is not authority to delegate.
+        let (state, _dir) = build_signing_test_app_state().await;
+        seed_acl_entry(&state.acl_ks, READER, Role::Reader, vec![OPENVTC.into()]).await;
+
+        let pending = cross_context_pending(vec![READER.into()], 1);
+        assert!(
+            compute_delegated_contexts(&state, &pending)
+                .await
+                .is_empty(),
+            "a reader of the context is not an admin of it"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approver_absent_from_the_acl_confers_nothing() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let pending = cross_context_pending(vec![STRANGER.into()], 1);
+        assert!(
+            compute_delegated_contexts(&state, &pending)
+                .await
+                .is_empty(),
+            "a signer with no ACL entry has no authority to delegate"
+        );
+    }
+
+    #[tokio::test]
+    async fn delegation_requires_meeting_the_threshold_with_context_admins() {
+        // Two approvals required, but only one is a context-admin ⇒ no delegation.
+        let (state, _dir) = build_signing_test_app_state().await;
+        seed_acl_entry(&state.acl_ks, ADMIN_A, Role::Admin, vec![OPENVTC.into()]).await;
+        seed_acl_entry(&state.acl_ks, READER, Role::Reader, vec![OPENVTC.into()]).await;
+
+        let pending = cross_context_pending(vec![ADMIN_A.into(), READER.into()], 2);
+        assert!(
+            compute_delegated_contexts(&state, &pending)
+                .await
+                .is_empty(),
+            "one context-admin cannot meet a threshold of two"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_super_admin_approver_can_confer_any_context() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        // Empty contexts + Admin role = super-admin (unrestricted).
+        seed_acl_entry(&state.acl_ks, ADMIN_A, Role::Admin, vec![]).await;
+
+        let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
+        assert_eq!(
+            compute_delegated_contexts(&state, &pending).await,
+            vec![OPENVTC.to_string()],
+        );
+    }
+
+    #[tokio::test]
+    async fn a_self_authorized_task_never_delegates() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        seed_acl_entry(&state.acl_ks, ADMIN_A, Role::Admin, vec![OPENVTC.into()]).await;
+
+        let mut pending = cross_context_pending(vec![ADMIN_A.into()], 1);
+        pending.requester_authorized = true;
+        assert!(
+            compute_delegated_contexts(&state, &pending)
+                .await
+                .is_empty(),
+            "the requester already held the context — nothing to delegate"
+        );
+    }
 }

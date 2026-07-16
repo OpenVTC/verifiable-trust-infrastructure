@@ -465,6 +465,213 @@ async fn the_requester_cannot_approve_its_own_task() {
     );
 }
 
+/// Per-task delegated capability, end to end: a requester with **no authority
+/// over the DID's context** proposes an update, an admin **of that context**
+/// approves, and the update executes — under authority the approval conferred
+/// for that one task, never standing on the requester's token.
+///
+/// This is the flow the whole redesign exists for: the agent holds nothing, and
+/// authority arrives per-task from someone who actually has it.
+#[tokio::test]
+async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+
+    // Setup: mint the DID in context `default` using a super-admin (the
+    // provisioning identity a deployment already trusts).
+    let admin_token = ctx
+        .mint_token("did:key:z6MkTestRequester", "admin", vec![])
+        .await;
+    let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
+    let keys_before = update_keys_in_force(&ctx, &did).await;
+
+    // The requester is an admin — but of `other-ctx`, NOT `default`. On its own
+    // token it cannot touch this DID.
+    let requester = "did:key:z6MkCrossCtxAgent";
+    let deleg_token = ctx
+        .mint_token(requester, "admin", vec!["other-ctx".into()])
+        .await;
+
+    // The approver is an admin of `default` in the ACL — the authority a
+    // delegation can draw on.
+    let ops = approver(21);
+    vta_service::test_support::seed_acl_entry(
+        &ctx.acl_ks,
+        &ops.did,
+        vta_service::acl::Role::Admin,
+        vec!["default".into()],
+    )
+    .await;
+
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    // 1. The cross-context requester proposes the edit. The dry-run must succeed
+    //    *despite* the requester lacking the context (plan tolerance) so an
+    //    approver can be shown the effects.
+    let update = envelope(
+        WEBVH_UPDATE,
+        requester,
+        &ctx.vta_did,
+        json!({
+            "did": did,
+            "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did, "alsoKnownAs": ["did:example:delegated"] }
+        }),
+    );
+    let (status, rejected) = post(&router, &deleg_token, &update).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a cross-context proposal must require consent, not fail or execute: {rejected}"
+    );
+    let d = &rejected["payload"]["details"];
+    let payload_digest = d["payloadDigest"].as_str().expect("digest");
+    let challenge = d["challenge"].as_str().expect("challenge");
+    assert_eq!(
+        d["consentRequests"].as_array().map(Vec::len),
+        Some(1),
+        "the context admin must be asked: {rejected}"
+    );
+
+    // 2. The context admin approves.
+    let decision = sign_as(
+        &ops,
+        envelope(
+            TASK_CONSENT_DECISION,
+            &ops.did,
+            &ctx.vta_did,
+            json!({ "challenge": challenge, "payloadDigest": payload_digest, "decision": "approve" }),
+        ),
+    );
+    let (status, granted) = post(&router, &deleg_token, &decision).await;
+    assert_eq!(status, StatusCode::OK, "decision accepted: {granted}");
+    assert_eq!(granted["payload"]["status"], "granted", "{granted}");
+
+    // 3. The cross-context requester re-submits — and it now executes, under the
+    //    context authority the approval conferred for this one task.
+    let resubmit = envelope(
+        WEBVH_UPDATE,
+        requester,
+        &ctx.vta_did,
+        update["payload"].clone(),
+    );
+    let (status, executed) = post(&router, &deleg_token, &resubmit).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the delegated task must execute for a requester who never held the context: {executed}"
+    );
+
+    // 4. It really ran: a webvh update rotates the update key, so the log moved.
+    let keys_after = update_keys_in_force(&ctx, &did).await;
+    assert_ne!(
+        keys_after, keys_before,
+        "the delegated update must have committed to the log"
+    );
+}
+
+/// The dual: an approval from someone who is a set member but is **not** an admin
+/// of the DID's context confers nothing. The decision is accepted (they are in
+/// the set), but the re-submit cannot execute — authority can only be delegated
+/// by someone who holds it.
+#[tokio::test]
+async fn an_approval_from_a_non_context_admin_confers_no_execution() {
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        provisionable_vta: true,
+        ..Default::default()
+    })
+    .await;
+
+    let admin_token = ctx
+        .mint_token("did:key:z6MkTestRequester", "admin", vec![])
+        .await;
+    let (did, _scid) = create_did(&router, &ctx, &admin_token).await;
+    let keys_before = update_keys_in_force(&ctx, &did).await;
+
+    let requester = "did:key:z6MkCrossCtxAgent";
+    let deleg_token = ctx
+        .mint_token(requester, "admin", vec!["other-ctx".into()])
+        .await;
+
+    // The approver administers a DIFFERENT context, not `default`.
+    let ops = approver(23);
+    vta_service::test_support::seed_acl_entry(
+        &ctx.acl_ks,
+        &ops.did,
+        vta_service::acl::Role::Admin,
+        vec!["some-other-ctx".into()],
+    )
+    .await;
+
+    {
+        let mut cfg = ctx.config.write().await;
+        cfg.policy.enforcement = true;
+        cfg.policy
+            .approver_sets
+            .insert("operators".into(), vec![ops.did.clone()]);
+    }
+    install_policy(&ctx, REQUIRE_CONSENT).await;
+
+    let update = envelope(
+        WEBVH_UPDATE,
+        requester,
+        &ctx.vta_did,
+        json!({
+            "did": did,
+            "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did, "alsoKnownAs": ["did:example:nope"] }
+        }),
+    );
+    let (_, rejected) = post(&router, &deleg_token, &update).await;
+    let d = &rejected["payload"]["details"];
+
+    // The approver is in the set, so the decision itself is accepted and a grant
+    // is minted — but it carries no delegated context.
+    let decision = sign_as(
+        &ops,
+        envelope(
+            TASK_CONSENT_DECISION,
+            &ops.did,
+            &ctx.vta_did,
+            json!({ "challenge": d["challenge"], "payloadDigest": d["payloadDigest"], "decision": "approve" }),
+        ),
+    );
+    let (status, _granted) = post(&router, &deleg_token, &decision).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a set member's decision is accepted"
+    );
+
+    // The re-submit must NOT execute: the grant conferred no authority over
+    // `default`, and the requester never held it.
+    let resubmit = envelope(
+        WEBVH_UPDATE,
+        requester,
+        &ctx.vta_did,
+        update["payload"].clone(),
+    );
+    let (status, refused) = post(&router, &deleg_token, &resubmit).await;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "an approval from a non-context-admin must not confer execution: {refused}"
+    );
+    assert_eq!(
+        update_keys_in_force(&ctx, &did).await,
+        keys_before,
+        "nothing may have committed to the log"
+    );
+}
+
 // ─── setup ───────────────────────────────────────────────────────────────────
 
 async fn install_policy(ctx: &TestAppContext, rego: &str) {

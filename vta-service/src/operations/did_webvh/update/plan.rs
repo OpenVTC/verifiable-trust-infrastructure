@@ -59,6 +59,15 @@ pub struct UpdatePlan {
     /// value before committing and refuses if it moved, which is what makes the
     /// keys an approver was shown the keys that actually execute.
     pub path_counter_pin: u32,
+
+    /// The context the updated DID belongs to (`record.context_id`). The consent
+    /// gate needs it to know which context an approver must administer to
+    /// authorize this update via delegation.
+    pub subject_context: String,
+    /// Whether the requester's own token authorized `subject_context`. `false`
+    /// means the update is a cross-context proposal — executable only via a
+    /// consented delegation from an approver who holds that context.
+    pub requester_authorized: bool,
 }
 
 impl UpdatePlan {
@@ -194,6 +203,8 @@ mod tests {
             new_next_key_hashes: vec!["QmHashA".into(), "QmHashB".into()],
             base_path: "m/1'/2'".into(),
             path_counter_pin: 7,
+            subject_context: "ctx-test".into(),
+            requester_authorized: true,
         }
     }
 

@@ -213,6 +213,32 @@ impl AuthClaims {
                 .any(|allowed| crate::context_path::is_ancestor_or_self(allowed, context_id))
     }
 
+    /// Clone these claims with `extra` contexts merged into `allowed_contexts`.
+    ///
+    /// This is how a **consented per-task delegation** is realized: an approver
+    /// who holds admin in a context authorizes one specific task, and the
+    /// executor runs *that one dispatch* under the requester's identity widened
+    /// to include the delegated context. The widening lives only for the single
+    /// consented, payload-bound, single-use execution — it is never persisted
+    /// onto the session or the JWT, so the agent accrues no standing authority.
+    ///
+    /// Never *widens* a super-admin (empty `allowed_contexts` already means "all
+    /// contexts", so there is nothing to add and replacing the empty list would
+    /// wrongly *narrow* it) and is a no-op when `extra` is empty. Duplicates are
+    /// dropped so repeated delegation can't bloat the list.
+    pub fn with_delegated_contexts(&self, extra: &[String]) -> Self {
+        let mut claims = self.clone();
+        if extra.is_empty() || claims.is_super_admin() {
+            return claims;
+        }
+        for ctx in extra {
+            if !claims.allowed_contexts.iter().any(|c| c == ctx) {
+                claims.allowed_contexts.push(ctx.clone());
+            }
+        }
+        claims
+    }
+
     /// Check that the caller has access to the given context.
     ///
     /// Admins with an empty `allowed_contexts` list have unrestricted access.
@@ -486,6 +512,61 @@ mod tests {
 
         assert!(claims.require_context("acme/eng/team-a").is_ok());
         assert!(claims.require_context("acme/ops").is_err());
+    }
+
+    #[test]
+    fn with_delegated_contexts_widens_a_scoped_admin_for_one_call() {
+        let base = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: vec!["ctx-a".into()],
+            ..Default::default()
+        };
+        // Before: no access to the delegated context.
+        assert!(base.require_context("openvtc").is_err());
+
+        let widened = base.with_delegated_contexts(&["openvtc".into()]);
+        assert!(widened.require_context("openvtc").is_ok());
+        assert!(
+            widened.require_context("ctx-a").is_ok(),
+            "keeps its own context"
+        );
+        // The delegation is a fresh value — the caller's own claims are untouched.
+        assert!(base.require_context("openvtc").is_err());
+    }
+
+    #[test]
+    fn with_delegated_contexts_is_a_noop_for_empty_or_super_admin() {
+        let scoped = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: vec!["ctx-a".into()],
+            ..Default::default()
+        };
+        // Empty delegation changes nothing.
+        assert_eq!(
+            scoped.with_delegated_contexts(&[]).allowed_contexts,
+            scoped.allowed_contexts
+        );
+        // A super-admin (empty list = all contexts) must never be narrowed to a
+        // scoped list by a delegation.
+        let sa = AuthClaims {
+            role: Role::Admin,
+            ..Default::default()
+        };
+        assert!(sa.is_super_admin());
+        let after = sa.with_delegated_contexts(&["openvtc".into()]);
+        assert!(after.is_super_admin(), "super-admin stays unrestricted");
+        assert!(after.allowed_contexts.is_empty());
+    }
+
+    #[test]
+    fn with_delegated_contexts_dedups() {
+        let base = AuthClaims {
+            role: Role::Admin,
+            allowed_contexts: vec!["ctx-a".into()],
+            ..Default::default()
+        };
+        let widened = base.with_delegated_contexts(&["ctx-a".into(), "openvtc".into()]);
+        assert_eq!(widened.allowed_contexts, vec!["ctx-a", "openvtc"]);
     }
 
     #[test]

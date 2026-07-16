@@ -213,6 +213,7 @@ mod tests {
             &auth,
             vta_sdk::trust_tasks::TASK_VTA_CREDENTIALS_ISSUE_0_1,
             &doc,
+            &mut Vec::new(),
         )
         .await
         .expect("the credentials/issue floor must reject an AAL1 caller at the gate");

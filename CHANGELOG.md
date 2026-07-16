@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### vta-service — per-task delegated capability for cross-context trust tasks
+
+* A delegated webvh update failed with `forbidden: caller has no admin role in
+  context` whenever the requester wasn't an admin of the DID's context. The only
+  ways to make it pass were to grant the (agent) requester standing admin in
+  every context it touches, or make it a super-admin — both put durable, broad
+  authority on a long-lived credential. Authority was a standing property of the
+  requester, checked at both plan and execute; consent was collected but never
+  load-bearing (the approver's authority was never consulted).
+* Authority can now flow **per task** from an approver who holds it. When a
+  requester can't self-authorize the DID's context, the plan dry-run still runs
+  (its only output is the public DID-document diff, so an approver can be shown
+  the effects), and the task is executable only via consent. At the approval
+  threshold, `task-consent/decision` resolves each approver against the live ACL
+  and — attenuation only — confers the DID's context **iff** enough approvers are
+  admins of it (`Role::Admin` + context access; set membership alone is not
+  authority). The consumed grant then widens the requester's `AuthClaims` for
+  that single dispatch via `AuthClaims::with_delegated_contexts`; the widening is
+  payload-bound, state-pinned, single-use, short-lived, and never written back to
+  the session. The agent holds no standing context authority.
+* An approval from a set member who is *not* an admin of the context confers
+  nothing, so the re-submit still can't execute. Same-context consent is
+  unchanged. New fields carry the delegation through: `UpdatePlan` /
+  `TaskPlan.{subject_context, requester_authorized}`,
+  `PendingTaskConsent.{subject_context, requester_authorized}`, and
+  `TaskConsentGrant.delegated_contexts` (all `#[serde(default)]`, so older stored
+  pendings/grants read as non-delegated). Covered by unit tests for the
+  attenuation rule and two `mocks-nothing` e2e flows (a context-admin approval
+  lets a cross-context requester execute; a non-context-admin approval does not).
+
 ### vtc-service (0.11.5) — foreign status-list fetch delegates to the shared SSRF chokepoint (D2)
 
 * The recognise/present path's SSRF guard, hardened HTTP client, and

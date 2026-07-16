@@ -33,6 +33,25 @@ pub struct TaskPlan {
     /// one — and putting them on the wire would only invite a consent surface to
     /// render a number it cannot interpret.
     pub guards: Guards,
+    /// The context whose admin authority this task acts under, when the executor
+    /// can determine it (webvh update: the DID's context). Lets the consent gate
+    /// require an approver who administers it before a delegation can confer
+    /// execution authority. `None` for tasks with no context-scoped subject.
+    pub subject_context: Option<String>,
+    /// Whether the requester's own authority already covered the task. When
+    /// `false`, the task is a cross-context proposal, executable only via a
+    /// consented delegation from a context-admin approver.
+    ///
+    /// The serde default is `true` so wire/stored plans missing the field (and
+    /// tasks with no delegation-aware planner) are never mistaken for delegated
+    /// proposals. Do not read the derived `Default` (`false`) as a delegation
+    /// signal — always extract via the `Option<TaskPlan>`-aware path in the gate.
+    #[serde(default = "default_true")]
+    pub requester_authorized: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Preconditions the executor checks for itself before committing.
@@ -111,6 +130,8 @@ async fn plan_webvh_update(
                 counter: plan.path_counter_pin,
             }),
         },
+        subject_context: Some(plan.subject_context.clone()),
+        requester_authorized: plan.requester_authorized,
     })
 }
 
@@ -196,6 +217,8 @@ mod tests {
             effects: vec![],
             state_pin: Some(pin(pin_v)),
             guards: guards(counter),
+            subject_context: None,
+            requester_authorized: true,
         }
     }
 

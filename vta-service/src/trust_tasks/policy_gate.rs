@@ -95,6 +95,10 @@ pub(super) async fn policy_gate(
     auth: &AuthClaims,
     type_uri: &str,
     doc: &TrustTask<Value>,
+    // Out: contexts a consumed delegated grant confers on this execution (see
+    // `consent_gate`). Only the consent path ever writes it; every other gate
+    // outcome leaves it empty.
+    delegated_out: &mut Vec<String>,
 ) -> Option<TrustTaskOutcome> {
     // Ceremony tasks are the mechanism, not a gated operation — never gate them.
     if is_ceremony_task(type_uri) {
@@ -157,7 +161,15 @@ pub(super) async fn policy_gate(
             }
         }
         Disposition::RequireConsent => {
-            consent_gate(state, auth, doc, type_uri, decision.require_consent).await
+            consent_gate(
+                state,
+                auth,
+                doc,
+                type_uri,
+                decision.require_consent,
+                delegated_out,
+            )
+            .await
         }
     }
 }
@@ -181,6 +193,13 @@ async fn consent_gate(
     doc: &TrustTask<Value>,
     type_uri: &str,
     require: Option<RequireConsent>,
+    // Out: filled with the contexts a consumed *delegated* grant confers on this
+    // one execution, so the caller can widen `auth` for the dispatch. Left empty
+    // for an ordinary same-context consent (the requester already held the
+    // context). The bodies below never widen authority themselves — they only
+    // report what the approvers conferred, keeping the augmentation on one
+    // explicit, auditable path.
+    delegated_out: &mut Vec<String>,
 ) -> Option<TrustTaskOutcome> {
     // A requireConsent naming no approver set can never be satisfied — fail closed.
     let Some(require) = require else {
@@ -263,6 +282,10 @@ async fn consent_gate(
                     },
                 ));
             }
+            // The grant is authorized and the world still matches. If it carries
+            // a delegation (approvers conferred a context the requester lacked),
+            // hand it to the caller to widen `auth` for this one dispatch.
+            *delegated_out = grant.delegated_contexts;
             return None;
         }
         Ok(None) => {}
@@ -276,9 +299,17 @@ async fn consent_gate(
         Ok(p) => p,
         Err(e) => return Some(app_error_to_reject(doc, e)),
     };
-    let (effects, state_pin, guards) = match &plan {
-        Some(p) => (p.effects.clone(), p.state_pin.clone(), p.guards.clone()),
-        None => (vec![], None, Default::default()),
+    let (effects, state_pin, guards, subject_context, requester_authorized) = match &plan {
+        Some(p) => (
+            p.effects.clone(),
+            p.state_pin.clone(),
+            p.guards.clone(),
+            p.subject_context.clone(),
+            p.requester_authorized,
+        ),
+        // No planner ⇒ no delegation concept: treat as self-authorized so the
+        // approver-authority path below never engages for an unplanned task.
+        None => (vec![], None, Default::default(), None, true),
     };
 
     let min_approvals = require.min_approvals.max(1);
@@ -314,6 +345,8 @@ async fn consent_gate(
                 now,
                 &state_pin,
                 &guards,
+                &subject_context,
+                requester_authorized,
             )
             .await
             {
@@ -332,6 +365,8 @@ async fn consent_gate(
                 now,
                 &state_pin,
                 &guards,
+                &subject_context,
+                requester_authorized,
             )
             .await
             {
@@ -470,6 +505,8 @@ async fn mint_pending(
     now: u64,
     state_pin: &Option<crate::policy::effects::StatePin>,
     guards: &super::planner::Guards,
+    subject_context: &Option<String>,
+    requester_authorized: bool,
 ) -> Result<consent::PendingTaskConsent, vti_common::error::AppError> {
     // 256 bits of entropy. It is both the replay nonce and the digest salt, so
     // guessing it would both replay a decision and unmask the payload.
@@ -489,6 +526,8 @@ async fn mint_pending(
         approvals: vec![],
         state_pin: state_pin.clone(),
         guards: guards.clone(),
+        subject_context: subject_context.clone(),
+        requester_authorized,
         created_at: now,
         expires_at: now + CONSENT_PENDING_TTL_SECS,
     };
@@ -547,23 +586,39 @@ mod tests {
         let d = doc(UNGATED_URI);
 
         // Disabled: proceed even with an empty policy set.
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_none()
+        );
 
         // Enabled + empty set → default-deny.
         state.config.write().await.policy.enforcement = true;
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some()
+        );
 
         // Deny policy → reject.
         crate::policy::storage::store_policy(&state.policy_ks, &module("deny", 0, DENY_ALL))
             .await
             .unwrap();
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some()
+        );
 
         // Higher-priority allow overrides → proceed.
         crate::policy::storage::store_policy(&state.policy_ks, &module("allow", 10, ALLOW_ALL))
             .await
             .unwrap();
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -583,14 +638,18 @@ mod tests {
         // aal1 session → policy demands step-up → rejected (with approve-request).
         auth.acr = "aal1".into();
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some(),
             "aal1 session must be sent to step-up"
         );
 
         // aal2 session → requirement already satisfied → proceed.
         auth.acr = "aal2".into();
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_none(),
             "aal2 session must pass the step-up gate"
         );
     }
@@ -630,7 +689,7 @@ mod tests {
         .await
         .unwrap();
 
-        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d)
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
             .await
             .expect("first submit is rejected pending consent");
         let body: Value = serde_json::from_slice(&outcome.body).expect("reject body");
@@ -735,7 +794,9 @@ mod tests {
         .await
         .unwrap();
 
-        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d).await.unwrap();
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&outcome.body).unwrap();
         let req = &body.pointer("/payload/details/consentRequests").unwrap()[0];
 
@@ -769,7 +830,9 @@ mod tests {
         .await
         .unwrap();
 
-        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d).await.unwrap();
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&outcome.body).unwrap();
         let req = &body.pointer("/payload/details/consentRequests").unwrap()[0];
         assert!(req["payload"].get("origin").is_none());
@@ -798,7 +861,9 @@ mod tests {
         .await
         .unwrap();
 
-        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d).await.unwrap();
+        let outcome = policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+            .await
+            .unwrap();
         let body: Value = serde_json::from_slice(&outcome.body).unwrap();
         let requests = body
             .pointer("/payload/details/consentRequests")
@@ -864,7 +929,11 @@ mod tests {
         .unwrap();
 
         // First submit raises the question — the approver is asked.
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some()
+        );
         let pushed = state.mediator_registry.take_outbound(MEDIATOR).await;
         assert_eq!(pushed.len(), 1, "the approver is asked exactly once");
         assert_eq!(
@@ -881,7 +950,11 @@ mod tests {
 
         // Re-submitting the identical payload re-asks the same question, and must
         // not ring the phone again.
-        assert!(policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some());
+        assert!(
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some()
+        );
         assert!(
             state
                 .mediator_registry
@@ -934,6 +1007,7 @@ mod tests {
             approvers: vec!["did:key:zApprover".into()],
             state_pin: None,
             guards: Default::default(),
+            delegated_contexts: vec![],
             granted_at: now,
             expires_at: now + 600,
         };
@@ -950,7 +1024,9 @@ mod tests {
         }
 
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some(),
             "a grant signed by a now-revoked approver must NOT carry the task through"
         );
     }
@@ -989,6 +1065,7 @@ mod tests {
                 approvers: vec!["did:key:zApprover".into()],
                 state_pin: None,
                 guards: Default::default(),
+                delegated_contexts: vec![],
                 granted_at: now,
                 expires_at: now + 600,
             },
@@ -997,7 +1074,9 @@ mod tests {
         .unwrap();
 
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_none(),
             "an approver still in the set must carry the task through"
         );
     }
@@ -1038,6 +1117,7 @@ mod tests {
                 approvers: vec!["did:key:zA".into()],
                 state_pin: None,
                 guards: Default::default(),
+                delegated_contexts: vec![],
                 granted_at: now,
                 expires_at: now + 600,
             },
@@ -1046,7 +1126,9 @@ mod tests {
         .unwrap();
 
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some(),
             "a single approval must not satisfy a threshold that has since risen to two"
         );
     }
@@ -1096,6 +1178,7 @@ mod tests {
                 requester_did: auth.did.clone(),
                 type_uri: UNGATED_URI.into(),
                 approvers: vec!["did:key:zApprover".into()],
+                delegated_contexts: vec![],
                 granted_at: now,
                 expires_at: now + 600,
             },
@@ -1105,15 +1188,21 @@ mod tests {
 
         // The substituted task must NOT ride that grant through.
         assert!(
-            policy_gate(&state, &auth, OTHER_UNGATED_URI, &substituted)
-                .await
-                .is_some(),
+            policy_gate(
+                &state,
+                &auth,
+                OTHER_UNGATED_URI,
+                &substituted,
+                &mut Vec::new()
+            )
+            .await
+            .is_some(),
             "a grant for a different task URI must not authorize this one"
         );
 
         // …while the task actually approved still passes.
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &approved)
+            policy_gate(&state, &auth, UNGATED_URI, &approved, &mut Vec::new())
                 .await
                 .is_none(),
             "the approved task must still consume its own grant"
@@ -1143,7 +1232,9 @@ mod tests {
 
         // First submit → consent required (rejected) + a pending is recorded.
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some(),
             "first submit must be rejected pending consent"
         );
         let digest = consent::payload_digest(UNGATED_URI, &d.payload).unwrap();
@@ -1166,6 +1257,7 @@ mod tests {
                 requester_did: auth.did.clone(),
                 type_uri: UNGATED_URI.into(),
                 approvers: vec!["did:key:zApprover".into()],
+                delegated_contexts: vec![],
                 granted_at: now,
                 expires_at: now + 600,
             },
@@ -1175,12 +1267,16 @@ mod tests {
 
         // Re-submit → grant consumed → proceed.
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_none(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_none(),
             "a valid grant must let the re-submit proceed"
         );
         // Grant was single-use → the next submit needs consent again.
         assert!(
-            policy_gate(&state, &auth, UNGATED_URI, &d).await.is_some(),
+            policy_gate(&state, &auth, UNGATED_URI, &d, &mut Vec::new())
+                .await
+                .is_some(),
             "grant is single-use; a further submit re-requires consent"
         );
     }

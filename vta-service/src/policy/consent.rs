@@ -123,8 +123,23 @@ pub struct PendingTaskConsent {
     /// Executor-internal preconditions to re-assert at execution.
     #[serde(default)]
     pub guards: crate::trust_tasks::planner::Guards,
+    /// The context whose admin authority the task acts under (webvh update: the
+    /// DID's context), when the planner could determine it. An approver must
+    /// administer this context for their approval to confer execution authority.
+    #[serde(default)]
+    pub subject_context: Option<String>,
+    /// Whether the requester's own token authorized `subject_context`. `false`
+    /// marks a cross-context proposal whose execution requires a delegation from
+    /// a context-admin approver. Defaults `true` so pre-feature pendings (and
+    /// tasks with no context subject) are never treated as delegated.
+    #[serde(default = "default_true")]
+    pub requester_authorized: bool,
     pub created_at: u64,
     pub expires_at: u64,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// A completed authorization a re-submitted task consumes (single-use).
@@ -141,6 +156,14 @@ pub struct TaskConsentGrant {
     pub state_pin: Option<crate::policy::effects::StatePin>,
     #[serde(default)]
     pub guards: crate::trust_tasks::planner::Guards,
+    /// Contexts this grant confers admin authority in for the single execution
+    /// that consumes it. Empty for an ordinary same-context consent (the
+    /// requester already held the context); populated only when the approvals
+    /// came from admins of a context the requester lacked — the per-task
+    /// delegation. Consumed by widening the executing `AuthClaims` via
+    /// [`crate::auth::AuthClaims::with_delegated_contexts`], never persisted.
+    #[serde(default)]
+    pub delegated_contexts: Vec<String>,
     pub granted_at: u64,
     pub expires_at: u64,
 }
@@ -461,6 +484,8 @@ mod tests {
             exclude_requester: true,
             challenge: "nonce123".into(),
             approvals: vec![],
+            subject_context: None,
+            requester_authorized: true,
             created_at: 100,
             expires_at: 1000,
         }
@@ -543,6 +568,7 @@ mod tests {
             requester_did: "did:key:zReq".into(),
             type_uri: T_UPDATE.into(),
             approvers: vec!["did:key:zA".into()],
+            delegated_contexts: vec![],
             granted_at: 100,
             expires_at,
         }

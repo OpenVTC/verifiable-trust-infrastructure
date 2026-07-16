@@ -139,14 +139,31 @@ async fn run_update(
 
     // 2. Auth gate. Forbidden + NotFound both surface as 404 at the
     //    wire boundary — see `From<UpdateDidWebvhError> for AppError`.
+    //
+    // `require_admin` always holds: only an admin (of *some* context) may
+    // propose an update at all. `require_context` is the per-DID authority. In
+    // Execute mode it is mandatory — but note the caller may have widened `auth`
+    // for this one dispatch via a consented delegation
+    // (`AuthClaims::with_delegated_contexts`), so a requester who lacked the
+    // context on their own token passes here iff an approver conferred it.
+    //
+    // In Plan mode the check is *recorded, not enforced*: the plan is a
+    // read-only dry-run whose only outputs are the DID-document diff (public —
+    // webvh logs resolve for anyone) and a reserving-nothing key-counter peek.
+    // Letting it run for a context the requester can't self-authorize is what
+    // lets the consent gate show an approver the effects of a delegated update
+    // *before* anyone holds the authority to commit it. Whether the requester
+    // self-authorized rides out on `UpdatePlan.requester_authorized` so the gate
+    // knows to demand a context-admin approver.
     auth.require_admin()
         .map_err(|e| UpdateDidWebvhError::Forbidden(format!("admin required: {e}")))?;
-    auth.require_context(&record.context_id).map_err(|_| {
-        UpdateDidWebvhError::Forbidden(format!(
+    let requester_authorized = auth.has_context_access(&record.context_id);
+    if mode == Mode::Execute && !requester_authorized {
+        return Err(UpdateDidWebvhError::Forbidden(format!(
             "caller has no admin role in context `{}`",
             record.context_id
-        ))
-    })?;
+        )));
+    }
 
     // 3. Validate caller-supplied inputs (cheap; do before key derivation).
     let new_doc = match opts.document {
@@ -438,6 +455,8 @@ async fn run_update(
                 .collect(),
             base_path: context.base_path.clone(),
             path_counter_pin,
+            subject_context: record.context_id.clone(),
+            requester_authorized,
         }));
     }
 
