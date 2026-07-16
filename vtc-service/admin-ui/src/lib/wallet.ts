@@ -32,6 +32,21 @@ export interface VtaWalletLoginResult {
   holderDid: string;
 }
 
+/** Canonical `secretKind` wire values — camelCase, mirroring
+ *  `vault/_shared/0.2/vault-entry.schema.json#/$defs/SecretKind`. The
+ *  maintainer schema-validates this enum before dispatch, so a
+ *  kebab-case value is a payload rejection, not a no-op filter. Keep
+ *  this the single source of truth for outbound `secretKind` filters. */
+export type SecretKind =
+  | "password"
+  | "passkey"
+  | "oauthTokens"
+  | "didSelfIssued"
+  | "didcommPeer"
+  | "bearerToken"
+  | "sshKey"
+  | "custom";
+
 /** A `did-self-issued` vault entry pinned to this RP, eligible for
  *  VTA-proxied SIOP login. */
 export interface ProxyVaultEntry {
@@ -66,7 +81,7 @@ interface VtaWalletProvider {
   vaultList?(params: {
     targetDid?: string;
     targetOriginPrefix?: string;
-    secretKind?: string;
+    secretKind?: SecretKind;
   }): Promise<VaultListWireResult>;
   proxyLogin?(params: {
     entryId: string;
@@ -156,7 +171,7 @@ export async function listProxyCandidates(): Promise<ProxyVaultEntry[]> {
   }
   const wire = await window.vtaWallet!.vaultList!({
     targetDid: await rpDid(),
-    secretKind: "did-self-issued",
+    secretKind: "didSelfIssued",
   });
   return wire.entries.filter((e) => Boolean(e.principalDid));
 }
