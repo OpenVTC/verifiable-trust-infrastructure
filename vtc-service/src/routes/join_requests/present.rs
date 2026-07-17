@@ -182,9 +182,12 @@ pub struct SendQueryResponse {
     /// The `credential-exchange/query` body to deliver to the holder.
     #[schema(value_type = Object)]
     pub query: QueryBody,
-    /// Whether the VTC pushed the query to the holder over DIDComm. `false` when
-    /// no mediator is configured or the push failed — the caller can still relay
-    /// the returned [`query`](Self::query) out-of-band (relayer ≠ holder).
+    /// Whether the VTC **accepted the query for guaranteed delivery** (durably
+    /// queued to the outbox; the drain loop sends + retries it) — not a
+    /// confirmation that it has been received. `false` when no mediator is
+    /// configured or the enqueue failed — the caller can still relay the returned
+    /// [`query`](Self::query) out-of-band (relayer ≠ holder). The wire field name
+    /// stays `delivered` (camelCase, `deny_unknown_fields`) for API stability.
     pub delivered: bool,
 }
 
@@ -221,7 +224,7 @@ pub async fn send_query(
     let delivered = match push_credential_query(&state, &body.holder_did, &thread_id, &query).await
     {
         Ok(()) => {
-            info!(holder = %body.holder_did, thread = %thread_id, "pushed credential query over DIDComm");
+            info!(holder = %body.holder_did, thread = %thread_id, "queued credential query for guaranteed delivery");
             true
         }
         Err(e) => {

@@ -219,10 +219,13 @@ impl AppState {
     /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
     /// reply path does), so outbound never opens a competing socket.
     ///
-    /// `Err` when the listener isn't running yet **or** the send fails — the
-    /// error is surfaced honestly (never swallowed), so a caller that must know
-    /// whether the frame reached the mediator can act on it. Packs authcrypt
-    /// with the VTC's keys and hands off to the delivery-layer
+    /// `Ok(())` once the message is **durably queued** for guaranteed delivery
+    /// (not yet sent) — the delivery-layer drain loop owns sending + retrying it
+    /// until it lands (up to `deliver_by`). `Err` only when the listener isn't
+    /// running yet **or** the enqueue itself fails — surfaced honestly (never
+    /// swallowed), so a caller that must know whether the frame was accepted for
+    /// delivery can act on it. Packs authcrypt with the VTC's keys and hands off
+    /// to the delivery-layer
     /// [`MessagingService`](affinidi_messaging_delivery::MessagingService) over
     /// the one shared mediator websocket.
     pub async fn send_to_member(
@@ -233,6 +236,8 @@ impl AppState {
         let messaging = self.didcomm.get().ok_or_else(|| {
             AppError::Internal("VTC messaging not running — cannot send to member".into())
         })?;
+        // Capture the id before packing — `pack_encrypted` borrows `message`.
+        let idempotency_key = message.id.clone();
         let (packed, _) = messaging
             .atm
             .pack_encrypted(
@@ -250,7 +255,11 @@ impl AppState {
             .send(
                 recipient_did,
                 packed.into_bytes(),
-                affinidi_messaging_delivery::Delivery::BestEffort,
+                affinidi_messaging_delivery::Delivery::Guaranteed {
+                    idempotency_key: Some(idempotency_key),
+                    ordering_key: None,
+                    deliver_by: std::time::Duration::from_secs(24 * 3600),
+                },
             )
             .await
             .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
