@@ -256,6 +256,7 @@ impl TestVtcBuilder {
                 mediator_did: mediator_did.clone(),
                 mediator_host: None,
                 setup_acl: false,
+                drain_inbox_on_start: false,
             });
         }
 
