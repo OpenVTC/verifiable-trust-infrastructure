@@ -40,6 +40,11 @@ pub const CONSUMED_INVITATIONS: &str = "consumed_invitations";
 /// recording its revocation-list slot, subject, granted role, and
 /// revocation state — drives the list + revoke operator surfaces.
 pub const INVITATIONS: &str = "invitations";
+/// Durable delivery-layer outbox (D2 P1a): backs
+/// [`vti_common::outbox_store::VtiOutboxStore`] for `MessagingService`
+/// `Guaranteed` sends so delivery-critical work survives a restart.
+/// Ephemeral, re-driven from live state — excluded from backup.
+pub const OUTBOX: &str = "outbox";
 
 /// Every keyspace the daemon opens, in `AppState` field order. The
 /// setup wizard pre-creates exactly this set; `server::run` opens
@@ -68,6 +73,7 @@ pub const ALL: &[&str] = &[
     AUDIT_KEY,
     CONSUMED_INVITATIONS,
     INVITATIONS,
+    OUTBOX,
 ];
 
 /// Keyspaces captured by `POST /v1/backup/export` (P3.9). These hold
@@ -115,6 +121,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     REGISTRY_RECORDS,
     SYNC_QUEUE,
     SYNC_CURSOR,
+    // Delivery-layer outbox — re-driven from live state; a restore must not
+    // resurrect stale in-flight sends.
+    OUTBOX,
 ];
 
 #[cfg(test)]
@@ -126,7 +135,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 23, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 24, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

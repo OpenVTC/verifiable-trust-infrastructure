@@ -95,6 +95,10 @@ affinidi-messaging-didcomm-service = "0.3"
 # over the MessageTransport contract — the D1 delivery layer the VTI cut-over
 # (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
 affinidi-messaging-delivery = "0.1"
+# Transport-agnostic messaging contract (`MessageTransport`, `Inbound`,
+# `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
+# directly by services that demux `MessagingService::subscribe()` inbound.
+affinidi-messaging-core = "0.1"
 
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1.3"

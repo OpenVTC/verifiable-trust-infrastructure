@@ -103,6 +103,14 @@ pub struct DiagnosticsResponse {
     pub syncer_enabled: bool,
     pub syncer_running: bool,
     pub syncer_restarts: u64,
+    /// Live messaging connectivity (D2 P1a): `"connected"` when the delivery
+    /// layer's transport reports a live mediator websocket, else
+    /// `"disconnected"` — including before the listener has bound. Read off
+    /// [`MessagingService::status`](affinidi_messaging_delivery::MessagingService::status),
+    /// which tracks the transport's re-falsifiable connection signal (never a
+    /// boot-time latch, per R6.2). `"disconnected"` when messaging is
+    /// unconfigured.
+    pub messaging_status: String,
 }
 
 #[utoipa::path(
@@ -153,6 +161,18 @@ pub async fn diagnostics(
     }
     .to_string();
 
+    // Live messaging connectivity — off the delivery-layer transport's
+    // re-falsifiable connection signal, not a boot latch (R6.2). Absent handle
+    // (listener not yet bound / messaging unconfigured) reads "disconnected".
+    let messaging_status = match state.didcomm.get() {
+        Some(m) => match m.service.status() {
+            affinidi_messaging_delivery::MessagingStatus::Connected => "connected",
+            _ => "disconnected",
+        },
+        None => "disconnected",
+    }
+    .to_string();
+
     // Identity / mediator detail — folded down from the unauth
     // `/health` payload (P3.7), now only readable by an admin.
     let syncer = state.syncer_health.snapshot();
@@ -189,5 +209,6 @@ pub async fn diagnostics(
         syncer_enabled: syncer.enabled,
         syncer_running: syncer.running,
         syncer_restarts: syncer.restarts,
+        messaging_status,
     }))
 }

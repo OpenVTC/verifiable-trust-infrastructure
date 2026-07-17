@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::messaging::ATM;
@@ -110,6 +109,12 @@ pub struct AppState {
     pub endorsements_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
+    /// Durable delivery-layer outbox (D2 P1a). Backs
+    /// [`vti_common::outbox_store::VtiOutboxStore`] for the messaging
+    /// service's `Guaranteed` sends so delivery-critical work survives a
+    /// restart. Opened alongside the other keyspaces and handed to
+    /// [`crate::messaging::run_didcomm_service`].
+    pub outbox_ks: KeyspaceHandle,
     /// Single-use ledger for redeemed Invitation Credentials (VICs).
     /// Written when a VIC-driven join is admitted; read at verify
     /// time so a consumed invite can't be replayed.
@@ -178,7 +183,7 @@ pub struct AppState {
     /// only one connection per DID, and opening a second made it terminate one
     /// as `w.websocket.duplicate-channel`. Unset until the listener boots (and
     /// when messaging is disabled), so sends are best-effort.
-    pub didcomm: Arc<tokio::sync::OnceCell<Arc<DIDCommService>>>,
+    pub didcomm: Arc<tokio::sync::OnceCell<Arc<crate::messaging::VtcMessaging>>>,
 }
 
 impl AppState {
@@ -214,26 +219,42 @@ impl AppState {
     /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
     /// reply path does), so outbound never opens a competing socket.
     ///
-    /// `Err` when the listener isn't running/connected yet; callers treat
-    /// delivery as best-effort.
+    /// `Err` when the listener isn't running yet **or** the send fails — the
+    /// error is surfaced honestly (never swallowed), so a caller that must know
+    /// whether the frame reached the mediator can act on it. Packs authcrypt
+    /// with the VTC's keys and hands off to the delivery-layer
+    /// [`MessagingService`](affinidi_messaging_delivery::MessagingService) over
+    /// the one shared mediator websocket.
     pub async fn send_to_member(
         &self,
         recipient_did: &str,
         message: affinidi_messaging_didcomm::Message,
     ) -> Result<(), AppError> {
-        let service = self.didcomm.get().ok_or_else(|| {
-            AppError::Internal("DIDComm listener not running — cannot send to member".into())
+        let messaging = self.didcomm.get().ok_or_else(|| {
+            AppError::Internal("VTC messaging not running — cannot send to member".into())
         })?;
-        service
-            .send_message_with_retry(
-                crate::messaging::VTC_LISTENER_ID,
-                message,
+        let (packed, _) = messaging
+            .atm
+            .pack_encrypted(
+                &message,
                 recipient_did,
-                3,
-                std::time::Duration::from_secs(2),
+                Some(&messaging.vtc_did),
+                Some(&messaging.vtc_did),
+            )
+            .await
+            .map_err(|e| {
+                AppError::Internal(format!("DIDComm pack for {recipient_did} failed: {e}"))
+            })?;
+        messaging
+            .service
+            .send(
+                recipient_did,
+                packed.into_bytes(),
+                affinidi_messaging_delivery::Delivery::BestEffort,
             )
             .await
             .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
+            .map(|_| ())
     }
 }
 
@@ -348,6 +369,7 @@ pub async fn run(
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
+    let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
 
     // M2.5: install the workspace-shipped default policies for any
     // PolicyPurpose that lacks an active row. Idempotent — operator
@@ -562,6 +584,7 @@ pub async fn run(
         endorsements_ks,
         audit_ks,
         audit_key_ks,
+        outbox_ks,
         consumed_invitations_ks,
         invitations_ks,
         registry_client: registry_client.clone(),

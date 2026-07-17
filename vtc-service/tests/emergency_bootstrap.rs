@@ -222,6 +222,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     let endorsements_ks = store.keyspace("endorsements").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
+    let outbox_ks = store.keyspace("outbox").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
     let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
     let install_store = InstallTokenStore::new(install_ks.clone());
@@ -320,6 +321,7 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
         credential_signer: None,
         audit_ks,
         audit_key_ks,
+        outbox_ks,
         config: Arc::new(RwLock::new(config.clone())),
         did_resolver: None,
         secrets_resolver: None,

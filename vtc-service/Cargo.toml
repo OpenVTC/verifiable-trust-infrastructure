@@ -2,7 +2,7 @@
 name = "vtc-service"
 description = "Service for Verifiable Trust Communities"
 readme = "README.md"
-version = "0.11.6"
+version = "0.11.7"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -119,7 +119,15 @@ vta-sdk = { path = "../vta-sdk", version = "0.19", features = [
   "crypto-provider",
 ] }
 affinidi-tdk = { workspace = true }
-affinidi-messaging-didcomm-service = { workspace = true }
+# D1 delivery layer (P1a cut-over): `MessagingService` (subscribe/send) over a
+# `DidCommTransport`, replacing the old `affinidi-messaging-didcomm-service`
+# type-routed framework. `affinidi-messaging-core` supplies the transport
+# contract types (`MessageTransport`, `Inbound`); `VtiOutboxStore` (vti-common)
+# backs the outbox.
+affinidi-messaging-delivery = { workspace = true }
+affinidi-messaging-core = { workspace = true }
+# `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
+futures-util = "0.3"
 # Trust Task document framework — `TrustTask<P>`, `respond_with`,
 # `reject_with`, `RejectReason`, `TypeUri` (join-request ceremony flow).
 # `trust-tasks-https` provides `status_for_code` for the HTTP status of a

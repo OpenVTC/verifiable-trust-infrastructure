@@ -2,21 +2,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_messaging_didcomm::{Message, UnpackMetadata};
-use affinidi_messaging_didcomm_service::{
-    DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
-    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, MiddlewareResult,
-    Next, RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler,
-    middleware_fn, trust_ping_handler,
-};
-use affinidi_tdk::common::profiles::TDKProfile;
+use affinidi_messaging_core::{Inbound, MessageTransport};
+use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
+use affinidi_messaging_didcomm::Message;
+use affinidi_tdk::common::TDKSharedState;
+use affinidi_tdk::common::config::TDKConfig;
+use affinidi_tdk::messaging::config::ATMConfig;
+use affinidi_tdk::messaging::profiles::ATMProfile;
+use affinidi_tdk::messaging::{ATM, DidCommTransport};
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
+use futures_util::StreamExt;
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use serde_json::json;
 use vti_common::error::AppError;
+use vti_common::outbox_store::VtiOutboxStore;
 
 use vta_sdk::protocols::credential_exchange::PRESENT as CREDENTIAL_PRESENT_TYPE;
 use vta_sdk::protocols::credential_exchange::REQUEST as CREDENTIAL_REQUEST_TYPE;
@@ -39,22 +41,33 @@ use crate::config::AppConfig;
 use crate::join::JoinTransport;
 use crate::members::Disposition;
 use crate::server::AppState;
+use crate::store::KeyspaceHandle;
 use crate::trust_tasks::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
 
-/// Id of the VTC's single inbound DIDComm listener. Used both to register the
-/// listener and, via [`AppState::send_to_member`](crate::server::AppState::send_to_member),
-/// to send outbound over that same connection.
-pub const VTC_LISTENER_ID: &str = "vtc-main";
+/// DIDComm message types handled locally by the dispatcher rather than routed
+/// to a protocol handler. These used to come from the
+/// `affinidi-messaging-didcomm-service` framework; with that framework removed
+/// (the delivery-layer cut-over, D2 P1a) we re-declare the two we act on.
+const TRUST_PING_TYPE: &str = "https://didcomm.org/trust-ping/2.0/ping";
+const TRUST_PONG_TYPE: &str = "https://didcomm.org/trust-ping/2.0/ping-response";
+/// The high-frequency message-pickup status heartbeat. Dispatched as a no-op
+/// (was the framework's `ignore_handler`) and never logged.
+const MESSAGE_PICKUP_STATUS_TYPE: &str = "https://didcomm.org/messagepickup/3.0/status";
 
-/// Start the DIDComm service and block until shutdown.
+/// The VTC's live messaging handle, published into
+/// [`AppState::didcomm`](crate::server::AppState) once the listener starts.
 ///
-/// Uses `DIDCommService` for automatic mediator connection management,
-/// reconnection with backoff, and typed message routing.
-///
-/// `state` is needed because the join-request handler writes
-/// rows into the keyspaces + audit log — same shared
-/// `AppState` the REST surface holds. Passed as a `Router`
-/// extension so handlers extract it via `Extension<AppState>`.
+/// Holds the delivery-layer [`MessagingService`] (the one inbound/outbound
+/// chokepoint over the VTC's single mediator websocket), the [`ATM`] used to
+/// authcrypt-pack outbound replies, and the VTC's own DID (the pack sender).
+/// Every outbound `AppState::send_to_member` reads this so it reuses the one
+/// connection — the mediator permits only one websocket per DID.
+pub struct VtcMessaging {
+    pub service: Arc<MessagingService>,
+    pub atm: Arc<ATM>,
+    pub vtc_did: String,
+}
+
 /// The VTC's signing + key-agreement verification-method ids, read from its
 /// **own DID document** rather than assumed.
 ///
@@ -122,6 +135,90 @@ async fn vtc_key_ids(
     }
 }
 
+/// Build the delivery-layer [`MessagingService`] over a `DidCommTransport`
+/// bound to the VTC's single mediator websocket.
+///
+/// Mirrors `vta-sdk::didcomm_session::connect_with_secrets`: a fresh TDK with
+/// the VTC's secrets, an ATM, a profile against the mediator, then a
+/// **bounded** `profile_enable_websocket` (the connect can hang) before the
+/// transport is bound (`DidCommTransport::new` requires the websocket first).
+/// The `outbox` keyspace backs `Guaranteed` sends durably (unused by P1a's
+/// `BestEffort`-only sends, but `MessagingService::new` requires a store).
+async fn build_messaging(
+    secrets: Vec<Secret>,
+    vtc_did: &str,
+    mediator_did: &str,
+    outbox_ks: KeyspaceHandle,
+) -> Result<(Arc<MessagingService>, Arc<ATM>), String> {
+    let tdk = TDKSharedState::new(
+        TDKConfig::builder()
+            .build()
+            .map_err(|e| format!("build TDK config: {e}"))?,
+    )
+    .await
+    .map_err(|e| format!("create TDK shared state: {e}"))?;
+    for secret in secrets {
+        tdk.secrets_resolver().insert(secret).await;
+    }
+
+    let atm = ATM::new(
+        ATMConfig::builder()
+            .build()
+            .map_err(|e| format!("build ATM config: {e}"))?,
+        Arc::new(tdk),
+    )
+    .await
+    .map_err(|e| format!("create ATM: {e}"))?;
+
+    let profile = Arc::new(
+        ATMProfile::new(
+            &atm,
+            None,
+            vtc_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
+        .await
+        .map_err(|e| format!("create ATM profile: {e}"))?,
+    );
+
+    // Bounded — a `did:webvh` mediator websocket connect can hang.
+    match tokio::time::timeout(
+        Duration::from_secs(30),
+        atm.profile_enable_websocket(&profile),
+    )
+    .await
+    {
+        Ok(res) => res.map_err(|e| format!("enable websocket: {e}"))?,
+        Err(_) => {
+            return Err(
+                "timeout enabling websocket to mediator after 30s — mediator may be unreachable"
+                    .to_string(),
+            );
+        }
+    }
+
+    let atm = Arc::new(atm);
+    let transport: Arc<dyn MessageTransport> = Arc::new(
+        DidCommTransport::new((*atm).clone(), profile.clone())
+            .await
+            .map_err(|e| format!("bind DidComm transport: {e}"))?,
+    );
+    let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
+    // P1a uses `new` (not `with_receipts`) — no layer-receipt emission yet.
+    let service = Arc::new(MessagingService::new(transport, outbox));
+    Ok((service, atm))
+}
+
+/// Start the VTC messaging listener and block until shutdown.
+///
+/// Owns the VTC's single mediator websocket via the delivery-layer
+/// [`MessagingService`] and drives inbound dispatch off
+/// [`MessagingService::subscribe`]. Replies are packed authcrypt (the VTC's
+/// keys) and sent `BestEffort` back to the request's sender.
+///
+/// `state` carries the keyspaces + audit writer the handlers write into (the
+/// same shared `AppState` the REST surface holds) and the `didcomm` slot every
+/// outbound `AppState::send_to_member` reads once this publishes it.
 pub async fn run_didcomm_service(
     config: &AppConfig,
     secrets_resolver: &Arc<ThreadedSecretsResolver>,
@@ -129,12 +226,8 @@ pub async fn run_didcomm_service(
     state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
-    // The slot every outbound `AppState::send_to_member` reads — published
-    // below once the service starts, so all `AppState` clones share the one
-    // listener connection. Captured before `state` moves into the router.
-    let didcomm_slot = state.didcomm.clone();
     let mediator_did = match &config.messaging {
-        Some(m) => &m.mediator_did,
+        Some(m) => m.mediator_did.clone(),
         None => {
             warn!("messaging not configured — inbound message handling disabled");
             let _ = shutdown_rx.changed().await;
@@ -142,7 +235,7 @@ pub async fn run_didcomm_service(
         }
     };
 
-    // Collect secrets for the TDKProfile, keyed by the verification-method ids
+    // Collect secrets for the profile, keyed by the verification-method ids
     // the VTC's own DID document actually declares (see `vtc_key_ids`).
     let (signing_id, ka_id) = vtc_key_ids(state.did_resolver.as_ref(), vtc_did).await;
     let mut secrets = Vec::new();
@@ -159,218 +252,211 @@ pub async fn run_didcomm_service(
         secrets.push(s);
     }
 
-    let profile = TDKProfile::new("VTC", vtc_did, Some(mediator_did), secrets);
-
-    let service_config = DIDCommServiceConfig {
-        listeners: vec![ListenerConfig {
-            id: VTC_LISTENER_ID.into(),
-            profile,
-            restart_policy: RestartPolicy::Always {
-                backoff: RetryConfig {
-                    initial_delay_secs: 5,
-                    max_delay_secs: 60,
-                },
-            },
-            ..Default::default()
-        }],
-    };
-
-    // Build the router: trust-ping + ignore-pickup-status + the
-    // VTC's protocol surface. `Extension<AppState>` is how the
-    // join-request handler reaches the keyspaces / audit writer.
-    let router = match Router::new()
-        .extension(state)
-        .route(TRUST_PING_TYPE, handler_fn(trust_ping_handler))
-        .and_then(|r| r.route(MESSAGE_PICKUP_STATUS_TYPE, handler_fn(ignore_handler)))
-        .and_then(|r| {
-            r.route(
-                JOIN_REQUEST_SUBMIT_TYPE,
-                handler_fn(join_request_submit_handler),
-            )
-        })
-        .and_then(|r| {
-            r.route(
-                JOIN_REQUEST_ACCEPT_TYPE,
-                handler_fn(join_request_accept_handler),
-            )
-        })
-        .and_then(|r| {
-            r.route(
-                JOIN_REQUEST_MANIFEST_TYPE,
-                handler_fn(join_request_manifest_handler),
-            )
-        })
-        .and_then(|r| {
-            r.route(
-                JOIN_REQUEST_STATUS_TYPE,
-                handler_fn(join_request_status_handler),
-            )
-        })
-        .and_then(|r| {
-            r.route(
-                MEMBER_SELF_REMOVE_TYPE,
-                handler_fn(member_self_remove_handler),
-            )
-        })
-        .and_then(|r| r.route(MEMBER_VMC_TYPE, handler_fn(member_vmc_handler)))
-        .and_then(|r| {
-            r.route(
-                CREDENTIAL_REQUEST_TYPE,
-                handler_fn(credential_request_handler),
-            )
-        })
-        .and_then(|r| {
-            r.route(
-                CREDENTIAL_PRESENT_TYPE,
-                handler_fn(credential_present_handler),
-            )
-        }) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("failed to build DIDComm router: {e}");
-            let _ = shutdown_rx.changed().await;
-            return;
-        }
-    };
-
-    // Observability: `RequestLogging` emits an `info!` (target
-    // `didcomm_server::request`) for *every* inbound message that is unpacked
-    // and dispatched — message type, sender, ok/error, latency — so operators
-    // can see whether a join request is even reaching the VTC. The `fallback`
-    // makes an unrouted message type loud (`warn!`) instead of the library's
-    // default `debug!`, catching a protocol-type drift between client and VTC
-    // (a message arrives, matches no handler, and is silently dropped).
-    let router = router
-        .layer(middleware_fn(log_request_middleware))
-        .fallback(handler_fn(unhandled_message_handler));
-
     info!(
         vtc_did = %vtc_did,
         mediator = %mediator_did,
-        "starting VTC DIDComm listener"
+        "starting VTC messaging listener"
     );
 
-    let shutdown_token = CancellationToken::new();
-    let service = match DIDCommService::start(service_config, router, shutdown_token.clone()).await
-    {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            warn!("failed to start DIDComm service: {e}");
-            let _ = shutdown_rx.changed().await;
-            return;
-        }
-    };
+    let (service, atm) =
+        match build_messaging(secrets, vtc_did, &mediator_did, state.outbox_ks.clone()).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("failed to start VTC messaging: {e}");
+                let _ = shutdown_rx.changed().await;
+                return;
+            }
+        };
 
-    // Publish the service so any VTC component can send to a member over this
-    // one connection (`AppState::send_to_member`) instead of opening its own
-    // websocket. Set-once; the service object persists across reconnects.
-    if didcomm_slot.set(service.clone()).is_err() {
-        warn!("DIDComm service handle was already published — outbound sends use the existing one");
+    // Publish the handle so any VTC component can send to a member over this
+    // one connection (`AppState::send_to_member`). Set-once; it persists across
+    // reconnects (the transport reconnects internally).
+    let messaging = Arc::new(VtcMessaging {
+        service: service.clone(),
+        atm: atm.clone(),
+        vtc_did: vtc_did.to_string(),
+    });
+    if state.didcomm.set(messaging).is_err() {
+        warn!("VTC messaging handle was already published — outbound sends use the existing one");
     }
 
-    // Wait for the mediator connection
-    match service
-        .wait_connected(VTC_LISTENER_ID, Duration::from_secs(30))
-        .await
-    {
-        Ok(()) => info!(
-            listener = VTC_LISTENER_ID,
-            "DIDComm listener connected to mediator — inbound messages will be processed"
-        ),
-        Err(e) => warn!(
-            "DIDComm listener not connected after 30s ({e}) — inbound DIDComm \
-             (join requests etc.) will NOT be received until it connects"
-        ),
-    }
+    info!("VTC messaging connected to mediator — inbound messages will be processed");
 
-    // Log lifecycle events in background
-    let mut event_rx = service.subscribe();
-    let event_task = tokio::spawn(async move {
-        loop {
-            match event_rx.recv().await {
-                Ok(ListenerEvent::Connected { listener_id }) => {
-                    info!(listener = %listener_id, "DIDComm listener connected");
-                }
-                Ok(ListenerEvent::Disconnected { listener_id, error }) => {
-                    warn!(
-                        listener = %listener_id,
-                        error = error.as_deref().unwrap_or("none"),
-                        "DIDComm listener disconnected"
-                    );
-                }
-                Ok(ListenerEvent::Restarting {
-                    listener_id,
-                    attempt,
-                    delay,
-                }) => {
-                    info!(
-                        listener = %listener_id,
-                        attempt,
-                        delay_secs = delay.as_secs(),
-                        "DIDComm listener restarting"
-                    );
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(skipped = n, "DIDComm event logger lagged");
+    let vtc_did_owned = vtc_did.to_string();
+    let mut stream = service.subscribe();
+
+    loop {
+        tokio::select! {
+            maybe = stream.next() => {
+                let Some(inbound) = maybe else {
+                    warn!("VTC inbound stream ended — messaging dispatcher stopping");
+                    break;
+                };
+                // The reply goes to whoever reached us: the authenticated sender
+                // when present, else the plaintext `from` (the manifest public
+                // read may arrive anoncrypt). Captured before `inbound` moves
+                // into `dispatch`. NOTE: we do NOT ack — `MessagingService`'s
+                // own dispatcher acks after handing the message to `subscribe`.
+                let reply_to = inbound.message.sender.clone().or_else(|| {
+                    serde_json::from_slice::<Message>(&inbound.message.payload)
+                        .ok()
+                        .and_then(|m| m.from)
+                });
+
+                if let Some(reply) = dispatch(inbound, &state).await {
+                    let Some(to) = reply_to else {
+                        warn!(
+                            reply_type = %reply.type_,
+                            "computed a DIDComm reply but the inbound message had no sender/from \
+                             to reply to — dropping"
+                        );
+                        continue;
+                    };
+                    let reply_id = uuid::Uuid::new_v4().to_string();
+                    let reply_msg = Message::build(reply_id, reply.type_, reply.body)
+                        .from(vtc_did_owned.clone())
+                        .to(to.clone())
+                        .thid(reply.thid)
+                        .finalize();
+                    match atm
+                        .pack_encrypted(&reply_msg, &to, Some(&vtc_did_owned), Some(&vtc_did_owned))
+                        .await
+                    {
+                        Ok((packed, _)) => {
+                            if let Err(e) = service
+                                .send(&to, packed.into_bytes(), Delivery::BestEffort)
+                                .await
+                            {
+                                warn!(recipient = %to, error = %e, "failed to send DIDComm reply");
+                            }
+                        }
+                        Err(e) => warn!(recipient = %to, error = %e, "failed to pack DIDComm reply"),
+                    }
                 }
             }
+            _ = shutdown_rx.changed() => {
+                info!("VTC messaging stopping (shutdown signalled)");
+                break;
+            }
         }
-    });
+    }
 
-    info!("DIDComm service started");
-
-    // Block until shutdown
-    let _ = shutdown_rx.changed().await;
-
-    // Graceful shutdown
-    service.shutdown().await;
-    event_task.abort();
-    info!("DIDComm service stopped");
+    info!("VTC messaging stopped");
 }
 
-/// Per-message request logger (replaces the library's `RequestLogging`) — logs
-/// every inbound message that is unpacked + dispatched (type, sender, outcome,
-/// latency) at `info!`, EXCEPT the high-frequency message-pickup status poll,
-/// which is a no-op (`ignore_handler`) and just floods the log.
-async fn log_request_middleware(
-    ctx: HandlerContext,
-    message: Message,
-    meta: UnpackMetadata,
-    next: Next,
-) -> MiddlewareResult {
-    if message.typ == MESSAGE_PICKUP_STATUS_TYPE {
-        // Dispatch silently — no log line for the pickup-status heartbeat.
-        return next.run(ctx, message, meta).await;
+/// A reply the dispatcher packs + sends back to the request's sender, threaded
+/// to the request. Replaces the old framework's `DIDCommResponse`.
+struct Reply {
+    type_: String,
+    body: serde_json::Value,
+    thid: String,
+}
+
+/// Route one inbound message to its handler + emit the per-request log line.
+///
+/// Rehydrates the plaintext DIDComm [`Message`] from the neutral payload (the
+/// full DIDComm plaintext — `typ`/`from`/`body`/`id` recoverable), computes the
+/// **cryptographically-authenticated** sender, and dispatches on `msg.typ`.
+///
+/// The authenticated sender is `inbound.message.sender` filtered by `verified`:
+/// SDK 0.18.56's `DidCommTransport` sets `sender` to the DID of the key that
+/// actually authcrypted the envelope (or `None` for anonymous / spoofed
+/// `from`), so the anti-spoof guarantee the old local `authenticated_sender_did`
+/// enforced now lives in the transport. Handlers that need a proven caller use
+/// this; the two public-read handlers (manifest, credential request/present)
+/// use the plaintext `msg.from` and never authorize on it.
+async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
+    let msg: Message = serde_json::from_slice(&inbound.message.payload).ok()?;
+
+    // Message-pickup status heartbeat: dispatch silently (was `ignore_handler`)
+    // — no handler, no log line.
+    if msg.typ == MESSAGE_PICKUP_STATUS_TYPE {
+        return None;
     }
-    let start = std::time::Instant::now();
-    let message_type = message.typ.clone();
-    let sender = ctx
-        .sender_did
+
+    let auth_sender = inbound
+        .message
+        .sender
         .clone()
+        .filter(|_| inbound.message.verified);
+
+    // Per-request observability (folds the old `log_request_middleware`): every
+    // inbound message that is dispatched logs type / sender / outcome / latency
+    // at `info!`, except the pickup-status heartbeat handled above.
+    let start = std::time::Instant::now();
+    let message_type = msg.typ.clone();
+    let sender_log = auth_sender
+        .clone()
+        .or_else(|| msg.from.clone())
         .unwrap_or_else(|| "<anon>".to_string());
-    let result = next.run(ctx, message, meta).await;
-    let status = match &result {
-        Ok(Some(_)) => "ok(response)",
-        Ok(None) => "ok(empty)",
-        Err(_) => "error",
-    };
+
+    let reply = route(&msg, auth_sender, state).await;
+
     info!(
         target: "didcomm_server::request",
         message_type = %message_type,
-        sender = %sender,
-        status,
+        sender = %sender_log,
+        status = if reply.is_some() { "ok(response)" } else { "ok(empty)" },
         latency = ?start.elapsed(),
         "Request processed"
     );
-    result
+    reply
 }
 
-/// Build a DIDComm problem-report reply, threaded to the request, so a
-/// sender gets a typed code + comment instead of a silent
-/// `DIDCommServiceError::Internal` (which often yields no reply at all).
-fn problem_report(thid: String, code: &str, comment: impl Into<String>) -> DIDCommResponse {
-    DIDCommResponse::new(PROBLEM_REPORT_TYPE, problem_report_body(code, comment)).thid(thid)
+/// The type-routed dispatch (was the framework `Router`). The `_` arm is the
+/// old fallback: a problem-report is logged and never replied to (a reply would
+/// loop); any other unsupported type gets a threaded BAD_REQUEST problem-report.
+async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> Option<Reply> {
+    match msg.typ.as_str() {
+        TRUST_PING_TYPE => trust_ping_reply(msg, auth_sender.as_deref()),
+        JOIN_REQUEST_SUBMIT_TYPE => join_request_submit_handler(msg, auth_sender, state).await,
+        JOIN_REQUEST_ACCEPT_TYPE => join_request_accept_handler(msg, auth_sender, state).await,
+        JOIN_REQUEST_MANIFEST_TYPE => join_request_manifest_handler(msg, state).await,
+        JOIN_REQUEST_STATUS_TYPE => join_request_status_handler(msg, auth_sender, state).await,
+        MEMBER_SELF_REMOVE_TYPE => member_self_remove_handler(msg, auth_sender, state).await,
+        MEMBER_VMC_TYPE => member_vmc_handler(msg, auth_sender, state).await,
+        CREDENTIAL_REQUEST_TYPE => credential_request_handler(msg, state).await,
+        CREDENTIAL_PRESENT_TYPE => credential_present_handler(msg, state).await,
+        _ => unhandled_message(msg),
+    }
+}
+
+/// Local trust-ping responder (was the framework `trust_ping_handler`). Replies
+/// a `trust-ping/2.0/ping-response` on the ping's thread unless the ping didn't
+/// request a response or has no (authenticated) sender to reply to.
+fn trust_ping_reply(msg: &Message, auth_sender: Option<&str>) -> Option<Reply> {
+    #[derive(serde::Deserialize)]
+    struct PingBody {
+        #[serde(default = "default_true")]
+        response_requested: bool,
+    }
+    fn default_true() -> bool {
+        true
+    }
+
+    let body: PingBody = serde_json::from_value(msg.body.clone()).unwrap_or(PingBody {
+        response_requested: true,
+    });
+    if !body.response_requested {
+        return None;
+    }
+    // Only pong an authenticated ping (no reply to a spoofed/anonymous sender).
+    auth_sender?;
+    Some(Reply {
+        type_: TRUST_PONG_TYPE.to_string(),
+        body: serde_json::Value::Null,
+        thid: msg.id.clone(),
+    })
+}
+
+/// Build a threaded problem-report reply so a sender gets a typed code +
+/// comment instead of a silent internal error (which often yields no reply).
+fn problem_report(thid: String, code: &str, comment: impl Into<String>) -> Reply {
+    Reply {
+        type_: PROBLEM_REPORT_TYPE.to_string(),
+        body: problem_report_body(code, comment),
+        thid,
+    }
 }
 
 /// The problem-report body shape — `{code, comment}`, matching
@@ -432,27 +518,23 @@ pub(crate) fn app_error_code(err: &AppError) -> &'static str {
 }
 
 /// Map a business-logic [`AppError`] to a threaded problem-report reply.
-fn app_error_report(thid: String, err: &AppError) -> DIDCommResponse {
+fn app_error_report(thid: String, err: &AppError) -> Reply {
     problem_report(thid, app_error_code(err), err.to_string())
 }
 
-/// Fallback for an inbound DIDComm message whose `type` matches no registered
-/// route. The library's built-in default only logs this at `debug!`, so an
-/// unexpected/unsupported message type — e.g. a protocol-version drift between
-/// the client and this VTC — looks like the message "just disappeared". We log
-/// it at `warn!` (visible at the default level) with the type + sender, and
-/// (for a genuine unsupported request) return a threaded problem-report so the
-/// sender isn't left hanging.
+/// Fallback for an inbound DIDComm message whose `type` matches no handler.
+///
+/// An unexpected/unsupported message type — e.g. a protocol-version drift
+/// between the client and this VTC — is logged at `warn!` (visible at the
+/// default level) with the type + sender, and (for a genuine unsupported
+/// request) returns a threaded problem-report so the sender isn't left hanging.
 ///
 /// **Never reply to a problem-report.** Replying to one with our own
 /// (unsupported-type) problem-report makes the peer reply to *that*, and so on —
 /// an unbounded problem-report ping-pong (observed against the mediator). A
 /// problem-report is a terminal notification: log it and stop. Mirrors the VTA's
 /// `handle_unknown` (`vta-service` `messaging::handlers`).
-async fn unhandled_message_handler(
-    message: Message,
-    _meta: UnpackMetadata,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+fn unhandled_message(message: &Message) -> Option<Reply> {
     if message.typ.contains("problem-report") {
         let (code, comment, args) = problem_report_details(&message.body);
         warn!(
@@ -468,7 +550,7 @@ async fn unhandled_message_handler(
             id = %message.id,
             "received unhandled problem-report — not replying (a reply would loop)"
         );
-        return Ok(None);
+        return None;
     }
     warn!(
         message_type = %message.typ,
@@ -476,35 +558,43 @@ async fn unhandled_message_handler(
         id = %message.id,
         "inbound DIDComm message has no matching handler — dropping (unsupported message type)"
     );
-    Ok(Some(problem_report(
+    Some(problem_report(
         message.id.clone(),
         codes::BAD_REQUEST,
         format!("unsupported message type: {}", message.typ),
-    )))
+    ))
 }
 
 /// Render a [`TrustTaskOutcome`] as a DIDComm reply: the response document
 /// (self-describing — carries its own `type`, either a `#response` or a
 /// `trust-task-error`) threaded to the request id.
-fn tt_didcomm_reply(
-    outcome: TrustTaskOutcome,
-    thid: String,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let doc: serde_json::Value = serde_json::from_slice(&outcome.body)
-        .map_err(|e| DIDCommServiceError::Internal(format!("reply document parse: {e}")))?;
+fn tt_didcomm_reply(outcome: TrustTaskOutcome, thid: String) -> Option<Reply> {
+    let doc: serde_json::Value = match serde_json::from_slice(&outcome.body) {
+        Ok(d) => d,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("reply document parse: {e}"),
+            ));
+        }
+    };
     let typ = doc
         .get("type")
         .and_then(|t| t.as_str())
         .unwrap_or("https://trusttasks.org/spec/trust-task-error/0.1")
         .to_string();
-    Ok(Some(DIDCommResponse::new(typ, doc).thid(thid)))
+    Some(Reply {
+        type_: typ,
+        body: doc,
+        thid,
+    })
 }
 
 /// Serialise an inbound DIDComm message body (the Trust Task document) to the
 /// bytes the dispatcher parses.
-fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, DIDCommServiceError> {
-    serde_json::to_vec(&message.body)
-        .map_err(|e| DIDCommServiceError::Internal(format!("serialise inbound document: {e}")))
+fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&message.body).map_err(|e| format!("serialise inbound document: {e}"))
 }
 
 /// Pull the framework reject `code` + human-readable `message` out of a
@@ -531,6 +621,17 @@ fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
     (code, message)
 }
 
+/// The threaded UNAUTHORIZED reply for a handler that requires a proven sender
+/// but got none (anonymous / spoofed `from`). The transport already refused to
+/// bind an unauthenticated sender; this is the wire-visible refusal.
+fn unauthorized_reply(thid: String) -> Reply {
+    problem_report(
+        thid,
+        codes::UNAUTHORIZED,
+        "DIDComm message is not authcrypt-authenticated — sender cannot be trusted",
+    )
+}
+
 /// `join-requests/submit/1.0` over DIDComm — the ceremony `request` verb.
 ///
 /// The message body is the Trust Task document; the authcrypt sender is the
@@ -538,12 +639,14 @@ fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
 /// (the same spine REST uses) and replies with a `#response` (Verdict) or a
 /// `trust-task-error` document.
 async fn join_request_submit_handler(
-    message: Message,
-    meta: UnpackMetadata,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let thid = message.id.clone();
-    let applicant_did = authenticated_sender_did(&message, &meta)?;
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let Some(applicant_did) = auth_sender else {
+        return Some(unauthorized_reply(thid));
+    };
     let applicant_log = applicant_did.clone();
     // Entry log: the request logger only fires once the handler *returns*, so an
     // explicit log here distinguishes "join received + processing started" from
@@ -551,15 +654,18 @@ async fn join_request_submit_handler(
     info!(
         applicant = %applicant_did,
         thid = %thid,
-        has_credential = message
+        has_credential = msg
             .body
             .pointer("/payload/vp/verifiableCredential")
             .is_some(),
         "received join-request submit (Trust Task) over DIDComm"
     );
-    let body = inbound_doc_bytes(&message)?;
+    let body = match inbound_doc_bytes(msg) {
+        Ok(b) => b,
+        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
+    };
     let ctx = JoinAuthCtx::didcomm(applicant_did);
-    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     // Outcome observability (preserved from #539): a refused join must be loud —
     // it replies with a `trust-task-error` and stores nothing, so without this
     // it would look like it "silently went nowhere"; a processed one logs at
@@ -586,32 +692,36 @@ async fn join_request_submit_handler(
 /// authcrypt sender is the proven member; the document payload carries the
 /// `requestId`, `vmcId`, and the member-issued reciprocal `vc`.
 async fn join_request_accept_handler(
-    message: Message,
-    meta: UnpackMetadata,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let thid = message.id.clone();
-    let member_did = authenticated_sender_did(&message, &meta)?;
-    let body = inbound_doc_bytes(&message)?;
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let Some(member_did) = auth_sender else {
+        return Some(unauthorized_reply(thid));
+    };
+    let body = match inbound_doc_bytes(msg) {
+        Ok(b) => b,
+        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
+    };
     let ctx = JoinAuthCtx::didcomm(member_did);
-    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     tt_didcomm_reply(outcome, thid)
 }
 
 /// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery. A
-/// public read; no sender authentication required.
-async fn join_request_manifest_handler(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let thid = message.id.clone();
-    let body = inbound_doc_bytes(&message)?;
+/// public read; no sender authentication required (uses the plaintext `from`).
+async fn join_request_manifest_handler(msg: &Message, state: &AppState) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let body = match inbound_doc_bytes(msg) {
+        Ok(b) => b,
+        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
+    };
     let ctx = JoinAuthCtx {
         transport: JoinTransport::DIDComm,
-        sender_did: message.from.clone(),
+        sender_did: msg.from.clone(),
     };
-    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     tt_didcomm_reply(outcome, thid)
 }
 
@@ -619,42 +729,48 @@ async fn join_request_manifest_handler(
 /// sender is the proven applicant; the document payload carries the
 /// `requestId`.
 async fn join_request_status_handler(
-    message: Message,
-    meta: UnpackMetadata,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let thid = message.id.clone();
-    let applicant_did = authenticated_sender_did(&message, &meta)?;
-    let body = inbound_doc_bytes(&message)?;
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let Some(applicant_did) = auth_sender else {
+        return Some(unauthorized_reply(thid));
+    };
+    let body = match inbound_doc_bytes(msg) {
+        Ok(b) => b,
+        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
+    };
     let ctx = JoinAuthCtx::didcomm(applicant_did);
-    let outcome = dispatch_trust_task_core(&state, &ctx, &body).await;
+    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
     tt_didcomm_reply(outcome, thid)
 }
 
 /// `members/self-remove/1.0` over DIDComm (M1.11.1 twin).
 ///
-/// Caller's DID = the DIDComm `from` field. Body optionally
-/// carries the disposition; defaults match REST (Member's
-/// stored `departure_preference`, then PolicyDefault→Tombstone).
+/// Caller's DID = the *authcrypt-authenticated* sender, not the plaintext
+/// `from` — otherwise a spoofed `from` would self-remove the victim
+/// (`remove_inner(&caller, &caller, …)` with actor == subject). Body optionally
+/// carries the disposition; defaults match REST (Member's stored
+/// `departure_preference`, then PolicyDefault→Tombstone).
 async fn member_self_remove_handler(
-    message: Message,
-    meta: UnpackMetadata,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    // The caller's DID is the *authcrypt-authenticated* sender, not the
-    // plaintext `from` — otherwise a spoofed `from` would self-remove the
-    // victim (`remove_inner(&caller, &caller, …)` with actor == subject).
-    let thid = message.id.clone();
-    let caller_did = authenticated_sender_did(&message, &meta)?;
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let Some(caller_did) = auth_sender else {
+        return Some(unauthorized_reply(thid));
+    };
 
-    let body: SelfRemoveBody = match serde_json::from_value(message.body.clone()) {
+    let body: SelfRemoveBody = match serde_json::from_value(msg.body.clone()) {
         Ok(b) => b,
         Err(e) => {
-            return Ok(Some(problem_report(
+            return Some(problem_report(
                 thid,
                 codes::BAD_REQUEST,
                 format!("malformed self-remove body: {e}"),
-            )));
+            ));
         }
     };
 
@@ -665,16 +781,16 @@ async fn member_self_remove_handler(
         .transpose()
     {
         Ok(d) => d,
-        Err(e) => return Ok(Some(problem_report(thid, codes::BAD_REQUEST, e))),
+        Err(e) => return Some(problem_report(thid, codes::BAD_REQUEST, e)),
     };
 
     // DIDComm self-leave — actor == subject. The leave decision policy
     // allows self-leave unconditionally (spec §10.2); the no-last-admin
     // invariant still applies in the effect stage.
     let outcome =
-        match remove_inner(&state, &caller_did, &caller_did, disposition, String::new()).await {
+        match remove_inner(state, &caller_did, &caller_did, disposition, String::new()).await {
             Ok(o) => o,
-            Err(e) => return Ok(Some(app_error_report(thid, &e))),
+            Err(e) => return Some(app_error_report(thid, &e)),
         };
 
     let receipt = SelfRemoveReceiptBody {
@@ -682,11 +798,21 @@ async fn member_self_remove_handler(
         disposition: outcome.disposition,
         removed: outcome.removed,
     };
-    let body = serde_json::to_value(&receipt)
-        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(MEMBER_SELF_REMOVE_RECEIPT_TYPE, body).thid(message.id),
-    ))
+    let body = match serde_json::to_value(&receipt) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("receipt serialise: {e}"),
+            ));
+        }
+    };
+    Some(Reply {
+        type_: MEMBER_SELF_REMOVE_RECEIPT_TYPE.to_string(),
+        body,
+        thid,
+    })
 }
 
 /// `members/vmc/1.0` over DIDComm — a member submits their reciprocal VMC
@@ -697,30 +823,32 @@ async fn member_self_remove_handler(
 /// verifies the issuer / subject binding + the DI proof and stores it on the
 /// member row. Replies with a receipt, or a threaded problem-report on failure.
 async fn member_vmc_handler(
-    message: Message,
-    meta: UnpackMetadata,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let thid = message.id.clone();
-    let member_did = authenticated_sender_did(&message, &meta)?;
+    msg: &Message,
+    auth_sender: Option<String>,
+    state: &AppState,
+) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let Some(member_did) = auth_sender else {
+        return Some(unauthorized_reply(thid));
+    };
 
-    let body: MemberVmcBody = match serde_json::from_value(message.body.clone()) {
+    let body: MemberVmcBody = match serde_json::from_value(msg.body.clone()) {
         Ok(b) => b,
         Err(e) => {
-            return Ok(Some(problem_report(
+            return Some(problem_report(
                 thid,
                 codes::BAD_REQUEST,
                 format!("malformed member-vmc body: {e}"),
-            )));
+            ));
         }
     };
 
     let outcome =
-        match crate::members::inbound_vmc::receive_member_vmc_inner(&state, member_did, body.vc)
+        match crate::members::inbound_vmc::receive_member_vmc_inner(state, member_did, body.vc)
             .await
         {
             Ok(o) => o,
-            Err(e) => return Ok(Some(app_error_report(thid, &e))),
+            Err(e) => return Some(app_error_report(thid, &e)),
         };
 
     let receipt = MemberVmcReceiptBody {
@@ -728,11 +856,21 @@ async fn member_vmc_handler(
         vmc_id: outcome.vmc_id,
         status: "stored".to_string(),
     };
-    let body = serde_json::to_value(&receipt)
-        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(MEMBER_VMC_RESPONSE_TYPE, body).thid(message.id),
-    ))
+    let body = match serde_json::to_value(&receipt) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("receipt serialise: {e}"),
+            ));
+        }
+    };
+    Some(Reply {
+        type_: MEMBER_VMC_RESPONSE_TYPE.to_string(),
+        body,
+        thid,
+    })
 }
 
 /// `credential-exchange/request/1.0` over DIDComm (Phase 3, task 3.2 wire).
@@ -749,31 +887,55 @@ async fn member_vmc_handler(
 /// **inner key-binding proof** authenticates the *holder*, and the credential
 /// is released only to the proven subject — so a relayer ≠ holder is safe (it
 /// can't satisfy the proof), mirroring the provision-integration onion.
-async fn credential_request_handler(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let body: RequestBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed credential request: {e}")))?;
+async fn credential_request_handler(msg: &Message, state: &AppState) -> Option<Reply> {
+    let thid = msg.id.clone();
+    let body: RequestBody = match serde_json::from_value(msg.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("malformed credential request: {e}"),
+            ));
+        }
+    };
 
-    let response = crate::credentials::redeem(
+    let response = match crate::credentials::redeem(
         &state.join_requests_ks,
         &body.credential_request,
         chrono::Utc::now(),
     )
     .await
-    .map_err(|e| DIDCommServiceError::Internal(format!("credential issuance: {e}")))?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("credential issuance: {e}"),
+            ));
+        }
+    };
 
     let issue = IssueBody {
         credential_response: Some(response),
         sealed: None,
     };
-    let issue_body = serde_json::to_value(&issue)
-        .map_err(|e| DIDCommServiceError::Internal(format!("issue serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(CREDENTIAL_ISSUE_TYPE, issue_body).thid(message.id),
-    ))
+    let issue_body = match serde_json::to_value(&issue) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("issue serialise: {e}"),
+            ));
+        }
+    };
+    Some(Reply {
+        type_: CREDENTIAL_ISSUE_TYPE.to_string(),
+        body: issue_body,
+        thid,
+    })
 }
 
 /// `credential-exchange/present/1.0` over DIDComm (close-the-join-loop, part 3).
@@ -790,29 +952,52 @@ async fn credential_request_handler(
 /// **holder kb-jwt** inside the `vp_token` authenticates the *holder* and binds
 /// the verifier's nonce + audience — so a relayer ≠ holder is safe (it cannot
 /// forge the kb-jwt), mirroring the request-handler onion.
-async fn credential_present_handler(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(state): Extension<AppState>,
-) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
-    let body: PresentBody = serde_json::from_value(message.body.clone())
-        .map_err(|e| DIDCommServiceError::Internal(format!("malformed present body: {e}")))?;
+async fn credential_present_handler(msg: &Message, state: &AppState) -> Option<Reply> {
+    // The reply threads to the present's own id (not the query thread).
+    let thid = msg.id.clone();
+    let body: PresentBody = match serde_json::from_value(msg.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("malformed present body: {e}"),
+            ));
+        }
+    };
 
     // The present replies on the query's thread; the challenge is keyed by it.
-    let thread_id = message.thid.clone().ok_or_else(|| {
-        DIDCommServiceError::Internal(
-            "present carries no thread id (thid) to correlate its challenge".into(),
-        )
-    })?;
+    let thread_id = match msg.thid.clone() {
+        Some(t) => t,
+        None => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                "present carries no thread id (thid) to correlate its challenge",
+            ));
+        }
+    };
 
     let now = chrono::Utc::now();
-    let challenge =
-        crate::credentials::present_challenge::consume(&state.join_requests_ks, &thread_id, now)
-            .await
-            .map_err(|e| DIDCommServiceError::Internal(format!("present challenge: {e}")))?;
+    let challenge = match crate::credentials::present_challenge::consume(
+        &state.join_requests_ks,
+        &thread_id,
+        now,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("present challenge: {e}"),
+            ));
+        }
+    };
 
-    let outcome = crate::routes::join_requests::present::present_and_decide_join(
-        &state,
+    let outcome = match crate::routes::join_requests::present::present_and_decide_join(
+        state,
         &body.vp_token,
         &challenge.aud,
         &challenge.nonce,
@@ -820,7 +1005,16 @@ async fn credential_present_handler(
         now,
     )
     .await
-    .map_err(|e| DIDCommServiceError::Internal(format!("present decision: {e}")))?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("present decision: {e}"),
+            ));
+        }
+    };
 
     // On auto-admit, deliver the issued MembershipCredential (+ role VEC) to the
     // proven holder's wallet over DIDComm — the holder only gets a receipt on the
@@ -830,7 +1024,7 @@ async fn credential_present_handler(
     if let Some(admit) = outcome.admit.as_deref() {
         let holder_did = outcome.request.applicant_did.clone();
         if let Err(e) =
-            crate::credentials::delivery::deliver_membership_credentials(&state, &holder_did, admit)
+            crate::credentials::delivery::deliver_membership_credentials(state, &holder_did, admit)
                 .await
         {
             warn!(holder = %holder_did, request = %outcome.request.id, error = %e, "membership-credential delivery failed; credential is issued and can be re-delivered");
@@ -847,62 +1041,21 @@ async fn credential_present_handler(
         request_id: outcome.request.id,
         status,
     };
-    let receipt_body = serde_json::to_value(&receipt)
-        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
-    Ok(Some(
-        DIDCommResponse::new(JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, receipt_body).thid(message.id),
-    ))
-}
-
-/// Resolve the **authenticated** sender DID of an inbound DIDComm message.
-///
-/// The listener fills `ctx.sender_did` / `message.from` from the *plaintext*
-/// `from` header, which the sender controls. An attacker can authcrypt a
-/// message with their **own** key (so the unpack succeeds and
-/// `meta.authenticated == true`) while setting `from` to a *victim's* DID —
-/// yielding a message whose `from` (and thus `ctx.sender_did`) is the victim.
-/// Handlers that trust `ctx.sender_did` as the proven sender would then act
-/// *as the victim* (submit a join, self-remove the victim, …). The
-/// `affinidi-messaging-sdk` unpack does not cross-check `from` against the
-/// authcrypt sender key, and `MessagePolicy::require_authenticated` only
-/// asserts *some* key authenticated the envelope — not *which* DID.
-///
-/// The cryptographically-authenticated identity is the DID of
-/// `meta.encrypted_from_kid` (the key that actually encrypted the message).
-/// This binds the two: the message must be authcrypt-authenticated (not
-/// anoncrypt / plaintext) **and** its `from` must equal that DID, else the
-/// sender is spoofed and we refuse.
-fn authenticated_sender_did(
-    message: &Message,
-    meta: &UnpackMetadata,
-) -> Result<String, DIDCommServiceError> {
-    if !meta.authenticated || meta.anonymous_sender {
-        return Err(DIDCommServiceError::Internal(
-            "DIDComm message is not authcrypt-authenticated — sender cannot be trusted".into(),
-        ));
-    }
-    let from = message.from.as_deref().ok_or_else(|| {
-        DIDCommServiceError::Internal(
-            "authenticated DIDComm message carries no `from` — sender cannot be trusted".into(),
-        )
-    })?;
-    let skid = meta.encrypted_from_kid.as_deref().ok_or_else(|| {
-        DIDCommServiceError::Internal(
-            "authenticated DIDComm message exposes no sender key id — sender cannot be trusted"
-                .into(),
-        )
-    })?;
-    // `encrypted_from_kid` is a verificationMethod id (`<did>#<fragment>`);
-    // the authenticated sender is its DID prefix. A DID never contains `#`,
-    // so splitting on the first `#` recovers it.
-    let authenticated_did = skid.split_once('#').map(|(did, _)| did).unwrap_or(skid);
-    if authenticated_did != from {
-        return Err(DIDCommServiceError::Internal(format!(
-            "DIDComm sender spoofed: `from` ({from}) does not match the authcrypt sender key \
-             ({authenticated_did})"
-        )));
-    }
-    Ok(from.to_string())
+    let receipt_body = match serde_json::to_value(&receipt) {
+        Ok(v) => v,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::INTERNAL,
+                format!("receipt serialise: {e}"),
+            ));
+        }
+    };
+    Some(Reply {
+        type_: JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
+        body: receipt_body,
+        thid,
+    })
 }
 
 fn parse_disposition(s: &str) -> Result<Disposition, String> {
@@ -921,27 +1074,6 @@ fn parse_disposition(s: &str) -> Result<Disposition, String> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn msg(from: Option<&str>) -> Message {
-        let mut b = Message::build("id-1".to_string(), "test/1.0".to_string(), json!({}));
-        if let Some(f) = from {
-            b = b.from(f.to_string());
-        }
-        b.finalize()
-    }
-
-    fn meta(authenticated: bool, anonymous_sender: bool, skid: Option<&str>) -> UnpackMetadata {
-        UnpackMetadata {
-            encrypted: true,
-            authenticated,
-            anonymous_sender,
-            encrypted_from_kid: skid.map(str::to_string),
-            ..Default::default()
-        }
-    }
-
-    const ALICE: &str = "did:key:z6MkAlice";
-    const ALICE_SKID: &str = "did:key:z6MkAlice#z6MkAlice";
 
     #[test]
     fn problem_report_details_extracts_code_comment_and_args() {
@@ -1001,69 +1133,5 @@ mod tests {
         let (code, comment) = vta_sdk::protocols::extract_problem_report(&body);
         assert_eq!(code, codes::BAD_REQUEST);
         assert_eq!(comment, "malformed body");
-    }
-
-    #[test]
-    fn accepts_authenticated_sender_whose_from_matches_the_authcrypt_key() {
-        let got = authenticated_sender_did(&msg(Some(ALICE)), &meta(true, false, Some(ALICE_SKID)))
-            .unwrap();
-        assert_eq!(got, ALICE);
-    }
-
-    #[test]
-    fn rejects_spoofed_from_authcrypted_with_a_different_key() {
-        // The core impersonation attack: authcrypt with the attacker's key
-        // (so `authenticated == true`) but set `from` to the victim. The
-        // `from` must match the key that actually encrypted the message.
-        let victim = "did:key:z6MkVictim";
-        let attacker_skid = "did:key:z6MkAttacker#z6MkAttacker";
-        let err =
-            authenticated_sender_did(&msg(Some(victim)), &meta(true, false, Some(attacker_skid)))
-                .unwrap_err();
-        assert!(
-            format!("{err}").contains("spoofed"),
-            "expected spoof rejection, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_unauthenticated_anoncrypt() {
-        // anoncrypt — no proven sender at all.
-        let err =
-            authenticated_sender_did(&msg(Some(ALICE)), &meta(false, true, None)).unwrap_err();
-        assert!(
-            format!("{err}").contains("not authcrypt-authenticated"),
-            "expected auth rejection, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_authenticated_but_anonymous_sender() {
-        let err = authenticated_sender_did(&msg(Some(ALICE)), &meta(true, true, Some(ALICE_SKID)))
-            .unwrap_err();
-        assert!(
-            format!("{err}").contains("not authcrypt-authenticated"),
-            "expected auth rejection, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_authenticated_message_with_no_from() {
-        let err =
-            authenticated_sender_did(&msg(None), &meta(true, false, Some(ALICE_SKID))).unwrap_err();
-        assert!(
-            format!("{err}").contains("no `from`"),
-            "expected missing-from rejection, got: {err}"
-        );
-    }
-
-    #[test]
-    fn rejects_authenticated_message_with_no_sender_key_id() {
-        let err =
-            authenticated_sender_did(&msg(Some(ALICE)), &meta(true, false, None)).unwrap_err();
-        assert!(
-            format!("{err}").contains("no sender key id"),
-            "expected missing-skid rejection, got: {err}"
-        );
     }
 }

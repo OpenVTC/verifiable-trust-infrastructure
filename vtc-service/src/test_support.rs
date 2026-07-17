@@ -230,6 +230,7 @@ impl TestVtcBuilder {
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
         let invitations_ks = store.keyspace("invitations").expect("invitations ks");
+        let outbox_ks = store.keyspace("outbox").expect("outbox ks");
 
         let jwt_keys =
             Arc::new(JwtKeys::from_ed25519_bytes(&JWT_SEED, "VTC").expect("build VTC JWT keys"));
@@ -343,6 +344,7 @@ impl TestVtcBuilder {
             endorsements_ks,
             audit_ks,
             audit_key_ks,
+            outbox_ks,
             consumed_invitations_ks,
             invitations_ks,
             registry_client: None,
