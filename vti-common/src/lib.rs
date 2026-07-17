@@ -1,6 +1,7 @@
 pub mod acl;
 pub mod audit;
 pub mod auth;
+pub mod capability_client;
 pub mod config;
 pub mod consent;
 pub mod context_path;

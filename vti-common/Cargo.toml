@@ -78,6 +78,8 @@ bytes = "1"
 
 # Secrets resolver (for error type)
 affinidi-tdk = { workspace = true }
+affinidi-data-integrity = { workspace = true }
+trust-tasks-rs = { workspace = true }
 # DID resolution for SIOPv2 id_token verification (auth::siop). The
 # resolver + `DocumentExt` (from affinidi-tdk) turn an `iss` DID into the
 # Ed25519 verifying key. multibase decodes the `did:key` key for pinning.
