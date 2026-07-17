@@ -91,6 +91,10 @@ affinidi-openid4vp = "0.1.2"
 affinidi-openid4vci = "0.2"
 affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.3"
+# Reliable messaging delivery layer (durable outbox + drain + §5a confirmation)
+# over the MessageTransport contract — the D1 delivery layer the VTI cut-over
+# (D2) wires in. `VtiOutboxStore` (vti-common) backs its OutboxStore with fjall.
+affinidi-messaging-delivery = "0.1"
 
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1.3"

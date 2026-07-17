@@ -8,6 +8,7 @@ pub mod error;
 pub mod idempotency;
 pub mod identifier;
 pub mod integrity;
+pub mod outbox_store;
 pub mod pagination;
 pub mod secure_file;
 pub mod seed_store;

@@ -290,6 +290,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-messaging-core"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7cdce5ec80c3d3826420a787f2a325c60864888ed0b33b128766699adfba40"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "affinidi-messaging-delivery"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34313da7d531d72a6ef239b215b392ae5bd9810d651c452e75b5433ca54e8e90"
+dependencies = [
+ "affinidi-messaging-core",
+ "async-trait",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "affinidi-messaging-didcomm"
 version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10350,10 +10380,11 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.5"
+version = "0.11.6"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-delivery",
  "affinidi-tdk",
  "async-trait",
  "axum",
