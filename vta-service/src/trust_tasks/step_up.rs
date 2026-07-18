@@ -15,6 +15,8 @@
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 
+use std::time::Duration;
+
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use axum::http::request::Parts;
@@ -739,21 +741,29 @@ async fn maybe_push_step_up(
         // approver's device over the mediator. `buffer_outbound` alone never
         // reaches the device (nothing drains it in steady state); this is the
         // send. The device replies later with a separate approve-response, so
-        // it's fire-and-forget. Best-effort — the reject already carries the
-        // approveRequest as the relay fallback.
+        // it's fire-and-forget from this thread. Delivery-critical, so it goes
+        // Guaranteed: durably queued + retried across websocket reconnects
+        // (a bare send silently dropped the frame mid-reconnect — R1.1), keyed
+        // by the approve-request id so retries dedup. The reject still carries
+        // the approveRequest as the relay fallback if the window elapses.
         if let Err(e) = state
             .didcomm_bridge
-            .send_oneway(
+            .send_guaranteed(
                 "vta-main",
                 recipient,
                 STEP_UP_APPROVE_REQUEST_TYPE,
                 approve_request.clone(),
+                approve_request
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                Duration::from_secs(STEP_UP_TTL_SECS),
             )
             .await
         {
             tracing::warn!(
                 error = %e, approver = %recipient,
-                "delegated step-up push send failed; relay fallback applies"
+                "delegated step-up push enqueue failed; relay fallback applies"
             );
         }
     }

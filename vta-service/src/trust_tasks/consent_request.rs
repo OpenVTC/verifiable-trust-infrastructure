@@ -11,9 +11,19 @@
 //! *response*, and nothing in the request is load-bearing for the decision.
 //! Here the request *is* the decision's basis, so it has to be attributable.
 
+use std::time::Duration;
+
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
 use serde_json::{Value, json};
 use vti_common::error::AppError;
+
+/// How long the delivery layer keeps retrying the task-consent push *hop* to the
+/// mediator across websocket reconnects before the outbox entry settles
+/// `Unconfirmed` and the relay fallback carries the request. Bounds hop-retry,
+/// not the request's own validity (the mediator holds a hop-accepted push for
+/// the device to collect whenever it next connects). Matches the step-up push
+/// window (`STEP_UP_TTL_SECS`).
+const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
 use crate::policy::consent::PendingTaskConsent;
 use crate::policy::effects::Effect;
@@ -182,19 +192,29 @@ async fn push_one(
             );
         }
 
+        // Delivery-critical, so it goes Guaranteed: durably queued + retried
+        // across websocket reconnects (a bare send silently dropped the frame
+        // mid-reconnect — R1.1), keyed by the request id so retries dedup. The
+        // `deliver_by` bounds how long we retry the *hop* to the mediator (which
+        // then holds it for the device); the relay fallback covers a lapse.
         if let Err(e) = state
             .didcomm_bridge
-            .send_oneway(
+            .send_guaranteed(
                 "vta-main",
                 approver,
                 TASK_CONSENT_REQUEST_0_1,
                 request.clone(),
+                request
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
             )
             .await
         {
             tracing::warn!(
                 error = %e, approver = %approver,
-                "task-consent request send failed; relay fallback applies"
+                "task-consent request enqueue failed; relay fallback applies"
             );
         }
 

@@ -67,8 +67,8 @@ struct BridgeInner {
 /// `affinidi-messaging-didcomm-service` framework's `DIDCommService` + a
 /// thread-id pending-map. It now wraps the delivery-layer [`MessagingService`]:
 /// `send_and_wait` → [`MessagingService::request`] (the outbound message id is
-/// the correlation thread id), `send_oneway` → [`MessagingService::send`] with
-/// [`Delivery::BestEffort`], `send_and_wait_via` → [`MessagingService::request_via`]
+/// the correlation thread id), `send_guaranteed` → [`MessagingService::send`] with
+/// [`Delivery::Guaranteed`], `send_and_wait_via` → [`MessagingService::request_via`]
 /// (a named candidate transport, for the mediator handshake). The delivery
 /// dispatcher owns thread-id correlation, so the old pending-map / `try_complete`
 /// / `send_message_with_retry` are gone.
@@ -185,27 +185,51 @@ impl DIDCommBridge {
         Ok((msg_id, packed.into_bytes()))
     }
 
-    /// Fire-and-forget: pack `body` as a DIDComm message to `recipient_did` and
-    /// send it via the mediator, **without** awaiting a reply. Used for the
-    /// delegated step-up push — the approver's device replies later via a
-    /// separate `approve-response` call, not as a DIDComm reply on this thread.
+    /// Durably enqueue `body` as a **Guaranteed** DIDComm push to
+    /// `recipient_did`: written to the outbox and drained with exponential
+    /// backoff so a websocket reconnect can no longer silently drop it (R1.1 —
+    /// the exact failure a bare `BestEffort` send hid). The push hop-accepts to
+    /// the mediator **once** (then it is `Sent`, never re-sent — only a *failed*
+    /// hop retries), settling `Delivered` on §5a evidence or `Unconfirmed` when
+    /// the `deliver_by` window passes; never a silent success.
     ///
-    /// `_listener_id` is retained for call-site parity; outbound routes through
-    /// the service's current primary transport.
-    pub async fn send_oneway(
+    /// Used for the delegated step-up / task-consent pushes — the approver's
+    /// device replies later via a separate out-of-thread call, so this is
+    /// fire-and-forget from the request thread's point of view, but now
+    /// delivery-durable. `idempotency_key` dedups re-enqueues of the same logical
+    /// push (pass the request/thread id). Returns once durably **queued**, not
+    /// once delivered. `_listener_id` is retained for call-site parity; outbound
+    /// routes through the service's current primary transport.
+    pub async fn send_guaranteed(
         &self,
         _listener_id: &str,
         recipient_did: &str,
         msg_type: &str,
         body: serde_json::Value,
+        idempotency_key: Option<String>,
+        deliver_by: Duration,
     ) -> Result<(), AppError> {
         let inner = self.inner()?;
+        // No DIDComm `expires_time`: `deliver_by` bounds the outbox *hop-retry*
+        // window (how long we retry reaching the mediator), NOT the message's
+        // content validity. A held push must remain collectable until the
+        // request's own `expiresAt` — a shorter message expiry could make the
+        // mediator drop it before an offline device reconnects. (This preserves
+        // the prior `send_oneway` behaviour, which set no expiry.)
         let (_msg_id, packed) = Self::pack(inner, recipient_did, msg_type, body, None).await?;
         inner
             .service
-            .send(recipient_did, packed, Delivery::BestEffort)
+            .send(
+                recipient_did,
+                packed,
+                Delivery::Guaranteed {
+                    idempotency_key,
+                    ordering_key: None,
+                    deliver_by,
+                },
+            )
             .await
-            .map_err(|e| bad_gateway_error(format!("failed to send message: {e}")))?;
+            .map_err(|e| bad_gateway_error(format!("failed to enqueue guaranteed push: {e}")))?;
         Ok(())
     }
 
