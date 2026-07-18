@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### vta-service — notify the requester when a task-consent grant is minted
+
+* A requester had no way to learn that its task had been approved except to
+  re-submit and see whether the grant existed — which meant the caller polled.
+  On reaching the approval threshold, the VTA now pushes a lightweight
+  `task-consent/granted/0.1` notice (carrying the salted `payloadDigest` the
+  requester already holds) to the requester's DID over the mediator, using the
+  same Guaranteed delivery + doorbell as the consent-request push. It is
+  best-effort and non-load-bearing — the single-use grant check remains the real
+  gate, so a lost or spurious notice costs at most one re-submit — and it lets a
+  requester act the instant an approval lands (same browser or another device)
+  instead of polling.
+
 ### vta-sdk / vta-service / CLI — surface an entry's approve-authority in output
 
 * The ACL create/get/list echo carried no `approve_scope`, so after

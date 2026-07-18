@@ -33,6 +33,12 @@ use crate::server::AppState;
 pub(super) const TASK_CONSENT_REQUEST_0_1: &str =
     "https://trusttasks.org/spec/task-consent/request/0.1";
 
+/// Fire-and-forget notice to the **requester** that its task is now approved and
+/// a grant is ready. Lets the requester re-submit the moment the approval lands
+/// instead of polling for it.
+pub(super) const TASK_CONSENT_GRANTED_0_1: &str =
+    "https://trusttasks.org/spec/task-consent/granted/0.1";
+
 /// Build one signed `task-consent/request` per eligible approver.
 ///
 /// One document per approver rather than one broadcast document, because the
@@ -222,5 +228,82 @@ async fn push_one(
         // its next voluntary pickup. Contentless by design — the wake says only
         // "you have mail", never what the task is or who is asking.
         super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+    }
+}
+
+/// Notify the **requester** that its task has reached the approval threshold and
+/// a grant is waiting, so it can re-submit immediately rather than poll.
+///
+/// Best-effort and **non-load-bearing**: the requester still re-submits and the
+/// single-use grant check is the real gate, so a lost or spurious notice costs
+/// at most one poll cycle — the authcrypt sender (this VTA) is the only
+/// attribution the device needs, and it carries only the salted `wire_digest`
+/// the requester already holds. Mirrors [`push_one`]: buffer at the requester's
+/// mediator, send Guaranteed, ring the doorbell.
+pub(super) async fn push_granted(
+    state: &AppState,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] requester: &str,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] wire_digest: &str,
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))] type_uri: &str,
+) {
+    let mediator_did = {
+        let cfg = state.config.read().await;
+        super::step_up::approver_mediator(
+            requester,
+            cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
+        )
+    };
+    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
+    let Some(mediator_did) = mediator_did else {
+        tracing::debug!(
+            requester = %requester,
+            "no mediator route for consent requester; skipping granted notice (it will re-submit on its own)"
+        );
+        return;
+    };
+
+    #[cfg(feature = "didcomm")]
+    {
+        let body = serde_json::json!({
+            "status": "granted",
+            "payloadDigest": wire_digest,
+            "taskType": type_uri,
+        });
+        let pending = crate::messaging::registry::PendingResponse {
+            recipient_did: requester.to_string(),
+            message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
+            body: body.clone(),
+            thread_id: Some(wire_digest.to_string()),
+        };
+        if let Err(e) = state
+            .mediator_registry
+            .buffer_outbound(&mediator_did, pending)
+            .await
+        {
+            tracing::warn!(
+                error = %e, requester = %requester, mediator = %mediator_did,
+                "failed to buffer granted notice; requester falls back to re-submit"
+            );
+        }
+
+        if let Err(e) = state
+            .didcomm_bridge
+            .send_guaranteed(
+                "vta-main",
+                requester,
+                TASK_CONSENT_GRANTED_0_1,
+                body,
+                Some(format!("granted:{wire_digest}")),
+                Duration::from_secs(CONSENT_PUSH_DELIVER_BY_SECS),
+            )
+            .await
+        {
+            tracing::warn!(
+                error = %e, requester = %requester,
+                "granted notice enqueue failed; requester falls back to re-submit"
+            );
+        }
+
+        super::step_up::trigger_gateway_wake(state, requester, &mediator_did).await;
     }
 }

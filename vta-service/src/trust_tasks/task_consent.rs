@@ -250,6 +250,16 @@ pub(super) async fn handle_decision(
             return app_error_to_reject(&doc, e);
         }
         let _ = consent::delete_pending(ks, &updated).await;
+        // Nudge the requester that a grant is ready, so it re-submits at once
+        // instead of polling. Best-effort — the grant is already durable; a lost
+        // notice only costs the requester a poll cycle.
+        super::consent_request::push_granted(
+            state,
+            &updated.requester_did,
+            &updated.wire_digest,
+            &updated.type_uri,
+        )
+        .await;
         return success_response(
             &doc,
             json!({
