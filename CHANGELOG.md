@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### vti-common / vta-service — least-privilege approvers: separate "may approve" from "may act"
+
+* An approval only *conferred* delegated authority (task-consent
+  `compute_delegated_contexts`, step-up `delegated_any_approver_covers`) if the
+  approver was `Role::Admin` of the subject's context — which is also the power
+  to change DIDs in it directly, and approving across all contexts required a
+  super-admin. The reviewer had to hold the maximal power to make the very change
+  it was meant to check.
+* **Fix 1** — new `ApproveScope` (`none` | `all` | `contexts([...])`) on the ACL
+  entry, read only by the two conferral paths and never by
+  `require_admin`/`has_context_access`. An approver can now be `role: reader`,
+  `allowed_contexts: []` (acts nowhere) with `approve_scope: all` (authorizes
+  anywhere). Both conferral paths honour it in addition to the existing admin
+  path (backward compatible; pre-existing rows deserialise as `none`,
+  fail-closed). Granting it is privilege-checked: `all` is super-admin-only, a
+  scoped grant requires the caller to hold each context. Exposed on the ACL
+  create surface (trust-task / DIDComm / REST) and the CLI (`--approve-all` /
+  `--approve-contexts`).
+* **Fix 2** — new `AuthClaims::with_delegated_authority`: a consumed consent
+  grant now lifts the ephemeral role to `Admin` (not just the context) for the
+  single bound dispatch, so a purely unprivileged requester can execute a task an
+  approver blessed. The webvh update guard is relaxed to match: Plan mode needs
+  only `require_read` (a dry-run reveals just the public DID-document diff), and
+  Execute is satisfied by the delegated grant. The requester (e.g. the browser
+  plugin) can therefore hold no standing admin — every cross-context edit is
+  gated on a live approval. The widening stays single-dispatch and is never
+  persisted to the session, JWT, or ACL.
+
 ### vta-service — recover from a wedged mediator listener (drain-on-start + clearer logging)
 
 * The mediator enforces one live-delivery websocket per DID, and the VTA's single
