@@ -10386,6 +10386,7 @@ name = "vti-common"
 version = "0.11.6"
 dependencies = [
  "aes-gcm",
+ "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-delivery",
  "affinidi-tdk",
@@ -10415,6 +10416,7 @@ dependencies = [
  "tokio-vsock",
  "tower",
  "tracing",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "utoipa-axum",
