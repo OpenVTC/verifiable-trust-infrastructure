@@ -29,6 +29,59 @@
   plugin) can therefore hold no standing admin — every cross-context edit is
   gated on a live approval. The widening stays single-dispatch and is never
   persisted to the session, JWT, or ACL.
+### vtc-service 0.11.11 — follow vti-common capability_client dedup
+
+* The hook writer drops one `?` now that the shared capability document builders
+  are infallible (they return the document, not `Result`). No behaviour change.
+
+### vti-common 0.11.8 — capability_client is now the shared crate
+
+* `vti_common::capability_client` is re-exported from the new published
+  `trust-tasks-capability-client` crate instead of an inlined copy, so the hook
+  producer here and out-of-repo consumers (management UIs) share one
+  contract-tested wire implementation. The builders are now infallible (they
+  return the document directly); `vtc-service`'s hook writer drops the
+  corresponding `?`.
+
+
+### vtc-service 0.11.10 — membership hooks: production DIDComm writer + wiring
+
+* Completes the membership hook relay (`design-docs/vtc-membership-hooks.md`): the
+  `DidcommCapabilityWriter` signs `git-trust/grant|revoke` documents with the VTC's
+  credential signer (the community is the authority its grants are issued under; the
+  signer's canonical form matches the trust registry verifier's exactly) and sends them
+  to the registry over the delivery-layer messaging, correlating the reply by `threadId`
+  through a shared pending-reply map completed in the inbound demux.
+* New config: `registry.did` (the registry's DIDComm DID — required for the relay) and a
+  `[hooks.git-trust]` section (`grant_on_role`, `revoke_with_membership`). `serve()`
+  spawns the relay under a panic-restart supervisor **only** when git-trust hooks, the
+  registry DID, and the VTC credential signer are all present — absent any, no relay.
+* New keyspaces `hooks_queue` / `hooks_cursor`.
+
+
+### vti-common 0.11.7 — `capability_client`: shared capability Trust Task primitives
+
+* New `capability_client` module: transport-free document builders, `eddsa-jcs-2022`
+  Data-Integrity signing (canonical form matching the trust registry's verifier),
+  DIDComm envelope parsing, and reply classification for the capability Trust Task
+  families (`governance/capability/*`, `git-trust/*`). `WriteOutcome::IdempotentSuccess`
+  classifies the registry's `already_granted`/`not_granted` answers as success, making
+  redelivered capability writes safe. First consumer: the vtc-service membership hooks;
+  the openvtc TUI's duplicate copy migrates in a follow-up.
+
+### vtc-service 0.11.9 — membership lifecycle hooks (capability grant relay)
+
+* New `hooks` module (`design-docs/vtc-membership-hooks.md`): membership audit events
+  (`MemberAdded`/`MemberRemoved`/`RoleChanged`) map through the operator's
+  `[hooks.git-trust] grant_on_role` configuration into `git-trust/grant|revoke`
+  capability writes, drained by `HookRelay` — a second audit-tail consumer with its own
+  cursor and queue, modeled on the `MembershipSyncer` so crash-replay is inherited.
+  Exactly-once-effective (idempotency root = the audit row key), FIFO-ordered including
+  within one event's revoke→grant pair, revocation retries indefinitely on transient
+  failures (delivery-critical), grants carry a bounded retry budget, and registry
+  rejections are terminal and loud. Absent `[hooks]` config, the relay is not spawned.
+  The production DIDComm `CapabilityWriter` plus server wiring land in the follow-up.
+
 
 ### vta-service — recover from a wedged mediator listener (drain-on-start + clearer logging)
 

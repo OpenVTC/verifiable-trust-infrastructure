@@ -9,6 +9,12 @@ pub mod handshake;
 pub mod live_prover;
 pub mod registry;
 pub mod router;
+/// Delivery-layer construction + protocol-routed inbound loop (D2 P2a).
+#[cfg(feature = "didcomm")]
+pub mod service;
+/// Local replacements for the `affinidi-messaging-didcomm-service` types the
+/// DIDComm handlers depend on (D2 P2a cut-over). See [`shim`].
+pub mod shim;
 #[cfg(all(feature = "webvh", feature = "didcomm"))]
 pub mod transient_handshake;
 #[cfg(feature = "tsp")]

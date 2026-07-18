@@ -205,7 +205,25 @@ async fn build_messaging(
     );
     let outbox: Arc<dyn OutboxStore> = Arc::new(VtiOutboxStore::new(outbox_ks));
     // P1a uses `new` (not `with_receipts`) — no layer-receipt emission yet.
-    let service = Arc::new(MessagingService::new(transport, outbox));
+    // Clone transport + outbox before `new` consumes them: the background
+    // loops need their own handles.
+    let service = Arc::new(MessagingService::new(transport.clone(), outbox.clone()));
+    // Durable outbox: drain sends due entries + retries; outbox-drain confirms
+    // Delivered on recipient pickup; confirmation sweep settles expired entries.
+    tokio::spawn(affinidi_messaging_delivery::drain_loop(
+        outbox.clone(),
+        transport.clone(),
+        std::time::Duration::from_secs(2),
+    ));
+    tokio::spawn(affinidi_messaging_delivery::outbox_drain_loop(
+        transport.clone(),
+        outbox.clone(),
+        std::time::Duration::from_secs(10),
+    ));
+    tokio::spawn(affinidi_messaging_delivery::confirmation_loop(
+        outbox.clone(),
+        std::time::Duration::from_secs(30),
+    ));
     Ok((service, atm))
 }
 
@@ -371,6 +389,19 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
     // Message-pickup status heartbeat: dispatch silently (was `ignore_handler`)
     // — no handler, no log line.
     if msg.typ == MESSAGE_PICKUP_STATUS_TYPE {
+        return None;
+    }
+
+    // Capability write replies (git-trust/*, governance/capability/*): the
+    // hook relay's writer registered a waiter keyed by the request document
+    // id; complete it and reply nothing. A reply we don't recognise (no
+    // matching waiter) is dropped here rather than problem-reported.
+    if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE {
+        if let Some((_thid, doc)) =
+            vti_common::capability_client::parse_envelope_document(&msg.body)
+        {
+            state.capability_replies.complete(doc);
+        }
         return None;
     }
 
@@ -1029,7 +1060,7 @@ async fn credential_present_handler(msg: &Message, state: &AppState) -> Option<R
         {
             warn!(holder = %holder_did, request = %outcome.request.id, error = %e, "membership-credential delivery failed; credential is issued and can be re-delivered");
         } else {
-            info!(holder = %holder_did, request = %outcome.request.id, "delivered membership credentials to holder over DIDComm");
+            info!(holder = %holder_did, request = %outcome.request.id, "queued membership credentials for guaranteed delivery to holder");
         }
     }
 

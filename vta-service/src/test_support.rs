@@ -872,10 +872,6 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         ka_vm_id: None,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
-        #[cfg(feature = "didcomm")]
-        didcomm_websocket_status: Arc::new(tokio::sync::RwLock::new(
-            crate::server::DidcommWebsocketStatus::Disconnected,
-        )),
         jwt_keys: Some(jwt_keys.clone()),
         atm: None,
         #[cfg(feature = "tsp")]

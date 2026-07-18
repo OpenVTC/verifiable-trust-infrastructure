@@ -91,6 +91,13 @@ pub struct AppState {
     /// Singleton row tracking the audit-log tail's last-seen
     /// timestamp for boot-time replay (Phase 3 M3.3).
     pub sync_cursor_ks: KeyspaceHandle,
+    /// Durable queue of membership-hook capability-grant jobs.
+    pub hooks_queue_ks: KeyspaceHandle,
+    /// Singleton audit-tail cursor for the hook relay.
+    pub hooks_cursor_ks: KeyspaceHandle,
+    /// In-flight capability writes awaiting their DIDComm reply — shared
+    /// between the hook relay's writer and the inbound demux.
+    pub capability_replies: crate::hooks::PendingReplies,
     /// VRC trust-edge rows (Phase 4 M4.5). Primary keyspace.
     pub relationships_ks: KeyspaceHandle,
     /// VRC per-DID secondary index (Phase 4 M4.5). Keyed by
@@ -219,10 +226,13 @@ impl AppState {
     /// authcrypt and forwards through the VTC's mediator, exactly as the inbound
     /// reply path does), so outbound never opens a competing socket.
     ///
-    /// `Err` when the listener isn't running yet **or** the send fails — the
-    /// error is surfaced honestly (never swallowed), so a caller that must know
-    /// whether the frame reached the mediator can act on it. Packs authcrypt
-    /// with the VTC's keys and hands off to the delivery-layer
+    /// `Ok(())` once the message is **durably queued** for guaranteed delivery
+    /// (not yet sent) — the delivery-layer drain loop owns sending + retrying it
+    /// until it lands (up to `deliver_by`). `Err` only when the listener isn't
+    /// running yet **or** the enqueue itself fails — surfaced honestly (never
+    /// swallowed), so a caller that must know whether the frame was accepted for
+    /// delivery can act on it. Packs authcrypt with the VTC's keys and hands off
+    /// to the delivery-layer
     /// [`MessagingService`](affinidi_messaging_delivery::MessagingService) over
     /// the one shared mediator websocket.
     pub async fn send_to_member(
@@ -233,6 +243,8 @@ impl AppState {
         let messaging = self.didcomm.get().ok_or_else(|| {
             AppError::Internal("VTC messaging not running — cannot send to member".into())
         })?;
+        // Capture the id before packing — `pack_encrypted` borrows `message`.
+        let idempotency_key = message.id.clone();
         let (packed, _) = messaging
             .atm
             .pack_encrypted(
@@ -250,7 +262,11 @@ impl AppState {
             .send(
                 recipient_did,
                 packed.into_bytes(),
-                affinidi_messaging_delivery::Delivery::BestEffort,
+                affinidi_messaging_delivery::Delivery::Guaranteed {
+                    idempotency_key: Some(idempotency_key),
+                    ordering_key: None,
+                    deliver_by: std::time::Duration::from_secs(24 * 3600),
+                },
             )
             .await
             .map_err(|e| AppError::Internal(format!("DIDComm send to {recipient_did} failed: {e}")))
@@ -356,6 +372,8 @@ pub async fn run(
     let registry_records_ks = store.keyspace(keyspaces::REGISTRY_RECORDS)?;
     let sync_queue_ks = store.keyspace(keyspaces::SYNC_QUEUE)?;
     let sync_cursor_ks = store.keyspace(keyspaces::SYNC_CURSOR)?;
+    let hooks_queue_ks = store.keyspace(keyspaces::HOOKS_QUEUE)?;
+    let hooks_cursor_ks = store.keyspace(keyspaces::HOOKS_CURSOR)?;
     let relationships_ks = store.keyspace(keyspaces::RELATIONSHIPS)?;
     let relationships_by_did_ks = store.keyspace(keyspaces::RELATIONSHIPS_BY_DID)?;
     let endorsement_types_ks = store.keyspace(keyspaces::ENDORSEMENT_TYPES)?;
@@ -577,6 +595,9 @@ pub async fn run(
         registry_records_ks,
         sync_queue_ks,
         sync_cursor_ks,
+        hooks_queue_ks,
+        hooks_cursor_ks,
+        capability_replies: crate::hooks::PendingReplies::new(),
         relationships_ks,
         relationships_by_did_ks,
         endorsement_types_ks,
@@ -804,6 +825,54 @@ pub async fn run(
                 }
             }
             health.mark_stopped();
+        });
+    }
+
+    // Membership hook relay: propagate membership changes to capability grants
+    // in the community's trust registry. Spawned only when git-trust hooks are
+    // configured AND the registry DID + the VTC credential signer are present —
+    // absent any of these the relay is not started (R5.1: no config, no relay).
+    if let (Some(git_trust_cfg), Some(registry_did), Some(signer)) = (
+        boot_cfg.hooks.git_trust.clone(),
+        boot_cfg.registry.did.clone(),
+        state.credential_signer.clone(),
+    ) {
+        let writer = std::sync::Arc::new(crate::hooks::DidcommCapabilityWriter::new(
+            state.didcomm.clone(),
+            signer,
+            registry_did,
+            state.capability_replies.clone(),
+        ));
+        let audit_ks = state.audit_ks.clone();
+        let queue_ks = state.hooks_queue_ks.clone();
+        let cursor_ks = state.hooks_cursor_ks.clone();
+        let mut supervisor_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                if *supervisor_shutdown.borrow() {
+                    break;
+                }
+                let relay = crate::hooks::HookRelay::new(
+                    audit_ks.clone(),
+                    queue_ks.clone(),
+                    cursor_ks.clone(),
+                    git_trust_cfg.clone(),
+                    writer.clone(),
+                );
+                let run_shutdown = supervisor_shutdown.clone();
+                let child = tokio::spawn(async move { relay.run(run_shutdown).await });
+                match child.await {
+                    Ok(()) => break,
+                    Err(join_err) if join_err.is_panic() => {
+                        error!(error = %join_err, "HookRelay task panicked — restarting after backoff");
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+                            _ = supervisor_shutdown.changed() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
         });
     }
 

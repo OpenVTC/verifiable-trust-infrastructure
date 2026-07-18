@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use base64::Engine;
 
-use affinidi_messaging_didcomm::Message;
-use affinidi_messaging_didcomm_service::{
+use crate::messaging::shim::{
     DIDCommResponse, DIDCommServiceError, Extension, HandlerContext, ProblemReport,
     ServiceProblemReport,
 };
+use affinidi_messaging_didcomm::Message;
 use tracing::{info, warn};
 
 use crate::acl::Role;

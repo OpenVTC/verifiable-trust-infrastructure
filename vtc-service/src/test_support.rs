@@ -215,6 +215,8 @@ impl TestVtcBuilder {
             .expect("registry_records ks");
         let sync_queue_ks = store.keyspace("sync_queue").expect("sync_queue ks");
         let sync_cursor_ks = store.keyspace("sync_cursor").expect("sync_cursor ks");
+        let hooks_queue_ks = store.keyspace("hooks_queue").expect("hooks_queue ks");
+        let hooks_cursor_ks = store.keyspace("hooks_cursor").expect("hooks_cursor ks");
         let relationships_ks = store.keyspace("relationships").expect("relationships ks");
         let relationships_by_did_ks = store
             .keyspace("relationships_by_did")
@@ -337,6 +339,9 @@ impl TestVtcBuilder {
             registry_records_ks,
             sync_queue_ks,
             sync_cursor_ks,
+            hooks_queue_ks,
+            hooks_cursor_ks,
+            capability_replies: crate::hooks::PendingReplies::new(),
             relationships_ks,
             relationships_by_did_ks,
             endorsement_types_ks,

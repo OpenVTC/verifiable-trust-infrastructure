@@ -1,16 +1,13 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_messaging_didcomm_service::DIDCommService;
+use affinidi_messaging_delivery::{Delivery, MessagingService, MessagingStatus};
 use affinidi_tdk::didcomm::Message;
-use tokio::sync::oneshot;
+use affinidi_tdk::messaging::ATM;
+use tokio::sync::OnceCell;
 
 use crate::error::{AppError, bad_gateway_error};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, extract_problem_report};
-
-/// Map of pending request IDs to oneshot senders for response routing.
-pub type PendingMap = Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Message>>>>;
 
 /// Translate a remote peer's DIDComm problem-report into a typed [`AppError`].
 ///
@@ -49,103 +46,204 @@ fn problem_report_to_app_error(code: &str, comment: &str) -> AppError {
     }
 }
 
-/// Bridge between REST/DIDComm handlers and the DIDComm service's outbound
-/// send capability.
+/// The live delivery-layer wiring the bridge sends through, published once the
+/// [`MessagingService`] is built in `server::run`.
+struct BridgeInner {
+    /// The one delivery-layer service over the VTA's mediator websocket(s).
+    /// Outbound `send`/`request` route through its current **primary**;
+    /// `request_via` targets a named (candidate) transport for the mediator
+    /// handshake.
+    service: Arc<MessagingService>,
+    /// The ATM used to authcrypt-pack outbound messages (pack sender = the
+    /// VTA's DID).
+    atm: ATM,
+    /// The VTA's own DID — the `from` on every packed outbound message.
+    vta_did: String,
+}
+
+/// Outbound DIDComm adapter over the reliable-messaging delivery layer.
 ///
-/// Provides outbound request-response DIDComm messaging by registering
-/// oneshot channels keyed by message ID. The [`BridgeHandler`] wrapper
-/// calls [`try_complete`](Self::try_complete) on each inbound message to route responses
-/// back to the waiting handler.
+/// **D2 P2a cut-over**: this used to wrap the
+/// `affinidi-messaging-didcomm-service` framework's `DIDCommService` + a
+/// thread-id pending-map. It now wraps the delivery-layer [`MessagingService`]:
+/// `send_and_wait` → [`MessagingService::request`] (the outbound message id is
+/// the correlation thread id), `send_oneway` → [`MessagingService::send`] with
+/// [`Delivery::BestEffort`], `send_and_wait_via` → [`MessagingService::request_via`]
+/// (a named candidate transport, for the mediator handshake). The delivery
+/// dispatcher owns thread-id correlation, so the old pending-map / `try_complete`
+/// / `send_message_with_retry` are gone.
 ///
-/// The bridge starts without a service reference. Call [`set_service`](Self::set_service)
-/// after [`DIDCommService::start`] to enable outbound sends.
-///
-/// [`BridgeHandler`]: crate::messaging::router::BridgeHandler
+/// The public method surface is unchanged so the ~25 WebVH / provision / CLI /
+/// test call-sites that thread `Arc<DIDCommBridge>` compile untouched;
+/// [`placeholder`](Self::placeholder) stays free (offline CLI + tests never
+/// send). The live wiring is published once via [`set_messaging`](Self::set_messaging).
 pub struct DIDCommBridge {
-    service: tokio::sync::OnceCell<DIDCommService>,
-    pending: PendingMap,
+    inner: OnceCell<BridgeInner>,
+    /// The primary transport id (e.g. `"vta-main"`). Retained for parity with
+    /// the old listener id; outbound always routes through the service's
+    /// current primary regardless.
+    #[allow(dead_code)]
     listener_id: String,
 }
 
 impl DIDCommBridge {
-    /// Create a new bridge targeting a specific listener.
-    ///
-    /// Call [`set_service`](Self::set_service) after the DIDComm service starts to enable
-    /// outbound sends.
+    /// Create a new bridge. Call [`set_messaging`](Self::set_messaging) after
+    /// the delivery-layer `MessagingService` starts to enable outbound sends.
     pub fn new(listener_id: impl Into<String>) -> Self {
         Self {
-            service: tokio::sync::OnceCell::new(),
-            pending: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            inner: OnceCell::new(),
             listener_id: listener_id.into(),
         }
     }
 
     /// Create a placeholder bridge for test/CLI contexts that never send.
-    ///
-    /// Attempting to send via a placeholder will return an error.
+    /// Attempting to send via a placeholder returns an error.
     pub fn placeholder() -> Self {
         Self::new("")
     }
 
-    /// Store the DIDComm service reference for outbound sends.
-    ///
-    /// Called once after [`DIDCommService::start`] completes.
-    pub fn set_service(&self, service: DIDCommService) {
-        let _ = self.service.set(service);
+    /// Publish the live delivery-layer wiring. Called once from `server::run`
+    /// after the `MessagingService` is built over the mediator websocket.
+    pub fn set_messaging(&self, service: Arc<MessagingService>, atm: ATM, vta_did: String) {
+        let _ = self.inner.set(BridgeInner {
+            service,
+            atm,
+            vta_did,
+        });
     }
 
-    /// Best-effort accessor for the wrapped service. Returns
-    /// `None` if [`set_service`](Self::set_service) hasn't been
-    /// called (e.g. the bridge is a placeholder, or DIDComm
-    /// hasn't started yet). Used by the live mediator handshake
-    /// prover, which needs to call `add_listener` /
-    /// `wait_connected` against a running service.
-    pub fn try_get_service(&self) -> Option<DIDCommService> {
-        self.service.get().cloned()
+    /// The live [`MessagingService`] handle, or `None` before
+    /// [`set_messaging`](Self::set_messaging). Used by the live mediator
+    /// handshake prover, which drives `add_transport`/`request_via`/`promote`
+    /// against it.
+    pub fn messaging_handle(&self) -> Option<Arc<MessagingService>> {
+        self.inner.get().map(|i| i.service.clone())
     }
 
-    /// Fire-and-forget: pack `body` as a DIDComm message to `recipient_did` and
-    /// send it via the mediator, **without** registering a pending reply. Used
-    /// for the delegated step-up push — the approver's device replies later via
-    /// a separate `approve-response` call, not as a DIDComm reply on this thread.
-    pub async fn send_oneway(
-        &self,
-        listener_id: &str,
-        recipient_did: &str,
+    /// The ATM (for building a candidate transport's profile + packing during
+    /// the mediator handshake), or `None` before the service is published.
+    pub fn atm(&self) -> Option<ATM> {
+        self.inner.get().map(|i| i.atm.clone())
+    }
+
+    /// The VTA's own DID, or `None` before the service is published.
+    pub fn vta_did(&self) -> Option<String> {
+        self.inner.get().map(|i| i.vta_did.clone())
+    }
+
+    /// The live, **non-latched** messaging status (R6.2), or `None` before the
+    /// service is published. Read straight off [`MessagingService::status`],
+    /// which reflects each transport's live connection signal and can go false
+    /// again after boot.
+    pub fn messaging_status_str(&self) -> Option<String> {
+        self.inner.get().map(|i| {
+            match i.service.status() {
+                MessagingStatus::Connected => "connected",
+                MessagingStatus::Degraded => "degraded",
+                // `MessagingStatus` is `#[non_exhaustive]`; treat any other
+                // (including `Disconnected`) as disconnected.
+                _ => "disconnected",
+            }
+            .to_string()
+        })
+    }
+
+    fn inner(&self) -> Result<&BridgeInner, AppError> {
+        self.inner
+            .get()
+            .ok_or_else(|| AppError::Internal("DIDComm messaging not initialized".into()))
+    }
+
+    /// Authcrypt-pack `body` as a DIDComm message from the VTA to `recipient`.
+    /// Returns `(message_id, packed_bytes)`; the id is the correlation thread
+    /// id for a request/reply round trip.
+    async fn pack(
+        inner: &BridgeInner,
+        recipient: &str,
         msg_type: &str,
         body: serde_json::Value,
-    ) -> Result<(), AppError> {
-        let service = self
-            .service
-            .get()
-            .ok_or_else(|| AppError::Internal("DIDComm service not initialized".into()))?;
-        let vta_did = service.listener_did(listener_id).await.ok_or_else(|| {
-            AppError::Internal(format!(
-                "listener '{listener_id}' not found in DIDComm service"
-            ))
-        })?;
+        timeout_secs: Option<u64>,
+    ) -> Result<(String, Vec<u8>), AppError> {
+        let msg_id = uuid::Uuid::new_v4().to_string();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let msg = Message::build(uuid::Uuid::new_v4().to_string(), msg_type.to_string(), body)
-            .from(vta_did)
-            .to(recipient_did.to_string())
-            .created_time(now)
-            .finalize();
-        service
-            .send_message_with_retry(listener_id, msg, recipient_did, 3, Duration::from_secs(2))
+        let mut builder = Message::build(msg_id.clone(), msg_type.to_string(), body)
+            .from(inner.vta_did.clone())
+            .to(recipient.to_string())
+            .created_time(now);
+        if let Some(secs) = timeout_secs {
+            builder = builder.expires_time(now + secs);
+        }
+        let msg = builder.finalize();
+        let (packed, _meta) = inner
+            .atm
+            .pack_encrypted(&msg, recipient, Some(&inner.vta_did), Some(&inner.vta_did))
+            .await
+            .map_err(|e| bad_gateway_error(format!("failed to pack message: {e}")))?;
+        Ok((msg_id, packed.into_bytes()))
+    }
+
+    /// Fire-and-forget: pack `body` as a DIDComm message to `recipient_did` and
+    /// send it via the mediator, **without** awaiting a reply. Used for the
+    /// delegated step-up push — the approver's device replies later via a
+    /// separate `approve-response` call, not as a DIDComm reply on this thread.
+    ///
+    /// `_listener_id` is retained for call-site parity; outbound routes through
+    /// the service's current primary transport.
+    pub async fn send_oneway(
+        &self,
+        _listener_id: &str,
+        recipient_did: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+    ) -> Result<(), AppError> {
+        let inner = self.inner()?;
+        let (_msg_id, packed) = Self::pack(inner, recipient_did, msg_type, body, None).await?;
+        inner
+            .service
+            .send(recipient_did, packed, Delivery::BestEffort)
             .await
             .map_err(|e| bad_gateway_error(format!("failed to send message: {e}")))?;
         Ok(())
     }
 
-    /// Like [`send_and_wait`](Self::send_and_wait) but uses the
-    /// caller-supplied `listener_id` instead of `self.listener_id`.
-    /// Required when the VTA holds multiple listeners (e.g. during
-    /// a mediator migration drain window) — outbound messages must
-    /// be sent through a specific listener and the response routed
-    /// back via the same listener's pending-map entry.
+    /// Send a DIDComm message and await the correlated reply, validating it
+    /// against `expected_type` / `problem_report_type` exactly as before.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_and_wait(
+        &self,
+        server_did: &str,
+        msg_type: &str,
+        body: serde_json::Value,
+        expected_type: &str,
+        problem_report_type: &str,
+        timeout_secs: u64,
+    ) -> Result<Message, AppError> {
+        let inner = self.inner()?;
+        let (msg_id, packed) =
+            Self::pack(inner, server_did, msg_type, body, Some(timeout_secs)).await?;
+        // The outbound message id IS the correlation thread id: the reply
+        // threads to it (`thid == request.id`), and the delivery dispatcher
+        // demuxes the reply to this waiter by that thread id.
+        let received = inner
+            .service
+            .request(
+                server_did,
+                packed,
+                &msg_id,
+                Duration::from_secs(timeout_secs),
+            )
+            .await
+            .map_err(|e| bad_gateway_error(format!("failed to send message: {e}")))?;
+        Self::validate_reply(received.payload, expected_type, problem_report_type)
+    }
+
+    /// Like [`send_and_wait`](Self::send_and_wait) but sends over a **named**
+    /// (non-primary) installed transport — the candidate mediator being proven
+    /// during a migration handshake — while still awaiting the correlated reply
+    /// on the merged dispatcher.
     #[allow(clippy::too_many_arguments)]
     pub async fn send_and_wait_via(
         &self,
@@ -157,148 +255,39 @@ impl DIDCommBridge {
         problem_report_type: &str,
         timeout_secs: u64,
     ) -> Result<Message, AppError> {
-        let service = self
+        let inner = self.inner()?;
+        let (msg_id, packed) =
+            Self::pack(inner, recipient_did, msg_type, body, Some(timeout_secs)).await?;
+        let received = inner
             .service
-            .get()
-            .ok_or_else(|| AppError::Internal("DIDComm service not initialized".into()))?;
-
-        let vta_did = service.listener_did(listener_id).await.ok_or_else(|| {
-            AppError::Internal(format!(
-                "listener '{listener_id}' not found in DIDComm service",
-            ))
-        })?;
-
-        let msg_id = uuid::Uuid::new_v4().to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
-            .from(vta_did.clone())
-            .to(recipient_did.to_string())
-            .created_time(now)
-            .expires_time(now + timeout_secs)
-            .finalize();
-
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(msg_id.clone(), tx);
-
-        service
-            .send_message_with_retry(listener_id, msg, recipient_did, 3, Duration::from_secs(2))
-            .await
-            .map_err(|e| {
-                self.pending.lock().unwrap().remove(&msg_id);
-                bad_gateway_error(format!("failed to send message: {e}"))
-            })?;
-
-        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), rx)
-            .await
-            .map_err(|_| {
-                self.pending.lock().unwrap().remove(&msg_id);
-                bad_gateway_error("timeout waiting for DIDComm response".to_string())
-            })?
-            .map_err(|_| bad_gateway_error("pending request channel dropped".to_string()))?;
-
-        if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
-            let (code, comment) = extract_problem_report(&response.body);
-            return Err(problem_report_to_app_error(&code, &comment));
-        }
-
-        if response.typ != expected_type {
-            return Err(bad_gateway_error(format!(
-                "unexpected response type: expected {expected_type}, got {}",
-                response.typ
-            )));
-        }
-
-        Ok(response)
-    }
-
-    /// Try to complete a pending outbound request. Returns true if the
-    /// message was routed to a waiting [`Self::send_and_wait`] caller.
-    pub fn try_complete(&self, msg: &Message) -> bool {
-        if let Some(thid) = &msg.thid
-            && let Some(tx) = self.pending.lock().unwrap().remove(thid)
-        {
-            let _ = tx.send(msg.clone());
-            return true;
-        }
-        false
-    }
-
-    /// Send a DIDComm message and wait for a response matching the thread ID.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_and_wait(
-        &self,
-        server_did: &str,
-        msg_type: &str,
-        body: serde_json::Value,
-        expected_type: &str,
-        problem_report_type: &str,
-        timeout_secs: u64,
-    ) -> Result<Message, AppError> {
-        let service = self
-            .service
-            .get()
-            .ok_or_else(|| AppError::Internal("DIDComm service not initialized".into()))?;
-
-        let vta_did = service
-            .listener_did(&self.listener_id)
-            .await
-            .ok_or_else(|| {
-                AppError::Internal(format!(
-                    "listener '{}' not found in DIDComm service",
-                    self.listener_id
-                ))
-            })?;
-
-        let msg_id = uuid::Uuid::new_v4().to_string();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let msg = Message::build(msg_id.clone(), msg_type.to_string(), body)
-            .from(vta_did.clone())
-            .to(server_did.to_string())
-            .created_time(now)
-            .expires_time(now + timeout_secs)
-            .finalize();
-
-        // Register pending before sending
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(msg_id.clone(), tx);
-
-        // Send via the DIDComm service with retry on reconnect
-        service
-            .send_message_with_retry(
-                &self.listener_id,
-                msg,
-                server_did,
-                3,
-                Duration::from_secs(2),
+            .request_via(
+                listener_id,
+                recipient_did,
+                packed,
+                &msg_id,
+                Duration::from_secs(timeout_secs),
             )
             .await
-            .map_err(|e| {
-                self.pending.lock().unwrap().remove(&msg_id);
-                bad_gateway_error(format!("failed to send message: {e}"))
-            })?;
+            .map_err(|e| bad_gateway_error(format!("failed to send message: {e}")))?;
+        Self::validate_reply(received.payload, expected_type, problem_report_type)
+    }
 
-        // Wait for response with timeout
-        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), rx)
-            .await
-            .map_err(|_| {
-                self.pending.lock().unwrap().remove(&msg_id);
-                bad_gateway_error("timeout waiting for DIDComm response".to_string())
-            })?
-            .map_err(|_| bad_gateway_error("pending request channel dropped".to_string()))?;
+    /// Parse a delivery-layer reply payload (the full plaintext DIDComm message
+    /// JSON) and validate it: a problem-report maps through
+    /// [`problem_report_to_app_error`]; any non-`expected_type` reply is a 502.
+    fn validate_reply(
+        payload: Vec<u8>,
+        expected_type: &str,
+        problem_report_type: &str,
+    ) -> Result<Message, AppError> {
+        let response: Message = serde_json::from_slice(&payload)
+            .map_err(|e| bad_gateway_error(format!("failed to parse DIDComm response: {e}")))?;
 
-        // Check for problem report
         if response.typ == problem_report_type || response.typ == PROBLEM_REPORT_TYPE {
             let (code, comment) = extract_problem_report(&response.body);
             return Err(problem_report_to_app_error(&code, &comment));
         }
 
-        // Verify expected type
         if response.typ != expected_type {
             return Err(bad_gateway_error(format!(
                 "unexpected response type: expected {expected_type}, got {}",

@@ -19,6 +19,10 @@ pub const PASSKEY: &str = "passkey";
 pub const INSTALL: &str = "install";
 pub const MEMBERS: &str = "members";
 pub const JOIN_REQUESTS: &str = "join_requests";
+/// Durable queue of pending capability-grant hook jobs (membership → grant).
+pub const HOOKS_QUEUE: &str = "hooks_queue";
+/// Singleton audit-tail cursor for the hook relay.
+pub const HOOKS_CURSOR: &str = "hooks_cursor";
 pub const POLICIES: &str = "policies";
 pub const ACTIVE_POLICIES: &str = "active_policies";
 pub const STATUS_LISTS: &str = "status_lists";

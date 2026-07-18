@@ -305,9 +305,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-delivery"
-version = "0.1.7"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34313da7d531d72a6ef239b215b392ae5bd9810d651c452e75b5433ca54e8e90"
+checksum = "bb92150efbc0d18868510c2163ab0e314b34e71a16a032688c6f3033eb1f4e14"
 dependencies = [
  "affinidi-messaging-core",
  "async-trait",
@@ -336,30 +336,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "affinidi-messaging-didcomm-service"
-version = "0.3.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525bb8c3cb37f5c470ca1ed443d2beebba698b254d7656b8e4783e772355f1f0"
-dependencies = [
- "affinidi-messaging-didcomm",
- "affinidi-messaging-sdk",
- "affinidi-secrets-resolver",
- "affinidi-tdk-common",
- "async-trait",
- "regex",
- "serde",
- "serde_json",
- "sha256",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "trust-tasks-rs",
  "uuid",
 ]
 
@@ -478,9 +454,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.18.57"
+version = "0.18.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "197dc2c0e495bc94e92f74df980b59cc16668018fe47d6f55e22f9c699e40f00"
+checksum = "22956a9d0183e10019486445ddcc134835be191001c455c8d1d3fed8083c0670"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -2984,7 +2960,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -4751,7 +4727,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "system-configuration 0.7.0",
  "tokio",
  "tower-service",
@@ -6943,7 +6919,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.41",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6981,7 +6957,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]
@@ -9499,6 +9475,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-tasks-capability-client"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cdd2a1c83c4b1b74d2bd335ff2e45cdcb1bf4e17eddbf24761dd4a471a79cf8"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "trust-tasks-rs",
+ "uuid",
+]
+
+[[package]]
 name = "trust-tasks-https"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10196,7 +10186,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.11.6"
+version = "0.11.7"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10204,8 +10194,9 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-core",
+ "affinidi-messaging-delivery",
  "affinidi-messaging-didcomm",
- "affinidi-messaging-didcomm-service",
  "affinidi-messaging-sdk",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
@@ -10235,6 +10226,7 @@ dependencies = [
  "ed25519-dalek",
  "ed25519-dalek-bip32",
  "fjall",
+ "futures-util",
  "hex",
  "hkdf 0.13.0",
  "hmac 0.13.0",
@@ -10301,7 +10293,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.7"
+version = "0.11.11"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10383,9 +10375,10 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.7"
+version = "0.11.9"
 dependencies = [
  "aes-gcm",
+ "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-delivery",
  "affinidi-tdk",
@@ -10415,6 +10408,8 @@ dependencies = [
  "tokio-vsock",
  "tower",
  "tracing",
+ "trust-tasks-capability-client",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "utoipa-axum",
@@ -10837,7 +10832,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
