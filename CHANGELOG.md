@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### vti-common 0.11.8 — capability_client is now the shared crate
+
+* `vti_common::capability_client` is re-exported from the new published
+  `trust-tasks-capability-client` crate instead of an inlined copy, so the hook
+  producer here and out-of-repo consumers (management UIs) share one
+  contract-tested wire implementation. The builders are now infallible (they
+  return the document directly); `vtc-service`'s hook writer drops the
+  corresponding `?`.
+
+
 ### vtc-service 0.11.10 — membership hooks: production DIDComm writer + wiring
 
 * Completes the membership hook relay (`design-docs/vtc-membership-hooks.md`): the

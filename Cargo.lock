@@ -9499,6 +9499,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "trust-tasks-capability-client"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cdd2a1c83c4b1b74d2bd335ff2e45cdcb1bf4e17eddbf24761dd4a471a79cf8"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "trust-tasks-rs",
+ "uuid",
+]
+
+[[package]]
 name = "trust-tasks-https"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10383,7 +10397,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -10416,6 +10430,7 @@ dependencies = [
  "tokio-vsock",
  "tower",
  "tracing",
+ "trust-tasks-capability-client",
  "trust-tasks-rs",
  "url",
  "utoipa",

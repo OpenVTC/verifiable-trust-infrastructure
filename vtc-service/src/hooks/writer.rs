@@ -133,8 +133,7 @@ impl DidcommCapabilityWriter {
                 &job.resource,
                 job.reason.as_deref(),
             ),
-        }
-        .map_err(|e| HookWriteError::Transient(format!("build capability document: {e}")))?;
+        };
 
         let mut doc_value = serde_json::to_value(&doc)
             .map_err(|e| HookWriteError::Transient(format!("serialise document: {e}")))?;
