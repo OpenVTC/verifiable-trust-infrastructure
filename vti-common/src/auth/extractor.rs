@@ -239,6 +239,35 @@ impl AuthClaims {
         claims
     }
 
+    /// Realize a **consented grant** for a single dispatch: the approval conferred
+    /// full authority over `extra`, so the requester need hold **no standing
+    /// admin at all**.
+    ///
+    /// Unlike [`with_delegated_contexts`] — which widens context but keeps the
+    /// requester's role — this also lifts the role to [`Role::Admin`], because
+    /// the grant authorizes the exact bound task in full. That is what lets a
+    /// purely unprivileged agent (a Reader that can act nowhere) execute a task an
+    /// approver blessed: the approval *is* the authority. Ephemeral in exactly the
+    /// same way as the context widening — built for one dispatch, never persisted
+    /// to the session, JWT, or ACL — so the agent accrues no standing power.
+    ///
+    /// A no-op when `extra` is empty (nothing was delegated — an ordinary
+    /// same-context, already-authorized execution) and for a super-admin (already
+    /// unrestricted; adding to the empty list would wrongly narrow it).
+    pub fn with_delegated_authority(&self, extra: &[String]) -> Self {
+        let mut claims = self.clone();
+        if extra.is_empty() || claims.is_super_admin() {
+            return claims;
+        }
+        claims.role = Role::Admin;
+        for ctx in extra {
+            if !claims.allowed_contexts.iter().any(|c| c == ctx) {
+                claims.allowed_contexts.push(ctx.clone());
+            }
+        }
+        claims
+    }
+
     /// Check that the caller has access to the given context.
     ///
     /// Admins with an empty `allowed_contexts` list have unrestricted access.
@@ -556,6 +585,52 @@ mod tests {
         let after = sa.with_delegated_contexts(&["openvtc".into()]);
         assert!(after.is_super_admin(), "super-admin stays unrestricted");
         assert!(after.allowed_contexts.is_empty());
+    }
+
+    #[test]
+    fn with_delegated_authority_lifts_a_non_admin_for_one_dispatch() {
+        // Fix 2: a purely unprivileged agent (Reader, acts nowhere) executes a
+        // task an approver blessed — the grant confers both admin and context.
+        let reader = AuthClaims {
+            role: Role::Reader,
+            allowed_contexts: vec![],
+            ..Default::default()
+        };
+        assert!(reader.require_admin().is_err());
+        assert!(!reader.has_context_access("openvtc"));
+
+        let widened = reader.with_delegated_authority(&["openvtc".into()]);
+        assert!(widened.require_admin().is_ok(), "grant confers admin");
+        assert!(
+            widened.has_context_access("openvtc"),
+            "grant confers the context"
+        );
+
+        // The original is untouched — no standing elevation persists.
+        assert!(reader.require_admin().is_err());
+        assert!(!reader.has_context_access("openvtc"));
+    }
+
+    #[test]
+    fn with_delegated_authority_is_a_noop_for_empty_or_super_admin() {
+        let reader = AuthClaims {
+            role: Role::Reader,
+            allowed_contexts: vec![],
+            ..Default::default()
+        };
+        // Empty delegation changes nothing (an ordinary self-authorized execution).
+        let after = reader.with_delegated_authority(&[]);
+        assert_eq!(after.role, Role::Reader);
+        assert!(after.allowed_contexts.is_empty());
+
+        // A super-admin is already unrestricted; never narrow it to a scoped list.
+        let sa = AuthClaims {
+            role: Role::Admin,
+            ..Default::default()
+        };
+        assert!(sa.is_super_admin());
+        let after = sa.with_delegated_authority(&["openvtc".into()]);
+        assert!(after.is_super_admin(), "super-admin stays unrestricted");
     }
 
     #[test]

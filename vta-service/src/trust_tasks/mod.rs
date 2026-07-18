@@ -494,10 +494,13 @@ pub(crate) async fn dispatch_trust_task_core(
     // `config.policy.enforcement` is on; when a policy denies (or demands
     // step-up/consent), the task is rejected here and never reaches its handler.
     // A rejected task still flows through the audit tail below.
-    // Filled by the gate only when a consumed consent grant *delegated* a context
+    // Filled by the gate only when a consumed consent grant *delegated* authority
     // the requester's own token lacked. When non-empty, this dispatch — and only
-    // this dispatch — runs under the requester's identity widened to include the
-    // delegated context; the widening is never written back to the session.
+    // this dispatch — runs under the requester's identity widened to full admin
+    // over the delegated context (`with_delegated_authority`), because the grant
+    // authorizes the exact bound task in full. This is what lets a purely
+    // unprivileged requester execute a task an approver blessed; the widening is
+    // never written back to the session.
     let mut delegated_contexts: Vec<String> = Vec::new();
     let outcome =
         match policy_gate::policy_gate(state, auth, &type_uri, &doc, &mut delegated_contexts).await
@@ -505,7 +508,7 @@ pub(crate) async fn dispatch_trust_task_core(
             Some(reject_outcome) => reject_outcome,
             None => {
                 let delegated_auth = (!delegated_contexts.is_empty())
-                    .then(|| auth.with_delegated_contexts(&delegated_contexts));
+                    .then(|| auth.with_delegated_authority(&delegated_contexts));
                 let auth = delegated_auth.as_ref().unwrap_or(auth);
                 if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
                     let mut doc = doc;

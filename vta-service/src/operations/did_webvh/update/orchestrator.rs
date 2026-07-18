@@ -155,14 +155,34 @@ async fn run_update(
     // *before* anyone holds the authority to commit it. Whether the requester
     // self-authorized rides out on `UpdatePlan.requester_authorized` so the gate
     // knows to demand a context-admin approver.
-    auth.require_admin()
-        .map_err(|e| UpdateDidWebvhError::Forbidden(format!("admin required: {e}")))?;
-    let requester_authorized = auth.has_context_access(&record.context_id);
-    if mode == Mode::Execute && !requester_authorized {
-        return Err(UpdateDidWebvhError::Forbidden(format!(
-            "caller has no admin role in context `{}`",
-            record.context_id
-        )));
+    // Whether the caller can authorize this update on its **own standing** —
+    // admin role AND access to the DID's context. In Execute mode `auth` may
+    // already have been widened for this one dispatch by a consented delegation
+    // (`AuthClaims::with_delegated_authority`, which confers *both* admin and the
+    // context), so a requester that held neither on its own token passes here iff
+    // an approver conferred them. This is what lets a purely unprivileged agent
+    // execute a task an approver blessed.
+    let requester_authorized =
+        auth.require_admin().is_ok() && auth.has_context_access(&record.context_id);
+    match mode {
+        // A dry-run reveals only the public DID-document diff and reserves
+        // nothing, so any known (Reader+) principal may run it to surface the
+        // effects a consent surface must show — including for a context the
+        // caller cannot self-authorize. That is precisely how the consent gate
+        // shows an approver a delegated update before anyone holds the authority
+        // to commit it. `requester_authorized` still rides out on
+        // `UpdatePlan.requester_authorized` so the gate knows to demand a
+        // conferring approver.
+        Mode::Plan => auth.require_read().map_err(|e| {
+            UpdateDidWebvhError::Forbidden(format!("read access required to plan an update: {e}"))
+        })?,
+        Mode::Execute if !requester_authorized => {
+            return Err(UpdateDidWebvhError::Forbidden(format!(
+                "caller is not authorized to update DIDs in context `{}`, and no consented delegation conferred it",
+                record.context_id
+            )));
+        }
+        Mode::Execute => {}
     }
 
     // 3. Validate caller-supplied inputs (cheap; do before key derivation).
