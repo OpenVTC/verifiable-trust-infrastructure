@@ -2,7 +2,7 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.10.6"
+version = "0.10.7"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true

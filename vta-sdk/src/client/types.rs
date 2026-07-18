@@ -322,6 +322,15 @@ pub struct AclEntryResponse {
     /// pre-existing entries on the wire.
     #[serde(default)]
     pub step_up_require: Option<String>,
+    /// Approve-authority over **any** context — may confer via approval while
+    /// acting nowhere. `#[serde(default)]` so entries from pre-approver servers
+    /// (which never send it) read as `false`.
+    #[serde(default)]
+    pub approve_all_contexts: bool,
+    /// Approve-authority scoped to these contexts. Empty = confers nothing
+    /// (unless `approve_all_contexts`). `#[serde(default)]` for older servers.
+    #[serde(default)]
+    pub approve_contexts: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

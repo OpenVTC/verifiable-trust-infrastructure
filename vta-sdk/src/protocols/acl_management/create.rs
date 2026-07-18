@@ -86,6 +86,15 @@ pub struct CreateAclResultBody {
     /// if any (echoes the stored `step_up_require`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_up_require: Option<String>,
+    /// Approve-authority the entry holds — `true` means it may confer *any*
+    /// context via approval (while acting nowhere). Echoes the stored
+    /// `approve_scope`; takes precedence over `approve_contexts`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub approve_all_contexts: bool,
+    /// Approve-authority scoped to these contexts (echoes the stored
+    /// `approve_scope`). Empty = confers nothing, unless `approve_all_contexts`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approve_contexts: Vec<String>,
 }
 
 #[cfg(test)]

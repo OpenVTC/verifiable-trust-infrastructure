@@ -2459,7 +2459,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -3261,7 +3261,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -6721,7 +6721,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -10020,7 +10020,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.6"
+version = "0.10.7"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10038,7 +10038,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "vti-common",
  "x25519-dalek",
 ]
@@ -10071,7 +10071,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -10094,7 +10094,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -10129,7 +10129,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.19.7"
+version = "0.19.8"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10186,7 +10186,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.11.7"
+version = "0.11.8"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10266,7 +10266,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10288,7 +10288,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
 ]
 
 [[package]]
@@ -10362,7 +10362,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10414,7 +10414,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10441,7 +10441,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "vta-service",
  "vti-common",
 ]
@@ -10470,7 +10470,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.19.7",
+ "vta-sdk 0.19.8",
  "vti-common",
 ]
 

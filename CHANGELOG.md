@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### vta-sdk / vta-service / CLI — surface an entry's approve-authority in output
+
+* The ACL create/get/list echo carried no `approve_scope`, so after
+  `acl create --approve-contexts …` the one field that makes an entry an approver
+  was invisible — you couldn't confirm it was set. The result body
+  (`CreateAclResultBody`) and the client `AclEntryResponse` now echo it as
+  `approve_all_contexts` / `approve_contexts` (both `#[serde(default)]` for
+  pre-approver servers), and `pnm acl create` / `acl get` / `acl list
+  --full-display` print an `Approve:` line (`all contexts` or `contexts [ … ]`),
+  shown only when the entry actually confers something.
+
 ### vti-common / vta-service — least-privilege approvers: separate "may approve" from "may act"
 
 * An approval only *conferred* delegated authority (task-consent

@@ -119,6 +119,11 @@ async fn require_contexts_exist(
 }
 
 fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
+    let (approve_all_contexts, approve_contexts) = match &e.approve_scope {
+        ApproveScope::All => (true, Vec::new()),
+        ApproveScope::Contexts(cs) => (false, cs.clone()),
+        ApproveScope::None => (false, Vec::new()),
+    };
     CreateAclResultBody {
         did: e.did.clone(),
         role: e.role.to_string(),
@@ -129,6 +134,8 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
         expires_at: e.expires_at,
         step_up_approver: e.step_up_approver.clone(),
         step_up_require: step_up_require_to_wire(e.step_up_require),
+        approve_all_contexts,
+        approve_contexts,
     }
 }
 
@@ -644,6 +651,28 @@ mod tests {
         // All removes, no adds.
         let s = symmetric_difference_contexts(&["x".into()], &[]);
         assert_eq!(s, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn to_result_body_echoes_approve_scope() {
+        let base = AclEntry::new("did:key:zA", Role::Reader, "did:key:zC");
+
+        let scoped = base
+            .clone()
+            .with_approve_scope(ApproveScope::Contexts(vec!["openvtc".into()]));
+        let body = to_result_body(&scoped);
+        assert!(!body.approve_all_contexts);
+        assert_eq!(body.approve_contexts, vec!["openvtc"]);
+
+        let all = base.clone().with_approve_scope(ApproveScope::All);
+        let body = to_result_body(&all);
+        assert!(body.approve_all_contexts);
+        assert!(body.approve_contexts.is_empty());
+
+        // The default (a non-approver entry) echoes nothing.
+        let body = to_result_body(&base);
+        assert!(!body.approve_all_contexts);
+        assert!(body.approve_contexts.is_empty());
     }
 
     /// Regression test for the eviction-via-shrink bug.

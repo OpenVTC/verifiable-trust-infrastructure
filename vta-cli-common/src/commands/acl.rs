@@ -23,6 +23,19 @@ pub fn format_role(role: &str, contexts: &[String]) -> String {
     }
 }
 
+/// Human-readable approve-authority — what this entry may *confer* via an
+/// approval (task-consent delegation / step-up ratification) while acting
+/// nowhere. `None` when it confers nothing, so callers omit the line entirely.
+pub fn format_approve_scope(approve_all: bool, approve_contexts: &[String]) -> Option<String> {
+    if approve_all {
+        Some("all contexts".to_string())
+    } else if !approve_contexts.is_empty() {
+        Some(format!("contexts [{}]", approve_contexts.join(", ")))
+    } else {
+        None
+    }
+}
+
 pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     match role {
         "admin" | "initiator" | "application" | "reader" => Ok(()),
@@ -59,13 +72,18 @@ pub async fn cmd_acl_list(
             let label = entry.label.as_deref().unwrap_or("—");
             let contexts = format_contexts(&entry.allowed_contexts);
             let role = format_role(&entry.role, &entry.allowed_contexts);
-            print_full_entry(&[
+            let approve = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts);
+            let mut fields: Vec<(&str, &str)> = vec![
                 ("DID", &entry.did),
                 ("Role", &role),
                 ("Label", label),
                 ("Contexts", &contexts),
-                ("Created By", &entry.created_by),
-            ]);
+            ];
+            if let Some(a) = &approve {
+                fields.push(("Approve", a));
+            }
+            fields.push(("Created By", &entry.created_by));
+            print_full_entry(&fields);
         }
         return Ok(());
     }
@@ -138,6 +156,9 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
         "Contexts:         {}",
         format_contexts(&entry.allowed_contexts)
     );
+    if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
+        println!("Approve:          {scope}");
+    }
     println!("Created At:       {}", entry.created_at);
     println!("Created By:       {}", entry.created_by);
     Ok(())
@@ -185,6 +206,9 @@ pub async fn cmd_acl_create(
         println!("  Label:      {label}");
     }
     println!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
+    if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
+        println!("  Approve:    {scope}");
+    }
     if let Some(approver) = &step_up_approver {
         println!("  Step-up approver: {approver}");
     }
@@ -267,6 +291,24 @@ mod tests {
     #[test]
     fn test_format_contexts_empty_shows_unrestricted() {
         assert_eq!(format_contexts(&[]), "(unrestricted)");
+    }
+
+    #[test]
+    fn test_format_approve_scope() {
+        assert_eq!(
+            format_approve_scope(true, &[]).as_deref(),
+            Some("all contexts")
+        );
+        assert_eq!(
+            format_approve_scope(false, &["openvtc".to_string()]).as_deref(),
+            Some("contexts [openvtc]")
+        );
+        assert_eq!(
+            format_approve_scope(false, &["a".to_string(), "b".to_string()]).as_deref(),
+            Some("contexts [a, b]")
+        );
+        // Confers nothing ⇒ no line.
+        assert_eq!(format_approve_scope(false, &[]), None);
     }
 
     #[test]
