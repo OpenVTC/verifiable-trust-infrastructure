@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### vti-common 0.11.7 — `capability_client`: shared capability Trust Task primitives
+
+* New `capability_client` module: transport-free document builders, `eddsa-jcs-2022`
+  Data-Integrity signing (canonical form matching the trust registry's verifier),
+  DIDComm envelope parsing, and reply classification for the capability Trust Task
+  families (`governance/capability/*`, `git-trust/*`). `WriteOutcome::IdempotentSuccess`
+  classifies the registry's `already_granted`/`not_granted` answers as success, making
+  redelivered capability writes safe. First consumer: the vtc-service membership hooks;
+  the openvtc TUI's duplicate copy migrates in a follow-up.
+
+### vtc-service 0.11.9 — membership lifecycle hooks (capability grant relay)
+
+* New `hooks` module (`design-docs/vtc-membership-hooks.md`): membership audit events
+  (`MemberAdded`/`MemberRemoved`/`RoleChanged`) map through the operator's
+  `[hooks.git-trust] grant_on_role` configuration into `git-trust/grant|revoke`
+  capability writes, drained by `HookRelay` — a second audit-tail consumer with its own
+  cursor and queue, modeled on the `MembershipSyncer` so crash-replay is inherited.
+  Exactly-once-effective (idempotency root = the audit row key), FIFO-ordered including
+  within one event's revoke→grant pair, revocation retries indefinitely on transient
+  failures (delivery-critical), grants carry a bounded retry budget, and registry
+  rejections are terminal and loud. Absent `[hooks]` config, the relay is not spawned.
+  The production DIDComm `CapabilityWriter` plus server wiring land in the follow-up.
+
+
 ### vta-service — recover from a wedged mediator listener (drain-on-start + clearer logging)
 
 * The mediator enforces one live-delivery websocket per DID, and the VTA's single
