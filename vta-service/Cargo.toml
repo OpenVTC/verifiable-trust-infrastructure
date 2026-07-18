@@ -21,7 +21,6 @@ tsp = [
     "vta-sdk/tsp",
     "dep:affinidi-messaging-sdk",
     "affinidi-messaging-sdk/tsp",
-    "affinidi-messaging-didcomm-service/tsp",
 ]
 webvh = ["dep:didwebvh-rs", "dep:url", "dep:reqwest"]
 setup = ["webvh", "dep:tempfile"]
@@ -146,7 +145,16 @@ affinidi-status-list = { workspace = true }
 hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.15"
-affinidi-messaging-didcomm-service = { workspace = true }
+# D2 P2a cut-over: the reliable-messaging delivery layer replaces the old
+# `affinidi-messaging-didcomm-service` type-routed framework. `MessagingService`
+# (subscribe/send/request over a `DidCommTransport`) drives inbound + outbound;
+# `affinidi-messaging-core` supplies the transport contract types
+# (`MessageTransport`, `Inbound`, `Protocol`); `VtiOutboxStore` (vti-common)
+# backs the outbox. `DidCommTransport` comes from `affinidi-tdk::messaging`.
+affinidi-messaging-delivery = { workspace = true }
+affinidi-messaging-core = { workspace = true }
+# `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
+futures-util = "0.3"
 # Direct (optional) dependency only so the `tsp` feature can turn on the
 # messaging-SDK's own `tsp` ops (`atm.tsp()`), which are gated behind that
 # crate's `tsp` feature and are NOT reachable via `affinidi-tdk/tsp`. The crate

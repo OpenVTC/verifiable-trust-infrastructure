@@ -1,6 +1,6 @@
-//! TSP (Trust Spanning Protocol) inbound handler.
+//! TSP (Trust Spanning Protocol) inbound handling.
 //!
-//! [`VtaTspHandler`] receives TSP messages off the VTA's **single** mediator
+//! [`dispatch_one`] receives TSP messages off the VTA's **single** mediator
 //! websocket — the *same* socket the DIDComm listener uses — and feeds each one
 //! into the shared [`dispatch_trust_task_core`](crate::trust_tasks) spine that
 //! REST and DIDComm also use. TSP is the highest-preference transport
@@ -8,28 +8,25 @@
 //!
 //! ## One socket, multiplexed
 //!
-//! The mediator permits **one websocket per DID**. The DIDComm service
-//! (`affinidi-messaging-didcomm-service`, ADR 0005 — `AffinidiMessageService`)
-//! owns that socket, sniffs inbound frames, and routes TSP frames to a
-//! [`TspHandler`]. The VTA registers `VtaTspHandler` via
-//! `DIDCommService::start_with_tsp`. There is **no second websocket** — opening
-//! one (as the earlier standalone loop did) made the mediator evict a
-//! connection as `w.websocket.duplicate-channel`, flapping the VTA.
+//! The mediator permits **one websocket per DID**. The delivery-layer
+//! `DidCommTransport` (D2 P2a) owns that socket and its `inbound()` surfaces
+//! BOTH DIDComm and TSP frames off it (`Inbound.message.protocol` tags which);
+//! the inbound loop (`super::service::handle_tsp`) hands each TSP frame's
+//! cleartext payload + proven `sender_vid` to [`dispatch_one`]. There is **no
+//! second websocket** — opening one (as the earlier standalone loop did) made
+//! the mediator evict a connection as `w.websocket.duplicate-channel`, flapping
+//! the VTA.
 //!
 //! ## Round-trip: the reply routes back over the same socket
 //!
 //! Each received Trust Task is dispatched on the shared spine and its response
-//! envelope is returned to the sender **over TSP** — the message service
-//! (`affinidi-messaging-didcomm-service` ≥ 0.3.14) seals the returned
-//! [`TspResponse`] to the proven `sender_vid` and routes it back over the same
-//! mediator socket (`send_routed([mediator_did, sender_vid])`). This mirrors the
-//! DIDComm `handle_trust_task` bridge, which returns the same framework document
-//! as its reply, so TSP and DIDComm callers get byte-identical round-trip
-//! semantics off the shared `dispatch_trust_task_core`.
+//! envelope is returned to the sender **over TSP** — the inbound loop seals the
+//! returned bytes to the proven `sender_vid` and routes them back over the same
+//! mediator socket (`atm.tsp().send_routed([mediator_did, sender_vid])`). This
+//! mirrors the DIDComm `handle_trust_task` bridge, which returns the same
+//! framework document as its reply, so TSP and DIDComm callers get
+//! byte-identical round-trip semantics off the shared `dispatch_trust_task_core`.
 
-use affinidi_messaging_didcomm_service::{
-    DIDCommServiceError, HandlerContext, TspHandler, TspResponse,
-};
 use tracing::info;
 
 use crate::messaging::auth::auth_from_did;
@@ -70,36 +67,12 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     outcome.body
 }
 
-/// TSP handler registered on the VTA's message service via
-/// [`AffinidiMessageService::start_with_tsp`](affinidi_messaging_didcomm_service::AffinidiMessageService::start_with_tsp).
-///
-/// The service unpacks the TSP frame off the shared websocket (yielding the
-/// cleartext payload + the cryptographically-authenticated `sender_vid`) and
-/// invokes [`handle`](TspHandler::handle), which bridges to the shared spine via
-/// [`dispatch_one`] and returns the response envelope as a [`TspResponse`]. The
-/// service seals + routes that reply back to the sender over the same socket.
-pub struct VtaTspHandler {
-    app_state: AppState,
-}
-
-impl VtaTspHandler {
-    pub fn new(app_state: AppState) -> Self {
-        Self { app_state }
-    }
-}
-
-#[async_trait::async_trait]
-impl TspHandler for VtaTspHandler {
-    async fn handle(
-        &self,
-        _ctx: HandlerContext,
-        payload: Vec<u8>,
-        sender_vid: String,
-    ) -> Result<Option<TspResponse>, DIDCommServiceError> {
-        let body = dispatch_one(&self.app_state, &payload, &sender_vid).await;
-        Ok(Some(TspResponse::new(body)))
-    }
-}
+// The delivery-layer inbound loop (`super::service::handle_tsp`) unpacks the
+// TSP frame off the shared mediator websocket (via `DidCommTransport`) into a
+// neutral `Inbound` with the proven `sender_vid`, calls [`dispatch_one`]
+// directly, and seals + routes the reply back — so the framework
+// `TspHandler`/`TspResponse` wrapper the old `start_with_tsp` path required is
+// no longer needed.
 
 #[cfg(test)]
 mod tests {

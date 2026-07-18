@@ -11,8 +11,9 @@
 //!    drop the in-memory drain entry, remove it from the keyspace,
 //!    and emit [`vti_common::telemetry::TelemetryKind::MediatorDrainExpire`].
 //! 2. Sends the mediator DID over a `tokio::sync::mpsc` channel so
-//!    whoever owns the upstream listener (the server bootstrap)
-//!    can call `DIDCommService::remove_listener`.
+//!    whoever owns the delivery-layer service (the server bootstrap)
+//!    can call `MessagingService::remove_transport` to drop the
+//!    drained mediator's transport.
 //!
 //! This keeps the sweeper deterministically testable without standing
 //! up the full DIDComm stack.

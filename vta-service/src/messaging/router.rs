@@ -1,42 +1,65 @@
-//! DIDComm message router built on `affinidi-messaging-didcomm-service`.
+//! DIDComm message dispatch for the delivery-layer inbound loop.
 //!
-//! Replaces the manual `dispatch_message()` match statement with a typed
-//! Router that maps message types to handler functions. Shared state is
-//! injected via `Extension<Arc<VtaState>>`.
+//! **D2 P2a cut-over**: this used to build an
+//! `affinidi-messaging-didcomm-service` `Router` (type-routed handler table +
+//! `MessagePolicy` middleware) wrapped in a `BridgeHandler`. That framework is
+//! gone. [`dispatch`] is now a plain `msg.typ` match that calls the same ~50
+//! handler functions directly — they are unchanged, taking
+//! `(HandlerContext, Message, Extension<T>)` from [`crate::messaging::shim`].
+//! The [`crate::server`] inbound loop drives it off
+//! [`affinidi_messaging_delivery::MessagingService::subscribe`].
+//!
+//! The `MessagePolicy` auth gate (`require_encrypted` + verified-sender-or-none)
+//! now lives in the inbound loop, which sets `Message::from` to the
+//! cryptographically-authenticated sender before calling [`dispatch`] (the
+//! `#620` anti-spoof guarantee), so every handler's `auth_from_message` /
+//! `ctx.sender_did` sees only a proven sender.
 
 use std::sync::Arc;
 
-use affinidi_messaging_didcomm_service::{
-    DIDCommServiceError, MESSAGE_PICKUP_STATUS_TYPE, MessagePolicy, RequestLogging, Router,
-    TRUST_PING_TYPE, handler_fn, ignore_handler, trust_ping_handler,
-};
+use affinidi_messaging_didcomm::Message;
 use tokio::sync::RwLock;
-use tracing::debug;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::SeedStore;
+use crate::messaging::shim::{DIDCommResponse, DIDCommServiceError, HandlerContext, ProblemReport};
+#[cfg(feature = "didcomm")]
+use crate::messaging::shim::{Extension, ServiceProblemReport};
 use crate::server::AppState;
 use crate::store::KeyspaceHandle;
 
+#[cfg(feature = "didcomm")]
 use super::handlers;
 
-#[cfg(feature = "tee")]
+#[cfg(all(feature = "tee", feature = "didcomm"))]
 use vta_sdk::protocols::attestation_management;
-#[cfg(feature = "webvh")]
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
 use vta_sdk::protocols::did_management;
-#[cfg(feature = "webvh")]
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
 use vta_sdk::protocols::protocol_management;
 // `provision-integration` is unconditionally enabled via the
 // `vta-sdk` feature list in vta-service's Cargo.toml — no cfg gate.
-#[cfg(feature = "webvh")]
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
 use vta_sdk::protocols::provision_integration_management;
+#[cfg(feature = "didcomm")]
 use vta_sdk::protocols::{
     self, acl_management, audit_management, context_management, credential_exchange,
     key_management, seed_management, vta_management,
 };
+
+/// Trust-ping protocol identifiers (was the framework's `TRUST_PING_TYPE` /
+/// `TRUST_PONG_TYPE`). Re-declared locally now the framework is gone.
+#[cfg(feature = "didcomm")]
+const TRUST_PING_TYPE: &str = "https://didcomm.org/trust-ping/2.0/ping";
+#[cfg(feature = "didcomm")]
+const TRUST_PONG_TYPE: &str = "https://didcomm.org/trust-ping/2.0/ping-response";
+/// The high-frequency message-pickup status heartbeat (was the framework's
+/// `MESSAGE_PICKUP_STATUS_TYPE`, routed to `ignore_handler`). Dispatched as a
+/// silent no-op.
+pub(crate) const MESSAGE_PICKUP_STATUS_TYPE: &str = "https://didcomm.org/messagepickup/3.0/status";
 
 /// Shared state injected into all DIDComm handlers via `Extension<Arc<VtaState>>`.
 #[derive(Clone)]
@@ -195,435 +218,350 @@ impl From<&AppState> for VtaState {
 }
 
 // ---------------------------------------------------------------------------
-// BridgeHandler — wraps the Router to intercept outbound-response routing
+// Type-routed dispatch (was the framework `Router` + `BridgeHandler`)
 // ---------------------------------------------------------------------------
 
-/// Handler wrapper that bridges the DIDComm listener's ATM to the
-/// outbound [`DIDCommBridge`].
-///
-/// On every inbound message this handler:
-/// 1. Captures the listener's ATM/profile so the bridge can reuse the
-///    same mediator connection for outbound sends.
-/// 2. Checks if the message completes a pending outbound request
-///    (via [`DIDCommBridge::try_complete`]). If so, the message is
-///    consumed and not dispatched to the inner Router.
-/// 3. Otherwise delegates to the inner Router for normal handler dispatch.
-pub struct BridgeHandler {
-    inner: Router,
-    bridge: Arc<DIDCommBridge>,
+/// The handler return shape (unchanged from the framework): a reply, no reply,
+/// or a handler error the dispatch renders as an `internal-error`
+/// problem-report.
+#[cfg(feature = "didcomm")]
+type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
+
+/// Fold a handler's `Result` into the reply the loop sends. A handler `Err`
+/// becomes a threaded `internal-error` problem-report (was the framework's
+/// `DefaultErrorHandler::on_error`).
+#[cfg(feature = "didcomm")]
+fn finish(result: HandlerResult) -> Option<DIDCommResponse> {
+    match result {
+        Ok(opt) => opt,
+        Err(e) => Some(DIDCommResponse::problem_report(
+            ProblemReport::internal_error(e.to_string()),
+        )),
+    }
 }
 
-#[async_trait::async_trait]
-impl affinidi_messaging_didcomm_service::DIDCommHandler for BridgeHandler {
-    async fn handle(
-        &self,
-        ctx: affinidi_messaging_didcomm_service::HandlerContext,
-        message: affinidi_messaging_didcomm::Message,
-        meta: affinidi_messaging_didcomm::UnpackMetadata,
-    ) -> Result<Option<affinidi_messaging_didcomm_service::DIDCommResponse>, DIDCommServiceError>
-    {
-        // Route responses to pending outbound requests before normal dispatch.
-        if self.bridge.try_complete(&message) {
-            return Ok(None);
-        }
+/// Local trust-ping responder (was the framework `trust_ping_handler`). Replies
+/// a `trust-ping/2.0/ping-response` on the ping's thread unless the ping didn't
+/// request a response or has no authenticated sender to reply to.
+#[cfg(feature = "didcomm")]
+fn trust_ping_reply(msg: &Message, sender_did: Option<&str>) -> Option<DIDCommResponse> {
+    #[derive(serde::Deserialize)]
+    struct PingBody {
+        #[serde(default = "default_true")]
+        response_requested: bool,
+    }
+    fn default_true() -> bool {
+        true
+    }
+    let body: PingBody = serde_json::from_value(msg.body.clone()).unwrap_or(PingBody {
+        response_requested: true,
+    });
+    if !body.response_requested {
+        return None;
+    }
+    // Only pong an authenticated ping (no reply to a spoofed/anonymous sender).
+    sender_did?;
+    Some(DIDCommResponse::new(TRUST_PONG_TYPE, serde_json::Value::Null).thid(msg.id.clone()))
+}
 
-        // Log unmatched responses (likely stale messages from a previous session)
-        if message.thid.is_some() {
-            debug!(
-                msg_type = %message.typ,
-                thid = message.thid.as_deref().unwrap_or(""),
-                from = message.from.as_deref().unwrap_or("unknown"),
-                "unmatched response — no pending request for thread (stale message)"
+/// Route one inbound (authenticated-sender-stamped) DIDComm message to its
+/// handler, mirroring the framework route list (same URIs, same feature gates).
+///
+/// `ctx.sender_did` and `msg.from` are the cryptographically-authenticated
+/// sender (or `None`); handlers authorize on those, never on the raw wire
+/// `from`. The `_` arm is the fallback (`handle_unknown`).
+#[cfg(feature = "didcomm")]
+pub async fn dispatch(
+    msg: Message,
+    ctx: HandlerContext,
+    vta_state: Arc<VtaState>,
+    app_state: AppState,
+) -> Option<DIDCommResponse> {
+    let t = msg.typ.clone();
+    let t = t.as_str();
+
+    // Message-pickup status heartbeat: silent no-op (was `ignore_handler`).
+    if t == MESSAGE_PICKUP_STATUS_TYPE {
+        return None;
+    }
+    // Trust-ping (was the built-in `trust_ping_handler`).
+    if t == TRUST_PING_TYPE {
+        return trust_ping_reply(&msg, ctx.sender_did.as_deref());
+    }
+
+    // ── Trust-Tasks envelope (AppState) ──────────────────────────────
+    if t == handlers::TRUST_TASK_ENVELOPE_TYPE {
+        return finish(handlers::handle_trust_task(ctx, msg, Extension(app_state)).await);
+    }
+
+    // ── Key management ───────────────────────────────────────────────
+    if t == key_management::CREATE_KEY {
+        return finish(handlers::handle_create_key(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::GET_KEY {
+        return finish(handlers::handle_get_key(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::LIST_KEYS {
+        return finish(handlers::handle_list_keys(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::RENAME_KEY {
+        return finish(handlers::handle_rename_key(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::REVOKE_KEY {
+        return finish(handlers::handle_revoke_key(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::GET_KEY_SECRET {
+        return finish(handlers::handle_get_key_secret(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == key_management::SIGN_REQUEST {
+        return finish(handlers::handle_sign_request(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── Seed management ──────────────────────────────────────────────
+    if t == seed_management::LIST_SEEDS {
+        return finish(handlers::handle_list_seeds(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == seed_management::ROTATE_SEED {
+        return finish(handlers::handle_rotate_seed(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── Context management ───────────────────────────────────────────
+    if t == context_management::CREATE_CONTEXT {
+        return finish(handlers::handle_create_context(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == context_management::GET_CONTEXT {
+        return finish(handlers::handle_get_context(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == context_management::LIST_CONTEXTS {
+        return finish(handlers::handle_list_contexts(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == context_management::UPDATE_CONTEXT {
+        return finish(handlers::handle_update_context(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == context_management::UPDATE_CONTEXT_DID {
+        return finish(handlers::handle_update_context_did(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == context_management::PREVIEW_DELETE_CONTEXT {
+        return finish(
+            handlers::handle_preview_delete_context(ctx, msg, Extension(vta_state)).await,
+        );
+    }
+    if t == context_management::DELETE_CONTEXT {
+        return finish(handlers::handle_delete_context(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── ACL management ───────────────────────────────────────────────
+    if t == acl_management::CREATE_ACL {
+        return finish(handlers::handle_create_acl(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == acl_management::GET_ACL {
+        return finish(handlers::handle_get_acl(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == acl_management::LIST_ACL {
+        return finish(handlers::handle_list_acl(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == acl_management::UPDATE_ACL {
+        return finish(handlers::handle_update_acl(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == acl_management::DELETE_ACL {
+        return finish(handlers::handle_delete_acl(ctx, msg, Extension(vta_state)).await);
+    }
+    // Legacy FPN-private `swap-acl` + canonical Trust Task `acl/swap-key/0.1`
+    // both route to the same handler (dispatches on the incoming type).
+    if t == acl_management::SWAP_ACL || t == acl_management::ACL_SWAP_KEY {
+        return finish(handlers::handle_swap_acl(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── Audit management ─────────────────────────────────────────────
+    if t == audit_management::LIST_LOGS {
+        return finish(handlers::handle_list_logs(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == audit_management::GET_RETENTION {
+        return finish(handlers::handle_get_retention(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == audit_management::UPDATE_RETENTION {
+        return finish(handlers::handle_update_retention(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── VTA management ───────────────────────────────────────────────
+    if t == vta_management::GET_CONFIG {
+        return finish(handlers::handle_get_config(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == vta_management::UPDATE_CONFIG {
+        return finish(handlers::handle_update_config(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == protocols::PROBLEM_REPORT_TYPE {
+        return finish(handlers::handle_problem_report(ctx, msg).await);
+    }
+    if t == vta_management::RESTART {
+        return finish(handlers::handle_restart(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == protocols::backup_management::EXPORT_BACKUP {
+        return finish(handlers::handle_backup_export(ctx, msg, Extension(vta_state)).await);
+    }
+    if t == protocols::backup_management::IMPORT_BACKUP {
+        return finish(handlers::handle_backup_import(ctx, msg, Extension(vta_state)).await);
+    }
+
+    // ── Credential exchange (AppState) ───────────────────────────────
+    if t == credential_exchange::ISSUE {
+        return finish(handlers::handle_credential_issue(ctx, msg, Extension(app_state)).await);
+    }
+    if t == credential_exchange::QUERY {
+        return finish(handlers::handle_credential_query(ctx, msg, Extension(app_state)).await);
+    }
+    if t == credential_exchange::OFFER {
+        return finish(handlers::handle_credential_offer(ctx, msg, Extension(app_state)).await);
+    }
+
+    // ── DID WebVH management (webvh) ─────────────────────────────────
+    #[cfg(feature = "webvh")]
+    {
+        if t == did_management::CREATE_DID_WEBVH {
+            return finish(handlers::handle_create_did_webvh(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::GET_DID_WEBVH {
+            return finish(handlers::handle_get_did_webvh(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::GET_DID_WEBVH_LOG {
+            return finish(
+                handlers::handle_get_did_webvh_log(ctx, msg, Extension(vta_state)).await,
             );
         }
-
-        self.inner.handle(ctx, message, meta).await
+        if t == did_management::LIST_DIDS_WEBVH {
+            return finish(handlers::handle_list_dids_webvh(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::DELETE_DID_WEBVH {
+            return finish(handlers::handle_delete_did_webvh(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::ADD_WEBVH_SERVER {
+            return finish(handlers::handle_add_webvh_server(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::LIST_WEBVH_SERVERS {
+            return finish(
+                handlers::handle_list_webvh_servers(ctx, msg, Extension(vta_state)).await,
+            );
+        }
+        if t == did_management::LIST_WEBVH_SERVER_DOMAINS {
+            return finish(
+                handlers::handle_list_webvh_server_domains(ctx, msg, Extension(vta_state)).await,
+            );
+        }
+        if t == did_management::UPDATE_WEBVH_SERVER {
+            return finish(
+                handlers::handle_update_webvh_server(ctx, msg, Extension(vta_state)).await,
+            );
+        }
+        if t == did_management::REMOVE_WEBVH_SERVER {
+            return finish(
+                handlers::handle_remove_webvh_server(ctx, msg, Extension(vta_state)).await,
+            );
+        }
+        if t == did_management::UPDATE_DID_WEBVH {
+            return finish(handlers::handle_update_did_webvh(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == did_management::ROTATE_DID_WEBVH_KEYS {
+            return finish(
+                handlers::handle_rotate_did_webvh_keys(ctx, msg, Extension(vta_state)).await,
+            );
+        }
+        if t == did_management::REGISTER_DID_WITH_SERVER {
+            return finish(
+                handlers::handle_register_did_with_server(ctx, msg, Extension(vta_state)).await,
+            );
+        }
     }
-}
 
-/// Build the DIDComm message handler with all VTA protocol handlers.
-///
-/// Returns a [`BridgeHandler`] that wraps the Router and integrates
-/// outbound request-response routing via the shared [`DIDCommBridge`].
-pub fn build_handler(
-    state: Arc<VtaState>,
-    app_state: AppState,
-    bridge: Arc<DIDCommBridge>,
-) -> Result<BridgeHandler, DIDCommServiceError> {
-    let mut router = Router::new()
-        .extension(state)
-        // Full REST `AppState`, injected so the generic trust-task
-        // handler can drive the shared `dispatch_trust_task_core`
-        // (which needs keyspaces not mirrored onto `VtaState`).
-        .extension(app_state)
-        // Built-in protocol handlers
-        .route(TRUST_PING_TYPE, handler_fn(trust_ping_handler))?
-        .route(MESSAGE_PICKUP_STATUS_TYPE, handler_fn(ignore_handler))?
-        // Trust-Tasks: one binding envelope type carries every slice's
-        // `TrustTask<P>` in its body; the handler dispatches on the
-        // inner envelope's own `type` via the shared REST dispatcher.
-        .route(
-            handlers::TRUST_TASK_ENVELOPE_TYPE,
-            handler_fn(handlers::handle_trust_task),
-        )?
-        // Key management
-        .route(
-            key_management::CREATE_KEY,
-            handler_fn(handlers::handle_create_key),
-        )?
-        .route(
-            key_management::GET_KEY,
-            handler_fn(handlers::handle_get_key),
-        )?
-        .route(
-            key_management::LIST_KEYS,
-            handler_fn(handlers::handle_list_keys),
-        )?
-        .route(
-            key_management::RENAME_KEY,
-            handler_fn(handlers::handle_rename_key),
-        )?
-        .route(
-            key_management::REVOKE_KEY,
-            handler_fn(handlers::handle_revoke_key),
-        )?
-        .route(
-            key_management::GET_KEY_SECRET,
-            handler_fn(handlers::handle_get_key_secret),
-        )?
-        .route(
-            key_management::SIGN_REQUEST,
-            handler_fn(handlers::handle_sign_request),
-        )?
-        // Seed management
-        .route(
-            seed_management::LIST_SEEDS,
-            handler_fn(handlers::handle_list_seeds),
-        )?
-        .route(
-            seed_management::ROTATE_SEED,
-            handler_fn(handlers::handle_rotate_seed),
-        )?
-        // Context management
-        .route(
-            context_management::CREATE_CONTEXT,
-            handler_fn(handlers::handle_create_context),
-        )?
-        .route(
-            context_management::GET_CONTEXT,
-            handler_fn(handlers::handle_get_context),
-        )?
-        .route(
-            context_management::LIST_CONTEXTS,
-            handler_fn(handlers::handle_list_contexts),
-        )?
-        .route(
-            context_management::UPDATE_CONTEXT,
-            handler_fn(handlers::handle_update_context),
-        )?
-        .route(
-            context_management::UPDATE_CONTEXT_DID,
-            handler_fn(handlers::handle_update_context_did),
-        )?
-        .route(
-            context_management::PREVIEW_DELETE_CONTEXT,
-            handler_fn(handlers::handle_preview_delete_context),
-        )?
-        .route(
-            context_management::DELETE_CONTEXT,
-            handler_fn(handlers::handle_delete_context),
-        )?
-        // ACL management
-        .route(
-            acl_management::CREATE_ACL,
-            handler_fn(handlers::handle_create_acl),
-        )?
-        .route(
-            acl_management::GET_ACL,
-            handler_fn(handlers::handle_get_acl),
-        )?
-        .route(
-            acl_management::LIST_ACL,
-            handler_fn(handlers::handle_list_acl),
-        )?
-        .route(
-            acl_management::UPDATE_ACL,
-            handler_fn(handlers::handle_update_acl),
-        )?
-        .route(
-            acl_management::DELETE_ACL,
-            handler_fn(handlers::handle_delete_acl),
-        )?
-        .route(
-            acl_management::SWAP_ACL,
-            handler_fn(handlers::handle_swap_acl),
-        )?
-        // Canonical Trust Task URI for the same operation — dual-registered
-        // during the deprecation window. Handler dispatches on incoming type.
-        .route(
-            acl_management::ACL_SWAP_KEY,
-            handler_fn(handlers::handle_swap_acl),
-        )?
-        // Audit management
-        .route(
-            audit_management::LIST_LOGS,
-            handler_fn(handlers::handle_list_logs),
-        )?
-        .route(
-            audit_management::GET_RETENTION,
-            handler_fn(handlers::handle_get_retention),
-        )?
-        .route(
-            audit_management::UPDATE_RETENTION,
-            handler_fn(handlers::handle_update_retention),
-        )?
-        // VTA management
-        .route(
-            vta_management::GET_CONFIG,
-            handler_fn(handlers::handle_get_config),
-        )?
-        .route(
-            vta_management::UPDATE_CONFIG,
-            handler_fn(handlers::handle_update_config),
-        )?
-        // Problem reports
-        .route(
-            protocols::PROBLEM_REPORT_TYPE,
-            handler_fn(handlers::handle_problem_report),
-        )?
-        // VTA management — restart
-        .route(
-            vta_management::RESTART,
-            handler_fn(handlers::handle_restart),
-        )?
-        // Backup management
-        .route(
-            protocols::backup_management::EXPORT_BACKUP,
-            handler_fn(handlers::handle_backup_export),
-        )?
-        .route(
-            protocols::backup_management::IMPORT_BACKUP,
-            handler_fn(handlers::handle_backup_import),
-        )?
-        // Credential exchange — holder-side receive of an issued credential
-        // (spec §6 / task 3.3). Uses `AppState` for the credential vault.
-        .route(
-            credential_exchange::ISSUE,
-            handler_fn(handlers::handle_credential_issue),
-        )?
-        // Credential exchange — holder answers a verifier's DCQL query with a
-        // presentation (spec §6 / task 3.5). Uses `AppState` for vault + keys.
-        .route(
-            credential_exchange::QUERY,
-            handler_fn(handlers::handle_credential_query),
-        )?
-        // Credential exchange — holder answers an issuer's offer with a request
-        // (spec §6 / task 3.2). Opt-in via `credential_holder_did`.
-        .route(
-            credential_exchange::OFFER,
-            handler_fn(handlers::handle_credential_offer),
-        )?;
-
-    // WebVH handlers (feature-gated)
+    // ── Protocol management over DIDComm (webvh) ─────────────────────
     #[cfg(feature = "webvh")]
     {
-        router = router
-            .route(
-                did_management::CREATE_DID_WEBVH,
-                handler_fn(handlers::handle_create_did_webvh),
-            )?
-            .route(
-                did_management::GET_DID_WEBVH,
-                handler_fn(handlers::handle_get_did_webvh),
-            )?
-            .route(
-                did_management::GET_DID_WEBVH_LOG,
-                handler_fn(handlers::handle_get_did_webvh_log),
-            )?
-            .route(
-                did_management::LIST_DIDS_WEBVH,
-                handler_fn(handlers::handle_list_dids_webvh),
-            )?
-            .route(
-                did_management::DELETE_DID_WEBVH,
-                handler_fn(handlers::handle_delete_did_webvh),
-            )?
-            .route(
-                did_management::ADD_WEBVH_SERVER,
-                handler_fn(handlers::handle_add_webvh_server),
-            )?
-            .route(
-                did_management::LIST_WEBVH_SERVERS,
-                handler_fn(handlers::handle_list_webvh_servers),
-            )?
-            .route(
-                did_management::LIST_WEBVH_SERVER_DOMAINS,
-                handler_fn(handlers::handle_list_webvh_server_domains),
-            )?
-            .route(
-                did_management::UPDATE_WEBVH_SERVER,
-                handler_fn(handlers::handle_update_webvh_server),
-            )?
-            .route(
-                did_management::REMOVE_WEBVH_SERVER,
-                handler_fn(handlers::handle_remove_webvh_server),
-            )?
-            .route(
-                did_management::UPDATE_DID_WEBVH,
-                handler_fn(handlers::handle_update_did_webvh),
-            )?
-            .route(
-                did_management::ROTATE_DID_WEBVH_KEYS,
-                handler_fn(handlers::handle_rotate_did_webvh_keys),
-            )?
-            .route(
-                did_management::REGISTER_DID_WITH_SERVER,
-                handler_fn(handlers::handle_register_did_with_server),
-            )?;
-
-        // Protocol management over DIDComm. `enable` is REST-only
-        // by nature so it has no DIDComm route; the rest go through
-        // the same operation functions as the REST handlers.
-        // Spec: docs/05-design-notes/didcomm-protocol-management.md.
-        router = router
-            .route(
-                protocol_management::DISABLE_DIDCOMM,
-                handler_fn(super::handlers_protocol::handle_disable_didcomm),
-            )?
-            .route(
-                protocol_management::ENABLE_REST,
-                handler_fn(super::handlers_protocol::handle_enable_rest),
-            )?
-            .route(
-                protocol_management::UPDATE_REST,
-                handler_fn(super::handlers_protocol::handle_update_rest),
-            )?
-            .route(
-                protocol_management::DISABLE_REST,
-                handler_fn(super::handlers_protocol::handle_disable_rest),
-            )?
-            .route(
-                protocol_management::ROLLBACK_REST,
-                handler_fn(super::handlers_protocol::handle_rollback_rest),
-            )?
-            .route(
-                protocol_management::ENABLE_TSP,
-                handler_fn(super::handlers_protocol::handle_enable_tsp),
-            )?
-            .route(
-                protocol_management::UPDATE_TSP,
-                handler_fn(super::handlers_protocol::handle_update_tsp),
-            )?
-            .route(
-                protocol_management::DISABLE_TSP,
-                handler_fn(super::handlers_protocol::handle_disable_tsp),
-            )?
-            .route(
-                protocol_management::ROLLBACK_TSP,
-                handler_fn(super::handlers_protocol::handle_rollback_tsp),
-            )?
-            .route(
-                protocol_management::UPDATE_DIDCOMM,
-                handler_fn(super::handlers_protocol::handle_update_didcomm),
-            )?
-            .route(
-                protocol_management::ROLLBACK_DIDCOMM,
-                handler_fn(super::handlers_protocol::handle_rollback_didcomm),
-            )?
-            .route(
-                protocol_management::LIST_SERVICES,
-                handler_fn(super::handlers_protocol::handle_list_services),
-            )?
-            .route(
-                protocol_management::LIST_DRAIN,
-                handler_fn(super::handlers_protocol::handle_list_drain),
-            )?
-            .route(
-                protocol_management::DRAIN_CANCEL,
-                handler_fn(super::handlers_protocol::handle_drain_cancel),
-            )?
-            .route(
-                protocol_management::MEDIATOR_REPORT,
-                handler_fn(super::handlers_protocol::handle_mediator_report),
-            )?;
+        use super::handlers_protocol as hp;
+        if t == protocol_management::DISABLE_DIDCOMM {
+            return finish(hp::handle_disable_didcomm(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::ENABLE_REST {
+            return finish(hp::handle_enable_rest(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::UPDATE_REST {
+            return finish(hp::handle_update_rest(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::DISABLE_REST {
+            return finish(hp::handle_disable_rest(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::ROLLBACK_REST {
+            return finish(hp::handle_rollback_rest(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::ENABLE_TSP {
+            return finish(hp::handle_enable_tsp(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::UPDATE_TSP {
+            return finish(hp::handle_update_tsp(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::DISABLE_TSP {
+            return finish(hp::handle_disable_tsp(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::ROLLBACK_TSP {
+            return finish(hp::handle_rollback_tsp(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::UPDATE_DIDCOMM {
+            return finish(hp::handle_update_didcomm(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::ROLLBACK_DIDCOMM {
+            return finish(hp::handle_rollback_didcomm(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::LIST_SERVICES {
+            return finish(hp::handle_list_services(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::LIST_DRAIN {
+            return finish(hp::handle_list_drain(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::DRAIN_CANCEL {
+            return finish(hp::handle_drain_cancel(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == protocol_management::MEDIATOR_REPORT {
+            return finish(hp::handle_mediator_report(ctx, msg, Extension(vta_state)).await);
+        }
     }
 
-    // Provision-integration mints WebVH DIDs, so it's `webvh`-gated like the
-    // REST side (`routes::bootstrap`'s `mod provision`). Without webvh the op
-    // can't function, so we don't expose the route (vs the old unconditional
-    // registration that panicked at runtime — see the `From<&VtaState>` note
-    // above).
-    //
-    // Both canonical Trust Task versions (0.1 and 0.2) route to the same
-    // handler; the handler reads the inbound `typ` and emits the matching
-    // `#response` URI (`result_uri_for`). The 0.2 wire form differs only
-    // in camelCase enum casing — including the signed VP's `ask.type`, so
-    // the handler verifies over the bytes as received. The legacy
-    // `firstperson.network` provision URI was retired now that the browser
-    // plugin and Rust CLIs all target the canonical registry.
+    // ── Provision-integration (webvh) ────────────────────────────────
     #[cfg(feature = "webvh")]
     {
-        router = router
-            .route(
-                provision_integration_management::CANONICAL_PROVISION_INTEGRATION,
-                handler_fn(handlers::handle_provision_integration),
-            )?
-            .route(
-                provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2,
-                handler_fn(handlers::handle_provision_integration),
-            )?;
+        if t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION
+            || t == provision_integration_management::CANONICAL_PROVISION_INTEGRATION_0_2
+        {
+            return finish(
+                handlers::handle_provision_integration(ctx, msg, Extension(vta_state)).await,
+            );
+        }
     }
 
-    // Step-up approval — the VTA vouches (signs as itself) that a holder
-    // may step up their session at a relying party. Always available. Both
-    // the legacy `vta/step-up/approve-request/1.0` and the canonical
-    // `spec/auth/step-up/approve-request/0.1` registry URIs route to the same
-    // handler, which echoes the request's version family in its response
-    // (issue #517). Registering the canonical URI is additive — the legacy
-    // plugin is unaffected.
-    router = router
-        .route(
-            handlers::STEP_UP_APPROVE_REQUEST_TYPE,
-            handler_fn(handlers::handle_step_up_approve),
-        )?
-        .route(
-            handlers::STEP_UP_APPROVE_REQUEST_CANONICAL,
-            handler_fn(handlers::handle_step_up_approve),
-        )?;
+    // ── Step-up approval (always) ────────────────────────────────────
+    if t == handlers::STEP_UP_APPROVE_REQUEST_TYPE
+        || t == handlers::STEP_UP_APPROVE_REQUEST_CANONICAL
+    {
+        return finish(handlers::handle_step_up_approve(ctx, msg, Extension(vta_state)).await);
+    }
 
-    // TEE attestation handlers (feature-gated)
+    // ── TEE attestation (tee) ────────────────────────────────────────
     #[cfg(feature = "tee")]
     {
-        router = router
-            .route(
-                attestation_management::GET_TEE_STATUS,
-                handler_fn(handlers::handle_tee_status),
-            )?
-            .route(
-                attestation_management::REQUEST_ATTESTATION,
-                handler_fn(handlers::handle_request_attestation),
-            )?;
+        if t == attestation_management::GET_TEE_STATUS {
+            return finish(handlers::handle_tee_status(ctx, msg, Extension(vta_state)).await);
+        }
+        if t == attestation_management::REQUEST_ATTESTATION {
+            return finish(
+                handlers::handle_request_attestation(ctx, msg, Extension(vta_state)).await,
+            );
+        }
     }
 
-    // Discovery (no auth required — the handler doesn't call auth_from_message)
-    router = router.route(
-        protocols::discovery::DISCOVER_CAPABILITIES,
-        handler_fn(handlers::handle_discover_capabilities),
-    )?;
+    // ── Discovery (no auth) ──────────────────────────────────────────
+    if t == protocols::discovery::DISCOVER_CAPABILITIES {
+        return finish(
+            handlers::handle_discover_capabilities(ctx, msg, Extension(vta_state)).await,
+        );
+    }
 
-    // Fallback, middleware, error handling
-    router = router
-        .fallback(handler_fn(handlers::handle_unknown))
-        .layer(
-            MessagePolicy::new()
-                .require_encrypted(true)
-                .require_authenticated(true)
-                .allow_anonymous_sender(false),
-        )
-        .layer(RequestLogging);
-
-    Ok(BridgeHandler {
-        inner: router,
-        bridge,
-    })
+    // ── Fallback ─────────────────────────────────────────────────────
+    finish(handlers::handle_unknown(ctx, msg).await)
 }

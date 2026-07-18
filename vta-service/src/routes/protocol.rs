@@ -237,14 +237,16 @@ pub async fn get_didcomm_status_handler(
         });
     }
 
+    // Live (non-latched, R6.2) messaging status off `MessagingService::status()`
+    // once the delivery-layer service is published; before that it is truthfully
+    // "disconnected" (messaging isn't up yet) — matching the prior latched
+    // default so the reported field is always present under `didcomm`.
     #[cfg(feature = "didcomm")]
     let websocket_status = Some(
         state
-            .didcomm_websocket_status
-            .read()
-            .await
-            .as_str()
-            .to_string(),
+            .didcomm_bridge
+            .messaging_status_str()
+            .unwrap_or_else(|| "disconnected".to_string()),
     );
     #[cfg(not(feature = "didcomm"))]
     let websocket_status: Option<String> = None;

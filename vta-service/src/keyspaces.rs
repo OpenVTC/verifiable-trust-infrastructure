@@ -82,6 +82,14 @@ pub const POLICY: &str = "policy";
 /// Durable operator-facing security state → [`BACKED_UP`].
 pub const TASK_CONSENT: &str = "task_consent";
 
+/// Durable reliable-messaging outbox backing
+/// [`vti_common::outbox_store::VtiOutboxStore`] for the delivery-layer
+/// `MessagingService` (D2 P2a cut-over). Holds `Guaranteed`-delivery outbox
+/// entries; dormant in P2a (all current sends are `BestEffort`) but wired so
+/// the drain/confirmation loops persist across restarts once P2b adds
+/// guaranteed VTA pushes. Runtime state, not backed up.
+pub const OUTBOX: &str = "outbox";
+
 /// Every production keyspace. Partitioned by [`BACKED_UP`] +
 /// [`EXCLUDED_FROM_BACKUP`]; the [`tests::backup_partition_is_total`] guard
 /// asserts the partition stays exhaustive so a newly-added keyspace can't be
@@ -110,6 +118,7 @@ pub const ALL: &[&str] = &[
     MEMORY,
     POLICY,
     TASK_CONSENT,
+    OUTBOX,
 ];
 
 /// Keyspaces whose contents a full `export_backup` captures (as typed
@@ -156,6 +165,9 @@ pub const EXCLUDED_FROM_BACKUP: &[&str] = &[
     // Durable VTA-issued holder credentials. Like [`VAULT`], a known backup
     // gap — a backup-fidelity follow-up should move it into [`BACKED_UP`].
     ISSUED_CREDENTIALS,
+    // Reliable-messaging outbox: runtime delivery state, re-driven from live
+    // sends, not part of a state backup.
+    OUTBOX,
 ];
 
 /// Test-only keyspaces (descriptor sweeper tests open isolated keyspaces so a

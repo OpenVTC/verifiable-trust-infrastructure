@@ -16,11 +16,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use affinidi_messaging_didcomm::Message;
-use affinidi_messaging_didcomm_service::{
+use crate::messaging::shim::{
     DIDCommResponse, DIDCommServiceError, Extension, HandlerContext, ProblemReport,
     ServiceProblemReport,
 };
+use affinidi_messaging_didcomm::Message;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 

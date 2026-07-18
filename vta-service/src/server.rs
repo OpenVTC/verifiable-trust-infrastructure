@@ -23,8 +23,6 @@ use crate::keys::KeyRecord;
 use crate::keys::derivation::Bip32Extension;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::load_seed_bytes;
-#[cfg(feature = "didcomm")]
-use crate::messaging;
 #[cfg(feature = "rest")]
 use crate::routes;
 use crate::store::{KeyspaceHandle, Store};
@@ -34,12 +32,11 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, Tr
 use tracing::Level;
 use tracing::{debug, error, info, warn};
 
+// D2 P2a: the reliable-messaging delivery layer replaces the
+// `affinidi-messaging-didcomm-service` framework. `MessagingService` (built in
+// `messaging::service`) drives inbound + outbound over a `DidCommTransport`.
 #[cfg(feature = "didcomm")]
-use affinidi_messaging_didcomm_service::{
-    DIDCommService, DIDCommServiceConfig, ListenerConfig, Protocols, RestartPolicy, RetryConfig,
-};
-#[cfg(feature = "didcomm")]
-use affinidi_tdk_common::profiles::TDKProfile;
+use affinidi_messaging_delivery::MessagingService;
 #[cfg(feature = "didcomm")]
 use tokio_util::sync::CancellationToken;
 use vta_sdk::acl_setup;
@@ -190,11 +187,6 @@ pub struct AppState {
     pub ka_vm_id: Option<String>,
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<DIDCommBridge>,
-    /// WebSocket connection status of the DIDComm listener. Only meaningful
-    /// on the axum server path (`run()`); `build_app_state()` (TEE
-    /// front-ends) never wires the event logger that updates this field.
-    #[cfg(feature = "didcomm")]
-    pub didcomm_websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     /// VTA's registered TSP profile, used to unpack `tsp-message` sealed
@@ -211,25 +203,6 @@ pub struct AppState {
     /// Prometheus metrics handle for rendering `/metrics` endpoint.
     #[cfg(feature = "rest")]
     pub metrics_handle: Option<crate::metrics::PrometheusHandle>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum DidcommWebsocketStatus {
-    Connected,
-    Connecting,
-    #[default]
-    Disconnected,
-}
-
-impl DidcommWebsocketStatus {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Connected => "connected",
-            Self::Connecting => "connecting",
-            Self::Disconnected => "disconnected",
-        }
-    }
 }
 
 impl AuthState for AppState {
@@ -425,9 +398,6 @@ pub async fn build_app_state(
         didcomm_bridge: parts
             .didcomm_bridge
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
-        #[cfg(feature = "didcomm")]
-        didcomm_websocket_status: Arc::new(RwLock::new(DidcommWebsocketStatus::Disconnected)),
-
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         #[cfg(feature = "tsp")]
@@ -870,16 +840,6 @@ pub async fn run(
             );
         }
 
-        // The DIDComm-transport view of shared state. Derived from the single
-        // `AppState` so REST and DIDComm share the same config `RwLock`,
-        // `WebvhAuthLocks`, registry, sweeper, and telemetry (P1.1).
-        #[cfg(feature = "didcomm")]
-        let vta_state = if config.services.didcomm {
-            Some(Arc::new(messaging::router::VtaState::from(&app_state)))
-        } else {
-            None
-        };
-
         // Spawn REST thread (conditional)
         #[cfg(feature = "rest")]
         let rest_handle = if let Some(ref listener_ref) = std_listener {
@@ -898,9 +858,20 @@ pub async fn run(
         #[cfg(not(feature = "rest"))]
         let rest_handle: Option<std::thread::JoinHandle<()>> = None;
 
-        // Start DIDComm service (conditional)
+        // Start the delivery-layer messaging service (conditional).
+        //
+        // D2 P2a: the `MessagingService` over a `DidCommTransport` (built in
+        // `messaging::service::build_messaging`) replaces the framework
+        // `DIDCommService`. On success it is published into the outbound
+        // `DIDCommBridge` (so REST + DIDComm handlers can send) and drives the
+        // protocol-routed inbound loop; the `Arc<MessagingService>` handle is
+        // retained for drain teardown. `DidCommTransport::inbound()` multiplexes
+        // BOTH DIDComm and TSP frames off the one mediator socket (one socket
+        // per DID — a second would be evicted as `duplicate-channel`), so TSP
+        // receive is always on when compiled with `tsp`; `config.services.tsp`
+        // governs advertisement only.
         #[cfg(feature = "didcomm")]
-        let didcomm_service: Option<DIDCommService> = if let Some(ref vta_state) = vta_state {
+        let messaging_service: Option<Arc<MessagingService>> = if config.services.didcomm {
             match (
                 &app_state.secrets_resolver,
                 &config.vta_did,
@@ -921,83 +892,11 @@ pub async fn run(
                         secrets.push(s);
                     }
 
-                    let profile = TDKProfile::new(
-                        "VTA",
-                        vta_did,
-                        Some(&messaging_config.mediator_did),
-                        secrets,
-                    );
-
-                    // Build a TDKConfig for the DIDComm listener. Reuse the
-                    // already-initialized app-state resolver when available so
-                    // the listener sees the same seeded self-DID cache entry
-                    // (e.g. `preload_self_did_document`), instead of creating
-                    // a fresh resolver that starts cold and may hit network.
-                    // Fall back to resolver-url mode for degraded/startup paths
-                    // where app-state auth init yielded no resolver.
-                    let listener_tdk_config = {
-                        let mut builder = affinidi_tdk::common::config::TDKConfig::builder()
-                            .with_load_environment(false);
-                        if let Some(ref did_resolver) = app_state.did_resolver {
-                            builder = builder.with_did_resolver(did_resolver.clone());
-                        } else if let Some(ref url) = config.resolver_url {
-                            let resolver_config = DIDCacheConfigBuilder::default()
-                                .with_network_mode(url)
-                                .build();
-                            builder = builder.with_did_resolver_config(resolver_config);
-                        }
-                        builder.build().ok()
-                    };
-
-                    // TSP receive-capability is a **compile-time** property, not
-                    // a runtime toggle: a `tsp`-compiled VTA ALWAYS multiplexes
-                    // TSP + DIDComm on its single mediator websocket (one socket
-                    // per DID — a second would be evicted as
-                    // `duplicate-channel`). Gating the listener mode on
-                    // `config.services.tsp` used to leave a split-brain — a VTA
-                    // that advertised `#tsp` (via `services tsp enable`) but
-                    // hadn't rebooted with `[services] tsp = true` ran a
-                    // DIDComm-only receive path that couldn't unpack inbound TSP
-                    // frames, poison-looping them every ~30s. `config.services.tsp`
-                    // now governs **advertisement** only; receive is always on
-                    // when compiled with `tsp`. Build without the `tsp` feature
-                    // to exclude the TSP receive path entirely.
-                    let listen_tsp = cfg!(feature = "tsp");
-
-                    let service_config = DIDCommServiceConfig {
-                        listeners: vec![ListenerConfig {
-                            id: "vta-main".into(),
-                            profile,
-                            restart_policy: RestartPolicy::Always {
-                                backoff: RetryConfig {
-                                    initial_delay_secs: 5,
-                                    max_delay_secs: 60,
-                                },
-                            },
-                            tdk_config: listener_tdk_config,
-                            protocols: if listen_tsp {
-                                Protocols::BOTH
-                            } else {
-                                Protocols::DIDCOMM_ONLY
-                            },
-                            ..Default::default()
-                        }],
-                    };
-
-                    let handler = messaging::router::build_handler(
-                        Arc::clone(vta_state),
-                        app_state.clone(),
-                        didcomm_bridge.clone(),
-                    )
-                    .map_err(|e| {
-                        AppError::Internal(format!("failed to build DIDComm handler: {e}"))
-                    })?;
-
                     // Recovery: optionally clear this DID's mediator inbox over
                     // REST *before* enabling live delivery, so a poison /
                     // undeliverable backlog can't stall the pickup handshake and
-                    // wedge the (shared DIDComm+TSP) listener. Best-effort, and
-                    // off unless `messaging.drain_inbox_on_start` is set.
+                    // wedge the (shared DIDComm+TSP) socket. Best-effort, and off
+                    // unless `messaging.drain_inbox_on_start` is set.
                     if messaging_config.drain_inbox_on_start {
                         match app_state.atm.as_ref() {
                             Some(atm) => {
@@ -1019,74 +918,28 @@ pub async fn run(
                         }
                     }
 
-                    // With `tsp` compiled, always register the TSP handler so
-                    // inbound TSP frames off the shared socket reach the
-                    // trust-task spine — independent of whether TSP is currently
-                    // advertised. Without the feature, the plain DIDComm start.
-                    #[cfg(feature = "tsp")]
-                    let service_start = DIDCommService::start_with_tsp(
-                        service_config,
-                        handler,
-                        messaging::tsp_inbound::VtaTspHandler::new(app_state.clone()),
-                        didcomm_shutdown.clone(),
-                    );
-                    #[cfg(not(feature = "tsp"))]
-                    let service_start =
-                        DIDCommService::start(service_config, handler, didcomm_shutdown.clone());
-
-                    match service_start.await {
-                        Ok(service) => {
-                            {
-                                let mut status = app_state.didcomm_websocket_status.write().await;
-                                *status = DidcommWebsocketStatus::Connecting;
-                            }
-                            // Wait for the mediator connection before accepting traffic.
-                            // Race the wait against shutdown so a Ctrl-C while the
-                            // mediator is unreachable doesn't park us here for the full
-                            // 30s — `wait_connected` is itself signal-deaf upstream.
-                            tokio::select! {
-                                res = service.wait_connected(
-                                    "vta-main",
-                                    Duration::from_secs(30),
-                                ) => {
-                                    if let Err(e) = res {
-                                        let mut status = app_state.didcomm_websocket_status.write().await;
-                                        *status = DidcommWebsocketStatus::Disconnected;
-                                        warn!(
-                                            mediator = %messaging_config.mediator_did,
-                                            error = %e,
-                                            "DIDComm listener did not go live within 30s. Auth + \
-                                             websocket most likely connected, but live-delivery \
-                                             (message-pickup) never completed — and this single \
-                                             listener carries BOTH DIDComm and TSP, so both inbound \
-                                             paths are down. The mediator enforces one live-delivery \
-                                             websocket per DID, so the usual causes are: (1) an \
-                                             active websocket for this DID left by a prior process \
-                                             that wasn't cleanly stopped, or (2) an \
-                                             undeliverable/poison message queued for this DID that \
-                                             stalls the pickup handshake. The VTA keeps serving REST \
-                                             and retries in the background. To recover without \
-                                             touching the mediator, set \
-                                             `messaging.drain_inbox_on_start = true` and restart — \
-                                             the VTA will clear this DID's queued messages over REST \
-                                             before going live."
-                                        );
-                                    } else {
-                                        let mut status = app_state.didcomm_websocket_status.write().await;
-                                        *status = DidcommWebsocketStatus::Connected;
-                                    }
-                                }
-                                _ = didcomm_shutdown.cancelled() => {
-                                    let mut status = app_state.didcomm_websocket_status.write().await;
-                                    *status = DidcommWebsocketStatus::Disconnected;
-                                    info!("shutdown received before mediator connected");
-                                }
-                            }
-                            didcomm_bridge.set_service(service.clone());
-                            spawn_event_logger(
+                    let outbox_ks = apply_encryption(store.keyspace(crate::keyspaces::OUTBOX)?);
+                    match crate::messaging::service::build_messaging(
+                        secrets,
+                        vta_did,
+                        &messaging_config.mediator_did,
+                        outbox_ks,
+                        app_state.did_resolver.as_ref(),
+                        config.resolver_url.as_deref(),
+                    )
+                    .await
+                    {
+                        Ok(messaging) => {
+                            let service = messaging.service.clone();
+                            // Publish the outbound wiring so every REST/DIDComm
+                            // component can send to a peer over this one
+                            // connection (`DIDCommBridge` → `MessagingService`).
+                            app_state.didcomm_bridge.set_messaging(
                                 service.clone(),
-                                Arc::clone(&app_state.didcomm_websocket_status),
+                                (*messaging.atm).clone(),
+                                vta_did.clone(),
                             );
+
                             // Register the config-loaded mediator in the listener
                             // registry so the delegated step-up push (which buffers
                             // outbound through the registry) can reach approvers on
@@ -1105,9 +958,6 @@ pub async fn run(
                                 .await;
 
                             // Set the VTA's own ACL on the mediator to accept all messages.
-                            // This happens after the connection succeeds, so we have a live
-                            // transport to send the trust task. The ACL setting is
-                            // fire-and-forget (spawns internally) — startup is not blocked.
                             // The ACL is keyed on the VTA's DID, so it authorises the account
                             // for both DIDComm *and* TSP, which share this one mediator socket.
                             // Only runs when `setup_acl = true` in the messaging config
@@ -1130,13 +980,23 @@ pub async fn run(
                                 }
                             }
 
-                            info!("DIDComm service started");
+                            // Spawn the protocol-routed inbound loop. It runs until
+                            // `didcomm_shutdown` is cancelled (Ctrl-C or soft
+                            // restart), dispatching DIDComm frames to the handler
+                            // set and TSP frames to the trust-task spine.
+                            tokio::spawn(crate::messaging::service::run_inbound_loop(
+                                Arc::new(messaging),
+                                app_state.clone(),
+                                vta_did.clone(),
+                                messaging_config.mediator_did.clone(),
+                                didcomm_shutdown.clone(),
+                            ));
+
+                            info!("DIDComm messaging started");
                             Some(service)
                         }
                         Err(e) => {
-                            let mut status = app_state.didcomm_websocket_status.write().await;
-                            *status = DidcommWebsocketStatus::Disconnected;
-                            warn!("failed to start DIDComm service: {e}");
+                            warn!("failed to start DIDComm messaging: {e}");
                             None
                         }
                     }
@@ -1150,15 +1010,15 @@ pub async fn run(
             None
         };
         #[cfg(not(feature = "didcomm"))]
-        let didcomm_service: Option<()> = None;
+        let messaging_service: Option<()> = None;
 
-        // TSP inbound is no longer a standalone websocket. When `services.tsp`
-        // is on, the DIDComm service above multiplexes TSP frames off its
-        // single mediator websocket and routes them to `VtaTspHandler`
-        // (registered via `start_with_tsp`). Opening a second socket here — as
-        // the earlier `run_tsp_inbound` loop did — made the mediator evict a
-        // connection as `duplicate-channel`, flapping the VTA. See
-        // `messaging::tsp_inbound`.
+        // TSP inbound is no longer a standalone websocket. The delivery-layer
+        // `DidCommTransport` built above multiplexes TSP frames off its single
+        // mediator websocket (`Inbound.message.protocol` tags DIDComm vs TSP);
+        // the inbound loop routes each TSP frame to `messaging::tsp_inbound`.
+        // Opening a second socket here — as the earlier `run_tsp_inbound` loop
+        // did — made the mediator evict a connection as `duplicate-channel`,
+        // flapping the VTA. See `messaging::tsp_inbound`.
 
         // Spawn the teardown channel consumer. The drain sweeper
         // sends mediator DIDs over `teardown_rx` whenever a TTL
@@ -1169,7 +1029,7 @@ pub async fn run(
         // keyspace level by the sweeper.
         #[cfg(all(feature = "webvh", feature = "didcomm"))]
         let _teardown_handle = {
-            let didcomm_service_ref = didcomm_service.clone();
+            let messaging_service_ref = messaging_service.clone();
             let mut teardown_rx = teardown_rx;
             let mut shutdown_rx_for_teardown = shutdown_rx.clone();
             tokio::spawn(async move {
@@ -1185,23 +1045,21 @@ pub async fn run(
                             match msg {
                                 None => break,
                                 Some(mediator_did) => {
-                                    if let Some(ref svc) = didcomm_service_ref {
-                                        if let Err(e) = svc.remove_listener(&mediator_did).await {
-                                            warn!(
-                                                mediator = %mediator_did,
-                                                error = %e,
-                                                "drain teardown: remove_listener failed"
-                                            );
-                                        } else {
-                                            info!(
-                                                mediator = %mediator_did,
-                                                "drain teardown: listener removed"
-                                            );
-                                        }
+                                    // The drain window kept the OLD mediator's
+                                    // transport installed (still receiving inbound
+                                    // via the merged dispatcher) after promote; its
+                                    // fjall drain-entry TTL has now expired, so drop
+                                    // it from the delivery-layer service.
+                                    if let Some(ref svc) = messaging_service_ref {
+                                        svc.remove_transport(&mediator_did);
+                                        info!(
+                                            mediator = %mediator_did,
+                                            "drain teardown: transport removed"
+                                        );
                                     } else {
                                         debug!(
                                             mediator = %mediator_did,
-                                            "drain teardown: DIDComm not running, skipping remove_listener"
+                                            "drain teardown: DIDComm not running, skipping remove_transport"
                                         );
                                     }
                                 }
@@ -1276,15 +1134,18 @@ pub async fn run(
             }
         }
 
-        // Gracefully shut down the DIDComm service and wait for listeners
-        // to disconnect from the mediator.
+        // Stop DIDComm messaging: cancel the inbound loop's shutdown token.
+        // The delivery-layer background tasks (dispatcher, transport forwarder,
+        // outbox drain loops) are detached — as in the VTC pilot — and wind down
+        // as their `Arc<MessagingService>`/transport handles drop.
         #[cfg(feature = "didcomm")]
-        if let Some(ref service) = didcomm_service {
-            service.shutdown().await;
-            info!("DIDComm service stopped");
+        {
+            didcomm_shutdown.cancel();
+            let _ = &messaging_service;
+            info!("DIDComm messaging stopped");
         }
         #[cfg(not(feature = "didcomm"))]
-        let _ = didcomm_service;
+        let _ = messaging_service;
 
         if any_panic {
             let _ = shutdown_tx.send(true);
@@ -2098,51 +1959,9 @@ async fn drain_mediator_inbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> u
     cleared
 }
 
-/// Spawn a background task that logs DIDComm listener lifecycle events.
-#[cfg(feature = "didcomm")]
-fn spawn_event_logger(
-    service: DIDCommService,
-    websocket_status: Arc<RwLock<DidcommWebsocketStatus>>,
-) {
-    use affinidi_messaging_didcomm_service::ListenerEvent;
-
-    let mut rx = service.subscribe();
-    tokio::spawn(async move {
-        loop {
-            match rx.recv().await {
-                Ok(ListenerEvent::Connected { listener_id }) => {
-                    *websocket_status.write().await = DidcommWebsocketStatus::Connected;
-                    info!(listener = %listener_id, "DIDComm listener connected to mediator");
-                }
-                Ok(ListenerEvent::Disconnected { listener_id, error }) => {
-                    *websocket_status.write().await = DidcommWebsocketStatus::Disconnected;
-                    warn!(
-                        listener = %listener_id,
-                        error = error.as_deref().unwrap_or("none"),
-                        "DIDComm listener disconnected from mediator"
-                    );
-                }
-                Ok(ListenerEvent::Restarting {
-                    listener_id,
-                    attempt,
-                    delay,
-                }) => {
-                    *websocket_status.write().await = DidcommWebsocketStatus::Connecting;
-                    info!(
-                        listener = %listener_id,
-                        attempt,
-                        delay_secs = delay.as_secs(),
-                        "DIDComm listener restarting"
-                    );
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(skipped = n, "DIDComm event logger lagged");
-                }
-            }
-        }
-    });
-}
+// The framework's `ListenerEvent`-based `spawn_event_logger` is gone with the
+// `DIDCommService`. Messaging connectivity is now read live (non-latched, R6.2)
+// off `MessagingService::status()` via `DIDCommBridge::messaging_status_str`.
 
 async fn shutdown_signal() {
     let ctrl_c = async {
