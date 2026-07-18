@@ -99,6 +99,10 @@ affinidi-messaging-delivery = "0.1"
 # `ReceivedMessage`, `MessagingError`) the delivery layer builds on. Referenced
 # directly by services that demux `MessagingService::subscribe()` inbound.
 affinidi-messaging-core = "0.1"
+# Async `Stream` combinators (`StreamExt`, `BoxStream`) for draining the
+# delivery layer's `subscribe()` inbound. Matches the `= "0.3"` pin the
+# services already use directly.
+futures-util = "0.3"
 
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1.3"

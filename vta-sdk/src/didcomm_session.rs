@@ -2,13 +2,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use affinidi_messaging_core::{Inbound, MessageTransport};
+use affinidi_messaging_delivery::{Delivery, InMemoryOutboxStore, MessagingService, OutboxStore};
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::didcomm::Message;
-use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
+use affinidi_tdk::messaging::{ATM, DidCommTransport};
 use affinidi_tdk::secrets_resolver::SecretsResolver;
+use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
 use tracing::{debug, info, warn};
 
 use crate::error::VtaError;
@@ -37,8 +41,30 @@ const MEDIATOR_OP_TIMEOUT: Duration = Duration::from_secs(15);
 /// `WARN` (and trips a `debug_assert!` in debug builds).
 #[derive(Clone)]
 pub struct DIDCommSession {
+    /// The reliable-messaging delivery layer over the mediator socket. Its
+    /// single inbound dispatcher demuxes replies by `thid` to [`request`]
+    /// waiters and hands unsolicited messages to [`subscribe`], deleting each
+    /// message from the mediator exactly once — this is what fixes the F5
+    /// steal-and-destroy bug the old raw `live_stream_next(auto_delete=true)`
+    /// path had when concurrent `send_and_wait`s shared one session.
+    ///
+    /// [`request`]: affinidi_messaging_delivery::MessagingService::request
+    /// [`subscribe`]: affinidi_messaging_delivery::MessagingService::subscribe
+    service: Arc<MessagingService>,
+    /// Kept solely to `pack_encrypted` outbound messages (the delivery layer
+    /// takes already-packed bytes) and to seal/open vault JWEs.
     atm: Arc<ATM>,
+    /// Kept for the mediator DID + packing context on the profile.
     profile: Arc<ATMProfile>,
+    /// The one persistent [`subscribe`] stream feeding [`receive_next`]. Each
+    /// subscriber is independent + buffered, so this must be created once (in
+    /// [`connect_with_secrets`]) and shared across clones — a fresh `subscribe()`
+    /// per `receive_next` call would only see messages that arrive after it.
+    ///
+    /// [`subscribe`]: affinidi_messaging_delivery::MessagingService::subscribe
+    /// [`receive_next`]: Self::receive_next
+    /// [`connect_with_secrets`]: Self::connect_with_secrets
+    subscriber: Arc<tokio::sync::Mutex<BoxStream<'static, Inbound>>>,
     pub(crate) client_did: String,
     pub(crate) vta_did: String,
     /// Set by [`shutdown`](Self::shutdown). Shared across clones so calling
@@ -164,7 +190,8 @@ impl DIDCommSession {
             tdk.secrets_resolver().insert(secret).await;
         }
 
-        // Build ATM (no inbound channel needed — we use REST polling)
+        // Build ATM — inbound is driven by the delivery layer's DidCommTransport,
+        // not by direct ATM polling (see the `MessagingService` wiring below).
         let atm_config = ATMConfig::builder().build()?;
         let atm = ATM::new(atm_config, Arc::new(tdk)).await?;
 
@@ -261,7 +288,26 @@ impl DIDCommSession {
         )
         .await;
 
-        debug!("DIDComm session connected via mediator {mediator_did} (WebSocket mode)");
+        // Build the reliable-messaging delivery layer over the mediator
+        // websocket, mirroring `vta-service`/`vtc-service`'s `build_messaging`:
+        // wrap the (now websocket-enabled) ATM + profile in a `DidCommTransport`,
+        // back an ephemeral in-memory outbox (the client is short-lived — no
+        // durability needed), and start the merged inbound dispatcher via
+        // `MessagingService::new`. The dispatcher is what demuxes replies to
+        // `request` waiters and unsolicited pushes to `subscribe`, deleting each
+        // message from the mediator exactly once (the F5 fix).
+        let transport: Arc<dyn MessageTransport> = Arc::new(
+            DidCommTransport::new((*atm).clone(), profile.clone())
+                .await
+                .map_err(|e| format!("bind DidComm transport: {e}"))?,
+        );
+        let outbox: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
+        let service = Arc::new(MessagingService::new(transport, outbox));
+        // ONE persistent subscriber for `receive_next` — a per-call `subscribe()`
+        // would miss anything delivered before it started.
+        let subscriber = Arc::new(tokio::sync::Mutex::new(service.subscribe()));
+
+        debug!("DIDComm session connected via mediator {mediator_did} (delivery-layer mode)");
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let leak_guard = Arc::new(LeakGuard {
@@ -270,8 +316,10 @@ impl DIDCommSession {
             vta_did: vta_did.to_string(),
         });
         Ok(Self {
+            service,
             atm,
             profile,
+            subscriber,
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
             shutdown,
@@ -320,26 +368,29 @@ impl DIDCommSession {
     }
 
     /// Pack `body` as an authcrypt DIDComm message of `msg_type` from this
-    /// session to `recipient_did`, wrap it in a `routing/2.0/forward` envelope,
-    /// and ship it through the mediator. Returns once the mediator has accepted
-    /// the forward — it does **not** consume the inbound live stream, so it is
-    /// safe to call concurrently with [`receive_next`](Self::receive_next) /
-    /// [`send_and_wait`](Self::send_and_wait) without racing on inbound
-    /// messages.
+    /// session to `recipient_did` and return the packed JWE string.
     ///
-    /// Shared by [`send_and_wait`](Self::send_and_wait) (which then waits on the
-    /// live stream for `msg_id`'s response) and
-    /// [`send_one_way`](Self::send_one_way) (which returns immediately). Strict
-    /// mediators (`local_direct_delivery_allowed: false`) refuse direct
-    /// delivery — this is the same `forward_and_send_message` path the
-    /// production VTA-side `affinidi-messaging-didcomm-service` takes.
-    async fn pack_and_forward(
+    /// Pack-only: the actual send/forward is done by the delivery layer
+    /// ([`MessagingService::send`] / [`MessagingService::request`]), whose
+    /// [`DidCommTransport`] wraps the message in a `routing/2.0/forward`
+    /// envelope through the mediator internally — so there is no
+    /// `forward_and_send_message` call here anymore. Strict mediators
+    /// (`local_direct_delivery_allowed: false`) still get a forward-wrapped
+    /// message because the transport always routes via the mediator.
+    ///
+    /// Shared by [`send_and_wait`](Self::send_and_wait) (which then awaits the
+    /// reply the dispatcher demuxes to it by `thid`) and
+    /// [`send_one_way`](Self::send_one_way) (which fires and forgets).
+    ///
+    /// [`MessagingService::send`]: affinidi_messaging_delivery::MessagingService::send
+    /// [`MessagingService::request`]: affinidi_messaging_delivery::MessagingService::request
+    async fn pack_message(
         &self,
         recipient_did: &str,
         msg_id: &str,
         msg_type: &str,
         body: serde_json::Value,
-    ) -> Result<(), VtaError> {
+    ) -> Result<String, VtaError> {
         let msg = Message::build(msg_id.to_string(), msg_type.to_string(), body)
             .from(self.client_did.clone())
             .to(recipient_did.to_string())
@@ -357,34 +408,8 @@ impl DIDCommSession {
             .await
             .map_err(|e| VtaError::DidcommTransport(format!("failed to pack message: {e}")))?;
 
-        debug!(msg_type, msg_id, recipient_did, "sending via DIDComm");
-
-        let mediator_did = self
-            .profile
-            .inner
-            .mediator
-            .as_ref()
-            .as_ref()
-            .map(|m| m.did.clone())
-            .ok_or_else(|| {
-                VtaError::DidcommTransport("no mediator configured on profile".into())
-            })?;
-
-        self.atm
-            .forward_and_send_message(
-                &self.profile,
-                false, // authcrypt the forward envelope (mediator policy)
-                &packed,
-                Some(msg_id),
-                &mediator_did,
-                recipient_did,
-                None,
-                None,
-                false,
-            )
-            .await
-            .map_err(|e| VtaError::DidcommTransport(format!("failed to send message: {e}")))?;
-        Ok(())
+        debug!(msg_type, msg_id, recipient_did, "packed DIDComm message");
+        Ok(packed)
     }
 
     /// Send a one-way (fire-and-forget) DIDComm message to `recipient_did` and
@@ -406,8 +431,16 @@ impl DIDCommSession {
         body: serde_json::Value,
     ) -> Result<(), VtaError> {
         let msg_id = uuid::Uuid::new_v4().to_string();
-        self.pack_and_forward(recipient_did, &msg_id, msg_type, body)
+        let packed = self
+            .pack_message(recipient_did, &msg_id, msg_type, body)
+            .await?;
+        // `BestEffort`: one truthful hop send — `Err` if the frame wasn't
+        // transmitted (no silent `Ok` for a dropped frame, per R1.1).
+        self.service
+            .send(recipient_did, packed.into_bytes(), Delivery::BestEffort)
             .await
+            .map_err(|e| VtaError::DidcommTransport(format!("failed to send message: {e}")))?;
+        Ok(())
     }
 
     /// Send a DIDComm message and wait for a matching response.
@@ -427,82 +460,66 @@ impl DIDCommSession {
         timeout_secs: u64,
     ) -> Result<T, VtaError> {
         let msg_id = uuid::Uuid::new_v4().to_string();
-        // Pack + forward through the mediator (to the VTA). The reply is
-        // matched on the live stream below by `thid == msg_id`.
-        self.pack_and_forward(&self.vta_did, &msg_id, msg_type, body)
+        // Pack the message; the delivery layer sends it (forward-wrapped via the
+        // mediator) and awaits the reply the dispatcher demuxes to THIS waiter by
+        // `thid == msg_id`. Concurrent `send_and_wait`s each register their own
+        // waiter, so a peer request's reply can no longer be stolen (F5 fix).
+        let packed = self
+            .pack_message(&self.vta_did, &msg_id, msg_type, body)
             .await?;
 
-        // Wait for the response via WebSocket live stream
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        let wait_duration = std::time::Duration::from_secs(5);
-        let deadline = tokio::time::Instant::now() + timeout;
+        let received = self
+            .service
+            .request(
+                &self.vta_did,
+                packed.into_bytes(),
+                &msg_id,
+                Duration::from_secs(timeout_secs),
+            )
+            .await
+            .map_err(|e| {
+                // Preserve the exact timeout message callers/tests match on today.
+                if e.to_string().contains("timed out") {
+                    VtaError::DidcommTransport("timeout waiting for DIDComm response".into())
+                } else {
+                    VtaError::DidcommTransport(format!("message pickup error: {e}"))
+                }
+            })?;
 
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(VtaError::DidcommTransport(
-                    "timeout waiting for DIDComm response".into(),
-                ));
-            }
-            let wait = wait_duration.min(remaining);
+        // `payload` is the full plaintext DIDComm `Message` JSON.
+        let response_msg: Message =
+            serde_json::from_slice(&received.payload).map_err(VtaError::from)?;
 
-            let next = self
-                .atm
-                .message_pickup()
-                .live_stream_next(&self.profile, Some(wait), true)
-                .await
-                .map_err(|e| VtaError::DidcommTransport(format!("message pickup error: {e}")))?;
+        debug!(response_type = %response_msg.typ, "received DIDComm response");
 
-            let (response_msg, _meta) = match next {
-                Some(pair) => pair,
-                None => continue, // No message yet, keep waiting
-            };
-
-            // Check if this is the response we're waiting for (matching thread ID)
-            let response_thid = response_msg.thid.as_deref().unwrap_or("");
-            if response_thid != msg_id {
-                debug!(
-                    response_thid,
-                    expected = msg_id,
-                    response_type = %response_msg.typ,
-                    "received message with non-matching thread ID — skipping"
-                );
-                continue;
-            }
-
-            debug!(response_type = %response_msg.typ, "received DIDComm response");
-
-            // Check for problem report — map the `e.p.msg.*` code to the
-            // matching VtaError variant so callers can `match` on the same
-            // error shapes they get from REST (see `VtaError::from_http`).
-            if response_msg.typ == PROBLEM_REPORT_TYPE
-                || response_msg.typ.contains("problem-report")
-            {
-                let code = response_msg
-                    .body
-                    .get("code")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let comment = response_msg
-                    .body
-                    .get("comment")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                return Err(VtaError::from_problem_report(code, comment));
-            }
-
-            // Verify expected type
-            if response_msg.typ != expected_result_type {
-                return Err(VtaError::Protocol(format!(
-                    "unexpected response type: expected {expected_result_type}, got {}",
-                    response_msg.typ
-                )));
-            }
-
-            // Deserialize response body
-            return serde_json::from_value(response_msg.body).map_err(VtaError::from);
+        // Check for problem report — map the `e.p.msg.*` code to the
+        // matching VtaError variant so callers can `match` on the same
+        // error shapes they get from REST (see `VtaError::from_http`).
+        if response_msg.typ == PROBLEM_REPORT_TYPE || response_msg.typ.contains("problem-report") {
+            let code = response_msg
+                .body
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let comment = response_msg
+                .body
+                .get("comment")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Err(VtaError::from_problem_report(code, comment));
         }
+
+        // Verify expected type
+        if response_msg.typ != expected_result_type {
+            return Err(VtaError::Protocol(format!(
+                "unexpected response type: expected {expected_result_type}, got {}",
+                response_msg.typ
+            )));
+        }
+
+        // Deserialize response body
+        serde_json::from_value(response_msg.body).map_err(VtaError::from)
     }
 
     /// Receive the next **unsolicited** inbound DIDComm message — e.g. an
@@ -516,31 +533,27 @@ impl DIDCommSession {
     /// ATM has already decrypted it under the holder key, so the caller works
     /// with plaintext (the application Trust Task rides in `body`).
     pub async fn receive_next(&self, timeout_secs: u64) -> Result<Option<String>, VtaError> {
-        let timeout = std::time::Duration::from_secs(timeout_secs);
-        let wait_duration = std::time::Duration::from_secs(5);
-        let deadline = tokio::time::Instant::now() + timeout;
-
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return Ok(None);
+        // Pull from the ONE persistent subscriber. This no longer competes with
+        // `send_and_wait`: the dispatcher already routed any thread-correlated
+        // reply to its `request` waiter, so this stream carries only unsolicited
+        // inbound. The lock serialises concurrent `receive_next` calls on the
+        // same session (each message goes to exactly one caller).
+        let mut stream = self.subscriber.lock().await;
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), stream.next()).await {
+            Ok(Some(inbound)) => {
+                // `payload` is the full plaintext DIDComm `Message` JSON;
+                // re-serialise it to preserve the `{ id, type, body, from, … }`
+                // shape callers (`InboundMessage::parse`) expect.
+                let msg: Message =
+                    serde_json::from_slice(&inbound.message.payload).map_err(VtaError::from)?;
+                debug!(msg_type = %msg.typ, "received inbound DIDComm message");
+                let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
+                Ok(Some(json))
             }
-            let wait = wait_duration.min(remaining);
-
-            let next = self
-                .atm
-                .message_pickup()
-                .live_stream_next(&self.profile, Some(wait), true)
-                .await
-                .map_err(|e| VtaError::DidcommTransport(format!("message pickup error: {e}")))?;
-
-            let (msg, _meta) = match next {
-                Some(pair) => pair,
-                None => continue, // nothing yet — keep waiting until the deadline
-            };
-            debug!(msg_type = %msg.typ, "received inbound DIDComm message");
-            let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
-            return Ok(Some(json));
+            // Stream ended (service shut down) — nothing more to receive.
+            Ok(None) => Ok(None),
+            // Poll window elapsed with nothing.
+            Err(_) => Ok(None),
         }
     }
 
