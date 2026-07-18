@@ -40,6 +40,7 @@ mod proof;
 // Planned module surface. These are stubs in slice 1; each file documents the
 // FFI it will expose and which slice wires it. They are kept as real modules
 // so the crate layout matches the mapped design from day one.
+pub mod consent;
 pub mod didcomm;
 pub mod keys;
 pub mod mediator;

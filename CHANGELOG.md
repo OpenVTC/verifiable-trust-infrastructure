@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### vta-mobile-core — task-consent approver FFI (mobile as a 2nd device, phase 1)
+
+* New `consent.rs` exposes the FFI the mobile agent needs to act as a
+  task-consent approver, mirroring the existing step-up approver: parse an
+  inbound `task-consent/request/0.1` for display (`parse_task_consent_request` —
+  lenient, tolerating the VTA's extra wire fields, and surfacing effects, the
+  side-effect/exposure class, and a digest-prefix match code), and build a
+  DID-signed `task-consent/decision/0.1` approval or denial
+  (`build_task_consent_decision_did_signed` / `_denied`) via the shared
+  `eddsa-jcs-2022` proof path. DIDComm transport only; the on-device DI-proof
+  verify of the request is a hardening follow-up. The Swift approval UI is the
+  next slice.
+
 ### vta-service — notify the requester when a task-consent grant is minted
 
 * A requester had no way to learn that its task had been approved except to
