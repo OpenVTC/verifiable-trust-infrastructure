@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### vtc-service 0.11.11 — follow vti-common capability_client dedup
+
+* The hook writer drops one `?` now that the shared capability document builders
+  are infallible (they return the document, not `Result`). No behaviour change.
+
 ### vti-common 0.11.8 — capability_client is now the shared crate
 
 * `vti_common::capability_client` is re-exported from the new published
