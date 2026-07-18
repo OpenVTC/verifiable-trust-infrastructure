@@ -54,8 +54,6 @@ pub struct DIDCommSession {
     /// Kept solely to `pack_encrypted` outbound messages (the delivery layer
     /// takes already-packed bytes) and to seal/open vault JWEs.
     atm: Arc<ATM>,
-    /// Kept for the mediator DID + packing context on the profile.
-    profile: Arc<ATMProfile>,
     /// The one persistent [`subscribe`] stream feeding [`receive_next`]. Each
     /// subscriber is independent + buffered, so this must be created once (in
     /// [`connect_with_secrets`]) and shared across clones — a fresh `subscribe()`
@@ -318,7 +316,6 @@ impl DIDCommSession {
         Ok(Self {
             service,
             atm,
-            profile,
             subscriber,
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
