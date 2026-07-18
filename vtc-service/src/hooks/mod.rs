@@ -514,5 +514,11 @@ fn backoff(attempts: u32) -> chrono::Duration {
     chrono::Duration::seconds(secs as i64)
 }
 
+pub mod reply;
+pub mod writer;
+
+pub use reply::PendingReplies;
+pub use writer::DidcommCapabilityWriter;
+
 #[cfg(test)]
 mod tests;

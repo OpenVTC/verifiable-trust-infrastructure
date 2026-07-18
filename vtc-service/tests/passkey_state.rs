@@ -45,6 +45,8 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let registry_records_ks = store.keyspace("registry_records").unwrap();
     let sync_queue_ks = store.keyspace("sync_queue").unwrap();
     let sync_cursor_ks = store.keyspace("sync_cursor").unwrap();
+    let hooks_queue_ks = store.keyspace("hooks_queue").unwrap();
+    let hooks_cursor_ks = store.keyspace("hooks_cursor").unwrap();
     let relationships_ks = store.keyspace("relationships").unwrap();
     let relationships_by_did_ks = store.keyspace("relationships_by_did").unwrap();
     let endorsement_types_ks = store.keyspace("endorsement_types").unwrap();
@@ -83,6 +85,9 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         registry_records_ks: registry_records_ks.clone(),
         sync_queue_ks: sync_queue_ks.clone(),
         sync_cursor_ks: sync_cursor_ks.clone(),
+        hooks_queue_ks: hooks_queue_ks.clone(),
+        hooks_cursor_ks: hooks_cursor_ks.clone(),
+        capability_replies: vtc_service::hooks::PendingReplies::new(),
         relationships_ks: relationships_ks.clone(),
         relationships_by_did_ks: relationships_by_did_ks.clone(),
         endorsement_types_ks: endorsement_types_ks.clone(),

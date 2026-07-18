@@ -35,6 +35,10 @@ pub struct AppConfig {
     /// the registry at boot and on a periodic interval.
     #[serde(default)]
     pub registry: RegistryConfig,
+    /// Membership lifecycle hooks — capability grant propagation
+    /// (`design-docs/vtc-membership-hooks.md`). Absent ⇒ no hook relay.
+    #[serde(default)]
+    pub hooks: crate::hooks::HooksConfig,
     /// Renewal-path settings (Phase 4 M4.2.2). Currently
     /// gates the renewal-time behaviour when `personhood.rego`
     /// flips a previously-asserted member's flag to `false`.
@@ -244,6 +248,11 @@ pub struct RegistryConfig {
     /// `"degraded"`, sync is skipped.
     #[serde(default)]
     pub url: Option<String>,
+    /// DID of the trust registry — the recipient of DIDComm capability
+    /// writes (`governance/capability/*`, `git-trust/*`). Required for the
+    /// membership hook relay; unset ⇒ hooks are not spawned.
+    #[serde(default)]
+    pub did: Option<String>,
     /// Period (seconds) between background health probes.
     /// `0` disables the periodic probe (only boot-time probe
     /// runs). Default: 60s.
@@ -289,6 +298,7 @@ impl Default for RegistryConfig {
         // construction.
         Self {
             url: None,
+            did: None,
             health_probe_interval_seconds: default_health_probe_interval(),
             http_timeout_seconds: default_registry_http_timeout(),
             rtbf_batch_window_hours: default_rtbf_batch_window_hours(),

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### vtc-service 0.11.10 — membership hooks: production DIDComm writer + wiring
+
+* Completes the membership hook relay (`design-docs/vtc-membership-hooks.md`): the
+  `DidcommCapabilityWriter` signs `git-trust/grant|revoke` documents with the VTC's
+  credential signer (the community is the authority its grants are issued under; the
+  signer's canonical form matches the trust registry verifier's exactly) and sends them
+  to the registry over the delivery-layer messaging, correlating the reply by `threadId`
+  through a shared pending-reply map completed in the inbound demux.
+* New config: `registry.did` (the registry's DIDComm DID — required for the relay) and a
+  `[hooks.git-trust]` section (`grant_on_role`, `revoke_with_membership`). `serve()`
+  spawns the relay under a panic-restart supervisor **only** when git-trust hooks, the
+  registry DID, and the VTC credential signer are all present — absent any, no relay.
+* New keyspaces `hooks_queue` / `hooks_cursor`.
+
+
 ### vti-common 0.11.7 — `capability_client`: shared capability Trust Task primitives
 
 * New `capability_client` module: transport-free document builders, `eddsa-jcs-2022`

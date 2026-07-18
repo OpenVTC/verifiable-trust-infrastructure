@@ -392,6 +392,19 @@ async fn dispatch(inbound: Inbound, state: &AppState) -> Option<Reply> {
         return None;
     }
 
+    // Capability write replies (git-trust/*, governance/capability/*): the
+    // hook relay's writer registered a waiter keyed by the request document
+    // id; complete it and reply nothing. A reply we don't recognise (no
+    // matching waiter) is dropped here rather than problem-reported.
+    if msg.typ == vti_common::capability_client::TRUST_TASK_ENVELOPE_TYPE {
+        if let Some((_thid, doc)) =
+            vti_common::capability_client::parse_envelope_document(&msg.body)
+        {
+            state.capability_replies.complete(doc);
+        }
+        return None;
+    }
+
     let auth_sender = inbound
         .message
         .sender
