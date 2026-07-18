@@ -14,7 +14,7 @@ use trust_tasks_rs::{RejectReason, TrustTask};
 
 use super::TrustTaskOutcome;
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
-use crate::acl::{Role, check_acl_full};
+use crate::acl::{Role, get_acl_entry};
 use crate::auth::AuthClaims;
 use crate::policy::consent;
 use crate::server::AppState;
@@ -63,17 +63,24 @@ fn now_secs() -> u64 {
 ///
 /// Empty unless the task was a cross-context proposal (`requester_authorized ==
 /// false`) with a known `subject_context`. When it was, an approver confers that
-/// context **only if they actually administer it**: resolved against live ACL
-/// state, requiring `Role::Admin` *and* context access (super-admin, or the
-/// context/an ancestor in `allowed_contexts`). This is attenuation — an approver
-/// can never delegate authority they do not hold, and set membership alone is
-/// not authority. The context is conferred only if enough such admins approved
-/// to meet the same `min_approvals` threshold the task required; otherwise the
-/// grant carries nothing and execution still fails the requester's own
-/// `require_context`.
+/// context **only if they hold authority over it**, resolved against live ACL
+/// state, by *either* of two paths:
+///   1. **Explicit approve authority** — an `approve_scope` covering the context.
+///      This is the least-privilege approver: it may confer without any power to
+///      act (`role: Reader`, no `allowed_contexts`).
+///   2. **Admin of the context** — `Role::Admin` with context access (super-admin,
+///      or the context/an ancestor in `allowed_contexts`). The backward-compatible
+///      path: an admin confers what it already holds.
+///
+/// This is attenuation — an approver can never delegate authority it does not
+/// hold, and set membership alone is not authority. The context is conferred only
+/// if enough such approvers met the same `min_approvals` threshold the task
+/// required; otherwise the grant carries nothing and execution still fails the
+/// requester's own authorization.
 async fn compute_delegated_contexts(
     state: &AppState,
     pending: &consent::PendingTaskConsent,
+    now: u64,
 ) -> Vec<String> {
     if pending.requester_authorized {
         return Vec::new();
@@ -81,23 +88,30 @@ async fn compute_delegated_contexts(
     let Some(ctx) = pending.subject_context.as_deref() else {
         return Vec::new();
     };
-    let mut context_admins = 0u32;
+    let mut conferrers = 0u32;
     for approver in &pending.approvals {
-        // A DID absent from the ACL (or expired) resolves to an error and
-        // confers nothing — a random approver device cannot grant authority.
-        if let Ok((role, contexts)) = check_acl_full(&state.acl_ks, approver).await {
+        // A DID absent from the ACL (or expired) confers nothing — a random
+        // approver device cannot grant authority.
+        let Ok(Some(entry)) = get_acl_entry(&state.acl_ks, approver).await else {
+            continue;
+        };
+        if entry.is_expired(now) {
+            continue;
+        }
+        let confers = entry.approve_scope.covers(ctx) || {
             let claims = AuthClaims {
                 did: approver.clone(),
-                role,
-                allowed_contexts: contexts,
+                role: entry.role.clone(),
+                allowed_contexts: entry.allowed_contexts.clone(),
                 ..Default::default()
             };
-            if claims.role == Role::Admin && claims.has_context_access(ctx) {
-                context_admins += 1;
-            }
+            claims.role == Role::Admin && claims.has_context_access(ctx)
+        };
+        if confers {
+            conferrers += 1;
         }
     }
-    if context_admins >= pending.min_approvals {
+    if conferrers >= pending.min_approvals {
         vec![ctx.to_string()]
     } else {
         Vec::new()
@@ -215,7 +229,7 @@ pub(super) async fn handle_decision(
         // task's context, the approvals confer execution authority for it — but
         // only if the approvers actually hold admin there. Resolved here, at the
         // moment the grant is minted, against live ACL state.
-        let delegated_contexts = compute_delegated_contexts(state, &updated).await;
+        let delegated_contexts = compute_delegated_contexts(state, &updated, now).await;
         let grant = consent::TaskConsentGrant {
             digest: updated.digest.clone(),
             requester_did: updated.requester_did.clone(),
@@ -296,7 +310,7 @@ mod tests {
 
         let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
         assert_eq!(
-            compute_delegated_contexts(&state, &pending).await,
+            compute_delegated_contexts(&state, &pending, 1000).await,
             vec![OPENVTC.to_string()],
             "an admin of the context confers it"
         );
@@ -315,7 +329,7 @@ mod tests {
 
         let pending = cross_context_pending(vec![ADMIN_OTHER.into()], 1);
         assert!(
-            compute_delegated_contexts(&state, &pending)
+            compute_delegated_contexts(&state, &pending, 1000)
                 .await
                 .is_empty(),
             "an admin of a different context cannot delegate this one"
@@ -330,7 +344,7 @@ mod tests {
 
         let pending = cross_context_pending(vec![READER.into()], 1);
         assert!(
-            compute_delegated_contexts(&state, &pending)
+            compute_delegated_contexts(&state, &pending, 1000)
                 .await
                 .is_empty(),
             "a reader of the context is not an admin of it"
@@ -342,7 +356,7 @@ mod tests {
         let (state, _dir) = build_signing_test_app_state().await;
         let pending = cross_context_pending(vec![STRANGER.into()], 1);
         assert!(
-            compute_delegated_contexts(&state, &pending)
+            compute_delegated_contexts(&state, &pending, 1000)
                 .await
                 .is_empty(),
             "a signer with no ACL entry has no authority to delegate"
@@ -358,7 +372,7 @@ mod tests {
 
         let pending = cross_context_pending(vec![ADMIN_A.into(), READER.into()], 2);
         assert!(
-            compute_delegated_contexts(&state, &pending)
+            compute_delegated_contexts(&state, &pending, 1000)
                 .await
                 .is_empty(),
             "one context-admin cannot meet a threshold of two"
@@ -373,7 +387,7 @@ mod tests {
 
         let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
         assert_eq!(
-            compute_delegated_contexts(&state, &pending).await,
+            compute_delegated_contexts(&state, &pending, 1000).await,
             vec![OPENVTC.to_string()],
         );
     }
@@ -386,10 +400,45 @@ mod tests {
         let mut pending = cross_context_pending(vec![ADMIN_A.into()], 1);
         pending.requester_authorized = true;
         assert!(
-            compute_delegated_contexts(&state, &pending)
+            compute_delegated_contexts(&state, &pending, 1000)
                 .await
                 .is_empty(),
             "the requester already held the context — nothing to delegate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pure_approver_with_approve_scope_confers_without_admin() {
+        // Fix 1: a least-privilege approver — a Reader that can act nowhere —
+        // still confers the context through explicit `approve_scope`.
+        let (state, _dir) = build_signing_test_app_state().await;
+        let entry = crate::acl::AclEntry::new(ADMIN_A, Role::Reader, "did:key:zSetup")
+            .with_approve_scope(crate::acl::ApproveScope::Contexts(vec![OPENVTC.into()]));
+        crate::acl::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+
+        let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
+        assert_eq!(
+            compute_delegated_contexts(&state, &pending, 1000).await,
+            vec![OPENVTC.to_string()],
+            "a non-admin approver with approve authority still confers the context"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_approve_all_approver_confers_any_context_without_admin() {
+        let (state, _dir) = build_signing_test_app_state().await;
+        let entry = crate::acl::AclEntry::new(ADMIN_A, Role::Reader, "did:key:zSetup")
+            .with_approve_scope(crate::acl::ApproveScope::All);
+        crate::acl::store_acl_entry(&state.acl_ks, &entry)
+            .await
+            .unwrap();
+
+        let pending = cross_context_pending(vec![ADMIN_A.into()], 1);
+        assert_eq!(
+            compute_delegated_contexts(&state, &pending, 1000).await,
+            vec![OPENVTC.to_string()],
         );
     }
 }

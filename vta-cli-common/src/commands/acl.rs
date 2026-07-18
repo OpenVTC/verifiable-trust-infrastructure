@@ -152,6 +152,8 @@ pub async fn cmd_acl_create(
     expires_at: Option<u64>,
     step_up_approver: Option<String>,
     step_up_require: Option<String>,
+    approve_all: bool,
+    approve_contexts: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
@@ -166,6 +168,11 @@ pub async fn cmd_acl_create(
     }
     if let Some(ref require) = step_up_require {
         req = req.step_up_require(require.clone());
+    }
+    if approve_all {
+        req = req.approve_all();
+    } else if !approve_contexts.is_empty() {
+        req = req.approve_contexts(approve_contexts);
     }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");

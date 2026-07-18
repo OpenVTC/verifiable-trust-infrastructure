@@ -45,6 +45,25 @@ pub struct CreateAclBody {
         alias = "step_up_require"
     )]
     pub step_up_require: Option<String>,
+    /// Approve-authority: this DID may **confer** access via an approval
+    /// (task-consent delegation / step-up ratification) over any context,
+    /// **without** any authority to act. Granting this is super-admin-only.
+    /// Takes precedence over `approve_contexts`. Stored as `approve_scope`.
+    #[serde(
+        default,
+        skip_serializing_if = "std::ops::Not::not",
+        alias = "approve_all_contexts"
+    )]
+    pub approve_all_contexts: bool,
+    /// Approve-authority scoped to these contexts (and their subtrees): the DID
+    /// may confer them via approval but cannot act in them. Ignored when
+    /// `approve_all_contexts` is set. Empty = confers nothing (the default).
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        alias = "approve_contexts"
+    )]
+    pub approve_contexts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,10 +157,42 @@ mod tests {
             expires_at: Some(1_800_000_000),
             step_up_approver: None,
             step_up_require: None,
+            approve_all_contexts: false,
+            approve_contexts: vec![],
         };
         let v = serde_json::to_value(&body).unwrap();
         assert!(v.get("allowedContexts").is_some());
         assert!(v.get("expiresAt").is_some());
         assert!(v.get("allowed_contexts").is_none());
+    }
+
+    /// Approve-authority fields round-trip via camelCase, and snake_case aliases
+    /// are still accepted; the boolean/list default to off so an omitted scope
+    /// confers nothing.
+    #[test]
+    fn approve_scope_fields_round_trip_and_default_off() {
+        let json = serde_json::json!({
+            "did": "did:key:z6MkApprover",
+            "role": "reader",
+            "approveAllContexts": true,
+        });
+        let body: CreateAclBody = serde_json::from_value(json).unwrap();
+        assert!(body.approve_all_contexts);
+        assert!(body.approve_contexts.is_empty());
+
+        let json = serde_json::json!({
+            "did": "did:key:z6MkApprover",
+            "role": "reader",
+            "approve_contexts": ["openvtc"],
+        });
+        let body: CreateAclBody = serde_json::from_value(json).unwrap();
+        assert!(!body.approve_all_contexts);
+        assert_eq!(body.approve_contexts, vec!["openvtc"]);
+
+        // Absent ⇒ confers nothing.
+        let json = serde_json::json!({ "did": "did:key:zX", "role": "reader" });
+        let body: CreateAclBody = serde_json::from_value(json).unwrap();
+        assert!(!body.approve_all_contexts);
+        assert!(body.approve_contexts.is_empty());
     }
 }

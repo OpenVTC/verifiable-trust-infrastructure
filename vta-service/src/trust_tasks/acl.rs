@@ -87,6 +87,7 @@ pub(super) async fn handle_create(
         req.expires_at,
         req.step_up_approver,
         req.step_up_require,
+        operations::acl::approve_scope_from_wire(req.approve_all_contexts, req.approve_contexts),
         TRANSPORT_TRUST_TASK,
     )
     .await

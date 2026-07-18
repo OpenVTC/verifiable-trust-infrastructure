@@ -260,6 +260,88 @@ impl DeviceBinding {
     }
 }
 
+/// A DID's authority to **confer** access through an approval — task-consent
+/// delegation (`compute_delegated_contexts`) and delegated step-up ratification
+/// ([`delegated_any_approver_covers`]) — **without** any authority to act.
+///
+/// Read only by those two conferral paths; it never feeds `require_admin` or
+/// `has_context_access`, so an approver can bless a change in a context while
+/// being unable to make one. This is the axis that lets an approver be
+/// least-privilege: `role: Reader`, `allowed_contexts: []` (acts nowhere),
+/// `approve_scope: All` (may authorize anywhere).
+///
+/// Default [`ApproveScope::None`]: an entry confers nothing unless explicitly
+/// granted this — strictly additive and fail-closed. Pre-existing rows omit the
+/// field and deserialise as `None`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "contexts")]
+pub enum ApproveScope {
+    /// Confers nothing (the default).
+    #[default]
+    None,
+    /// May confer any context — a cross-context authorizer. Granting this is
+    /// super-admin-only (see [`validate_approve_scope_grant`]).
+    All,
+    /// May confer these contexts (and their subtrees), and only these.
+    Contexts(Vec<String>),
+}
+
+impl ApproveScope {
+    /// Whether an approval by a holder of this scope may confer `context_id`.
+    ///
+    /// Segment-aware ancestry, matching [`AuthClaims::has_context_access`], so an
+    /// approver scoped to a parent context covers its whole subtree.
+    pub fn covers(&self, context_id: &str) -> bool {
+        match self {
+            ApproveScope::None => false,
+            ApproveScope::All => true,
+            ApproveScope::Contexts(cs) => cs
+                .iter()
+                .any(|c| crate::context_path::is_ancestor_or_self(c, context_id)),
+        }
+    }
+
+    /// Whether this scope confers nothing.
+    pub fn confers_nothing(&self) -> bool {
+        matches!(self, ApproveScope::None)
+    }
+}
+
+/// Validate that `caller` may grant `scope` on an ACL entry.
+///
+/// Mirrors [`validate_acl_modification`]'s context rule: `All` is a
+/// cross-context authorizer, so only a super-admin may confer it; a scoped
+/// `Contexts` grant requires the caller to administer every listed context.
+/// `None` is always allowed.
+pub fn validate_approve_scope_grant(
+    caller: &AuthClaims,
+    scope: &ApproveScope,
+) -> Result<(), AppError> {
+    match scope {
+        ApproveScope::None => Ok(()),
+        ApproveScope::All => {
+            if caller.is_super_admin() {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden(
+                    "only super admin can grant approve-all authority".into(),
+                ))
+            }
+        }
+        ApproveScope::Contexts(cs) => {
+            if cs.is_empty() {
+                return Err(AppError::Forbidden(
+                    "approve scope must name at least one context (or use 'all')".into(),
+                ));
+            }
+            for c in cs {
+                caller.require_context(c)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// An entry in the Access Control List.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AclEntry {
@@ -324,6 +406,14 @@ pub struct AclEntry {
     /// override; the system floor applies unchanged).
     #[serde(default)]
     pub step_up_require: Option<StepUpMode>,
+    /// Authority to **confer** access via an approval, decoupled from the
+    /// authority to act. Read only by the two conferral paths
+    /// (`compute_delegated_contexts`, [`delegated_any_approver_covers`]); it
+    /// never feeds `require_admin`/`has_context_access`. Lets an approver be
+    /// least-privilege (act nowhere, authorize across contexts). `#[serde(default)]`
+    /// ⇒ pre-existing rows deserialise as [`ApproveScope::None`].
+    #[serde(default)]
+    pub approve_scope: ApproveScope,
 }
 
 impl AclEntry {
@@ -350,6 +440,7 @@ impl AclEntry {
             version: 0,
             step_up_approver: None,
             step_up_require: None,
+            approve_scope: ApproveScope::None,
         }
     }
 
@@ -405,6 +496,13 @@ impl AclEntry {
     /// Set the per-entry step-up override (`stepUp.require`).
     pub fn with_step_up_require(mut self, require: Option<StepUpMode>) -> Self {
         self.step_up_require = require;
+        self
+    }
+
+    /// Set the approve-authority scope (what this DID may confer via approval,
+    /// without any authority to act).
+    pub fn with_approve_scope(mut self, approve_scope: ApproveScope) -> Self {
+        self.approve_scope = approve_scope;
         self
     }
 
@@ -648,6 +746,28 @@ pub fn validate_acl_modification(
 /// Non-admins never qualify. Expiry is the caller's responsibility (it should
 /// skip an expired approver entry before calling this).
 pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) -> bool {
+    // Explicit approve authority (a least-privilege approver): covers by scope,
+    // independent of role or `allowed_contexts`. `All` covers any subject; a
+    // scoped grant covers a context-scoped subject all of whose contexts fall
+    // within the scope. A global (empty-context) subject is never covered by a
+    // scoped grant — only by `All` or a super-admin.
+    match &approver.approve_scope {
+        ApproveScope::All => return true,
+        ApproveScope::Contexts(_) => {
+            if !subject.allowed_contexts.is_empty()
+                && subject
+                    .allowed_contexts
+                    .iter()
+                    .all(|c| approver.approve_scope.covers(c))
+            {
+                return true;
+            }
+            // Fall through: the approver may still qualify via the admin path.
+        }
+        ApproveScope::None => {}
+    }
+
+    // Backward-compatible admin path: an admin confers what it holds.
     if !approver.is_admin() {
         return false;
     }
@@ -756,6 +876,70 @@ mod delegated_any_tests {
                 &subject(Role::Reader, &["ctx-a"])
             ));
         }
+    }
+
+    // ── ApproveScope: a least-privilege approver confers without acting ──
+
+    /// A Reader with no contexts and no admin — it can *act* nowhere. Its only
+    /// authority is the approve scope layered on top.
+    fn pure_approver(scope: ApproveScope) -> AclEntry {
+        AclEntry::new("did:key:zApprover", Role::Reader, "did:key:zCreator")
+            .with_approve_scope(scope)
+    }
+
+    #[test]
+    fn approve_scope_covers_semantics() {
+        assert!(!ApproveScope::None.covers("ctx-a"));
+        assert!(ApproveScope::All.covers("anything"));
+        let scoped = ApproveScope::Contexts(vec!["ctx-a".into()]);
+        assert!(scoped.covers("ctx-a"));
+        assert!(!scoped.covers("ctx-b"));
+    }
+
+    #[test]
+    fn approve_all_confers_for_any_subject_without_any_admin_authority() {
+        // The whole point: an approver that holds no admin (acts nowhere) may
+        // still ratify across contexts, including a global subject.
+        let approver = pure_approver(ApproveScope::All);
+        assert!(
+            !approver.is_admin(),
+            "the approver holds no admin authority"
+        );
+        assert!(delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Reader, &["ctx-a"])
+        ));
+        assert!(delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Admin, &[])
+        ));
+    }
+
+    #[test]
+    fn scoped_approve_authority_covers_only_within_scope() {
+        let approver = pure_approver(ApproveScope::Contexts(vec!["ctx-a".into()]));
+        assert!(delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Reader, &["ctx-a"])
+        ));
+        assert!(!delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Reader, &["ctx-b"])
+        ));
+        // A global subject needs `All` (or a super-admin), never a scoped grant.
+        assert!(!delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Admin, &[])
+        ));
+    }
+
+    #[test]
+    fn no_approve_scope_and_no_admin_confers_nothing() {
+        let reader = pure_approver(ApproveScope::None);
+        assert!(!delegated_any_approver_covers(
+            &reader,
+            &subject(Role::Reader, &["ctx-a"])
+        ));
     }
 }
 
@@ -1267,5 +1451,65 @@ mod tests {
         }"#;
         let entry: AclEntry = serde_json::from_str(legacy).expect("legacy shape must deserialize");
         assert!(entry.allowed_contexts.is_empty());
+    }
+
+    #[test]
+    fn acl_entry_without_approve_scope_defaults_to_none() {
+        // Pre-approver rows omit `approve_scope`; they must load as `None`
+        // (confers nothing) — fail-closed.
+        let legacy = r#"{
+            "did": "did:key:zLegacy",
+            "role": "reader",
+            "label": null,
+            "created_at": 1700000000,
+            "created_by": "did:key:zSetup"
+        }"#;
+        let entry: AclEntry = serde_json::from_str(legacy).expect("legacy shape must deserialize");
+        assert_eq!(entry.approve_scope, ApproveScope::None);
+        assert!(entry.approve_scope.confers_nothing());
+    }
+
+    #[test]
+    fn approve_scope_round_trips_on_the_wire() {
+        for scope in [
+            ApproveScope::None,
+            ApproveScope::All,
+            ApproveScope::Contexts(vec!["ctx-a".into(), "ctx-b".into()]),
+        ] {
+            let e = AclEntry::new("did:key:zA", Role::Reader, "did:key:zC")
+                .with_approve_scope(scope.clone());
+            let json = serde_json::to_string(&e).unwrap();
+            let back: AclEntry = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.approve_scope, scope);
+        }
+    }
+
+    #[test]
+    fn validate_approve_scope_grant_authority() {
+        // `All` is a cross-context authorizer: super-admin only.
+        validate_approve_scope_grant(&super_admin_claims(), &ApproveScope::All)
+            .expect("super admin may grant approve-all");
+        assert!(
+            validate_approve_scope_grant(&context_admin_claims(&["ctx-a"]), &ApproveScope::All)
+                .is_err(),
+            "a context admin must not grant approve-all"
+        );
+
+        // A scoped grant requires the caller to hold each context.
+        let ctx_admin = context_admin_claims(&["ctx-a"]);
+        validate_approve_scope_grant(&ctx_admin, &ApproveScope::Contexts(vec!["ctx-a".into()]))
+            .expect("own context ok");
+        assert!(
+            validate_approve_scope_grant(&ctx_admin, &ApproveScope::Contexts(vec!["ctx-b".into()]))
+                .is_err(),
+            "foreign context must be rejected"
+        );
+
+        // `None` is always allowed; an empty context list is rejected.
+        validate_approve_scope_grant(&ctx_admin, &ApproveScope::None).expect("none ok");
+        assert!(
+            validate_approve_scope_grant(&ctx_admin, &ApproveScope::Contexts(vec![])).is_err(),
+            "empty scope must name a context or use all"
+        );
     }
 }

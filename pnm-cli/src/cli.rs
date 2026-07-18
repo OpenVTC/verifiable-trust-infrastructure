@@ -1669,6 +1669,16 @@ pub(crate) enum AclCommands {
         /// floor for this subject (`stepUp.require`). Omit for none.
         #[arg(long)]
         step_up_require: Option<String>,
+        /// Grant approve-authority over ALL contexts: this DID may *approve*
+        /// (confer) a change across every context while being able to *act* in
+        /// none. Super-admin only. Pair with `--role reader --contexts ''`.
+        #[arg(long)]
+        approve_all: bool,
+        /// Grant approve-authority scoped to these contexts (comma-separated):
+        /// may confer them via approval, cannot act in them. Ignored when
+        /// `--approve-all` is set.
+        #[arg(long, value_delimiter = ',')]
+        approve_contexts: Vec<String>,
     },
     /// Update an ACL entry
     Update {

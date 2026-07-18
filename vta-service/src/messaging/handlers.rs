@@ -594,6 +594,10 @@ didcomm_handler!(
             body.expires_at,
             body.step_up_approver,
             body.step_up_require,
+            operations::acl::approve_scope_from_wire(
+                body.approve_all_contexts,
+                body.approve_contexts,
+            ),
             "didcomm",
         )
         .await

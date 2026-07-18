@@ -350,6 +350,13 @@ pub struct CreateAclRequest {
     /// floor for this subject. Omit for none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_require: Option<String>,
+    /// Approve-authority over any context (confer via approval, act nowhere).
+    /// Super-admin-only to grant. Takes precedence over `approve_contexts`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub approve_all_contexts: bool,
+    /// Approve-authority scoped to these contexts. Empty = confers nothing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub approve_contexts: Vec<String>,
 }
 
 impl CreateAclRequest {
@@ -362,6 +369,8 @@ impl CreateAclRequest {
             expires_at: None,
             step_up_approver: None,
             step_up_require: None,
+            approve_all_contexts: false,
+            approve_contexts: Vec::new(),
         }
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
@@ -385,6 +394,17 @@ impl CreateAclRequest {
     /// `"delegated"`), which raises the system floor for this subject.
     pub fn step_up_require(mut self, require: impl Into<String>) -> Self {
         self.step_up_require = Some(require.into());
+        self
+    }
+    /// Grant approve-authority over **all** contexts (confer via approval, act
+    /// nowhere). Super-admin-only on the server.
+    pub fn approve_all(mut self) -> Self {
+        self.approve_all_contexts = true;
+        self
+    }
+    /// Grant approve-authority scoped to these contexts.
+    pub fn approve_contexts(mut self, contexts: Vec<String>) -> Self {
+        self.approve_contexts = contexts;
         self
     }
 }

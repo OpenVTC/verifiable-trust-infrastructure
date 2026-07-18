@@ -20,6 +20,8 @@ pub(crate) async fn run(
             expires,
             step_up_approver,
             step_up_require,
+            approve_all,
+            approve_contexts,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
                 acl::cmd_acl_create(
@@ -31,6 +33,8 @@ pub(crate) async fn run(
                     expires_at,
                     step_up_approver,
                     step_up_require,
+                    approve_all,
+                    approve_contexts,
                 )
                 .await
             }

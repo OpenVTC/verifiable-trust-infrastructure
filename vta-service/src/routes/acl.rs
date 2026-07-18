@@ -58,6 +58,13 @@ pub struct CreateAclRequest {
     /// floor for this subject. Omit for none.
     #[serde(default)]
     pub step_up_require: Option<String>,
+    /// Approve-authority over any context (confer via approval, act nowhere).
+    /// Super-admin-only to grant. Takes precedence over `approve_contexts`.
+    #[serde(default)]
+    pub approve_all_contexts: bool,
+    /// Approve-authority scoped to these contexts. Empty = confers nothing.
+    #[serde(default)]
+    pub approve_contexts: Vec<String>,
 }
 
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
@@ -92,6 +99,7 @@ pub async fn create_acl(
         req.expires_at,
         req.step_up_approver,
         req.step_up_require,
+        operations::acl::approve_scope_from_wire(req.approve_all_contexts, req.approve_contexts),
         "rest",
     )
     .await?;

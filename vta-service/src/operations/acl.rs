@@ -8,8 +8,9 @@ use vta_sdk::protocols::acl_management::{
 };
 
 use crate::acl::{
-    AclEntry, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
-    store_acl_entry, validate_acl_modification, validate_role_assignment,
+    AclEntry, ApproveScope, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible,
+    list_acl_entries, store_acl_entry, validate_acl_modification, validate_approve_scope_grant,
+    validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -41,6 +42,19 @@ pub fn parse_step_up_require(s: Option<&str>) -> Result<Option<StepUpMode>, AppE
         Some(other) => Err(AppError::Validation(format!(
             "invalid stepUp.require '{other}': must be 'self' or 'delegated'"
         ))),
+    }
+}
+
+/// Build an [`ApproveScope`] from the two wire fields. `all` wins over an
+/// explicit context list; both absent ⇒ [`ApproveScope::None`] (confers
+/// nothing, the default).
+pub fn approve_scope_from_wire(all: bool, contexts: Vec<String>) -> ApproveScope {
+    if all {
+        ApproveScope::All
+    } else if !contexts.is_empty() {
+        ApproveScope::Contexts(contexts)
+    } else {
+        ApproveScope::None
     }
 }
 
@@ -131,12 +145,19 @@ pub async fn create_acl(
     expires_at: Option<u64>,
     step_up_approver: Option<String>,
     step_up_require: Option<String>,
+    approve_scope: ApproveScope,
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
     validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &allowed_contexts)?;
+    // Granting approve-authority is its own privilege check: `all` is
+    // super-admin-only, a scoped grant requires the caller to hold each context.
+    validate_approve_scope_grant(auth, &approve_scope)?;
     require_contexts_exist(contexts_ks, &allowed_contexts).await?;
+    if let ApproveScope::Contexts(cs) = &approve_scope {
+        require_contexts_exist(contexts_ks, cs).await?;
+    }
     let step_up_require = parse_step_up_require(step_up_require.as_deref())?;
 
     if get_acl_entry(acl_ks, did).await?.is_some() {
@@ -150,7 +171,8 @@ pub async fn create_acl(
         .with_contexts(allowed_contexts)
         .with_expires_at(expires_at)
         .with_step_up_approver(step_up_approver)
-        .with_step_up_require(step_up_require);
+        .with_step_up_require(step_up_require)
+        .with_approve_scope(approve_scope);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -760,6 +782,7 @@ mod tests {
             None,
             None,
             None,
+            ApproveScope::None,
             "test",
         )
         .await
@@ -794,6 +817,7 @@ mod tests {
             None,
             None,
             None,
+            ApproveScope::None,
             "test",
         )
         .await

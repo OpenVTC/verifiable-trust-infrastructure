@@ -1124,9 +1124,20 @@ async fn main() {
                 .transpose()
             {
                 Ok(expires_at) => {
-                    // cnm does not expose the per-entry step-up flags.
-                    acl::cmd_acl_create(&client, did, role, label, contexts, expires_at, None, None)
-                        .await
+                    // cnm does not expose the per-entry step-up or approve flags.
+                    acl::cmd_acl_create(
+                        &client,
+                        did,
+                        role,
+                        label,
+                        contexts,
+                        expires_at,
+                        None,
+                        None,
+                        false,
+                        Vec::new(),
+                    )
+                    .await
                 }
                 Err(e) => Err(format!("--expires: {e}").into()),
             },
