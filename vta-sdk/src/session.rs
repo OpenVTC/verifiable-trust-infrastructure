@@ -1679,6 +1679,132 @@ impl TspPingSession {
     }
 }
 
+/// A live, receive-oriented TSP session to a mediator, scoped to one client
+/// identity — the TSP analogue of [`crate::didcomm_session::DIDCommSession`].
+/// Connects the client's TSP websocket to the mediator and yields inbound
+/// Trust-Task frames already unpacked under the client key. This is the receive
+/// primitive the mobile approver uses to collect a VTA-pushed
+/// `task-consent/request` over TSP.
+///
+/// Unlike [`TspPingSession`] (a one-shot send-then-await liveness probe), this
+/// session is long-lived: [`receive_next`](Self::receive_next) can be polled
+/// repeatedly. The websocket lives behind a mutex so the receive/shutdown
+/// methods take `&self` — the session is shared as an `Arc` across the FFI
+/// boundary, mirroring `DIDCommSession::receive_next`.
+#[cfg(feature = "tsp")]
+pub struct TspSession {
+    atm: affinidi_tdk::messaging::ATM,
+    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    // `Option` so `shutdown` can `take()` the socket out to `close()` it —
+    // `TspWebSocket::close` consumes `self`, which a `MutexGuard` can't yield.
+    // `None` means already shut down; receive then no-ops.
+    ws: tokio::sync::Mutex<Option<affinidi_tdk::messaging::TspWebSocket>>,
+}
+
+#[cfg(feature = "tsp")]
+impl TspSession {
+    /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
+    /// endpoint — the mediator the VTA is a local account on) as `client_did`.
+    /// Same connect path as [`TspPingSession::new`]; the difference is lifetime
+    /// and direction (this one stays open to receive).
+    pub async fn connect(
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        use affinidi_tdk::common::TDKSharedState;
+        use affinidi_tdk::common::config::TDKConfig;
+        use affinidi_tdk::messaging::ATM;
+        use affinidi_tdk::messaging::config::ATMConfig;
+        use affinidi_tdk::messaging::profiles::ATMProfile;
+        use std::sync::Arc;
+
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
+        tdk.secrets_resolver().insert(secrets.signing).await;
+        tdk.secrets_resolver().insert(secrets.key_agreement).await;
+
+        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            client_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
+        .await?;
+        let profile = Arc::new(profile);
+
+        let ws = atm.tsp().connect_websocket(&profile).await?;
+
+        Ok(Self {
+            atm,
+            profile,
+            ws: tokio::sync::Mutex::new(Some(ws)),
+        })
+    }
+
+    /// Wait up to `timeout_secs` for the next inbound TSP frame that unpacks to a
+    /// Trust-Task payload, and return that payload as a JSON string — the
+    /// unpacked inner document (e.g. a `task-consent/request`). Returns `None`
+    /// if nothing arrived within the timeout or the websocket closed. TSP
+    /// control frames (which don't unpack to an application payload) are skipped
+    /// within the remaining budget rather than surfaced. Call again to poll on.
+    ///
+    /// The plaintext is the *inner* document the sender packed, not a DIDComm
+    /// envelope: TSP carries the Trust-Task bytes directly, so callers parse the
+    /// returned JSON as the document itself (its own `type`/`issuer` fields),
+    /// not as `{ body: … }`.
+    pub async fn receive_next(
+        &self,
+        timeout_secs: u64,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        use std::time::{Duration, Instant};
+
+        let mut guard = self.ws.lock().await;
+        let ws = match guard.as_mut() {
+            Some(w) => w,
+            None => return Ok(None), // already shut down
+        };
+        let budget = Duration::from_secs(timeout_secs);
+        let start = Instant::now();
+        loop {
+            let remaining = match budget.checked_sub(start.elapsed()) {
+                Some(r) => r,
+                None => return Ok(None),
+            };
+            let frame = match tokio::time::timeout(remaining, ws.recv()).await {
+                Ok(Ok(Some(bytes))) => bytes,
+                Ok(Ok(None)) => return Ok(None), // websocket closed
+                Ok(Err(e)) => return Err(Box::new(e)),
+                Err(_) => return Ok(None), // timed out with nothing to hand back
+            };
+            // A frame sealed to us that unpacks to a UTF-8 body is an application
+            // message; hand its plaintext to the caller. Frames that don't unpack
+            // are TSP control/relationship traffic — skip and keep waiting.
+            match self.atm.tsp().unpack_bytes(&self.profile, &frame).await {
+                Ok((payload, _sender)) => {
+                    let json = String::from_utf8(payload)
+                        .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
+                    return Ok(Some(json));
+                }
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Close the TSP websocket and shut down the ATM connection. Takes `&self`
+    /// (the session is shared across the FFI boundary).
+    pub async fn shutdown(&self) {
+        if let Some(ws) = self.ws.lock().await.take() {
+            let _ = ws.close().await;
+        }
+        self.atm.graceful_shutdown().await;
+    }
+}
+
 fn now_epoch() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

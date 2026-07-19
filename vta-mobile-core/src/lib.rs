@@ -49,6 +49,7 @@ pub mod resolver;
 pub mod session;
 pub mod stepup;
 pub mod task;
+pub mod tsp;
 
 pub use api::*;
 pub use error::FfiError;
