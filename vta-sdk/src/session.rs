@@ -1699,6 +1699,8 @@ pub struct TspSession {
     // `TspWebSocket::close` consumes `self`, which a `MutexGuard` can't yield.
     // `None` means already shut down; receive then no-ops.
     ws: tokio::sync::Mutex<Option<affinidi_tdk::messaging::TspWebSocket>>,
+    /// This client's DID — the `issuer` on an [`announce`](Self::announce) frame.
+    client_did: String,
 }
 
 #[cfg(feature = "tsp")]
@@ -1743,7 +1745,49 @@ impl TspSession {
             atm,
             profile,
             ws: tokio::sync::Mutex::new(Some(ws)),
+            client_did: client_did.to_string(),
         })
+    }
+
+    /// Announce this client's TSP reachability to `vta_did` by sending a
+    /// session-less `messaging/ping/0.1` frame (routed through `mediator_did`).
+    /// The point is not the pong — it's that the VTA's inbound dispatcher records
+    /// our **proven** `sender_vid` as TSP-reachable (learn-from-inbound), so its
+    /// device-push prefers TSP for us. The VTA's pong arrives on
+    /// [`receive_next`](Self::receive_next) like any other frame and is ignored
+    /// by the Trust-Task classifier (it's neither a step-up nor a task-consent).
+    ///
+    /// Send-only: unlike a socket read it needs no `ws` lock — `send_routed`
+    /// goes out through the ATM's TSP transport, so it can run concurrently with
+    /// a blocked `receive_next`. Call it on connect (and periodically) to keep
+    /// the VTA's reachability record fresh.
+    pub async fn announce(
+        &self,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use trust_tasks_rs::TrustTask;
+
+        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
+            .parse()
+            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
+        let mut doc: TrustTask<serde_json::Value> =
+            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
+        doc.issuer = Some(self.client_did.clone());
+        doc.recipient = Some(vta_did.to_string());
+        let body = serde_json::to_vec(&doc)?;
+
+        self.atm
+            .tsp()
+            .send_routed(
+                &self.profile,
+                &[mediator_did.to_string(), vta_did.to_string()],
+                &body,
+            )
+            .await?;
+        Ok(())
     }
 
     /// Wait up to `timeout_secs` for the next inbound TSP frame that unpacks to a

@@ -71,6 +71,21 @@ impl TspMediatorSession {
             })
     }
 
+    /// Announce this holder's TSP reachability to `vta_did` (routed through
+    /// `mediator_did`) so the VTA's device-push prefers TSP for this device
+    /// (learn-from-inbound). Sends a session-less ping frame; the VTA records
+    /// our proven DID and replies with a pong that `receive_next` harmlessly
+    /// ignores. Call right after connecting the inbox, and periodically, so the
+    /// VTA's reachability record for this device stays fresh.
+    pub async fn announce(&self, vta_did: String, mediator_did: String) -> Result<(), FfiError> {
+        self.inner
+            .announce(&vta_did, &mediator_did)
+            .await
+            .map_err(|e| FfiError::Transport {
+                reason: e.to_string(),
+            })
+    }
+
     /// Gracefully close the mediator connection (the TSP websocket).
     pub async fn shutdown(&self) {
         self.inner.shutdown().await;
