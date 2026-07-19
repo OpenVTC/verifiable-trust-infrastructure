@@ -72,6 +72,7 @@ pub(crate) async fn run(
             admin_label,
             server,
             did_url,
+            did_path,
             portable,
             mediator_service,
             pre_rotation,
@@ -81,6 +82,12 @@ pub(crate) async fn run(
         } => {
             if server.is_some() && did_url.is_some() {
                 Err("--server and --did-url are mutually exclusive".into())
+            } else if did_path.is_some() && server.is_none() && did_url.is_none() {
+                // No DID is minted without --server/--did-url, so a path
+                // label would be silently discarded. Say so rather than
+                // provisioning a context the operator thinks is hosted
+                // at their chosen path.
+                Err("--did-path requires --server or --did-url".into())
             } else {
                 let recipient_spec = resolve_recipient(
                     recipient.as_deref(),
@@ -94,6 +101,7 @@ pub(crate) async fn run(
                             _ => Some(contexts::ProvisionDidOptions {
                                 server_id: server,
                                 did_url,
+                                did_path,
                                 portable,
                                 add_mediator_service: mediator_service,
                                 pre_rotation_count: pre_rotation,

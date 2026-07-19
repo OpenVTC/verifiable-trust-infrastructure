@@ -461,6 +461,12 @@ pnm contexts provision \
 # → prints an armored VTA SEALED BUNDLE + SHA-256 digest
 ```
 
+When the DID is hosted on a registered server (`--server`), the host
+allocates its path label by default. Add `--did-path <label>` to pick
+the label yourself — the same selector as `pnm did-mgmt dids create
+--path`, so `.well-known` claims the reserved root slot and any other
+value becomes an explicit path segment.
+
 **Back on the client's host**:
 
 ```bash

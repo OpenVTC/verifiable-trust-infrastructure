@@ -6743,7 +6743,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10063,7 +10063,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.7"
+version = "0.10.8"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",

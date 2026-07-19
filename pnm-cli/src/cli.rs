@@ -1574,6 +1574,12 @@ pub(crate) enum ContextCommands {
         /// Create a DID at this URL for self-hosting (mutually exclusive with --server)
         #[arg(long)]
         did_url: Option<String>,
+        /// Explicit path label for the DID on the hosting server (e.g.
+        /// `acme-eng`). Omit to let the host auto-assign one. Pass
+        /// `.well-known` for the reserved root slot. Same selector as
+        /// `pnm did-mgmt dids create --path`.
+        #[arg(long)]
+        did_path: Option<String>,
         /// Make the DID portable (default: true)
         #[arg(long, default_value = "true")]
         portable: bool,

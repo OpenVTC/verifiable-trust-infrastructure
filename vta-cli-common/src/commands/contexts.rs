@@ -8,6 +8,7 @@ use ratatui::{
 use vta_sdk::client::{ContextResponse, CreateDidWebvhRequest, UpdateContextRequest};
 use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
 use vta_sdk::prelude::*;
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 use vta_sdk::sealed_transfer::SealedPayloadV1;
 
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
@@ -16,6 +17,10 @@ use crate::sealed_producer::{SealedRecipient, seal_for_recipient};
 pub struct ProvisionDidOptions {
     pub server_id: Option<String>,
     pub did_url: Option<String>,
+    /// Explicit path label for the DID on the hosting server. `None`
+    /// leaves the host to auto-assign one; `.well-known` selects the
+    /// reserved root slot. Mirrors `pnm did-mgmt dids create --path`.
+    pub did_path: Option<String>,
     pub portable: bool,
     pub add_mediator_service: bool,
     pub pre_rotation_count: u32,
@@ -523,9 +528,12 @@ pub async fn cmd_context_provision(
             server_id: opts.server_id,
             url: opts.did_url,
             path: None,
-            // No explicit path-mode override; the absent legacy `path`
-            // resolves to auto-assign server-side.
-            path_mode: None,
+            // `--did-path` maps onto the canonical path-mode selector:
+            // absent → auto-assign server-side, `.well-known` → the
+            // reserved root slot, anything else → an explicit label.
+            // `WebvhPathMode::from(String)` owns that trimming/mapping
+            // so the contexts surface can't drift from `dids create`.
+            path_mode: opts.did_path.map(WebvhPathMode::from),
             // Context-bootstrap path: no per-DID domain override.
             // The server's caller-default → system-default resolves.
             domain: None,
