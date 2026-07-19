@@ -1,7 +1,8 @@
 # Design note: how a VTA/VTC sends TSP outbound
 
-**Status:** DRAFT for review — scopes SDD PR 7 (outbound seams). No code until
-the §3 relationship question is decided.
+**Status:** DRAFT for review — scopes SDD PR 7 (outbound seams). No send-path
+code until the §3 relationship question is decided; the probe that decides it
+already ships in `pnm health` (see §3.1) — run it against a live TSP-enabled VTA.
 **Owner:** Glenn Gore
 **Created:** 2026-06-28
 **Context:** `tsp-enablement.md` §7 ("outbound seams behind `send_to_member`")
@@ -74,6 +75,38 @@ This gates the design. Options:
 mandatory, adopt 3a (lazy, least coupling to the admit flow) with the
 relationship store + the Control-message handler wired into the PR-6b inbound
 loop. Either way this is the decision to lock before the send path is coded.
+
+### 3.1 The probe already exists — how to decide
+
+No new probe is needed. `pnm-cli`'s `health::tsp_probe` (compiled by default —
+`tsp` is in the crate's `default` features) already performs the load-bearing
+test: it opens the client's TSP websocket to the mediator and does a **cold
+`atm.tsp().send_routed`** of a `messaging/ping/0.1` Trust Task to the VTA with
+**no `form_relationship` call first**, then awaits the routed reply. `pnm health`
+runs it automatically whenever the target VTA's DID document advertises a
+`#tsp` (`TSPTransport`) service. Run against a live TSP-enabled VTA:
+
+```
+pnm health          # (default build already has `tsp`)
+```
+
+Read the **"VTA TSP → Trust-ping"** line:
+
+- **`✓ pong (Nms)`** → a cold routed TSP send to a peer we have no relationship
+  with *did not* hard-fail → **§3 resolves to 3c** for the routed path. PR 7
+  proceeds with no relationship store / FSM (drop PR 7c); treat TSP like DIDComm.
+- **`✗ TSP ping failed: <error>`** → capture the error. If it names a
+  relationship / not-authorized / VID-unknown precondition, relationships are
+  required → adopt **3a** (lazy establish-on-first-send) and keep PR 7c.
+
+**Scope of the test — be precise:** the probe exercises the **routed** send
+(`send_routed`, through the mediator bridge), which is exactly the path VTA→device
+push uses (the device is a mediator account). It is a genuine *cold* send — the
+client VID has no prior relationship with the VTA, so if the SDK required a
+`Bidirectional` state the **send itself** would fail before any reply. It does
+**not** exercise Direct (non-routed) `send`; the ecosystem routes everything
+through the mediator (ADR 0008), so Direct isn't on the design path and needs no
+separate probe here.
 
 ## 4. Protocol selection (reuse PR 3)
 
