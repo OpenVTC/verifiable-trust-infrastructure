@@ -335,15 +335,18 @@ channel.
 ### Registry operator — open the bundle
 
 ```bash
+sudo mkdir -p /etc/trust-registry
+
 pnm bootstrap open \
   --bundle tr-sealed.txt \
-  --expect-digest <sha256-hex>
+  --expect-digest <sha256-hex> \
+  --out /etc/trust-registry/vta-credential.json
 ```
 
 The digest check is mandatory; there is no trust-on-first-use.
 `--no-verify-digest` exists for testing only.
 
-The recovered bundle:
+`--out` writes the credential bundle as JSON at `0600`:
 
 ```json
 {
@@ -354,12 +357,24 @@ The recovered bundle:
 }
 ```
 
-Install it with restrictive permissions:
+> **`--out` is not optional in practice.** Without it, `bootstrap
+> open` only inspects the bundle — it prints a payload summary and
+> writes nothing. `privateKeyMultibase` is never printed, so the
+> credential cannot be recovered from terminal output.
+>
+> Opening also consumes the single-use bootstrap secret under
+> `~/.config/pnm/bootstrap-secrets/`. A second `open` on the same
+> file fails. Recovering from a forgotten `--out` means a fresh
+> `pnm bootstrap request` **and** a fresh `pnm contexts provision`
+> — the whole ceremony, from the top.
 
-```bash
-sudo install -m 600 -D /dev/stdin \
-  /etc/trust-registry/vta-credential.json < bundle.json
-```
+Both `AdminCredential` and `ContextProvision` payloads yield a
+credential; `pnm contexts provision` produces the latter. Other
+payload variants are rejected with a per-variant message.
+
+`--out` requires a `pnm` build that carries the flag. Older builds
+reject it at argument parsing and have no file-writing path at
+all, so upgrade rather than working around it.
 
 ### Configure the registry
 
@@ -497,6 +512,8 @@ be treated restrictively rather than as transport failure.
 | Peers cannot reach the registry | `did:webvh` generated but never hosted |
 | VTC green, membership never syncs | DIDComm write defect above |
 | Cross-community mint 503s forever | `recognized` mismatch above |
+| `bootstrap open` produced no file | `--out` omitted; the bundle is now spent, start over from `bootstrap request` |
+| Second `bootstrap open` fails | single-use secret already consumed by the first open |
 | Docker image ignores VTA settings | `vta` not compiled into the shipped image |
 | Keys still in plaintext `.env` | setup tool writes both, cloud backend or not |
 | "fjall support was not compiled" | missing `--features storage-fjall` on this build |
