@@ -19,3 +19,5 @@ pub mod shim;
 pub mod transient_handshake;
 #[cfg(feature = "tsp")]
 pub mod tsp_inbound;
+#[cfg(feature = "tsp")]
+pub mod tsp_reach;

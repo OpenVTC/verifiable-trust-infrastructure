@@ -158,7 +158,7 @@ pub(super) async fn push_signed_requests(state: &AppState, requests: &[Value]) {
 async fn push_one(
     state: &AppState,
     approver: &str,
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] request: &Value,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))] request: &Value,
 ) {
     let mediator_did = {
         let cfg = state.config.read().await;
@@ -167,7 +167,7 @@ async fn push_one(
             cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
         )
     };
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(
             approver = %approver,
@@ -175,6 +175,15 @@ async fn push_one(
         );
         return;
     };
+
+    // Prefer TSP when the approver's device was recently seen on it
+    // (learn-from-inbound); otherwise fall through to DIDComm below.
+    #[cfg(feature = "tsp")]
+    if super::step_up::try_push_over_tsp(state, approver, &mediator_did, request).await {
+        #[cfg(feature = "didcomm")]
+        super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
+        return;
+    }
 
     #[cfg(feature = "didcomm")]
     {

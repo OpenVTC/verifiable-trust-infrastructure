@@ -200,6 +200,8 @@ jobs:
         run: cargo check -p vta-service --no-default-features --features aws-secrets,keyring,rest
       - name: vta-service azure-secrets
         run: cargo check -p vta-service --no-default-features --features azure-secrets,keyring,rest
+      - name: vta-service tsp transport
+        run: cargo check -p vta-service --features tsp
       - name: vta-sdk attest-verify
         run: cargo check -p vta-sdk --features attest-verify
       - name: vta-sdk client + sealed-transfer + provision-integration

@@ -872,6 +872,8 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         ka_vm_id: None,
         #[cfg(feature = "didcomm")]
         didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        #[cfg(feature = "tsp")]
+        tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
         jwt_keys: Some(jwt_keys.clone()),
         atm: None,
         #[cfg(feature = "tsp")]

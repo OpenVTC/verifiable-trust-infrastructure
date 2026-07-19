@@ -152,6 +152,36 @@ separate probe here.
    advertises DIDComm, the matcher simply picks DIDComm — the VTC never builds a
    bridge envelope.
 
+### 4.1 IMPLEMENTED — device push: learn-from-inbound (not document selection)
+
+Document-based `select_protocol` (§4) works for **node peers** that advertise a
+`#tsp` service. It does **not** work for the immediate outbound consumer — the
+device push to a `did:key` approver/requester — because a `did:key` has no
+service block to advertise `#tsp`, and the device picks its inbox transport at
+*runtime* (the mobile app's DIDComm/TSP toggle). So the document can never carry
+the answer. Instead the VTA **learns from inbound**:
+
+- `messaging::tsp_reach::TspReachability` — an in-memory, self-expiring map of
+  DIDs last seen sending over TSP (TTL-bounded; never persisted).
+- `messaging::tsp_inbound::dispatch_one` records the **proven** `sender_vid` on
+  every inbound TSP frame — cryptographic proof that DID is on TSP right now.
+- The device-push sites (`consent_request::push_one` and
+  `step_up::maybe_push_step_up`) call `step_up::try_push_over_tsp`: if the
+  recipient is fresh in the map, route the **bare** Trust-Task doc over TSP via
+  `atm.tsp().send_routed([mediator, recipient])` (§3 = 3c, no relationship);
+  otherwise fall through to the existing DIDComm `send_guaranteed`. A TSP send
+  error also falls back to DIDComm.
+
+`push_granted` stays DIDComm-only: it targets the browser **requester** (which
+doesn't speak TSP), and its notice body isn't a full Trust-Task envelope, so the
+device's TSP inbox — which classifies by the doc's own `type` — would ignore it.
+
+The device announces its TSP-reachability by sending the VTA a TSP frame; that
+"announce on connect" is a small mobile follow-up (the iOS TSP session in
+vta-mobile-agent-ios #21 is receive-only for now), so until it lands the first
+contact is DIDComm and this arm activates for any DID that has sent inbound TSP
+(e.g. exercised via `pnm`).
+
 ## 5. The abstraction change
 
 The seam takes a built `didcomm::Message` today; TSP needs the **raw payload**

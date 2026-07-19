@@ -686,6 +686,56 @@ pub(super) fn approver_mediator(approver_did: &str, configured: Option<&str>) ->
     configured.filter(|m| !m.is_empty()).map(str::to_string)
 }
 
+/// Deliver a signed Trust-Task document to `recipient` over **TSP** when we have
+/// fresh learn-from-inbound proof it's listening on TSP (a `did:key` device
+/// can't advertise `#tsp`, so its inbound TSP frames are the only signal — see
+/// [`crate::messaging::tsp_reach`]). Routes the bare document bytes through the
+/// shared mediator; §3 resolved to 3c (relationship-free routed send — see
+/// `docs/05-design-notes/tsp-outbound-send.md`), so no relationship setup is
+/// needed. Returns `true` if delivered over TSP, `false` to fall back to DIDComm
+/// (not TSP-reachable, TSP transport not connected on this node, or a send error).
+#[cfg(feature = "tsp")]
+pub(super) async fn try_push_over_tsp(
+    state: &AppState,
+    recipient: &str,
+    mediator_did: &str,
+    doc: &Value,
+) -> bool {
+    if !state.tsp_reach.fresh(recipient) {
+        return false;
+    }
+    let (Some(atm), Some(profile)) = (state.atm.as_ref(), state.tsp_profile.as_ref()) else {
+        return false; // TSP transport not connected on this node
+    };
+    let body = match serde_json::to_vec(doc) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, recipient = %recipient, "serialising TSP push failed; DIDComm fallback");
+            return false;
+        }
+    };
+    // inner sealed end-to-end to the device, outer sealed to the mediator — the
+    // same routed shape the inbound loop uses for its replies.
+    match atm
+        .tsp()
+        .send_routed(
+            profile,
+            &[mediator_did.to_string(), recipient.to_string()],
+            &body,
+        )
+        .await
+    {
+        Ok(_) => {
+            tracing::debug!(recipient = %recipient, "delivered Trust-Task over TSP (learn-from-inbound)");
+            true
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, recipient = %recipient, "TSP push failed; falling back to DIDComm");
+            false
+        }
+    }
+}
+
 /// Best-effort proactive delivery of a delegated step-up approve-request to the
 /// approver's device over DIDComm, by buffering a forward through the resolved
 /// mediator. No-op for self-approval (`recipient == caller`). Failures are
@@ -695,7 +745,8 @@ async fn maybe_push_step_up(
     state: &AppState,
     recipient: &str,
     caller_did: &str,
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))] approve_request: &Value,
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
+    approve_request: &Value,
 ) {
     if recipient == caller_did {
         return; // self mode — the caller satisfies its own step-up.
@@ -707,7 +758,7 @@ async fn maybe_push_step_up(
             cfg.messaging.as_ref().map(|m| m.mediator_did.as_str()),
         )
     };
-    #[cfg_attr(not(feature = "didcomm"), allow(unused))]
+    #[cfg_attr(not(any(feature = "didcomm", feature = "tsp")), allow(unused))]
     let Some(mediator_did) = mediator_did else {
         tracing::debug!(
             approver = %recipient,
@@ -715,6 +766,15 @@ async fn maybe_push_step_up(
         );
         return;
     };
+    // Prefer TSP when the device was recently seen on it (learn-from-inbound);
+    // a fresh hit delivers over TSP and rings the doorbell, otherwise fall
+    // through to the DIDComm path below.
+    #[cfg(feature = "tsp")]
+    if try_push_over_tsp(state, recipient, &mediator_did, approve_request).await {
+        #[cfg(feature = "didcomm")]
+        trigger_gateway_wake(state, recipient, &mediator_did).await;
+        return;
+    }
     #[cfg(feature = "didcomm")]
     {
         let pending = crate::messaging::registry::PendingResponse {

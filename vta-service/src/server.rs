@@ -187,6 +187,12 @@ pub struct AppState {
     pub ka_vm_id: Option<String>,
     #[cfg(feature = "didcomm")]
     pub didcomm_bridge: Arc<DIDCommBridge>,
+
+    /// Learn-from-inbound TSP reachability: which device DIDs were last seen
+    /// sending over TSP, so device-push can prefer TSP over DIDComm for them.
+    /// Populated by the inbound TSP dispatcher from the proven `sender_vid`.
+    #[cfg(feature = "tsp")]
+    pub tsp_reach: Arc<crate::messaging::tsp_reach::TspReachability>,
     pub jwt_keys: Option<Arc<JwtKeys>>,
     pub atm: Option<ATM>,
     /// VTA's registered TSP profile, used to unpack `tsp-message` sealed
@@ -398,6 +404,8 @@ pub async fn build_app_state(
         didcomm_bridge: parts
             .didcomm_bridge
             .unwrap_or_else(|| Arc::new(DIDCommBridge::placeholder())),
+        #[cfg(feature = "tsp")]
+        tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
         jwt_keys: auth.jwt_keys,
         atm: auth.atm,
         #[cfg(feature = "tsp")]
