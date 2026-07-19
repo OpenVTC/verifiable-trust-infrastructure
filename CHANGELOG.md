@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### pnm-cli — `bootstrap open --out` writes the credential bundle
+
+* `pnm bootstrap open` decrypted a sealed bundle, printed a summary and exited
+  without writing anything, and had no flag to do otherwise. File-based
+  consumers of a `CredentialBundle` — notably the trust registry's
+  `TR_VTA_CREDENTIAL`, documented as a `file://` URI — therefore had no
+  supported way to obtain one: `extract_admin_credential` existed but was
+  reachable only from `cnm-cli`, which feeds it straight into the keyring.
+  `--out <PATH>` now writes the extracted bundle as JSON, opened at `0600` so
+  the private key is never briefly world-readable. Serde renames on
+  `CredentialBundle` mean the output is already the documented wire shape
+  (`privateKeyMultibase` / `vtaDid` / `vtaUrl`). Accepts `AdminCredential` and
+  `ContextProvision` payloads; other variants keep their existing per-variant
+  rejection. Because opening consumes the single-use bootstrap secret, the
+  omit-`--out` path now says plainly that nothing was written and how to get a
+  file, rather than pointing only at the online `connect` flow.
+
 ### vta-mobile-core — task-consent approver FFI (mobile as a 2nd device, phase 1)
 
 * New `consent.rs` exposes the FFI the mobile agent needs to act as a
