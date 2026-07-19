@@ -1672,6 +1672,41 @@ impl TspPingSession {
         }
     }
 
+    /// Cold **send** probe for §3: build the same `messaging/ping` and route it
+    /// to `vta_did`, returning as soon as the send is accepted — **no reply
+    /// wait**. This is the honest §3 test for a *throwaway* DID, whose only
+    /// question is whether a cold `send_routed` hard-fails without a relationship
+    /// (a `Bidirectional` precondition would surface here as an `Err`). A
+    /// throwaway VID can't complete a round-trip regardless: it has no ACL entry
+    /// (so the VTA 403s the dispatched ping) and isn't a registered mediator
+    /// account (so the reply can't route back to it) — so waiting for a pong (as
+    /// [`ping`](Self::ping) does) always times out and masks the send success.
+    /// `Ok(())` means the relationship-free routed send worked (3c).
+    pub async fn probe_send(&self, vta_did: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use trust_tasks_rs::TrustTask;
+
+        let id = format!("urn:uuid:{}", uuid::Uuid::new_v4());
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let type_uri = crate::trust_tasks::TASK_MESSAGING_PING_0_1
+            .parse()
+            .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
+        let mut doc: TrustTask<serde_json::Value> =
+            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
+        doc.issuer = Some(self.client_did.clone());
+        doc.recipient = Some(vta_did.to_string());
+        let body = serde_json::to_vec(&doc)?;
+
+        self.atm
+            .tsp()
+            .send_routed(
+                &self.profile,
+                &[self.mediator_did.clone(), vta_did.to_string()],
+                &body,
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Close the TSP websocket and shut down the ATM connection.
     pub async fn shutdown(self) {
         let _ = self.ws.close().await;

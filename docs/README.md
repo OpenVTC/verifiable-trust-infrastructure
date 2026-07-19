@@ -51,6 +51,7 @@ VTA via the `vtc-host` DID template.
 | Provision a mediator / webvh-host / custom integration | [Provision-integration](02-vta/provision-integration.md) |
 | Configure community membership policy | [VTC community lifecycle](03-vtc/community-lifecycle.md) |
 | Host a public community website | [VTC website + admin UX](03-vtc/website-and-admin.md) |
+| Deploy a trust registry and wire a VTC to it | [Trust-registry deployment](03-vtc/trust-registry-deployment.md) |
 | Look up a BIP-32 path | [BIP-32 paths](04-reference/bip32-paths.md) |
 | Read the threat model | [Security model](01-concepts/security-model.md) |
 
@@ -118,6 +119,9 @@ How to operate and integrate against a VTC.
   lists, renewal, DID rotation, custom endorsements.
 - **[Trust-registry integration](03-vtc/trust-registry.md)** —
   registry publish, membership sync, cross-community recognition.
+- **[Trust-registry deployment](03-vtc/trust-registry-deployment.md)** —
+  runbook for standing up a registry, sourcing its identity from a
+  VTA, and wiring a VTC to it.
 - **[Personhood + relationships](03-vtc/personhood-and-graph.md)** —
   personhood assertion, VRC trust graph, custom endorsements.
 - **[Website + admin UX](03-vtc/website-and-admin.md)** — public

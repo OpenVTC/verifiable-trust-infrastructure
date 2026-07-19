@@ -218,6 +218,9 @@ cnm registry refresh
 
 ## See also
 
+- [Trust-registry deployment](trust-registry-deployment.md) — the
+  operational runbook: standing up a registry, sourcing its
+  identity from a VTA, wiring this `[registry]` block.
 - [VTC MVP spec §8](../05-design-notes/vtc-mvp.md) — full TRQP
   binding + reconciliation details.
 - [Community lifecycle](community-lifecycle.md) — what events

@@ -365,23 +365,27 @@ pub(crate) async fn run(
         print_section("VTA TSP");
         // `--fresh`: probe from a throwaway `did:key` minted right here. A DID
         // that did not exist until this instant can hold no pre-existing TSP
-        // relationship (persisted or otherwise), so a `pong` is an unambiguous
-        // *cold* relationship-free routed send — the §3 test with no reliance
-        // on the in-memory-store assumption. Session identity is used otherwise.
+        // relationship, so a successful cold *send* is an unambiguous
+        // relationship-free routed send — the §3 test with no reliance on the
+        // in-memory-store assumption. Only the send is judged: the throwaway VID
+        // has no ACL entry and isn't a registered mediator account, so it can't
+        // complete a round-trip. Session identity (`cold = false`) does the full
+        // pong round-trip.
         if fresh_tsp_probe {
             let (fresh_did, fresh_key) =
                 vta_cli_common::local_keygen::generate_unbound_admin_did_key();
             println!(
-                "  {DIM}cold probe — fresh throwaway DID (no prior relationship possible):{RESET}"
+                "  {DIM}cold send probe — fresh throwaway DID (no prior relationship possible):{RESET}"
             );
             println!("  {CYAN}{:<13}{RESET} {fresh_did}", "Probe DID");
-            tsp_probe(&fresh_did, &fresh_key, tsp_mediator, vta_did).await;
+            tsp_probe(&fresh_did, &fresh_key, tsp_mediator, vta_did, true).await;
         } else {
             tsp_probe(
                 &info.client_did,
                 &info.private_key_multibase,
                 tsp_mediator,
                 vta_did,
+                false,
             )
             .await;
         }
@@ -405,14 +409,20 @@ async fn steady_ping(
 }
 
 /// Drive the TSP connectivity probe: open the client's TSP websocket to the
-/// mediator, send a Trust Task to the VTA over TSP, and await the response —
-/// proving the full TSP round-trip. Compiled only with the `tsp` feature.
+/// mediator and send a Trust Task to the VTA over TSP. With `cold = false`
+/// (session identity) it awaits the reply and reports round-trip latency. With
+/// `cold = true` (a throwaway `--fresh` DID) it reports on the **send** alone —
+/// a throwaway VID has no ACL entry (the VTA 403s the ping) and isn't a
+/// registered mediator account (the reply can't route back), so a round-trip is
+/// impossible; the send succeeding is the §3 test (a cold relationship-free
+/// routed send). Compiled only with the `tsp` feature.
 #[cfg(feature = "tsp")]
 async fn tsp_probe(
     client_did: &str,
     private_key_multibase: &str,
     mediator_did: &str,
     vta_did: &str,
+    cold: bool,
 ) {
     match tokio::time::timeout(
         std::time::Duration::from_secs(15),
@@ -421,26 +431,45 @@ async fn tsp_probe(
     .await
     {
         Ok(Ok(mut session)) => {
-            // Warm-up ping (pays the first-send VID/route resolution), then a
-            // measured one — a steady-state latency comparable to the DIDComm
-            // probe. A warm-up failure is reported straight away.
-            let ping_timeout = std::time::Duration::from_secs(10);
-            let measured = match session.ping(vta_did, ping_timeout).await {
-                Ok(_) => session.ping(vta_did, ping_timeout).await,
-                Err(e) => Err(e),
-            };
-            match measured {
-                Ok(latency) => {
-                    println!(
-                        "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
-                        "Trust-ping"
-                    );
+            if cold {
+                // The cold routed SEND is the whole §3 test here — no reply wait,
+                // because a throwaway VID can never complete the round-trip.
+                match session.probe_send(vta_did).await {
+                    Ok(()) => {
+                        println!(
+                            "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} cold send accepted — relationship-free routed send (§3 = 3c)",
+                            "Cold-send"
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "  {CYAN}{:<13}{RESET} {RED}✗{RESET} cold send failed: {e}",
+                            "Cold-send"
+                        );
+                    }
                 }
-                Err(e) => {
-                    println!(
-                        "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP ping failed: {e}",
-                        "Trust-ping"
-                    );
+            } else {
+                // Warm-up ping (pays the first-send VID/route resolution), then a
+                // measured one — a steady-state latency comparable to the DIDComm
+                // probe. A warm-up failure is reported straight away.
+                let ping_timeout = std::time::Duration::from_secs(10);
+                let measured = match session.ping(vta_did, ping_timeout).await {
+                    Ok(_) => session.ping(vta_did, ping_timeout).await,
+                    Err(e) => Err(e),
+                };
+                match measured {
+                    Ok(latency) => {
+                        println!(
+                            "  {CYAN}{:<13}{RESET} {GREEN}✓{RESET} pong ({latency}ms)",
+                            "Trust-ping"
+                        );
+                    }
+                    Err(e) => {
+                        println!(
+                            "  {CYAN}{:<13}{RESET} {RED}✗{RESET} TSP ping failed: {e}",
+                            "Trust-ping"
+                        );
+                    }
                 }
             }
             session.shutdown().await;
@@ -469,6 +498,7 @@ async fn tsp_probe(
     _private_key_multibase: &str,
     _mediator_did: &str,
     _vta_did: &str,
+    _cold: bool,
 ) {
     println!("  {DIM}advertised — rebuild pnm with `--features tsp` to probe over TSP{RESET}");
 }

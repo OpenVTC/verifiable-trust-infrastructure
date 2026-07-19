@@ -111,14 +111,23 @@ runs it automatically whenever the target VTA's DID document advertises a
 `#tsp` (`TSPTransport`) service. Run against a live TSP-enabled VTA:
 
 ```
-pnm health          # (default build already has `tsp`) — probes from your session DID
-pnm health --fresh  # probes from a throwaway did:key minted at probe time — provably cold
+pnm health          # (default build already has `tsp`) — round-trip from your session DID
+pnm health --fresh  # cold SEND probe from a throwaway did:key minted at probe time
 ```
 
-`--fresh` mints a never-before-seen `did:key`, runs the routed send from it, and
-prints the `Probe DID`. A DID created at that instant can hold no relationship
-(persisted or not), so its `pong` is an unarguable cold, relationship-free send.
-`messaging/ping` is reachability-only, so the throwaway DID needs no ACL entry.
+`--fresh` mints a never-before-seen `did:key` and runs the routed send from it,
+judging success on the **send alone** (`✓ cold send accepted`) — it does *not*
+wait for a reply. Two facts about a throwaway VID make the round-trip impossible
+but are irrelevant to §3: it has no ACL entry — so the VTA's TSP dispatch
+(`dispatch_one` gates *every* task, `messaging/ping` included, on `auth_from_did`)
+answers `403` — and it isn't a registered mediator account, so that reply can't
+route back to it. §3 asks only whether a cold `send_routed` **hard-fails**
+without a relationship; the send being accepted answers it (3c). Plain
+`pnm health` (session DID — registered + ACL'd) does the full pong round-trip.
+
+**Confirmed live (2026-07-19):** plain `pnm health` → `VTA TSP ✓ pong (250ms)`,
+and a `--fresh` cold send reached the VTA (`TSP trust-task dispatched … 403`) —
+both prove the relationship-free routed send. 3c holds on real infrastructure.
 
 Read the **"VTA TSP → Trust-ping"** line:
 
