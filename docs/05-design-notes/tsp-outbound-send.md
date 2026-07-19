@@ -76,6 +76,30 @@ mandatory, adopt 3a (lazy, least coupling to the admit flow) with the
 relationship store + the Control-message handler wired into the PR-6b inbound
 loop. Either way this is the decision to lock before the send path is coded.
 
+### 3.0 DECIDED: 3c (relationship-free routed send)
+
+Confirmed against a live mediator (2026-07-19): `pnm health`'s TSP Trust-ping
+returns `pong` — an `atm.tsp().send_routed` to the VTA, with no `form_relationship`
+first, succeeds. **§3 resolves to 3c.** PR 7 carries no relationship store / FSM;
+**PR 7c is dropped**. Outbound TSP is treated like DIDComm (intrinsic per-message
+auth, routed through the mediator).
+
+*Is the ping cold?* Yes, by construction: `TspPingSession::new` builds a fresh
+in-memory ATM/TDK each run (no relationship-store path is configured anywhere in
+the SDK) and `pnm` is a short-lived process, so every run starts from an empty
+relationship store. And 3c holds even if `affinidi_tsp` forms a relationship
+*transparently* on first send — our code still just calls `send_routed`; only a
+hard "no relationship" send failure would refute 3c. To remove all doubt about a
+persisted external store, `pnm health --fresh` (§3.1) probes from a throwaway
+`did:key` minted at probe time, which can hold no prior relationship at all.
+
+Consequence for device push: routing a TSP frame to a `did:key` device works
+via the shared mediator exactly as DIDComm does (`send_routed(&[mediator, dev]`).
+The remaining gate is **not** routing or relationships — it is a *capability
+signal*: a `did:key` device can't advertise `#tsp` in a document, so the VTA
+needs another way to know a device can **receive** TSP before it prefers TSP for
+that device. See the outbound-send tracks below / the Phase-2 plan.
+
 ### 3.1 The probe already exists — how to decide
 
 No new probe is needed. `pnm-cli`'s `health::tsp_probe` (compiled by default —
@@ -87,8 +111,14 @@ runs it automatically whenever the target VTA's DID document advertises a
 `#tsp` (`TSPTransport`) service. Run against a live TSP-enabled VTA:
 
 ```
-pnm health          # (default build already has `tsp`)
+pnm health          # (default build already has `tsp`) — probes from your session DID
+pnm health --fresh  # probes from a throwaway did:key minted at probe time — provably cold
 ```
+
+`--fresh` mints a never-before-seen `did:key`, runs the routed send from it, and
+prints the `Probe DID`. A DID created at that instant can hold no relationship
+(persisted or not), so its `pong` is an unarguable cold, relationship-free send.
+`messaging/ping` is reachability-only, so the throwaway DID needs no ACL entry.
 
 Read the **"VTA TSP → Trust-ping"** line:
 

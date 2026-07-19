@@ -105,7 +105,15 @@ pub(crate) enum Commands {
     },
 
     /// Check service health
-    Health,
+    Health {
+        /// Run the TSP probe from a throwaway, never-before-seen `did:key`
+        /// instead of your session identity. A DID minted at probe time can
+        /// have no pre-existing TSP relationship, so a `pong` proves a *cold*
+        /// relationship-free routed send (the §3 test). `messaging/ping` is
+        /// reachability-only, so the fresh DID needs no ACL entry.
+        #[arg(long)]
+        fresh: bool,
+    },
 
     /// Authentication management
     Auth {
@@ -2218,7 +2226,7 @@ pub(crate) fn requires_auth(cmd: &Commands) -> bool {
     }
     !matches!(
         cmd,
-        Commands::Health
+        Commands::Health { .. }
             | Commands::Auth { .. }
             | Commands::Setup { .. }
             | Commands::Vta { .. }

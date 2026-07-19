@@ -17,6 +17,7 @@ use crate::auth;
 pub(crate) async fn run(
     url_override: Option<&str>,
     keyring_key: &str,
+    fresh_tsp_probe: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 
@@ -362,13 +363,28 @@ pub(crate) async fn run(
         && let Some(vta_did) = info.vta_did.as_deref()
     {
         print_section("VTA TSP");
-        tsp_probe(
-            &info.client_did,
-            &info.private_key_multibase,
-            tsp_mediator,
-            vta_did,
-        )
-        .await;
+        // `--fresh`: probe from a throwaway `did:key` minted right here. A DID
+        // that did not exist until this instant can hold no pre-existing TSP
+        // relationship (persisted or otherwise), so a `pong` is an unambiguous
+        // *cold* relationship-free routed send — the §3 test with no reliance
+        // on the in-memory-store assumption. Session identity is used otherwise.
+        if fresh_tsp_probe {
+            let (fresh_did, fresh_key) =
+                vta_cli_common::local_keygen::generate_unbound_admin_did_key();
+            println!(
+                "  {DIM}cold probe — fresh throwaway DID (no prior relationship possible):{RESET}"
+            );
+            println!("  {CYAN}{:<13}{RESET} {fresh_did}", "Probe DID");
+            tsp_probe(&fresh_did, &fresh_key, tsp_mediator, vta_did).await;
+        } else {
+            tsp_probe(
+                &info.client_did,
+                &info.private_key_multibase,
+                tsp_mediator,
+                vta_did,
+            )
+            .await;
+        }
     }
 
     Ok(())

@@ -268,7 +268,9 @@ async fn main() {
             command: VtaCommands::Restart,
         } => commands::vta::run_restart(&client).await,
         Commands::Vta { .. } => unreachable!("VTA non-restart handled in pre-auth dispatch"),
-        Commands::Health => commands::health::run(effective_url_override, &keyring_key).await,
+        Commands::Health { fresh } => {
+            commands::health::run(effective_url_override, &keyring_key, fresh).await
+        }
         Commands::Auth { command } => commands::auth::run(&keyring_key, command).await,
         Commands::Config { command } => commands::config::run(&client, command).await,
         Commands::Services { command } => commands::services::run(&client, command).await,
@@ -370,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_requires_auth_health_false() {
-        assert!(!requires_auth(&Commands::Health));
+        assert!(!requires_auth(&Commands::Health { fresh: false }));
     }
 
     #[test]
