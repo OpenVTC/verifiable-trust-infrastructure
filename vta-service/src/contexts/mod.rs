@@ -144,12 +144,57 @@ pub async fn allocate_context_index(
     Ok((current, base_path))
 }
 
+/// Validate a **single** context id segment.
+///
+/// Deliberately stricter than
+/// [`vti_common::identifier::validate_identifier`], which also admits
+/// uppercase, `.` and `_`. Context ids surface in DID paths, derivation
+/// labels and operator commands, so they are held to one canonical
+/// lowercase-slug spelling rather than several that differ only by case
+/// or punctuation.
+///
+/// **Segment-only.** A hierarchical id (`acme/eng`) is the *stored*
+/// form, built by `context_path::child_path` from an already-validated
+/// parent plus a leaf validated here. Never call this on a full path —
+/// the `/` would be rejected.
+pub fn validate_slug(id: &str) -> Result<(), AppError> {
+    if id.is_empty() {
+        return Err(AppError::Validation("context id cannot be empty".into()));
+    }
+    if id.len() > 64 {
+        return Err(AppError::Validation(
+            "context id must be 64 characters or fewer".into(),
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(AppError::Validation(
+            "context id must contain only lowercase alphanumeric characters and hyphens".into(),
+        ));
+    }
+    if id.starts_with('-') || id.ends_with('-') {
+        return Err(AppError::Validation(
+            "context id must not start or end with a hyphen".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Create a new top-level application context and store it.
+///
+/// Applies the same [`validate_slug`] gate as the authenticated
+/// `operations::contexts::create_context`. Both must, or setup-time
+/// callers (`setup::from_toml`, `tee::did_autogen`) could persist ids
+/// the operator-facing API would later refuse — leaving a deployment
+/// whose own CLI rejects a context it already has.
 pub async fn create_context(
     contexts_ks: &KeyspaceHandle,
     id: &str,
     name: &str,
 ) -> Result<ContextRecord, Box<dyn std::error::Error>> {
+    validate_slug(id).map_err(|e| format!("{e}"))?;
     let (index, base_path) = allocate_context_index(contexts_ks, CONTEXT_KEY_BASE, "ctx_counter")
         .await
         .map_err(|e| format!("{e}"))?;
@@ -278,5 +323,56 @@ mod tests {
             stored.base_path, winners[0].base_path,
             "stored record must be the winner's — no overwrite by losers"
         );
+    }
+
+    #[test]
+    fn validate_slug_accepts_canonical_shapes() {
+        for ok in ["a", "vta", "trust-registry", "ctx-1", "a1-b2-c3"] {
+            validate_slug(ok).unwrap_or_else(|e| panic!("{ok:?} should be valid: {e}"));
+        }
+        validate_slug(&"a".repeat(64)).expect("64 chars is the limit, not over it");
+    }
+
+    #[test]
+    fn validate_slug_rejects_non_canonical_shapes() {
+        // Uppercase, `.` and `_` are accepted by the *looser*
+        // `validate_identifier` used for parent path segments. Context
+        // ids are held to the narrower slug rule, so these must fail
+        // here even though they are legal identifiers elsewhere.
+        for bad in [
+            "MyApp", "ctx.v2", "my_app", "-lead", "trail-", "", "a/b", "a b",
+        ] {
+            assert!(
+                validate_slug(bad).is_err(),
+                "{bad:?} must be rejected as a context id"
+            );
+        }
+        assert!(validate_slug(&"a".repeat(65)).is_err(), "65 chars is over");
+    }
+
+    /// The setup-time path (`setup::from_toml`, `tee::did_autogen`)
+    /// must not be able to persist an id that the authenticated
+    /// `operations::contexts::create_context` would refuse — otherwise
+    /// a deployment ends up with a context its own CLI rejects.
+    #[tokio::test]
+    async fn low_level_create_context_enforces_the_slug_rule() {
+        let (ks, _dir) = temp_ks();
+
+        let err = create_context(&ks, "MyApp", "My App")
+            .await
+            .expect_err("non-slug id must be refused");
+        assert!(
+            err.to_string().contains("lowercase"),
+            "error should name the rule, got: {err}"
+        );
+
+        assert!(
+            get_context(&ks, "MyApp").await.expect("get").is_none(),
+            "a rejected id must not have been persisted"
+        );
+
+        create_context(&ks, "myapp", "My App")
+            .await
+            .expect("the slug form is accepted");
     }
 }

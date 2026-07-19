@@ -106,6 +106,11 @@ admin_did   = "did:key:z6MkOWNER..."
 backend = "keyring"
 
 # A staff member, bounded to the `sales` context.
+#
+# `context` must be a slug: lowercase letters, digits and hyphens, no
+# leading or trailing hyphen, 64 chars max. Setup fails on anything
+# else rather than creating a context that `pnm contexts create` would
+# later refuse.
 [[staff]]
 did     = "did:key:z6MkSTAFF..."
 context = "sales"

@@ -390,12 +390,12 @@ mod tests {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
         // Seed multiple contexts to confirm the inference doesn't reach
         // for rule 2's fallback when rule 1 already resolves.
-        seed_context(&ks, "ctx_a").await;
-        seed_context(&ks, "ctx_b").await;
+        seed_context(&ks, "ctx-a").await;
+        seed_context(&ks, "ctx-b").await;
 
-        let a = auth(Role::Admin, vec!["ctx_b"]);
+        let a = auth(Role::Admin, vec!["ctx-b"]);
         let result = infer_target_context(&a, &ks).await.expect("ok");
-        assert_eq!(result.expect("not ambiguous"), "ctx_b");
+        assert_eq!(result.expect("not ambiguous"), "ctx-b");
     }
 
     /// Rule 2: super-admin grant + maintainer has exactly one context →
@@ -419,9 +419,9 @@ mod tests {
     #[tokio::test]
     async fn infer_super_admin_with_multiple_contexts_is_ambiguous() {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
-        seed_context(&ks, "ctx_a").await;
-        seed_context(&ks, "ctx_b").await;
-        seed_context(&ks, "ctx_c").await;
+        seed_context(&ks, "ctx-a").await;
+        seed_context(&ks, "ctx-b").await;
+        seed_context(&ks, "ctx-c").await;
 
         let a = auth(Role::Admin, vec![]);
 
@@ -430,9 +430,9 @@ mod tests {
         assert_eq!(
             ambiguous.candidates,
             vec![
-                "ctx_a".to_string(),
-                "ctx_b".to_string(),
-                "ctx_c".to_string()
+                "ctx-a".to_string(),
+                "ctx-b".to_string(),
+                "ctx-c".to_string()
             ]
         );
         assert!(ambiguous.message.contains("3 contexts"));
@@ -444,13 +444,13 @@ mod tests {
     async fn infer_multi_context_grant_is_ambiguous() {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
 
-        let a = auth(Role::Admin, vec!["ctx_x", "ctx_y"]);
+        let a = auth(Role::Admin, vec!["ctx-x", "ctx-y"]);
 
         let result = infer_target_context(&a, &ks).await.expect("ok");
         let ambiguous = result.expect_err("two contexts → ambiguous");
         assert_eq!(
             ambiguous.candidates,
-            vec!["ctx_x".to_string(), "ctx_y".to_string()]
+            vec!["ctx-x".to_string(), "ctx-y".to_string()]
         );
     }
 
@@ -479,14 +479,14 @@ mod tests {
     #[tokio::test]
     async fn resolve_uses_requested_existing_context() {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
-        seed_context(&ks, "ctx_a").await;
-        let a = auth(Role::Admin, vec!["ctx_a"]);
+        seed_context(&ks, "ctx-a").await;
+        let a = auth(Role::Admin, vec!["ctx-a"]);
 
-        let (context, created) = resolve_target_context(&a, &ks, Some("ctx_a".into()), false)
+        let (context, created) = resolve_target_context(&a, &ks, Some("ctx-a".into()), false)
             .await
             .map_err(|_| ())
             .expect("resolves");
-        assert_eq!(context, "ctx_a");
+        assert_eq!(context, "ctx-a");
         assert!(!created);
     }
 
@@ -516,7 +516,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_propagates_ambiguous_inference() {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
-        let a = auth(Role::Admin, vec!["ctx_x", "ctx_y"]);
+        let a = auth(Role::Admin, vec!["ctx-x", "ctx-y"]);
 
         let err = resolve_target_context(&a, &ks, None, false)
             .await
@@ -526,7 +526,7 @@ mod tests {
             ResolveContextError::Ambiguous(amb) => {
                 assert_eq!(
                     amb.candidates,
-                    vec!["ctx_x".to_string(), "ctx_y".to_string()]
+                    vec!["ctx-x".to_string(), "ctx-y".to_string()]
                 );
             }
             ResolveContextError::Op(e) => panic!("expected Ambiguous, got Op({e:?})"),
@@ -537,9 +537,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_missing_context_without_create_is_op_not_found() {
         let (_dir, _store, ks) = fresh_contexts_ks().await;
-        let a = auth(Role::Admin, vec!["ctx_absent"]);
+        let a = auth(Role::Admin, vec!["ctx-absent"]);
 
-        let err = resolve_target_context(&a, &ks, Some("ctx_absent".into()), false)
+        let err = resolve_target_context(&a, &ks, Some("ctx-absent".into()), false)
             .await
             .err()
             .expect("not found");

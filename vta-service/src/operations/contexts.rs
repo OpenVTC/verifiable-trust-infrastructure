@@ -26,31 +26,6 @@ pub struct UpdateContextParams {
     pub context_policy: Option<vta_sdk::context_policy::ContextPolicy>,
 }
 
-fn validate_slug(id: &str) -> Result<(), AppError> {
-    if id.is_empty() {
-        return Err(AppError::Validation("context id cannot be empty".into()));
-    }
-    if id.len() > 64 {
-        return Err(AppError::Validation(
-            "context id must be 64 characters or fewer".into(),
-        ));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    {
-        return Err(AppError::Validation(
-            "context id must contain only lowercase alphanumeric characters and hyphens".into(),
-        ));
-    }
-    if id.starts_with('-') || id.ends_with('-') {
-        return Err(AppError::Validation(
-            "context id must not start or end with a hyphen".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn to_result_body(r: &ContextRecord) -> CreateContextResultBody {
     CreateContextResultBody {
         id: r.id.clone(),
@@ -88,7 +63,7 @@ pub async fn create_context(
     channel: &str,
 ) -> Result<CreateContextResultBody, AppError> {
     // The leaf id is always a single slug segment.
-    validate_slug(id)?;
+    crate::contexts::validate_slug(id)?;
 
     let (full_id, parent_field, base_prefix, counter_key) = match &parent {
         None => {
