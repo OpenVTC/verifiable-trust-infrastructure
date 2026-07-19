@@ -134,6 +134,42 @@ cloned cheaply into handlers. The complete list:
 | `audit` | HMAC-actor-hashing audit envelopes |
 | `audit_key` | HMAC audit key + rotation history |
 
+### Audit tamper-evidence
+
+Every audit envelope from schema version 2 carries `prevHash` (its
+predecessor's `entryHash`) and `entryHash` (a SHA-256 over its own
+immutable content), so the log is a hash chain.
+
+Verify it with either:
+
+```bash
+cnm audit verify              # exits non-zero on a break
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Trust-Task: https://trusttasks.org/openvtc/vtc/audit/verify/1.0" \
+     "$VTC_URL/v1/audit/verify"
+```
+
+Both report `entriesExamined`, `entriesVerified`, `legacySkipped`,
+`unparseableSkipped`, the chain `head`, and — when the chain is
+broken — where.
+
+**Read the skip counters.** Pre-v2 (`legacySkipped`) and
+undeserializable (`unparseableSkipped`) rows are *not* checked; they
+are stepped over. On a store written entirely by a current daemon both
+should be zero, and a non-zero count is itself the finding rather than
+a footnote to a passing result.
+
+**What a pass proves.** Internal consistency — no reorder, drop,
+duplicate, or content edit. It is **not** an authenticity proof: the
+chain is unsigned (`chain_digest` takes no key), so an adversary with
+write access to the `audit` keyspace can restamp a forged suffix, and
+truncating the log to a valid prefix is undetectable. Closing that
+needs signed checkpoints — see
+[`vtc-audit-checkpoints.md`](../05-design-notes/vtc-audit-checkpoints.md).
+Until then, treat `cnm audit verify` as detecting accident and
+careless tampering, and verify an out-of-band copy when the answer
+actually matters.
+
 ## Three-thread runtime
 
 `vtc-service` runs three named OS threads, mirroring the VTA's

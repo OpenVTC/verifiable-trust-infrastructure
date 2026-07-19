@@ -20,7 +20,7 @@ use crate::error::AppError;
 use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, SessionRevokedData};
+use vti_common::audit::{AuditEvent, SessionRevokedData, SignedOutData};
 use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
@@ -894,10 +894,28 @@ pub async fn sign_out(
     use axum::http::header::SET_COOKIE;
 
     let sessions = state.sessions_ks.clone();
-    // Best-effort delete — the session may already have been
-    // revoked from another tab. Either way we set the expiry
-    // cookies so this browser stops sending the stale JWT.
+    // Best-effort delete — a failure still falls through to the
+    // cookie clearing below, so the browser stops sending the stale
+    // JWT either way. (The session is known to exist: `AuthClaims`
+    // rejects a token whose session row is gone.)
     let _ = delete_session(&sessions, &auth.session_id).await;
+
+    // Audit the session ending. Best-effort like the delete above: a
+    // failed audit write must not leave the caller holding a live
+    // cookie pair they were told was cleared.
+    if let Some(writer) = state.audit_writer.as_ref()
+        && let Err(e) = writer
+            .write(
+                &auth.did,
+                Some(&auth.did),
+                AuditEvent::SignedOut(SignedOutData {
+                    session_id: auth.session_id.clone(),
+                }),
+            )
+            .await
+    {
+        tracing::warn!(error = %e, did = %auth.did, "sign-out audit write failed");
+    }
     info!(did = %auth.did, session_id = %auth.session_id, "sign-out");
 
     let mut response = StatusCode::NO_CONTENT.into_response();

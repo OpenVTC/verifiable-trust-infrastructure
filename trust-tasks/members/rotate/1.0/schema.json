@@ -1,28 +1,81 @@
 {
   "$id": "https://trusttasks.org/openvtc/vtc/members/rotate/1.0/schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "VTC Members — DID Rotation",
+  "title": "VTC Members \u2014 DID Rotation",
   "type": "object",
   "properties": {
     "request": {
       "type": "object",
-      "required": ["rotationId", "oldDid", "newDid", "oldSignature", "newSignature"],
+      "required": [
+        "rotationId",
+        "oldDid",
+        "newDid",
+        "oldSignature",
+        "newSignature"
+      ],
       "properties": {
-        "rotationId": { "type": "string", "format": "uuid" },
-        "oldDid": { "type": "string" },
-        "newDid": { "type": "string" },
-        "oldSignature": { "type": "string", "pattern": "^[0-9a-f]+$" },
-        "newSignature": { "type": "string", "pattern": "^[0-9a-f]+$" }
+        "rotationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "oldDid": {
+          "type": "string"
+        },
+        "newDid": {
+          "type": "string"
+        },
+        "oldSignature": {
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        },
+        "newSignature": {
+          "type": "string",
+          "pattern": "^[0-9a-f]+$"
+        }
       }
     },
     "response": {
       "type": "object",
-      "required": ["newDid", "method", "vmc", "roleVec"],
+      "required": [
+        "newDid",
+        "method",
+        "vmc",
+        "roleVec"
+      ],
       "properties": {
-        "newDid": { "type": "string" },
-        "method": { "type": "string", "enum": ["did:key", "did:webvh"] },
-        "vmc": { "type": "object" },
-        "roleVec": { "type": "object" }
+        "newDid": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "did:key",
+            "did:webvh"
+          ]
+        },
+        "vmc": {
+          "type": "object"
+        },
+        "roleVec": {
+          "type": "object"
+        }
+      }
+    },
+    "challengeRequest": {
+      "type": "object",
+      "description": "Optional body for POST /v1/members/me/rotate/challenge. Omitting the body entirely is valid and equivalent to reason: unspecified.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "routine",
+            "compromise",
+            "deviceLoss",
+            "migration",
+            "unspecified"
+          ],
+          "description": "Self-asserted motive for the rotation. Recorded on the DidRotated audit envelope. NOT covered by either rotation signature \u2014 it is bound to the authenticated session that opened the ceremony, not proven."
+        }
       }
     }
   }

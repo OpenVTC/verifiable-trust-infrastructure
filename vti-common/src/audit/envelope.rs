@@ -184,12 +184,80 @@ pub enum ChainBreak {
 /// Pre-v2 envelopes (written before the chain existed) carry no hashes
 /// and are skipped; the chain re-anchors at the first v2 envelope.
 pub fn verify_chain(envelopes: &[AuditEnvelope]) -> Result<(), ChainBreak> {
-    let mut prev: Option<[u8; 32]> = None;
-    for (index, env) in envelopes.iter().enumerate() {
+    let mut verifier = ChainVerifier::new();
+    for env in envelopes {
+        verifier.push(env)?;
+    }
+    Ok(())
+}
+
+/// Incremental form of [`verify_chain`], for callers that stream the
+/// audit log rather than materialising it.
+///
+/// A full audit log does not fit comfortably in memory on a busy
+/// community, and the verification is a strict left fold — each
+/// envelope needs only its predecessor's `entry_hash`. Feeding
+/// envelopes in ascending write order through [`Self::push`] keeps
+/// memory constant regardless of log size.
+///
+/// The fold state is just `(prev_hash, index)`, so verification can
+/// also be **resumed** across pages via [`Self::resume`] — pass the
+/// [`Self::head`] and [`Self::index`] returned by the previous page.
+/// A resumed verifier is only as trustworthy as the head it is given:
+/// resuming from a head an adversary supplied verifies nothing about
+/// the entries before it.
+#[derive(Debug, Clone)]
+pub struct ChainVerifier {
+    prev: Option<[u8; 32]>,
+    index: usize,
+    verified: usize,
+    skipped_legacy: usize,
+}
+
+impl Default for ChainVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChainVerifier {
+    /// Start at the genesis anchor — the first v2+ envelope pushed
+    /// must carry [`GENESIS_HASH`] as its `prev_hash`.
+    pub fn new() -> Self {
+        Self {
+            prev: None,
+            index: 0,
+            verified: 0,
+            skipped_legacy: 0,
+        }
+    }
+
+    /// Resume from a previously-returned [`Self::head`] and
+    /// [`Self::index`], so a page of envelopes can be verified as a
+    /// continuation of the page before it.
+    pub fn resume(head: [u8; 32], index: usize) -> Self {
+        Self {
+            prev: Some(head),
+            index,
+            verified: 0,
+            skipped_legacy: 0,
+        }
+    }
+
+    /// Verify one envelope as the successor of everything pushed so
+    /// far. Envelopes must arrive in ascending write order.
+    ///
+    /// On `Err` the verifier is left at the breaking entry and must
+    /// not be reused — the chain past a break carries no meaning.
+    pub fn push(&mut self, env: &AuditEnvelope) -> Result<(), ChainBreak> {
+        let index = self.index;
+        self.index += 1;
+
         if env.schema_version < 2 {
             // Predates the chain — nothing to verify, and it must not
             // become the predecessor of a v2 link.
-            continue;
+            self.skipped_legacy += 1;
+            return Ok(());
         }
         if env.chain_digest() != env.entry_hash {
             return Err(ChainBreak::TamperedEntry {
@@ -197,16 +265,45 @@ pub fn verify_chain(envelopes: &[AuditEnvelope]) -> Result<(), ChainBreak> {
                 event_id: env.event_id,
             });
         }
-        let expected_prev = prev.unwrap_or(GENESIS_HASH);
+        let expected_prev = self.prev.unwrap_or(GENESIS_HASH);
         if env.prev_hash != expected_prev {
             return Err(ChainBreak::BrokenLink {
                 index,
                 event_id: env.event_id,
             });
         }
-        prev = Some(env.entry_hash);
+        self.prev = Some(env.entry_hash);
+        self.verified += 1;
+        Ok(())
     }
-    Ok(())
+
+    /// `entry_hash` of the last verified v2+ envelope — the head of
+    /// the chain so far. `None` if nothing chainable has been pushed.
+    pub fn head(&self) -> Option<[u8; 32]> {
+        self.prev
+    }
+
+    /// Number of envelopes pushed, chainable or not. Pass to
+    /// [`Self::resume`] so a continuation reports absolute indices.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Count of v2+ envelopes that verified.
+    pub fn verified(&self) -> usize {
+        self.verified
+    }
+
+    /// Count of pre-v2 envelopes skipped as unchainable.
+    ///
+    /// **Read this, don't ignore it.** Legacy rows are skipped rather
+    /// than verified, so they are an insertion point: a forged
+    /// envelope marked `schema_version: 1` passes untouched. A store
+    /// that should hold no legacy rows reporting a non-zero count
+    /// here is itself the finding.
+    pub fn skipped_legacy(&self) -> usize {
+        self.skipped_legacy
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +510,80 @@ mod tests {
         let a = chained_envelope(GENESIS_HASH, 0x01);
         let b = chained_envelope(a.entry_hash, 0x02);
         assert!(verify_chain(&[legacy, a, b]).is_ok());
+    }
+
+    #[test]
+    fn incremental_verifier_matches_the_slice_form() {
+        let a = chained_envelope(GENESIS_HASH, 0x01);
+        let b = chained_envelope(a.entry_hash, 0x02);
+        let c = chained_envelope(b.entry_hash, 0x03);
+
+        let mut v = ChainVerifier::new();
+        for env in [&a, &b, &c] {
+            v.push(env).expect("chain verifies");
+        }
+        assert_eq!(v.verified(), 3);
+        assert_eq!(v.index(), 3);
+        assert_eq!(v.skipped_legacy(), 0);
+        assert_eq!(v.head(), Some(c.entry_hash));
+        assert!(verify_chain(&[a, b, c]).is_ok(), "slice form agrees");
+    }
+
+    #[test]
+    fn resumed_verifier_continues_across_a_page_boundary() {
+        // The point of `resume`: page 1 verified separately from page
+        // 2 must reach the same verdict as one contiguous pass.
+        let a = chained_envelope(GENESIS_HASH, 0x01);
+        let b = chained_envelope(a.entry_hash, 0x02);
+        let c = chained_envelope(b.entry_hash, 0x03);
+
+        let mut page1 = ChainVerifier::new();
+        page1.push(&a).expect("a verifies");
+        page1.push(&b).expect("b verifies");
+
+        let mut page2 = ChainVerifier::resume(page1.head().expect("head"), page1.index());
+        page2
+            .push(&c)
+            .expect("c continues the chain from page 1's head");
+        assert_eq!(page2.head(), Some(c.entry_hash));
+        // Absolute index carries across, so a break on page 2 reports
+        // its position in the whole log rather than within the page.
+        assert_eq!(page2.index(), 3);
+    }
+
+    #[test]
+    fn resumed_verifier_rejects_a_page_that_does_not_follow() {
+        let a = chained_envelope(GENESIS_HASH, 0x01);
+        let b = chained_envelope(a.entry_hash, 0x02);
+        // `c` chains from `b`, but we resume from `a` — a dropped
+        // entry across the page boundary must still be caught.
+        let c = chained_envelope(b.entry_hash, 0x03);
+
+        let mut page2 = ChainVerifier::resume(a.entry_hash, 1);
+        match page2.push(&c) {
+            Err(ChainBreak::BrokenLink { index, .. }) => assert_eq!(index, 1),
+            other => panic!("expected BrokenLink, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn legacy_rows_are_counted_not_silently_dropped() {
+        // The skip is an insertion point, so the count has to be
+        // observable — an operator seeing a non-zero legacy count on a
+        // v2-only store is looking at the finding itself.
+        let mut legacy = sample_envelope();
+        legacy.schema_version = 1;
+        legacy.prev_hash = GENESIS_HASH;
+        legacy.entry_hash = GENESIS_HASH;
+        let a = chained_envelope(GENESIS_HASH, 0x01);
+
+        let mut v = ChainVerifier::new();
+        v.push(&legacy)
+            .expect("legacy row is skipped, not an error");
+        v.push(&a).expect("chain anchors at genesis after the skip");
+        assert_eq!(v.skipped_legacy(), 1);
+        assert_eq!(v.verified(), 1);
+        assert_eq!(v.index(), 2, "index counts skipped rows too");
     }
 
     #[test]

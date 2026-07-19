@@ -26,6 +26,28 @@ the equivalent "new key holder is in control" guarantee. The
 deviation is documented for M2.16's spec-clarification
 pass.)
 
+## Challenge request (optional body)
+
+```
+POST /v1/members/me/rotate/challenge
+Content-Type: application/json
+
+{
+  "reason": "routine" | "compromise" | "deviceLoss" | "migration" | "unspecified"
+}
+```
+
+The body is optional; omitting it means `unspecified`. The reason
+is recorded on the resulting `DidRotated` audit envelope.
+
+It is deliberately collected **here** rather than on the finish
+request: the rotation signatures cover only `{rotationId, oldDid,
+newDid, expiresAt}`, so a reason submitted at finish would be
+unauthenticated and alterable by whoever relays that request.
+Captured at challenge time it is bound to the authenticated
+session that opened the ceremony. It remains **self-asserted** —
+the member's own claim about their motive, never evidence of it.
+
 ## Request
 
 ```
@@ -65,8 +87,8 @@ challenge response.
    existing status-list slot** (spec §6.2 — no new slot
    allocation on rotation).
 7. Emit `DidRotated { oldDid, newDid, method, vmcId,
-   roleVecId }` audit envelope. Actor is the **new** DID
-   (future principal).
+   roleVecId, priorRole, rotationReason }` audit envelope.
+   Actor is the **new** DID (future principal).
 
 ## Response (`200 OK`)
 

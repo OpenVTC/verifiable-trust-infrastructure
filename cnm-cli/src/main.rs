@@ -1,3 +1,4 @@
+mod audit;
 mod auth;
 mod backup;
 mod config;
@@ -19,8 +20,9 @@ use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_section
     long_about = "Community Network Manager — community-admin-scoped CLI for the VTA.\n\
                   \n\
                   CNM is deliberately a reduced surface compared to `pnm`:\n\
-                  - No `webvh` / `audit` / `keys import` — those are VTA-operator\n\
-                    concerns, not community-admin concerns, and live on pnm.\n\
+                  - No `webvh` / `keys import`, and no VTA audit *tail* — those are\n\
+                    VTA-operator concerns and live on pnm. (`cnm audit verify` IS\n\
+                    here: it checks the *community's* own audit chain.)\n\
                   - `backup` IS here: it backs up the *community's* state (the VTC),\n\
                     a community-admin concern, distinct from pnm's VTA backup.\n\
                   - DID-template management is mirrored here because community admins\n\
@@ -137,6 +139,12 @@ enum Commands {
     Backup {
         #[command(subcommand)]
         command: BackupCommands,
+    },
+
+    /// Audit-trail integrity checks for the community.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommands,
     },
 
     /// Sealed-transfer bootstrap (consumer side).
@@ -266,6 +274,16 @@ fn is_online_template_cmd(cmd: &DidTemplateCommands) -> bool {
             | DidTemplateCommands::Init { .. }
             | DidTemplateCommands::ListBuiltins
     )
+}
+
+#[derive(Subcommand)]
+enum AuditCommands {
+    /// Verify the community's audit hash chain end to end.
+    ///
+    /// Exits non-zero when the chain does not verify, so this works
+    /// as a scheduled check. Note that a pass proves internal
+    /// consistency, not authenticity — the chain is unsigned.
+    Verify,
 }
 
 #[derive(Subcommand)]
@@ -1179,6 +1197,9 @@ async fn main() {
             BackupCommands::Import { file, preview } => {
                 backup::cmd_import(&client, &keyring_key, file, preview).await
             }
+        },
+        Commands::Audit { command } => match command {
+            AuditCommands::Verify => audit::cmd_verify(&client, &keyring_key).await,
         },
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::Request { out, label } => bootstrap_request(out, label),

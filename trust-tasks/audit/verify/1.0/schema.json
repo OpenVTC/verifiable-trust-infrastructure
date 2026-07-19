@@ -1,0 +1,7 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/audit/verify/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC — Verify the audit hash chain",
+  "description": "GET /v1/audit/verify has no request body and no query parameters. Response is shaped by vtc_service::routes::audit::VerifyResponse.",
+  "type": "null"
+}

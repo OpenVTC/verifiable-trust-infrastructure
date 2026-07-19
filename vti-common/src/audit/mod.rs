@@ -30,21 +30,22 @@ pub mod key_store;
 pub mod writer;
 
 pub use envelope::{
-    AuditEnvelope, ChainBreak, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION, verify_chain,
+    AuditEnvelope, ChainBreak, ChainVerifier, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION,
+    verify_chain,
 };
 pub use event::{
     AclChangeData, AclRevokedData, AdminInviteData, AdminPasskeyData, AdminPromotedData,
     AdminUiServedData, AuditEvent, AuditKeyRotatedData, BackupData, CommunityInstalledData,
     CommunityProfileUpdatedData, ConfigChange, ConfigChangedData, ConfigReloadedData, ConfigSource,
     CredentialIssuedData, CrossCommunitySessionMintedData, CustomEndorsementIssuedData,
-    CustomEndorsementRevokedData, DidRotatedData, EmergencyBootstrapData,
+    CustomEndorsementRevokedData, DidRotatedData, DidRotationReason, EmergencyBootstrapData,
     EndorsementTypeDeletedData, EndorsementTypeRegisteredData, FieldChange, InvitationIssuedData,
     InvitationRevokedData, JoinRequestData, JoinRequestRejectedData, MemberAddedData,
     MemberRemovedData, MemberUpdatedData, MembershipReciprocatedData, MembershipRenewedData,
     PersonhoodAssertedData, PersonhoodRevokedData, PolicyActivatedData, PolicyUploadedData,
     REDACTED_MARKER, RegistryRecordPolicyOverrideData, RegistryStatusChangedData,
     RegistrySyncOutcomeData, RestartRequestedData, RoleChangedData, SchemaChangeData,
-    SessionRevokedData, StatusListFlippedData, VrcPublishedData, VrcRevokedData,
+    SessionRevokedData, SignedOutData, StatusListFlippedData, VrcPublishedData, VrcRevokedData,
     WebsiteBundleDeployedData, WebsiteFileDeletedData, WebsiteFileWrittenData,
     WebsiteGenerationRolledBackData,
 };

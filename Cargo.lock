@@ -2472,7 +2472,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.11.1"
+version = "0.11.2"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -10342,7 +10342,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.11"
+version = "0.11.12"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10424,7 +10424,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.9"
+version = "0.11.10"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

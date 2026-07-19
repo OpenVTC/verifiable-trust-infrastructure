@@ -88,7 +88,7 @@ use serde_json::Value as JsonValue;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use vti_common::audit::{AuditEvent, DidRotatedData};
+use vti_common::audit::{AuditEvent, DidRotatedData, DidRotationReason};
 use vti_common::auth::session::{delete_session, list_sessions};
 use vti_common::error::AppError;
 
@@ -126,6 +126,15 @@ struct RotationChallenge {
     id: Uuid,
     did: String,
     expires_at: DateTime<Utc>,
+    /// Reason declared when the challenge was requested. Held on the
+    /// server-side row rather than read from the finish body: the
+    /// rotation signatures cover only `{rotationId, oldDid, newDid,
+    /// expiresAt}`, so a reason submitted at finish would be
+    /// unauthenticated and alterable by whoever relays that request.
+    /// Captured here it is bound to the authenticated session that
+    /// opened the ceremony.
+    #[serde(default)]
+    reason: Option<DidRotationReason>,
 }
 
 fn challenge_key(id: Uuid) -> Vec<u8> {
@@ -173,11 +182,28 @@ pub struct ChallengeResponse {
     pub canonical_template: JsonValue,
 }
 
+/// Optional body for the challenge request.
+///
+/// Absent body, absent field, and `unspecified` all mean the same
+/// thing — the member declined to say. The endpoint predates this
+/// field, so clients that send no body at all stay valid.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct ChallengeBody {
+    /// Why the member is rotating. Self-asserted — see
+    /// [`DidRotatedData::rotation_reason`] for what this is and is not
+    /// evidence of.
+    #[serde(default)]
+    pub reason: Option<DidRotationReason>,
+}
+
 /// POST /members/me/rotate/challenge — mint a DID-rotation challenge.
 /// Auth: any authenticated member.
 #[utoipa::path(
     post, path = "/members/me/rotate/challenge", tag = "members",
     security(("bearer_jwt" = [])),
+    request_body = Option<ChallengeBody>,
     responses(
         (status = 200, description = "Rotation challenge issued", body = ChallengeResponse),
         (status = 401, description = "Missing or invalid bearer token"),
@@ -187,7 +213,9 @@ pub struct ChallengeResponse {
 pub async fn challenge(
     auth: AuthClaims,
     State(state): State<AppState>,
+    body: Option<Json<ChallengeBody>>,
 ) -> Result<(StatusCode, Json<ChallengeResponse>), AppError> {
+    let reason = body.and_then(|Json(b)| b.reason);
     // Caller must be a current member — anyone with a session
     // could mint a challenge otherwise.
     let _acl = get_acl_entry(&state.acl_ks, &auth.did)
@@ -201,6 +229,7 @@ pub async fn challenge(
         id,
         did: auth.did.clone(),
         expires_at,
+        reason,
     };
     store_challenge(&state, &challenge).await?;
 
@@ -215,6 +244,7 @@ pub async fn challenge(
     info!(
         rotation_id = %id,
         did = %auth.did,
+        reason = ?reason,
         "DID rotation challenge issued"
     );
 
@@ -457,6 +487,7 @@ pub async fn rotate(
                 vmc_id,
                 role_vec_id: vec_id,
                 prior_role: Some(acl.role.to_string()),
+                rotation_reason: challenge.reason,
             }),
         )
         .await?;

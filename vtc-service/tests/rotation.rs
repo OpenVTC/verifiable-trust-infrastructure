@@ -38,6 +38,7 @@ struct Fixture {
     members_ks: vti_common::store::KeyspaceHandle,
     acl_ks: vti_common::store::KeyspaceHandle,
     sessions_ks: vti_common::store::KeyspaceHandle,
+    audit_ks: vti_common::store::KeyspaceHandle,
     signer: Arc<LocalSigner>,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
     _vtc: TestVtc,
@@ -138,6 +139,7 @@ async fn build_fixture() -> Fixture {
     let members_ks = vtc.state.members_ks.clone();
     let acl_ks = vtc.state.acl_ks.clone();
     let sessions_ks = vtc.state.sessions_ks.clone();
+    let audit_ks = vtc.state.audit_ks.clone();
     let router = vtc.router.clone();
 
     Fixture {
@@ -148,6 +150,7 @@ async fn build_fixture() -> Fixture {
         members_ks,
         acl_ks,
         sessions_ks,
+        audit_ks,
         signer,
         _vtc: vtc,
     }
@@ -185,13 +188,25 @@ fn signing_bytes(rotation_id: &str, old_did: &str, new_did: &str, expires_at: i6
 }
 
 async fn mint_challenge(fix: &Fixture) -> (String, i64) {
-    let req = Request::builder()
+    mint_challenge_with_reason(fix, None).await
+}
+
+/// `reason` mirrors the optional `ChallengeBody`. `None` sends no body
+/// at all — the pre-existing wire shape, which must keep working.
+async fn mint_challenge_with_reason(fix: &Fixture, reason: Option<&str>) -> (String, i64) {
+    let mut builder = Request::builder()
         .method("POST")
         .uri("/v1/members/me/rotate/challenge")
         .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", CHALLENGE_TASK)
-        .body(Body::empty())
-        .unwrap();
+        .header("trust-task", CHALLENGE_TASK);
+    let body = match reason {
+        Some(r) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(json!({ "reason": r }).to_string())
+        }
+        None => Body::empty(),
+    };
+    let req = builder.body(body).unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp.into_body()).await;
@@ -443,4 +458,115 @@ async fn rotation_id_is_single_use() {
         "second call must not succeed, got {}",
         resp.status()
     );
+}
+
+/// The reason is declared at challenge time and must survive to the
+/// `DidRotated` envelope — it is collected there, rather than on the
+/// finish request, because the rotation signatures do not cover it.
+#[tokio::test]
+async fn rotation_reason_reaches_the_audit_envelope() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent, DidRotationReason};
+
+    let fix = build_fixture().await;
+
+    let new_signing = SigningKey::from_bytes(&[0xCC; 32]);
+    let new_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&new_signing.verifying_key().to_bytes());
+
+    let (rotation_id, expires_at) = mint_challenge_with_reason(&fix, Some("compromise")).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, &new_did, expires_at);
+    let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
+    let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/members/me/rotate")
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", ROTATE_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "rotationId": rotation_id,
+                "oldDid": fix.member_did,
+                "newDid": new_did,
+                "oldSignature": old_sig,
+                "newSignature": new_sig,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let raw = fix
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .expect("read audit keyspace");
+    let rotated: Vec<AuditEnvelope> = raw
+        .iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<AuditEnvelope>(v).ok())
+        .filter(|e| matches!(e.event, AuditEvent::DidRotated(_)))
+        .collect();
+    assert_eq!(rotated.len(), 1, "one DidRotated envelope");
+    let AuditEvent::DidRotated(data) = &rotated[0].event else {
+        unreachable!()
+    };
+    assert_eq!(
+        data.rotation_reason,
+        Some(DidRotationReason::Compromise),
+        "the reason declared at challenge time survives to the audit row"
+    );
+}
+
+/// Omitting the body leaves the reason unset rather than defaulting to
+/// something that reads as a claim the member never made.
+#[tokio::test]
+async fn rotation_without_a_reason_records_none() {
+    use vti_common::audit::{AuditEnvelope, AuditEvent};
+
+    let fix = build_fixture().await;
+
+    let new_signing = SigningKey::from_bytes(&[0xDD; 32]);
+    let new_did =
+        affinidi_crypto::did_key::ed25519_pub_to_did_key(&new_signing.verifying_key().to_bytes());
+
+    let (rotation_id, expires_at) = mint_challenge(&fix).await;
+    let payload = signing_bytes(&rotation_id, &fix.member_did, &new_did, expires_at);
+    let old_sig = hex::encode(fix.member_signing.sign(&payload).to_bytes());
+    let new_sig = hex::encode(new_signing.sign(&payload).to_bytes());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/members/me/rotate")
+        .header("authorization", format!("Bearer {}", fix.member_token))
+        .header("trust-task", ROTATE_TASK)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "rotationId": rotation_id,
+                "oldDid": fix.member_did,
+                "newDid": new_did,
+                "oldSignature": old_sig,
+                "newSignature": new_sig,
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    assert_eq!(
+        fix.router.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let raw = fix.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+    let rotated: Vec<AuditEnvelope> = raw
+        .iter()
+        .filter_map(|(_, v)| serde_json::from_slice::<AuditEnvelope>(v).ok())
+        .filter(|e| matches!(e.event, AuditEvent::DidRotated(_)))
+        .collect();
+    assert_eq!(rotated.len(), 1);
+    let AuditEvent::DidRotated(data) = &rotated[0].event else {
+        unreachable!()
+    };
+    assert_eq!(data.rotation_reason, None);
 }

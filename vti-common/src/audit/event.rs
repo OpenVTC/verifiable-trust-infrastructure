@@ -342,6 +342,17 @@ pub enum AuditEvent {
     /// `target_did` is the session owner (when revoking by DID).
     SessionRevoked(SessionRevokedData),
 
+    /// A principal ended their **own** session (`POST
+    /// /v1/auth/sign-out`).
+    ///
+    /// Deliberately distinct from [`Self::SessionRevoked`] rather than
+    /// a flag on it: voluntary sign-out is routine, admin-forced
+    /// revocation is a security signal, and a SIEM rule that has to
+    /// tell them apart by comparing actor to target will get it wrong
+    /// the first time an admin revokes their own session. Same
+    /// reasoning as [`Self::AdminPromoted`] versus [`Self::RoleChanged`].
+    SignedOut(SignedOutData),
+
     /// An encrypted state backup was exported (`POST /v1/backup/export`).
     BackupExported(BackupData),
 
@@ -437,6 +448,19 @@ pub struct SessionRevokedData {
     pub session_id: Option<String>,
     /// Number of sessions revoked (1 for a single id, N for revoke-by-DID).
     pub revoked_count: u32,
+}
+
+/// Payload for [`AuditEvent::SignedOut`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedOutData {
+    /// Session ended. Always known — the caller's own JWT names it.
+    ///
+    /// There is deliberately no "did it exist" flag: the `AuthClaims`
+    /// extractor rejects a token whose session row is gone, so the
+    /// handler only ever runs against a live session. A second
+    /// sign-out with the same token 401s and never reaches here.
+    pub session_id: String,
 }
 
 /// Payload for [`AuditEvent::BackupExported`] / [`AuditEvent::BackupImported`].
@@ -1125,6 +1149,47 @@ pub struct DidRotatedData {
     /// rotated key inherits. `None` on pre-enrichment rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior_role: Option<String>,
+    /// Why the member rotated, as declared when they requested the
+    /// rotation challenge. `None` on pre-enrichment rows and whenever
+    /// the member declined to say.
+    ///
+    /// **Self-asserted, not proven.** The rotation signatures cover
+    /// `{rotationId, oldDid, newDid, expiresAt}` and nothing else, so
+    /// this value is the member's own claim about their motive. It is
+    /// bound to the authenticated session that opened the ceremony and
+    /// cannot be altered by whoever submits the finish request, but a
+    /// member who lies about *why* they rotated will be recorded
+    /// faithfully lying. Treat it as intent, never as evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation_reason: Option<DidRotationReason>,
+}
+
+/// Why a member rotated their DID, as declared at challenge time.
+///
+/// Separate from [`crate::audit::RotationReason`], which describes
+/// *audit-HMAC-key* rotation: that enum serializes PascalCase, is
+/// already persisted in `audit_key:` rows (so it cannot be re-cased),
+/// and its variants (`Initial`, `Routine` meaning "the background task
+/// fired") carry no sensible reading in this domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum DidRotationReason {
+    /// Routine hygiene — scheduled or self-directed key refresh, no
+    /// suspected compromise.
+    Routine,
+    /// The old key is believed exposed. The security-relevant value:
+    /// a SIEM rule keying on this should escalate, and everything the
+    /// old DID did before the rotation is suspect.
+    Compromise,
+    /// The device holding the old key was lost, destroyed, or
+    /// replaced. Distinct from `Compromise` — no exposure claimed.
+    DeviceLoss,
+    /// Moving between DID methods or hosts (e.g. `did:key` →
+    /// `did:webvh`), the identity being otherwise unchanged.
+    Migration,
+    /// The member gave no reason.
+    Unspecified,
 }
 
 /// Payload for [`AuditEvent::PolicyActivated`].
@@ -1480,6 +1545,7 @@ mod tests {
             vmc_id: Some("urn:uuid:vmc-2".into()),
             role_vec_id: Some("urn:uuid:vec-2".into()),
             prior_role: Some("member".into()),
+            rotation_reason: Some(DidRotationReason::Compromise),
         });
         let v = wire_value(&e);
         assert_eq!(v["type"], "DidRotated");
@@ -1499,6 +1565,7 @@ mod tests {
             vmc_id: None,
             role_vec_id: None,
             prior_role: None,
+            rotation_reason: None,
         });
         let v = wire_value(&e);
         assert!(v["data"].get("vmcId").is_none());
@@ -1903,6 +1970,7 @@ mod tests {
                     vmc_id: None,
                     role_vec_id: None,
                     prior_role: None,
+                    rotation_reason: None,
                 }),
                 "DidRotated",
             ),
