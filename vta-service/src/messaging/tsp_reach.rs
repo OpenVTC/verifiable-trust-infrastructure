@@ -29,14 +29,30 @@ use std::time::{Duration, Instant};
 const TSP_REACH_TTL: Duration = Duration::from_secs(300);
 
 /// In-memory record of which DIDs were last seen sending over TSP.
-#[derive(Default)]
 pub struct TspReachability {
     seen: RwLock<HashMap<String, Instant>>,
+    ttl: Duration,
+}
+
+impl Default for TspReachability {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TspReachability {
+    /// Production constructor — the standard [`TSP_REACH_TTL`] window.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_ttl(TSP_REACH_TTL)
+    }
+
+    /// Construct with an explicit TTL. Used by tests to exercise expiry without
+    /// waiting out the production window.
+    pub fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            seen: RwLock::new(HashMap::new()),
+            ttl,
+        }
     }
 
     /// Note that `did` just sent us a TSP frame — it is reachable over TSP now.
@@ -55,7 +71,7 @@ impl TspReachability {
         self.seen
             .read()
             .ok()
-            .and_then(|seen| seen.get(did).map(|t| t.elapsed() < TSP_REACH_TTL))
+            .and_then(|seen| seen.get(did).map(|t| t.elapsed() < self.ttl))
             .unwrap_or(false)
     }
 }
@@ -71,5 +87,34 @@ mod tests {
         r.record("did:key:zDevice");
         assert!(r.fresh("did:key:zDevice"));
         assert!(!r.fresh("did:key:zOther"));
+    }
+
+    #[test]
+    fn entry_expires_after_ttl() {
+        // Tiny TTL so the record goes stale almost immediately — this is the
+        // decay a device toggling back to DIDComm relies on for push to revert.
+        let r = TspReachability::with_ttl(Duration::from_millis(20));
+        r.record("did:key:zDevice");
+        assert!(r.fresh("did:key:zDevice"), "fresh right after record");
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(
+            !r.fresh("did:key:zDevice"),
+            "must go stale once the TTL elapses so push falls back to DIDComm"
+        );
+    }
+
+    #[test]
+    fn record_refreshes_the_window() {
+        let r = TspReachability::with_ttl(Duration::from_millis(40));
+        r.record("did:key:zDevice");
+        std::thread::sleep(Duration::from_millis(25));
+        // A re-announce before expiry resets the clock, so the device that keeps
+        // announcing stays continuously TSP-reachable.
+        r.record("did:key:zDevice");
+        std::thread::sleep(Duration::from_millis(25));
+        assert!(
+            r.fresh("did:key:zDevice"),
+            "re-record within the window keeps it fresh past the original expiry"
+        );
     }
 }

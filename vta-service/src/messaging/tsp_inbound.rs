@@ -56,6 +56,7 @@ pub async fn dispatch_one(app_state: &AppState, payload: &[u8], sender_vid: &str
     // stays fresh. Recorded regardless of authorization: reachability is a
     // transport fact, and only DIDs we later push to are ever queried.
     app_state.tsp_reach.record(sender_vid);
+    tracing::debug!(sender = %sender_vid, "recorded TSP reachability (learn-from-inbound)");
     let outcome = match auth_from_did(sender_vid, &app_state.acl_ks, &app_state.sessions_ks).await {
         Ok(auth) => crate::trust_tasks::dispatch_trust_task_core(app_state, &auth, payload).await,
         Err(e) => crate::trust_tasks::reject_trust_task(
@@ -131,5 +132,28 @@ mod tests {
             "authorized sender must get a reply envelope"
         );
         serde_json::from_slice::<serde_json::Value>(&body).expect("reply is JSON");
+    }
+
+    /// The learn-from-inbound hook: dispatching any inbound TSP frame records its
+    /// **proven** `sender_vid` as TSP-reachable, so subsequent device-push
+    /// prefers TSP for that DID. Reachability is a transport fact recorded
+    /// regardless of the auth outcome, so an unknown sender (which still gets a
+    /// reply envelope) is marked reachable just the same.
+    #[tokio::test]
+    async fn dispatch_one_records_sender_as_tsp_reachable() {
+        let (app_state, _dir) = build_signing_test_app_state().await;
+        let did = "did:key:zTspDevice";
+
+        assert!(
+            !app_state.tsp_reach.fresh(did),
+            "a DID we've never seen over TSP is not reachable"
+        );
+
+        let _ = dispatch_one(&app_state, b"{}", did).await;
+
+        assert!(
+            app_state.tsp_reach.fresh(did),
+            "an inbound TSP frame must mark its proven sender TSP-reachable"
+        );
     }
 }
