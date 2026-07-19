@@ -12,6 +12,7 @@
 //! available but prints a warning — there is no silent TOFU.
 
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -131,6 +132,7 @@ fn parse_var(raw: &str) -> Result<(String, serde_json::Value), Box<dyn std::erro
 /// `pnm bootstrap open --bundle <PATH> [--expect-digest <HEX>] [--no-verify-digest]`
 pub async fn run_open(
     bundle_path: PathBuf,
+    out: Option<PathBuf>,
     expect_digest: Option<String>,
     no_verify_digest: bool,
     expect_vta_did: Option<String>,
@@ -158,17 +160,27 @@ pub async fn run_open(
             if let Some(ref u) = c.vta_url {
                 println!("  VTA URL: {u}");
             }
-            println!();
-            println!("To install this credential, use the online bootstrap flow:");
-            println!(
-                "  pnm bootstrap connect --vta-url <url> [--expect-digest <sha256>] \
-                 [--expect-pcr0 <hex>] [--expect-pcr8 <hex>]"
-            );
+            if out.is_none() {
+                println!();
+                println!("Nothing was written. To install this credential either:");
+                println!("  - re-open with --out <path> for a file-based consumer, or");
+                println!(
+                    "  - use the online flow: pnm bootstrap connect --vta-url <url> \
+                     [--expect-digest <sha256>] [--expect-pcr0 <hex>] [--expect-pcr8 <hex>]"
+                );
+            }
         }
         SealedPayloadV1::ContextProvision(p) => {
             println!("Payload: ContextProvision");
             println!("  Context:   {} ({})", p.context_id, p.context_name);
             println!("  Admin DID: {}", p.admin_did);
+            if out.is_none() {
+                println!();
+                println!(
+                    "Nothing was written — this payload carries an admin credential. \
+                     Re-open with --out <path> to write it as JSON."
+                );
+            }
         }
         SealedPayloadV1::DidSecrets(s) => {
             println!("Payload: DidSecrets");
@@ -256,6 +268,53 @@ pub async fn run_open(
         }
     }
 
+    if let Some(path) = out {
+        // Rejects any payload variant that isn't an admin identity, with a
+        // per-variant message. The bundle is already spent by this point, so
+        // failing here still costs the operator a fresh request cycle — hence
+        // the up-front warning in the `--out` help text.
+        let bundle = vta_cli_common::sealed_consumer::extract_admin_credential(opened.payload)?;
+        write_credential_bundle(&path, &bundle)?;
+        println!();
+        println!("Credential written to {} (0600).", path.display());
+    }
+
+    Ok(())
+}
+
+/// Serialize a [`CredentialBundle`] to `path`, owner-readable only.
+///
+/// Field names come from the type's serde renames (`privateKeyMultibase`,
+/// `vtaDid`, `vtaUrl`), so the output is exactly the shape file-based
+/// consumers expect — e.g. the trust registry's `TR_VTA_CREDENTIAL`.
+fn write_credential_bundle(
+    path: &std::path::Path,
+    bundle: &vta_sdk::credentials::CredentialBundle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let json = serde_json::to_vec_pretty(bundle)?;
+
+    let mut opts = fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    // Open at 0600 so the private key is never briefly world-readable
+    // between create and chmod — same rationale as `write_secret` in
+    // vta-cli-common's sealed_consumer.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(&json)?;
+    file.write_all(b"\n")?;
+    drop(file);
+
+    if let Err(e) = vta_cli_common::secure_file::restrict_file_to_owner(path) {
+        eprintln!(
+            "warning: could not restrict {} to owner ({e}) — the private key may be \
+             readable by other local users",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -626,5 +685,87 @@ mod tests {
     #[test]
     fn parse_var_empty_key_errors() {
         assert!(parse_var("=value").is_err());
+    }
+
+    fn scratch_path(name: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("pnm-open-out-{name}-{}.json", std::process::id()));
+        p
+    }
+
+    fn sample_bundle() -> vta_sdk::credentials::CredentialBundle {
+        vta_sdk::credentials::CredentialBundle {
+            did: "did:key:z6MkTest".into(),
+            private_key_multibase: "z3SecretTest".into(),
+            vta_did: "did:webvh:QmTest:vta.example.com:vta".into(),
+            vta_url: Some("https://vta.example.com".into()),
+        }
+    }
+
+    /// The on-disk field names are the contract with file-based consumers
+    /// (the trust registry's `TR_VTA_CREDENTIAL` parses exactly these), so
+    /// assert the serde renames rather than the Rust field names.
+    #[test]
+    fn written_credential_uses_wire_field_names() {
+        let path = scratch_path("fields");
+        super::write_credential_bundle(&path, &sample_bundle()).unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["did"], "did:key:z6MkTest");
+        assert_eq!(v["privateKeyMultibase"], "z3SecretTest");
+        assert_eq!(v["vtaDid"], "did:webvh:QmTest:vta.example.com:vta");
+        assert_eq!(v["vtaUrl"], "https://vta.example.com");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `vtaUrl` is `skip_serializing_if = "Option::is_none"`, so an absent
+    /// URL must omit the key entirely rather than emit `null` — the
+    /// registry's loader treats an explicit null as a parse error.
+    #[test]
+    fn written_credential_omits_absent_vta_url() {
+        let path = scratch_path("nourl");
+        let mut bundle = sample_bundle();
+        bundle.vta_url = None;
+        super::write_credential_bundle(&path, &bundle).unwrap();
+
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(v.get("vtaUrl").is_none());
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_credential_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = scratch_path("perms");
+        super::write_credential_bundle(&path, &sample_bundle()).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "credential file must not be group/world readable"
+        );
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Writing must overwrite, not append — re-running against an existing
+    /// path would otherwise produce trailing garbage after valid JSON.
+    #[cfg(unix)]
+    #[test]
+    fn written_credential_truncates_existing_file() {
+        let path = scratch_path("truncate");
+        std::fs::write(&path, vec![b'x'; 4096]).unwrap();
+        super::write_credential_bundle(&path, &sample_bundle()).unwrap();
+
+        // Parses cleanly => no leftover bytes from the longer previous file.
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["did"], "did:key:z6MkTest");
+
+        std::fs::remove_file(&path).ok();
     }
 }

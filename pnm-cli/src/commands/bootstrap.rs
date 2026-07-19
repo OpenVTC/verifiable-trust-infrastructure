@@ -26,12 +26,14 @@ pub(crate) async fn run_offline(
         }
         BootstrapCommands::Open {
             bundle,
+            out,
             expect_digest,
             no_verify_digest,
             expect_vta_did,
         } => Some(
             bootstrap::run_open(
                 bundle.clone(),
+                out.clone(),
                 expect_digest.clone(),
                 *no_verify_digest,
                 expect_vta_did.clone(),

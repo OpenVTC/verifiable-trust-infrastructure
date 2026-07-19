@@ -297,10 +297,23 @@ pub(crate) enum BootstrapCommands {
     ///
     /// `--expect-digest <hex>` is required by default. Use `--no-verify-digest`
     /// to opt out (with a warning) — there is no silent TOFU.
+    ///
+    /// By default this only inspects the bundle: the payload summary is
+    /// printed and nothing is written. Pass `--out <PATH>` to also write
+    /// the admin `CredentialBundle` as JSON for services that read one
+    /// from a file (e.g. the trust registry's `TR_VTA_CREDENTIAL`).
+    ///
+    /// Opening consumes the single-use bootstrap secret, so a bundle can
+    /// only be opened once — decide up front whether you need `--out`.
     Open {
         /// Path to the armored bundle file.
         #[arg(long)]
         bundle: std::path::PathBuf,
+        /// Write the extracted admin credential to this path as JSON
+        /// (created 0600). Only valid for `AdminCredential` and
+        /// `ContextProvision` payloads.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
         /// Expected SHA-256 digest, communicated out-of-band by the producer.
         #[arg(long)]
         expect_digest: Option<String>,
