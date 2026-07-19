@@ -308,6 +308,7 @@ pnm contexts provision \
   --id trust-registry \
   --name "Trust Registry" \
   --server https://webvh.example.com \
+  --did-path trust-registry \
   --mediator-service \
   --recipient tr-request.json
 ```
@@ -317,6 +318,13 @@ pnm contexts provision \
   service endpoint the registry needs to connect over DIDComm.
 - `--server` creates the registry's `did:webvh` on that host; use
   `--did-url` when self-hosting.
+- `--did-path` fixes the DID's path label on the hosting server, so
+  the registry's DID reads
+  `did:webvh:<scid>:webvh.example.com:trust-registry` rather than
+  whatever label the host would otherwise allocate. Optional, but
+  worth setting for a long-lived service other communities will
+  recognise by DID. Requires `--server` or `--did-url`. Pass
+  `.well-known` to claim the host's reserved root slot.
 - `--pre-rotation <N>` pre-generates rotation keys. Decide now;
   retrofitting is harder.
 
