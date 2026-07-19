@@ -46,7 +46,7 @@ those to reach the mediator. Identity custody, nothing more.
 
 | Stage | Establishes | Gate |
 |---|---|---|
-| 1 | Registry runs standalone, TRQP answers | `curl /health`, `POST /recognition` |
+| 1 | Registry runs standalone, fjall store opens | `curl /health`, `POST /recognition` → 404 |
 | 2 | Real DID, mediator connection | `/.well-known/did.json` resolves |
 | 3 | Trust Tasks round-trip | `test-trust-registry` mediator tests |
 | 4 | Identity sourced from the VTA | stages 1–3 pass again, new identity |
@@ -85,6 +85,11 @@ curl -s https://webvh.example/mediator/did.json | jq .
 Proves the binary, storage layer, and HTTP surface with no DIDComm
 involved.
 
+This runbook assumes the **fjall** backend: an embedded LSM store,
+no external database, state on local disk. See
+[storage backends](#storage-backends) for how it differs from the
+CSV and DynamoDB paths — the differences affect stages 1 and 2.
+
 ```bash
 cd affinidi-trust-registry-rs
 cp .env.example .env
@@ -93,19 +98,31 @@ cp .env.example .env
 Reduce `.env` to:
 
 ```dotenv
-TR_STORAGE_BACKEND=csv
-FILE_STORAGE_PATH=./sample-data/data.csv
+TR_STORAGE_BACKEND=fjall
+TR_FJALL_PATH=/var/lib/trust-registry/records.fjall
 LISTEN_ADDRESS=127.0.0.1:3232
 CORS_ALLOWED_ORIGINS=*
 AUDIT_LOG_FORMAT=json
 ```
 
-Setting `ENABLE_DIDCOMM=false` short-circuits before any mediator
-or profile variable is read:
+`TR_FJALL_PATH` defaults to `./trust_records.fjall` — relative to
+the working directory, which is rarely what a service unit wants.
+Set it explicitly to a durable, writable, **backed-up** location.
+Delete the `FILE_STORAGE_PATH` and `DDB_TABLE_NAME` lines inherited
+from `.env.example`; they are ignored under fjall and only mislead.
+
+fjall is behind a Cargo feature. It must be on **every** build and
+run command from here on:
 
 ```bash
-ENABLE_DIDCOMM=false RUST_LOG=info cargo run --bin trust-registry
+ENABLE_DIDCOMM=false RUST_LOG=info \
+  cargo run --bin trust-registry --features storage-fjall
 ```
+
+Omitting it is at least a clean failure — the storage factory
+returns *"TR_STORAGE_BACKEND=fjall selected but fjall support was
+not compiled; rebuild with --features storage-fjall"* rather than
+silently falling back to CSV.
 
 The registry exposes five routes: `/health`, `/recognition`,
 `/authorization`, `/trust-tasks`, and `/.well-known/did.json`.
@@ -123,18 +140,37 @@ curl -s -X POST localhost:3232/recognition \
        "resource":"resource3"}' | jq .
 ```
 
-Those identifiers are the `recognition`-type row in
-`sample-data/data.csv`; the `entity1/authority1/action1/resource1`
-row is the `authorization` one.
+**A fresh fjall store is empty**, so that query returns **404
+`Trust record not found`** — and on a new deployment that *is* the
+correct answer. There is no import path from `sample-data/data.csv`
+into fjall; records arrive only via Trust Tasks, which is stage 3.
 
-**Gate:** both calls return 200 with a record.
+**Gate:** `/health` returns `{"status":"OK"}`, the process creates
+the directory at `TR_FJALL_PATH`, and `/recognition` returns a
+well-formed 404 rather than a 500. A 500 here means the store
+could not be opened — check permissions on the parent directory.
+
+If you want the query path proven against real data before
+touching DIDComm, run this stage once with
+`TR_STORAGE_BACKEND=csv` and `FILE_STORAGE_PATH=./sample-data/data.csv`
+(no rebuild required — CSV is in the default feature set). The
+`entity3/authority3/action3/resource3` row is the `recognition`
+record; `entity1/…` is the `authorization` one. Then switch back
+to fjall. The two backends share no state, so nothing carries over.
 
 ---
 
 ## Stage 2 — Real DID and mediator
 
 Use the provisioning CLI rather than hand-authoring
-`PROFILE_CONFIG`:
+`PROFILE_CONFIG`.
+
+> **The setup CLI cannot express a fjall configuration.**
+> `--storage-backend` carries `value_parser = ["csv", "ddb",
+> "redis"]`, so `--storage-backend fjall` is rejected by clap
+> before the tool runs. Its storage arguments are therefore a
+> throwaway here — run it for the *identity* work and re-apply the
+> storage settings afterwards.
 
 ```bash
 cargo run --bin setup-trust-registry --features dev-tools -- \
@@ -143,11 +179,23 @@ cargo run --bin setup-trust-registry --features dev-tools -- \
   --didweb-url https://webvh.example.com \
   --admin-dids "did:peer:2.Vz6Mk…" \
   --storage-backend csv \
-  --file-storage-path ./sample-data/data.csv \
   --acl-mode ExplicitDeny \
   --audit-log-format json \
   --non-interactive
 ```
+
+The tool **rewrites `.env` wholesale**, seeded from
+`.env.example` — so it will overwrite the fjall settings from
+stage 1 with `TR_STORAGE_BACKEND=csv`. Put them back:
+
+```dotenv
+TR_STORAGE_BACKEND=fjall
+TR_FJALL_PATH=/var/lib/trust-registry/records.fjall
+```
+
+and delete the `FILE_STORAGE_PATH` line it wrote. Re-check this
+after *any* future `setup-trust-registry` run; it is not
+idempotent with respect to storage.
 
 Points worth knowing:
 
@@ -164,7 +212,7 @@ Points worth knowing:
   `TSPTransport` service entry to the generated DID document.
 
 ```bash
-RUST_LOG=info cargo run --bin trust-registry
+RUST_LOG=info cargo run --bin trust-registry --features storage-fjall
 curl -s localhost:3232/.well-known/did.json | jq .
 ```
 
@@ -193,8 +241,15 @@ The routed tests are `#[ignore]`d by default. Add `--features tsp`
 for the TSP-multiplexed variant. This uses an in-process test
 mediator, so it exercises the code path without your real one.
 
-**Gate:** green. A failure here is in the registry, not your
-configuration.
+These tests use their own in-process storage, not your fjall
+store — passing here says the Trust Task path works, not that
+fjall persists correctly. Confirm that separately: write a record
+via a Trust Task, restart the process, then re-run the stage-1
+`/recognition` query. It should now return 200 with the record
+rather than 404. That round trip is the only real proof the store
+is durable and that `TR_FJALL_PATH` points where you think.
+
+**Gate:** tests green, and a written record survives a restart.
 
 ---
 
@@ -207,15 +262,26 @@ general sealed-transfer pattern.
 
 ### Build with the feature
 
+Features accumulate — `storage-fjall` must be carried forward
+alongside `vta`:
+
 ```bash
-cargo build --release --bin trust-registry --features vta
+cargo build --release --bin trust-registry \
+  --features "vta,storage-fjall"
 ```
 
 `vta` is in neither the default build nor the Docker image — the
 shipped `docker-compose.yaml` cannot run VTA mode. Containerised
-deployments need a custom image. Append a secrets backend, e.g.
-`--features "vta,secrets-aws"`, to keep the offline cache off
-local disk.
+deployments need a custom image, and that image must carry
+`storage-fjall` too. Append a secrets backend, e.g.
+`--features "vta,storage-fjall,secrets-aws"`, to keep the offline
+cache off local disk.
+
+Note that fjall and the VTA offline cache are **separate stores**
+with separate paths: `TR_FJALL_PATH` holds trust records,
+`TR_SECRETS_DATA_DIR` (default `./.trust-registry`) holds the
+cached credential bundle. Both need durable storage; neither is a
+backup of the other.
 
 ### Registry operator — recipient request
 
@@ -296,11 +362,17 @@ ENABLE_DIDCOMM=true
 MEDIATOR_DID=did:webvh:Qm…:webvh.example:mediator
 TR_VTA_CREDENTIAL=file:///etc/trust-registry/vta-credential.json
 TR_VTA_CONTEXT_ID=trust-registry
+TR_STORAGE_BACKEND=fjall
+TR_FJALL_PATH=/var/lib/trust-registry/records.fjall
 LISTEN_ADDRESS=0.0.0.0:3232
 ACL_MODE=ExplicitDeny
 AUDIT_LOG_FORMAT=json
 RUST_LOG=info
 ```
+
+`.env.vta.example` does not mention storage at all, so the two
+fjall lines must be added by hand when starting from that
+template.
 
 Four traps, all silent:
 
@@ -419,6 +491,58 @@ be treated restrictively rather than as transport failure.
 | Cross-community mint 503s forever | `recognized` mismatch above |
 | Docker image ignores VTA settings | `vta` not compiled into the shipped image |
 | Keys still in plaintext `.env` | setup tool writes both, cloud backend or not |
+| "fjall support was not compiled" | missing `--features storage-fjall` on this build |
+| Registry looks empty after a restart | `TR_FJALL_PATH` relative → resolved against a different working directory |
+| Records silently absent, no error | `TR_STORAGE_BACKEND` typo → silent fallback to `csv` |
+| Storage config reverted to CSV | a `setup-trust-registry` run rewrote `.env` |
+| 500 on every query at first boot | fjall cannot open the store — parent directory permissions |
+| Second replica fails or corrupts | fjall is single-writer; only one process per directory |
+
+## Storage backends
+
+`TR_STORAGE_BACKEND` selects the store. Anything unrecognised
+falls back to `csv` **silently** — there is no error for a typo,
+so `fjal` or `Fjall-db` yields a CSV registry that looks like it
+started fine.
+
+| Backend | Value | Extra config | Feature |
+|---|---|---|---|
+| CSV file | `csv` (default) | `FILE_STORAGE_PATH`, `FILE_STORAGE_UPDATE_INTERVAL_SEC` | built in |
+| DynamoDB | `ddb` / `dynamodb` | `DDB_TABLE_NAME`, `AWS_REGION`, `AWS_ENDPOINT` | built in |
+| Redis | `redis` | `REDIS_URL` | built in |
+| fjall | `fjall` | `TR_FJALL_PATH` | `storage-fjall` |
+
+### Why fjall, and what it costs
+
+fjall is an embedded LSM store: no external database, no network
+dependency in the read path, state on local disk. That makes it a
+good fit for a single-node registry where DynamoDB is unwanted
+operational surface.
+
+The trade-offs are worth stating plainly, because the rest of this
+runbook assumes you have accepted them:
+
+- **Single-writer, single-node.** The store is embedded in the
+  process. You cannot run two registry replicas over one fjall
+  directory, so horizontal scaling and rolling restarts both need
+  rethinking. Use DynamoDB if you need more than one instance.
+- **Backups are your problem.** No managed snapshots. Back up
+  `TR_FJALL_PATH` on whatever schedule your record durability
+  requires, and test a restore.
+- **The node becomes stateful.** Container deployments need a
+  persistent volume mounted at `TR_FJALL_PATH`; the shipped
+  `docker-compose.yaml` mounts `./sample-data` for the CSV path
+  and has no volume suitable for fjall.
+- **No seed-data import.** CSV starts populated from
+  `sample-data/data.csv`; fjall starts empty and is filled only by
+  Trust Tasks.
+- **The feature must be compiled in** on every build, including
+  any custom Docker image.
+
+Also note that the CSV backend rewrites its file on an interval
+(`FILE_STORAGE_UPDATE_INTERVAL_SEC`, default 60s) while fjall
+writes are durable per-operation. Migrating between the two means
+replaying Trust Tasks; there is no converter.
 
 ## Configuration notes
 
