@@ -168,6 +168,13 @@ jobs:
           fetch-depth: 0
       - name: Version-bump guard for changed publishable crates
         run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
+      # Sibling guard: the bump can be correct and the release still break if
+      # Cargo.lock pins a stale crates.io copy of one of our own crates (a
+      # transitive dev-dep pulls vta-sdk back in from the registry). `cargo
+      # publish --locked` verifies dependents against that pinned copy. See the
+      # script header. Not diff-based, so it needs no base ref.
+      - name: Lockfile self-pin guard
+        run: bash scripts/check-lockfile-self-pins.sh
 
   features:
     # Build the most-used non-default feature combinations so a misuse
