@@ -24,7 +24,10 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # `write` so the self-pin refresh can be committed back to main. Without
+  # that commit the refresh lives only in the runner's working copy and is
+  # discarded when the job ends — see the "Commit refreshed self-pins" step.
+  contents: write
   id-token: write # required for the OIDC token exchange with crates.io
 
 jobs:
@@ -139,3 +142,63 @@ jobs:
               cargo update -p "${REGISTRY}#${crate}@${pinned}" --precise "$version"
             fi
           done
+
+      # The refresh above happens in the runner's working copy. Until this
+      # step existed it was never committed, so main kept the stale pin and
+      # `scripts/check-lockfile-self-pins.sh` failed on the NEXT pull request
+      # — attributing a release-time problem to an unrelated author. It hit
+      # #706, #711 and #714 that way.
+      #
+      # CI on the release commit cannot prevent this: the guard deliberately
+      # allows a pin it cannot refresh, and the new version only becomes
+      # resolvable partway through this job, after that CI has finished. So
+      # the fix has to be here, not in a gate.
+      #
+      # `[skip ci]` keeps the commit from re-triggering CI and this workflow.
+      # Re-running Publish would be harmless (every version is on crates.io
+      # by now, so the loop skips them all) but it is pure waste, and the
+      # commit's only content is a mechanical `cargo update --precise` to a
+      # version this job just published successfully against.
+      - name: Commit refreshed self-pins
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- Cargo.lock; then
+            echo "no self-pin refresh to commit"
+            exit 0
+          fi
+
+          echo "::notice::committing refreshed lockfile self-pins"
+          git diff --stat -- Cargo.lock
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add Cargo.lock
+          git commit -s -m 'chore(release): refresh crates.io self-pins [skip ci]' \
+            -m 'Published versions have just become resolvable, so the registry self-pins in Cargo.lock can finally point at them. Committed by the publish workflow because no pull request can do it — the versions do not exist on crates.io until this job runs.'
+
+          # Another push may have landed while crates were uploading. Rebase
+          # onto it rather than clobbering; the only local change is Cargo.lock.
+          for attempt in 1 2 3; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "self-pin refresh pushed"
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); rebasing onto ${GITHUB_REF_NAME}"
+
+            # A concurrent Cargo.lock edit conflicts here. Abort out of the
+            # rebase rather than leaving the repo mid-operation, and stop
+            # retrying — `set -e` would otherwise fail this step and make a
+            # successful release look like a failed one.
+            if ! git pull --rebase origin "${GITHUB_REF_NAME}"; then
+              git rebase --abort || true
+              echo "rebase conflicted — giving up on the automatic refresh"
+              break
+            fi
+          done
+
+          # Publishing already succeeded — failing the job here would imply the
+          # release did not ship. Warn loudly instead; the next PR's guard will
+          # catch the stale pin, which is the status quo this step improves on.
+          echo "::warning::could not push the refreshed Cargo.lock after 3 attempts — main still holds a stale self-pin; run scripts/check-lockfile-self-pins.sh locally and commit the fix"
