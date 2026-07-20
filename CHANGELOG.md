@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### vta-sdk — REST discovery matches a set of service types
+
+* `ServiceCapabilities` matched REST on `"VTARest"` and nothing else. That
+  type is correct for a VTA — it says a VTA's REST API is behind the URL — but
+  it made the type unusable as a generic "this peer speaks REST" marker: any
+  non-VTA service either had to claim to be a VTA or stay undiscoverable. A
+  Trust Registry advertising its own type was invisible, so `select_protocol`
+  returned `NoMatchingProtocol` for a peer that plainly spoke REST.
+  `REST_SERVICE_TYPES` now holds both `VTARest` and `TRQPRest` (a Trust
+  Registry's TRQP-over-REST surface) and matching walks the set. VTAs are
+  unaffected; adding a REST-speaking service type is a one-line change.
+* `vta-mobile-core`'s resolver matched services with
+  `id.ends_with("#vta-rest") || ty == "VTARest"`. Matching on the `#id`
+  fragment violates R4.4 — the fragment is an arbitrary label — so the check
+  both missed valid services (a registry uses `#rest`) and could match the
+  wrong one: a DIDComm entry fragmented `#vta-rest` would have been read as
+  the REST endpoint. It now matches on `type` alone.
+
 ### vta-service — CMS `encryptedContent` unwrap no longer misreads raw ciphertext
 
 * `decrypt_cms_envelope` decided whether KMS had used EXPLICIT tagging on
