@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### vta-service — CMS `encryptedContent` unwrap no longer misreads raw ciphertext
+
+* `decrypt_cms_envelope` decided whether KMS had used EXPLICIT tagging on
+  `encryptedContent [0]` by testing a single byte — `ct_value[0] == 0x04`.
+  Under the normal IMPLICIT tagging that slice is raw AES-GCM ciphertext, i.e.
+  uniformly random bytes, so roughly 1 envelope in 256 was mistaken for an
+  EXPLICIT OCTET STRING wrapper. The misfire either raised a bogus
+  `CMS: truncated length bytes for inner encryptedContent` on a perfectly valid
+  envelope, or — worse — parsed successfully and returned a *truncated*
+  ciphertext, surfacing as a GCM tag mismatch indistinguishable from the KMS
+  ciphertext tampering the JWT-fingerprint guard exists to flag. Both land on
+  the enclave's first-boot path. The check is now structural: the slice is
+  unwrapped only when it is a well-formed OCTET STRING TLV spanning it
+  *exactly*, which random ciphertext cannot satisfy by accident. Measured over
+  500 runs of the wrong-key test: 2 failures before, 0 after (issue #685, filed
+  as CI flake — the flake was this bug).
+* The `encryptedContent` length parse also sliced without bounds checks, so a
+  truncated or malformed envelope panicked instead of returning `AppError`;
+  over-wide long-form lengths are now rejected before they can overflow the
+  shift. Every other parse in this module already returned typed errors.
+
 ### pnm-cli — `bootstrap open --out` writes the credential bundle
 
 * `pnm bootstrap open` decrypted a sealed bundle, printed a summary and exited

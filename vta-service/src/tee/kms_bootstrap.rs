@@ -984,6 +984,11 @@ mod cms_der {
 
         let ct_value = if first_len < 0x80 {
             let len = first_len as usize;
+            if pos + len > eci_data.len() {
+                return Err(tee_attestation_error(
+                    "CMS: encryptedContent overflows EncryptedContentInfo",
+                ));
+            }
             &eci_data[pos..pos + len]
         } else if first_len == 0x80 {
             // Indefinite length on raw octets — take everything remaining,
@@ -999,11 +1004,28 @@ mod cms_der {
             }
         } else {
             let num_bytes = (first_len & 0x7F) as usize;
+            // A length wider than usize can never address a real buffer, and
+            // shifting it in would overflow before the bounds check below.
+            if num_bytes > core::mem::size_of::<usize>() {
+                return Err(tee_attestation_error(
+                    "CMS: oversized length encoding for encryptedContent",
+                ));
+            }
+            if pos + num_bytes > eci_data.len() {
+                return Err(tee_attestation_error(
+                    "CMS: truncated length bytes for encryptedContent",
+                ));
+            }
             let mut len = 0usize;
             for i in 0..num_bytes {
                 len = (len << 8) | (eci_data[pos + i] as usize);
             }
             pos += num_bytes;
+            if pos + len > eci_data.len() {
+                return Err(tee_attestation_error(
+                    "CMS: encryptedContent overflows EncryptedContentInfo",
+                ));
+            }
             &eci_data[pos..pos + len]
         };
 
@@ -1012,15 +1034,38 @@ mod cms_der {
 
         // The ciphertext may be wrapped in an inner OCTET STRING if KMS used
         // EXPLICIT tagging on [0] instead of IMPLICIT. Unwrap if present.
-        let ciphertext = if ct_value.len() > 2 && ct_value[0] == 0x04 {
-            let mut inner_pos = 0;
-            let (_, inner) = read_tlv(ct_value, &mut inner_pos, "inner encryptedContent")?;
-            inner.to_vec()
-        } else {
-            ct_value.to_vec()
-        };
+        let ciphertext =
+            unwrap_explicit_octet_string(ct_value).unwrap_or_else(|| ct_value.to_vec());
 
         Ok((oid, iv, ciphertext))
+    }
+
+    /// If `ct_value` is an EXPLICIT-tagged wrapper, it is a single OCTET STRING
+    /// TLV spanning the whole slice. Return its contents; otherwise `None`.
+    ///
+    /// The check must be structural, not a peek at the first byte. Under the
+    /// (normal) IMPLICIT tagging, `ct_value` is raw AES-GCM ciphertext —
+    /// uniformly random bytes, so roughly 1 in 256 envelopes start with 0x04
+    /// and would be mistaken for a wrapper. That misfire either raised a
+    /// bogus "CMS parse" error on a perfectly valid envelope or, worse,
+    /// silently truncated the ciphertext into a GCM tag mismatch that reads
+    /// like KMS ciphertext tampering.
+    ///
+    /// Requiring the TLV to consume *exactly* the whole slice drops the
+    /// false-positive rate from 2^-8 to negligible: random ciphertext would
+    /// have to encode its own remaining length.
+    fn unwrap_explicit_octet_string(ct_value: &[u8]) -> Option<Vec<u8>> {
+        if ct_value.first() != Some(&0x04) {
+            return None;
+        }
+        let mut pos = 0;
+        let (tag, inner) = read_tlv(ct_value, &mut pos, "inner encryptedContent").ok()?;
+        // read_tlv already bounds-checks; `pos` is the end of the TLV it read.
+        if tag == 0x04 && pos == ct_value.len() {
+            Some(inner.to_vec())
+        } else {
+            None
+        }
     }
 
     /// Parse the AlgorithmIdentifier to extract the OID and IV/nonce.
@@ -1212,6 +1257,72 @@ mod cms_der {
             let data = [0x04, 0x05, 0x01]; // claims 5 bytes but only 1
             let mut pos = 0;
             assert!(read_tlv(&data, &mut pos, "test").is_err());
+        }
+
+        /// A genuine EXPLICIT-tagged wrapper spans the whole slice and unwraps.
+        #[test]
+        fn explicit_octet_string_wrapper_is_unwrapped() {
+            let payload = [0xDE, 0xAD, 0xBE, 0xEF];
+            let mut wrapped = vec![0x04, payload.len() as u8];
+            wrapped.extend_from_slice(&payload);
+            assert_eq!(
+                unwrap_explicit_octet_string(&wrapped),
+                Some(payload.to_vec())
+            );
+        }
+
+        /// Raw ciphertext that merely *starts* with 0x04 is not a wrapper.
+        ///
+        /// Regression for the flaky-CI bug: the old check was
+        /// `ct_value[0] == 0x04`, so ~1 in 256 random AES-GCM ciphertexts was
+        /// misread as an EXPLICIT wrapper.
+        #[test]
+        fn raw_ciphertext_starting_with_0x04_is_not_unwrapped() {
+            // 0x04 0x02 ... — a well-formed TLV, but it does not span the
+            // whole slice, so it is ciphertext rather than a wrapper.
+            let ciphertext = [0x04, 0x02, 0x11, 0x22, 0x33, 0x44];
+            assert_eq!(unwrap_explicit_octet_string(&ciphertext), None);
+
+            // 0x04 followed by a long-form length with too few bytes: the old
+            // code propagated this as "CMS: truncated length bytes for inner
+            // encryptedContent" — the exact error seen in CI.
+            let ciphertext = [0x04, 0x84, 0xFF];
+            assert_eq!(unwrap_explicit_octet_string(&ciphertext), None);
+        }
+
+        /// Every 2-byte prefix must be handled without panicking or erroring —
+        /// covers the whole space the random-ciphertext misfire drew from.
+        #[test]
+        fn no_prefix_of_raw_ciphertext_is_mistaken_for_a_wrapper() {
+            for b0 in 0u8..=255 {
+                for b1 in 0u8..=255 {
+                    let mut ct = vec![b0, b1];
+                    ct.extend_from_slice(&[0x5A; 40]);
+                    // Length 42 can only be spanned by `04 28 <40 bytes>`.
+                    let expect_unwrap = b0 == 0x04 && b1 == 40;
+                    assert_eq!(
+                        unwrap_explicit_octet_string(&ct).is_some(),
+                        expect_unwrap,
+                        "prefix {b0:#04x} {b1:#04x}"
+                    );
+                }
+            }
+        }
+
+        /// Malformed EncryptedContentInfo must error, not panic.
+        #[test]
+        fn truncated_encrypted_content_errors_without_panicking() {
+            // contentType OID, algorithm SEQUENCE, then [0] claiming more
+            // bytes than remain.
+            let mut eci = vec![0x06, 0x01, 0x2A]; // minimal OID
+            eci.extend_from_slice(&[0x30, 0x00]); // empty algorithm SEQUENCE
+            eci.extend_from_slice(&[0x80, 0x40, 0x01, 0x02]); // claims 64, has 2
+            assert!(parse_encrypted_content_info(&eci).is_err());
+
+            // Long-form length wider than usize.
+            let mut eci = vec![0x06, 0x01, 0x2A, 0x30, 0x00];
+            eci.extend_from_slice(&[0x80, 0x9F]); // 31 length bytes
+            assert!(parse_encrypted_content_info(&eci).is_err());
         }
     }
 }
