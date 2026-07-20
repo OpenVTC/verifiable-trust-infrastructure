@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.14 — republish on didwebvh-rs 0.6
+
+* Dependency-only release, but a necessary one: the published `vta-sdk 0.19.13`
+  has `didwebvh-rs = "0.5.6"` baked into its manifest, because a crate freezes
+  its workspace-inherited dependency versions at publish time. #712 moved this
+  workspace to `didwebvh-rs 0.6`, and that only reaches consumers once vta-sdk
+  is republished.
+* Why it matters: `didwebvh-rs 0.6` requires `affinidi-did-common "0.4"` while
+  0.5.x required `"0.3"`. Any consumer resolving both the published vta-sdk and
+  a current Affinidi crate therefore pulls **two copies of
+  `affinidi-did-common`** — which compiles only while no `Document` crosses the
+  boundary, and becomes a hard `E0308` the moment one does. The Affinidi TDK
+  carries exactly this duplicate today, allowlisted in its
+  `scripts/workspace-duplicates-allow.txt` pending this release.
+* No source changes. Verified by packaging: the 0.19.14 manifest carries
+  `didwebvh-rs = "0.6"`.
+
 ### vta-sdk — REST discovery matches a set of service types
 
 * `ServiceCapabilities` matched REST on `"VTARest"` and nothing else. That
