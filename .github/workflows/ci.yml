@@ -168,11 +168,25 @@ jobs:
           fetch-depth: 0
       - name: Version-bump guard for changed publishable crates
         run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
-      # Sibling guard: the bump can be correct and the release still break if
-      # Cargo.lock pins a stale crates.io copy of one of our own crates (a
-      # transitive dev-dep pulls vta-sdk back in from the registry). `cargo
-      # publish --locked` verifies dependents against that pinned copy. See the
-      # script header. Not diff-based, so it needs no base ref.
+
+  lockfile-self-pins:
+    # Sibling guard to release-guards: the version bump can be correct and the
+    # release still break if Cargo.lock pins a stale crates.io copy of one of
+    # our own crates (a transitive dev-dep pulls vta-sdk back in from the
+    # registry). `cargo publish --locked` verifies dependents against that
+    # pinned copy. See the script header.
+    #
+    # Its own job, and deliberately NOT PR-only. This check compares workspace
+    # manifest versions against Cargo.lock — a whole-tree invariant, not a diff
+    # against a base ref — so it is meaningful on a push. While it lived as a
+    # step inside release-guards it inherited that job's `if: pull_request`,
+    # which meant a merge could leave the lockfile stale, main stayed green,
+    # and the failure surfaced on whichever unrelated PR opened next. That
+    # misattribution happened twice (#706, #711).
+    name: lockfile self-pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
       - name: Lockfile self-pin guard
         run: bash scripts/check-lockfile-self-pins.sh
 
