@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/join-requests/list/1.0
 title: VTC Join Requests — List
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

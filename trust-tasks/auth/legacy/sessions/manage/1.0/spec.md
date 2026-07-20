@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/manage/1.0
 title: VTC Legacy — Sessions Management
-status: Draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/sessions/list/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0
 title: VTC — Community Profile (Show + Update)
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

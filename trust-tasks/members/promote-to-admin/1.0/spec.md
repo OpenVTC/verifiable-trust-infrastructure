@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0
 title: VTC Members — Promote to Admin
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0
 title: VTC — Custom Endorsement Issue
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

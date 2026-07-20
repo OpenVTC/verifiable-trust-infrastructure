@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/recognise/1.0
 title: VTC — Cross-Community Session Mint
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

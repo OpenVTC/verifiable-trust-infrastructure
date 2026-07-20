@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0
 title: VTC Admin — Revoke Passkey
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

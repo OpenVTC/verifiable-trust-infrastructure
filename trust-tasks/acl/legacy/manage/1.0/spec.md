@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0
 title: VTC Legacy — ACL Collection
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

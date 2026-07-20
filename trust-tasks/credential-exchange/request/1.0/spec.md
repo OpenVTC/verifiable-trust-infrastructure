@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/spec/credential-exchange/request/1.0
 title: Credential Exchange — Request
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

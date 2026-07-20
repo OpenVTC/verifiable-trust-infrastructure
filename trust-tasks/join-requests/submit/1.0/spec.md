@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0
 title: VTC Join Requests — Submit (the ceremony `request` verb)
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

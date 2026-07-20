@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/show/1.0
 title: VTC Members — Show
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

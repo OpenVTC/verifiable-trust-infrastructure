@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/revoke/1.0
 title: VTC Legacy — Revoke Single Session
-status: Draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/revoke-session/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

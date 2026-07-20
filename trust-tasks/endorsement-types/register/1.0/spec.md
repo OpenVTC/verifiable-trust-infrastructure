@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0
 title: VTC — Endorsement Type Register
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

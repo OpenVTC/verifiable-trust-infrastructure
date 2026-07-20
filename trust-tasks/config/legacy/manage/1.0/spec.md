@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0
 title: VTC Legacy — Config Management
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

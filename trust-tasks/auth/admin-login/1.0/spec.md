@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0
 title: VTC — Admin SPA cookie session mint
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/personhood/assert/1.0
 title: VTC — Personhood Assert
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

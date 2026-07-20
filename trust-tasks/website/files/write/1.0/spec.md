@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/website/files/write/1.0
 title: VTC — Website file write
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/config/export/1.0
 title: VTC Admin — Export Config
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

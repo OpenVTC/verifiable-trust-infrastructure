@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/audit/list/1.0
 title: VTC — List audit log entries
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

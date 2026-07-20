@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0
 title: VTC Admin — Bootstrap
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

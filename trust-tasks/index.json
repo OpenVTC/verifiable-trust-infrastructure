@@ -7,435 +7,443 @@
   "tasks": [
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/challenge/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/legacy/challenge/1.0",
-      "rest": "POST /v1/auth/challenge"
+      "rest": "POST /v1/auth/challenge",
+      "supersededBy": "https://trusttasks.org/spec/auth/challenge/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/authenticate/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/legacy/authenticate/1.0",
-      "rest": "POST /v1/auth/"
+      "rest": "POST /v1/auth/",
+      "supersededBy": "https://trusttasks.org/spec/auth/authenticate/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/refresh/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/legacy/refresh/1.0",
-      "rest": "POST /v1/auth/refresh"
+      "rest": "POST /v1/auth/refresh",
+      "supersededBy": "https://trusttasks.org/spec/auth/refresh/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "auth/admin-login/1.0",
       "rest": "POST /v1/auth/admin-login"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/manage/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/legacy/sessions/manage/1.0",
-      "rest": "GET, DELETE /v1/auth/sessions"
+      "rest": "GET, DELETE /v1/auth/sessions",
+      "supersededBy": "https://trusttasks.org/spec/auth/sessions/list/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/revoke/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/legacy/sessions/revoke/1.0",
-      "rest": "DELETE /v1/auth/sessions/{session_id}"
+      "rest": "DELETE /v1/auth/sessions/{session_id}",
+      "supersededBy": "https://trusttasks.org/spec/auth/revoke-session/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/whoami/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/whoami/1.0",
-      "rest": "GET /v1/auth/whoami"
+      "rest": "GET /v1/auth/whoami",
+      "supersededBy": "https://trusttasks.org/spec/auth/whoami/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0",
-      "status": "Draft",
+      "status": "retired",
       "path": "auth/sign-out/1.0",
-      "rest": "POST /v1/auth/sign-out"
+      "rest": "POST /v1/auth/sign-out",
+      "supersededBy": "https://trusttasks.org/spec/auth/revoke-session/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/audit/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "audit/list/1.0",
       "rest": "GET /v1/audit"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/audit/verify/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "audit/verify/1.0",
       "rest": "GET /v1/audit/verify"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "config/legacy/manage/1.0",
       "rest": "GET, PATCH /v1/config"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "acl/legacy/manage/1.0",
       "rest": "GET, POST /v1/acl"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "acl/legacy/entry/1.0",
       "rest": "GET, PATCH, DELETE /v1/acl/{did}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "community/profile/manage/1.0",
       "rest": "GET, PUT /v1/community/profile"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/config/manage/1.0",
       "rest": "GET, PATCH /v1/admin/config"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "install/claim/start/1.0",
       "rest": "POST /v1/install/claim/start"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "install/claim/finish/1.0",
       "rest": "POST /v1/install/claim/finish"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/bootstrap/1.0",
       "rest": "POST /v1/admin/bootstrap"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/passkeys/list/1.0",
       "rest": "GET /v1/admin/passkeys"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/passkeys/register/1.0",
       "rest": "POST /v1/admin/passkeys/register/{start,finish}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/passkeys/revoke/1.0",
       "rest": "POST /v1/admin/passkeys/revoke/{start,finish}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/config/reload/1.0",
       "rest": "POST /v1/admin/config/reload"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/config/restart/1.0",
       "rest": "POST /v1/admin/config/restart"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/config/export/1.0",
       "rest": "POST /v1/admin/config/export"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin/config/import/1.0",
       "rest": "POST /v1/admin/config/import"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/list/1.0",
       "rest": "GET /v1/members"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/show/1.0",
       "rest": "GET /v1/members/{did}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/update/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/update/1.0",
       "rest": "PATCH /v1/members/{did}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/promote-to-admin/1.0",
       "rest": "POST /v1/members/{did}/promote-to-admin/{start,finish}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/submit/1.0",
       "rest": "POST /v1/trust-tasks",
       "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/list/1.0",
       "rest": "GET /v1/join-requests"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/show/1.0",
       "rest": "GET /v1/join-requests/{id}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/approve/1.0",
       "rest": "POST /v1/join-requests/{id}/approve"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/reject/1.0",
       "rest": "POST /v1/join-requests/{id}/reject"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/accept/1.0",
       "rest": "POST /v1/trust-tasks",
       "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/manifest/1.0",
       "rest": "POST /v1/trust-tasks",
       "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "join-requests/status/1.0",
       "rest": "POST /v1/trust-tasks",
       "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/self-remove/1.0",
       "rest": "DELETE /v1/members/me",
       "didcomm": "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/admin-remove/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/admin-remove/1.0",
       "rest": "DELETE /v1/members/{did}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "policies/upload/1.0",
       "rest": "POST /v1/policies"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/activate/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "policies/activate/1.0",
       "rest": "POST /v1/policies/{id}/activate"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/test/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "policies/test/1.0",
       "rest": "POST /v1/policies/{id}/test"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "policies/list/1.0",
       "rest": "GET /v1/policies"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "policies/show/1.0",
       "rest": "GET /v1/policies/{id}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/renew/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/renew/1.0",
       "rest": "POST /v1/members/me/renew"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/rotate-challenge/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/rotate-challenge/1.0",
       "rest": "POST /v1/members/me/rotate/challenge"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/rotate/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/rotate/1.0",
       "rest": "POST /v1/members/me/rotate"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/status-lists/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "status-lists/show/1.0",
       "rest": "GET /v1/status-lists/{purpose}",
       "trust_task_header_exempt": true
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "health/diagnostics/1.0",
       "rest": "GET /v1/health/diagnostics"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/recognise/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "auth/recognise/1.0",
       "rest": "POST /v1/auth/recognise"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/personhood/challenge/1.0",
       "rest": "POST /v1/members/{did}/personhood/challenge"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/assert/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/personhood/assert/1.0",
       "rest": "POST /v1/members/{did}/personhood"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/revoke/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "members/personhood/revoke/1.0",
       "rest": "DELETE /v1/members/{did}/personhood"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/publish/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "relationships/publish/1.0",
       "rest": "POST /v1/relationships"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "relationships/list/1.0",
       "rest": "GET /v1/members/{did}/relationships"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "relationships/revoke/1.0",
       "rest": "DELETE /v1/relationships/{id}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "endorsement-types/register/1.0",
       "rest": "POST /v1/endorsement-types"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "endorsement-types/list/1.0",
       "rest": "GET /v1/endorsement-types"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "endorsement-types/delete/1.0",
       "rest": "DELETE /v1/endorsement-types/{type_uri}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "credentials/endorsements/issue/1.0",
       "rest": "POST /v1/credentials/endorsements"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/credentials/endorsements/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "credentials/endorsements/list/1.0",
       "rest": "GET /v1/credentials/endorsements"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "credentials/endorsements/show/1.0",
       "rest": "GET /v1/credentials/endorsements/{id}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/credentials/endorsements/revoke/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "credentials/endorsements/revoke/1.0",
       "rest": "DELETE /v1/credentials/endorsements/{id}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/files/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/files/list/1.0",
       "rest": "GET /v1/website/files"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/files/show/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/files/show/1.0",
       "rest": "GET /v1/website/files/{*path}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/files/write/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/files/write/1.0",
       "rest": "PUT /v1/website/files/{*path}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/files/delete/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/files/delete/1.0",
       "rest": "DELETE /v1/website/files/{*path}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/deploy/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/deploy/1.0",
       "rest": "POST /v1/website/deploy"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/generations/list/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/generations/list/1.0",
       "rest": "GET /v1/website/generations"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/rollback/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "website/rollback/1.0",
       "rest": "POST /v1/website/rollback/{gen}"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin-ui/build-info/1.0",
-      "status": "Draft",
+      "status": "draft",
       "path": "admin-ui/build-info/1.0",
-      "rest": "GET /admin/build-info.json"
+      "rest": "GET /admin/build-info.json",
+      "trust_task_header_exempt": true
     }
   ]
 }

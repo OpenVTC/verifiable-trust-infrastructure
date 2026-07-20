@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/website/rollback/1.0
 title: VTC — Website generation rollback
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

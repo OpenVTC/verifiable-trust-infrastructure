@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/website/generations/list/1.0
 title: VTC — Website generations list
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

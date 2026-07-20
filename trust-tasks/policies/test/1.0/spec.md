@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/policies/test/1.0
 title: VTC Policies — Test
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

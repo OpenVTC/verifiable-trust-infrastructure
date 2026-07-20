@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/status-lists/show/1.0
 title: VTC Status Lists — Show
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

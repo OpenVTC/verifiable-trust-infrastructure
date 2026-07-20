@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0
 title: VTC Join Requests — Status (applicant poll)
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

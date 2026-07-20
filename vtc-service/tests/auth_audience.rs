@@ -147,7 +147,10 @@ async fn mismatched_trust_task_header_returns_415() {
         .uri("/v1/acl")
         .header(
             "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/auth/legacy/challenge/1.0",
+            // Any well-formed URI the mount does not bind. Deliberately not a
+            // real task — this asserts the mismatch path, so it must not start
+            // passing if the task it names is ever wired here.
+            "https://trusttasks.org/openvtc/vtc/not-a-real-task/1.0",
         )
         .body(Body::empty())
         .unwrap();

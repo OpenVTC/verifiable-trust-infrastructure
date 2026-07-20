@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/credentials/endorsements/revoke/1.0
 title: VTC — Custom Endorsement Revoke
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0
 title: VTC — Admin Runtime Configuration (Show + Patch)
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

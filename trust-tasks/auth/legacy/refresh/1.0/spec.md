@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/legacy/refresh/1.0
 title: VTC Legacy — Refresh Token
-status: Draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/refresh/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

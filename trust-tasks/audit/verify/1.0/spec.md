@@ -1,7 +1,7 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/audit/verify/1.0
 title: VTC — Verify the audit hash chain
-status: Draft
+status: draft
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

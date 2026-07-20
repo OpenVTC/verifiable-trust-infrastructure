@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0
 title: VTC — Revoke session and clear browser cookies
-status: Draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/revoke-session/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
