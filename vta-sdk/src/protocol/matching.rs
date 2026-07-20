@@ -32,7 +32,29 @@ pub const DIDCOMM_SERVICE_TYPE: &str = "DIDCommMessaging";
 
 /// DID-document service `type` for the VTA REST endpoint. Kept in sync with
 /// `vta_service::operations::protocol::document::REST_SERVICE_TYPE`.
+///
+/// Correct for a VTA, and only for a VTA — it says "a VTA's REST API is behind
+/// this URL". Non-VTA services advertise their own REST type; see
+/// [`TRQP_REST_SERVICE_TYPE`].
 pub const REST_SERVICE_TYPE: &str = "VTARest";
+
+/// DID-document service `type` for a Trust Registry's REST/TRQP surface.
+///
+/// A Trust Registry is not a VTA, so it must not advertise [`REST_SERVICE_TYPE`]
+/// — that would promise a consumer a VTA's endpoints. `TRQPRest` names the
+/// interface actually served (TRQP over REST), matching how the sibling types
+/// name protocols rather than products. Kept in sync with
+/// `trust_registry::didcomm::did_document::REST_SERVICE_TYPE` in
+/// `affinidi-trust-registry-rs`.
+pub const TRQP_REST_SERVICE_TYPE: &str = "TRQPRest";
+
+/// Every service `type` that denotes a REST endpoint, in match order.
+///
+/// Matching a set rather than one string is what lets a consumer discover a
+/// VTA and a Trust Registry without either claiming the other's identity.
+/// Adding a REST-speaking service type here is the only change needed for it
+/// to become discoverable.
+pub const REST_SERVICE_TYPES: [&str; 2] = [REST_SERVICE_TYPE, TRQP_REST_SERVICE_TYPE];
 
 /// A transport protocol, in workspace preference order: TSP, then DIDComm,
 /// then REST. `Ord` follows that order — `Tsp` is the smallest (most
@@ -106,7 +128,7 @@ impl ServiceCapabilities {
                 caps.tsp.get_or_insert(uri);
             } else if service_has_type(svc, DIDCOMM_SERVICE_TYPE) {
                 caps.didcomm.get_or_insert(uri);
-            } else if service_has_type(svc, REST_SERVICE_TYPE) {
+            } else if REST_SERVICE_TYPES.iter().any(|t| service_has_type(svc, t)) {
                 caps.rest.get_or_insert(uri);
             }
         }
@@ -205,6 +227,42 @@ mod tests {
 
     fn doc(services: Value) -> Value {
         json!({ "id": "did:webvh:peer", "service": services })
+    }
+
+    /// A VTA advertises `VTARest`; a Trust Registry advertises `TRQPRest`.
+    /// Both are REST endpoints, and neither should have to claim the other's
+    /// service type to be discovered.
+    #[test]
+    fn both_rest_service_types_are_recognised() {
+        for ty in ["VTARest", "TRQPRest"] {
+            let caps = ServiceCapabilities::from_did_document(&doc(json!([
+                { "id": "did:webvh:peer#rest", "type": ty,
+                  "serviceEndpoint": "https://peer.example" }
+            ])));
+            assert_eq!(
+                caps.rest.as_deref(),
+                Some("https://peer.example"),
+                "{ty} must be recognised as a REST endpoint"
+            );
+            assert_eq!(caps.advertised(), vec![Protocol::Rest]);
+        }
+    }
+
+    /// A registry advertising only `TRQPRest` must be selectable over REST —
+    /// this is the case that previously yielded `NoMatchingProtocol`.
+    #[test]
+    fn trqp_rest_only_peer_is_selectable() {
+        let theirs = ServiceCapabilities::from_did_document(&doc(json!([
+            { "id": "did:webvh:registry#rest", "type": "TRQPRest",
+              "serviceEndpoint": "https://registry.example" }
+        ])));
+        let ours = ServiceCapabilities {
+            rest: Some("https://us.example".into()),
+            ..Default::default()
+        };
+        let chosen = select_protocol(&ours, &theirs, "did:webvh:registry").unwrap();
+        assert_eq!(chosen.protocol, Protocol::Rest);
+        assert_eq!(chosen.peer_endpoint, "https://registry.example");
     }
 
     #[test]

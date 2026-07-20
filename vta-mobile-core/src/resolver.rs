@@ -12,6 +12,7 @@ use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
 use tokio::sync::OnceCell;
 
 use crate::error::FfiError;
+use vta_sdk::protocol::matching::{DIDCOMM_SERVICE_TYPE, REST_SERVICE_TYPES};
 
 /// One process-wide caching resolver, lazily initialised on first use. The
 /// resolver caches immutable methods (key/peer) indefinitely, so repeated
@@ -55,7 +56,8 @@ pub async fn resolve_did(did: String) -> Result<String, FfiError> {
 /// mediator.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct VtaEndpoints {
-    /// REST base URL, from the `#vta-rest` (`VTARest`) service. `None` if the
+    /// REST base URL, from a REST service entry (`VTARest` for a VTA,
+    /// `TRQPRest` for a Trust Registry), matched by `type`. `None` if the
     /// VTA advertises no REST service.
     pub rest_base_url: Option<String>,
     /// Mediator DID, from the `#vta-didcomm` (`DIDCommMessaging`) service's
@@ -87,9 +89,16 @@ fn parse_vta_endpoints(doc: &serde_json::Value) -> VtaEndpoints {
             let id = svc.get("id").and_then(|v| v.as_str()).unwrap_or_default();
             let ty = svc.get("type").and_then(|v| v.as_str()).unwrap_or_default();
             let endpoint = svc.get("serviceEndpoint");
-            if id.ends_with("#vta-rest") || ty == "VTARest" {
+            // Match on `type` only. The `#id` fragment is an arbitrary label
+            // (R4.4): the OWF reference TSP implementation names its id
+            // `#tsp-transport` where Affinidi uses `#tsp`, for the same type,
+            // and a Trust Registry uses `#rest` for a `TRQPRest` service. A
+            // fragment check both misses valid services and can match the
+            // wrong one — a `#vta-rest`-fragmented DIDComm entry would have
+            // been read as REST here.
+            if REST_SERVICE_TYPES.contains(&ty) {
                 rest_base_url = endpoint_uri(endpoint);
-            } else if id.ends_with("#vta-didcomm") || ty == "DIDCommMessaging" {
+            } else if ty == DIDCOMM_SERVICE_TYPE {
                 mediator_did = endpoint_uri(endpoint);
             }
         }
