@@ -256,26 +256,56 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
 
     // 6. The membership credential lands at the applicant over DIDComm — the
     //    full push the activation path (T6) needs.
-    let (typ, issue_body) = mock
-        .client
-        .next_pushed(Duration::from_secs(20))
-        .await
-        .expect("VMC delivered over DIDComm");
-    assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);
-    let issue: IssueBody = serde_json::from_value(issue_body).expect("issue body");
-    let credential = issue
-        .credential_response
-        .expect("credential_response present")
-        .credential
-        .expect("credential present");
-    let types = credential["type"].as_array().expect("VC type array");
-    assert!(
-        types.iter().any(|t| t == "MembershipCredential"),
-        "delivered credential is a MembershipCredential: {credential}"
-    );
+    //
+    //    Admission delivers *two* credentials (the VMC and the role VEC) as
+    //    independent one-way messages — `deliver_credentials` opens a fresh
+    //    thread per credential, and each is forwarded through the mediator
+    //    separately. Arrival order is therefore not guaranteed, so collect both
+    //    pushes and look for the VMC among them rather than asserting it is the
+    //    first to land (which flaked in CI when the VEC overtook it).
+    let mut delivered = Vec::new();
+    for _ in 0..2 {
+        let (typ, issue_body) = mock
+            .client
+            .next_pushed(Duration::from_secs(20))
+            .await
+            .expect("admission credential delivered over DIDComm");
+        assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);
+        let issue: IssueBody = serde_json::from_value(issue_body).expect("issue body");
+        delivered.push(
+            issue
+                .credential_response
+                .expect("credential_response present")
+                .credential
+                .expect("credential present"),
+        );
+    }
+
+    let has_type = |c: &serde_json::Value, want: &str| {
+        c["type"]
+            .as_array()
+            .expect("VC type array")
+            .iter()
+            .any(|t| t == want)
+    };
+
+    let vmc = delivered
+        .iter()
+        .find(|c| has_type(c, "MembershipCredential"))
+        .unwrap_or_else(|| panic!("a MembershipCredential was delivered: {delivered:#?}"));
     assert_eq!(
-        credential["credentialSubject"]["id"], applicant_did,
+        vmc["credentialSubject"]["id"], applicant_did,
         "VMC subject is the applicant"
+    );
+
+    // The role VEC is the other half of the admission push.
+    let vec_cred = delivered
+        .iter()
+        .find(|c| has_type(c, "EndorsementCredential"))
+        .unwrap_or_else(|| panic!("a role EndorsementCredential was delivered: {delivered:#?}"));
+    assert_eq!(
+        vec_cred["credentialSubject"]["id"], applicant_did,
+        "role VEC subject is the applicant"
     );
 
     mock.shutdown().await;
