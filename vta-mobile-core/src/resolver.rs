@@ -86,7 +86,6 @@ fn parse_vta_endpoints(doc: &serde_json::Value) -> VtaEndpoints {
     let mut mediator_did = None;
     if let Some(services) = doc.get("service").and_then(|s| s.as_array()) {
         for svc in services {
-            let id = svc.get("id").and_then(|v| v.as_str()).unwrap_or_default();
             let ty = svc.get("type").and_then(|v| v.as_str()).unwrap_or_default();
             let endpoint = svc.get("serviceEndpoint");
             // Match on `type` only. The `#id` fragment is an arbitrary label
