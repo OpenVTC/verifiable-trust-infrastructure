@@ -34,6 +34,15 @@
 # agree. Refreshing the pin is a one-line `cargo update` that the PR author runs
 # alongside the version bump.
 #
+# One case is NOT a failure: a PR that bumps a workspace crate sets the local
+# version to something not yet on crates.io, so the pin CANNOT be refreshed —
+# `cargo update --precise <new>` fails with "no matching package". Demanding
+# equality there makes this guard and check-version-bumps.sh mutually
+# unsatisfiable: one requires the bump, the other forbids its consequence. So
+# an unpublished local version is reported and allowed; the publish workflow
+# refreshes the pin immediately after publishing the crate, which is the only
+# moment the refresh is actually possible.
+#
 # Usage: scripts/check-lockfile-self-pins.sh
 # Portable to macOS bash 3.2 / BSD userland.
 set -euo pipefail
@@ -53,6 +62,21 @@ if [ ! -f Cargo.lock ]; then
 fi
 
 REGISTRY='https://github.com/rust-lang/crates.io-index'
+UA='vti-lockfile-guard (https://github.com/OpenVTC/verifiable-trust-infrastructure)'
+
+# Is $1@$2 already on crates.io?  0 = published, 1 = not, 2 = undeterminable.
+# Mirrors the check the publish workflow uses to skip already-published crates.
+crate_is_published() {
+  local name="$1" version="$2" status
+  status=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -H "User-Agent: $UA" \
+    "https://crates.io/api/v1/crates/${name}/${version}" 2>/dev/null) || return 2
+  case "$status" in
+    200) return 0 ;;
+    404) return 1 ;;
+    *) return 2 ;;
+  esac
+}
 
 # Publishable workspace members as  name<TAB>version.
 members=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
@@ -82,6 +106,7 @@ echo ""
 
 fail=0
 found=0
+bumping=0
 while IFS=$'\t' read -r name version; do
   [ -z "$name" ] && continue
   # Is this workspace crate also present as a registry package?
@@ -91,9 +116,32 @@ while IFS=$'\t' read -r name version; do
   if [ "$pinned" = "$version" ]; then
     echo "  ${GREEN}ok${NC}   $name: workspace $version == locked registry copy $pinned"
   else
-    echo "  ${RED}STALE${NC} $name: workspace $version but Cargo.lock pins registry copy at $pinned"
-    echo "         fix: cargo update -p '$REGISTRY#$name@$pinned' --precise $version"
-    fail=1
+    # `|| published=$?` is required: under `set -e` a bare call returning
+    # non-zero would abort the script before the case statement runs.
+    published=0
+    crate_is_published "$name" "$version" || published=$?
+    case "$published" in
+      1)
+        # Bump in flight: the local version does not exist on crates.io, so the
+        # pin cannot point at it yet. publish.yml refreshes it after publishing.
+        echo "  ${CYAN}bump${NC} $name: workspace $version not yet on crates.io (registry copy pinned at $pinned)"
+        echo "         no action — the publish workflow refreshes this pin once $version is published"
+        bumping=1
+        ;;
+      2)
+        # Could not reach crates.io. Fail closed: a guard that passes when it
+        # cannot verify is not a guard, and this ran green on every other job
+        # in the same workflow, so the network is normally fine.
+        echo "  ${RED}ERROR${NC} $name: could not reach crates.io to check whether $version is published"
+        echo "         re-run the job; if crates.io is down, merge on the other checks"
+        fail=1
+        ;;
+      *)
+        echo "  ${RED}STALE${NC} $name: workspace $version but Cargo.lock pins registry copy at $pinned"
+        echo "         fix: cargo update -p '$REGISTRY#$name@$pinned' --precise $version"
+        fail=1
+        ;;
+    esac
   fi
 done <<EOF
 $members
@@ -106,7 +154,11 @@ if [ "$found" -eq 0 ]; then
 fi
 
 if [ "$fail" -eq 0 ]; then
-  echo "${GREEN}All self-pins match the workspace versions.${NC}"
+  if [ "$bumping" -eq 1 ]; then
+    echo "${GREEN}No stale self-pins.${NC} A pending version bump is awaiting publish (see above)."
+  else
+    echo "${GREEN}All self-pins match the workspace versions.${NC}"
+  fi
 else
   echo "${RED}Cargo.lock pins a stale crates.io copy of a workspace crate.${NC}"
   echo "\`cargo publish --locked\` verifies dependent crates against that pinned copy,"

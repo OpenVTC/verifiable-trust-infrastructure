@@ -79,6 +79,7 @@ jobs:
 
           UA="verifiable-trust-infrastructure-release (https://github.com/${GITHUB_REPOSITORY})"
 
+          REGISTRY='https://github.com/rust-lang/crates.io-index'
           for crate in "${CRATES[@]}"; do
             version=$(cargo metadata --format-version 1 --no-deps \
               | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
@@ -113,4 +114,28 @@ jobs:
             # cargo publish blocks until the new version is queryable in the
             # index, so the next (dependent) crate sees it.
             cargo publish -p "$crate" --locked $extra
+
+            # Refresh this crate's registry self-pin, if Cargo.lock carries one.
+            #
+            # A transitive dev-dependency pulls some of our crates back in from
+            # crates.io, so the lock holds both a path copy and a registry copy.
+            # `cargo publish --locked` builds a DEPENDENT against that registry
+            # copy — which, until now, still pointed at the PREVIOUS release. A
+            # dependent published later in this same loop was therefore verified
+            # against stale source and failed to compile (the #706 regression:
+            # pnm-cli built against vta-sdk 0.19.11 minutes after 0.19.12 shipped).
+            #
+            # This is the only moment the refresh is possible: the version has
+            # just become resolvable in the index, and a PR cannot do it because
+            # the version does not exist yet (see scripts/check-lockfile-self-pins.sh).
+            pinned=$(awk -v n="$crate" '
+              /^\[\[package\]\]/ { name=""; version=""; next }
+              /^name = / { gsub(/^name = "|"$/, ""); name=$0; next }
+              /^version = / { gsub(/^version = "|"$/, ""); version=$0; next }
+              /^source = "registry\+/ { if (name == n) { print version; exit } }
+            ' Cargo.lock)
+            if [ -n "$pinned" ] && [ "$pinned" != "$version" ]; then
+              echo "  refreshing lockfile self-pin ${crate} ${pinned} -> ${version}"
+              cargo update -p "${REGISTRY}#${crate}@${pinned}" --precise "$version"
+            fi
           done
