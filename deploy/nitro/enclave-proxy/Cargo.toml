@@ -1,3 +1,9 @@
+# Standalone workspace root: this crate is excluded from the repo's root
+# workspace (Linux-only, see below), so it declares its own empty
+# `[workspace]` table. Without it, cargo run inside this directory walks up
+# to the root manifest and refuses to operate on a non-member package.
+[workspace]
+
 [package]
 name = "enclave-proxy"
 description = "VTA Nitro Enclave parent-instance proxy — bridges vsock, TCP, and TLS"
