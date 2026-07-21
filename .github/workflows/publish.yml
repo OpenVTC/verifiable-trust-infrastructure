@@ -24,10 +24,12 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  # `write` so the self-pin refresh can be committed back to main. Without
-  # that commit the refresh lives only in the runner's working copy and is
-  # discarded when the job ends — see the "Commit refreshed self-pins" step.
+  # `contents: write` to push the refresh branch; `pull-requests: write` to
+  # open + auto-merge the refresh PR. The refresh cannot push to main directly
+  # — the main ruleset (required status checks) rejects it — so it goes via a
+  # PR. See the "Open self-pin refresh PR" step.
   contents: write
+  pull-requests: write
   id-token: write # required for the OIDC token exchange with crates.io
 
 jobs:
@@ -143,62 +145,76 @@ jobs:
             fi
           done
 
-      # The refresh above happens in the runner's working copy. Until this
-      # step existed it was never committed, so main kept the stale pin and
-      # `scripts/check-lockfile-self-pins.sh` failed on the NEXT pull request
-      # — attributing a release-time problem to an unrelated author. It hit
-      # #706, #711 and #714 that way.
+      # The refresh above happens in the runner's working copy. It cannot be
+      # committed to main directly: the main branch is governed by an org
+      # ruleset (required status checks), which rejects any push the workflow
+      # makes — a `[skip ci]` commit runs no checks and so can never satisfy
+      # the rule. (An earlier version of this step pushed to main and was
+      # rejected every release; the stale pin then failed the NEXT unrelated
+      # PR's guard — #706/#711/#714/#720.)
       #
-      # CI on the release commit cannot prevent this: the guard deliberately
-      # allows a pin it cannot refresh, and the new version only becomes
-      # resolvable partway through this job, after that CI has finished. So
-      # the fix has to be here, not in a gate.
+      # CI on the release commit cannot prevent the staleness either: the guard
+      # deliberately allows a pin it cannot refresh, and the new version only
+      # becomes resolvable partway through this job, after that CI has finished.
+      # So the fix has to be here — but as a PR, not a direct push.
       #
-      # `[skip ci]` keeps the commit from re-triggering CI and this workflow.
-      # Re-running Publish would be harmless (every version is on crates.io
-      # by now, so the loop skips them all) but it is pure waste, and the
-      # commit's only content is a mechanical `cargo update --precise` to a
-      # version this job just published successfully against.
-      - name: Commit refreshed self-pins
+      # The refresh therefore opens a PR (a new branch is not ruleset-blocked)
+      # and enables auto-merge, so it lands once the required checks pass. One
+      # caveat: GitHub suppresses workflow runs for GITHUB_TOKEN-authored
+      # events, so with the default token the PR opens but CI does not run and
+      # it waits for a one-click human merge. Set a PAT / GitHub App token in
+      # the `SELF_PIN_REFRESH_TOKEN` secret to make the PR trigger CI and
+      # auto-merge unattended. Either way this is strictly better than the old
+      # rejected-push-then-buried-warning: the refresh is a visible PR, not a
+      # silently stale main.
+      - name: Open self-pin refresh PR
+        env:
+          GH_TOKEN: ${{ secrets.SELF_PIN_REFRESH_TOKEN || github.token }}
+          REFRESH_TOKEN: ${{ secrets.SELF_PIN_REFRESH_TOKEN || github.token }}
         run: |
           set -euo pipefail
 
           if git diff --quiet -- Cargo.lock; then
-            echo "no self-pin refresh to commit"
+            echo "no self-pin refresh needed"
             exit 0
           fi
 
-          echo "::notice::committing refreshed lockfile self-pins"
+          echo "::notice::opening a self-pin refresh PR"
           git diff --stat -- Cargo.lock
 
+          branch="chore/self-pin-refresh-${GITHUB_RUN_ID}"
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
+          git switch -c "$branch"
           git add Cargo.lock
-          git commit -s -m 'chore(release): refresh crates.io self-pins [skip ci]' \
-            -m 'Published versions have just become resolvable, so the registry self-pins in Cargo.lock can finally point at them. Committed by the publish workflow because no pull request can do it — the versions do not exist on crates.io until this job runs.'
+          git commit -s -m 'chore(release): refresh crates.io self-pins' \
+            -m 'Published versions have just become resolvable, so the registry
+          self-pins in Cargo.lock can finally point at them. Opened by the publish
+          workflow as a PR: the versions do not exist on crates.io until this job
+          runs (so no pre-release PR can refresh them), and the main ruleset
+          forbids the workflow pushing to main directly.'
 
-          # Another push may have landed while crates were uploading. Rebase
-          # onto it rather than clobbering; the only local change is Cargo.lock.
-          for attempt in 1 2 3; do
-            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
-              echo "self-pin refresh pushed"
-              exit 0
-            fi
-            echo "push rejected (attempt ${attempt}); rebasing onto ${GITHUB_REF_NAME}"
+          # Push the refresh branch with REFRESH_TOKEN (a new branch is not
+          # ruleset-blocked). With a PAT/App token this push triggers CI on the
+          # PR; with GITHUB_TOKEN it does not. Token is embedded in the remote
+          # URL rather than the persisted checkout credential so a PAT actually
+          # takes effect; GitHub masks it in the log.
+          if ! git push "https://x-access-token:${REFRESH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${branch}"; then
+            echo "::warning::could not push the refresh branch — main still holds a stale self-pin; run scripts/check-lockfile-self-pins.sh locally and commit the fix"
+            exit 0
+          fi
 
-            # A concurrent Cargo.lock edit conflicts here. Abort out of the
-            # rebase rather than leaving the repo mid-operation, and stop
-            # retrying — `set -e` would otherwise fail this step and make a
-            # successful release look like a failed one.
-            if ! git pull --rebase origin "${GITHUB_REF_NAME}"; then
-              git rebase --abort || true
-              echo "rebase conflicted — giving up on the automatic refresh"
-              break
-            fi
-          done
+          pr_url=$(gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title 'chore(release): refresh crates.io self-pins' \
+            --body 'Automated post-release refresh of the Cargo.lock registry self-pins (single-line lockfile change; see the commit body). Auto-merge is enabled — it lands once required checks pass. A PAT / GitHub App token in the SELF_PIN_REFRESH_TOKEN secret is what lets CI run on this bot PR; without it, merge manually.') || {
+            echo "::warning::pushed ${branch} but could not open the PR — open it manually"
+            exit 0
+          }
+          echo "opened ${pr_url}"
 
-          # Publishing already succeeded — failing the job here would imply the
-          # release did not ship. Warn loudly instead; the next PR's guard will
-          # catch the stale pin, which is the status quo this step improves on.
-          echo "::warning::could not push the refreshed Cargo.lock after 3 attempts — main still holds a stale self-pin; run scripts/check-lockfile-self-pins.sh locally and commit the fix"
+          # Enable auto-merge. Try squash then merge so it works whatever the
+          # repo's allowed methods are; a failure here is non-fatal (the PR is
+          # open and can be merged by hand).
+          gh pr merge "$pr_url" --auto --squash \
+            || gh pr merge "$pr_url" --auto --merge \
+            || echo "::warning::opened ${pr_url} but could not enable auto-merge — merge it manually once checks pass"
