@@ -597,6 +597,74 @@ impl WebvhClient {
         Ok(())
     }
 
+    /// POST /api/agent-names/{op} — park (`disable`) or resume (`enable`) an
+    /// agent name via a signed new DID version.
+    ///
+    /// `op` is `"disable"` or `"enable"`. `did_log` is the full new signed
+    /// `did.jsonl` whose `alsoKnownAs` no longer claims (disable) or claims
+    /// again (enable) the name; the host verifies that, republishes it as a new
+    /// version, and toggles the name registry in one commit.
+    async fn agent_name_op(
+        &self,
+        op: &str,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        let url = format!("{}/api/agent-names/{op}", self.server_url);
+        info!(method = "POST", %url, "webvh: sending via rest");
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "mnemonic".to_string(),
+            serde_json::Value::String(mnemonic.to_string()),
+        );
+        body.insert(
+            "name".to_string(),
+            serde_json::Value::String(name.to_string()),
+        );
+        body.insert(
+            "didLog".to_string(),
+            serde_json::Value::String(did_log.to_string()),
+        );
+        if let Some(d) = domain {
+            body.insert(
+                "domain".to_string(),
+                serde_json::Value::String(d.to_string()),
+            );
+        }
+        let req = self
+            .with_auth(self.http.post(&url))
+            .json(&serde_json::Value::Object(body));
+        self.send(req, &format!("POST /api/agent-names/{op}"))
+            .await?;
+        Ok(())
+    }
+
+    /// Park an agent name (kept reserved, stops resolving).
+    pub async fn disable_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_op("disable", mnemonic, name, did_log, domain)
+            .await
+    }
+
+    /// Resume serving a parked agent name.
+    pub async fn enable_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_op("enable", mnemonic, name, did_log, domain)
+            .await
+    }
+
     /// DELETE /api/dids/{mnemonic}.
     pub async fn delete_did(&self, mnemonic: &str, domain: Option<&str>) -> Result<(), AppError> {
         let url = if let Some(d) = domain {
@@ -1288,6 +1356,47 @@ mod tests {
         assert!(
             matches!(err, AppError::Internal(msg) if msg.contains("refreshToken")),
             "missing refreshToken must be a typed Internal error"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_name_disable_posts_bearer_authed_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent-names/disable"))
+            .and(header("Authorization", "Bearer tok-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "record": {} })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        client
+            .disable_agent_name("alice", "alice", "<jsonl>", Some("example.com"))
+            .await
+            .expect("disable should POST and succeed");
+    }
+
+    #[tokio::test]
+    async fn agent_name_enable_maps_403_to_forbidden() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent-names/enable"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("not the owner"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        let err = client
+            .enable_agent_name("alice", "alice", "<jsonl>", None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "a 403 from the host maps to Forbidden, got {err:?}"
         );
     }
 }

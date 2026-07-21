@@ -958,6 +958,24 @@ pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
 pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0";
 
+/// `spec/vta/webvh/agent-name/disable/1.0` — park an agent name
+/// (`/@alice`) on a hosted DID: publish a new signed version whose
+/// `alsoKnownAs` no longer claims it (so the host stops serving the
+/// redirect) while keeping it reserved to this DID. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameBody`].
+/// Destructive (drops a public binding + rotates the update key like
+/// any update). Auth: Admin role on the DID's context.
+pub const TASK_WEBVH_AGENT_NAME_DISABLE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/disable/1.0";
+
+/// `spec/vta/webvh/agent-name/enable/1.0` — resume serving a parked
+/// agent name: publish a new signed version whose `alsoKnownAs` claims
+/// it again. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_WEBVH_AGENT_NAME_ENABLE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/enable/1.0";
+
 // ─── DID-templates slice (spec/vta/did-templates/*) ──────────────────────
 //
 // Global-scope template CRUD + render. Mirrored under
@@ -1337,6 +1355,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
+    TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
     // DID-templates slice (global)
     TASK_DID_TEMPLATES_LIST_1_0,
     TASK_DID_TEMPLATES_CREATE_1_0,

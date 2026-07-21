@@ -48,7 +48,18 @@ pub async fn plan_did_webvh_update(
     scid: &str,
     opts: UpdateDidWebvhOptions,
 ) -> Result<UpdatePlan, UpdateDidWebvhError> {
-    match run_update(deps, auth, scid, opts, None, "plan", Mode::Plan).await? {
+    match run_update(
+        deps,
+        auth,
+        scid,
+        opts,
+        None,
+        "plan",
+        Mode::Plan,
+        PublishTarget::DidLog,
+    )
+    .await?
+    {
         Outcome::Planned(plan) => Ok(plan),
         Outcome::Executed(_) => Err(UpdateDidWebvhError::Library(
             "plan mode committed an update".into(),
@@ -69,12 +80,153 @@ pub async fn update_did_webvh(
     vta_did: Option<&str>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
-    match run_update(deps, auth, scid, opts, vta_did, channel, Mode::Execute).await? {
+    match run_update(
+        deps,
+        auth,
+        scid,
+        opts,
+        vta_did,
+        channel,
+        Mode::Execute,
+        PublishTarget::DidLog,
+    )
+    .await?
+    {
         Outcome::Executed(result) => Ok(result),
         Outcome::Planned(_) => Err(UpdateDidWebvhError::Library(
             "execute mode returned a plan".into(),
         )),
     }
+}
+
+/// Park or resume an agent name (`/@alice`) on a hosted webvh DID.
+///
+/// Reads the DID's current document, edits its `alsoKnownAs` to no-longer-claim
+/// (`enable == false`) or claim again (`enable == true`)
+/// `https://<domain>/@<name>`, then runs the *same* signing path as an update
+/// and submits the new version to the host's `agent-name/{disable,enable}`
+/// endpoint — which republishes it AND toggles the name registry atomically.
+///
+/// `did` may be a full `did:webvh:…` or a bare SCID. Refused for serverless
+/// DIDs (no host serves their names).
+pub async fn agent_name_op(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    name: &str,
+    enable: bool,
+    vta_did: Option<&str>,
+    channel: &str,
+) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
+    let record = find_record_by_scid(deps.webvh_ks, did)
+        .await?
+        .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("DID {did} not found")))?;
+
+    if record.server_id == "serverless" {
+        return Err(UpdateDidWebvhError::Publish(
+            "agent names require a hosted DID; this DID is serverless \
+             (register it with a server first)"
+                .to_string(),
+        ));
+    }
+
+    let did_log = webvh_store::get_did_log(deps.webvh_ks, &record.did)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_did_log: {e}")))?
+        .ok_or_else(|| {
+            UpdateDidWebvhError::NotFound(format!("no did.jsonl stored for {}", record.did))
+        })?;
+    let mut document =
+        crate::operations::protocol::document::current_document_from_log(&did_log)
+            .map_err(|e| UpdateDidWebvhError::Library(format!("read current document: {e}")))?;
+
+    let domain = domain_from_webvh_did(&record.did).ok_or_else(|| {
+        UpdateDidWebvhError::Library(format!("cannot derive domain from DID {}", record.did))
+    })?;
+    edit_agent_name(&mut document, &domain, name, enable);
+
+    let opts = UpdateDidWebvhOptions {
+        document: Some(document),
+        label: Some(format!(
+            "agent-name/{}",
+            if enable { "enable" } else { "disable" }
+        )),
+        ..Default::default()
+    };
+
+    match run_update(
+        deps,
+        auth,
+        &record.scid,
+        opts,
+        vta_did,
+        channel,
+        Mode::Execute,
+        PublishTarget::AgentName {
+            name: name.to_string(),
+            enable,
+        },
+    )
+    .await?
+    {
+        Outcome::Executed(result) => Ok(result),
+        Outcome::Planned(_) => Err(UpdateDidWebvhError::Library(
+            "execute mode returned a plan".into(),
+        )),
+    }
+}
+
+/// Extract the hosting domain (host authority) from a
+/// `did:webvh:{scid}:{host}:…` identifier, percent-decoding an encoded port
+/// (`localhost%3A8534` → `localhost:8534`). `None` if the shape is unexpected.
+fn domain_from_webvh_did(did: &str) -> Option<String> {
+    let rest = did.strip_prefix("did:webvh:")?;
+    let host = rest.split(':').nth(1)?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(host.replace("%3A", ":").replace("%3a", ":"))
+}
+
+/// Edit a DID document's `alsoKnownAs` to claim (`enable`) or drop (`!enable`)
+/// the agent name `https://<domain>/@<name>`. Idempotent.
+fn edit_agent_name(document: &mut serde_json::Value, domain: &str, name: &str, enable: bool) {
+    let entry = format!("https://{domain}/@{name}");
+    let Some(obj) = document.as_object_mut() else {
+        return;
+    };
+    if enable {
+        let arr = obj
+            .entry("alsoKnownAs")
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if let Some(list) = arr.as_array_mut()
+            && !list.iter().any(|v| is_agent_name(v, domain, name))
+        {
+            list.push(serde_json::Value::String(entry));
+        }
+    } else if let Some(serde_json::Value::Array(list)) = obj.get_mut("alsoKnownAs") {
+        list.retain(|v| !is_agent_name(v, domain, name));
+        if list.is_empty() {
+            obj.remove("alsoKnownAs");
+        }
+    }
+}
+
+/// Whether a JSON value is the agent name `<name>` on `<domain>` (host match
+/// case-insensitive; local part exact, per the spec's case-sensitive rule).
+fn is_agent_name(v: &serde_json::Value, domain: &str, name: &str) -> bool {
+    let Some(s) = v.as_str() else {
+        return false;
+    };
+    let no_scheme = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let Some((host, rest)) = no_scheme.split_once("/@") else {
+        return false;
+    };
+    let local = rest.split('/').next().unwrap_or("");
+    host.eq_ignore_ascii_case(domain) && local == name
 }
 
 /// Whether [`run_update`] stops at the last read or goes on to commit.
@@ -89,6 +241,20 @@ enum Outcome {
     Executed(UpdateDidWebvhResult),
 }
 
+/// Where [`run_update`]'s freshly-signed log gets published (Execute mode).
+///
+/// Both variants publish the *same* signed `did.jsonl` a normal update
+/// produces; they differ only in which host endpoint receives it. Agent-name
+/// ops build the mutated document (`alsoKnownAs` edited) and pass it as
+/// `opts.document`, so the signing path is byte-for-byte the update path.
+enum PublishTarget {
+    /// `PUT /api/dids/{mnemonic}` — every plain document update.
+    DidLog,
+    /// `POST /api/agent-names/{disable,enable}` — the host republishes the log
+    /// AND toggles the name registry in one commit.
+    AgentName { name: String, enable: bool },
+}
+
 async fn run_update(
     deps: &super::super::WebvhDeps<'_>,
     auth: &AuthClaims,
@@ -97,6 +263,7 @@ async fn run_update(
     vta_did: Option<&str>,
     channel: &str,
     mode: Mode,
+    publish: PublishTarget,
 ) -> Result<Outcome, UpdateDidWebvhError> {
     // Re-bind the bundled deps to the historical local names so the (large) body
     // below is unchanged. All fields are `Copy` references — this copies the
@@ -601,21 +768,44 @@ async fn run_update(
                     .to_string(),
             )
         })?;
-        super::super::publish_log_to_server(
-            deps,
-            vta_did,
-            &server,
-            &record.mnemonic,
-            &new_log_jsonl,
-            // Update paths follow the slot's existing domain — the
-            // remote already records it on the slot. Passing None
-            // lets the remote use the recorded value; a host that
-            // does per-domain mnemonic namespacing would resolve via
-            // the slot lookup.
-            None,
-        )
-        .await
-        .map_err(|e| UpdateDidWebvhError::Publish(format!("publish_did: {e}")))?;
+        match &publish {
+            PublishTarget::DidLog => {
+                super::super::publish_log_to_server(
+                    deps,
+                    vta_did,
+                    &server,
+                    &record.mnemonic,
+                    &new_log_jsonl,
+                    // Update paths follow the slot's existing domain — the
+                    // remote already records it on the slot. Passing None
+                    // lets the remote use the recorded value; a host that
+                    // does per-domain mnemonic namespacing would resolve via
+                    // the slot lookup.
+                    None,
+                )
+                .await
+                .map_err(|e| UpdateDidWebvhError::Publish(format!("publish_did: {e}")))?;
+            }
+            PublishTarget::AgentName { name, enable } => {
+                // The host both republishes this signed log AND toggles the
+                // name registry, so we must name the domain explicitly (it is
+                // the DID's own host) — unlike a plain publish, which lets the
+                // slot lookup supply it.
+                let domain = domain_from_webvh_did(&record.did);
+                super::super::agent_name_op_on_server(
+                    deps,
+                    vta_did,
+                    &server,
+                    *enable,
+                    &record.mnemonic,
+                    name,
+                    &new_log_jsonl,
+                    domain.as_deref(),
+                )
+                .await
+                .map_err(|e| UpdateDidWebvhError::Publish(format!("agent_name: {e}")))?;
+            }
+        }
     }
 
     // 14. Audit emission. Best-effort — a missing audit row should
@@ -670,4 +860,107 @@ async fn run_update(
         // to call the host transport.
         serverless: record.server_id == "serverless",
     }))
+}
+
+#[cfg(test)]
+mod agent_name_tests {
+    use super::{domain_from_webvh_did, edit_agent_name, is_agent_name};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn domain_parses_host_and_decodes_port() {
+        assert_eq!(
+            domain_from_webvh_did("did:webvh:QmScid:example.com:alice").as_deref(),
+            Some("example.com")
+        );
+        // Percent-encoded port is decoded to match the form a name carries.
+        assert_eq!(
+            domain_from_webvh_did("did:webvh:QmScid:localhost%3A8534:staff:bob").as_deref(),
+            Some("localhost:8534")
+        );
+        assert_eq!(domain_from_webvh_did("did:key:z6Mk").as_deref(), None);
+        assert_eq!(domain_from_webvh_did("did:webvh:QmScid").as_deref(), None);
+    }
+
+    #[test]
+    fn is_agent_name_matches_host_ci_local_exact() {
+        let v = |s: &str| Value::String(s.to_string());
+        assert!(is_agent_name(
+            &v("https://example.com/@alice"),
+            "example.com",
+            "alice"
+        ));
+        // Scheme-less and host case-insensitive both match.
+        assert!(is_agent_name(
+            &v("example.com/@alice"),
+            "EXAMPLE.com",
+            "alice"
+        ));
+        // Local part is case-sensitive.
+        assert!(!is_agent_name(
+            &v("https://example.com/@Alice"),
+            "example.com",
+            "alice"
+        ));
+        // Wrong domain / not an agent name.
+        assert!(!is_agent_name(
+            &v("https://other.com/@alice"),
+            "example.com",
+            "alice"
+        ));
+        assert!(!is_agent_name(
+            &v("did:web:example.com"),
+            "example.com",
+            "alice"
+        ));
+    }
+
+    #[test]
+    fn enable_adds_canonical_entry_idempotently() {
+        let mut doc = json!({ "id": "did:webvh:x:example.com:me" });
+        edit_agent_name(&mut doc, "example.com", "alice", true);
+        assert_eq!(
+            doc["alsoKnownAs"],
+            json!(["https://example.com/@alice"]),
+            "enable creates the array with the canonical entry"
+        );
+        // Idempotent: a second enable does not duplicate.
+        edit_agent_name(&mut doc, "example.com", "alice", true);
+        assert_eq!(doc["alsoKnownAs"], json!(["https://example.com/@alice"]));
+    }
+
+    #[test]
+    fn enable_preserves_unrelated_also_known_as() {
+        let mut doc = json!({ "alsoKnownAs": ["did:web:example.com", "https://example.com/@bob"] });
+        edit_agent_name(&mut doc, "example.com", "alice", true);
+        assert_eq!(
+            doc["alsoKnownAs"],
+            json!([
+                "did:web:example.com",
+                "https://example.com/@bob",
+                "https://example.com/@alice"
+            ])
+        );
+    }
+
+    #[test]
+    fn disable_removes_the_name_in_any_form_and_prunes_empty() {
+        // A scheme-less stored form is still removed.
+        let mut doc = json!({ "alsoKnownAs": ["example.com/@alice"] });
+        edit_agent_name(&mut doc, "example.com", "alice", false);
+        assert!(
+            doc.get("alsoKnownAs").is_none(),
+            "an emptied alsoKnownAs is dropped, not left as []"
+        );
+
+        // Only the target name goes; other entries stay.
+        let mut doc = json!({
+            "alsoKnownAs": ["https://example.com/@alice", "https://example.com/@bob", "did:web:x"]
+        });
+        edit_agent_name(&mut doc, "example.com", "alice", false);
+        assert_eq!(
+            doc["alsoKnownAs"],
+            json!(["https://example.com/@bob", "did:web:x"])
+        );
+    }
 }

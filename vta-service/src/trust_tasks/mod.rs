@@ -153,6 +153,8 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
     // did-management Trust-Task spec URIs — declared in vta-sdk by
     // PR #139 ("PR 1 of N") as the shared vocabulary for the
     // cross-repo did-management migration (vta-sdk + vta-service +
@@ -928,6 +930,19 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0
         => webvh::handle_dids_register_with_server
         [ Mutating None false ],
+    // Agent-name park/resume. Both publish a new signed version (and so
+    // rotate the update key exactly like any update), and both change a
+    // public name binding — Destructive, like `dids/update`, per the
+    // rationale above. Classifying them Destructive is what makes the
+    // wallet force a cross-device type-to-confirm, which is the elevation
+    // for these ops (the hosting endpoint is deliberately not step-up-gated
+    // — the VTA can't hold an aal2 session).
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_DISABLE_1_0 => webvh::handle_agent_name_disable
+        [ Destructive None false ],
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_ENABLE_1_0 => webvh::handle_agent_name_enable
+        [ Destructive None false ],
 }
 
 #[cfg(test)]

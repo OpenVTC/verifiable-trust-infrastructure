@@ -315,6 +315,45 @@ pub async fn register_did_atomic_on_server(
         .await
 }
 
+/// Authenticate and park (`enable == false`) or resume (`enable == true`) an
+/// agent name on the hosting server, submitting the signed new `did.jsonl`.
+/// Same encapsulation as [`publish_log_to_server`].
+#[allow(clippy::too_many_arguments)]
+pub async fn agent_name_op_on_server(
+    deps: &super::WebvhDeps<'_>,
+    vta_did: &str,
+    server: &WebvhServerRecord,
+    enable: bool,
+    mnemonic: &str,
+    name: &str,
+    did_log: &str,
+    domain: Option<&str>,
+) -> Result<(), AppError> {
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
+    let auth_ctx = AuthContext {
+        webvh_ks: deps.webvh_ks,
+        identity: &identity,
+        locks: deps.auth_locks,
+    };
+    let mut transport = super::WebvhTransport::from_server_authenticated(
+        server,
+        deps.did_resolver,
+        deps.didcomm_bridge,
+        &auth_ctx,
+    )
+    .await?;
+    transport
+        .agent_name_authenticated(enable, mnemonic, name, did_log, domain, &auth_ctx, server)
+        .await
+}
+
 /// Load the VTA's signing identity for daemon REST authentication.
 ///
 /// Looks up `{vta_did}#key-0` via `get_key_secret_internal` under

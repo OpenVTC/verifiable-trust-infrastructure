@@ -37,6 +37,7 @@ use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::did_management::{
+    agent_name::{AgentNameBody, AgentNameResultBody},
     create::CreateDidWebvhBody,
     delete::DeleteDidWebvhBody,
     get::GetDidWebvhBody,
@@ -363,6 +364,71 @@ pub(super) async fn handle_dids_update(
     .await
     {
         Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, AppError::from(e)),
+    }
+}
+
+/// `spec/vta/webvh/agent-name/disable/1.0` — park an agent name: publish a new
+/// signed version dropping it from `alsoKnownAs` and tell the host to keep it
+/// reserved. Destructive.
+pub(super) async fn handle_agent_name_disable(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_agent_name(state, auth, doc, false).await
+}
+
+/// `spec/vta/webvh/agent-name/enable/1.0` — resume serving a parked name:
+/// publish a new signed version that claims it again.
+pub(super) async fn handle_agent_name_enable(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_agent_name(state, auth, doc, true).await
+}
+
+async fn handle_agent_name(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+    enable: bool,
+) -> TrustTaskOutcome {
+    let req: AgentNameBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+    match operations::did_webvh::agent_name_op(
+        &deps,
+        auth,
+        &req.did,
+        &req.name,
+        enable,
+        vta_did.as_deref(),
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(_) => success_response(
+            &doc,
+            AgentNameResultBody {
+                did: req.did,
+                name: req.name,
+                enabled: enable,
+            },
+        ),
         Err(e) => app_error_to_reject(&doc, AppError::from(e)),
     }
 }
