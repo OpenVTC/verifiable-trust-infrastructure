@@ -300,13 +300,6 @@
       "rest": "POST /v1/members/me/rotate"
     },
     {
-      "id": "https://trusttasks.org/openvtc/vtc/status-lists/show/1.0",
-      "status": "draft",
-      "path": "status-lists/show/1.0",
-      "rest": "GET /v1/status-lists/{purpose}",
-      "trust_task_header_exempt": true
-    },
-    {
       "id": "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0",
       "status": "draft",
       "path": "health/diagnostics/1.0",
@@ -437,13 +430,6 @@
       "status": "draft",
       "path": "website/rollback/1.0",
       "rest": "POST /v1/website/rollback/{gen}"
-    },
-    {
-      "id": "https://trusttasks.org/openvtc/vtc/admin-ui/build-info/1.0",
-      "status": "draft",
-      "path": "admin-ui/build-info/1.0",
-      "rest": "GET /admin/build-info.json",
-      "trust_task_header_exempt": true
     }
   ]
 }

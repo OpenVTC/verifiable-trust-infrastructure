@@ -62,12 +62,6 @@ const UNBOUND_OK: &[(&str, &str)] = &[
         "website/files/write/1.0",
         "shares the website files show mount",
     ),
-    // -- deliberately carry no Trust-Task descriptor --
-    ("status-lists/show/1.0", "header-exempt: external verifiers"),
-    (
-        "admin-ui/build-info/1.0",
-        "header-exempt: plain admin-UI route",
-    ),
 ];
 
 /// Task URIs the code binds that the manifest does not publish.
