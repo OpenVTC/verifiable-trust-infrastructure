@@ -597,14 +597,19 @@ impl WebvhClient {
         Ok(())
     }
 
-    /// POST /api/agent-names/{op} — park (`disable`) or resume (`enable`) an
-    /// agent name via a signed new DID version.
+    /// POST /api/agent-names/{op} — bind (`set`), release (`remove`), park
+    /// (`disable`) or resume (`enable`) an agent name via a signed new DID
+    /// version.
     ///
-    /// `op` is `"disable"` or `"enable"`. `did_log` is the full new signed
-    /// `did.jsonl` whose `alsoKnownAs` no longer claims (disable) or claims
-    /// again (enable) the name; the host verifies that, republishes it as a new
-    /// version, and toggles the name registry in one commit.
-    async fn agent_name_op(
+    /// `did_log` is the full new signed `did.jsonl` whose `alsoKnownAs` claims
+    /// (`set`/`enable`) or no longer claims (`remove`/`disable`) the name; the
+    /// host verifies that direction matches the verb, republishes the log as a
+    /// new version, and applies the registry change in one commit.
+    ///
+    /// One generic call rather than four wrappers: the request body is
+    /// identical for every verb, so the only thing a wrapper would add is a
+    /// place for the endpoint and the document direction to disagree.
+    pub async fn agent_name_op(
         &self,
         op: &str,
         mnemonic: &str,
@@ -639,30 +644,6 @@ impl WebvhClient {
         self.send(req, &format!("POST /api/agent-names/{op}"))
             .await?;
         Ok(())
-    }
-
-    /// Park an agent name (kept reserved, stops resolving).
-    pub async fn disable_agent_name(
-        &self,
-        mnemonic: &str,
-        name: &str,
-        did_log: &str,
-        domain: Option<&str>,
-    ) -> Result<(), AppError> {
-        self.agent_name_op("disable", mnemonic, name, did_log, domain)
-            .await
-    }
-
-    /// Resume serving a parked agent name.
-    pub async fn enable_agent_name(
-        &self,
-        mnemonic: &str,
-        name: &str,
-        did_log: &str,
-        domain: Option<&str>,
-    ) -> Result<(), AppError> {
-        self.agent_name_op("enable", mnemonic, name, did_log, domain)
-            .await
     }
 
     /// DELETE /api/dids/{mnemonic}.
@@ -894,7 +875,7 @@ mod tests {
     use crate::webvh_auth::VtaSigningIdentity;
     use ed25519_dalek::SigningKey;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn signing_identity() -> ([u8; 32], String, String) {
@@ -1373,7 +1354,7 @@ mod tests {
         let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
         client.set_access_token("tok-1".to_string());
         client
-            .disable_agent_name("alice", "alice", "<jsonl>", Some("example.com"))
+            .agent_name_op("disable", "alice", "alice", "<jsonl>", Some("example.com"))
             .await
             .expect("disable should POST and succeed");
     }
@@ -1391,12 +1372,72 @@ mod tests {
         let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
         client.set_access_token("tok-1".to_string());
         let err = client
-            .enable_agent_name("alice", "alice", "<jsonl>", None)
+            .agent_name_op("enable", "alice", "alice", "<jsonl>", None)
             .await
             .unwrap_err();
         assert!(
             matches!(err, AppError::Forbidden(_)),
             "a 403 from the host maps to Forbidden, got {err:?}"
+        );
+    }
+
+    /// Every verb hits its own endpoint and carries the same body. The name
+    /// is what the caller passes, not a fixed `alice` — a wrapper that
+    /// transposed arguments would still pass a same-value test.
+    #[tokio::test]
+    async fn agent_name_op_routes_each_verb_to_its_endpoint() {
+        for verb in ["set", "remove", "enable", "disable"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/api/agent-names/{verb}")))
+                .and(header("Authorization", "Bearer tok-1"))
+                .and(body_json(json!({
+                    "mnemonic": "slot-one",
+                    "name": "bob",
+                    "didLog": "<jsonl>",
+                    "domain": "example.com",
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "record": {} })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let mut client =
+                WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+            client.set_access_token("tok-1".to_string());
+            client
+                .agent_name_op(verb, "slot-one", "bob", "<jsonl>", Some("example.com"))
+                .await
+                .unwrap_or_else(|e| panic!("{verb} should POST and succeed: {e:?}"));
+        }
+    }
+
+    /// A name already held by another DID comes back as a distinguishable
+    /// error, not a generic failure — the client has to render "pick another
+    /// name" differently from "you don't control this DID".
+    #[tokio::test]
+    async fn agent_name_set_surfaces_a_taken_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent-names/set"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "code": "did-management:name_taken",
+                "message": "agent name is already taken",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        let err = client
+            .agent_name_op("set", "slot-one", "alice", "<jsonl>", None)
+            .await
+            .unwrap_err();
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("name_taken") || rendered.contains("already taken"),
+            "the host's reason must survive into the error, got {rendered}"
         );
     }
 }

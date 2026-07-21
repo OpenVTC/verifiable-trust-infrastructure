@@ -43,7 +43,7 @@ mod validate;
 
 pub use errors::UpdateDidWebvhError;
 pub use options::{RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, UpdateDidWebvhResult};
-pub use orchestrator::{agent_name_op, plan_did_webvh_update, update_did_webvh};
+pub use orchestrator::{AgentNameVerb, agent_name_op, plan_did_webvh_update, update_did_webvh};
 pub use plan::UpdatePlan;
 pub use rotate::rotate_did_webvh_keys;
 

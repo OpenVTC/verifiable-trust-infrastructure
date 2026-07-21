@@ -99,13 +99,56 @@ pub async fn update_did_webvh(
     }
 }
 
-/// Park or resume an agent name (`/@alice`) on a hosted webvh DID.
+/// Which agent-name operation [`agent_name_op`] performs.
 ///
-/// Reads the DID's current document, edits its `alsoKnownAs` to no-longer-claim
-/// (`enable == false`) or claim again (`enable == true`)
+/// The four verbs share one document-level behaviour — claim the name in
+/// `alsoKnownAs` or drop it — and differ in the registry effect the host
+/// applies. `claims_name` mirrors did-hosting's own
+/// `AgentNameOp::requires_claim` exactly; if the two ever disagree the host
+/// rejects the submitted document with `also_known_as_mismatch`, which is the
+/// invariant keeping the served state and the signed document from diverging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentNameVerb {
+    /// Bind the name to this DID.
+    Set,
+    /// Release the name for anyone to reclaim.
+    Remove,
+    /// Resume serving a parked name.
+    Enable,
+    /// Park the name: stops resolving, stays reserved to this DID.
+    Disable,
+}
+
+impl AgentNameVerb {
+    /// The host endpoint segment — `POST /api/agent-names/{op}`.
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            Self::Set => "set",
+            Self::Remove => "remove",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
+
+    /// Whether the published document must claim the name.
+    pub fn claims_name(self) -> bool {
+        matches!(self, Self::Set | Self::Enable)
+    }
+}
+
+/// Bind, release, park or resume an agent name (`/@alice`) on a hosted webvh
+/// DID.
+///
+/// Reads the DID's current document, edits its `alsoKnownAs` to claim
+/// (`set`/`enable`) or no-longer-claim (`remove`/`disable`)
 /// `https://<domain>/@<name>`, then runs the *same* signing path as an update
-/// and submits the new version to the host's `agent-name/{disable,enable}`
-/// endpoint — which republishes it AND toggles the name registry atomically.
+/// and submits the new version to the host's `agent-name/{op}` endpoint —
+/// which republishes it AND applies the registry change atomically.
+///
+/// Binding through `set` rather than a plain `dids/update` with an edited
+/// `alsoKnownAs` is deliberate: the host's `set` endpoint enforces the
+/// reserved-name and already-taken checks, so a collision comes back as
+/// `name_taken` / `name_reserved` instead of a bind that appears to succeed.
 ///
 /// `did` may be a full `did:webvh:…` or a bare SCID. Refused for serverless
 /// DIDs (no host serves their names).
@@ -114,7 +157,7 @@ pub async fn agent_name_op(
     auth: &AuthClaims,
     did: &str,
     name: &str,
-    enable: bool,
+    verb: AgentNameVerb,
     vta_did: Option<&str>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
@@ -143,14 +186,11 @@ pub async fn agent_name_op(
     let domain = domain_from_webvh_did(&record.did).ok_or_else(|| {
         UpdateDidWebvhError::Library(format!("cannot derive domain from DID {}", record.did))
     })?;
-    edit_agent_name(&mut document, &domain, name, enable);
+    edit_agent_name(&mut document, &domain, name, verb.claims_name());
 
     let opts = UpdateDidWebvhOptions {
         document: Some(document),
-        label: Some(format!(
-            "agent-name/{}",
-            if enable { "enable" } else { "disable" }
-        )),
+        label: Some(format!("agent-name/{}", verb.endpoint())),
         ..Default::default()
     };
 
@@ -164,7 +204,7 @@ pub async fn agent_name_op(
         Mode::Execute,
         PublishTarget::AgentName {
             name: name.to_string(),
-            enable,
+            verb,
         },
     )
     .await?
@@ -188,14 +228,14 @@ fn domain_from_webvh_did(did: &str) -> Option<String> {
     Some(host.replace("%3A", ":").replace("%3a", ":"))
 }
 
-/// Edit a DID document's `alsoKnownAs` to claim (`enable`) or drop (`!enable`)
+/// Edit a DID document's `alsoKnownAs` to claim (`claim`) or drop (`!claim`)
 /// the agent name `https://<domain>/@<name>`. Idempotent.
-fn edit_agent_name(document: &mut serde_json::Value, domain: &str, name: &str, enable: bool) {
+fn edit_agent_name(document: &mut serde_json::Value, domain: &str, name: &str, claim: bool) {
     let entry = format!("https://{domain}/@{name}");
     let Some(obj) = document.as_object_mut() else {
         return;
     };
-    if enable {
+    if claim {
         let arr = obj
             .entry("alsoKnownAs")
             .or_insert_with(|| serde_json::Value::Array(Vec::new()));
@@ -250,9 +290,9 @@ enum Outcome {
 enum PublishTarget {
     /// `PUT /api/dids/{mnemonic}` — every plain document update.
     DidLog,
-    /// `POST /api/agent-names/{disable,enable}` — the host republishes the log
-    /// AND toggles the name registry in one commit.
-    AgentName { name: String, enable: bool },
+    /// `POST /api/agent-names/{set,remove,enable,disable}` — the host
+    /// republishes the log AND applies the registry change in one commit.
+    AgentName { name: String, verb: AgentNameVerb },
 }
 
 async fn run_update(
@@ -786,17 +826,17 @@ async fn run_update(
                 .await
                 .map_err(|e| UpdateDidWebvhError::Publish(format!("publish_did: {e}")))?;
             }
-            PublishTarget::AgentName { name, enable } => {
-                // The host both republishes this signed log AND toggles the
-                // name registry, so we must name the domain explicitly (it is
-                // the DID's own host) — unlike a plain publish, which lets the
-                // slot lookup supply it.
+            PublishTarget::AgentName { name, verb } => {
+                // The host both republishes this signed log AND applies the
+                // name registry change, so we must name the domain explicitly
+                // (it is the DID's own host) — unlike a plain publish, which
+                // lets the slot lookup supply it.
                 let domain = domain_from_webvh_did(&record.did);
                 super::super::agent_name_op_on_server(
                     deps,
                     vta_did,
                     &server,
-                    *enable,
+                    *verb,
                     &record.mnemonic,
                     name,
                     &new_log_jsonl,
@@ -864,8 +904,73 @@ async fn run_update(
 
 #[cfg(test)]
 mod agent_name_tests {
-    use super::{domain_from_webvh_did, edit_agent_name, is_agent_name};
+    use super::{AgentNameVerb, domain_from_webvh_did, edit_agent_name, is_agent_name};
     use serde_json::{Value, json};
+
+    /// Each verb maps to its own host endpoint. A transposition here would
+    /// send `remove` to `disable` — releasing a name the caller meant to
+    /// park, or the reverse — and nothing downstream could detect it.
+    #[test]
+    fn verbs_map_to_distinct_endpoints() {
+        assert_eq!(AgentNameVerb::Set.endpoint(), "set");
+        assert_eq!(AgentNameVerb::Remove.endpoint(), "remove");
+        assert_eq!(AgentNameVerb::Enable.endpoint(), "enable");
+        assert_eq!(AgentNameVerb::Disable.endpoint(), "disable");
+    }
+
+    /// The document direction per verb, which must match did-hosting's
+    /// `AgentNameOp::requires_claim` exactly — the host rejects the submitted
+    /// document with `also_known_as_mismatch` if it doesn't, and that
+    /// agreement is what keeps a served name and the signed document that
+    /// claims it from ever diverging.
+    #[test]
+    fn claim_direction_matches_the_hosts_rule() {
+        assert!(AgentNameVerb::Set.claims_name());
+        assert!(AgentNameVerb::Enable.claims_name());
+        assert!(!AgentNameVerb::Remove.claims_name());
+        assert!(!AgentNameVerb::Disable.claims_name());
+    }
+
+    /// End-to-end on the document: for every verb, the `alsoKnownAs` the VTA
+    /// signs claims the name iff that verb claims it.
+    #[test]
+    fn edited_document_matches_the_verbs_claim_direction() {
+        for verb in [
+            AgentNameVerb::Set,
+            AgentNameVerb::Remove,
+            AgentNameVerb::Enable,
+            AgentNameVerb::Disable,
+        ] {
+            // Start from a document that already claims the name, so both
+            // directions are a real change for at least one verb.
+            let mut doc = json!({ "alsoKnownAs": ["https://example.com/@alice"] });
+            edit_agent_name(&mut doc, "example.com", "alice", verb.claims_name());
+            let claimed = doc
+                .get("alsoKnownAs")
+                .and_then(|v| v.as_array())
+                .is_some_and(|l| l.iter().any(|v| is_agent_name(v, "example.com", "alice")));
+            assert_eq!(
+                claimed,
+                verb.claims_name(),
+                "{} must leave the document {} the name",
+                verb.endpoint(),
+                if verb.claims_name() {
+                    "claiming"
+                } else {
+                    "not claiming"
+                }
+            );
+
+            // …and from a document that does not claim it.
+            let mut doc = json!({});
+            edit_agent_name(&mut doc, "example.com", "alice", verb.claims_name());
+            let claimed = doc
+                .get("alsoKnownAs")
+                .and_then(|v| v.as_array())
+                .is_some_and(|l| l.iter().any(|v| is_agent_name(v, "example.com", "alice")));
+            assert_eq!(claimed, verb.claims_name(), "{}", verb.endpoint());
+        }
+    }
 
     #[test]
     fn domain_parses_host_and_decodes_port() {

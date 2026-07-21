@@ -30,7 +30,7 @@ vsock-store = ["vta-service/vsock-store"]
 vsock-log = ["dep:tokio-vsock"]
 
 [dependencies]
-vta-service = { path = "../vta-service", version = "0.11", default-features = false, features = ["tee"] }
+vta-service = { path = "../vta-service", version = "0.12", default-features = false, features = ["tee"] }
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
 tokio = { workspace = true }
 tracing = { workspace = true }

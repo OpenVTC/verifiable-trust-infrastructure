@@ -54,8 +54,8 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations;
 use crate::operations::did_webvh::{
-    RegisterDidWithServerError, RegisterDidWithServerParams, RotateDidWebvhKeysOptions,
-    UpdateDidWebvhOptions, register_did_with_server,
+    AgentNameVerb, RegisterDidWithServerError, RegisterDidWithServerParams,
+    RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, register_did_with_server,
 };
 use crate::server::AppState;
 
@@ -368,6 +368,30 @@ pub(super) async fn handle_dids_update(
     }
 }
 
+/// `spec/vta/webvh/agent-name/set/1.0` — bind an agent name: publish a new
+/// signed version claiming it in `alsoKnownAs` and register the binding with
+/// the host, which refuses a reserved name or one another DID already holds.
+/// Destructive.
+pub(super) async fn handle_agent_name_set(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_agent_name(state, auth, doc, AgentNameVerb::Set).await
+}
+
+/// `spec/vta/webvh/agent-name/remove/1.0` — release an agent name: publish a
+/// new signed version dropping it from `alsoKnownAs` and tell the host to drop
+/// the reservation, so anyone may reclaim it. Destructive — and unlike
+/// `disable`, not recoverable by this DID alone.
+pub(super) async fn handle_agent_name_remove(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    handle_agent_name(state, auth, doc, AgentNameVerb::Remove).await
+}
+
 /// `spec/vta/webvh/agent-name/disable/1.0` — park an agent name: publish a new
 /// signed version dropping it from `alsoKnownAs` and tell the host to keep it
 /// reserved. Destructive.
@@ -376,7 +400,7 @@ pub(super) async fn handle_agent_name_disable(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    handle_agent_name(state, auth, doc, false).await
+    handle_agent_name(state, auth, doc, AgentNameVerb::Disable).await
 }
 
 /// `spec/vta/webvh/agent-name/enable/1.0` — resume serving a parked name:
@@ -386,14 +410,14 @@ pub(super) async fn handle_agent_name_enable(
     auth: &AuthClaims,
     doc: TrustTask<Value>,
 ) -> TrustTaskOutcome {
-    handle_agent_name(state, auth, doc, true).await
+    handle_agent_name(state, auth, doc, AgentNameVerb::Enable).await
 }
 
 async fn handle_agent_name(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
-    enable: bool,
+    verb: AgentNameVerb,
 ) -> TrustTaskOutcome {
     let req: AgentNameBody = match parse_payload(&doc) {
         Ok(r) => r,
@@ -415,7 +439,7 @@ async fn handle_agent_name(
         auth,
         &req.did,
         &req.name,
-        enable,
+        verb,
         vta_did.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
@@ -426,7 +450,9 @@ async fn handle_agent_name(
             AgentNameResultBody {
                 did: req.did,
                 name: req.name,
-                enabled: enable,
+                // Whether the name resolves now — `remove` reports `false`
+                // like `disable`; the caller knows which verb it sent.
+                enabled: verb.claims_name(),
             },
         ),
         Err(e) => app_error_to_reject(&doc, AppError::from(e)),

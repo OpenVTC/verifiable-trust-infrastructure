@@ -323,7 +323,7 @@ pub async fn agent_name_op_on_server(
     deps: &super::WebvhDeps<'_>,
     vta_did: &str,
     server: &WebvhServerRecord,
-    enable: bool,
+    verb: super::update::AgentNameVerb,
     mnemonic: &str,
     name: &str,
     did_log: &str,
@@ -350,7 +350,7 @@ pub async fn agent_name_op_on_server(
     )
     .await?;
     transport
-        .agent_name_authenticated(enable, mnemonic, name, did_log, domain, &auth_ctx, server)
+        .agent_name_authenticated(verb, mnemonic, name, did_log, domain, &auth_ctx, server)
         .await
 }
 

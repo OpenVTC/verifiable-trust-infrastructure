@@ -36,9 +36,9 @@ pub use servers::{
     update_webvh_server,
 };
 pub use update::{
-    RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions, UpdateDidWebvhResult,
-    UpdatePlan, agent_name_op, plan_did_webvh_update, rotate_did_webvh_keys, state_from_jsonl_pub,
-    update_did_webvh,
+    AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,
+    UpdateDidWebvhResult, UpdatePlan, agent_name_op, plan_did_webvh_update, rotate_did_webvh_keys,
+    state_from_jsonl_pub, update_did_webvh,
 };
 
 use std::sync::Arc;
@@ -1662,7 +1662,7 @@ impl<'a> WebvhTransport<'a> {
     /// refused rather than silently no-op'd.
     pub(super) async fn agent_name_authenticated(
         &mut self,
-        enable: bool,
+        verb: update::AgentNameVerb,
         mnemonic: &str,
         name: &str,
         did_log: &str,
@@ -1672,30 +1672,23 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<(), AppError> {
         let Self::Rest(c) = self else {
             return Err(AppError::Validation(
-                "agent-name enable/disable is not supported over the DIDComm transport; \
-                 the hosting server exposes it only via REST"
+                "agent-name operations are not supported over the DIDComm transport; \
+                 the hosting server exposes them only via REST"
                     .to_string(),
             ));
         };
-        let first = if enable {
-            c.enable_agent_name(mnemonic, name, did_log, domain).await
-        } else {
-            c.disable_agent_name(mnemonic, name, did_log, domain).await
-        };
-        match first {
+        let op = verb.endpoint();
+        match c.agent_name_op(op, mnemonic, name, did_log, domain).await {
             Ok(()) => Ok(()),
             Err(AppError::Unauthorized(_)) => {
                 info!(
                     server_id = %server.id,
+                    %op,
                     "webvh agent_name got 401; invalidating cache and retrying"
                 );
                 auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
                 auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                if enable {
-                    c.enable_agent_name(mnemonic, name, did_log, domain).await
-                } else {
-                    c.disable_agent_name(mnemonic, name, did_log, domain).await
-                }
+                c.agent_name_op(op, mnemonic, name, did_log, domain).await
             }
             Err(e) => Err(e),
         }

@@ -958,6 +958,39 @@ pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
 pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0";
 
+/// `spec/vta/webvh/agent-name/set/1.0` — bind an agent name
+/// (`/@alice`) to a hosted DID: publish a new signed version whose
+/// `alsoKnownAs` claims `https://<domain>/@<name>`, and register the
+/// binding with the host. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameBody`].
+///
+/// Deliberately a distinct verb rather than a plain `dids/update` with
+/// an edited `alsoKnownAs`. The host's `set` endpoint applies checks
+/// the publish path does not express — the name must not be reserved,
+/// and must not already belong to another DID — so binding this way is
+/// what makes `name_taken` / `name_reserved` reportable instead of the
+/// bind appearing to succeed and the name never resolving.
+///
+/// Destructive (publishes a new version, so it rotates the update key
+/// like any update, and it creates a public binding). Auth: Admin role
+/// on the DID's context.
+pub const TASK_WEBVH_AGENT_NAME_SET_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/set/1.0";
+
+/// `spec/vta/webvh/agent-name/remove/1.0` — release an agent name:
+/// publish a new signed version whose `alsoKnownAs` no longer claims
+/// it, and tell the host to drop the reservation so anyone may reclaim
+/// the name. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameBody`].
+///
+/// The irreversible counterpart to `disable`: parking keeps the name
+/// reserved to this DID, removing gives it up. Once released, the only
+/// way back is to re-`set` it — and someone else may have taken it
+/// first. Destructive; carries the same classification as `disable`,
+/// with more reason. Auth: Admin role on the DID's context.
+pub const TASK_WEBVH_AGENT_NAME_REMOVE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/remove/1.0";
+
 /// `spec/vta/webvh/agent-name/disable/1.0` — park an agent name
 /// (`/@alice`) on a hosted DID: publish a new signed version whose
 /// `alsoKnownAs` no longer claims it (so the host stops serving the
@@ -1355,6 +1388,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    TASK_WEBVH_AGENT_NAME_SET_1_0,
+    TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
     TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
     TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
     // DID-templates slice (global)
