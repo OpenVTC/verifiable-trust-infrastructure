@@ -37,3 +37,68 @@ pub struct AgentNameResultBody {
     /// the distinction is in the request rather than duplicated here.
     pub enabled: bool,
 }
+
+/// One name in a DID's agent-name registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AgentNameEntry {
+    /// The local part, without the `@`.
+    pub name: String,
+    /// Whether the name currently resolves.
+    ///
+    /// `false` means **parked, not gone**: the name is still reserved to this
+    /// DID and nobody else can claim it.
+    pub enabled: bool,
+    /// Unix seconds when the name was first bound to this DID.
+    pub created_at: u64,
+}
+
+/// Body for `spec/vta/webvh/agent-name/list/1.0`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AgentNameListBody {
+    /// The hosted DID — a full `did:webvh:…` or a bare SCID.
+    pub did: String,
+}
+
+/// Result of `spec/vta/webvh/agent-name/list/1.0` — the DID's registry as the
+/// hosting control plane holds it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AgentNameListResultBody {
+    pub did: String,
+    /// Every name bound to this DID, parked ones included.
+    pub names: Vec<AgentNameEntry>,
+}
+
+/// Body for `spec/vta/webvh/agent-name/check/1.0`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AgentNameCheckBody {
+    /// The DID whose host the name is checked against. Availability is
+    /// domain-scoped, and the domain is the DID's own host — the same rule
+    /// the mutating verbs use.
+    pub did: String,
+    /// The name's local part, without the `@`.
+    pub name: String,
+}
+
+/// Result of `spec/vta/webvh/agent-name/check/1.0`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct AgentNameCheckResultBody {
+    /// The canonicalised local part.
+    pub name: String,
+    /// The domain the answer applies to.
+    pub domain: String,
+    /// Free to claim: neither reserved nor already bound on this domain.
+    pub available: bool,
+    /// On the host's reserved list (`@admin`, `@support`, …) — unavailable
+    /// but well-formed, which is distinct from a malformed name (an error).
+    pub reserved: bool,
+}

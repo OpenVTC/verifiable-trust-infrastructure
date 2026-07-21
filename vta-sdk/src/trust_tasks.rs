@@ -958,6 +958,29 @@ pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
 pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0";
 
+/// `spec/vta/webvh/agent-name/list/1.0` — read a hosted DID's
+/// agent-name registry as the control plane holds it. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameListBody`].
+///
+/// Needed because a **parked** name is deliberately absent from the DID
+/// document — that absence is how parking stops it resolving — so a
+/// client that only resolves the document cannot see parked names and
+/// cannot offer "resume" without making the user retype the name from
+/// memory. Read-only. Auth: any authenticated caller on the DID's
+/// context.
+pub const TASK_WEBVH_AGENT_NAME_LIST_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/list/1.0";
+
+/// `spec/vta/webvh/agent-name/check/1.0` — ask whether a name is free
+/// on the DID's host before signing anything. Payload:
+/// [`crate::protocols::did_management::agent_name::AgentNameCheckBody`].
+///
+/// Without it the only way to discover a collision is to publish a new
+/// signed DID version and have the bind rejected. Reports `reserved`
+/// separately from `available` so a client can say *why*. Read-only.
+pub const TASK_WEBVH_AGENT_NAME_CHECK_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/agent-name/check/1.0";
+
 /// `spec/vta/webvh/agent-name/set/1.0` — bind an agent name
 /// (`/@alice`) to a hosted DID: publish a new signed version whose
 /// `alsoKnownAs` claims `https://<domain>/@<name>`, and register the
@@ -1388,6 +1411,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     TASK_WEBVH_AGENT_NAME_SET_1_0,
     TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
     TASK_WEBVH_AGENT_NAME_DISABLE_1_0,

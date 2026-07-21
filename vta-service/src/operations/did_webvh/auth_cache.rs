@@ -354,6 +354,73 @@ pub async fn agent_name_op_on_server(
         .await
 }
 
+/// Authenticate and read a DID's agent-name registry from the hosting server.
+/// Same encapsulation as [`agent_name_op_on_server`], read-only.
+pub async fn list_agent_names_on_server(
+    deps: &super::WebvhDeps<'_>,
+    vta_did: &str,
+    server: &WebvhServerRecord,
+    mnemonic: &str,
+    domain: Option<&str>,
+) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
+    let auth_ctx = AuthContext {
+        webvh_ks: deps.webvh_ks,
+        identity: &identity,
+        locks: deps.auth_locks,
+    };
+    let mut transport = super::WebvhTransport::from_server_authenticated(
+        server,
+        deps.did_resolver,
+        deps.didcomm_bridge,
+        &auth_ctx,
+    )
+    .await?;
+    transport
+        .list_agent_names_authenticated(mnemonic, domain, &auth_ctx, server)
+        .await
+}
+
+/// Authenticate and probe agent-name availability on the hosting server.
+pub async fn check_agent_name_on_server(
+    deps: &super::WebvhDeps<'_>,
+    vta_did: &str,
+    server: &WebvhServerRecord,
+    name: &str,
+    domain: Option<&str>,
+) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
+    let identity = load_vta_webvh_signing_identity(
+        deps.keys_ks,
+        deps.imported_ks,
+        deps.seed_store,
+        deps.audit_ks,
+        vta_did,
+    )
+    .await?;
+    let auth_ctx = AuthContext {
+        webvh_ks: deps.webvh_ks,
+        identity: &identity,
+        locks: deps.auth_locks,
+    };
+    let mut transport = super::WebvhTransport::from_server_authenticated(
+        server,
+        deps.did_resolver,
+        deps.didcomm_bridge,
+        &auth_ctx,
+    )
+    .await?;
+    transport
+        .check_agent_name_authenticated(name, domain, &auth_ctx, server)
+        .await
+}
+
 /// Load the VTA's signing identity for daemon REST authentication.
 ///
 /// Looks up `{vta_did}#key-0` via `get_key_secret_internal` under

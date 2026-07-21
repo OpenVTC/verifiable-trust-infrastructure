@@ -95,6 +95,27 @@ pub struct CheckPathResponse {
     pub available: bool,
 }
 
+/// One entry of the host's `agentNames` array on `GET /api/dids/{mnemonic}`.
+/// Deserialize-only: the VTA reads this registry, the host owns it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentNameEntryWire {
+    pub name: String,
+    /// `false` = parked: still reserved to this DID, just not resolving.
+    pub enabled: bool,
+    pub created_at: u64,
+}
+
+/// Wire shape of `POST /api/agent-names/check`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentNameAvailabilityWire {
+    pub name: String,
+    pub domain: String,
+    pub available: bool,
+    pub reserved: bool,
+}
+
 /// The VTA's **internal** token representation — the value
 /// `authenticate()` / `refresh()` return and `auth_cache::persist_tokens`
 /// writes to `WebvhServerAuthRecord`. Not a wire type: it is built from
@@ -644,6 +665,77 @@ impl WebvhClient {
         self.send(req, &format!("POST /api/agent-names/{op}"))
             .await?;
         Ok(())
+    }
+
+    /// GET /api/dids/{mnemonic} — the DID's agent-name registry.
+    ///
+    /// Returns the record's `agentNames`, **parked entries included**. That is
+    /// the whole point: parking works by dropping the name from `alsoKnownAs`,
+    /// so a caller that only resolves the DID document cannot see a parked
+    /// name at all and has nothing to offer "resume" on.
+    ///
+    /// A host that predates the registry omits the field; that is an empty
+    /// list, not an error.
+    pub async fn list_agent_names(
+        &self,
+        mnemonic: &str,
+        domain: Option<&str>,
+    ) -> Result<Vec<AgentNameEntryWire>, AppError> {
+        let url = if let Some(d) = domain {
+            format!(
+                "{}/api/dids/{mnemonic}?domain={}",
+                self.server_url,
+                url::form_urlencoded::byte_serialize(d.as_bytes()).collect::<String>()
+            )
+        } else {
+            format!("{}/api/dids/{mnemonic}", self.server_url)
+        };
+        info!(method = "GET", %url, "webvh: sending via rest");
+        let req = self.with_auth(self.http.get(&url));
+        let body = self
+            .send(req, &format!("GET /api/dids/{mnemonic}"))
+            .await?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|e| AppError::Internal(format!("webvh-server response parse error: {e}")))?;
+        let Some(names) = body.get("agentNames") else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_value(names.clone())
+            .map_err(|e| AppError::Internal(format!("webvh-server agentNames parse error: {e}")))
+    }
+
+    /// POST /api/agent-names/check — is this name free on `domain`?
+    ///
+    /// `reserved` is reported separately from `available` so a caller can say
+    /// *why* a name is unavailable. A malformed name is an error, not an
+    /// unavailable answer.
+    pub async fn check_agent_name(
+        &self,
+        name: &str,
+        domain: Option<&str>,
+    ) -> Result<AgentNameAvailabilityWire, AppError> {
+        let url = format!("{}/api/agent-names/check", self.server_url);
+        info!(method = "POST", %url, "webvh: sending via rest");
+        let mut body = serde_json::Map::new();
+        body.insert(
+            "name".to_string(),
+            serde_json::Value::String(name.to_string()),
+        );
+        if let Some(d) = domain {
+            body.insert(
+                "domain".to_string(),
+                serde_json::Value::String(d.to_string()),
+            );
+        }
+        let req = self
+            .with_auth(self.http.post(&url))
+            .json(&serde_json::Value::Object(body));
+        self.send(req, "POST /api/agent-names/check")
+            .await?
+            .json::<AgentNameAvailabilityWire>()
+            .await
+            .map_err(|e| AppError::Internal(format!("webvh-server response parse error: {e}")))
     }
 
     /// DELETE /api/dids/{mnemonic}.
@@ -1410,6 +1502,93 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("{verb} should POST and succeed: {e:?}"));
         }
+    }
+
+    /// The registry read must surface **parked** entries — they are the only
+    /// reason this call exists, since a parked name is absent from the DID
+    /// document by design and cannot be recovered from it.
+    #[tokio::test]
+    async fn list_agent_names_returns_parked_entries() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dids/slot-one"))
+            .and(header("Authorization", "Bearer tok-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "mnemonic": "slot-one",
+                "agentNames": [
+                    { "name": "alice", "enabled": true,  "createdAt": 1 },
+                    { "name": "bob",   "enabled": false, "createdAt": 2 },
+                ],
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        let names = client
+            .list_agent_names("slot-one", None)
+            .await
+            .expect("list should succeed");
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().any(|n| n.name == "bob" && !n.enabled));
+    }
+
+    /// A host predating the registry omits the field entirely. That is an
+    /// empty list, not a parse error — otherwise every read against an older
+    /// host fails.
+    #[tokio::test]
+    async fn list_agent_names_tolerates_a_host_without_the_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dids/slot-one"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "mnemonic": "slot-one"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        assert!(
+            client
+                .list_agent_names("slot-one", None)
+                .await
+                .expect("absent agentNames must not be an error")
+                .is_empty()
+        );
+    }
+
+    /// `reserved` has to survive as its own signal — "unavailable because it
+    /// is `@admin`" needs different UI from "unavailable because someone has
+    /// it".
+    #[tokio::test]
+    async fn check_agent_name_reports_reserved_separately() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent-names/check"))
+            .and(body_json(
+                json!({ "name": "admin", "domain": "example.com" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "name": "admin",
+                "domain": "example.com",
+                "available": false,
+                "reserved": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut client = WebvhClient::new(&server.uri(), "did:web:daemon-mock.example").unwrap();
+        client.set_access_token("tok-1".to_string());
+        let a = client
+            .check_agent_name("admin", Some("example.com"))
+            .await
+            .expect("check should succeed");
+        assert!(!a.available);
+        assert!(a.reserved);
     }
 
     /// A name already held by another DID comes back as a distinguishable

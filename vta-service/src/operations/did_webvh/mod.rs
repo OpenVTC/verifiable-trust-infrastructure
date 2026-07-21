@@ -18,8 +18,8 @@ mod webvh_keys;
 
 pub use auth_cache::WebvhAuthLocks;
 pub(crate) use auth_cache::{
-    agent_name_op_on_server, delete_log_on_server, publish_log_to_server,
-    register_did_atomic_on_server,
+    agent_name_op_on_server, check_agent_name_on_server, delete_log_on_server,
+    list_agent_names_on_server, publish_log_to_server, register_did_atomic_on_server,
 };
 
 pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
@@ -37,8 +37,8 @@ pub use servers::{
 };
 pub use update::{
     AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,
-    UpdateDidWebvhResult, UpdatePlan, agent_name_op, plan_did_webvh_update, rotate_did_webvh_keys,
-    state_from_jsonl_pub, update_did_webvh,
+    UpdateDidWebvhResult, UpdatePlan, agent_name_op, check_agent_name, list_agent_names,
+    plan_did_webvh_update, rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
 };
 
 use std::sync::Arc;
@@ -1660,6 +1660,67 @@ impl<'a> WebvhTransport<'a> {
     /// with one-shot 401 retry. REST-only: the hosting server exposes the
     /// agent-name endpoints over REST only, so a DIDComm-transport server is
     /// refused rather than silently no-op'd.
+    /// Read the DID's agent-name registry from the host, retrying once on a
+    /// stale token exactly as the mutating path does.
+    pub(super) async fn list_agent_names_authenticated(
+        &mut self,
+        mnemonic: &str,
+        domain: Option<&str>,
+        auth_ctx: &auth_cache::AuthContext<'_>,
+        server: &WebvhServerRecord,
+    ) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
+        let Self::Rest(c) = self else {
+            return Err(AppError::Validation(
+                "agent-name operations are not supported over the DIDComm transport; \
+                 the hosting server exposes them only via REST"
+                    .to_string(),
+            ));
+        };
+        match c.list_agent_names(mnemonic, domain).await {
+            Ok(v) => Ok(v),
+            Err(AppError::Unauthorized(_)) => {
+                info!(
+                    server_id = %server.id,
+                    "webvh list_agent_names got 401; invalidating cache and retrying"
+                );
+                auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
+                auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
+                c.list_agent_names(mnemonic, domain).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Probe name availability on the host, with the same 401 retry.
+    pub(super) async fn check_agent_name_authenticated(
+        &mut self,
+        name: &str,
+        domain: Option<&str>,
+        auth_ctx: &auth_cache::AuthContext<'_>,
+        server: &WebvhServerRecord,
+    ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
+        let Self::Rest(c) = self else {
+            return Err(AppError::Validation(
+                "agent-name operations are not supported over the DIDComm transport; \
+                 the hosting server exposes them only via REST"
+                    .to_string(),
+            ));
+        };
+        match c.check_agent_name(name, domain).await {
+            Ok(v) => Ok(v),
+            Err(AppError::Unauthorized(_)) => {
+                info!(
+                    server_id = %server.id,
+                    "webvh check_agent_name got 401; invalidating cache and retrying"
+                );
+                auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
+                auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
+                c.check_agent_name(name, domain).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub(super) async fn agent_name_authenticated(
         &mut self,
         verb: update::AgentNameVerb,

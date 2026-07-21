@@ -37,7 +37,10 @@ use serde_json::Value;
 use trust_tasks_rs::{RejectReason, TrustTask};
 
 use vta_sdk::protocols::did_management::{
-    agent_name::{AgentNameBody, AgentNameResultBody},
+    agent_name::{
+        AgentNameBody, AgentNameCheckBody, AgentNameCheckResultBody, AgentNameEntry,
+        AgentNameListBody, AgentNameListResultBody, AgentNameResultBody,
+    },
     create::CreateDidWebvhBody,
     delete::DeleteDidWebvhBody,
     get::GetDidWebvhBody,
@@ -364,6 +367,91 @@ pub(super) async fn handle_dids_update(
     .await
     {
         Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, AppError::from(e)),
+    }
+}
+
+/// `spec/vta/webvh/agent-name/list/1.0` — read the DID's agent-name registry
+/// from the hosting control plane, parked names included. Read-only.
+pub(super) async fn handle_agent_name_list(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: AgentNameListBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+    match operations::did_webvh::list_agent_names(&deps, auth, &req.did, vta_did.as_deref()).await {
+        Ok((did, names)) => success_response(
+            &doc,
+            AgentNameListResultBody {
+                did,
+                names: names
+                    .into_iter()
+                    .map(|e| AgentNameEntry {
+                        name: e.name,
+                        enabled: e.enabled,
+                        created_at: e.created_at,
+                    })
+                    .collect(),
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, AppError::from(e)),
+    }
+}
+
+/// `spec/vta/webvh/agent-name/check/1.0` — is this name free on the DID's
+/// host? Read-only; lets a client report a collision before signing anything.
+pub(super) async fn handle_agent_name_check(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let req: AgentNameCheckBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let did_resolver = match state.did_resolver.as_ref() {
+        Some(r) => r,
+        None => {
+            return app_error_to_reject(
+                &doc,
+                AppError::Internal("DID resolver not available".into()),
+            );
+        }
+    };
+    let vta_did = state.config.read().await.vta_did.clone();
+    let deps = operations::did_webvh::WebvhDeps::from_app_state(state, did_resolver);
+    match operations::did_webvh::check_agent_name(
+        &deps,
+        auth,
+        &req.did,
+        &req.name,
+        vta_did.as_deref(),
+    )
+    .await
+    {
+        Ok(a) => success_response(
+            &doc,
+            AgentNameCheckResultBody {
+                name: a.name,
+                domain: a.domain,
+                available: a.available,
+                reserved: a.reserved,
+            },
+        ),
         Err(e) => app_error_to_reject(&doc, AppError::from(e)),
     }
 }

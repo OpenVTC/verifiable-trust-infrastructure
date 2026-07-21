@@ -136,6 +136,118 @@ impl AgentNameVerb {
     }
 }
 
+/// Resolve a hosted DID to `(record, server, domain)` for the read-only
+/// agent-name operations. Shares `agent_name_op`'s preconditions — the DID
+/// must exist, must not be serverless, and must have a resolvable host — so
+/// the read and write paths agree about which DIDs have agent names at all.
+///
+/// Enforces `require_context` like every other per-DID read
+/// (`get_did_webvh`, `get_did_webvh_log`). These reads are not public: the
+/// registry exposes *parked* names, which are deliberately absent from the
+/// published document, and `check` is a probe against the host. Neither is
+/// inferable from the DID log, so neither may be readable across contexts.
+async fn hosted_agent_name_context(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+) -> Result<
+    (
+        vta_sdk::webvh::WebvhDidRecord,
+        vta_sdk::webvh::WebvhServerRecord,
+        String,
+    ),
+    UpdateDidWebvhError,
+> {
+    let record = find_record_by_scid(deps.webvh_ks, did)
+        .await?
+        .ok_or_else(|| UpdateDidWebvhError::NotFound(format!("DID {did} not found")))?;
+
+    // Forbidden and NotFound both surface as 404, so this does not tell an
+    // unauthorized caller that the DID exists.
+    auth.require_context(&record.context_id)
+        .map_err(|e| UpdateDidWebvhError::Forbidden(e.to_string()))?;
+
+    if record.server_id == "serverless" {
+        return Err(UpdateDidWebvhError::Publish(
+            "agent names require a hosted DID; this DID is serverless \
+             (register it with a server first)"
+                .to_string(),
+        ));
+    }
+
+    let server = webvh_store::get_server(deps.webvh_ks, &record.server_id)
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_server: {e}")))?
+        .ok_or_else(|| {
+            UpdateDidWebvhError::Publish(format!(
+                "webvh server `{}` referenced by DID is missing",
+                record.server_id
+            ))
+        })?;
+
+    let domain = domain_from_webvh_did(&record.did).ok_or_else(|| {
+        UpdateDidWebvhError::Library(format!("cannot derive domain from DID {}", record.did))
+    })?;
+
+    Ok((record, server, domain))
+}
+
+/// Read a hosted DID's agent-name registry from the control plane.
+///
+/// The control plane is the source of record for agent names, and this is a
+/// live read of it — not a projection of the local DID record. That matters
+/// for one case in particular: a **parked** name is deliberately absent from
+/// the DID document (dropping the `alsoKnownAs` claim is *how* parking stops
+/// it resolving), so nothing derived from the document can show one. Without
+/// this call a client cannot offer "resume" without making the user retype
+/// the name from memory.
+pub async fn list_agent_names(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    vta_did: Option<&str>,
+) -> Result<(String, Vec<crate::webvh_client::AgentNameEntryWire>), UpdateDidWebvhError> {
+    let (record, server, domain) = hosted_agent_name_context(deps, auth, did).await?;
+    let vta_did = vta_did.ok_or_else(|| {
+        UpdateDidWebvhError::Library("no VTA DID configured for hosting auth".to_string())
+    })?;
+
+    let names = super::super::list_agent_names_on_server(
+        deps,
+        vta_did,
+        &server,
+        &record.mnemonic,
+        Some(&domain),
+    )
+    .await
+    .map_err(|e| UpdateDidWebvhError::Publish(format!("list_agent_names: {e}")))?;
+
+    Ok((record.did, names))
+}
+
+/// Ask the host whether `name` is free on this DID's domain.
+///
+/// Availability is domain-scoped, and the domain is the DID's own host — the
+/// same rule the mutating verbs follow. Answering this *before* the caller
+/// signs a new DID version is the point: otherwise the only way to discover a
+/// collision is to publish and have the bind rejected.
+pub async fn check_agent_name(
+    deps: &super::super::WebvhDeps<'_>,
+    auth: &AuthClaims,
+    did: &str,
+    name: &str,
+    vta_did: Option<&str>,
+) -> Result<crate::webvh_client::AgentNameAvailabilityWire, UpdateDidWebvhError> {
+    let (_record, server, domain) = hosted_agent_name_context(deps, auth, did).await?;
+    let vta_did = vta_did.ok_or_else(|| {
+        UpdateDidWebvhError::Library("no VTA DID configured for hosting auth".to_string())
+    })?;
+
+    super::super::check_agent_name_on_server(deps, vta_did, &server, name, Some(&domain))
+        .await
+        .map_err(|e| UpdateDidWebvhError::Publish(format!("check_agent_name: {e}")))
+}
+
 /// Bind, release, park or resume an agent name (`/@alice`) on a hosted webvh
 /// DID.
 ///

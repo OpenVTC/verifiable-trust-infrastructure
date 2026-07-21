@@ -153,6 +153,8 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
@@ -943,6 +945,15 @@ dispatch_table! {
     // `remove` earns the classification most directly: it releases the name
     // for anyone to reclaim, so unlike `disable` it is not recoverable by
     // this DID alone.
+    // Read-only: no side effect, metadata-class. A parked name is invisible
+    // in the DID document, so `list` is the only way to see one — and `check`
+    // is what lets a client report a collision before it signs a new version.
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0 => webvh::handle_agent_name_list
+        [ None Metadata false ],
+    #[cfg(feature = "webvh")]
+    vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0 => webvh::handle_agent_name_check
+        [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0 => webvh::handle_agent_name_set
         [ Destructive None false ],
