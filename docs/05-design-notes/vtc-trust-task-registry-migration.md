@@ -30,6 +30,73 @@ dance, the DIDComm peer window, staged sequencing — was an artifact of
 assuming compatibility had to be preserved. With constraint 1 those
 sections are moot and have been dropped.
 
+## Two planes: management vs self-management
+
+The reduction below only makes sense against a distinction the earlier
+draft missed, which turns out to govern where step-up, policy, and human
+approval each belong. VTC operates on **two planes**, and a task lives on
+exactly one of them.
+
+**1. Management / administration — a human is in the loop.** Operations an
+operator performs *on* the community: promoting a member to admin,
+enrolling or revoking an admin passkey, editing the community profile.
+These require **human approval**, and that approval follows the
+**delegated ratify** pattern (DTTE — Delegated Trust-Task Execution): the
+agent proposes the action, a human admin ratifies it, and only then does
+it run. Four-eyes capable — the ratifying admin may differ from the
+initiator.
+
+**2. Self-management — no human, policy-gated.** The VTC acting *on
+itself* through its own VTA, autonomously, when a Rego policy authorises
+it. Issuing a `MembershipCredential` from the community's own keys on a
+join-policy verdict is the canonical case: the VTC evaluates its own
+`policy/*` rules, and if they permit, it acts with no operator present.
+The `policy/*` family's `purpose`/governance-stage enum *is* this plane's
+decision layer.
+
+### Consequence for step-up
+
+This is where an earlier assumption was wrong. VTC's current management
+tasks (`admin/passkeys/{register,revoke}`, `members/promote-to-admin`)
+carry an **inline self-UV** shape — `uvOptions`/`uv_response` embedded in
+the task's own start/finish. An earlier draft proposed extracting that
+into a shared `StepUpChallenge`/`StepUpAssertion` `$def` so the tasks
+could compose it inline.
+
+That is not the pattern the mesh actually uses. DID-hosting — the sibling
+that already implements this — gates a privileged operation as a
+**separate concern**, not inline: the op is guarded server-side, and the
+approval runs as its own exchange. Two mechanisms exist there:
+
+- `auth/step-up/approve-request` + `approve-response/0.2` — despite the
+  name, the code converged onto **self** step-up (`issuer == subject`,
+  "the VTA is no longer in the loop"): the acting principal re-signs to
+  elevate their *own* session `aal1 → aal2`.
+- `confirm/request` + `confirm/response/0.1` — the genuinely **delegated**
+  flow: park the REST op, send the approver a DIDComm confirm, resume on
+  their signed ratification. This is the literal DTTE pattern and the one
+  VTC management adopts.
+
+**Decision (confirmed): VTC management uses the delegated `confirm/1.0`
+gate.** Consequences:
+
+- The three management tasks **shed their inline UV fields entirely** and
+  collapse to plain canonical tasks — `promote-to-admin` → `acl/change-role`,
+  `passkey/register` → `auth/passkey/enroll/*`, `passkey/revoke` → a
+  canonical passkey-revoke.
+- Human approval becomes a **server-side `confirm/1.0` gate** reused from
+  DID-hosting, orthogonal to each task's schema. No step-up fields on the
+  privileged task at all.
+- **No new canonical spec is needed** for any of this. `confirm/request`,
+  `confirm/response`, `acl/change-role`, and `auth/passkey/enroll/*` all
+  already exist. The `_shared` step-up envelope the earlier draft called
+  the "highest-leverage finding" is **not built** — the delegated-gate
+  decision removes the need for it.
+
+Self-management operations touch none of this: no step-up, no confirm
+gate. They are authorised by `policy/*` evaluation and run under the VTC's
+own VTA identity.
+
 ## The precedent that settles the URI question
 
 VTA already publishes its service-specific tasks to the **public**
@@ -88,36 +155,45 @@ optimistic concurrency, `scopes` partial revocation). These are the same
 pattern as the seven `auth/legacy/*` tasks retired in PR #711 — nobody
 had checked whether it extended past `auth`. It does.
 
-### A2. Collapse once canonical gains a step-up envelope — 3 tasks
+### A2. Collapse to canonical + a delegated confirm gate — 3 tasks
 
-**This is the highest-leverage finding in the analysis.** Three VTC tasks
-differ from their canonical counterparts by *exactly one thing*: a
-mandatory step-up user-verification carried **inside** the privileged
+These three are the management-plane privileged operations (see "Two
+planes" above). Each differs from a plain canonical task by *exactly one
+thing*: a mandatory step-up user-verification carried **inside** the
 request (`uvOptions` / `uv_response`, or `options` / `uvResponse`).
 
-| VTC task | Canonical | Sole blocking delta |
+| VTC task | Canonical | Inline shape to shed |
 |---|---|---|
 | `admin/passkeys/register` | `auth/passkey/enroll/{start,finish}` | in-request UV |
-| `admin/passkeys/revoke` | `vta/passkey-vms/revoke` | in-request UV (+ the `409 LastPasskeyProtected` invariant, behavioural) |
+| `admin/passkeys/revoke` | canonical passkey-revoke (see A3) | in-request UV (+ the `409 LastPasskeyProtected` invariant, behavioural) |
 | `members/promote-to-admin` | `acl/change-role` | in-request UV |
 
-Canonical models step-up only as a *separate* ceremony
-(`auth/passkey/login/start` with `purpose: "stepUp"`), never as fields
-within the privileged operation. VTC needs it atomic — its rationale is
-that "a stolen session must not be able to bind a new authenticator", and
-a two-ceremony flow reopens exactly that window.
+An earlier draft proposed a shared `StepUpChallenge` / `StepUpAssertion`
+`$def` so the tasks could keep the UV *inline*. **That is abandoned.** The
+two-plane analysis showed the mesh does not gate privileged ops inline —
+DID-hosting gates them as a **separate, server-side concern** and runs the
+approval as its own exchange. So:
 
-**Proposal: add a shared step-up envelope to the canonical `_shared`
-namespace** — a `StepUpChallenge` / `StepUpAssertion` `$def` composable
-into any privileged task. That single addition collapses all three VTC
-tasks into canonical ones, and is reusable by every future privileged
-operation in the mesh rather than being a VTC concession. It is the
-clearest instance of the "fewest total tasks" goal paying off.
+- Each task **sheds its inline UV fields** and becomes the plain canonical
+  task in the middle column.
+- Human approval is enforced by a **delegated `confirm/1.0` gate**
+  (`confirm/request` + `confirm/response`, reused verbatim from
+  DID-hosting): the server parks the op, sends the approver a DIDComm
+  confirm, and resumes on their signed ratification. Four-eyes capable.
+- **Nothing new is authored in the canonical registry.** All four target
+  tasks plus the confirm pair already exist. This is a bigger reduction
+  than the envelope plan and needs zero canonical spec work.
 
-Note `members/promote-to-admin`'s other deltas are narrowings, not new
-capability: `toRole` hardcoded to `Admin`, `subject` carried in the URL
-path, and `fromRole`'s optimistic-concurrency intent expressed
-server-side via `PROMOTE_LOCK` instead of in the payload.
+`members/promote-to-admin`'s remaining deltas are narrowings, not new
+capability: `toRole` hardcoded to `Admin`, `subject` in the URL path, and
+`fromRole`'s optimistic-concurrency intent expressed server-side via
+`PROMOTE_LOCK` instead of in the payload — all fine to drop onto
+`acl/change-role`.
+
+The original "a stolen session must not bind a new authenticator"
+rationale still holds: a delegated confirm is *stronger* than inline
+self-UV, since it can require a second admin rather than just re-checking
+the possibly-stolen session's own credential.
 
 ### A3. Generalize into a new canonical task — 1 task
 
@@ -298,18 +374,21 @@ acceptance test for the whole migration.
    the registry, so this is a sequencing constraint we control, not an
    external dependency. In dependency order:
 
-   1. **The `_shared` step-up envelope** (`StepUpChallenge` /
-      `StepUpAssertion`). Highest leverage: it alone unblocks group A2's
-      three tasks, and it is reusable by every future privileged
-      operation rather than being a VTC-shaped concession.
-   2. **`auth/passkey/list`** (group A3) — reconcile `deviceLabel` vs
-      `label` while doing it.
-   3. **The group B generics** — `audit/{list,verify}`,
+   1. **`auth/passkey/list`** (group A3) — reconcile `deviceLabel` vs
+      `label` while doing it. Also the canonical passkey-revoke A2's
+      `admin/passkeys/revoke` targets, if `vta/passkey-vms/revoke`'s
+      fragment-based identifier is judged the wrong fit.
+   2. **The group B generics** — `audit/{list,verify}`,
       `config/{show,patch,reload,restart}`, then `config/{export,import}`
       once `communityProfile` moves to `ext`.
-   4. **The policy-family extensions** (`policy/get`, `policy/activate`,
-      and a home for `purpose`) — only if the decision is to move all
-      five; see group C.
+   3. **The policy-family extensions** (`policy/get`, `policy/activate`,
+      and a home for `purpose`) — the self-management plane's decision
+      layer; move all five (decision confirmed, see group C).
+
+   No step-up envelope appears here: the delegated `confirm/1.0` gate
+   (see "Two planes") reuses tasks that already exist, so A2 needs no
+   canonical addition at all — only the passkey-revoke target above,
+   shared with A3.
 3. **Author surviving `vtc/*` specs** into `specs/vtc/…`, in registry
    format. This is not a relocation — the on-disk shape differs:
 
@@ -322,7 +401,7 @@ acceptance test for the whole migration.
 
    `summary` (≤280 chars) and `category` (closed enum) do not exist in
    our front matter and must be written per task — the bulk of the manual
-   effort, though the reduction cuts it from 64 to ~36.
+   effort, though the reduction cuts it from 64 to ~47.
 4. **Repoint the code.** `routes/mod.rs` wiring, `trust_tasks/mod.rs`
    dispatch, `vta-sdk/src/protocols/{join_requests,members}.rs` (15
    `pub const`s — change values in place, no deprecation window needed),
@@ -340,15 +419,44 @@ acceptance test for the whole migration.
    holding the surface together. The natural successor asserts that every
    task the router binds resolves to a spec in the registry repo.
 
+## Settled decisions
+
+Recorded so they are not relitigated:
+
+- **Policy family → extend canonical, move all five.** `policy/get` +
+  `policy/activate` + a canonical home for `purpose` are added, and VTC
+  binds canonical for the whole family. It is the self-management plane's
+  decision layer (see "Two planes"); the `purpose` governance enum is
+  community-specific even though the CRUD verbs are generic.
+- **`auth/admin-login` → collapse into `auth/authenticate`.** The only
+  delta was a cookie side-effect for SIEM distinguishability, which the
+  audit event type already carries; the cookie behaviour moves to a
+  transport binding / `ext`.
+- **Management-plane approval → delegated `confirm/1.0`** (see "Two
+  planes"). Not inline step-up, not self step-up. No `_shared` envelope.
+- **`credential-exchange/*` → keep; not dead.** The five directories are
+  complete Phase-3 specs whose IDs are referenced by dispatched handler
+  code (`vtc-service` `messaging.rs:449-450`) via
+  `vta_sdk::protocols::credential_exchange` constants. Their absence from
+  `index.json` is tracked backlog (credential-architecture plan task 3.7,
+  the same "unpublished bound tasks" class as #709), not abandonment.
+  Publishing them is completing 3.7; deleting them would orphan live
+  handlers. They migrate to `spec/vtc/credential-exchange/*` (or a shared
+  `spec/credential-exchange/*` if the shape is service-agnostic — decide
+  when 3.7 is done).
+
 ## Open questions
 
-- **`credential-exchange/*`** — 5 task directories on disk in neither the
-  manifest nor any binding. Decide publish-or-delete before they get
-  migrated by accident.
 - **Version numbers.** Surviving tasks stay at `1.0`; content is
   unchanged and a lower number would imply a maturity regression that did
   not happen. Group B promotions start at `0.1`, matching how the
   canonical families they join are versioned.
+- **Where `confirm/1.0` gating is enforced.** DID-hosting applies its gate
+  to exactly one operation today (domain force-delete); the extractor +
+  `elevate_session` helpers live in `did-hosting-common`, with no shared
+  SDK. VTC either depends on that crate or reimplements the gate. Which,
+  and whether the gate helper should be promoted to a shared crate, is an
+  implementation decision for the management-plane work, not this note.
 
 ## Non-goals
 
