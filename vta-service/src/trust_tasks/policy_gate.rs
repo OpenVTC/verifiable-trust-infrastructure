@@ -274,6 +274,16 @@ async fn consent_gate(
             )
             .await
             {
+                tracing::info!(
+                    consent_diag = true,
+                    type_uri,
+                    digest = %digest.chars().take(12).collect::<String>(),
+                    grant_state_pin = ?grant.state_pin,
+                    grant_guards = ?grant.guards,
+                    %why,
+                    "consent-diag: grant CONSUMED but the re-planned world no longer matches it \
+                     — re-raising consent. If this line repeats, THIS is the loop."
+                );
                 return Some(reject_with(
                     doc,
                     RejectReason::TaskFailed {
@@ -288,7 +298,16 @@ async fn consent_gate(
             *delegated_out = grant.delegated_contexts;
             return None;
         }
-        Ok(None) => {}
+        Ok(None) => {
+            tracing::info!(
+                consent_diag = true,
+                type_uri,
+                requester = %auth.did,
+                digest = %digest.chars().take(12).collect::<String>(),
+                "consent-diag: no grant found for (requester, digest) — the approval has not landed \
+                 for this exact payload; will mint/reuse a pending below"
+            );
+        }
         Err(e) => return Some(app_error_to_reject(doc, e)),
     }
 
@@ -329,9 +348,30 @@ async fn consent_gate(
     let pending = match existing {
         Some(p) if p.state_pin == state_pin && p.guards == guards => {
             newly_raised = false;
+            tracing::info!(
+                consent_diag = true,
+                type_uri,
+                digest = %digest.chars().take(12).collect::<String>(),
+                "consent-diag: REUSING the outstanding pending (state_pin + guards unchanged) — \
+                 the code should stay the same; waiting on the approver's grant"
+            );
             p
         }
         Some(stale) => {
+            tracing::info!(
+                consent_diag = true,
+                type_uri,
+                digest = %digest.chars().take(12).collect::<String>(),
+                state_pin_changed = stale.state_pin != state_pin,
+                guards_changed = stale.guards != guards,
+                old_guards = ?stale.guards,
+                new_guards = ?guards,
+                old_state_pin = ?stale.state_pin,
+                new_state_pin = ?state_pin,
+                "consent-diag: RE-MINTING — the outstanding pending went stale, so a fresh code is \
+                 issued. `guards_changed`/`state_pin_changed` say which drifted. If this repeats, \
+                 THIS is why the code changes every time."
+            );
             if let Err(e) = consent::delete_pending(&state.task_consent_ks, &stale).await {
                 return Some(app_error_to_reject(doc, e));
             }
