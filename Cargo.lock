@@ -400,7 +400,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.19.18",
+ "vta-sdk 0.19.19 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -10141,39 +10141,6 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.19.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c189650af46f061f2436fc5378507ec3b1ceadb3f529ebf2c5cb9fd39d8783e8"
-dependencies = [
- "affinidi-crypto",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.4.3",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "vta-sdk"
 version = "0.19.19"
 dependencies = [
  "affinidi-bbs",
@@ -10230,6 +10197,39 @@ dependencies = [
  "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
+]
+
+[[package]]
+name = "vta-sdk"
+version = "0.19.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa4dadface2af16f9146338c6b3e6771381f43d29e2e7829d08ac4f66c4ab66f"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-core",
+ "affinidi-messaging-delivery",
+ "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
+ "affinidi-openid4vp",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "futures-util",
+ "getrandom 0.4.3",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
