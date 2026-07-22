@@ -47,7 +47,7 @@ fn response_payload(doc: serde_json::Value) -> serde_json::Value {
 use vta_sdk::vp::{HeldCredential, build_vp_token, select_credentials};
 
 const ADMIN_DID: &str = "did:key:z6MkJoinAdmin";
-const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
+const APPROVE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/approve/0.1";
 
 /// Seed the join ceremony the same way `server::run` does at boot: default
 /// policies (so `join.rego` evaluates instead of failing closed), both status

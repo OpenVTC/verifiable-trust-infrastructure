@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0
 title: VTC Join Requests — Manifest (discovery)
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/manifest/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

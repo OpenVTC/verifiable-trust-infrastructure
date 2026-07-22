@@ -53,7 +53,7 @@ import {
 
 const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
 const TRUST_TASK_JOIN_REQUESTS =
-  "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 
 // Queues a refer verdict can route to that map to an actionable admin
 // surface. The moderator queue is the join-requests inbox.

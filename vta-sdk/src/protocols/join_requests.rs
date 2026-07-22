@@ -7,17 +7,22 @@
 //! failures are framework `trust-task-error` documents, never DIDComm
 //! problem-reports.
 //!
-//! ## URI shape (framework-canonical, private-registry authority)
+//! ## URI shape (canonical registry)
 //!
 //! ```text
-//! https://trusttasks.org/openvtc/vtc/spec/join-requests/{verb}/{maj}.{min}
+//! https://trusttasks.org/spec/vtc/join-requests/{verb}/{maj}.{min}
 //! ```
 //!
-//! Authority `https://trusttasks.org/openvtc/vtc` (SPEC §6.5 private
-//! registry) + the mandatory `/spec/<slug>/<maj.min>` path shape, so the
-//! URIs parse as [`trust_tasks_rs::TypeUri`]. The earlier flat form (no
-//! `/spec/`) deserialised as a `&str` but failed
-//! `serde_json::from_slice::<TrustTask<Value>>`. The success-response
+//! These moved off the private `trusttasks.org/openvtc/vtc` authority
+//! (SPEC §6.5) and onto the canonical registry, where the ceremony's
+//! tasks are published as `spec/vtc/join-requests/*`. The path keeps the
+//! `/spec/<slug>/<maj.min>` shape the framework requires, so the URIs
+//! still parse as [`trust_tasks_rs::TypeUri`].
+//!
+//! The two `*_RECEIPT_TYPE` consts stay on the old authority on purpose:
+//! a receipt is a fire-and-forget ack rather than a Trust Task response,
+//! and the registry publishes no receipt task — emitting a canonical URI
+//! for one would name a spec that does not exist. The success-response
 //! variant is the same URI with a `#response` fragment (the
 //! `*_RESPONSE_TYPE` consts), minted by `TrustTask::respond_with`.
 //!
@@ -37,17 +42,24 @@ use uuid::Uuid;
 /// Trust Task `type` for a join-request submission (the ceremony `request`
 /// verb). Payload [`JoinRequestSubmitBody`]; response [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0";
+    "https://trusttasks.org/spec/vtc/join-requests/submit/0.1";
 
 /// `#response` variant of [`JOIN_REQUEST_SUBMIT_TYPE`] — the type of the
 /// success document `respond_with` mints; carries a [`VerdictResponse`].
 pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0#response";
+    "https://trusttasks.org/spec/vtc/join-requests/submit/0.1#response";
 
 /// Reply `type` used by the **credential-exchange** join close-the-loop
 /// (`credential-exchange/present`), which results in a join and echoes this
 /// receipt. Distinct from the Trust Task `submit` conversion above; retained
 /// for that not-yet-converted path. Carries a [`JoinRequestSubmitReceiptBody`].
+/// Async acknowledgement sent by the VTC after a submit. Deliberately
+/// still on the `openvtc/vtc/` authority: the canonical registry has no
+/// receipt task — the ceremony's canonical surface is
+/// submit/accept/status/manifest plus their `#response` forms, and a
+/// receipt is a separate fire-and-forget ack, not a Trust Task response.
+/// Inventing `spec/vtc/join-requests/submit-receipt` here would mean
+/// emitting a URI that resolves to nothing in the registry.
 pub const JOIN_REQUEST_SUBMIT_RECEIPT_TYPE: &str =
     "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit-receipt/1.0";
 
@@ -85,12 +97,12 @@ pub struct JoinRequestSubmitBody {
 /// edge. `memberDid` is the TrustTask `issuer` (DIDComm authcrypt sender /
 /// REST document proof).
 pub const JOIN_REQUEST_ACCEPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0";
+    "https://trusttasks.org/spec/vtc/join-requests/accept/0.1";
 
 /// `#response` variant of [`JOIN_REQUEST_ACCEPT_TYPE`] — carries a
 /// [`JoinRequestAcceptReceiptBody`].
 pub const JOIN_REQUEST_ACCEPT_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0#response";
+    "https://trusttasks.org/spec/vtc/join-requests/accept/0.1#response";
 
 /// Body of the accept message. `memberDid` comes from the DIDComm
 /// `from` field (the authcrypt sender) — the envelope binds the member,
@@ -128,12 +140,12 @@ pub struct JoinRequestAcceptReceiptBody {
 /// Trust Task `type` for a join-request manifest request: discover the
 /// community's join evidence requirements. Public read; empty payload.
 pub const JOIN_REQUEST_MANIFEST_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0";
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1";
 
 /// `#response` variant of [`JOIN_REQUEST_MANIFEST_TYPE`] — carries a
 /// [`JoinRequestManifestResponseBody`].
 pub const JOIN_REQUEST_MANIFEST_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0#response";
+    "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1#response";
 
 /// One community evidence requirement — a named DCQL Presentation
 /// Definition the applicant may present against.
@@ -163,12 +175,12 @@ pub struct JoinRequestManifestResponseBody {
 /// Trust Task `type` for an applicant status poll. The applicant DID is
 /// the TrustTask `issuer` (DIDComm authcrypt sender / REST document proof).
 pub const JOIN_REQUEST_STATUS_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0";
+    "https://trusttasks.org/spec/vtc/join-requests/status/0.1";
 
 /// `#response` variant of [`JOIN_REQUEST_STATUS_TYPE`] — carries a
 /// [`JoinRequestStatusResponseBody`].
 pub const JOIN_REQUEST_STATUS_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0#response";
+    "https://trusttasks.org/spec/vtc/join-requests/status/0.1#response";
 
 /// Body of the status message (DIDComm). Over REST the `{id}` is the
 /// path segment; over DIDComm it travels here.
@@ -334,6 +346,9 @@ pub const MEMBER_SELF_REMOVE_TYPE: &str =
     "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0";
 
 /// VTC's reply with the resolved disposition + audit hint.
+/// Async acknowledgement for a self-remove. Stays on `openvtc/vtc/`
+/// for the same reason as [`JOIN_REQUEST_SUBMIT_RECEIPT_TYPE`] — no
+/// canonical receipt task exists.
 pub const MEMBER_SELF_REMOVE_RECEIPT_TYPE: &str =
     "https://trusttasks.org/openvtc/vtc/members/self-remove-receipt/1.0";
 

@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0
 title: VTC Join Requests — Reject
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/reject/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.19 / vtc-service — Phase 4: the join-requests ceremony moves to `spec/vtc`
+
+* The nine join-requests constants move to
+  `spec/vtc/join-requests/{submit,accept,status,manifest}/0.1` (and their
+  `#response` forms); the four admin REST mounts move to
+  `spec/vtc/join-requests/{list,show,approve,reject}/0.1`.
+* **Breaking for DIDComm/document peers**: the Trust Task `type` a holder
+  sends changes. `OpenVTC/openvtc#171` (merged) already teaches the
+  OpenVTC router to accept both prefixes; an openvtc build must take
+  vta-sdk 0.19.19 to *dispatch* the new types, since it matches on these
+  constants.
+* The GET list carries its own task instead of borrowing `submit`'s
+  descriptor — the shared-mount workaround was never necessary (axum
+  merges same-path method routers per method).
+* The two `*_RECEIPT_TYPE` constants stay on the `openvtc` authority:
+  a receipt is a fire-and-forget ack, not a Trust Task response, and the
+  registry publishes no receipt task.
+* `members/self-remove` is untouched here — moving only its DIDComm
+  constant would have left its REST mount on the old authority. The
+  members family moves as a unit in its own change.
+
 ### vtc-service — Phase 2a: `policy/*` repointed to the canonical registry
 
 Completes the vtc-service Trust Task migration's Phase 2. The policy

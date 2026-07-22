@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0
 title: VTC Join Requests — Approve
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/approve/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

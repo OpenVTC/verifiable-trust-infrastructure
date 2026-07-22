@@ -195,55 +195,63 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/submit/1.0",
       "rest": "POST /v1/trust-tasks",
-      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0"
+      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/submit/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/list/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/list/1.0",
-      "rest": "GET /v1/join-requests"
+      "rest": "GET /v1/join-requests",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/list/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/show/1.0",
-      "rest": "GET /v1/join-requests/{id}"
+      "rest": "GET /v1/join-requests/{id}",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/show/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/approve/1.0",
-      "rest": "POST /v1/join-requests/{id}/approve"
+      "rest": "POST /v1/join-requests/{id}/approve",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/approve/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/reject/1.0",
-      "rest": "POST /v1/join-requests/{id}/reject"
+      "rest": "POST /v1/join-requests/{id}/reject",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/reject/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/accept/1.0",
       "rest": "POST /v1/trust-tasks",
-      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0"
+      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/accept/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/manifest/1.0",
       "rest": "POST /v1/trust-tasks",
-      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0"
+      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "join-requests/status/1.0",
       "rest": "POST /v1/trust-tasks",
-      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0"
+      "didcomm": "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0",
+      "supersededBy": "https://trusttasks.org/spec/vtc/join-requests/status/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",

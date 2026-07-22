@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0
 title: VTC Join Requests — Status (applicant poll)
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/status/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

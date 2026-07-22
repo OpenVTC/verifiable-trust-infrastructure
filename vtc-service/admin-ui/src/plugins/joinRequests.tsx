@@ -19,13 +19,13 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
 
 const TRUST_TASK_SUBMIT =
-  "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+  "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 const TRUST_TASK_SHOW =
-  "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0";
+  "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
 const TRUST_TASK_APPROVE =
-  "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
+  "https://trusttasks.org/spec/vtc/join-requests/approve/0.1";
 const TRUST_TASK_REJECT =
-  "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
+  "https://trusttasks.org/spec/vtc/join-requests/reject/0.1";
 
 type JoinStatus = "pending" | "approved" | "rejected" | "withdrawn" | "deferred";
 

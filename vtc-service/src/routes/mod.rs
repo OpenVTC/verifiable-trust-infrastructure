@@ -288,12 +288,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // TrustTaskRouter doesn't support per-method Trust-Task
     // selectors yet. The standalone task exists on disk +
     // index.json so the soft-gate surface stays complete.
-    // POST + GET share `/v1/join-requests`. The `join-requests/list/1.0`
-    // Trust Task exists in index.json + on-disk spec/schema so the
-    // soft-gate surface stays complete; the wire enforcement here
-    // collapses to `join-requests/submit/1.0` until TrustTaskRouter
-    // gains per-method selectors (same workaround community/profile,
-    // admin/config, members/{did} use).
+    // POST + GET share `/v1/join-requests`, each carrying its own Trust
+    // Task. The earlier note here said enforcement had to collapse onto
+    // `submit` until TrustTaskRouter gained per-method selectors; that
+    // was mistaken — `task_routes` layers the *method* router and axum
+    // merges same-path routers per method, so both verbs are enforced
+    // independently.
     // The unauthenticated `/join-requests` POST submit, `/accept`, and
     // `/status` move to `build_unauth_routes` (P0.5) so the governor + 64 KiB
     // cap apply; their Trust Tasks are declared there. The admin GET list keeps
@@ -696,23 +696,26 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         ))
         // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
         // accept / status live on the governed branch (`build_unauth_routes`,
-        // P0.5); the admin GET list keeps this `/join-requests` mount (axum
-        // merges this GET with the governed-branch POST submit).
+        // P0.5). The admin GET list shares the `/join-requests` path with
+        // the governed-branch POST submit, but now carries its OWN task:
+        // axum merges same-path method routers per method, so each verb
+        // enforces its own URI (see `vti_common::trust_task::openapi`).
+        // It no longer has to borrow `submit`'s descriptor.
         .routes(tt(
             routes!(join_requests::read::list_join_requests),
-            "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0",
+            "https://trusttasks.org/spec/vtc/join-requests/list/0.1",
         ))
         .routes(tt(
             routes!(join_requests::read::show_join_request),
-            "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
+            "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
         ))
         .routes(tt(
             routes!(join_requests::decide::approve),
-            "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0",
+            "https://trusttasks.org/spec/vtc/join-requests/approve/0.1",
         ))
         .routes(tt(
             routes!(join_requests::decide::reject),
-            "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
+            "https://trusttasks.org/spec/vtc/join-requests/reject/0.1",
         ))
         // (Manifest discovery moved to the single `POST /v1/trust-tasks`
         // document endpoint — `join-requests/manifest/1.0` is now a Trust

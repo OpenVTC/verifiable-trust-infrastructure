@@ -35,16 +35,16 @@ use vtc_service::test_support::TestVtc;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 // The holder-facing verbs are now Trust Task **document** types (the `/spec/`
 // canonical form the dispatcher routes on).
-const SUBMIT_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0";
-const ACCEPT_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0";
-const MANIFEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/manifest/1.0";
-const STATUS_TASK: &str = "https://trusttasks.org/openvtc/vtc/spec/join-requests/status/1.0";
+const SUBMIT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.1";
+const ACCEPT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/accept/0.1";
+const MANIFEST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/manifest/0.1";
+const STATUS_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/status/0.1";
 // The admin verbs remain header-gated REST routes (unchanged) — flat URIs.
 // The admin GET list shares the submit mount, so it gates on the flat submit URI.
-const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
-const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0";
-const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
-const REJECT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
+const APPROVE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/approve/0.1";
+const REJECT_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/reject/0.1";
 /// The VTC DID the fixture configures — the issuer of every VMC and the
 /// community a reciprocal VC must acknowledge.
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";

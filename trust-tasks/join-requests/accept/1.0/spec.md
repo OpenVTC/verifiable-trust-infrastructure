@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/spec/join-requests/accept/1.0
 title: VTC Join Requests — Accept (reciprocal VMC)
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/join-requests/accept/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
