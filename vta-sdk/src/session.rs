@@ -1403,32 +1403,45 @@ pub async fn send_trust_ping(
 
     let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
 
-    let profile = ATMProfile::new(
-        &atm,
-        None,
-        client_did.to_string(),
-        Some(mediator_did.to_string()),
-    )
-    .await?;
-    let profile = Arc::new(profile);
+    // Run the probe to completion, then shut down on EVERY path. An early `?`
+    // here used to return while the ATM's websocket transport kept running and
+    // auto-reconnecting for the life of the process — a failed probe must not
+    // leave a ghost socket contending for this DID's slot on the mediator.
+    //
+    // The outcome is stringified before the shutdown await: the boxed error is
+    // not `Send`, and holding it across an await would make this future non-Send.
+    let outcome = async {
+        let profile = Arc::new(
+            ATMProfile::new(
+                &atm,
+                None,
+                client_did.to_string(),
+                Some(mediator_did.to_string()),
+            )
+            .await?,
+        );
 
-    atm.profile_enable_websocket(&profile).await?;
+        atm.profile_enable_websocket(&profile).await?;
 
-    let start = Instant::now();
-    TrustPing::default()
-        .send_ping(
-            &atm,
-            &profile,
-            target_did.unwrap_or(mediator_did),
-            true,
-            true,
-            true,
-        )
-        .await?;
-    let elapsed = start.elapsed().as_millis();
+        let start = Instant::now();
+        TrustPing::default()
+            .send_ping(
+                &atm,
+                &profile,
+                target_did.unwrap_or(mediator_did),
+                true,
+                true,
+                true,
+            )
+            .await?;
+
+        Ok::<u128, Box<dyn std::error::Error>>(start.elapsed().as_millis())
+    }
+    .await
+    .map_err(|e| e.to_string());
 
     atm.graceful_shutdown().await;
-    Ok(elapsed)
+    outcome.map_err(Into::into)
 }
 
 /// Resolve the VTA DID document and extract the mediator DID from the
@@ -1502,16 +1515,33 @@ impl TrustPingSession {
 
         let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
 
-        let profile = ATMProfile::new(
-            &atm,
-            None,
-            client_did.to_string(),
-            Some(mediator_did.to_string()),
-        )
-        .await?;
-        let profile = Arc::new(profile);
+        // Build the profile + socket behind a single fallible step so a failure
+        // can tear the ATM down. Without this, a session that fails to connect
+        // still leaves an auto-reconnecting websocket task running — see
+        // `ping_over_didcomm` above.
+        let prepared = async {
+            let profile = Arc::new(
+                ATMProfile::new(
+                    &atm,
+                    None,
+                    client_did.to_string(),
+                    Some(mediator_did.to_string()),
+                )
+                .await?,
+            );
+            atm.profile_enable_websocket(&profile).await?;
+            Ok::<_, Box<dyn std::error::Error>>(profile)
+        }
+        .await
+        .map_err(|e| e.to_string());
 
-        atm.profile_enable_websocket(&profile).await?;
+        let profile = match prepared {
+            Ok(profile) => profile,
+            Err(msg) => {
+                atm.graceful_shutdown().await;
+                return Err(msg.into());
+            }
+        };
 
         Ok(Self {
             atm,
@@ -1589,16 +1619,31 @@ impl TspPingSession {
 
         let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
 
-        let profile = ATMProfile::new(
-            &atm,
-            None,
-            client_did.to_string(),
-            Some(mediator_did.to_string()),
-        )
-        .await?;
-        let profile = Arc::new(profile);
+        // As in `TrustPingSession::connect`: any failure past `ATM::new` must
+        // shut the ATM down rather than abandon its background tasks.
+        let prepared = async {
+            let profile = Arc::new(
+                ATMProfile::new(
+                    &atm,
+                    None,
+                    client_did.to_string(),
+                    Some(mediator_did.to_string()),
+                )
+                .await?,
+            );
+            let ws = atm.tsp().connect_websocket(&profile).await?;
+            Ok::<_, Box<dyn std::error::Error>>((profile, ws))
+        }
+        .await
+        .map_err(|e| e.to_string());
 
-        let ws = atm.tsp().connect_websocket(&profile).await?;
+        let (profile, ws) = match prepared {
+            Ok(pair) => pair,
+            Err(msg) => {
+                atm.graceful_shutdown().await;
+                return Err(msg.into());
+            }
+        };
 
         Ok(Self {
             atm,

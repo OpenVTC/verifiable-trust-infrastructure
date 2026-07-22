@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.18 — a failed DIDComm connect no longer leaks a live socket
+
+* `DIDCommSession::connect_with_secrets` created an `ATM` and then ran several
+  fallible steps against it — profile creation, the 15s-bounded
+  `profile_enable_websocket`, binding `DidCommTransport`. Every one of those
+  error paths returned without calling `graceful_shutdown()`. Dropping the
+  handles does **not** stop the ATM's background tasks: the websocket transport
+  survives, reconnects on its own timer, and goes on holding the mediator's
+  one-socket-per-DID slot for `client_did` for the life of the process. The
+  `LeakGuard` only catches a *successfully built* session that is dropped
+  without `shutdown()` — it never saw these, because the session was never
+  built.
+* Why it bit: a service that opens a session per refresh cycle accumulates one
+  ghost socket per failed connect. Several of them, all authenticated as the
+  same DID, then duel over that DID's slot — each eviction triggering an
+  immediate reconnect. A mediator was observed taking ~40 connects/sec from its
+  own admin DID this way.
+* Fix: the fallible tail moved into `finish_connect`, with a single error path
+  that shuts the ATM down. The outcome is stringified before the shutdown await
+  because `Box<dyn Error>` is not `Send` and would otherwise make the connect
+  future non-`Send`.
+* The same omission is fixed in the three probe paths in `session.rs`
+  (`ping_over_didcomm`, `TrustPingSession::connect`, the TSP probe): each now
+  tears its ATM down when setup fails, not only when it succeeds.
+* Pairs with `affinidi-messaging-sdk` 0.18.61 (client backoff no longer resets
+  on an immediately-closed socket) and `affinidi-messaging-mediator` 0.17.6
+  (refresh over REST when self-mediated; server-side duel damper).
+
 ### vtc-service — Phase 2c: config Trust Tasks repointed to the canonical registry
 
 * `GET /v1/admin/config` now carries `https://trusttasks.org/spec/config/show/0.1`,

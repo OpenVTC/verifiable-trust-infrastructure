@@ -191,19 +191,54 @@ impl DIDCommSession {
         // Build ATM — inbound is driven by the delivery layer's DidCommTransport,
         // not by direct ATM polling (see the `MessagingService` wiring below).
         let atm_config = ATMConfig::builder().build()?;
-        let atm = ATM::new(atm_config, Arc::new(tdk)).await?;
+        let atm = Arc::new(ATM::new(atm_config, Arc::new(tdk)).await?);
 
+        // Past this point we own live background tasks: the ATM's deletion
+        // handler, and shortly a websocket transport that reconnects on its own
+        // timer. Dropping the handles does NOT stop them. An abandoned transport
+        // keeps holding — and fighting other sessions for — the mediator's
+        // one-socket-per-DID slot for `client_did`, for the life of the process.
+        //
+        // So every fallible step runs inside `finish_connect`, and a failure
+        // tears the ATM down here. One place to get right, rather than one per
+        // `?` (a timeout arm that forgot this is exactly how a service that
+        // reconnects on a schedule accumulates duelling ghost sockets).
+        // `map_err` to a `String` before the match: the boxed error is not
+        // `Send`, so holding it across the `graceful_shutdown().await` below
+        // would make this whole future non-`Send` and break callers that
+        // `tokio::spawn` a connect.
+        let outcome = Self::finish_connect(&atm, client_did, vta_did, mediator_did)
+            .await
+            .map_err(|e| e.to_string());
+
+        match outcome {
+            Ok(session) => Ok(session),
+            Err(msg) => {
+                atm.graceful_shutdown().await;
+                Err(msg.into())
+            }
+        }
+    }
+
+    /// Fallible tail of [`connect_with_secrets`]: everything that needs a live
+    /// ATM. Split out so a single error path can shut that ATM down — see the
+    /// call site.
+    async fn finish_connect(
+        atm: &Arc<ATM>,
+        client_did: &str,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Create profile with mediator
-        let profile = ATMProfile::new(
-            &atm,
-            None,
-            client_did.to_string(),
-            Some(mediator_did.to_string()),
-        )
-        .await?;
-        let profile = Arc::new(profile);
-
-        let atm = Arc::new(atm);
+        let profile = Arc::new(
+            ATMProfile::new(
+                atm,
+                None,
+                client_did.to_string(),
+                Some(mediator_did.to_string()),
+            )
+            .await?,
+        );
 
         // Flush stale messages from the inbox (accumulated between CLI runs)
         {
@@ -278,7 +313,7 @@ impl DIDCommSession {
         // are unaffected.
         #[cfg(feature = "acl-setup")]
         crate::acl_setup::set_client_acl_on_connection(
-            &atm,
+            atm,
             client_did,
             mediator_did,
             "didcomm-session",
@@ -295,7 +330,7 @@ impl DIDCommSession {
         // `request` waiters and unsolicited pushes to `subscribe`, deleting each
         // message from the mediator exactly once (the F5 fix).
         let transport: Arc<dyn MessageTransport> = Arc::new(
-            DidCommTransport::new((*atm).clone(), profile.clone())
+            DidCommTransport::new((**atm).clone(), profile.clone())
                 .await
                 .map_err(|e| format!("bind DidComm transport: {e}"))?,
         );
@@ -315,7 +350,7 @@ impl DIDCommSession {
         });
         Ok(Self {
             service,
-            atm,
+            atm: Arc::clone(atm),
             subscriber,
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
