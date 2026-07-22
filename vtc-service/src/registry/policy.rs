@@ -231,6 +231,8 @@ mod tests {
             author_did: "did:key:test".into(),
             created_at: chrono::Utc::now(),
             version: 1,
+            name: None,
+            description: None,
         };
         store_policy(policies, &policy).await.unwrap();
         set_active_policy_id(active, PolicyPurpose::Registry, id)

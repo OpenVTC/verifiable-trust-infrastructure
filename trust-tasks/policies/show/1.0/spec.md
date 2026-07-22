@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/policies/show/1.0
 title: VTC Policies — Show
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/policy/get/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

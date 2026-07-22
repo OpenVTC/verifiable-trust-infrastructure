@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/policies/activate/1.0
 title: VTC Policies — Activate
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/policy/activate/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

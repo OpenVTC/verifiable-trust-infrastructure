@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### vtc-service — Phase 2a: `policy/*` repointed to the canonical registry
+
+Completes the vtc-service Trust Task migration's Phase 2. The policy
+family was the hardest of the five because canonical and VTC disagree on
+what a policy *is*, not just on field names.
+
+* `GET /v1/policies` → `spec/policy/list/0.2`, `POST /v1/policies` →
+  `spec/policy/upsert/0.2`, `GET /v1/policies/{id}` →
+  `spec/policy/get/0.1`, `POST /v1/policies/{id}/activate` →
+  `spec/policy/activate/0.1`, plus a new `GET /v1/policies/active` →
+  `spec/policy/active/0.1`. The four superseded `openvtc` tasks are
+  **retired** with `supersededBy`.
+* **`policies/test` deliberately stays on its `openvtc` URI.** Canonical
+  `policy/evaluate` runs the *matching policy set* through the standard
+  `decision` rule; `test` evaluates an operator-chosen Rego query against
+  one stored module. Different verb, not a rename.
+* **Purpose travels in `ext` (`org.openvtc.purpose`), and is required.**
+  Canonical models purpose as a property of the *activation binding* — a
+  module is purpose-agnostic and reusable. VTC cannot follow that: the
+  purpose is baked into the module's own Rego package and validated at
+  upload, because a module in the wrong package compiles cleanly and then
+  silently denies every request for that ceremony. Inference is not an
+  escape either — only 4 of the 10 purposes have an expected package, so
+  6 could never be derived from source. `ext` is exactly what the
+  framework reserves for ecosystem members, so the divergence is
+  documented rather than hidden, and an upsert without it is refused
+  rather than guessed at.
+* **The package↔purpose guard is preserved** on both upsert and activate.
+* **`expectedVersion` is honoured as a real compare-and-swap**: VTC's
+  monotone per-purpose revision counter is the concurrency token, so two
+  operators racing on the same purpose can no longer each append a
+  revision over the other's read.
+* **Breaking (admin API).** Entries are the canonical `PolicyModule`:
+  `regoSource` → `module`, responses wrap in `{policy}` / `{policies,
+  truncated, cursor}` / `{bindings}`, and `limit` → `pageSize`. `sha256`,
+  `authorDid` and `purpose` move under `ext` (the canonical type is
+  `additionalProperties: false`). `isActive` is **gone** — activeness is
+  a binding, read from `policy/active`. The bundled admin UI is updated
+  in step.
+* Canonical members this maintainer cannot honour — `appliesTo`,
+  `priority`, `enabled` on upsert; `contextId`, `enabledOnly` on list;
+  `contextId` on active — are **refused with an error naming them**
+  rather than accepted and ignored. A caller setting `enabled: false`
+  must never have it silently dropped.
+
 ### vtc-service — Phase 2d: `acl/*` repointed, with the canonical semantics implemented
 
 * The two combined mounts (`acl/legacy/{manage,entry}/1.0`) fan out to the five

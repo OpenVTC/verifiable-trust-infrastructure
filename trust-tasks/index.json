@@ -260,15 +260,17 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "policies/upload/1.0",
-      "rest": "POST /v1/policies"
+      "rest": "POST /v1/policies",
+      "supersededBy": "https://trusttasks.org/spec/policy/upsert/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/activate/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "policies/activate/1.0",
-      "rest": "POST /v1/policies/{id}/activate"
+      "rest": "POST /v1/policies/{id}/activate",
+      "supersededBy": "https://trusttasks.org/spec/policy/activate/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/test/1.0",
@@ -278,15 +280,17 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/list/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "policies/list/1.0",
-      "rest": "GET /v1/policies"
+      "rest": "GET /v1/policies",
+      "supersededBy": "https://trusttasks.org/spec/policy/list/0.2"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/show/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "policies/show/1.0",
-      "rest": "GET /v1/policies/{id}"
+      "rest": "GET /v1/policies/{id}",
+      "supersededBy": "https://trusttasks.org/spec/policy/get/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/renew/1.0",

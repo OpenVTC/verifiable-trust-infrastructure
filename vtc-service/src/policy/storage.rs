@@ -206,6 +206,8 @@ pub fn new_policy(
         author_did,
         created_at: Utc::now(),
         version,
+        name: None,
+        description: None,
     }
 }
 

@@ -321,6 +321,8 @@ async fn renew_default_downgrades_when_policy_drops_flag() {
         author_did: "did:key:test".into(),
         created_at: chrono::Utc::now(),
         version: 1,
+        name: None,
+        description: None,
     };
     vtc_service::policy::store_policy(&fix.policies_ks, &strict)
         .await

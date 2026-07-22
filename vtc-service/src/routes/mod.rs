@@ -726,19 +726,30 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Trust Tasks. `upload` mints + persists; `activate` flips
         // the per-purpose active pointer; `test` evaluates a stored
         // policy without mutating state.
+        // Each verb now carries its own canonical task. `test` stays
+        // on its openvtc URI: canonical `policy/evaluate` runs the
+        // matching policy set through the standard `decision` rule,
+        // while `test` evaluates an operator-chosen Rego query against
+        // one stored module — a different verb, not a rename.
         .routes(tt(
-            routes!(policies::read::list_policies, policies::admin::upload),
-            "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
+            routes!(policies::read::list_policies),
+            "https://trusttasks.org/spec/policy/list/0.2",
         ))
         .routes(tt(
-            routes!(policies::read::show_policy), // Reuses the upload task on the shared mount; the
-            // `policies/show/1.0` Trust Task lives in index.json
-            // + on disk for the soft-gate surface (see above).
-            "https://trusttasks.org/openvtc/vtc/policies/upload/1.0",
+            routes!(policies::admin::upload),
+            "https://trusttasks.org/spec/policy/upsert/0.2",
+        ))
+        .routes(tt(
+            routes!(policies::read::active_policies),
+            "https://trusttasks.org/spec/policy/active/0.1",
+        ))
+        .routes(tt(
+            routes!(policies::read::show_policy),
+            "https://trusttasks.org/spec/policy/get/0.1",
         ))
         .routes(tt(
             routes!(policies::admin::activate),
-            "https://trusttasks.org/openvtc/vtc/policies/activate/1.0",
+            "https://trusttasks.org/spec/policy/activate/0.1",
         ))
         .routes(tt(
             routes!(policies::admin::test),

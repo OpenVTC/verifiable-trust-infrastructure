@@ -23,16 +23,16 @@ use vtc_service::acl::{VtcAclEntry, VtcRole, store_acl_entry};
 use vtc_service::policy::{PolicyPurpose, get_active_policy_id, get_policy};
 use vtc_service::test_support::TestVtc;
 
-const UPLOAD_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/upload/1.0";
-const ACTIVATE_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/activate/1.0";
+const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 const TEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
 /// `/v1/policies` (list) + `/v1/policies/{id}` (show) share their
 /// HTTP mounts with the upload + activate POSTs respectively —
 /// TrustTaskRouter doesn't yet support per-method selectors, so
 /// the GET requests carry the upload task header. See
 /// `vtc-service/src/routes/mod.rs` comment block.
-const LIST_TASK: &str = UPLOAD_TASK;
-const SHOW_TASK: &str = UPLOAD_TASK;
+const LIST_TASK: &str = "https://trusttasks.org/spec/policy/list/0.2";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/policy/get/0.1";
 
 const ADMIN_DID: &str = "did:key:zPolicyAdmin";
 
@@ -139,15 +139,19 @@ async fn upload_policy(fix: &Fixture, purpose: &str, source: &str) -> Value {
         "/v1/policies",
         UPLOAD_TASK,
         &fix.admin_token,
-        json!({ "purpose": purpose, "regoSource": source }),
+        json!({ "name": purpose, "module": source, "ext": { "org.openvtc.purpose": purpose } }),
     );
     let resp = fix.router.clone().oneshot(req).await.unwrap();
-    assert_eq!(
+    // Canonical upsert: 201 on a new lineage, 200 on a revision.
+    assert!(
+        resp.status() == StatusCode::CREATED || resp.status() == StatusCode::OK,
+        "expected 201/200 from upsert, got {}",
         resp.status(),
-        StatusCode::CREATED,
-        "expected 201 from upload"
     );
-    body_json(resp.into_body()).await
+    // Unwrap the canonical `{policy, created}` envelope so callers can
+    // keep reading module fields directly.
+    let body = body_json(resp.into_body()).await;
+    body["policy"].clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -163,9 +167,9 @@ async fn upload_happy_path_persists_policy() {
     let body = upload_policy(&fix, "join", JOIN_ALLOW_POLICY).await;
     let id: Uuid = body["id"].as_str().unwrap().parse().unwrap();
 
-    assert_eq!(body["purpose"], "join");
+    assert_eq!(body["ext"]["org.openvtc.purpose"], "join");
     assert_eq!(body["version"], 1);
-    let sha = body["sha256"].as_str().unwrap();
+    let sha = body["ext"]["org.openvtc.sha256"].as_str().unwrap();
     assert_eq!(sha.len(), 64);
     assert!(
         sha.chars()
@@ -204,7 +208,7 @@ async fn upload_bad_rego_returns_400() {
         "/v1/policies",
         UPLOAD_TASK,
         &fix.admin_token,
-        json!({ "purpose": "join", "regoSource": "@@@ not rego @@@" }),
+        json!({ "name": "join", "module": "@@@ not rego @@@", "ext": { "org.openvtc.purpose": "join" } }),
     );
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -231,7 +235,7 @@ async fn upload_rejects_purpose_package_mismatch() {
         "/v1/policies",
         UPLOAD_TASK,
         &fix.admin_token,
-        json!({ "purpose": "join", "regoSource": mismatched }),
+        json!({ "name": "join", "module": mismatched, "ext": { "org.openvtc.purpose": "join" } }),
     );
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -262,7 +266,7 @@ async fn activate_swaps_active_pointer() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = body_json(resp.into_body()).await;
-    assert_eq!(body["id"], id.to_string());
+    assert_eq!(body["activated"], id.to_string());
     assert_eq!(body["purpose"], "join");
     assert!(
         body["previousPolicyId"].is_null(),
@@ -529,13 +533,14 @@ async fn list_returns_all_policies() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = body_json(resp.into_body()).await;
-    let items = body["items"].as_array().expect("items array");
+    let items = body["policies"].as_array().expect("items array");
     assert_eq!(items.len(), 2);
-    let active: Vec<&Value> = items.iter().filter(|i| i["isActive"] == true).collect();
-    assert_eq!(active.len(), 1);
-    assert_eq!(active[0]["id"], a_id);
+    // `isActive` is not a canonical PolicyModule field — activeness is
+    // expressed by the `status=active` filter and by policy/active's
+    // bindings, both covered below.
+    assert!(items.iter().any(|i| i["id"] == a_id));
     // Full row visibility — Rego source is in the response.
-    assert!(items.iter().all(|i| i["regoSource"].is_string()));
+    assert!(items.iter().all(|i| i["module"].is_string()));
 }
 
 /// `?purpose=removal` filters list to that purpose only.
@@ -557,9 +562,9 @@ async fn list_filters_by_purpose() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp.into_body()).await;
-    let items = body["items"].as_array().unwrap();
+    let items = body["policies"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["purpose"], "removal");
+    assert_eq!(items[0]["ext"]["org.openvtc.purpose"], "removal");
 }
 
 /// `?status=active` returns only rows pointed at by their
@@ -595,10 +600,9 @@ async fn list_filters_by_status() {
         .await
         .unwrap();
     let body = body_json(resp.into_body()).await;
-    let items = body["items"].as_array().unwrap();
+    let items = body["policies"].as_array().unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], join_id);
-    assert_eq!(items[0]["isActive"], true);
 
     // status=archived → just the removal row.
     let resp = fix
@@ -612,10 +616,11 @@ async fn list_filters_by_status() {
         .await
         .unwrap();
     let body = body_json(resp.into_body()).await;
-    let items = body["items"].as_array().unwrap();
+    let items = body["policies"].as_array().unwrap();
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["purpose"], "removal");
-    assert_eq!(items[0]["isActive"], false);
+    assert_eq!(items[0]["ext"]["org.openvtc.purpose"], "removal");
+    // The `archived` filter having returned it is the assertion — a
+    // canonical PolicyModule carries no isActive field.
 }
 
 /// Regression: the simulator's active-policy lookup
@@ -659,10 +664,9 @@ async fn list_active_by_purpose_is_exact_under_limit_one() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = body_json(resp.into_body()).await;
-        let items = body["items"].as_array().unwrap();
+        let items = body["policies"].as_array().unwrap();
         assert_eq!(items.len(), 1, "{purpose}: active lookup returns one row");
         assert_eq!(items[0]["id"], id, "{purpose}: active id");
-        assert_eq!(items[0]["isActive"], true);
     }
 }
 
@@ -685,17 +689,12 @@ async fn show_returns_full_row() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = body_json(resp.into_body()).await;
+    let outer = body_json(resp.into_body()).await;
+    let body = &outer["policy"];
     assert_eq!(body["id"], id);
-    assert_eq!(body["purpose"], "join");
+    assert_eq!(body["ext"]["org.openvtc.purpose"], "join");
     assert_eq!(body["version"], 1);
-    assert_eq!(body["isActive"], false);
-    assert!(
-        body["regoSource"]
-            .as_str()
-            .unwrap()
-            .contains("default allow")
-    );
+    assert!(body["module"].as_str().unwrap().contains("default allow"));
 }
 
 /// `GET /v1/policies/{id}` returns 404 for unknown ids.
@@ -731,7 +730,7 @@ async fn upload_without_token_returns_401() {
         .header("trust-task", UPLOAD_TASK)
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "purpose": "join", "regoSource": JOIN_ALLOW_POLICY }).to_string(),
+            json!({ "name": "join", "module": JOIN_ALLOW_POLICY, "ext": { "org.openvtc.purpose": "join" } }).to_string(),
         ))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();

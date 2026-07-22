@@ -51,8 +51,8 @@ const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 /// Member seed shared by `applicant_pair` (so a `LocalSigner` over the
 /// same seed signs reciprocal VCs that verify against the member did:key).
 const MEMBER_SEED: [u8; 32] = [0xCD; 32];
-const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/upload/1.0";
-const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/activate/1.0";
+const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
+const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";
 
@@ -702,11 +702,17 @@ async fn activate_join_policy(fix: &Fixture, source: &str) {
         "/v1/policies",
         POLICY_UPLOAD_TASK,
         Some(&fix.admin_token),
-        Some(json!({ "purpose": "join", "regoSource": source })),
+        Some(json!({ "name": "join", "module": source, "ext": { "org.openvtc.purpose": "join" } })),
     )
     .await;
-    assert_eq!(status, StatusCode::CREATED, "upload failed: {body}");
-    let id = body["id"].as_str().unwrap();
+    // Canonical upsert: 201 when this is the first revision for the
+    // purpose, 200 when it revises an existing one. Fixtures may have
+    // seeded a policy already, so both are success here.
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::OK,
+        "upload failed ({status}): {body}"
+    );
+    let id = body["policy"]["id"].as_str().unwrap();
     let (status, body) = send(
         &fix.router,
         "POST",

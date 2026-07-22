@@ -632,6 +632,8 @@ default publish_on_join := false
             author_did: "did:key:test".into(),
             created_at: chrono::Utc::now(),
             version: 1,
+            name: None,
+            description: None,
         };
         store_policy(&syncer.policies_ks, &policy).await.unwrap();
         set_active_policy_id(&syncer.active_policies_ks, PolicyPurpose::Registry, id)
@@ -693,6 +695,8 @@ default publish_on_join := false
                 author_did: "did:key:test".into(),
                 created_at: chrono::Utc::now(),
                 version: 1,
+                name: None,
+                description: None,
             },
         )
         .await

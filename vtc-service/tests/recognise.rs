@@ -50,6 +50,8 @@ async fn install_cross_community_policy(state: &AppState, source: &str) {
         author_did: "did:key:test".into(),
         created_at: Utc::now(),
         version: 1,
+        name: None,
+        description: None,
     };
     store_policy(&state.policies_ks, &policy).await.unwrap();
     set_active_policy_id(

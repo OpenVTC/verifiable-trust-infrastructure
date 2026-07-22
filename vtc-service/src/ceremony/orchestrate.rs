@@ -565,6 +565,8 @@ mod p0_14_role_change_policy_tests {
                 author_did: "did:key:test".into(),
                 created_at: Utc::now(),
                 version: 1,
+                name: None,
+                description: None,
             },
         )
         .await

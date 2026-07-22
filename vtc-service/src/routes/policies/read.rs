@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use vti_common::error::AppError;
-use vti_common::pagination::{Cursor, MAX_LIMIT, Paginated};
+use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 use crate::auth::AdminAuth;
 use crate::policy::{
@@ -57,6 +57,94 @@ pub struct PolicyResponse {
     pub is_active: bool,
 }
 
+/// Canonical `policy/list` response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyListResponse {
+    pub policies: Vec<PolicyModuleResponse>,
+    /// Canonical-required: more matching modules exist beyond this page.
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Canonical `policy/get` response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyGetResponse {
+    pub policy: PolicyModuleResponse,
+}
+
+/// Reverse-DNS-namespaced `ext` member carrying this maintainer's
+/// **intrinsic** policy purpose (SPEC.md §4.5.1).
+///
+/// Canonical models purpose as a property of the *activation binding*,
+/// not of the module — a module is purpose-agnostic and reusable. VTC
+/// cannot follow that: a purpose is baked into the module's own Rego
+/// package name and validated at upload, because a module in the wrong
+/// package compiles cleanly and then silently denies every request for
+/// that ceremony. Inference is not a way out either — only 4 of the 10
+/// purposes have an expected package, so 6 could never be derived from
+/// the source.
+///
+/// So the purpose travels in `ext`, which is exactly what the framework
+/// reserves for ecosystem-defined members. It is a documented
+/// divergence rather than a hidden one: a consumer reading the module
+/// can see that this maintainer binds purpose intrinsically.
+pub const PURPOSE_EXT_KEY: &str = "org.openvtc.purpose";
+
+/// Canonical `policy/_shared` **PolicyModule**.
+///
+/// Field mapping from VTC's storage row:
+/// - `rego_source` → `module`
+/// - `version` (monotone per-purpose revision counter) → `version`,
+///   which canonical also uses as the optimistic-concurrency token.
+/// - `updatedAt` is the activation time when the row has been
+///   activated, else its creation time. A VTC revision is immutable, so
+///   activation is the only thing that can change it after write.
+/// - `sha256` / `authorDid` / the intrinsic `purpose` have no canonical
+///   home and ride in `ext` (the canonical type is
+///   `additionalProperties: false`).
+///
+/// `appliesTo` / `priority` / `enabled` are deliberately **not**
+/// emitted: VTC does no `appliesTo`/`priority` selection, and emitting
+/// empty values would imply a selection model that isn't there.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyModuleResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub module: String,
+    pub version: u32,
+    pub created_at: String,
+    pub updated_at: String,
+    pub ext: serde_json::Value,
+}
+
+impl From<&Policy> for PolicyModuleResponse {
+    fn from(p: &Policy) -> Self {
+        Self {
+            id: p.id,
+            // Rows written before `name` existed fall back to the
+            // purpose — the only stable human-meaningful identifier
+            // such a row has, and canonical requires `name`.
+            name: p
+                .name
+                .clone()
+                .unwrap_or_else(|| p.purpose.as_str().to_owned()),
+            module: p.rego_source.clone(),
+            version: p.version,
+            created_at: p.created_at.to_rfc3339(),
+            updated_at: p.activated_at.unwrap_or(p.created_at).to_rfc3339(),
+            ext: serde_json::json!({
+                PURPOSE_EXT_KEY: p.purpose.as_str(),
+                "org.openvtc.sha256": hex::encode(p.sha256),
+                "org.openvtc.authorDid": p.author_did,
+            }),
+        }
+    }
+}
+
 impl PolicyResponse {
     fn from_policy(policy: Policy, is_active: bool) -> Self {
         Self { policy, is_active }
@@ -71,8 +159,17 @@ impl PolicyResponse {
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema, utoipa::IntoParams)]
 pub struct ListPoliciesQuery {
-    /// Filter by purpose (wire-form camelCase).
+    /// Filter by purpose (wire-form camelCase). A VTC extension —
+    /// canonical has no purpose filter because purpose is not a
+    /// property of a module there.
     pub purpose: Option<PolicyPurpose>,
+    /// Canonical `policy/list` parameters this maintainer does not
+    /// implement. Accepting them silently would tell a caller their
+    /// query was narrowed when it was not, so they are refused.
+    pub context_id: Option<String>,
+    pub enabled_only: Option<bool>,
+    /// Canonical page-size name.
+    pub page_size: Option<usize>,
     /// `"active"` — only the row pointed at by each
     /// `active_policies:<purpose>`. `"archived"` — every row that
     /// is *not* the current active pointer. Omitted → all rows.
@@ -96,7 +193,7 @@ pub enum PolicyStatusFilter {
     security(("bearer_jwt" = [])),
     params(ListPoliciesQuery),
     responses(
-        (status = 200, description = "Paginated list of policies", body = Paginated<PolicyResponse>),
+        (status = 200, description = "Paginated list of policies", body = PolicyListResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
     ),
@@ -105,7 +202,23 @@ pub async fn list_policies(
     _auth: AdminAuth,
     State(state): State<AppState>,
     Query(query): Query<ListPoliciesQuery>,
-) -> Result<Json<Paginated<PolicyResponse>>, AppError> {
+) -> Result<Json<PolicyListResponse>, AppError> {
+    let mut unsupported = Vec::new();
+    if query.context_id.is_some() {
+        unsupported.push("contextId");
+    }
+    if query.enabled_only.is_some() {
+        unsupported.push("enabledOnly");
+    }
+    if !unsupported.is_empty() {
+        return Err(AppError::Validation(format!(
+            "this maintainer does not implement the {} filter(s): its policy log \
+             is not context-partitioned and modules carry no enabled flag. \
+             Refusing rather than returning an unfiltered list.",
+            unsupported.join(", "),
+        )));
+    }
+
     // `status=active` is resolved directly from the per-purpose active
     // pointers, not the paginated keyspace scan. The purpose/status
     // filters below run *after* pagination, so a small `limit` (the
@@ -126,15 +239,18 @@ pub async fn list_policies(
                 items.push(PolicyResponse::from_policy(p, true));
             }
         }
-        let total = items.len() as u64;
-        return Ok(Json(Paginated {
-            items,
-            next_cursor: None,
-            total_estimate: Some(total),
+        return Ok(Json(PolicyListResponse {
+            policies: items.iter().map(|r| (&r.policy).into()).collect(),
+            truncated: false,
+            cursor: None,
         }));
     }
 
-    let limit = query.limit.unwrap_or(50).clamp(1, MAX_LIMIT);
+    let limit = query
+        .page_size
+        .or(query.limit)
+        .unwrap_or(50)
+        .clamp(1, MAX_LIMIT);
 
     let audit_writer = state
         .audit_writer
@@ -182,10 +298,10 @@ pub async fn list_policies(
         })
         .collect();
 
-    Ok(Json(Paginated {
-        items,
-        next_cursor: page.next_cursor,
-        total_estimate: page.total_estimate,
+    Ok(Json(PolicyListResponse {
+        policies: items.iter().map(|r| (&r.policy).into()).collect(),
+        truncated: page.next_cursor.is_some(),
+        cursor: page.next_cursor,
     }))
 }
 
@@ -198,7 +314,7 @@ pub async fn list_policies(
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Policy id")),
     responses(
-        (status = 200, description = "Policy", body = PolicyResponse),
+        (status = 200, description = "Policy", body = PolicyGetResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Policy not found"),
@@ -208,11 +324,85 @@ pub async fn show_policy(
     _auth: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<PolicyResponse>, AppError> {
+) -> Result<Json<PolicyGetResponse>, AppError> {
     let policy = get_policy(&state.policies_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("policy not found: {id}")))?;
-    let active_id = get_active_policy_id(&state.active_policies_ks, policy.purpose).await?;
-    let is_active = active_id == Some(id);
-    Ok(Json(PolicyResponse::from_policy(policy, is_active)))
+    Ok(Json(PolicyGetResponse {
+        policy: (&policy).into(),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /v1/policies/active — canonical `policy/active`
+// ---------------------------------------------------------------------------
+
+/// Canonical `policy/active` response: the `(contextId, purpose) →
+/// module` bindings currently in force.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveBindingsResponse {
+    pub bindings: Vec<ActiveBinding>,
+}
+
+/// One activation binding. `contextId` is omitted throughout: a VTC is
+/// a single community and does not partition its policy set per trust
+/// context, so every binding is community-wide.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveBinding {
+    pub purpose: String,
+    pub policy: PolicyModuleResponse,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct ActiveQuery {
+    /// Narrow to a single decision slot.
+    pub purpose: Option<PolicyPurpose>,
+    /// Not implemented — a VTC is not context-partitioned. Refused
+    /// rather than ignored, so a caller never reads a community-wide
+    /// binding as one scoped to their context.
+    pub context_id: Option<String>,
+}
+
+#[utoipa::path(
+    get, path = "/policies/active", tag = "policies",
+    security(("bearer_jwt" = [])),
+    params(ActiveQuery),
+    responses(
+        (status = 200, description = "Active policy bindings", body = ActiveBindingsResponse),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller is not an admin"),
+    ),
+)]
+pub async fn active_policies(
+    _auth: AdminAuth,
+    State(state): State<AppState>,
+    Query(query): Query<ActiveQuery>,
+) -> Result<Json<ActiveBindingsResponse>, AppError> {
+    if query.context_id.is_some() {
+        return Err(AppError::Validation(
+            "this maintainer does not implement the contextId filter: a VTC is a \
+             single community and its policy bindings are community-wide."
+                .into(),
+        ));
+    }
+
+    let mut bindings = Vec::new();
+    for purpose in PolicyPurpose::ALL {
+        if query.purpose.is_some_and(|f| f != purpose) {
+            continue;
+        }
+        if let Some(id) = get_active_policy_id(&state.active_policies_ks, purpose).await?
+            && let Some(p) = get_policy(&state.policies_ks, id).await?
+        {
+            bindings.push(ActiveBinding {
+                purpose: purpose.as_str().to_owned(),
+                policy: (&p).into(),
+            });
+        }
+    }
+    Ok(Json(ActiveBindingsResponse { bindings }))
 }

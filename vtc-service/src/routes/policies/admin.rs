@@ -60,35 +60,110 @@ static ACTIVATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UploadBody {
-    /// Wire-form camelCase purpose (`"join"`, `"removal"`,
-    /// `"crossCommunityRoles"`, …). Validated by serde against
-    /// [`PolicyPurpose`].
-    pub purpose: PolicyPurpose,
-    /// Full Rego source. Bounded by [`POLICY_SOURCE_MAX_BYTES`];
-    /// uploads above the cap are rejected with 413.
-    pub rego_source: String,
+    /// Human-readable module name (canonical-required).
+    pub name: String,
+    /// Full Rego source — canonical `module`. Bounded by
+    /// [`POLICY_SOURCE_MAX_BYTES`]; uploads above the cap are
+    /// rejected with 413.
+    pub module: String,
+    /// Optimistic-concurrency token. When present it MUST equal the
+    /// current highest revision for this purpose, else the caller is
+    /// writing over a revision it never saw.
+    #[serde(default)]
+    pub expected_version: Option<u32>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Canonical members this maintainer does not implement. Present
+    /// so they are *refused* rather than silently dropped — a caller
+    /// that sets `enabled: false` must not have it ignored.
+    #[serde(default)]
+    pub id: Option<Uuid>,
+    #[serde(default)]
+    pub applies_to: Option<Vec<String>>,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Ecosystem extension members. MUST carry
+    /// `org.openvtc.purpose` — see [`crate::routes::policies::read::PURPOSE_EXT_KEY`]
+    /// for why purpose is intrinsic here.
+    #[serde(default)]
+    pub ext: Option<serde_json::Value>,
+}
+
+impl UploadBody {
+    /// The decision slot this module serves.
+    ///
+    /// Canonical `policy/upsert` has no `purpose` — a module there is
+    /// purpose-agnostic and gains meaning only when activated. VTC
+    /// cannot work that way (the purpose is baked into the Rego package
+    /// and guarded), and it cannot be inferred either: only 4 of the 10
+    /// purposes have an expected package. So it is required in `ext`,
+    /// and its absence is an error rather than a guess.
+    fn purpose(&self) -> Result<PolicyPurpose, AppError> {
+        let raw = self
+            .ext
+            .as_ref()
+            .and_then(|e| e.get(crate::routes::policies::read::PURPOSE_EXT_KEY))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AppError::Validation(format!(
+                    "ext.{} is required: this maintainer binds a policy's purpose \
+                     intrinsically (it is fixed by the module's Rego package), so it \
+                     cannot be deferred to activation as canonical policy/upsert assumes",
+                    crate::routes::policies::read::PURPOSE_EXT_KEY,
+                ))
+            })?;
+        serde_json::from_value(serde_json::Value::String(raw.to_owned())).map_err(|e| {
+            AppError::Validation(format!("ext purpose {raw:?} is not a known purpose: {e}"))
+        })
+    }
+
+    fn unsupported(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.applies_to.is_some() {
+            out.push("appliesTo");
+        }
+        if self.priority.is_some() {
+            out.push("priority");
+        }
+        if self.enabled.is_some() {
+            out.push("enabled");
+        }
+        if self.id.is_some() {
+            // Canonical lets a caller target an existing module id.
+            // Here the lineage is the purpose (one active module per
+            // purpose, monotone revisions), and revision ids are
+            // server-allocated — honouring a caller-supplied id would
+            // mean pretending to update a row we actually append past.
+            out.push("id");
+        }
+        out
+    }
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct UploadResponse {
-    pub id: Uuid,
-    /// SHA-256 of the source bytes, lowercase hex. Matches what
-    /// `sha256sum policy.rego` prints — operators can verify the
-    /// upload made it across the wire intact.
-    pub sha256: String,
-    pub purpose: PolicyPurpose,
-    pub version: u32,
+    pub policy: crate::routes::policies::read::PolicyModuleResponse,
+    /// Canonical-required: true when this call created a new module
+    /// lineage rather than revising an existing one. VTC's first
+    /// revision for a purpose is a creation.
+    pub created: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct ActivateResponse {
-    pub id: Uuid,
+    /// Canonical name for the id of the policy now in force.
+    pub activated: Uuid,
     pub purpose: PolicyPurpose,
+    /// VTC extension: the activated module's source hash, so an
+    /// operator can confirm what went live without a second fetch.
     pub sha256: String,
     /// Predecessor active policy id for this purpose. `null` for
     /// the first activation under a given purpose.
@@ -143,10 +218,22 @@ pub async fn upload(
     State(state): State<AppState>,
     Json(body): Json<UploadBody>,
 ) -> Result<(StatusCode, Json<UploadResponse>), AppError> {
-    if body.rego_source.len() > POLICY_SOURCE_MAX_BYTES {
+    let unsupported = body.unsupported();
+    if !unsupported.is_empty() {
         return Err(AppError::Validation(format!(
-            "rego_source exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
-            body.rego_source.len(),
+            "this maintainer does not implement {}: it selects a policy by its \
+             activated (purpose) binding, not by appliesTo/priority matching, and \
+             modules carry no enabled flag. Refusing rather than accepting a \
+             selection hint that would never be honoured.",
+            unsupported.join(", "),
+        )));
+    }
+    let purpose = body.purpose()?;
+
+    if body.module.len() > POLICY_SOURCE_MAX_BYTES {
+        return Err(AppError::Validation(format!(
+            "module exceeds {POLICY_SOURCE_MAX_BYTES} bytes (got {})",
+            body.module.len(),
         )));
     }
 
@@ -159,22 +246,33 @@ pub async fn upload(
     // `new_policy` helper also allocates one — we override via
     // `Policy { id, .. }` after compile rather than mint twice.
     let id = Uuid::new_v4();
-    let compiled = compile(&body.rego_source, id)?;
+    let compiled = compile(&body.module, id)?;
     // Reject a module compiled into the wrong package for its declared
     // purpose — it would compile + activate cleanly, then evaluate to
     // `undefined` (silent host default-deny) for that whole ceremony.
-    validate_purpose_package(&compiled, body.purpose)?;
+    validate_purpose_package(&compiled, purpose)?;
     let sha256 = *compiled.source_sha256();
-    let version = max_version_for(&state.policies_ks, body.purpose).await? + 1;
+    let current_version = max_version_for(&state.policies_ks, purpose).await?;
+    // Optimistic concurrency: canonical `expectedVersion` must match the
+    // revision the caller believes is current, else two operators racing
+    // on the same purpose would each append a revision over the other's
+    // read with no signal.
+    if let Some(expected) = body.expected_version
+        && expected != current_version
+    {
+        return Err(AppError::Conflict(format!(
+            "expectedVersion {expected} does not match the current revision \
+             {current_version} for purpose {}",
+            purpose.as_str(),
+        )));
+    }
+    let version = current_version + 1;
+    let created = current_version == 0;
 
-    let mut policy = new_policy(
-        body.purpose,
-        body.rego_source,
-        sha256,
-        admin.0.did.clone(),
-        version,
-    );
+    let mut policy = new_policy(purpose, body.module, sha256, admin.0.did.clone(), version);
     policy.id = id;
+    policy.name = Some(body.name.clone());
+    policy.description = body.description.clone();
     store_policy(&state.policies_ks, &policy).await?;
 
     let sha256_hex = hex::encode(sha256);
@@ -184,7 +282,7 @@ pub async fn upload(
             None,
             AuditEvent::PolicyUploaded(PolicyUploadedData {
                 policy_id: id.to_string(),
-                purpose: body.purpose.as_str().to_string(),
+                purpose: purpose.as_str().to_string(),
                 sha256: sha256_hex.clone(),
                 version,
             }),
@@ -194,19 +292,21 @@ pub async fn upload(
     info!(
         actor = admin.0.did.as_str(),
         policy_id = %id,
-        purpose = body.purpose.as_str(),
+        purpose = purpose.as_str(),
         version,
         sha256 = sha256_hex.as_str(),
         "policy uploaded"
     );
 
     Ok((
-        StatusCode::CREATED,
+        if created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        },
         Json(UploadResponse {
-            id,
-            sha256: sha256_hex,
-            purpose: body.purpose,
-            version,
+            policy: (&policy).into(),
+            created,
         }),
     ))
 }
@@ -285,7 +385,7 @@ pub async fn activate(
     );
 
     Ok(Json(ActivateResponse {
-        id,
+        activated: id,
         purpose: policy.purpose,
         sha256: sha256_hex,
         previous_policy_id: previous,

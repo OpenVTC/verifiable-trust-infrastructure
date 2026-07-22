@@ -292,7 +292,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   // The active policy's IR, when it was authored visually — enables the
   // local decision trace.
   const activeIR = policyQuery.data
-    ? parseRego(policyQuery.data.regoSource)
+    ? parseRego(policyQuery.data.module)
     : null;
 
   // Editing the base evidence invalidates any satisfied needs.
@@ -608,6 +608,13 @@ function PolicyManager({
     queryFn: () => fetchPolicies(purpose),
   });
 
+  // Which revision is live is now a separate canonical task
+  // (policy/active) rather than an isActive flag on each module.
+  const activeQuery = useQuery({
+    queryKey: ["active-policy", purpose],
+    queryFn: () => fetchActivePolicy(purpose),
+  });
+
   const activate = useMutation({
     mutationFn: activatePolicy,
     onSuccess: () => {
@@ -631,7 +638,7 @@ function PolicyManager({
     mutationFn: async (row: PolicyRow) => {
       const created = await uploadPolicy({
         purpose,
-        regoSource: row.regoSource,
+        regoSource: row.module,
       });
       await activatePolicy(created.id);
     },
@@ -641,8 +648,10 @@ function PolicyManager({
     },
   });
 
-  const items = query.data?.items ?? [];
-  const active = items.find((p) => p.isActive) ?? null;
+  const items: PolicyRow[] = query.data?.policies ?? [];
+  // Activeness is no longer a flag on the module: the active binding
+  // comes from its own query (policy/active).
+  const active = activeQuery.data ?? null;
   const canAuthor = CEREMONY_PURPOSES.includes(purpose);
 
   if (editing) {
@@ -651,7 +660,7 @@ function PolicyManager({
         purpose={purpose}
         pkg={pkgFor(purpose)}
         initial={
-          (active && parseRego(active.regoSource)) || blankIR(purpose)
+          (active && parseRego(active.module)) || blankIR(purpose)
         }
         saving={saveVisual.isPending}
         onSave={(rego) => saveVisual.mutate(rego)}
@@ -678,11 +687,13 @@ function PolicyManager({
             <span className="cer-chip">
               active <b>v{active.version}</b>
             </span>
-            <span className="cer-chip">
-              sha <b>{active.sha256.slice(0, 12)}…</b>
-            </span>
+            {active.ext?.["org.openvtc.sha256"] && (
+              <span className="cer-chip">
+                sha <b>{active.ext["org.openvtc.sha256"].slice(0, 12)}…</b>
+              </span>
+            )}
           </div>
-          <ActivePolicyView source={active.regoSource} />
+          <ActivePolicyView source={active.module} />
         </>
       )}
       {!query.isLoading && !active && (
@@ -738,7 +749,7 @@ function PolicyManager({
           >
             Author visually ▸
           </button>
-          {active && !parseRego(active.regoSource) && (
+          {active && !parseRego(active.module) && (
             <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
               The active policy was hand-written — opening the editor starts
               from a blank route set.
@@ -788,19 +799,20 @@ function VersionRow({
 }) {
   const [comparing, setComparing] = useState(false);
   const isOlder = active ? row.version < active.version : false;
+  const isActive = active?.id === row.id;
 
   return (
-    <div className={`cer-ver${row.isActive ? " active" : ""}`}>
+    <div className={`cer-ver${isActive ? " active" : ""}`}>
       <div className="cer-ver-head">
         <span className="cer-ver-v">v{row.version}</span>
         <span className="cer-ver-meta">{formatIso(row.createdAt)}</span>
-        {row.isActive ? (
+        {isActive ? (
           <span className="cer-chip" style={{ color: "var(--vd-allow)" }}>
             active
           </span>
         ) : (
           <>
-            {active && !row.isActive && (
+            {active && !isActive && (
               <button
                 type="button"
                 className="cer-ver-compare"
@@ -840,8 +852,8 @@ function VersionDiff({
   from: PolicyRow;
   to: PolicyRow;
 }) {
-  const fromIr = parseRego(from.regoSource);
-  const toIr = parseRego(to.regoSource);
+  const fromIr = parseRego(from.module);
+  const toIr = parseRego(to.module);
   if (!fromIr || !toIr) {
     return (
       <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>

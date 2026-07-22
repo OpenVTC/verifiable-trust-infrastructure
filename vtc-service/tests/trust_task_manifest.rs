@@ -52,8 +52,6 @@ const UNBOUND_OK: &[(&str, &str)] = &[
         "DELETE shares the personhood mount",
     ),
     ("members/update/1.0", "PATCH shares the members/{did} mount"),
-    ("policies/list/1.0", "GET shares the upload/1.0 mount"),
-    ("policies/show/1.0", "GET shares the upload/1.0 mount"),
     (
         "website/files/delete/1.0",
         "shares the website files show mount",

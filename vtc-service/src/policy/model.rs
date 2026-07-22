@@ -78,6 +78,16 @@ pub struct Policy {
     /// purpose is `1`. Audit + the operator UX use this to label
     /// historical revisions ("removal.rego v3 archived").
     pub version: u32,
+    /// Operator-supplied module name and description (canonical
+    /// `PolicyModule.name` / `.description`; `name` is required there).
+    ///
+    /// `#[serde(default)]` keeps rows written before these fields
+    /// deserializable; they fall back to the purpose for `name`, which
+    /// is the only stable human-meaningful identifier such a row has.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Hard cap on the bytes-on-disk size of [`Policy::rego_source`].
@@ -258,6 +268,8 @@ mod tests {
             author_did: "did:key:zAdmin".into(),
             created_at: Utc::now(),
             version: 7,
+            name: None,
+            description: None,
         };
         let json = serde_json::to_value(&policy).unwrap();
         assert!(json["regoSource"].is_string());

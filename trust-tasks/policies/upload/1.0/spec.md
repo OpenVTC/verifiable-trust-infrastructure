@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/policies/upload/1.0
 title: VTC Policies — Upload
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/policy/upsert/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
