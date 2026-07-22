@@ -350,9 +350,16 @@ mod tests {
         .await
         .unwrap();
 
-        let handle = load_active_update_key(&ks, scid, &[Multibase::from(pub_mb.clone())])
-            .await
-            .expect("found via webvh_keys");
+        let seed_store = MockSeedStore(Mutex::new(None));
+        let handle = load_active_update_key(
+            &ks,
+            &seed_store,
+            "m/26'/0'/0'",
+            scid,
+            &[Multibase::from(pub_mb.clone())],
+        )
+        .await
+        .expect("found via webvh_keys");
         assert_eq!(handle.hash, hash);
         assert_eq!(handle.version_id, "1-zV");
     }
@@ -380,9 +387,16 @@ mod tests {
         };
         ks.insert(format!("key:{key_id}"), &record).await.unwrap();
 
-        let handle = load_active_update_key(&ks, scid, &[Multibase::from(pub_mb.clone())])
-            .await
-            .expect("found via legacy fallback");
+        let seed_store = MockSeedStore(Mutex::new(None));
+        let handle = load_active_update_key(
+            &ks,
+            &seed_store,
+            "m/26'/0'/0'",
+            scid,
+            &[Multibase::from(pub_mb.clone())],
+        )
+        .await
+        .expect("found via legacy fallback");
         assert_eq!(handle.public_key, pub_mb);
         assert_eq!(handle.derivation_path, "m/26'/0'/0'/0");
         assert_eq!(handle.version_id, "legacy");
@@ -392,9 +406,19 @@ mod tests {
     async fn load_active_update_key_errors_when_no_match() {
         let ks = test_keys_ks().await;
         let pub_mb = test_pub_multibase();
-        let err = load_active_update_key(&ks, "Q123", &[Multibase::from(pub_mb)])
-            .await
-            .unwrap_err();
+        // A real seed is present, so the recovery fallback runs and re-derives
+        // keys — but none match this foreign pubkey, so it returns None and we
+        // fall through to the terminal "no active update key" error.
+        let seed_store = MockSeedStore(Mutex::new(Some(vec![0x42u8; 32])));
+        let err = load_active_update_key(
+            &ks,
+            &seed_store,
+            "m/26'/0'/0'",
+            "Q123",
+            &[Multibase::from(pub_mb)],
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(err, UpdateDidWebvhError::Library(ref m) if m.contains("no active update key"))
         );
@@ -403,7 +427,10 @@ mod tests {
     #[tokio::test]
     async fn load_active_update_key_errors_on_empty_update_keys_list() {
         let ks = test_keys_ks().await;
-        let err = load_active_update_key(&ks, "Q", &[]).await.unwrap_err();
+        let seed_store = MockSeedStore(Mutex::new(None));
+        let err = load_active_update_key(&ks, &seed_store, "m/26'/0'/0'", "Q", &[])
+            .await
+            .unwrap_err();
         assert!(matches!(err, UpdateDidWebvhError::Library(ref m) if m.contains("no update_keys")));
     }
 
