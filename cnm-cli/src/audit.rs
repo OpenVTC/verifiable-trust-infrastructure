@@ -18,7 +18,7 @@ use crate::auth;
 /// Canonical HTTP header carrying the Trust-Task URL (mirrors
 /// `vti_common::trust_task::HEADER_NAME`).
 const TRUST_TASK_HEADER: &str = "Trust-Task";
-const VERIFY_TASK: &str = "https://trusttasks.org/openvtc/vtc/audit/verify/1.0";
+const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 
 /// `cnm audit verify` — walk the community's audit chain and report.
 ///

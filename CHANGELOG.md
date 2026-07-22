@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### vtc-service / cnm-cli — Phase 2b(i): `audit/verify` repointed to the canonical registry
+
+* `POST /v1/audit/verify` now carries
+  `https://trusttasks.org/spec/audit/verify/0.1`; the
+  `openvtc/vtc/audit/verify/1.0` task is **retired** with `supersededBy`.
+* **No payload change.** The canonical schema was derived from VTC's
+  `VerifyResponse`: the request is parameterless and every response field
+  (`verified`, `entriesExamined`, `entriesVerified`, `legacySkipped`,
+  `unparseableSkipped`, optional `head` / `chainBreak`) already matched,
+  including `chainBreak.kind`, which VTC already emits as the canonical
+  `tamperedEntry` / `brokenLink` rather than a snake_case variant.
+* `audit/list` is **not** repointed here — it needs a genuine response
+  projection (`{items,next_cursor,total_estimate}` →
+  `{entries,truncated,cursor}`, snake_case envelope → canonical
+  `AuditEnvelope`) plus a rewrite of the `vtc-service/admin-ui` audit
+  plugin that consumes the current shape. It follows as its own change.
+
 ### vta-sdk 0.19.18 — a failed DIDComm connect no longer leaks a live socket
 
 * `DIDCommSession::connect_with_secrets` created an `ATM` and then ran several

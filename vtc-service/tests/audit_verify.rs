@@ -15,7 +15,7 @@ use tower::ServiceExt;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const VERIFY_TASK: &str = "https://trusttasks.org/openvtc/vtc/audit/verify/1.0";
+const VERIFY_TASK: &str = "https://trusttasks.org/spec/audit/verify/0.1";
 const PROFILE_TASK: &str = "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0";
 
 struct Fixture {

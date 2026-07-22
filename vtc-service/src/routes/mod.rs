@@ -382,7 +382,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         ))
         .routes(tt(
             routes!(audit::verify_audit_chain),
-            "https://trusttasks.org/openvtc/vtc/audit/verify/1.0",
+            "https://trusttasks.org/spec/audit/verify/0.1",
         ))
         // Config
         .routes(tt(
