@@ -45,6 +45,27 @@ pub fn parse_step_up_require(s: Option<&str>) -> Result<Option<StepUpMode>, AppE
     }
 }
 
+/// Whether this ACL entry can **confer** authority over `ctx` in a consented
+/// delegation — either an explicit approve-scope covering it, or admin standing
+/// over it. Set *membership* alone is deliberately not enough: being in an
+/// approver set lets a holder *approve*, but conferring the authority the task
+/// actually needs requires holding it. This is the single predicate behind both
+/// the consent gate's fail-fast pre-check (is this task even satisfiable?) and
+/// grant-time `compute_delegated_contexts` (did the actual approvers confer it?),
+/// so the two can never diverge.
+pub(crate) fn acl_entry_can_confer(entry: &AclEntry, ctx: &str) -> bool {
+    if entry.approve_scope.covers(ctx) {
+        return true;
+    }
+    let claims = AuthClaims {
+        did: entry.did.clone(),
+        role: entry.role.clone(),
+        allowed_contexts: entry.allowed_contexts.clone(),
+        ..Default::default()
+    };
+    claims.role == Role::Admin && claims.has_context_access(ctx)
+}
+
 /// Build an [`ApproveScope`] from the two wire fields. `all` wins over an
 /// explicit context list; both absent ⇒ [`ApproveScope::None`] (confers
 /// nothing, the default).
@@ -673,6 +694,43 @@ mod tests {
         let body = to_result_body(&base);
         assert!(!body.approve_all_contexts);
         assert!(body.approve_contexts.is_empty());
+    }
+
+    /// `acl_entry_can_confer` — the single predicate behind the consent gate's
+    /// fail-fast and grant-time delegation. Locks in the exact production bug: an
+    /// approver whose approve-scope is `[openvtc]` cannot confer `openvtc-glenn`,
+    /// so a consent for a DID in `openvtc-glenn` completes but confers nothing and
+    /// loops. `openvtc` is not an ancestor of `openvtc-glenn` — distinct segments.
+    #[test]
+    fn acl_entry_can_confer_matches_scope_and_admin_but_not_a_sibling_context() {
+        // Approve-scope for `openvtc` covers `openvtc`, not the sibling `openvtc-glenn`.
+        let scoped = AclEntry::new("did:key:zApprover", Role::Reader, "seed")
+            .with_approve_scope(ApproveScope::Contexts(vec!["openvtc".into()]));
+        assert!(acl_entry_can_confer(&scoped, "openvtc"));
+        assert!(
+            !acl_entry_can_confer(&scoped, "openvtc-glenn"),
+            "approve-scope `openvtc` must NOT confer the distinct context `openvtc-glenn`"
+        );
+
+        // `ApproveScope::All` confers any context.
+        let all = AclEntry::new("did:key:zAll", Role::Reader, "seed")
+            .with_approve_scope(ApproveScope::All);
+        assert!(acl_entry_can_confer(&all, "openvtc-glenn"));
+
+        // A context admin confers via admin standing (no approve-scope needed).
+        let ctx_admin = AclEntry::new("did:key:zAdmin", Role::Admin, "seed")
+            .with_contexts(vec!["openvtc-glenn".into()]);
+        assert!(acl_entry_can_confer(&ctx_admin, "openvtc-glenn"));
+        assert!(!acl_entry_can_confer(&ctx_admin, "some-other-context"));
+
+        // A super-admin (Admin + empty contexts) confers anywhere.
+        let super_admin = AclEntry::new("did:key:zSuper", Role::Admin, "seed");
+        assert!(acl_entry_can_confer(&super_admin, "openvtc-glenn"));
+
+        // A plain reader with no approve-scope confers nothing — set membership
+        // alone is not authority.
+        let reader = AclEntry::new("did:key:zReader", Role::Reader, "seed");
+        assert!(!acl_entry_can_confer(&reader, "openvtc-glenn"));
     }
 
     /// Regression test for the eviction-via-shrink bug.

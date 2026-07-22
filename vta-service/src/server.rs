@@ -428,6 +428,12 @@ pub async fn run(
     storage_encryption_key: Option<[u8; 32]>,
     tee_context: Option<TeeContext>,
     allow_degraded: bool,
+    // Recovery: when set (via `--flush-queues`), purge BOTH this DID's mediator
+    // inbox and its outbound (sender) queue before going live. The outbound
+    // purge is the piece the config-driven `drain_inbox_on_start` can't do — a
+    // message loop can fill the sender queue at the mediator (`limits.queue.
+    // sender`) so no new sends get through until it's cleared.
+    flush_queues: bool,
 ) -> Result<(), AppError> {
     // Fail fast on a broken config rather than booting a half-started
     // service that passes a port-liveness check but can't function (P0.9).
@@ -905,7 +911,7 @@ pub async fn run(
                     // undeliverable backlog can't stall the pickup handshake and
                     // wedge the (shared DIDComm+TSP) socket. Best-effort, and off
                     // unless `messaging.drain_inbox_on_start` is set.
-                    if messaging_config.drain_inbox_on_start {
+                    if messaging_config.drain_inbox_on_start || flush_queues {
                         match app_state.atm.as_ref() {
                             Some(atm) => {
                                 let cleared = drain_mediator_inbox(
@@ -917,11 +923,38 @@ pub async fn run(
                                 info!(
                                     count = cleared,
                                     mediator = %messaging_config.mediator_did,
-                                    "drain_inbox_on_start: cleared queued mediator messages before going live"
+                                    "cleared queued mediator inbox before going live"
+                                );
+                            }
+                            None => {
+                                warn!("inbox drain requested but no ATM is available; skipping")
+                            }
+                        }
+                    }
+
+                    // `--flush-queues` additionally clears the OUTBOUND (sender)
+                    // queue — messages this DID sent that are still queued at the
+                    // mediator awaiting delivery. A message loop can fill that
+                    // queue (`limits.queue.sender`), after which the mediator
+                    // rejects every new send until it drains. The inbox drain
+                    // above cannot touch it; this does.
+                    if flush_queues {
+                        match app_state.atm.as_ref() {
+                            Some(atm) => {
+                                let cleared = flush_mediator_outbox(
+                                    atm,
+                                    &messaging_config.mediator_did,
+                                    vta_did,
+                                )
+                                .await;
+                                info!(
+                                    count = cleared,
+                                    mediator = %messaging_config.mediator_did,
+                                    "flush_queues: cleared outbound sender queue before going live"
                                 );
                             }
                             None => warn!(
-                                "drain_inbox_on_start is set but no ATM is available; skipping drain"
+                                "--flush-queues set but no ATM is available; skipping outbox flush"
                             ),
                         }
                     }
@@ -1960,6 +1993,76 @@ async fn drain_mediator_inbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> u
             Ok(_) => cleared += ids.len(),
             Err(e) => {
                 warn!(error = %e, cleared, "drain: delete failed; stopping to avoid a loop");
+                break;
+            }
+        }
+    }
+    cleared
+}
+
+/// Clear this DID's OUTBOUND (sender) queue at the mediator — messages it sent
+/// that are still queued for delivery to recipients.
+///
+/// A message loop (e.g. a wedged consent/update retry) can pile these up until
+/// the mediator's per-sender cap (`limits.queue.sender`) trips and rejects every
+/// new send, wedging the VTA's outbound path. [`drain_mediator_inbox`] can't
+/// touch these — they live in the sender's outbox, not this DID's inbox — so
+/// this lists the outbox and deletes each message. The VTA is authorised to
+/// delete them because the mediator's owner check admits the message's `FROM`
+/// (sender), not only its `TO` (recipient). Best-effort; returns how many were
+/// cleared and never panics.
+#[cfg(feature = "didcomm")]
+async fn flush_mediator_outbox(atm: &ATM, mediator_did: &str, vta_did: &str) -> usize {
+    use affinidi_tdk::messaging::messages::{DeleteMessageRequest, Folder};
+
+    let profile = match affinidi_tdk::messaging::profiles::ATMProfile::new(
+        atm,
+        Some("VTA-flush-outbox".to_string()),
+        vta_did.to_string(),
+        Some(mediator_did.to_string()),
+    )
+    .await
+    {
+        Ok(p) => match atm.profile_add(&p, false).await {
+            Ok(arc) => arc,
+            Err(e) => {
+                warn!(error = %e, "flush outbox: could not register mediator profile; skipping");
+                return 0;
+            }
+        },
+        Err(e) => {
+            warn!(error = %e, "flush outbox: could not build mediator profile; skipping");
+            return 0;
+        }
+    };
+
+    let list = match atm.list_messages(&profile, Folder::Outbox).await {
+        Ok(l) => l,
+        Err(e) => {
+            warn!(error = %e, "flush outbox: could not list outbound queue; skipping");
+            return 0;
+        }
+    };
+    let ids: Vec<String> = list.iter().map(|m| m.msg_id.clone()).collect();
+    if ids.is_empty() {
+        return 0;
+    }
+
+    // The mediator caps a single delete request at 100 ids, so batch.
+    let mut cleared = 0usize;
+    for chunk in ids.chunks(100) {
+        match atm
+            .delete_messages_direct(
+                &profile,
+                &DeleteMessageRequest {
+                    message_ids: chunk.to_vec(),
+                },
+            )
+            .await
+        {
+            Ok(r) => cleared += r.success.len(),
+            Err(e) => {
+                warn!(error = %e, cleared, "flush outbox: delete batch failed; stopping");
                 break;
             }
         }

@@ -363,6 +363,55 @@ async fn consent_gate(
 
     let min_approvals = require.min_approvals.max(1);
 
+    // Fail fast on an *unsatisfiable* elevation. When the requester can't
+    // self-authorize the subject context, the only way this task ever executes
+    // is for enough approvers to CONFER that context. If fewer than
+    // `min_approvals` members of the set even *can* (no approve-scope covering
+    // it, not admin over it), then no approval — however many arrive — will ever
+    // produce a non-empty delegation: the ceremony would complete, the grant
+    // would carry nothing, and execute would forbid. That is the silent
+    // consent-approved-but-still-forbidden loop. Reject now, before minting a
+    // doomed pending, with a message that names the context and the gap.
+    if !requester_authorized && let Some(ctx) = subject_context.as_deref() {
+        let mut eligible = 0u32;
+        for member in &members {
+            if let Ok(Some(entry)) = crate::acl::get_acl_entry(&state.acl_ks, member).await
+                && !entry.is_expired(now)
+                && crate::operations::acl::acl_entry_can_confer(&entry, ctx)
+            {
+                eligible += 1;
+            }
+        }
+        if eligible < min_approvals {
+            crate::audit::record_consent(
+                &state.audit_ks,
+                "consent.required",
+                &auth.did,
+                type_uri,
+                "denied:unsatisfiable",
+                Some(&format!(
+                    "context={ctx}; approverSet={}; eligible={eligible}/{min_approvals}",
+                    require.approver_set
+                )),
+            )
+            .await;
+            return Some(reject_with(
+                doc,
+                RejectReason::PermissionDenied {
+                    reason: format!(
+                        "this task updates context `{ctx}`, which the requester is not authorized \
+                         for and which consent cannot confer: {eligible} of the required \
+                         {min_approvals} member(s) of approver set `{}` hold approve authority \
+                         over `{ctx}`. Grant an approver approve-scope (or admin) over `{ctx}`, \
+                         or run this as a principal that already holds the context — otherwise \
+                         the approval would succeed but the update would still be refused.",
+                        require.approver_set
+                    ),
+                },
+            ));
+        }
+    }
+
     // Reuse the pending request — and so the challenge, and so the digest the
     // approver is being asked to sign — but only while it still describes the
     // world. If the state moved under it, the effects it was minted with are no

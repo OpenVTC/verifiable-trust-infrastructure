@@ -300,6 +300,7 @@ async fn main() {
         storage_encryption_key,
         tee_context,
         true,
+        false, // flush_queues: not applicable to ephemeral enclave boots
     )
     .await
     {

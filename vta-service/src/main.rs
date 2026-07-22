@@ -51,6 +51,15 @@ struct Cli {
     #[arg(long)]
     allow_degraded: bool,
 
+    /// On startup, before going live, purge BOTH this DID's mediator inbox and
+    /// its outbound (sender) queue. Recovery for a queue wedged full by a
+    /// message loop: once the mediator's per-sender cap (`limits.queue.sender`)
+    /// trips, it rejects every new send until the backlog is cleared. Implies
+    /// the inbox drain and additionally clears the outbound queue the
+    /// config-driven `drain_inbox_on_start` can't reach. Ignored by subcommands.
+    #[arg(long)]
+    flush_queues: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1989,6 +1998,7 @@ async fn main() {
                 None, // no storage encryption (non-TEE mode)
                 None, // no TEE context (use vta-enclave for TEE mode)
                 cli.allow_degraded,
+                cli.flush_queues,
             )
             .await
             {

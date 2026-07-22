@@ -14,7 +14,7 @@ use trust_tasks_rs::{RejectReason, TrustTask};
 
 use super::TrustTaskOutcome;
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
-use crate::acl::{Role, get_acl_entry};
+use crate::acl::get_acl_entry;
 use crate::auth::AuthClaims;
 use crate::policy::consent;
 use crate::server::AppState;
@@ -98,16 +98,7 @@ async fn compute_delegated_contexts(
         if entry.is_expired(now) {
             continue;
         }
-        let confers = entry.approve_scope.covers(ctx) || {
-            let claims = AuthClaims {
-                did: approver.clone(),
-                role: entry.role.clone(),
-                allowed_contexts: entry.allowed_contexts.clone(),
-                ..Default::default()
-            };
-            claims.role == Role::Admin && claims.has_context_access(ctx)
-        };
-        if confers {
+        if crate::operations::acl::acl_entry_can_confer(&entry, ctx) {
             conferrers += 1;
         }
     }
@@ -376,6 +367,7 @@ pub(super) async fn handle_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acl::Role;
     use crate::test_support::{build_signing_test_app_state, seed_acl_entry};
 
     const OPENVTC: &str = "openvtc";
