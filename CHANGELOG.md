@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### vtc-service — Phase 2b(ii): `audit/list` repointed, with filters actually implemented
+
+* `GET /v1/audit` now carries `https://trusttasks.org/spec/audit/list/0.1`;
+  `openvtc/vtc/audit/list/1.0` is **retired** with `supersededBy`.
+* **Breaking (admin API).** The response is the canonical envelope —
+  `{entries, truncated, cursor}` replaces `{items, next_cursor,
+  total_estimate}` — and each entry is a canonical `AuditEnvelope`:
+  `eventId` / `recordedAt` / `action` / `actor` / `target` / `detail`,
+  camelCase throughout. `limit` is renamed `pageSize`. The bundled
+  admin UI is updated in step.
+* Because the canonical envelope is `additionalProperties: false`,
+  VTC's maintainer-specific fields (`actorDidHash`, `targetDidHash`,
+  `auditKeyId`, `eventVersion`) move under `ext.vtc` rather than being
+  dropped. `action` is the serde tag already stored on the envelope
+  (e.g. `MemberRemoved`) and `detail` is that variant's payload.
+* `prevHash` / `entryHash` are emitted as **hex**, matching the encoding
+  `audit/verify` already uses for `head`. They are base64 in storage, so
+  a caller comparing `verify.head` with the newest entry's `entryHash`
+  would otherwise see a spurious mismatch; a test now pins the two
+  together.
+* **Filters are implemented, not accepted-and-ignored.** `from`, `to`,
+  `action` and `actor` filter server-side. `outcome` and `contextId` —
+  which this maintainer has no data for (there is no envelope-level
+  outcome, and a VTC is a single community, so the log is not
+  context-partitioned) — are **refused with an error naming them**.
+  Returning an unfiltered page to a caller who asked for
+  `actor=X&outcome=denied` would invite exactly the wrong conclusion.
+* `truncated` reports whether more *matching* entries remain, not
+  whether more rows remain, so a filtered query can't hand back a cursor
+  that leads only to an empty tail.
+* Cursors are bound to their filter set: `Cursor::{encode,decode}_bound`
+  fold the active filters into the HMAC without putting them on the
+  wire, so resuming a page under different filters fails as a tampered
+  cursor. Canonical requires filters not change mid-pagination; unbound
+  `encode`/`decode` stay byte-compatible, so other paginated endpoints
+  are unaffected.
+
 ### vtc-service / cnm-cli — Phase 2b(i): `audit/verify` repointed to the canonical registry
 
 * `POST /v1/audit/verify` now carries

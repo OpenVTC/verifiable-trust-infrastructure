@@ -62,9 +62,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/audit/list/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "audit/list/1.0",
-      "rest": "GET /v1/audit"
+      "rest": "GET /v1/audit",
+      "supersededBy": "https://trusttasks.org/spec/audit/list/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/audit/verify/1.0",

@@ -379,6 +379,77 @@ pub enum AuditEvent {
     SchemaDeleted(SchemaChangeData),
 }
 
+impl AuditEvent {
+    /// The serde tag for this variant — the same string that appears as
+    /// `{"type": ...}` on the stored envelope.
+    ///
+    /// This is what the canonical `audit/list` Trust Task exposes as
+    /// `action`, and what `audit/list`'s `action` filter matches on, so
+    /// it must stay identical to the serialized tag. Kept as an explicit
+    /// match (rather than round-tripping through `serde_json`) so listing
+    /// does not pay a serialization per row just to learn the name.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::CommunityInstalled(..) => "CommunityInstalled",
+            Self::EmergencyBootstrapInvoked(..) => "EmergencyBootstrapInvoked",
+            Self::AdminPasskeyRegistered(..) => "AdminPasskeyRegistered",
+            Self::AdminPasskeyRevoked(..) => "AdminPasskeyRevoked",
+            Self::ConfigChanged(..) => "ConfigChanged",
+            Self::ConfigReloaded(..) => "ConfigReloaded",
+            Self::RestartRequested(..) => "RestartRequested",
+            Self::CommunityProfileUpdated(..) => "CommunityProfileUpdated",
+            Self::AuditKeyRotated(..) => "AuditKeyRotated",
+            Self::MemberUpdated(..) => "MemberUpdated",
+            Self::RoleChanged(..) => "RoleChanged",
+            Self::AdminPromoted(..) => "AdminPromoted",
+            Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
+            Self::JoinRequestApproved(..) => "JoinRequestApproved",
+            Self::JoinRequestRejected(..) => "JoinRequestRejected",
+            Self::MemberAdded(..) => "MemberAdded",
+            Self::MemberRemoved(..) => "MemberRemoved",
+            Self::MembershipReciprocated(..) => "MembershipReciprocated",
+            Self::PolicyUploaded(..) => "PolicyUploaded",
+            Self::PolicyActivated(..) => "PolicyActivated",
+            Self::VmcIssued(..) => "VmcIssued",
+            Self::VecIssued(..) => "VecIssued",
+            Self::MembershipRenewed(..) => "MembershipRenewed",
+            Self::StatusListFlipped(..) => "StatusListFlipped",
+            Self::DidRotated(..) => "DidRotated",
+            Self::RegistryStatusChanged(..) => "RegistryStatusChanged",
+            Self::RegistrySyncSucceeded(..) => "RegistrySyncSucceeded",
+            Self::RegistrySyncFailed(..) => "RegistrySyncFailed",
+            Self::RegistryRecordPolicyOverride(..) => "RegistryRecordPolicyOverride",
+            Self::CrossCommunitySessionMinted(..) => "CrossCommunitySessionMinted",
+            Self::VrcPublished(..) => "VrcPublished",
+            Self::VrcRevoked(..) => "VrcRevoked",
+            Self::PersonhoodAsserted(..) => "PersonhoodAsserted",
+            Self::PersonhoodRevoked(..) => "PersonhoodRevoked",
+            Self::CustomEndorsementIssued(..) => "CustomEndorsementIssued",
+            Self::CustomEndorsementRevoked(..) => "CustomEndorsementRevoked",
+            Self::EndorsementTypeRegistered(..) => "EndorsementTypeRegistered",
+            Self::EndorsementTypeDeleted(..) => "EndorsementTypeDeleted",
+            Self::WebsiteFileWritten(..) => "WebsiteFileWritten",
+            Self::WebsiteFileDeleted(..) => "WebsiteFileDeleted",
+            Self::WebsiteBundleDeployed(..) => "WebsiteBundleDeployed",
+            Self::WebsiteGenerationRolledBack(..) => "WebsiteGenerationRolledBack",
+            Self::AdminUiServed(..) => "AdminUiServed",
+            Self::AclGranted(..) => "AclGranted",
+            Self::AclUpdated(..) => "AclUpdated",
+            Self::AclRevoked(..) => "AclRevoked",
+            Self::InvitationIssued(..) => "InvitationIssued",
+            Self::InvitationRevoked(..) => "InvitationRevoked",
+            Self::SessionRevoked(..) => "SessionRevoked",
+            Self::SignedOut(..) => "SignedOut",
+            Self::BackupExported(..) => "BackupExported",
+            Self::BackupImported(..) => "BackupImported",
+            Self::AdminInviteCreated(..) => "AdminInviteCreated",
+            Self::AdminInviteRevoked(..) => "AdminInviteRevoked",
+            Self::SchemaRegistered(..) => "SchemaRegistered",
+            Self::SchemaDeleted(..) => "SchemaDeleted",
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Variant data structs
 // ---------------------------------------------------------------------------

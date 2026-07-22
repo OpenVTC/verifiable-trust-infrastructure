@@ -160,6 +160,24 @@ impl Cursor {
     /// Encode + sign the cursor under `audit_key`. Returns the
     /// base64url-encoded wire form ready for `next_cursor`.
     pub fn encode(&self, audit_key: &[u8; 32]) -> String {
+        self.encode_bound(audit_key, &[])
+    }
+
+    /// As [`Cursor::encode`], but additionally binds `binding` into the
+    /// HMAC — without placing it on the wire.
+    ///
+    /// This is how a paginated query pins the filters a cursor was minted
+    /// under. The bytes are covered by the tag but not transmitted, so the
+    /// wire format is unchanged and a caller cannot rewrite them. Resuming
+    /// with a *different* binding fails verification and surfaces as
+    /// [`AppError::InvalidCursor`], which is what stops a consumer from
+    /// paging with one filter set and continuing with another — a silent
+    /// way to skip entries that must never happen on an audit log.
+    ///
+    /// Callers with no binding use [`Cursor::encode`], which passes an
+    /// empty slice and is therefore wire- and tag-compatible with cursors
+    /// minted before this method existed.
+    pub fn encode_bound(&self, audit_key: &[u8; 32], binding: &[u8]) -> String {
         let mut buf = Vec::with_capacity(4 + self.last_key.len() + 8 + HMAC_TAG_LEN);
         buf.extend_from_slice(&(self.last_key.len() as u32).to_be_bytes());
         buf.extend_from_slice(&self.last_key);
@@ -167,6 +185,7 @@ impl Cursor {
 
         let mut mac = HmacSha256::new_from_slice(audit_key).expect("32-byte HMAC key");
         mac.update(&buf);
+        mac.update(binding);
         let tag = mac.finalize().into_bytes();
         buf.extend_from_slice(&tag);
 
@@ -178,6 +197,18 @@ impl Cursor {
     /// tampered, or signed under a different key) — the error
     /// deliberately doesn't reveal which.
     pub fn decode(wire: &str, audit_key: &[u8; 32]) -> Result<Self, AppError> {
+        Self::decode_bound(wire, audit_key, &[])
+    }
+
+    /// As [`Cursor::decode`], but requires the cursor to have been minted
+    /// with the same `binding` (see [`Cursor::encode_bound`]). A mismatch
+    /// is indistinguishable from a tampered cursor and yields
+    /// [`AppError::InvalidCursor`].
+    pub fn decode_bound(
+        wire: &str,
+        audit_key: &[u8; 32],
+        binding: &[u8],
+    ) -> Result<Self, AppError> {
         let raw = B64.decode(wire).map_err(|_| AppError::InvalidCursor)?;
         if raw.len() <= HMAC_TAG_LEN + 4 + 8 {
             return Err(AppError::InvalidCursor);
@@ -189,6 +220,7 @@ impl Cursor {
 
         let mut mac = HmacSha256::new_from_slice(audit_key).expect("32-byte HMAC key");
         mac.update(payload);
+        mac.update(binding);
         mac.verify_slice(received_tag)
             .map_err(|_| AppError::InvalidCursor)?;
 
@@ -310,6 +342,45 @@ mod tests {
 
     const KEY_A: [u8; 32] = [0xAA; 32];
     const KEY_B: [u8; 32] = [0xBB; 32];
+
+    /// A bound cursor only decodes under the same binding. This is what
+    /// stops a filtered listing from being resumed under different
+    /// filters — a silent way to skip entries.
+    #[test]
+    fn a_bound_cursor_rejects_a_different_binding() {
+        let c = Cursor::new(b"audit:2026-01-01:abc".to_vec(), 7);
+        let wire = c.encode_bound(&KEY_A, b"action=MemberAdded");
+
+        assert_eq!(
+            Cursor::decode_bound(&wire, &KEY_A, b"action=MemberAdded").unwrap(),
+            c
+        );
+        assert!(matches!(
+            Cursor::decode_bound(&wire, &KEY_A, b"action=MemberRemoved"),
+            Err(AppError::InvalidCursor)
+        ));
+        // Dropping the binding entirely is also a change.
+        assert!(matches!(
+            Cursor::decode(&wire, &KEY_A),
+            Err(AppError::InvalidCursor)
+        ));
+        // And the key still has to match.
+        assert!(matches!(
+            Cursor::decode_bound(&wire, &KEY_B, b"action=MemberAdded"),
+            Err(AppError::InvalidCursor)
+        ));
+    }
+
+    /// Unbound encode/decode must stay byte-compatible with cursors
+    /// minted before binding existed, so other paginated endpoints
+    /// (e.g. policy list) are unaffected.
+    #[test]
+    fn an_unbound_cursor_round_trips_as_before() {
+        let c = Cursor::new(b"policy:001".to_vec(), 3);
+        let wire = c.encode(&KEY_A);
+        assert_eq!(Cursor::decode(&wire, &KEY_A).unwrap(), c);
+        assert_eq!(wire, c.encode_bound(&KEY_A, &[]));
+    }
 
     fn make_pairs(count: usize) -> Vec<RawKvPair> {
         (0..count)

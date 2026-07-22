@@ -78,42 +78,54 @@ const SYSTEM_EVENT_KINDS = new Set([
   "RegistrySyncFailed",
 ]);
 
-const TRUST_TASK = "https://trusttasks.org/openvtc/vtc/audit/list/1.0";
+const TRUST_TASK = "https://trusttasks.org/spec/audit/list/0.1";
 
-interface AuditEnvelope {
-  event_id: string;
-  event_version: number;
-  schema_version: number;
-  timestamp: string;
-  audit_key_id: string;
-  actor_did_hash: string;
-  actor_did_plain: string | null;
-  target_did_hash: string | null;
-  target_did_plain: string | null;
-  event: Record<string, unknown> | string;
+// Canonical `audit/list/0.1` entry shape. The maintainer-specific
+// fields VTC used to expose at the top level (keyed actor/target
+// hashes, the audit key id, the per-variant version) now live under
+// `ext.vtc`, because the canonical envelope is
+// `additionalProperties: false`.
+interface AuditEntry {
+  eventId: string;
+  recordedAt: string;
+  action: string;
+  actor: string | null;
+  target?: string | null;
+  schemaVersion: number;
+  prevHash: string;
+  entryHash: string;
+  detail: Record<string, unknown>;
+  ext?: {
+    vtc?: {
+      eventVersion?: number;
+      auditKeyId?: string;
+      actorDidHash?: string;
+      targetDidHash?: string | null;
+    };
+  };
 }
 
-interface Paginated<T> {
-  items: T[];
-  next_cursor?: string | null;
-  total_estimate?: number | null;
+interface AuditListResponse {
+  entries: AuditEntry[];
+  truncated: boolean;
+  cursor?: string | null;
 }
 
 async function fetchAuditPage(
   cursor: string | null,
-  limit: number,
-): Promise<Paginated<AuditEnvelope>> {
+  pageSize: number,
+): Promise<AuditListResponse> {
   const q = new URLSearchParams();
   if (cursor) q.set("cursor", cursor);
-  q.set("limit", String(limit));
-  return getJson<Paginated<AuditEnvelope>>(`/v1/audit?${q}`, {
+  q.set("pageSize", String(pageSize));
+  return getJson<AuditListResponse>(`/v1/audit?${q}`, {
     trustTask: TRUST_TASK,
   });
 }
 
 export function Audit() {
   const [cursor, setCursor] = useState<string | null>(null);
-  const [items, setItems] = useState<AuditEnvelope[]>([]);
+  const [items, setItems] = useState<AuditEntry[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [showSystem, setShowSystem] = useState(false);
   const [filterText, setFilterText] = useState("");
@@ -131,11 +143,11 @@ export function Audit() {
   useEffect(() => {
     if (!query.data) return;
     if (cursor === null) {
-      setItems(query.data.items);
+      setItems(query.data.entries);
     } else {
-      setItems((prev) => [...prev, ...query.data!.items]);
+      setItems((prev) => [...prev, ...query.data!.entries]);
     }
-    setNextCursor(query.data.next_cursor ?? null);
+    setNextCursor(query.data.cursor ?? null);
   }, [query.data, cursor]);
 
   useEffect(() => {
@@ -150,14 +162,14 @@ export function Audit() {
   const visibleItems = useMemo(() => {
     const needle = filterText.trim().toLowerCase();
     return items.filter((env) => {
-      const kind = eventKind(env.event);
+      const kind = env.action;
       if (!showSystem && SYSTEM_EVENT_KINDS.has(kind)) return false;
       if (!needle) return true;
       const haystack = [
         kind,
         EVENT_DESCRIPTIONS[kind] ?? "",
-        env.actor_did_plain ?? "",
-        env.target_did_plain ?? "",
+        env.actor ?? "",
+        env.target ?? "",
       ]
         .join(" ")
         .toLowerCase();
@@ -225,8 +237,8 @@ export function Audit() {
               setNextCursor(null);
               const result = await query.refetch();
               if (result.data) {
-                setItems(result.data.items);
-                setNextCursor(result.data.next_cursor ?? null);
+                setItems(result.data.entries);
+                setNextCursor(result.data.cursor ?? null);
               }
             }}
           >
@@ -275,7 +287,7 @@ export function Audit() {
               </tr>
             )}
             {visibleItems.map((env) => (
-              <AuditRow key={env.event_id} env={env} />
+              <AuditRow key={env.eventId} env={env} />
             ))}
           </tbody>
         </table>
@@ -297,14 +309,14 @@ export function Audit() {
   );
 }
 
-function AuditRow({ env }: { env: AuditEnvelope }) {
+function AuditRow({ env }: { env: AuditEntry }) {
   const [open, setOpen] = useState(false);
-  const kind = eventKind(env.event);
+  const kind = env.action;
   const description = EVENT_DESCRIPTIONS[kind];
   return (
     <>
       <tr>
-        <td title={env.timestamp}>{formatIso(env.timestamp)}</td>
+        <td title={env.recordedAt}>{formatIso(env.recordedAt)}</td>
         <td>
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span>{description ?? kind}</span>
@@ -319,9 +331,9 @@ function AuditRow({ env }: { env: AuditEnvelope }) {
           </div>
         </td>
         <td>
-          {env.actor_did_plain ? (
-            <code className="truncate" title={env.actor_did_plain}>
-              {env.actor_did_plain}
+          {env.actor ? (
+            <code className="truncate" title={env.actor}>
+              {env.actor}
             </code>
           ) : (
             <span className="muted" title="Redacted by RTBF">
@@ -330,11 +342,11 @@ function AuditRow({ env }: { env: AuditEnvelope }) {
           )}
         </td>
         <td>
-          {env.target_did_plain ? (
-            <code className="truncate" title={env.target_did_plain}>
-              {env.target_did_plain}
+          {env.target ? (
+            <code className="truncate" title={env.target}>
+              {env.target}
             </code>
-          ) : env.target_did_hash ? (
+          ) : env.ext?.vtc?.targetDidHash ? (
             <span className="muted" title="Redacted by RTBF">
               redacted
             </span>
@@ -364,21 +376,11 @@ function AuditRow({ env }: { env: AuditEnvelope }) {
   );
 }
 
-function eventKind(event: AuditEnvelope["event"]): string {
-  // The event field is serde-tagged: `{ kind: "MemberAdded", … }`
-  // or `"MemberAdded"` for unit variants. Surface the tag for the
-  // table column; the JSON detail row shows the full payload.
-  if (typeof event === "string") return event;
-  if (event && typeof event === "object") {
-    const obj = event as Record<string, unknown>;
-    for (const key of Object.keys(obj)) {
-      return key;
-    }
-  }
-  return "Unknown";
-}
+// `eventKind` used to dig the serde tag out of the nested `event`
+// object. Canonical `audit/list` hands back `action` as a plain string
+// and the payload separately as `detail`, so the helper is gone.
 
-function formatEvent(env: AuditEnvelope): string {
+function formatEvent(env: AuditEntry): string {
   try {
     return JSON.stringify(env, null, 2);
   } catch {
