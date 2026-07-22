@@ -3,9 +3,10 @@
 ## Overview
 
 The VTA implements a defense-in-depth security model with eight layers of
-protection when deployed in TEE mode. Non-TEE deployments use layers 4-8;
-TEE deployments add hardware isolation, KMS-backed secrets, and encrypted
-storage.
+protection when deployed in TEE mode. Non-TEE deployments use the
+identity/access, seal, and audit layers (5, 6, 8); TEE deployments add
+hardware isolation, KMS-backed secrets, encrypted storage, config locking,
+and the vsock network controls (layers 1-4, 7).
 
 For TEE implementation details (KMS bootstrap code, encrypted store layer,
 config changes), see [TEE Enclave Security Design](tee-architecture.md).
@@ -35,7 +36,7 @@ config changes), see [TEE Enclave Security Design](tee-architecture.md).
 - Storage key derived from master seed via HKDF-SHA256
 - Deterministic derivation -- same seed produces same key across restarts
 - Keys stored in plaintext for prefix scans; values always encrypted
-- Each value: `[12-byte random nonce][ciphertext][16-byte auth tag]`
+- Each value: `[4-byte magic "VAE1"][12-byte random nonce][ciphertext + 16-byte GCM tag]`, AEAD-bound (AAD) to its `(keyspace, key)` location
 
 ### Layer 4: Configuration Locking
 - When KMS bootstrap is active, environment variable overrides are blocked
@@ -53,7 +54,7 @@ config changes), see [TEE Enclave Security Design](tee-architecture.md).
   - **Admin**: full key/DID/audit management within contexts
   - **Monitor**: infrastructure-only (metrics, health)
 - Context scoping restricts access to assigned application contexts
-- DID method whitelist blocks unsafe `did:web` in TEE mode
+- Optional DID-method allowlist (`tee.allowed_did_methods`, TEE-only, off by default) can restrict which DID methods may authenticate
 - Session state machine prevents challenge replay
 
 ### Layer 6: VTA Seal
@@ -240,7 +241,7 @@ Client                          VTA (in enclave)
 │     Semi-Trusted Zone            │
 │  (Parent EC2 instance)           │
 │  - enclave-proxy                 │
-│  - EBS volumes (ciphertext only) │
+│  - EBS (fjall, ciphertext only)  │
 │  - IAM role (limited)            │
 └──────────────┬───────────────────┘
                │ vsock (no network)
@@ -249,7 +250,7 @@ Client                          VTA (in enclave)
 │  (Nitro Enclave)                 │
 │  - VTA service                   │
 │  - Plaintext secrets (memory)    │
-│  - Encrypted storage (fjall)     │
+│  - Storage encryption key (mem)  │
 │  - /dev/nsm (attestation)        │
 └──────────────────────────────────┘
 ```
@@ -276,7 +277,7 @@ Client                          VTA (in enclave)
   seed / data-key plaintext even by MITM'ing the vsock or TLS path to KMS
 - Anti-rollback anchor: an external monotonic counter (DynamoDB, attestation-gated
   writer) detects EBS snapshot rollback / state replay when configured (`tee.kms.anchor`)
-- DID method whitelist blocks `did:web` through untrusted resolver
+- Optional DID-method allowlist (`tee.allowed_did_methods`) restricts which DID methods may authenticate, enforced at auth time (off unless configured)
 
 #### A3: Supply Chain Attacker
 **Capabilities:** Modify the enclave image or signing certificate.
@@ -320,7 +321,8 @@ Steal master seed
 │   │   └── Brute-force Ed25519 → computationally infeasible
 │   └── Bypass time window → entropy zeroed after window
 └── Intercept during KMS Decrypt
-    ├── MITM vsock proxy → TLS to KMS (webpki-roots)
+    ├── MITM vsock proxy → end-to-end TLS enclave↔KMS (CONNECT tunnel,
+    │   not terminated by the parent; system CA bundle in-enclave)
     └── Read KMS response → attestation-encrypted to enclave
         (CiphertextForRecipient, RSAES-OAEP to in-enclave RSA-2048)
 ```
@@ -377,6 +379,7 @@ Escalate privileges
 | ECDSA P-384 | EIF signing (Nitro) | 384-bit | FIPS 186-4 |
 | COSE_Sign1 | Attestation reports (Nitro) | ES384 | RFC 8152 |
 | RSAES-OAEP-SHA256 | KMS attested `Recipient` (data-key unwrap) | RSA-2048 (ephemeral) | PKCS#1 v2.2 |
+| AES-256-CBC | KMS `CiphertextForRecipient` CMS content encryption | 256-bit | RFC 5652 / NIST SP 800-38A |
 
 ## Deployment Security Checklist
 
