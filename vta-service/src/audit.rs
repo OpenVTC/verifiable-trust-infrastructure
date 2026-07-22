@@ -117,6 +117,47 @@ pub async fn record_with_detail(
     audit_ks.insert(key, &entry).await
 }
 
+/// Best-effort audit write for the DTTE consent ceremony.
+///
+/// The consent gate and the approver-decision handler are security-relevant but
+/// were entirely un-audited: a request raised, an approver's decision, a grant
+/// minted/consumed, and every rejection left no durable trace, so a looped or
+/// failed elevation was invisible after the fact. This records the whole chain
+/// (`consent.required` → `consent.decision` → `consent.granted` →
+/// `consent.consumed`) under stable action names.
+///
+/// A missing audit row must never change a gate/decision outcome — same contract
+/// as the orchestrator's post-update emission — so errors are logged and
+/// swallowed rather than propagated.
+pub async fn record_consent(
+    audit_ks: &KeyspaceHandle,
+    action: &str,
+    actor: &str,
+    resource: &str,
+    outcome: &str,
+    detail: Option<&str>,
+) {
+    if let Err(e) = record_with_detail(
+        audit_ks,
+        action,
+        actor,
+        Some(resource),
+        outcome,
+        None,
+        None,
+        detail,
+    )
+    .await
+    {
+        tracing::warn!(
+            action,
+            actor,
+            error = %e,
+            "DTTE consent audit emission failed; ceremony outcome is unaffected"
+        );
+    }
+}
+
 /// Remove audit log entries older than `retention_days`.
 pub async fn cleanup_expired_logs(
     audit_ks: &KeyspaceHandle,

@@ -259,6 +259,15 @@ async fn consent_gate(
             // we go on to refuse. Re-submitting mints a fresh request, and the
             // approver is asked again against the world as it now is.
             if let Err(why) = approvals_still_authorize(&require, &members, &grant, &auth.did) {
+                crate::audit::record_consent(
+                    &state.audit_ks,
+                    "consent.consumed",
+                    &auth.did,
+                    type_uri,
+                    "denied:approver_no_longer_authorized",
+                    Some(&format!("digest={digest}; {why}")),
+                )
+                .await;
                 return Some(reject_with(
                     doc,
                     RejectReason::PermissionDenied { reason: why },
@@ -284,6 +293,15 @@ async fn consent_gate(
                     "consent-diag: grant CONSUMED but the re-planned world no longer matches it \
                      — re-raising consent. If this line repeats, THIS is the loop."
                 );
+                crate::audit::record_consent(
+                    &state.audit_ks,
+                    "consent.consumed",
+                    &auth.did,
+                    type_uri,
+                    "denied:plan_changed",
+                    Some(&format!("digest={digest}; {why}")),
+                )
+                .await;
                 return Some(reject_with(
                     doc,
                     RejectReason::TaskFailed {
@@ -295,6 +313,18 @@ async fn consent_gate(
             // The grant is authorized and the world still matches. If it carries
             // a delegation (approvers conferred a context the requester lacked),
             // hand it to the caller to widen `auth` for this one dispatch.
+            crate::audit::record_consent(
+                &state.audit_ks,
+                "consent.consumed",
+                &auth.did,
+                type_uri,
+                "success",
+                Some(&format!(
+                    "digest={digest}; approvers={}",
+                    grant.approvers.join(",")
+                )),
+            )
+            .await;
             *delegated_out = grant.delegated_contexts;
             return None;
         }
@@ -452,6 +482,28 @@ async fn consent_gate(
     if newly_raised {
         super::consent_request::push_signed_requests(state, &requests).await;
     }
+
+    // Durable record that a Destructive task was gated behind consent. Auditing
+    // on every re-submit (not just the newly-raised one) is deliberate: a wedged
+    // elevation shows up here as a run of `consent.required` rows with a stable
+    // digest and no matching `consent.consumed` — the loop, made visible after
+    // the fact without needing live logs.
+    crate::audit::record_consent(
+        &state.audit_ks,
+        "consent.required",
+        &auth.did,
+        type_uri,
+        if newly_raised {
+            "pending:raised"
+        } else {
+            "pending:reasked"
+        },
+        Some(&format!(
+            "digest={digest}; approverSet={}; minApprovals={min_approvals}; challenge={}",
+            require.approver_set, pending.challenge
+        )),
+    )
+    .await;
 
     Some(reject_with(
         doc,

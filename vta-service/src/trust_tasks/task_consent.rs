@@ -148,6 +148,18 @@ pub(super) async fn handle_decision(
     let pending = match consent::pending_by_wire_digest(ks, &payload.payload_digest, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            crate::audit::record_consent(
+                &state.audit_ks,
+                "consent.decision",
+                &approver,
+                &payload.payload_digest,
+                "denied:no_pending",
+                Some(
+                    "approver decided on a request that no longer exists (expired, \
+                      already resolved, or re-minted under a new challenge)",
+                ),
+            )
+            .await;
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
@@ -161,6 +173,15 @@ pub(super) async fn handle_decision(
 
     // Bind the decision to this exact request.
     if payload.challenge != pending.challenge {
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "denied:challenge_mismatch",
+            Some(&format!("digest={}", pending.digest)),
+        )
+        .await;
         return reject_with(
             &doc,
             RejectReason::PermissionDenied {
@@ -180,6 +201,15 @@ pub(super) async fn handle_decision(
         .cloned()
         .unwrap_or_default();
     if !members.iter().any(|m| m == &approver) {
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "denied:not_a_member",
+            Some(&format!("approverSet={}", pending.approver_set)),
+        )
+        .await;
         return reject_with(
             &doc,
             RejectReason::PermissionDenied {
@@ -192,6 +222,15 @@ pub(super) async fn handle_decision(
     }
     // A requester can't approve their own task when the policy excludes them.
     if pending.exclude_requester && approver == pending.requester_did {
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "denied:requester_excluded",
+            None,
+        )
+        .await;
         return reject_with(
             &doc,
             RejectReason::PermissionDenied {
@@ -203,6 +242,15 @@ pub(super) async fn handle_decision(
     // A denial aborts the request.
     if payload.decision == Decision::Deny {
         let _ = consent::delete_pending(ks, &pending).await;
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.decision",
+            &approver,
+            &pending.type_uri,
+            "success:deny",
+            Some(&format!("digest={}", pending.digest)),
+        )
+        .await;
         return success_response(
             &doc,
             json!({ "status": "denied", "payloadDigest": payload.payload_digest }),
@@ -250,6 +298,36 @@ pub(super) async fn handle_decision(
             return app_error_to_reject(&doc, e);
         }
         let _ = consent::delete_pending(ks, &updated).await;
+        // The approval that crossed the threshold, then the grant it minted:
+        // two rows so the trail shows both the final approver and the single-use
+        // grant the requester will consume.
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.decision",
+            &approver,
+            &updated.type_uri,
+            "success:approve",
+            Some(&format!(
+                "digest={}; approvals={}/{}",
+                updated.digest,
+                updated.approvals.len(),
+                updated.min_approvals
+            )),
+        )
+        .await;
+        crate::audit::record_consent(
+            &state.audit_ks,
+            "consent.granted",
+            &updated.requester_did,
+            &updated.type_uri,
+            "success",
+            Some(&format!(
+                "digest={}; approvers={}",
+                updated.digest,
+                updated.approvals.join(",")
+            )),
+        )
+        .await;
         // Nudge the requester that a grant is ready, so it re-submits at once
         // instead of polling. Best-effort — the grant is already durable; a lost
         // notice only costs the requester a poll cycle.
@@ -270,6 +348,20 @@ pub(super) async fn handle_decision(
         );
     }
 
+    crate::audit::record_consent(
+        &state.audit_ks,
+        "consent.decision",
+        &approver,
+        &updated.type_uri,
+        "success:approve_partial",
+        Some(&format!(
+            "digest={}; approvals={}/{}",
+            updated.digest,
+            updated.approvals.len(),
+            updated.min_approvals
+        )),
+    )
+    .await;
     success_response(
         &doc,
         json!({
