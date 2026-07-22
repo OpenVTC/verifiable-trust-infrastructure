@@ -13,7 +13,8 @@ use tower::ServiceExt;
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const CONFIG_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/config/show/0.1";
+const PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
 
 /// Thin wrapper over [`TestVtc`] preserving this suite's original
 /// fixture API (`fix.router`, `fix.state`). The keyspace + `AppState`
@@ -66,7 +67,7 @@ async fn get_returns_effective_config_with_defaults() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", SHOW_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -99,7 +100,7 @@ async fn get_requires_admin_role() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", SHOW_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -114,7 +115,7 @@ async fn get_requires_authentication() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", SHOW_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -131,10 +132,10 @@ async fn patch_applies_reloadable_key_immediately() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -147,7 +148,7 @@ async fn patch_applies_reloadable_key_immediately() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", SHOW_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -170,10 +171,10 @@ async fn patch_restart_required_key_is_pending() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"server.port":9100}"#))
+        .body(Body::from(r#"{"overrides":{"server.port":9100}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -190,10 +191,10 @@ async fn patch_unknown_key_rejected_with_reason() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"made.up.key":"value"}"#))
+        .body(Body::from(r#"{"overrides":{"made.up.key":"value"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -216,10 +217,10 @@ async fn patch_invalid_value_rejected_with_reason() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"verbose"}"#)) // not in enum
+        .body(Body::from(r#"{"overrides":{"log.level":"verbose"}}"#)) // not in enum
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -239,16 +240,16 @@ async fn patch_invalid_value_rejected_with_reason() {
 async fn patch_mixed_batch_partitions_correctly() {
     let fix = build_with(true, None).await;
     let token = token_for(&fix, "admin").await;
-    let body = json!({
+    let body = json!({ "overrides": {
         "log.level": "debug",      // applied
         "server.port": 9100,        // pendingRestart
         "made.up": "x",             // rejected (unknown)
         "log.level_v2": "debug",    // rejected (unknown)
-    });
+    }});
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(body.to_string()))
@@ -277,10 +278,10 @@ async fn patch_requires_admin_role() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _body) = body_value(resp).await;
@@ -294,10 +295,10 @@ async fn patch_empty_body_returns_empty_response() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{}"#))
+        .body(Body::from(r#"{"overrides":{}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -316,10 +317,12 @@ async fn patch_emits_config_changed_audit_with_real_actor() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug","server.port":9100}"#))
+        .body(Body::from(
+            r#"{"overrides":{"log.level":"debug","server.port":9100}}"#,
+        ))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _body) = body_value(resp).await;
@@ -364,10 +367,10 @@ async fn patch_rejects_only_does_not_need_audit_writer() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"made.up.key":"value"}"#))
+        .body(Body::from(r#"{"overrides":{"made.up.key":"value"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, body) = body_value(resp).await;
@@ -385,10 +388,10 @@ async fn patch_503_when_audit_writer_missing() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _body) = body_value(resp).await;
@@ -416,10 +419,73 @@ async fn get_with_wrong_trust_task_returns_415() {
     assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
+/// GET and PATCH share `/v1/admin/config` but carry **separate** canonical
+/// Trust Tasks. Each verb must reject its *sibling's* task, not just some
+/// unrelated one — otherwise the split is cosmetic and either task would
+/// authorise either verb.
+#[tokio::test]
+async fn each_verb_rejects_its_siblings_trust_task() {
+    let fix = build().await;
+    let token = token_for(&fix, "admin").await;
+
+    // GET presented with the PATCH task → 415.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", PATCH_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "GET must not accept the config/patch task"
+    );
+
+    // PATCH presented with the SHOW task → 415.
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", SHOW_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
+        .unwrap();
+    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "PATCH must not accept the config/show task"
+    );
+}
+
+/// The PATCH body is the canonical `{"overrides": {...}}` envelope, not a
+/// bare key→value map. A top-level config key is now an unknown member.
+#[tokio::test]
+async fn patch_rejects_the_pre_migration_flattened_body() {
+    let fix = build_with(true, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("PATCH")
+        .uri("/v1/admin/config")
+        .header("Trust-Task", PATCH_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .unwrap();
+    let (status, _) = body_value(fix.router.clone().oneshot(req).await.unwrap()).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the flattened pre-migration body must not be silently accepted"
+    );
+}
+
 // ──────────────────────── Reload ────────────────────────
 
-const RELOAD_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0";
-const RESTART_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0";
+const RELOAD_TASK: &str = "https://trusttasks.org/spec/config/reload/0.1";
+const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
 
 async fn reload(fix: &Fixture, token: &str) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -467,13 +533,10 @@ async fn reload_applies_hot_reloadable_diff() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
-        )
+        .header("Trust-Task", "https://trusttasks.org/spec/config/patch/0.1")
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     let (status, _body) = body_value(resp).await;
@@ -679,10 +742,10 @@ async fn export_includes_profile_and_db_overrides() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -868,10 +931,10 @@ async fn import_round_trip_export_then_import_equivalence() {
     let req = Request::builder()
         .method("PATCH")
         .uri("/v1/admin/config")
-        .header("Trust-Task", CONFIG_TASK)
+        .header("Trust-Task", PATCH_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(Body::from(r#"{"log.level":"debug"}"#))
+        .body(Body::from(r#"{"overrides":{"log.level":"debug"}}"#))
         .unwrap();
     let _ = src.router.clone().oneshot(req).await.unwrap();
 

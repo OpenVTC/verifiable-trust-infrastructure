@@ -45,10 +45,7 @@ async fn minted_admin_token_is_accepted() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/admin/config")
-                .header(
-                    "trust-task",
-                    "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
-                )
+                .header("trust-task", "https://trusttasks.org/spec/config/show/0.1")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),

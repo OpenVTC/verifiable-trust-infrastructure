@@ -415,23 +415,29 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // render before any session exists. Curated subset only (no
         // extensions, no registry status).
         .routes(routes!(community::profile::get_public_profile))
-        // Admin config (M0.8 — GET + PATCH share one task; will
-        // split into admin/config/show/1.0 + patch/1.0 when
-        // TrustTaskRouter gains per-method selectors).
+        // Admin config (M0.8). GET and PATCH share a path but carry
+        // *separate* canonical tasks — `task_routes` layers the method
+        // router and axum merges same-path routers per method, so each
+        // verb enforces its own URI (pinned by
+        // `vti_common::trust_task::openapi` tests).
         .routes(tt(
-            routes!(admin::config::get_config, admin::config::patch_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
+            routes!(admin::config::get_config),
+            "https://trusttasks.org/spec/config/show/0.1",
+        ))
+        .routes(tt(
+            routes!(admin::config::patch_config),
+            "https://trusttasks.org/spec/config/patch/0.1",
         ))
         // Reload + restart (M0.8.3). Reload applies hot-reloadable
         // settings in-place; restart requires a supervisor (412
         // `SupervisorRequired` otherwise).
         .routes(tt(
             routes!(admin::config::reload_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0",
+            "https://trusttasks.org/spec/config/reload/0.1",
         ))
         .routes(tt(
             routes!(admin::config::restart_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0",
+            "https://trusttasks.org/spec/config/restart/0.1",
         ))
         // Export / import (M0.8.4). Export returns the portable
         // (db-layer overrides + community profile) JSON; import runs

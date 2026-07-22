@@ -50,8 +50,8 @@ const PASSKEY_REGISTER_TASK: &str =
 const PASSKEY_LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
 const COMMUNITY_PROFILE_TASK: &str =
     "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0";
-const ADMIN_CONFIG_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0";
-const RESTART_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0";
+const ADMIN_CONFIG_PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
+const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
 
 struct Fixture {
     state: AppState,
@@ -372,9 +372,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
         &fix.router,
         "PATCH",
         "/v1/admin/config",
-        ADMIN_CONFIG_TASK,
+        ADMIN_CONFIG_PATCH_TASK,
         Some(&admin_token),
-        Some(json!({ "log.level": "debug" })),
+        Some(json!({ "overrides": { "log.level": "debug" } })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "config PATCH: {body}");

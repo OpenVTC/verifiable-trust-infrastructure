@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0
 title: VTC Admin — Restart Daemon
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/config/restart/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -98,9 +98,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "admin/config/manage/1.0",
-      "rest": "GET, PATCH /v1/admin/config"
+      "rest": "GET, PATCH /v1/admin/config",
+      "supersededBy": "https://trusttasks.org/spec/config/show/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0",
@@ -140,15 +141,17 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "admin/config/reload/1.0",
-      "rest": "POST /v1/admin/config/reload"
+      "rest": "POST /v1/admin/config/reload",
+      "supersededBy": "https://trusttasks.org/spec/config/reload/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/restart/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "admin/config/restart/1.0",
-      "rest": "POST /v1/admin/config/restart"
+      "rest": "POST /v1/admin/config/restart",
+      "supersededBy": "https://trusttasks.org/spec/config/restart/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",

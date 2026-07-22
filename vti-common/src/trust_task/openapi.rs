@@ -95,6 +95,95 @@ mod tests {
             .0
     }
 
+    #[utoipa::path(get, path = "/v1/admin/config", responses((status = 200)))]
+    async fn cfg_show() -> &'static str {
+        "show"
+    }
+
+    #[utoipa::path(patch, path = "/v1/admin/config", responses((status = 200)))]
+    async fn cfg_patch() -> &'static str {
+        "patch"
+    }
+
+    const SHOW: &str = "https://trusttasks.org/spec/config/show/0.1";
+    const PATCH: &str = "https://trusttasks.org/spec/config/patch/0.1";
+
+    /// Two methods on **one path** can carry **different** Trust Tasks.
+    ///
+    /// `task_routes` layers the method router, and axum merges same-path
+    /// method routers per method, so each verb keeps its own layer. This is
+    /// what lets a GET/PATCH pair mount as `config/show` + `config/patch`
+    /// instead of collapsing onto a single combined task.
+    async fn split_app() -> Router {
+        OpenApiRouter::new()
+            .routes(task_routes(
+                routes!(cfg_show),
+                TrustTask::new(SHOW).unwrap(),
+            ))
+            .routes(task_routes(
+                routes!(cfg_patch),
+                TrustTask::new(PATCH).unwrap(),
+            ))
+            .split_for_parts()
+            .0
+    }
+
+    async fn call(method: &str, task: &str) -> StatusCode {
+        split_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/v1/admin/config")
+                    .header(HEADER_NAME, task)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The split must not cost us the OpenAPI document: registering the same
+    /// path twice has to *merge* the two operations, not overwrite the first.
+    #[test]
+    fn per_method_split_keeps_both_operations_in_the_spec() {
+        let (_router, api): (Router, _) = OpenApiRouter::new()
+            .routes(task_routes(
+                routes!(cfg_show),
+                TrustTask::new(SHOW).unwrap(),
+            ))
+            .routes(task_routes(
+                routes!(cfg_patch),
+                TrustTask::new(PATCH).unwrap(),
+            ))
+            .split_for_parts();
+        let item = api
+            .paths
+            .paths
+            .get("/v1/admin/config")
+            .expect("path present");
+        assert!(item.get.is_some(), "GET operation dropped from the spec");
+        assert!(
+            item.patch.is_some(),
+            "PATCH operation dropped from the spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_method_tasks_on_one_path_are_enforced_independently() {
+        // Each verb accepts its own task...
+        assert_eq!(call("GET", SHOW).await, StatusCode::OK);
+        assert_eq!(call("PATCH", PATCH).await, StatusCode::OK);
+        // ...and rejects the sibling's (415 = task mismatch), so the two are
+        // not interchangeable even though they share a path.
+        assert_eq!(call("GET", PATCH).await, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            call("PATCH", SHOW).await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+    }
+
     #[tokio::test]
     async fn task_routes_enforces_the_header() {
         // Exact match → 200.

@@ -105,10 +105,22 @@ schema, update the census exception tables.
   meatiest repoint.
 - **2b `audit/*`** — repoint `audit/{list,verify}`; map VTC's envelope
   onto the canonical `AuditEnvelope`, keep the opaque cursor.
-- **2c `config/*`** — split VTC's merged `admin/config/manage` mount into
-  `config/show` + `config/patch`; repoint `reload`/`restart`.
+- **2c `config/*`** ✅ — split VTC's merged `admin/config/manage` mount into
+  `config/show` + `config/patch`; repointed `reload`/`restart`. The PATCH
+  body gained the canonical `overrides` wrapper (dropped
+  `#[serde(flatten)]`). `config/legacy/manage` and `admin/config/
+  {export,import}` stay on `openvtc/` — no canonical counterpart.
+  **Finding that unblocks 2d:** a merged GET+PATCH mount does *not* need
+  "per-method Trust-Task selectors" — `task_routes` layers the method
+  router and axum merges same-path method routers per method, so each
+  verb enforces its own URI. Pinned by
+  `vti_common::trust_task::openapi::per_method_tasks_on_one_path_are_enforced_independently`.
 - **2d `acl/*`** — repoint remaining ACL bindings to canonical
-  `acl/{show,change-role,revoke,list,grant}`.
+  `acl/{show,change-role,revoke,list,grant}`. The 2-mount → 5-task fan-out
+  is *not* blocked (see 2c's finding); the real work is payload
+  reconciliation: `did`→`subject`, `allowed_contexts`→`scopes`, `u64`
+  epoch → RFC3339 `date-time`, and adding the canonical-required
+  `truncated` to list responses.
 - **2e `auth/*`** — collapse `auth/admin-login` → `auth/authenticate`
   (cookie behaviour to a binding/`ext`); passkey enrolment →
   `auth/passkey/enroll/*` (its inline UV is removed in Phase 3).

@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/config/reload/1.0
 title: VTC Admin — Reload Config
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/config/reload/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

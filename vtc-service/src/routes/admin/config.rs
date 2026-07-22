@@ -41,12 +41,16 @@ use vti_common::audit::{
     ConfigReloadedData, ConfigSource, RestartRequestedData,
 };
 
-/// PATCH request body: arbitrary `key → value` map. Keys not in
+/// PATCH request body: a `key → value` map under `overrides`. Keys not in
 /// [`crate::config_store::REGISTRY`] are reported back under
 /// `rejected` rather than silently dropped.
+///
+/// The map is wrapped (rather than `#[serde(flatten)]`ed to the top level) to
+/// match canonical `spec/config/patch/0.1`, whose envelope is
+/// `additionalProperties: false` around a single `overrides` object.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PatchRequest {
-    #[serde(flatten)]
     pub overrides: HashMap<String, Value>,
 }
 

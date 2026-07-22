@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### vtc-service — Phase 2c: config Trust Tasks repointed to the canonical registry
+
+* `GET /v1/admin/config` now carries `https://trusttasks.org/spec/config/show/0.1`,
+  `PATCH` carries `spec/config/patch/0.1`, and reload / restart carry
+  `spec/config/{reload,restart}/0.1`. The `openvtc/vtc/admin/config/
+  {manage,reload,restart}/1.0` tasks are **retired** with `supersededBy`
+  (SPEC §5.3). `config/legacy/manage` and `admin/config/{export,import}` keep
+  their `openvtc/` URIs — they have no canonical counterpart.
+* **Breaking (admin API):** the PATCH body now wraps its key→value map in an
+  `overrides` object — `{"overrides":{"log.level":"debug"}}` — to match
+  canonical `config/patch/0.1`, whose envelope is `additionalProperties:
+  false`. Previously the map was flattened to the top level. Unknown top-level
+  members are now rejected rather than treated as config keys.
+* The merged GET+PATCH mount was split into two separately-enforced tasks.
+  A long-standing comment claimed this had to wait for `TrustTaskRouter` to
+  gain per-method task selectors; that was **mistaken**. `task_routes` layers
+  the *method* router and axum merges same-path method routers per method, so
+  each verb already enforces its own URI. Now pinned by
+  `vti_common::trust_task::openapi::per_method_tasks_on_one_path_are_enforced_independently`,
+  which also unblocks the ACL fan-out in Phase 2d.
+
 ### vta-sdk 0.19.14 — republish on didwebvh-rs 0.6
 
 * Dependency-only release, but a necessary one: the published `vta-sdk 0.19.13`

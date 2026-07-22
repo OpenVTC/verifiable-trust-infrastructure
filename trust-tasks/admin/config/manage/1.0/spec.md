@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/config/manage/1.0
 title: VTC — Admin Runtime Configuration (Show + Patch)
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/config/show/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -21,10 +22,25 @@ The reload + restart half of the spec §14.6 surface
 lands in a follow-up alongside its own Trust Task. Export/import
 (spec §14.2 + plan M0.8.4) is the third follow-up.
 
-Two HTTP methods share this task because they target the same
-resource collection; a future Phase-1+ revision will split them
-into `admin/config/show/1.0` and `admin/config/patch/1.0` when
-`TrustTaskRouter` gains per-method task selectors.
+> **Retired.** This task has been split across the two canonical
+> registry tasks and is no longer bound:
+>
+> - `GET /v1/admin/config` → `https://trusttasks.org/spec/config/show/0.1`
+>   (recorded as this task's `supersededBy`)
+> - `PATCH /v1/admin/config` → `https://trusttasks.org/spec/config/patch/0.1`
+>
+> The two verbs share a path but now carry separate Trust Tasks.
+> The earlier note here claimed the split had to wait for
+> `TrustTaskRouter` to gain per-method task selectors — that was
+> mistaken: `task_routes` layers the *method* router and axum merges
+> same-path method routers per method, so each verb already enforces
+> its own URI. This is pinned by
+> `vti_common::trust_task::openapi`'s
+> `per_method_tasks_on_one_path_are_enforced_independently`.
+>
+> The PATCH body also changed with the repoint: canonical
+> `config/patch/0.1` wraps the key→value map in an `overrides`
+> object rather than flattening it to the top level.
 
 ## Semantics
 
