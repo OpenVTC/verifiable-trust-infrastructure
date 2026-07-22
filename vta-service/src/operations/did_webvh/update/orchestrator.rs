@@ -708,9 +708,23 @@ async fn run_update(
         "update_did_webvh: resolving signing key"
     );
     let signing_handle = if pre_rotation_active {
-        load_pre_rotation_signing_key(keys_ks, scid, &last_next_key_hashes).await?
+        load_pre_rotation_signing_key(
+            keys_ks,
+            seed_store,
+            &context.base_path,
+            scid,
+            &last_next_key_hashes,
+        )
+        .await?
     } else {
-        load_active_update_key(keys_ks, scid, &last_update_keys).await?
+        load_active_update_key(
+            keys_ks,
+            seed_store,
+            &context.base_path,
+            scid,
+            &last_update_keys,
+        )
+        .await?
     };
     tracing::info!(
         scid,

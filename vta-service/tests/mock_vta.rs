@@ -352,3 +352,91 @@ async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() 
 
     mock.shutdown().await;
 }
+
+/// Backward-recovery: a DID whose signing-key handle was superseded out of the
+/// active prefix (the state a pre-#730 failed-publish loop left) still updates,
+/// because the resolver re-derives the committed key from the seed.
+///
+/// Without the recovery fallback this is the permanent wedge: the key the
+/// current entry requires is invisible to `find_handle_by_hash`, so every
+/// update fails at signing and loops.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_superseded_signing_key_is_recovered_from_the_seed() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+    use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let create = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("create server-managed DID");
+    let did = create.did.clone();
+    let scid = create.scid.clone();
+
+    let doc_update = |label: &str| {
+        let scid = scid.clone();
+        let did = did.clone();
+        let client = &client;
+        let body = UpdateDidWebvhBody {
+            document: Some(serde_json::json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "z6MkExternalPubForTest",
+                }],
+            })),
+            label: Some(label.into()),
+            ..Default::default()
+        };
+        async move { client.update_did_webvh("ctx1", &scid, body).await }
+    };
+
+    // v2: a document update rotates the update key; v2's handle is now active.
+    let v2 = doc_update("v2")
+        .await
+        .expect("first document update succeeds");
+
+    // Corrupt: move v2's key handles to `superseded:` — the exact state a
+    // failed-publish loop leaves the key the next update must sign with.
+    mock.corrupt_supersede_keys(&scid, &v2.new_version_id).await;
+
+    // The next update must still succeed: the resolver can't find v2's handle
+    // in the active prefix, so it re-derives the key from the seed.
+    doc_update("v3-after-corruption")
+        .await
+        .expect("update recovers by re-deriving the superseded signing key from the seed");
+
+    mock.shutdown().await;
+}

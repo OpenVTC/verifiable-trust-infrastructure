@@ -1332,6 +1332,22 @@ impl MockVta {
         }
     }
 
+    /// Test-only corruption: move a version's key handles to the `superseded:`
+    /// prefix, reproducing the state a pre-#730 failed-publish loop left — the
+    /// key the host's current entry still requires is no longer in the *active*
+    /// prefix the resolver searches. Proves the seed-re-derivation recovery
+    /// heals a DID the handle cache alone cannot.
+    #[cfg(feature = "webvh")]
+    pub async fn corrupt_supersede_keys(&self, scid: &str, version_id: &str) {
+        crate::operations::did_webvh::webvh_keys::supersede_keys_for_version(
+            &self.ctx.keys_ks,
+            scid,
+            version_id,
+        )
+        .await
+        .expect("supersede keys for test corruption");
+    }
+
     /// Seed a webvh hosting server so a DID-mint / join flow finds a server in
     /// the catalogue. Thin wrapper over [`seed_webvh_server`] against this
     /// mock's keyspace.

@@ -16,7 +16,7 @@ use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use super::errors::UpdateDidWebvhError;
 use super::legacy::{legacy_lookup_by_public_key, legacy_lookup_pre_rotation_by_hash};
 use super::options::DerivedWebvhKey;
-use crate::keys::paths::{allocate_paths, peek_paths};
+use crate::keys::paths::{allocate_paths, path_at, peek_path_counter, peek_paths};
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
 use crate::operations::did_webvh::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
@@ -205,6 +205,8 @@ fn hash_public_key_multibase(pubkey_multibase: &str) -> Result<String, UpdateDid
 /// `derivation_path` + the active seed.
 pub(in crate::operations::did_webvh) async fn load_active_update_key(
     keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    base_path: &str,
     scid: &str,
     update_keys: &[Multibase],
 ) -> Result<WebvhKeyHandle, UpdateDidWebvhError> {
@@ -244,12 +246,77 @@ pub(in crate::operations::did_webvh) async fn load_active_update_key(
         if let Some(handle) = legacy_lookup_by_public_key(keys_ks, scid, pubkey_str, &hash).await? {
             return Ok(handle);
         }
+
+        // Recovery fallback: the handle cache doesn't have it. Re-derive from
+        // the seed. See `recover_signing_key_by_hash`.
+        if let Some(handle) =
+            recover_signing_key_by_hash(keys_ks, seed_store, base_path, scid, &hash).await?
+        {
+            return Ok(handle);
+        }
     }
 
     Err(UpdateDidWebvhError::Library(format!(
-        "no active update key for DID with SCID {scid} found in keys keyspace — \
-         operator may need to restore key material from backup"
+        "no active update key for DID with SCID {scid} found in keys keyspace, and none of \
+         its committed keys could be re-derived from the seed"
     )))
+}
+
+/// Recover a signing key the handle cache can no longer find, by re-deriving it
+/// from the seed.
+///
+/// [`webvh_keys::find_handle_by_hash`] only searches the *active* prefix, and
+/// [`webvh_keys::supersede_keys_for_version`] moves a version's handles to
+/// `superseded:` when a later version rotates past it. A DID that committed
+/// local-only versions that never reached the host (a failed-publish loop) can
+/// therefore end up with the key the host's current entry still requires sitting
+/// in `superseded:` — invisible to the resolver, so every later update fails at
+/// signing and loops.
+///
+/// But webvh keys are deterministic BIP-32 derivations, so the seed *is* the
+/// backup: scan the indices the counter has handed out, derive each, and match
+/// the committed hash. On a hit, return a handle for it (the caller re-derives
+/// the secret from its path). `None` if the hash matches no index the seed
+/// produced — genuinely foreign key material, not ours to sign with.
+async fn recover_signing_key_by_hash(
+    keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    base_path: &str,
+    scid: &str,
+    target_hash: &str,
+) -> Result<Option<WebvhKeyHandle>, UpdateDidWebvhError> {
+    let counter = peek_path_counter(keys_ks, base_path).await.map_err(|e| {
+        UpdateDidWebvhError::Persistence(format!("peek_path_counter for key recovery: {e}"))
+    })?;
+    for i in 0..=counter {
+        let path = path_at(base_path, i);
+        let derived =
+            derive_webvh_keys_at(keys_ks, seed_store, std::slice::from_ref(&path)).await?;
+        let Some(key) = derived.into_iter().find(|k| k.hash == target_hash) else {
+            continue;
+        };
+        tracing::info!(
+            scid,
+            target_hash,
+            path = %key.derivation_path,
+            "recovered a signing key by re-deriving it from the seed (handle cache miss)"
+        );
+        return Ok(Some(WebvhKeyHandle {
+            scid: scid.to_string(),
+            // Cosmetic: the resolver matches by hash, and the caller signs via
+            // the derivation path. It becomes a normal active handle again the
+            // moment the next version installs and supersedes.
+            version_id: format!("recovered-{i}"),
+            hash: key.hash,
+            public_key: key.public_key,
+            derivation_path: key.derivation_path,
+            seed_id: Some(key.seed_id),
+            role: WebvhKeyRole::UpdateKey,
+            label: "re-derived from seed (handle cache miss)".to_string(),
+            created_at: Utc::now(),
+        }));
+    }
+    Ok(None)
 }
 
 /// Resolve a webvh signing key whose hash is committed in
@@ -266,6 +333,8 @@ pub(in crate::operations::did_webvh) async fn load_active_update_key(
 /// re-derives the secret via [`derive_secret_for_handle`].
 pub(in crate::operations::did_webvh) async fn load_pre_rotation_signing_key(
     keys_ks: &KeyspaceHandle,
+    seed_store: &dyn SeedStore,
+    base_path: &str,
     scid: &str,
     committed_hashes: &[String],
 ) -> Result<WebvhKeyHandle, UpdateDidWebvhError> {
@@ -309,9 +378,19 @@ pub(in crate::operations::did_webvh) async fn load_pre_rotation_signing_key(
             );
             return Ok(handle);
         }
+
+        // Recovery fallback: re-derive the committed pre-rotation key from the
+        // seed when the handle cache lost it (superseded by a local-only
+        // version). See `recover_signing_key_by_hash`.
+        if let Some(handle) =
+            recover_signing_key_by_hash(keys_ks, seed_store, base_path, scid, hash).await?
+        {
+            return Ok(handle);
+        }
     }
     Err(UpdateDidWebvhError::Library(format!(
-        "no pre-rotation key found for any committed hash: {committed_hashes:?}"
+        "no pre-rotation key found for any committed hash, and none could be re-derived from \
+         the seed: {committed_hashes:?}"
     )))
 }
 

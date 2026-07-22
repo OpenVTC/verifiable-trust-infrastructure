@@ -14,7 +14,7 @@ mod register_server;
 mod servers;
 mod transport;
 mod update;
-mod webvh_keys;
+pub(crate) mod webvh_keys;
 
 pub use auth_cache::WebvhAuthLocks;
 pub(crate) use auth_cache::{
