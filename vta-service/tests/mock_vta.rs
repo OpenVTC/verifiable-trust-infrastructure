@@ -234,3 +234,121 @@ async fn create_did_webvh_round_trips_against_stub_host() {
 
     mock.shutdown().await;
 }
+
+/// Self-recovery from a failed publish (the DTTE / update path).
+///
+/// A webvh update commits local state before it can confirm the host received
+/// the new version, so a publish that fails leaves the local head ahead of the
+/// host. This must not wedge the DID: the confirmed-published marker must not
+/// advance on a failed publish, and the next update must reconcile (re-publish
+/// the pending log) and succeed. Before the reconcile guard, a failed publish
+/// advanced the key counter and the DID looped forever.
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn a_failed_publish_does_not_wedge_the_did_and_the_next_update_recovers() {
+    use vta_sdk::client::{CreateDidWebvhRequest, VtaClient};
+    use vta_sdk::protocols::did_management::create::WebvhPathMode;
+    use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
+
+    let mock = MockVta::start_with_webvh_host().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkWebvhAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    let create = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".into(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.into()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("create server-managed DID against the stub host");
+    let did = create.did;
+    let scid = create.scid;
+
+    let confirmed = |did: &str| {
+        let did = did.to_string();
+        let ks = mock.ctx.webvh_ks.clone();
+        async move {
+            vta_service::webvh_store::get_published_version(&ks, &did)
+                .await
+                .unwrap()
+        }
+    };
+    // Drive *document* updates (the "Edit DID" case), which rotate the update
+    // key — the exact path that burned a key index on every failed publish.
+    let update = |label: &str| {
+        let scid = scid.clone();
+        let did = did.clone();
+        let client = &client;
+        let body = UpdateDidWebvhBody {
+            document: Some(serde_json::json!({
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#key-0"),
+                    "type": "Multikey",
+                    "controller": did,
+                    "publicKeyMultibase": "z6MkExternalPubForTest",
+                }],
+            })),
+            label: Some(label.into()),
+            ..Default::default()
+        };
+        async move { client.update_did_webvh("ctx1", &scid, body).await }
+    };
+
+    // A first update lands normally and confirms a published version.
+    update("u1").await.expect("first update succeeds");
+    let after_u1 = confirmed(&did).await;
+    assert!(
+        after_u1.is_some(),
+        "a successful update records a confirmed-published version"
+    );
+
+    // Fail the next publish. The update builds a new version locally, but the
+    // host rejects it — so the confirmed marker must NOT advance.
+    mock.fail_next_publishes(1);
+    assert!(
+        update("u2-fails").await.is_err(),
+        "a publish failure surfaces as an error, not a silent success"
+    );
+    assert_eq!(
+        confirmed(&did).await,
+        after_u1,
+        "a failed publish must not advance the confirmed-published marker \
+         (that divergence is what the reconcile heals)"
+    );
+
+    // The DID is diverged (local ahead of host) but not wedged: the next update
+    // reconciles the pending publish and succeeds, advancing the marker.
+    update("u3-recovers")
+        .await
+        .expect("the next update self-recovers instead of looping");
+    assert_ne!(
+        confirmed(&did).await,
+        after_u1,
+        "recovery re-publishes the pending log and advances past the pre-failure version"
+    );
+
+    mock.shutdown().await;
+}

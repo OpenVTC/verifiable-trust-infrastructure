@@ -987,6 +987,10 @@ pub const STUB_WEBVH_DID_URL: &str = "https://webvh-host.test/dids/persona/did.j
 #[cfg(feature = "webvh")]
 pub struct StubWebvhHost {
     base_url: String,
+    /// Number of upcoming `PUT /api/dids/{mnemonic}` publishes to fail with a
+    /// 500 before accepting again — lets a test simulate a transient host
+    /// outage and assert the VTA self-recovers. Shared with the route handler.
+    fail_puts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
@@ -997,6 +1001,13 @@ impl StubWebvhHost {
     pub async fn start() -> StubWebvhHost {
         use axum::routing::{post, put};
         use serde_json::json;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Shared publish-failure budget: the PUT handler fails while this is
+        // > 0, decrementing each time, so a test can outage the host for N
+        // publishes and watch the VTA recover afterwards.
+        let fail_puts = Arc::new(AtomicUsize::new(0));
 
         /// Reject a request that arrives without an `Authorization: Bearer`
         /// header. The real hosting daemon returns 401 "missing or invalid
@@ -1091,9 +1102,26 @@ impl StubWebvhHost {
             )
             .route(
                 "/api/dids/{mnemonic}",
-                put(|headers: axum::http::HeaderMap| async move {
-                    require_bearer(&headers)?;
-                    Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                put({
+                    let fail_puts = fail_puts.clone();
+                    move |headers: axum::http::HeaderMap| {
+                        let fail_puts = fail_puts.clone();
+                        async move {
+                            require_bearer(&headers)?;
+                            // Simulate a transient host outage while the budget
+                            // lasts. The real daemon commits nothing on a 500,
+                            // so this mirrors "the publish didn't land".
+                            if fail_puts
+                                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                    n.checked_sub(1)
+                                })
+                                .is_ok()
+                            {
+                                return Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+                            }
+                            Ok::<_, axum::http::StatusCode>(axum::http::StatusCode::OK)
+                        }
+                    }
                 })
                 .delete(|headers: axum::http::HeaderMap| async move {
                     require_bearer(&headers)?;
@@ -1118,6 +1146,7 @@ impl StubWebvhHost {
 
         StubWebvhHost {
             base_url,
+            fail_puts,
             shutdown: Some(tx),
             handle: Some(handle),
         }
@@ -1127,6 +1156,12 @@ impl StubWebvhHost {
     /// goes into the seeded server DID's `WebVHHosting` service endpoint.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Fail the next `n` publishes (`PUT /api/dids/{mnemonic}`) with a 500,
+    /// then accept again — a transient outage a test can recover from.
+    pub fn fail_next_publishes(&self, n: usize) {
+        self.fail_puts.store(n, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -1285,6 +1320,16 @@ impl MockVta {
     /// [`base_url`](Self::base_url) to a URL-direct provision entry point.
     pub fn vta_did(&self) -> &str {
         &self.ctx.vta_did
+    }
+
+    /// Fail the stub host's next `n` publishes with a 500 — simulate a
+    /// transient outage so a test can assert the VTA recovers on retry.
+    /// Only meaningful for a mock started via [`start_with_webvh_host`].
+    #[cfg(feature = "webvh")]
+    pub fn fail_next_publishes(&self, n: usize) {
+        if let Some(host) = &self.webvh_host {
+            host.fail_next_publishes(n);
+        }
     }
 
     /// Seed a webvh hosting server so a DID-mint / join flow finds a server in

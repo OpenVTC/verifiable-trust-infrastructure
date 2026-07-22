@@ -21,6 +21,21 @@ fn log_key(did: &str) -> String {
     format!("log:{did}")
 }
 
+/// The version id last **confirmed published** to the hosting server for this
+/// DID. Kept in a service-private key rather than on the record so it never
+/// leaks to `list` responses or backups, and so adding it needs no change to
+/// the published `WebvhDidRecord` type.
+///
+/// Its job is recovery: a webvh update commits local state (counter, keys, log)
+/// before it can confirm the host received it, so a failed publish leaves the
+/// local head ahead of the host. Comparing the local head against this marker
+/// tells the next update to *re-publish* the pending log rather than build a
+/// new version on top of a divergence — which is what lets a failed attempt
+/// self-heal instead of wedging the DID.
+fn published_key(did: &str) -> String {
+    format!("published:{did}")
+}
+
 /// Cached daemon REST auth state for a single webvh server. Kept in
 /// a service-private keyspace prefix (`server-auth:`) — never on the
 /// public [`WebvhServerRecord`] type — so bearer tokens cannot leak
@@ -162,6 +177,28 @@ pub async fn store_did_log(
         .await
 }
 
+/// Read the version id last confirmed published to the host (see
+/// [`published_key`]). `None` means never confirmed — treat the local head as
+/// unpublished and re-publish before building on it.
+pub async fn get_published_version(
+    ks: &KeyspaceHandle,
+    did: &str,
+) -> Result<Option<String>, AppError> {
+    let bytes = ks.get_raw(published_key(did)).await?;
+    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+}
+
+/// Record that `version_id` is now confirmed present on the host. Called only
+/// after a publish returns success.
+pub async fn set_published_version(
+    ks: &KeyspaceHandle,
+    did: &str,
+    version_id: &str,
+) -> Result<(), AppError> {
+    ks.insert_raw(published_key(did), version_id.as_bytes().to_vec())
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +214,36 @@ mod tests {
         .unwrap();
         let ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
         (dir, ks)
+    }
+
+    /// The reconcile marker: absent until a publish is confirmed, then it
+    /// round-trips and overwrites. The update path compares it against the
+    /// local head to decide whether to re-publish before building anew.
+    #[tokio::test]
+    async fn published_version_marker_round_trips() {
+        let (_dir, ks) = setup_ks().await;
+        let did = "did:webvh:abc:host.example:alice";
+
+        // Absent by default — the update path reads this as "unconfirmed" and
+        // re-publishes, which is the safe assumption for a DID that has never
+        // confirmed a publish (including one whose create-time publish failed).
+        assert_eq!(get_published_version(&ks, did).await.unwrap(), None);
+
+        set_published_version(&ks, did, "3-QmHead").await.unwrap();
+        assert_eq!(
+            get_published_version(&ks, did).await.unwrap().as_deref(),
+            Some("3-QmHead")
+        );
+
+        // Overwrites, so a later confirmed version replaces the earlier one.
+        set_published_version(&ks, did, "4-QmNext").await.unwrap();
+        assert_eq!(
+            get_published_version(&ks, did).await.unwrap().as_deref(),
+            Some("4-QmNext")
+        );
+
+        // Its own key prefix — it must not collide with the log or record.
+        assert_eq!(get_did_log(&ks, did).await.unwrap(), None);
     }
 
     fn sample_server(id: &str) -> WebvhServerRecord {

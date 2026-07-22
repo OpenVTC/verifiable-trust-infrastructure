@@ -572,6 +572,70 @@ async fn run_update(
         .unwrap_or_default();
     let pre_rotation_active = !last_next_key_hashes.is_empty();
 
+    // 4b. Reconcile a prior failed publish before building anything new.
+    //
+    // This function commits local state (the derivation counter, the installed
+    // keys, the stored log) *before* it can confirm the host received the new
+    // version — see the seam below. So a publish that failed for any reason (a
+    // host blip, a 500, a timeout) leaves the local head ahead of what the host
+    // actually serves. Building a *new* version on that divergence, and burning
+    // a fresh key index to do it, is exactly what turns one failed publish into
+    // an unrecoverable loop: every retry advances the counter, so the consent
+    // gate re-mints and never converges.
+    //
+    // So before doing anything that moves state, make the host whole. The host
+    // accepts any valid full log (it re-verifies the chain and replaces its
+    // copy), so re-publishing the current local head is idempotent and heals a
+    // divergence of any depth in one call. Only once it lands do we record it
+    // as confirmed and go on to build the new version. If it fails we return
+    // here — before a single key is derived or allocated — so nothing moves and
+    // the next attempt starts clean. That is what makes a failed attempt
+    // self-recover instead of wedging the DID.
+    if mode == Mode::Execute && record.server_id != "serverless" {
+        let confirmed = webvh_store::get_published_version(webvh_ks, &record.did)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_published_version: {e}")))?;
+        if confirmed.as_deref() != Some(prior_version_id.as_str()) {
+            let server = webvh_store::get_server(webvh_ks, &record.server_id)
+                .await
+                .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_server: {e}")))?
+                .ok_or_else(|| {
+                    UpdateDidWebvhError::Publish(format!(
+                        "webvh server `{}` referenced by DID is missing",
+                        record.server_id
+                    ))
+                })?;
+            let vta_did_ref = vta_did.ok_or_else(|| {
+                UpdateDidWebvhError::Publish(
+                    "VTA DID is not configured — cannot authenticate to webvh hosting \
+                     server to reconcile a pending publish."
+                        .to_string(),
+                )
+            })?;
+            tracing::info!(
+                did = %record.did,
+                local_head = %prior_version_id,
+                ?confirmed,
+                "reconcile: re-publishing an unconfirmed local head before updating"
+            );
+            super::super::publish_log_to_server(
+                deps,
+                vta_did_ref,
+                &server,
+                &record.mnemonic,
+                &did_log,
+                None,
+            )
+            .await
+            .map_err(|e| UpdateDidWebvhError::Publish(format!("reconcile publish_did: {e}")))?;
+            webvh_store::set_published_version(webvh_ks, &record.did, &prior_version_id)
+                .await
+                .map_err(|e| {
+                    UpdateDidWebvhError::Persistence(format!("set_published_version: {e}"))
+                })?;
+        }
+    }
+
     // 5. Resolve effective pre-rotation count.
     let pre_rotation_count = opts.pre_rotation_count.unwrap_or(record.pre_rotation_count);
 
@@ -958,6 +1022,15 @@ async fn run_update(
                 .map_err(|e| UpdateDidWebvhError::Publish(format!("agent_name: {e}")))?;
             }
         }
+
+        // The host has this version now. Record it so the next update's
+        // reconcile check (step 4b) knows the local head is published and does
+        // not needlessly re-publish. A publish failure above returns before
+        // this line, leaving the marker at the prior version — which is what
+        // makes the next attempt re-publish and self-heal.
+        webvh_store::set_published_version(webvh_ks, &record.did, &new_version_id)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("set_published_version: {e}")))?;
     }
 
     // 14. Audit emission. Best-effort — a missing audit row should
