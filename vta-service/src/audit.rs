@@ -129,6 +129,13 @@ pub async fn record_with_detail(
 /// A missing audit row must never change a gate/decision outcome — same contract
 /// as the orchestrator's post-update emission — so errors are logged and
 /// swallowed rather than propagated.
+///
+/// Emits to the `audit` tracing target *as well as* persisting to the keyspace.
+/// [`record_with_detail`] alone only writes to storage — the log-stream line
+/// comes from the [`audit!`] macro, which the other audit call sites invoke
+/// alongside `record`. Without emitting here, `consent.*` rows were queryable
+/// via the audit API but invisible in `RUST_LOG` output, so a live capture of a
+/// consent loop showed no consent activity at all. Emit both.
 pub async fn record_consent(
     audit_ks: &KeyspaceHandle,
     action: &str,
@@ -137,6 +144,29 @@ pub async fn record_consent(
     outcome: &str,
     detail: Option<&str>,
 ) {
+    // Emit to the `audit` target at a level that reflects the outcome: a denied
+    // decision/consume is ERROR (like the `audit!` macro's failure arm), while
+    // normal ceremony progress (pending raised, approval, grant, consume) is
+    // INFO — a Destructive task requiring consent is expected, not an error.
+    if outcome.starts_with("denied") {
+        tracing::event!(
+            target: "audit",
+            tracing::Level::ERROR,
+            action,
+            actor,
+            resource,
+            outcome,
+        );
+    } else {
+        tracing::event!(
+            target: "audit",
+            tracing::Level::INFO,
+            action,
+            actor,
+            resource,
+            outcome,
+        );
+    }
     if let Err(e) = record_with_detail(
         audit_ks,
         action,

@@ -451,6 +451,19 @@ pub(crate) async fn dispatch_trust_task_core(
     use wire_v0_2::{WIRE_VERSION, WireVersion};
     let type_uri = doc.type_uri.to_string();
 
+    // Name every inbound trust task at the one point all three transports (TSP,
+    // DIDComm, REST) converge, after the envelope parses. Without this the
+    // per-transport dispatch logs report only sender + status, so you cannot
+    // tell a `dids/update` submit from a `task-consent/decision` — which made a
+    // consent loop (requester re-submits pile up, the approver's decision never
+    // arrives) impossible to distinguish from the log alone.
+    tracing::info!(
+        type_uri = %type_uri,
+        actor = %auth.did,
+        id = %doc.id,
+        "trust-task received"
+    );
+
     // Blanket vault audit: capture the audit context BEFORE `doc` is moved
     // into dispatch. Every password-vault and credential-vault task — read or
     // write, success or denied — produces exactly one persisted audit row here
