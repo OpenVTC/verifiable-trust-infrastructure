@@ -24,6 +24,11 @@ config changes), see [TEE Enclave Security Design](tee-architecture.md).
 - KMS key policy requires PCR0 (image hash) + PCR8 (signing cert)
 - Only the exact enclave image + signing cert can decrypt secrets
 - JWT signing key also KMS-encrypted with fingerprint verification
+- KMS calls are **attestation-gated**: `GenerateDataKey` and `Decrypt` pass a
+  `Recipient` carrying an NSM attestation document, and KMS returns
+  `CiphertextForRecipient` wrapped (RSAES-OAEP-SHA256) to an ephemeral RSA-2048
+  key generated inside the enclave. The seed / data-key plaintext is therefore
+  never exposed to the parent, even on the vsock + TLS path to KMS.
 
 ### Layer 3: Encrypted Storage
 - All fjall keyspace values encrypted with AES-256-GCM
@@ -64,10 +69,15 @@ the unseal dance) lives in
 [`02-vta/seal-and-unseal.md`](../02-vta/seal-and-unseal.md).
 
 ### Layer 7: Network Controls
-- Three vsock channels with strict purpose separation:
+- Seven vsock channels with strict purpose separation (all network I/O is
+  brokered by the parent-side proxy -- the enclave has no direct network):
   - Inbound REST (port 5100): client requests to VTA
   - Outbound mediator (port 5200): DIDComm messaging with TLS
-  - Outbound HTTPS (port 5300): allowlisted destinations only
+  - Outbound HTTPS (port 5300): allowlisted destinations only (KMS, etc.)
+  - IMDS credential proxy (port 5400): IMDSv2, hop-limited
+  - Storage proxy (port 5500): fjall keyspace I/O -- ciphertext only
+  - DID resolver bridge (port 5600): resolver sidecar on the parent
+  - Log forwarding (port 5700): enclave logs forwarded to parent stdout
 - HTTPS CONNECT proxy validates every request against allowlist
 - Non-CONNECT requests rejected with 405 Method Not Allowed
 - Connection limits prevent resource exhaustion
@@ -97,6 +107,7 @@ graph LR
     VTA -->|vsock :5400| Proxy --> IMDS
     VTA -->|vsock :5500| Proxy --> Store
     VTA -->|vsock :5600| Proxy --> Resolver
+    VTA -->|vsock :5700| Proxy --> Logs[Parent stdout]
 ```
 
 ### Layer 8: Audit & Observability
@@ -167,6 +178,16 @@ graph LR
    │   envelope (Argon2id + AES-256-GCM)      │
    └─────────────────────────────────────────┘
 ```
+
+**Boot with a KMS decrypt failure (fail-closed).** On a subsequent boot, if
+`KMS Decrypt` of the stored `seed.enc` / `jwt.enc` fails, the VTA does **not**
+blindly regenerate its identity. Only an `AccessDenied` result -- the expected
+signal after an image rebuild changes PCR0 -- or an explicit
+`tee.kms.allow_kms_reinit = true` clears the bootstrap keyspace and mints a
+fresh identity. Every other error class (KMS internal, network, invalid
+ciphertext, unknown) is treated as a transient outage or possible tampering:
+the VTA refuses to start rather than silently reset its DID and keys. Resetting
+a live identity is thus always a deliberate, logged action.
 
 ## Authentication Flow
 
@@ -243,13 +264,18 @@ Client                          VTA (in enclave)
 - HTTPS CONNECT proxy with allowlist (outbound)
 
 #### A2: Compromised Parent Instance
-**Capabilities:** Root access to the EC2 host. Can read EBS, modify proxy, inject env vars.
+**Capabilities:** Root access to the EC2 host. Can read or roll back EBS, modify the proxy, inject env vars.
 **Mitigations:**
 - Nitro Enclave memory isolation (hypervisor-enforced)
 - KMS key policy with PCR pinning (PCR0 + PCR8)
 - Environment variable locking when KMS bootstrap active
 - Storage encrypted with AES-256-GCM (key only in enclave memory)
 - Attestation reports prove enclave identity to clients
+- KMS `Decrypt` / `GenerateDataKey` responses are attestation-encrypted
+  (`Recipient` -> `CiphertextForRecipient`), so a root parent cannot read the
+  seed / data-key plaintext even by MITM'ing the vsock or TLS path to KMS
+- Anti-rollback anchor: an external monotonic counter (DynamoDB, attestation-gated
+  writer) detects EBS snapshot rollback / state replay when configured (`tee.kms.anchor`)
 - DID method whitelist blocks `did:web` through untrusted resolver
 
 #### A3: Supply Chain Attacker
@@ -295,7 +321,8 @@ Steal master seed
 │   └── Bypass time window → entropy zeroed after window
 └── Intercept during KMS Decrypt
     ├── MITM vsock proxy → TLS to KMS (webpki-roots)
-    └── Read KMS response → TLS encrypted (TODO: Recipient param)
+    └── Read KMS response → attestation-encrypted to enclave
+        (CiphertextForRecipient, RSAES-OAEP to in-enclave RSA-2048)
 ```
 
 #### AT2: Impersonate VTA
@@ -320,6 +347,8 @@ Escalate privileges
 │   └── Ed25519 signing key only in enclave memory
 ├── Replay auth challenge
 │   └── Nonce stored in session KS, state machine prevents replay
+├── Roll back EBS to pre-revocation state
+│   └── Anti-rollback anchor (monotonic counter) detects stale state
 └── Create admin via API
     └── Requires existing admin/initiator JWT with Manage role
 ```
@@ -328,7 +357,8 @@ Escalate privileges
 
 | Risk | Severity | Status | Notes |
 |------|----------|--------|-------|
-| KMS Recipient parameter not implemented | Medium | TODO | Parent could theoretically intercept KMS Decrypt response; mitigated by TLS + key policy |
+| KMS Recipient parameter | n/a | Implemented | `GenerateDataKey`/`Decrypt` use an attestation-bound `Recipient`; KMS returns `CiphertextForRecipient` (RSAES-OAEP-SHA256) to an ephemeral in-enclave RSA-2048 key, so the parent never sees plaintext |
+| EBS snapshot rollback / state replay | Medium | Mitigated (config-gated) | Anti-rollback anchor (external monotonic counter, DynamoDB, attestation-gated writer) detects replayed state when `tee.kms.anchor` is set; manifest-only if unset |
 | No per-IP rate limiting in VTA | Low | Mitigated | Deploy behind reverse proxy with rate limiting |
 | Health endpoint information disclosure | Low | Fixed | Split into minimal (public) and detailed (auth required) |
 | DID resolver through parent | Low | Mitigated | Whitelist blocks `did:web`; `did:key` and `did:webvh` are self-certifying |
@@ -346,14 +376,17 @@ Escalate privileges
 | SHA-256 | JWT fingerprint, nonce hashing | 256-bit | FIPS 180-4 |
 | ECDSA P-384 | EIF signing (Nitro) | 384-bit | FIPS 186-4 |
 | COSE_Sign1 | Attestation reports (Nitro) | ES384 | RFC 8152 |
+| RSAES-OAEP-SHA256 | KMS attested `Recipient` (data-key unwrap) | RSA-2048 (ephemeral) | PKCS#1 v2.2 |
 
 ## Deployment Security Checklist
 
 - [ ] TEE mode set to `required` (not `optional` or `simulated`)
+- [ ] Parent instance is enclave-eligible (Graviton `.large`+ / x86 `.xlarge`+; T-family is not enclave-capable)
 - [ ] KMS key policy pinned to PCR0 + PCR8
 - [ ] EIF signed with offline P-384 key
 - [ ] IAM role limited to `kms:GenerateDataKey` + `kms:Decrypt` (both attestation-gated)
 - [ ] KMS admin requires MFA for policy changes
+- [ ] Anti-rollback anchor configured (`tee.kms.anchor`) if rollback protection is required
 - [ ] DID method whitelist: `["did:key", "did:webvh"]`
 - [ ] Reverse proxy with TLS, rate limiting, CORS policy
 - [ ] Mnemonic exported and stored securely offline
