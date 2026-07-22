@@ -14,7 +14,8 @@ use vtc_service::community::{CommunityProfile, store_profile};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const PROFILE_TASK: &str = "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0";
+const PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
+const PROFILE_UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
 
 struct Fixture {
     router: axum::Router,
@@ -127,7 +128,7 @@ async fn put_requires_admin_role() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(r#"{"name":"Renamed"}"#))
@@ -145,7 +146,7 @@ async fn put_updates_profile_and_lists_changed_fields() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(
@@ -173,7 +174,7 @@ async fn put_idempotent_noop_returns_empty_changeset() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(body))
@@ -192,7 +193,7 @@ async fn put_returns_404_when_profile_not_initialised() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(r#"{"name":"Renamed"}"#))
@@ -218,7 +219,7 @@ async fn put_rejects_oversized_extensions() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(body))
@@ -243,7 +244,7 @@ async fn put_does_not_accept_community_did_in_request() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(
@@ -274,7 +275,7 @@ async fn put_emits_profile_updated_audit_with_real_actor() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(r#"{"name":"Renamed","description":"new"}"#))
@@ -316,7 +317,7 @@ async fn put_503_when_audit_writer_missing() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(r#"{"name":"Renamed"}"#))
@@ -335,7 +336,7 @@ async fn put_idempotent_noop_does_not_need_audit_writer() {
     let req = Request::builder()
         .method("PUT")
         .uri("/v1/community/profile")
-        .header("Trust-Task", PROFILE_TASK)
+        .header("Trust-Task", PROFILE_UPDATE_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
         .body(Body::from(r#"{"name":"Example Community"}"#)) // already the value

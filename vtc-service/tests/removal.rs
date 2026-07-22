@@ -23,8 +23,9 @@ use vtc_service::members::{Member, get_member, store_member};
 use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const SELF_REMOVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0";
-const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/show/1.0";
+const SELF_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/self-remove/0.1";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
+const ADMIN_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
 
@@ -452,7 +453,7 @@ async fn admin_remove_member_works() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{target}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "reason": "policy violation" })),
     )
@@ -469,7 +470,7 @@ async fn admin_remove_self_refused_with_self_remove_hint() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{ADMIN_DID}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({})),
     )
@@ -500,7 +501,7 @@ async fn admin_remove_of_admin_target_is_denied_by_default_policy() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{second_admin}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "reason": "ouster" })),
     )
@@ -533,7 +534,7 @@ async fn admin_remove_404_for_unknown_did() {
         &fix.router,
         "DELETE",
         "/v1/members/did:key:zNobody",
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({})),
     )
@@ -551,7 +552,7 @@ async fn admin_remove_overlong_reason_rejected() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{target}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "reason": "x".repeat(1025) })),
     )
@@ -614,7 +615,7 @@ async fn admin_remove_member_blocked_by_deny_all_policy() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{target}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "reason": "policy gate test" })),
     )
@@ -656,7 +657,7 @@ async fn admin_remove_uses_policy_disposition_for_default() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{target}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({})),
     )
@@ -721,7 +722,7 @@ async fn admin_remove_flips_revocation_bit() {
         &fix.router,
         "DELETE",
         &format!("/v1/members/{target}"),
-        SHOW_TASK,
+        ADMIN_REMOVE_TASK,
         Some(&fix.admin_token),
         Some(json!({})),
     )

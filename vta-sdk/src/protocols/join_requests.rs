@@ -342,8 +342,7 @@ impl VerdictResponse {
 // ---------------------------------------------------------------------------
 
 /// DIDComm `type` for a member-side self-removal.
-pub const MEMBER_SELF_REMOVE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0";
+pub const MEMBER_SELF_REMOVE_TYPE: &str = "https://trusttasks.org/spec/vtc/members/self-remove/0.1";
 
 /// VTC's reply with the resolved disposition + audit hint.
 /// Async acknowledgement for a self-remove. Stays on `openvtc/vtc/`

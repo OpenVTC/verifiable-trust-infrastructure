@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### vtc-service 0.11.19 / vta-sdk 0.19.20 — Phase 4: the remaining vtc families move to `spec/vtc`
+
+* Every remaining VTC Trust Task with a canonical counterpart is repointed:
+  members (list/show/renew/rotate/rotate-challenge/self-remove/personhood),
+  relationships, endorsement-types, install/claim, admin/bootstrap,
+  auth/recognise, website (files/list, generations/list, rollback), and
+  `health/diagnostics` → `spec/vtc/registry/diagnostics/0.1`.
+* **Four shared mounts are now split, one canonical task per verb**:
+  `/members/{did}` (show/update/admin-remove), `/community/profile`
+  (show/update), `/credentials/endorsements` (issue/list) and
+  `/credentials/endorsements/{id}` (show/revoke). Seven of those tasks
+  previously existed only on disk and were never enforced on the wire.
+* **Breaking for clients that sent one verb's task for another.** The
+  bundled admin UI was sending the *show* task on `DELETE /members/{did}`
+  and on `PUT /community/profile`; both are fixed here, but any external
+  client doing the same now gets a 415.
+* `members/self-remove`'s SDK constant moves with the rest of the family
+  (held back from the join-requests change so members migrated as a unit).
+  openvtc needs one more `cargo update` after `vta-sdk 0.19.20` publishes.
+* Not included: website's raw-byte ops (`files/show`, `files/write`,
+  `deploy`) — Phase 4a decided those are not Trust Tasks, so they need
+  de-listing rather than repointing — `website/files/delete` (its mount is
+  a `ttl` chain sharing one layer across three verbs), and the families
+  with no canonical counterpart.
+
 ### vta-sdk 0.19.19 / vtc-service — Phase 4: the join-requests ceremony moves to `spec/vtc`
 
 * The nine join-requests constants move to

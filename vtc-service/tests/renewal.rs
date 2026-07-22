@@ -29,7 +29,7 @@ use vtc_service::test_support::TestVtc;
 
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const RENEW_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/renew/1.0";
+const RENEW_TASK: &str = "https://trusttasks.org/spec/vtc/members/renew/0.1";
 const MEMBER_DID: &str = "did:key:zRenewMember";
 
 struct Fixture {

@@ -12,7 +12,10 @@ import { Field } from "@/components/Field";
 import { getJson, putJson } from "@/lib/api";
 
 const TRUST_TASK =
-  "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0";
+  "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
+// PUT carries the update task — GET and PUT are separate Trust Tasks.
+const TRUST_TASK_UPDATE =
+  "https://trusttasks.org/spec/vtc/community/profile/update/0.1";
 
 // GET /v1/community/profile wire shape: the persisted profile fields
 // are flattened at the top level (server uses `#[serde(flatten)]`),
@@ -51,7 +54,7 @@ async function putProfile(body: ProfileUpdateRequest): Promise<unknown> {
   // it — `onSuccess` invalidates the query, which refetches via
   // `getProfile` and seeds the form from the flat GET shape.
   return putJson<unknown>("/v1/community/profile", body, {
-    trustTask: TRUST_TASK,
+    trustTask: TRUST_TASK_UPDATE,
   });
 }
 

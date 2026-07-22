@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0
 title: VTC — Endorsement Type Delete
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

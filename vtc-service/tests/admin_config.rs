@@ -409,7 +409,7 @@ async fn get_with_wrong_trust_task_returns_415() {
         .uri("/v1/admin/config")
         .header(
             "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0",
+            "https://trusttasks.org/spec/vtc/community/profile/show/0.1",
         )
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())

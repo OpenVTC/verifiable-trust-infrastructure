@@ -32,13 +32,17 @@ import {
 } from "@/lib/webauthn";
 
 const TRUST_TASK_LIST =
-  "https://trusttasks.org/openvtc/vtc/members/list/1.0";
+  "https://trusttasks.org/spec/vtc/members/list/0.1";
 // `members/show/1.0` covers GET + PATCH + DELETE on `/members/{did}`
 // today (TrustTaskRouter limitation). Server-side resolves the
 // actual operation by method; the header just needs to match the
 // router's registered task.
 const TRUST_TASK_SHOW =
-  "https://trusttasks.org/openvtc/vtc/members/show/1.0";
+  "https://trusttasks.org/spec/vtc/members/show/0.1";
+// DELETE /members/{did} is its own canonical task now that each verb on
+// the shared mount carries its own descriptor.
+const TRUST_TASK_ADMIN_REMOVE =
+  "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const TRUST_TASK_PROMOTE =
   "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
 const TRUST_TASK_REMOVED =
@@ -157,7 +161,7 @@ async function adminRemove(args: {
   // (`TrustTaskMismatch`, 415). The standalone admin-remove Trust Task still
   // exists on disk for the soft-gate surface.
   await deleteJson<unknown>(`/v1/members/${encodeURIComponent(args.did)}`, {
-    trustTask: TRUST_TASK_SHOW,
+    trustTask: TRUST_TASK_ADMIN_REMOVE,
     body: { reason: args.reason || null },
   });
 }

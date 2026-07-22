@@ -34,9 +34,9 @@ use vtc_service::test_support::TestVtc;
 use common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const START_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0";
-const FINISH_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0";
-const BOOTSTRAP_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0";
+const START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
+const FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.1";
+const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 
 struct Fixture {
     state: AppState,

@@ -27,8 +27,8 @@ use vtc_service::test_support::TestVtc;
 
 const VTC_DID: &str = "did:webvh:vtc.example.com:abc";
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const CHALLENGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/rotate-challenge/1.0";
-const ROTATE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/rotate/1.0";
+const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1";
+const ROTATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/rotate/0.1";
 
 struct Fixture {
     router: axum::Router,

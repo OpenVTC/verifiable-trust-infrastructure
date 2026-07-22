@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/update/1.0
 title: VTC Members — Update
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/members/update/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

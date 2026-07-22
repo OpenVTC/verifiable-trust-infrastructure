@@ -34,8 +34,8 @@ use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const CHALLENGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0";
-const ASSERT_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/personhood/assert/1.0";
+const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
+const ASSERT_TASK: &str = "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
 const MEMBER_DID: &str = "did:key:zPerson1";
 const OTHER_MEMBER_DID: &str = "did:key:zPerson2";
 const ADMIN_DID: &str = "did:key:zPersonAdmin";

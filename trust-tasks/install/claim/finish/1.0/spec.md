@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0
 title: VTC Install — Claim (Finish)
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/install/claim/finish/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

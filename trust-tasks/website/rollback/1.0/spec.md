@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/website/rollback/1.0
 title: VTC — Website generation rollback
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/website/rollback/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -42,14 +42,13 @@ use common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 
 // Trust Tasks ------------------------------------------------------
-const CLAIM_START_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/start/1.0";
-const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0";
-const BOOTSTRAP_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/bootstrap/1.0";
+const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
+const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.1";
+const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
 const PASSKEY_REGISTER_TASK: &str =
     "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0";
 const PASSKEY_LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
-const COMMUNITY_PROFILE_TASK: &str =
-    "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0";
+const COMMUNITY_PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
 const ADMIN_CONFIG_PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
 

@@ -20,10 +20,11 @@ use vtc_service::members::{Member, store_member};
 use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/list/1.0";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
 const REMOVED_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
 const PURGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
-const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/show/1.0";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
+const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
 const PROMOTE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";
@@ -402,7 +403,7 @@ async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
         &fix.router,
         "PATCH",
         "/v1/members/did:key:zM1",
-        SHOW_TASK,
+        UPDATE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "role": "moderator" })),
     )
@@ -427,7 +428,7 @@ async fn patch_member_role_admin_is_refused_with_promote_hint() {
         &fix.router,
         "PATCH",
         "/v1/members/did:key:zM1",
-        SHOW_TASK,
+        UPDATE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "role": "admin" })),
     )
@@ -449,7 +450,7 @@ async fn patch_member_profile_only_emits_member_updated() {
         &fix.router,
         "PATCH",
         "/v1/members/did:key:zM1",
-        SHOW_TASK,
+        UPDATE_TASK,
         Some(&fix.admin_token),
         Some(json!({
             "publishConsent": true,
@@ -471,7 +472,7 @@ async fn patch_member_404_for_unknown_did() {
         &fix.router,
         "PATCH",
         "/v1/members/did:key:zNobody",
-        SHOW_TASK,
+        UPDATE_TASK,
         Some(&fix.admin_token),
         Some(json!({ "publishConsent": true })),
     )

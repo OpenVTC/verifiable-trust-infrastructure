@@ -33,9 +33,9 @@ use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const PUBLISH_TASK: &str = "https://trusttasks.org/openvtc/vtc/relationships/publish/1.0";
-const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/relationships/list/1.0";
-const REVOKE_TASK: &str = "https://trusttasks.org/openvtc/vtc/relationships/revoke/1.0";
+const PUBLISH_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/publish/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/list/0.1";
+const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/relationships/revoke/0.1";
 const ISSUER_DID: &str = "did:key:zVrcIssuer";
 const SUBJECT_DID: &str = "did:key:zVrcSubject";
 const STRANGER_DID: &str = "did:key:zStranger";

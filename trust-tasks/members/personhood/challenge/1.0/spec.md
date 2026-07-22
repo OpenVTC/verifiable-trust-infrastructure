@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/personhood/challenge/1.0
 title: VTC — Personhood Assert Challenge
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

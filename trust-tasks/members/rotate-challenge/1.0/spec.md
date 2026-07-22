@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/rotate-challenge/1.0
 title: VTC Members — DID Rotation Challenge
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/members/rotate-challenge/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

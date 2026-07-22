@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/admin-remove/1.0
 title: VTC Members — Admin Remove
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/members/admin-remove/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

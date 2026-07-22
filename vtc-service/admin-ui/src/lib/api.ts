@@ -202,7 +202,7 @@ export const fetchBuildInfo = (): Promise<BuildInfo> =>
   getJsonExempt<BuildInfo>("/admin/build-info.json");
 
 const DIAGNOSTICS_TASK =
-  "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0";
+  "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
 
 // Admin-gated identity + reconciler diagnostics. The dashboard reads
 // `vta_did` / `mediator_did` from here since P3.7 stripped them off

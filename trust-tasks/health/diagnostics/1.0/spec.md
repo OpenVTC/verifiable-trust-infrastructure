@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0
 title: VTC — Trust-Registry Reconciler Diagnostics
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/registry/diagnostics/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

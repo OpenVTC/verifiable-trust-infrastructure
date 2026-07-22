@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/renew/1.0
 title: VTC Members — Renew
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/members/renew/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

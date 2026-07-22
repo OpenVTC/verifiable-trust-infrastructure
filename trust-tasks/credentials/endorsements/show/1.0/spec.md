@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0
 title: VTC — Custom Endorsement Show
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/vtc/endorsements/show/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

@@ -28,10 +28,11 @@ use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const REGISTER_TASK: &str = "https://trusttasks.org/openvtc/vtc/endorsement-types/register/1.0";
-const DELETE_TYPE_TASK: &str = "https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0";
-const ISSUE_TASK: &str = "https://trusttasks.org/openvtc/vtc/credentials/endorsements/issue/1.0";
-const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/credentials/endorsements/show/1.0";
+const REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
+const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
+const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
+const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
+const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";
 const MEMBER_DID: &str = "did:key:zEndMember";
@@ -467,7 +468,7 @@ async fn revoke_issuer_can_retract() {
         .method("DELETE")
         .uri(format!("/v1/credentials/endorsements/{id}"))
         .header("authorization", format!("Bearer {}", fix.issuer_token))
-        .header("trust-task", SHOW_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -513,7 +514,7 @@ async fn revoke_idempotent_on_already_revoked() {
             .method("DELETE")
             .uri(format!("/v1/credentials/endorsements/{id}"))
             .header("authorization", format!("Bearer {}", fix.admin_token))
-            .header("trust-task", SHOW_TASK)
+            .header("trust-task", REVOKE_TASK)
             .body(Body::empty())
             .unwrap();
         let resp = fix.router.clone().oneshot(req).await.unwrap();
@@ -543,7 +544,7 @@ async fn revoke_non_admin_non_issuer_forbidden() {
         .method("DELETE")
         .uri(format!("/v1/credentials/endorsements/{id}"))
         .header("authorization", format!("Bearer {}", fix.member_token))
-        .header("trust-task", SHOW_TASK)
+        .header("trust-task", REVOKE_TASK)
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();

@@ -16,7 +16,7 @@ use vtc_service::registry::{SyncJob, SyncJobKind, SyncJobState, store_sync_job};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const DIAGNOSTICS_TASK: &str = "https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0";
+const DIAGNOSTICS_TASK: &str = "https://trusttasks.org/spec/vtc/registry/diagnostics/0.1";
 
 struct Fixture {
     router: axum::Router,
