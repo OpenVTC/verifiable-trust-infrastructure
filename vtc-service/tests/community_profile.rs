@@ -393,10 +393,7 @@ async fn get_with_wrong_trust_task_returns_415() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/community/profile")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-        )
+        .header("Trust-Task", "https://trusttasks.org/spec/acl/list/0.1")
         .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();

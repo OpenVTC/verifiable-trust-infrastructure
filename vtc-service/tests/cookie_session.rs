@@ -31,7 +31,7 @@ use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
 const ADMIN_DID: &str = "did:key:z6MkAdminCookie";
-const ACL_TRUST_TASK: &str = "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0";
+const ACL_TRUST_TASK: &str = "https://trusttasks.org/spec/acl/list/0.1";
 
 struct Fixture {
     router: axum::Router,
@@ -59,6 +59,8 @@ async fn build_fixture() -> Fixture {
             allowed_contexts: vec![],
             created_at: now_epoch(),
             created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )

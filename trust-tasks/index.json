@@ -82,15 +82,17 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "acl/legacy/manage/1.0",
-      "rest": "GET, POST /v1/acl"
+      "rest": "GET, POST /v1/acl",
+      "supersededBy": "https://trusttasks.org/spec/acl/list/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "acl/legacy/entry/1.0",
-      "rest": "GET, PATCH, DELETE /v1/acl/{did}"
+      "rest": "GET, PATCH, DELETE /v1/acl/{did}",
+      "supersededBy": "https://trusttasks.org/spec/acl/show/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0",

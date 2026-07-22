@@ -54,10 +54,7 @@ async fn vta_audience_token_rejected_by_vtc_route() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/acl")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-        )
+        .header("Trust-Task", "https://trusttasks.org/spec/acl/list/0.1")
         .header("Authorization", format!("Bearer {foreign_token}"))
         .body(Body::empty())
         .unwrap();
@@ -91,10 +88,7 @@ async fn unknown_audience_token_rejected_by_vtc_route() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/acl")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-        )
+        .header("Trust-Task", "https://trusttasks.org/spec/acl/list/0.1")
         .header("Authorization", format!("Bearer {foreign_token}"))
         .body(Body::empty())
         .unwrap();
@@ -109,10 +103,7 @@ async fn no_token_rejected_by_vtc_route() {
     let req = Request::builder()
         .method("GET")
         .uri("/v1/acl")
-        .header(
-            "Trust-Task",
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
-        )
+        .header("Trust-Task", "https://trusttasks.org/spec/acl/list/0.1")
         .body(Body::empty())
         .unwrap();
     let (status, _body) = request(&router, req).await;

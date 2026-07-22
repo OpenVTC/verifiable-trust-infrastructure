@@ -135,6 +135,8 @@ pub async fn bootstrap(
         allowed_contexts: vec![],
         created_at: now_unix(),
         created_by: "did:key:vtc-install".into(),
+        updated_at: None,
+        updated_by: None,
         expires_at: None,
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;

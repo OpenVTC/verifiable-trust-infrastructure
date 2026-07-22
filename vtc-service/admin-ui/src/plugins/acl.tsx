@@ -14,70 +14,94 @@ import {
 } from "@tanstack/react-query";
 import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 
-import { deleteJson, getJson, patchJson, postJson } from "@/lib/api";
+import { deleteJson, getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { Field } from "@/components/Field";
-import { formatEpoch, formatIso, shorten, shortenDid } from "@/lib/format";
+import { formatIso, shorten, shortenDid } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 
-const TRUST_TASK_MANAGE =
-  "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0";
-const TRUST_TASK_ENTRY =
-  "https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0";
+// One canonical task per verb (the two combined `acl/legacy/*` tasks
+// were retired in phase 2d).
+const TRUST_TASK_LIST = "https://trusttasks.org/spec/acl/list/0.1";
+const TRUST_TASK_GRANT = "https://trusttasks.org/spec/acl/grant/0.1";
+const TRUST_TASK_REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
 const TRUST_TASK_INVITES_MANAGE =
   "https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0";
 const TRUST_TASK_INVITES_REVOKE =
   "https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0";
 
+// Canonical `acl/_shared` AclEntry. `did` -> `subject`,
+// `allowed_contexts` -> `scopes`, and every timestamp is now an
+// RFC3339 string rather than a unix epoch.
 interface AclEntry {
-  did: string;
+  subject: string;
   role: string;
-  label: string | null;
-  allowed_contexts: string[];
-  created_at: number;
-  created_by: string;
-  expires_at: number | null;
+  label?: string | null;
+  scopes: string[];
+  createdAt: string;
+  createdBy: string;
+  updatedAt?: string | null;
+  updatedBy?: string | null;
+  expiresAt?: string | null;
 }
 
 interface AclListResponse {
   entries: AclEntry[];
+  truncated: boolean;
+  cursor?: string | null;
 }
 
+// `acl/grant` wraps the entry; server-owned provenance is not settable.
 interface CreateAclRequest {
-  did: string;
-  role: string;
-  label?: string | null;
-  allowed_contexts: string[];
-  expires_at?: number | null;
+  entry: {
+    subject: string;
+    role: string;
+    label?: string | null;
+    scopes: string[];
+    expiresAt?: string | null;
+  };
+  reason?: string;
 }
 
-async function fetchAcl(context: string | null): Promise<AclListResponse> {
+async function fetchAcl(scope: string | null): Promise<AclListResponse> {
   const q = new URLSearchParams();
-  if (context) q.set("context", context);
+  if (scope) q.set("scope", scope);
   const suffix = q.toString();
   return getJson<AclListResponse>(`/v1/acl${suffix ? `?${suffix}` : ""}`, {
-    trustTask: TRUST_TASK_MANAGE,
+    trustTask: TRUST_TASK_LIST,
   });
 }
 
 async function createAcl(req: CreateAclRequest): Promise<AclEntry> {
-  return postJson<AclEntry>("/v1/acl", req, { trustTask: TRUST_TASK_MANAGE });
+  return postJson<AclEntry>("/v1/acl", req, { trustTask: TRUST_TASK_GRANT });
 }
 
-async function deleteAcl(did: string): Promise<void> {
-  await deleteJson<unknown>(`/v1/acl/${encodeURIComponent(did)}`, {
-    trustTask: TRUST_TASK_ENTRY,
+async function deleteAcl(subject: string): Promise<void> {
+  await deleteJson<unknown>(`/v1/acl/${encodeURIComponent(subject)}`, {
+    trustTask: TRUST_TASK_REVOKE,
   });
 }
 
+// A label edit is not a role change, so it goes through `acl/grant`
+// re-stating the entry with its existing role — `acl/change-role` is
+// role-only and would reject this.
 async function patchAclLabel(args: {
-  did: string;
+  entry: AclEntry;
   label: string;
 }): Promise<AclEntry> {
-  return patchJson<AclEntry>(
-    `/v1/acl/${encodeURIComponent(args.did)}`,
-    { label: args.label },
-    { trustTask: TRUST_TASK_ENTRY },
+  return postJson<AclEntry>(
+    "/v1/acl",
+    {
+      entry: {
+        subject: args.entry.subject,
+        role: args.entry.role,
+        label: args.label,
+        scopes: args.entry.scopes,
+        expiresAt: args.entry.expiresAt ?? null,
+      },
+      reason: "label updated from the admin UI",
+    },
+    { trustTask: TRUST_TASK_GRANT },
   );
 }
 
@@ -248,21 +272,21 @@ export function Acl() {
               </tr>
             )}
             {query.data?.entries.map((e) => (
-              <tr key={e.did}>
+              <tr key={e.subject}>
                 <td>
-                  <code title={e.did}>{shortenDid(e.did)}</code>
+                  <code title={e.subject}>{shortenDid(e.subject)}</code>
                 </td>
                 <td>
                   <code>{e.role}</code>
                 </td>
                 <td>
-                  <EditableLabelCell did={e.did} label={e.label} />
+                  <EditableLabelCell entry={e} label={e.label ?? null} />
                 </td>
                 <td>
-                  {e.allowed_contexts.length === 0 ? (
+                  {e.scopes.length === 0 ? (
                     <span className="muted">all</span>
                   ) : (
-                    e.allowed_contexts.map((c) => (
+                    e.scopes.map((c) => (
                       <code key={c} className="chip">
                         {c}
                       </code>
@@ -270,9 +294,9 @@ export function Acl() {
                   )}
                 </td>
                 <td>
-                  {e.expires_at ? (
-                    <span title={String(e.expires_at)}>
-                      {formatEpoch(e.expires_at)}
+                  {e.expiresAt ? (
+                    <span title={String(e.expiresAt)}>
+                      {formatIso(e.expiresAt)}
                     </span>
                   ) : (
                     <span className="muted">never</span>
@@ -286,11 +310,11 @@ export function Acl() {
                     onClick={async () => {
                       const ok = await confirm({
                         title: "Revoke ACL entry?",
-                        message: `${e.did} loses access immediately. This cannot be undone.`,
+                        message: `${e.subject} loses access immediately. This cannot be undone.`,
                         confirmLabel: "Revoke",
                         destructive: true,
                       });
-                      if (ok) revoke.mutate(e.did);
+                      if (ok) revoke.mutate(e.subject);
                     }}
                   >
                     Revoke
@@ -766,7 +790,7 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
   const mutation = useMutation({
     mutationFn: createAcl,
     onSuccess: (entry) => {
-      toast.push("success", `Created ACL entry for ${entry.did}`);
+      toast.push("success", `Created ACL entry for ${entry.subject}`);
       onSuccess();
     },
     onError: (err) => toast.pushFromError(err, "Create failed"),
@@ -774,17 +798,27 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const allowed_contexts = contexts
+    const scopes = contexts
       .split(",")
       .map((c) => c.trim())
       .filter((c) => c.length > 0);
     const exp = expiresAt.trim();
     mutation.mutate({
-      did: did.trim(),
-      role: role.trim(),
-      label: label.trim() === "" ? null : label.trim(),
-      allowed_contexts,
-      expires_at: exp === "" ? null : Number(exp) || null,
+      entry: {
+        subject: did.trim(),
+        role: role.trim(),
+        label: label.trim() === "" ? null : label.trim(),
+        scopes,
+        // Canonical `expiresAt` is RFC3339. Accept either an ISO
+        // string or a unix epoch typed by the operator and normalise,
+        // rather than sending an integer the server now rejects.
+        expiresAt:
+          exp === ""
+            ? null
+            : /^\d+$/.test(exp)
+              ? new Date(Number(exp) * 1000).toISOString()
+              : exp,
+      },
     });
   };
 
@@ -844,10 +878,10 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
 }
 
 function EditableLabelCell({
-  did,
+  entry,
   label,
 }: {
-  did: string;
+  entry: AclEntry;
   label: string | null;
 }) {
   const queryClient = useQueryClient();
@@ -890,7 +924,7 @@ function EditableLabelCell({
       setEditing(false);
       return;
     }
-    mutation.mutate({ did, label: next });
+    mutation.mutate({ entry, label: next });
   };
 
   const cancel = () => {

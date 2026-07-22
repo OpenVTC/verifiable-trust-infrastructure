@@ -204,6 +204,8 @@ async fn admit(
         allowed_contexts: vec![],
         created_at: now_epoch(),
         created_by: actor_did.to_string(),
+        updated_at: None,
+        updated_by: None,
         expires_at: None,
     };
     store_acl_entry(&state.acl_ks, &acl).await?;

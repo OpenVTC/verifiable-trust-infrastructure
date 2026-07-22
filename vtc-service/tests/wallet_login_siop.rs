@@ -59,6 +59,8 @@ async fn build_fixture(holder_did: &str) -> Fixture {
             allowed_contexts: vec![],
             created_at: now_epoch(),
             created_by: "test".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )

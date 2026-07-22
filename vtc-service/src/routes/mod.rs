@@ -390,13 +390,30 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
         ))
         // ACL
+        // Each verb carries its own canonical task — the two former
+        // combined mounts fan out to the five `acl/*` tasks. Safe
+        // because `task_routes` layers the *method* router and axum
+        // merges same-path routers per method (pinned by
+        // `vti_common::trust_task::openapi`).
         .routes(tt(
-            routes!(acl::list_acl, acl::create_acl),
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
+            routes!(acl::list_acl),
+            "https://trusttasks.org/spec/acl/list/0.1",
         ))
         .routes(tt(
-            routes!(acl::get_acl, acl::update_acl, acl::delete_acl),
-            "https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0",
+            routes!(acl::create_acl),
+            "https://trusttasks.org/spec/acl/grant/0.1",
+        ))
+        .routes(tt(
+            routes!(acl::get_acl),
+            "https://trusttasks.org/spec/acl/show/0.1",
+        ))
+        .routes(tt(
+            routes!(acl::update_acl),
+            "https://trusttasks.org/spec/acl/change-role/0.1",
+        ))
+        .routes(tt(
+            routes!(acl::delete_acl),
+            "https://trusttasks.org/spec/acl/revoke/0.1",
         ))
         // Community profile (GET + PUT share one Trust Task today;
         // a spec-aligned split into community/profile/show/1.0 +

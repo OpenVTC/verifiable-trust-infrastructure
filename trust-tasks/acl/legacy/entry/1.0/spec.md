@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/acl/legacy/entry/1.0
 title: VTC Legacy — ACL Entry
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/acl/show/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org

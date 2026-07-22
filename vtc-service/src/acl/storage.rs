@@ -205,6 +205,8 @@ mod tests {
             allowed_contexts: vec![],
             created_at: 1,
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         }
     }

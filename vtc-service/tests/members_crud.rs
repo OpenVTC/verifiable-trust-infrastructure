@@ -68,6 +68,8 @@ async fn build_fixture() -> Fixture {
             allowed_contexts: vec![],
             created_at: now,
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )
@@ -135,6 +137,8 @@ async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
             allowed_contexts: vec![],
             created_at: now,
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )

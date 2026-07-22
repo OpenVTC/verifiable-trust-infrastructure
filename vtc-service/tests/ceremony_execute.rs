@@ -103,6 +103,8 @@ async fn admit_duplicate_acl_is_conflict() {
             allowed_contexts: vec![],
             created_at: vtc_service::auth::session::now_epoch(),
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )
@@ -271,6 +273,8 @@ async fn depart_refuses_the_last_admin() {
             allowed_contexts: vec![],
             created_at: vtc_service::auth::session::now_epoch(),
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )
@@ -362,6 +366,8 @@ async fn remint_refuses_demoting_the_last_admin() {
             allowed_contexts: vec![],
             created_at: vtc_service::auth::session::now_epoch(),
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )

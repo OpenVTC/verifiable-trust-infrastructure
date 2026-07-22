@@ -107,6 +107,8 @@ pub async fn run_acl_add(args: AclAddArgs) -> CliResult {
         // Preserve the original creation time on update.
         created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(now),
         created_by: "cli:acl-add".into(),
+        updated_at: None,
+        updated_by: None,
         expires_at: args.expires.map(|ttl| now.saturating_add(ttl)),
     };
     store_acl_entry(&acl_ks, &entry).await?;

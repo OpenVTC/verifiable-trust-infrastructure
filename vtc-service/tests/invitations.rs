@@ -68,6 +68,8 @@ async fn build() -> Fixture {
                 allowed_contexts: vec![],
                 created_at: now,
                 created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
                 expires_at: None,
             },
         )

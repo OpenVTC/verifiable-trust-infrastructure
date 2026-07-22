@@ -93,6 +93,8 @@ async fn build_fixture() -> Fixture {
                 allowed_contexts: vec![],
                 created_at: now,
                 created_by: "did:key:vtc-install".into(),
+                updated_at: None,
+                updated_by: None,
                 expires_at: None,
             },
         )
@@ -391,6 +393,8 @@ async fn list_returns_issued_and_received_edges() {
             allowed_contexts: vec![],
             created_at: now_epoch(),
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         },
     )

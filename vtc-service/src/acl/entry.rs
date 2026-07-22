@@ -40,6 +40,21 @@ pub struct VtcAclEntry {
     pub allowed_contexts: Vec<String>,
     pub created_at: u64,
     pub created_by: String,
+    /// Unix-epoch seconds of the last mutation, and who made it.
+    ///
+    /// Canonical `acl/_shared` carries `updatedAt`/`updatedBy`, and now
+    /// that role changes (`acl/change-role`) and entry rewrites
+    /// (`acl/grant`) are distinct operations, "when did this last
+    /// change, and by whom" is answerable — previously every entry
+    /// looked as though it had never moved since creation.
+    ///
+    /// `#[serde(default)]` keeps rows written before this field
+    /// deserializable; they report `None` rather than pretending the
+    /// creation time was an update.
+    #[serde(default)]
+    pub updated_at: Option<u64>,
+    #[serde(default)]
+    pub updated_by: Option<String>,
     /// Unix-epoch seconds at which this entry expires and should be
     /// pruned by the background sweeper. `None` is permanent.
     #[serde(default)]
@@ -141,6 +156,8 @@ mod tests {
             allowed_contexts: vec![],
             created_at: 1,
             created_by: "did:key:zAdmin".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         };
         let bytes = serde_json::to_vec(&entry).unwrap();
@@ -157,6 +174,8 @@ mod tests {
             allowed_contexts: vec![],
             created_at: 42,
             created_by: "did:key:vtc-install".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at,
         }
     }

@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### vtc-service — Phase 2d: `acl/*` repointed, with the canonical semantics implemented
+
+* The two combined mounts (`acl/legacy/{manage,entry}/1.0`) fan out to the five
+  canonical tasks — `spec/acl/{list,grant,show,change-role,revoke}/0.1` — one per
+  verb. Both legacy tasks are **retired** with `supersededBy`.
+* **Breaking (admin API).** Entries are now the canonical `AclEntry`:
+  `did` → `subject`, `allowed_contexts` → `scopes`, and every timestamp is an
+  RFC3339 string rather than a unix epoch (canonical types them
+  `format: date-time`, so an integer would be a silent contract break). List
+  responses gain the canonical-required `truncated` plus an optional `cursor`.
+  The bundled admin UI is updated in step.
+* **`PATCH /v1/acl/{did}` is now `acl/change-role`, and role-only.** It takes
+  `{fromRole, toRole}` and **enforces `fromRole` as a compare-and-swap**,
+  returning 409 when the subject's current role differs. That closes the
+  read-modify-write race the old partial update had: two admins demoting the
+  same subject concurrently could each read `admin`, write different results,
+  and last-writer-wins with no signal. The old body (`role`/`label`/
+  `allowed_contexts`, all optional) is rejected outright rather than being
+  read as a subset of the new one.
+* **Label and scope edits move to `acl/grant`**, which canonical defines as
+  "the entry the maintainer should hold". Re-granting the *same* role rewrites
+  the entry; granting a *different* role to an existing subject is refused with
+  a pointer to `acl/change-role`, so grant cannot be used to bypass the CAS
+  guard. Server-owned provenance (`createdAt`/`createdBy`/`updatedAt`/
+  `updatedBy`) is not accepted from callers.
+* **`DELETE` implements canonical revoke's two modes.** With `?scopes=`, the
+  entry is *scope-reduced* and survives; only an omitted `scopes` removes it.
+  Conflating the two would have stripped far more authority than an operator
+  asked for. Revoking *every* scope is refused rather than executed, because an
+  empty scope set is how a community-wide (super) grant is spelled — revocation
+  must never widen authority. A scope reduction revokes the subject's live
+  sessions, since their tokens still carry the old scopes.
+* `acl/list` gains the canonical `role` / `scope` / `subjectPrefix` filters and
+  `pageSize`/`cursor` paging, with the filters bound into the cursor's HMAC so a
+  page cannot be resumed under a different filter set. The `scope` filter keeps
+  the hierarchy-aware matching the old `context` filter had (an ancestor scope
+  does carry a descendant). Paging degrades gracefully when the audit writer is
+  absent: cursors are signed with the audit key, so without one the full visible
+  set is returned as a single page rather than the endpoint failing — listing the
+  ACL must not depend on audit being configured.
+* `VtcAclEntry` gains `updated_at`/`updated_by` (`#[serde(default)]`, so existing
+  rows decode unchanged and report `None` rather than pretending creation was an
+  update).
+
 ### vtc-service — Phase 2b(ii): `audit/list` repointed, with filters actually implemented
 
 * `GET /v1/audit` now carries `https://trusttasks.org/spec/audit/list/0.1`;

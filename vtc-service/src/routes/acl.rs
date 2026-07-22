@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use tracing::info;
@@ -13,44 +14,128 @@ use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::server::AppState;
 use vti_common::audit::{AclChangeData, AclRevokedData, AuditEvent};
+use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 // ---------- GET /acl ----------
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct AclListResponse {
     pub entries: Vec<AclEntryResponse>,
+    /// True when more entries match beyond this page; `cursor` is then
+    /// present. Required by canonical `acl/list`.
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
+/// Canonical `acl/_shared` **AclEntry**.
+///
+/// Renames from VTC's storage shape: `did` → `subject`,
+/// `allowed_contexts` → `scopes`. Timestamps are RFC3339 strings, not
+/// unix epochs — canonical types them `format: date-time`, and an
+/// integer there would be a silent contract break rather than a
+/// cosmetic one.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct AclEntryResponse {
-    pub did: String,
+    pub subject: String,
     pub role: VtcRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    pub allowed_contexts: Vec<String>,
-    pub created_at: u64,
+    pub scopes: Vec<String>,
+    pub created_at: String,
     pub created_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<u64>,
+    pub updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+/// Unix epoch seconds → RFC3339, for canonical `date-time` fields.
+fn epoch_to_rfc3339(secs: u64) -> String {
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .unwrap_or_default()
+        .to_rfc3339()
 }
 
 impl From<VtcAclEntry> for AclEntryResponse {
     fn from(e: VtcAclEntry) -> Self {
         AclEntryResponse {
-            did: e.did,
+            subject: e.did,
             role: e.role,
             label: e.label,
-            allowed_contexts: e.allowed_contexts,
-            created_at: e.created_at,
+            scopes: e.allowed_contexts,
+            created_at: epoch_to_rfc3339(e.created_at),
             created_by: e.created_by,
-            expires_at: e.expires_at,
+            updated_at: e.updated_at.map(epoch_to_rfc3339),
+            updated_by: e.updated_by,
+            expires_at: e.expires_at.map(epoch_to_rfc3339),
         }
     }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
 #[into_params(parameter_in = Query)]
 pub struct ListAclQuery {
-    pub context: Option<String>,
+    /// Return only entries with this role.
+    pub role: Option<String>,
+    /// Return only entries carrying this scope (canonical name for
+    /// what VTC stores as an allowed context).
+    pub scope: Option<String>,
+    /// Return only entries whose subject starts with this prefix.
+    pub subject_prefix: Option<String>,
+    /// Page size. Clamped to `1..=200`. Defaults to 50.
+    pub page_size: Option<usize>,
+    /// Opaque continuation token from a previous page's `cursor`.
+    pub cursor: Option<String>,
+}
+
+impl ListAclQuery {
+    /// Filters folded into the cursor's HMAC (see
+    /// [`vti_common::pagination::Cursor::encode_bound`]) so a page
+    /// cannot be resumed under a different filter set — on an ACL that
+    /// would silently skip entries an operator believes they reviewed.
+    fn cursor_binding(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut field = |v: Option<&str>| {
+            let b = v.unwrap_or("").as_bytes();
+            out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+            out.extend_from_slice(b);
+        };
+        field(self.role.as_deref());
+        field(self.scope.as_deref());
+        field(self.subject_prefix.as_deref());
+        out
+    }
+
+    fn matches(&self, e: &VtcAclEntry) -> bool {
+        if let Some(role) = &self.role
+            && e.role.to_string() != *role
+        {
+            return false;
+        }
+        // Hierarchy-aware, as the pre-migration `context` filter was: an
+        // entry scoped to an *ancestor* of `scope` does grant `scope`
+        // (`docs/05-design-notes/hierarchical-contexts.md`), so it
+        // genuinely "carries" it. For flat ids this is exact match.
+        if let Some(scope) = &self.scope
+            && !e
+                .allowed_contexts
+                .iter()
+                .any(|allowed| vti_common::context_path::is_ancestor_or_self(allowed, scope))
+        {
+            return false;
+        }
+        if let Some(prefix) = &self.subject_prefix
+            && !e.did.starts_with(prefix.as_str())
+        {
+            return false;
+        }
+        true
+    }
 }
 
 /// GET /acl — list ACL entries visible to the caller. Auth: Manage.
@@ -70,38 +155,100 @@ pub async fn list_acl(
     Query(query): Query<ListAclQuery>,
 ) -> Result<Json<AclListResponse>, AppError> {
     let acl = state.acl_ks.clone();
-    let all_entries = list_acl_entries(&acl).await?;
-    let entries: Vec<AclEntryResponse> = all_entries
+    let limit = query.page_size.unwrap_or(50).clamp(1, MAX_LIMIT);
+
+    // Visibility first (a caller must never learn an entry exists by
+    // watching it fall out of a filter), then the caller's filters.
+    let mut matching: Vec<VtcAclEntry> = list_acl_entries(&acl)
+        .await?
         .into_iter()
         .filter(|e| is_acl_entry_visible(&auth.0, &as_vti_acl_entry(e)))
-        // Hierarchy-aware: an entry scoped to an *ancestor* of `ctx` grants
-        // access to `ctx`, so it's relevant to a query for `ctx`
-        // (`docs/05-design-notes/hierarchical-contexts.md`). For flat ids this
-        // is identical to an exact match.
-        .filter(|e| match &query.context {
-            Some(ctx) => e
-                .allowed_contexts
-                .iter()
-                .any(|allowed| vti_common::context_path::is_ancestor_or_self(allowed, ctx)),
-            None => true,
-        })
-        .map(AclEntryResponse::from)
+        .filter(|e| query.matches(e))
         .collect();
-    info!(caller = %auth.0.did, count = entries.len(), "ACL listed");
-    Ok(Json(AclListResponse { entries }))
+    // Stable order so a cursor means the same thing across calls; the
+    // subject is unique, so this is a total order.
+    matching.sort_by(|a, b| a.did.cmp(&b.did));
+
+    // Cursors are signed with the audit key, but the audit writer is
+    // optional — listing the ACL is a core admin function and must not
+    // stop working because audit is switched off. Without a key we
+    // simply cannot mint or verify a cursor, so the whole visible set
+    // is served as one page (which is what this endpoint did before it
+    // paginated) and a supplied cursor is rejected rather than trusted
+    // unverified.
+    let audit_key = match state.audit_writer.as_ref() {
+        Some(w) => Some(w.active_key().await?),
+        None => None,
+    };
+    let binding = query.cursor_binding();
+
+    let start = match (&query.cursor, &audit_key) {
+        (Some(wire), Some(key)) => {
+            let c = Cursor::decode_bound(wire, &key.key, &binding)?;
+            matching
+                .iter()
+                .position(|e| e.did.as_bytes() > c.last_key.as_slice())
+                .unwrap_or(matching.len())
+        }
+        // A cursor we cannot verify is not a cursor.
+        (Some(_), None) => return Err(AppError::InvalidCursor),
+        (None, _) => 0,
+    };
+
+    let take = if audit_key.is_some() {
+        limit
+    } else {
+        matching.len()
+    };
+    let page: Vec<VtcAclEntry> = matching[start..].iter().take(take).cloned().collect();
+    let truncated = start + page.len() < matching.len();
+    let cursor = match (&audit_key, truncated) {
+        (Some(key), true) => page.last().map(|e| {
+            Cursor::new(e.did.as_bytes().to_vec(), matching.len() as u64)
+                .encode_bound(&key.key, &binding)
+        }),
+        _ => None,
+    };
+
+    let entries: Vec<AclEntryResponse> = page.into_iter().map(AclEntryResponse::from).collect();
+    info!(caller = %auth.0.did, count = entries.len(), truncated, "ACL listed");
+    Ok(Json(AclListResponse {
+        entries,
+        truncated,
+        cursor,
+    }))
 }
 
 // ---------- POST /acl ----------
 
+/// Canonical `acl/grant` request: the entry the maintainer should hold
+/// for the subject, plus an optional operator rationale.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateAclRequest {
-    pub did: String,
+    pub entry: GrantEntry,
+    /// Operator rationale. Emitted on the service log line for this
+    /// change; the audit envelope's data types do not carry a free-text
+    /// reason today, so this is deliberately not described as audited.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// The writable subset of a canonical `AclEntry`. Server-owned fields
+/// (`createdAt`/`createdBy`/`updatedAt`/`updatedBy`) are deliberately
+/// absent — a caller must not be able to backdate provenance.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GrantEntry {
+    pub subject: String,
     pub role: VtcRole,
+    #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
-    pub allowed_contexts: Vec<String>,
+    pub scopes: Vec<String>,
+    /// RFC3339, per canonical `AclEntry.expiresAt`.
     #[serde(default)]
-    pub expires_at: Option<u64>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// POST /acl — create a new ACL entry. Auth: Manage.
@@ -120,29 +267,51 @@ pub async fn create_acl(
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
 ) -> Result<(StatusCode, Json<AclEntryResponse>), AppError> {
+    let req_entry = req.entry;
     // Block non-admin callers from granting Admin — role + context
     // bound checks must run before we touch storage.
-    validate_vtc_role_assignment(&auth.0, &req.role)?;
-    validate_acl_modification(&auth.0, &req.allowed_contexts)?;
+    validate_vtc_role_assignment(&auth.0, &req_entry.role)?;
+    validate_acl_modification(&auth.0, &req_entry.scopes)?;
 
     let acl = state.acl_ks.clone();
+    let expires_at = req_entry.expires_at.map(|t| t.timestamp() as u64);
 
-    // Check if entry already exists
-    if get_acl_entry(&acl, &req.did).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "ACL entry already exists for DID: {}",
-            req.did
-        )));
-    }
+    // Canonical `acl/grant` is "the entry the maintainer should hold":
+    // re-granting the *same* role rewrites the entry's scopes/label,
+    // but a role change is `acl/change-role`'s job and is refused here
+    // — that task carries the `fromRole` compare-and-swap this one has
+    // no way to express.
+    let existing = get_acl_entry(&acl, &req_entry.subject).await?;
+    let (created_at, created_by, status) = match existing {
+        Some(prev) => {
+            if !is_acl_entry_visible(&auth.0, &as_vti_acl_entry(&prev)) {
+                return Err(AppError::NotFound(format!(
+                    "ACL entry not found for DID: {}",
+                    req_entry.subject
+                )));
+            }
+            if prev.role != req_entry.role {
+                return Err(AppError::Conflict(format!(
+                    "ACL entry for {} already holds role {}; use acl/change-role \
+                     (PATCH /v1/acl/{}) to move it to {}",
+                    req_entry.subject, prev.role, req_entry.subject, req_entry.role
+                )));
+            }
+            (prev.created_at, prev.created_by, StatusCode::OK)
+        }
+        None => (now_epoch(), auth.0.did.clone(), StatusCode::CREATED),
+    };
 
     let entry = VtcAclEntry {
-        did: req.did,
-        role: req.role,
-        label: req.label,
-        allowed_contexts: req.allowed_contexts,
-        created_at: now_epoch(),
-        created_by: auth.0.did,
-        expires_at: req.expires_at,
+        did: req_entry.subject,
+        role: req_entry.role,
+        label: req_entry.label,
+        allowed_contexts: req_entry.scopes,
+        created_at,
+        created_by,
+        updated_at: (status == StatusCode::OK).then(now_epoch),
+        updated_by: (status == StatusCode::OK).then(|| auth.0.did.clone()),
+        expires_at,
     };
 
     store_acl_entry(&acl, &entry).await?;
@@ -162,8 +331,15 @@ pub async fn create_acl(
             .await?;
     }
 
-    info!(caller = %entry.created_by, did = %entry.did, role = %entry.role, "ACL entry created");
-    Ok((StatusCode::CREATED, Json(AclEntryResponse::from(entry))))
+    info!(
+        caller = %auth.0.did,
+        did = %entry.did,
+        role = %entry.role,
+        reason = req.reason.as_deref().unwrap_or(""),
+        created = status == StatusCode::CREATED,
+        "ACL entry granted",
+    );
+    Ok((status, Json(AclEntryResponse::from(entry))))
 }
 
 // ---------- GET /acl/{did} ----------
@@ -200,11 +376,28 @@ pub async fn get_acl(
 
 // ---------- PATCH /acl/{did} ----------
 
+/// Canonical `acl/change-role` request.
+///
+/// Role-only, and `fromRole` is a **compare-and-swap guard**, not
+/// decoration: the maintainer must confirm the subject's current role
+/// equals it and refuse otherwise. That closes the read-modify-write
+/// race the previous partial update had — two admins demoting the same
+/// subject concurrently could each read `admin` and write a different
+/// result, last-writer-wins, with no signal.
+///
+/// Label and scope edits are **not** here: they go to `acl/grant` with
+/// the subject's existing role, which is what canonical means by "the
+/// entry the maintainer should hold".
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateAclRequest {
-    pub role: Option<VtcRole>,
-    pub label: Option<String>,
-    pub allowed_contexts: Option<Vec<String>>,
+    pub from_role: VtcRole,
+    pub to_role: VtcRole,
+    /// Operator rationale. Emitted on the service log line for this
+    /// change; the audit envelope's data types do not carry a free-text
+    /// reason today, so this is deliberately not described as audited.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// PATCH /acl/{did} — modify an ACL entry. Auth: Admin.
@@ -257,18 +450,19 @@ pub async fn update_acl(
     let prev_role = entry.role.clone();
     let prev_contexts = entry.allowed_contexts.clone();
 
-    if let Some(role) = req.role {
-        validate_vtc_role_assignment(&auth.0, &role)?;
-        entry.role = role;
+    // Compare-and-swap: the subject's current role MUST equal
+    // `fromRole`, else the caller is acting on a stale read.
+    if entry.role != req.from_role {
+        return Err(AppError::Conflict(format!(
+            "state mismatch: {did} currently holds role {}, not {}",
+            entry.role, req.from_role
+        )));
     }
-    if let Some(label) = req.label {
-        entry.label = Some(label);
-    }
-    if let Some(allowed_contexts) = req.allowed_contexts {
-        // Validate the new contexts before applying
-        validate_acl_modification(&auth.0, &allowed_contexts)?;
-        entry.allowed_contexts = allowed_contexts;
-    }
+
+    validate_vtc_role_assignment(&auth.0, &req.to_role)?;
+    entry.role = req.to_role.clone();
+    entry.updated_at = Some(now_epoch());
+    entry.updated_by = Some(auth.0.did.clone());
 
     store_acl_entry(&acl, &entry).await?;
 
@@ -303,13 +497,46 @@ pub async fn update_acl(
             .await?;
     }
 
-    info!(did = %did, "ACL entry updated");
+    info!(
+        did = %did,
+        from = %prev_role,
+        to = %entry.role,
+        reason = req.reason.as_deref().unwrap_or(""),
+        "ACL role changed",
+    );
     Ok(Json(AclEntryResponse::from(entry)))
 }
 
 // ---------- DELETE /acl/{did} ----------
 
-/// DELETE /acl/{did} — remove an ACL entry. Auth: Admin.
+/// Canonical `acl/revoke` parameters. `scopes` is a comma-separated
+/// list; when present the entry is scope-reduced rather than removed.
+#[derive(Debug, Deserialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[serde(rename_all = "camelCase")]
+#[into_params(parameter_in = Query)]
+pub struct RevokeAclQuery {
+    pub scopes: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+impl RevokeAclQuery {
+    fn scopes_list(&self) -> Vec<String> {
+        self.scopes
+            .as_deref()
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// DELETE /acl/{did} — revoke: remove the entry, or reduce its scopes
+/// when `scopes` is supplied. Auth: Admin.
 #[utoipa::path(
     delete, path = "/acl/{did}", tag = "acl",
     security(("bearer_jwt" = [])),
@@ -329,6 +556,7 @@ pub async fn delete_acl(
     auth: AdminAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
+    Query(query): Query<RevokeAclQuery>,
 ) -> Result<StatusCode, AppError> {
     // Prevent self-deletion
     if auth.0.did == did {
@@ -359,6 +587,63 @@ pub async fn delete_acl(
         ));
     }
 
+    // Canonical `acl/revoke` has two modes. With `scopes`, this is a
+    // *scope reduction*: the entry survives, minus those scopes. Only
+    // an omitted `scopes` removes the entry outright. Treating a scope
+    // reduction as a full removal would strip far more authority than
+    // the operator asked for, so the two paths are kept distinct.
+    let reduce = query.scopes_list();
+    if !reduce.is_empty() {
+        let mut entry = entry;
+        let before = entry.allowed_contexts.len();
+        entry.allowed_contexts.retain(|s| !reduce.contains(s));
+        if entry.allowed_contexts.len() == before {
+            return Err(AppError::NotFound(format!(
+                "none of the requested scopes are held by {did}"
+            )));
+        }
+        // Emptying an entry's scopes would silently promote it to
+        // community-wide authority (an empty scope set is how a
+        // super-admin is spelled), which is the opposite of revoking.
+        if entry.allowed_contexts.is_empty() {
+            return Err(AppError::Conflict(format!(
+                "revoking every scope of {did} would leave an unscoped \
+                 (community-wide) entry; omit `scopes` to remove it instead"
+            )));
+        }
+        entry.updated_at = Some(now_epoch());
+        entry.updated_by = Some(auth.0.did.clone());
+        store_acl_entry(&acl, &entry).await?;
+
+        // A shrunk scope set is a privilege reduction; the subject's
+        // live tokens still carry the old scopes.
+        let sessions = state.sessions_ks.clone();
+        let revoked = super::auth::revoke_sessions_for_did(&sessions, &did).await?;
+
+        if let Some(writer) = state.audit_writer.as_ref() {
+            writer
+                .write(
+                    &auth.0.did,
+                    Some(&did),
+                    AuditEvent::AclUpdated(AclChangeData {
+                        did: did.clone(),
+                        role: entry.role.to_string(),
+                        contexts: entry.allowed_contexts.clone(),
+                        expires_at: entry.expires_at.map(|e| e.to_string()),
+                    }),
+                )
+                .await?;
+        }
+
+        info!(
+            caller = %auth.0.did, did = %did, revoked,
+            remaining = entry.allowed_contexts.len(),
+            reason = query.reason.as_deref().unwrap_or(""),
+            "ACL scopes reduced",
+        );
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
     delete_acl_entry(&acl, &did).await?;
 
     if let Some(writer) = state.audit_writer.as_ref() {
@@ -374,7 +659,12 @@ pub async fn delete_acl(
             .await?;
     }
 
-    info!(caller = %auth.0.did, did = %did, "ACL entry deleted");
+    info!(
+        caller = %auth.0.did,
+        did = %did,
+        reason = query.reason.as_deref().unwrap_or(""),
+        "ACL entry revoked",
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -476,6 +766,8 @@ mod tests {
             allowed_contexts: contexts.iter().map(|c| c.to_string()).collect(),
             created_at: 0,
             created_by: "did:key:zCreator".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         }
     }
@@ -570,35 +862,53 @@ mod tests {
     // ── CreateAclRequest ────────────────────────────────────────────
 
     #[test]
-    fn create_acl_request_parses_minimal_body() {
-        let body = json!({ "did": "did:key:zABC", "role": "admin" });
+    fn grant_request_parses_minimal_body() {
+        let body = json!({ "entry": { "subject": "did:key:zABC", "role": "admin" } });
         let req: CreateAclRequest = serde_json::from_value(body).expect("minimal body");
-        assert_eq!(req.did, "did:key:zABC");
-        assert_eq!(req.role, VtcRole::Admin);
-        assert_eq!(req.label, None);
-        assert!(req.allowed_contexts.is_empty(), "defaults to empty");
-        assert_eq!(req.expires_at, None);
+        assert_eq!(req.entry.subject, "did:key:zABC");
+        assert_eq!(req.entry.role, VtcRole::Admin);
+        assert_eq!(req.entry.label, None);
+        assert!(req.entry.scopes.is_empty(), "defaults to empty");
+        assert_eq!(req.entry.expires_at, None);
+        assert_eq!(req.reason, None);
     }
 
     #[test]
-    fn create_acl_request_parses_full_body() {
+    fn grant_request_parses_full_body() {
         let body = json!({
-            "did": "did:key:zABC",
-            "role": "moderator",
-            "label": "ops lead",
-            "allowed_contexts": ["ctx1", "ctx2"],
-            "expires_at": 1_800_000_000u64,
+            "entry": {
+                "subject": "did:key:zABC",
+                "role": "moderator",
+                "label": "ops lead",
+                "scopes": ["ctx1", "ctx2"],
+                "expiresAt": "2027-01-15T00:00:00Z",
+            },
+            "reason": "quarterly review",
         });
         let req: CreateAclRequest = serde_json::from_value(body).expect("full body");
-        assert_eq!(req.role, VtcRole::Moderator);
-        assert_eq!(req.label.as_deref(), Some("ops lead"));
-        assert_eq!(req.allowed_contexts, vec!["ctx1", "ctx2"]);
-        assert_eq!(req.expires_at, Some(1_800_000_000));
+        assert_eq!(req.entry.role, VtcRole::Moderator);
+        assert_eq!(req.entry.label.as_deref(), Some("ops lead"));
+        assert_eq!(req.entry.scopes, vec!["ctx1", "ctx2"]);
+        assert!(req.entry.expires_at.is_some());
+        assert_eq!(req.reason.as_deref(), Some("quarterly review"));
+    }
+
+    /// Server-owned provenance must not be settable by the caller, or a
+    /// grant could backdate who added an entry and when.
+    #[test]
+    fn grant_request_rejects_caller_supplied_provenance() {
+        for field in ["createdAt", "createdBy", "updatedAt", "updatedBy"] {
+            let body = json!({
+                "entry": { "subject": "did:key:zA", "role": "admin", field: "x" }
+            });
+            serde_json::from_value::<CreateAclRequest>(body)
+                .expect_err(&format!("{field} must not be accepted"));
+        }
     }
 
     #[test]
-    fn create_acl_request_rejects_unknown_role() {
-        let body = json!({ "did": "did:key:zA", "role": "godmode" });
+    fn grant_request_rejects_unknown_role() {
+        let body = json!({ "entry": { "subject": "did:key:zA", "role": "godmode" } });
         let err = serde_json::from_value::<CreateAclRequest>(body)
             .expect_err("unknown role must not parse");
         let msg = format!("{err}");
@@ -606,6 +916,20 @@ mod tests {
             msg.contains("godmode") || msg.contains("unknown"),
             "got {msg}"
         );
+    }
+
+    /// `fromRole` is the compare-and-swap guard; omitting it would turn
+    /// change-role back into a blind write.
+    #[test]
+    fn change_role_request_requires_both_roles() {
+        let ok: UpdateAclRequest =
+            serde_json::from_value(json!({ "fromRole": "member", "toRole": "moderator" }))
+                .expect("both roles");
+        assert_eq!(ok.from_role, VtcRole::Member);
+        assert_eq!(ok.to_role, VtcRole::Moderator);
+
+        serde_json::from_value::<UpdateAclRequest>(json!({ "toRole": "admin" }))
+            .expect_err("fromRole is mandatory");
     }
 
     #[test]
@@ -617,31 +941,34 @@ mod tests {
 
     // ── UpdateAclRequest ───────────────────────────────────────────
 
+    /// The pre-migration partial update (`role`/`label`/
+    /// `allowed_contexts`, all optional) is gone: label and scope edits
+    /// belong to `acl/grant`, and a role change now demands its CAS
+    /// guard. An old client body must fail loudly rather than be read
+    /// as some subset of the new one.
     #[test]
-    fn update_acl_request_all_fields_optional() {
-        let empty = json!({});
-        let req: UpdateAclRequest = serde_json::from_value(empty).expect("empty body parses");
-        assert!(req.role.is_none());
-        assert!(req.label.is_none());
-        assert!(req.allowed_contexts.is_none());
-    }
-
-    #[test]
-    fn update_acl_request_parses_role_only() {
-        let body = json!({ "role": "member" });
-        let req: UpdateAclRequest = serde_json::from_value(body).unwrap();
-        assert_eq!(req.role, Some(VtcRole::Member));
+    fn change_role_request_rejects_the_pre_migration_body() {
+        for body in [
+            json!({}),
+            json!({ "role": "member" }),
+            json!({ "label": "ops", "allowed_contexts": ["ctx-a"] }),
+        ] {
+            serde_json::from_value::<UpdateAclRequest>(body.clone())
+                .expect_err(&format!("legacy body must not parse: {body}"));
+        }
     }
 
     // ── ListAclQuery ───────────────────────────────────────────────
 
     #[test]
-    fn list_acl_query_context_is_optional() {
+    fn list_acl_query_filters_are_optional() {
         let q: ListAclQuery = serde_json::from_value(json!({})).unwrap();
-        assert!(q.context.is_none());
+        assert!(q.scope.is_none());
+        assert!(q.role.is_none());
+        assert!(q.subject_prefix.is_none());
 
-        let q: ListAclQuery = serde_json::from_value(json!({ "context": "app1" })).unwrap();
-        assert_eq!(q.context.as_deref(), Some("app1"));
+        let q: ListAclQuery = serde_json::from_value(json!({ "scope": "app1" })).unwrap();
+        assert_eq!(q.scope.as_deref(), Some("app1"));
     }
 
     // ── AclEntryResponse ───────────────────────────────────────────
@@ -655,17 +982,36 @@ mod tests {
             allowed_contexts: vec!["ctx1".into()],
             created_at: 1_700_000_000,
             created_by: "did:key:zSetup".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: Some(1_800_000_000),
         };
         let resp = AclEntryResponse::from(entry);
         let json = serde_json::to_value(&resp).unwrap();
-        assert_eq!(json["did"], "did:key:zABC");
+        // Canonical `acl/_shared` AclEntry names.
+        assert_eq!(json["subject"], "did:key:zABC");
         assert_eq!(json["role"], "admin");
         assert_eq!(json["label"], "test");
-        assert_eq!(json["allowed_contexts"], json!(["ctx1"]));
-        assert_eq!(json["created_at"], 1_700_000_000);
-        assert_eq!(json["created_by"], "did:key:zSetup");
-        assert_eq!(json["expires_at"], 1_800_000_000);
+        assert_eq!(json["scopes"], json!(["ctx1"]));
+        assert_eq!(json["createdBy"], "did:key:zSetup");
+        // Timestamps are RFC3339 strings — canonical types them
+        // `format: date-time`, so emitting the raw epoch would be a
+        // silent contract break rather than a cosmetic one.
+        assert_eq!(json["createdAt"], "2023-11-14T22:13:20+00:00");
+        assert_eq!(json["expiresAt"], "2027-01-15T08:00:00+00:00");
+        // The pre-migration names must be gone, not merely aliased.
+        for old in [
+            "did",
+            "allowed_contexts",
+            "created_at",
+            "created_by",
+            "expires_at",
+        ] {
+            assert!(
+                json.get(old).is_none(),
+                "{old} should not be emitted: {json}"
+            );
+        }
     }
 
     #[test]
@@ -677,13 +1023,22 @@ mod tests {
             allowed_contexts: vec![],
             created_at: 1_700_000_000,
             created_by: "did:key:zSetup".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         };
         let resp = AclEntryResponse::from(entry);
         let json = serde_json::to_value(&resp).unwrap();
         assert!(
-            json.get("expires_at").is_none(),
-            "permanent entries must omit expires_at — got {json}"
+            json.get("expiresAt").is_none() && json.get("expires_at").is_none(),
+            "permanent entries must omit expiresAt — got {json}"
+        );
+        // Canonical names and RFC3339 timestamps, not the storage shape.
+        assert_eq!(json["subject"], "did:key:zPerm");
+        assert!(json.get("did").is_none(), "did renamed to subject: {json}");
+        assert!(
+            json["createdAt"].as_str().unwrap().contains('T'),
+            "createdAt must be RFC3339, not an epoch int: {json}"
         );
     }
 
@@ -692,36 +1047,45 @@ mod tests {
     #[test]
     fn acl_list_response_round_trips() {
         let entries = vec![AclEntryResponse {
-            did: "did:key:zA".into(),
+            subject: "did:key:zA".into(),
             role: VtcRole::Member,
             label: None,
-            allowed_contexts: vec![],
-            created_at: 0,
+            scopes: vec![],
+            created_at: epoch_to_rfc3339(0),
             created_by: "did:key:zS".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         }];
-        let resp = AclListResponse { entries };
+        let resp = AclListResponse {
+            entries,
+            truncated: false,
+            cursor: None,
+        };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains(r#""entries":"#), "got {json}");
         assert!(json.contains(r#""role":"member""#));
+        // `truncated` is canonical-required and must always serialize.
+        assert!(json.contains(r#""truncated":false"#), "got {json}");
     }
 
     #[test]
     fn custom_role_round_trip_through_request_body() {
         let body = json!({
-            "did": "did:key:zEditor",
-            "role": "custom:editor",
+            "entry": { "subject": "did:key:zEditor", "role": "custom:editor" },
         });
         let req: CreateAclRequest = serde_json::from_value(body).expect("custom role parses");
-        assert_eq!(req.role, VtcRole::Custom("editor".into()));
+        assert_eq!(req.entry.role, VtcRole::Custom("editor".into()));
         // Round-trip via the response shape.
         let entry = VtcAclEntry {
-            did: req.did,
-            role: req.role,
+            did: req.entry.subject,
+            role: req.entry.role,
             label: None,
             allowed_contexts: vec![],
             created_at: 0,
             created_by: "did:key:zS".into(),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         };
         let resp = AclEntryResponse::from(entry);

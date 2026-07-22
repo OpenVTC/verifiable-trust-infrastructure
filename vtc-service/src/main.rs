@@ -439,6 +439,8 @@ async fn run_invite_cli(
             allowed_contexts: vec![],
             created_at: now_epoch(),
             created_by: format!("vtc-cli/{}", env!("CARGO_PKG_VERSION")),
+            updated_at: None,
+            updated_by: None,
             expires_at: None,
         };
         store_acl_entry(&acl_ks, &entry).await?;
