@@ -367,7 +367,21 @@ pub(super) async fn handle_dids_update(
     .await
     {
         Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, AppError::from(e)),
+        Err(e) => {
+            // A Destructive update that passed the consent gate and then failed
+            // in execute previously vanished into a bare 422 — no line named the
+            // cause, so a consent-approved-but-still-looping DID was undiagnosable
+            // from the log. The error's Display distinguishes the sub-causes
+            // (`reconcile publish_did: …`, `webvh server … missing`,
+            // `get_published_version: …`, a signing/library failure), so log it.
+            tracing::warn!(
+                did = %did,
+                error = %e,
+                "webvh dids/update execute failed after the consent gate passed — \
+                 returning task error to requester"
+            );
+            app_error_to_reject(&doc, AppError::from(e))
+        }
     }
 }
 
