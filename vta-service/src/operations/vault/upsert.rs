@@ -41,28 +41,22 @@ pub async fn unseal_secret(
         .await
         .map_err(|e| UnsealError::UnpackFailed(e.to_string()))?;
 
-    // The envelope must actually be authcrypt: `unpack` also accepts plaintext
-    // and anoncrypt, either of which yields an unauthenticated (or absent)
-    // sender. Accepting those here would defeat the sender cross-check below
-    // (a plaintext `from` is attacker-controlled) and the "sealed" secret
-    // wouldn't be sealed at all. Require encrypted + authenticated.
-    vti_common::auth::require_authcrypt(
+    // One call does both: reject non-authcrypt envelopes AND bind the sender to
+    // the cryptographically-authenticated key (`encrypted_from_kid`), not the
+    // attacker-controlled plaintext `from`. A missing sender maps to the
+    // `MissingSender` reject; anything else (plaintext/anoncrypt, or a `from`
+    // that doesn't match the authenticated key) is a `sealed_secret_invalid`.
+    let sender = vti_common::auth::bind_authcrypt_sender(
+        msg.from.as_deref(),
         metadata.encrypted,
         metadata.authenticated,
-        "sealed secret",
+        metadata.encrypted_from_kid.as_deref(),
     )
-    .map_err(UnsealError::UnpackFailed)?;
-
-    // Cross-check: the authcrypt sender's DID must equal the authenticated
-    // caller. Bind to the cryptographically-authenticated sender key
-    // (`encrypted_from_kid`), NOT the plaintext `from`: `atm.unpack`
-    // proves the `skid` sender key but never checks it equals the inner `from`,
-    // which is attacker-controlled.
-    let sender = metadata
-        .encrypted_from_kid
-        .as_deref()
-        .map(|kid| kid.split('#').next().unwrap_or(kid).to_string())
-        .ok_or(UnsealError::MissingSender)?;
+    .map_err(|e| match e {
+        vti_common::auth::AuthcryptError::NoFrom
+        | vti_common::auth::AuthcryptError::NoSenderKey => UnsealError::MissingSender,
+        other => UnsealError::UnpackFailed(other.message("sealed secret")),
+    })?;
     if sender != caller_did {
         return Err(UnsealError::SenderMismatch {
             sender,

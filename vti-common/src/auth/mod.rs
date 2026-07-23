@@ -13,7 +13,7 @@ pub use backend::{
     AttestationOutcome, AuthAuditEvent, AuthBackend, AuthError, AuthenticateInput, ChallengeInput,
     RefreshInput, RoleResolution, SessionStore,
 };
-pub use didcomm::{bind_authcrypt_sender, require_authcrypt};
+pub use didcomm::{AuthcryptError, bind_authcrypt_sender};
 pub use extractor::{
     AdminAuth, AuthClaims, AuthState, ManageAuth, StepUpAuth, SuperAdminAuth, WriteAuth,
 };

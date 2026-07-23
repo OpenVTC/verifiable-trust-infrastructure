@@ -247,9 +247,8 @@ async fn authenticate_and_mint(
         metadata.encrypted,
         metadata.authenticated,
         metadata.encrypted_from_kid.as_deref(),
-        "authenticate message",
     )
-    .map_err(AppError::Authentication)?;
+    .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
 
     // Canonical Trust-Task URI only; the legacy `affinidi.com/atm/1.0`
     // alias was removed (all VTC clients emit the canonical type).
@@ -792,9 +791,8 @@ pub async fn refresh(
         metadata.encrypted,
         metadata.authenticated,
         metadata.encrypted_from_kid.as_deref(),
-        "refresh message",
     )
-    .map_err(AppError::Authentication)?;
+    .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
     // Canonical Trust-Task URI only; the legacy
     // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
