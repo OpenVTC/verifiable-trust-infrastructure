@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### vta-service 0.12.15 — the consent decisions that reached no audit row
+
+* Two decision paths recorded nothing, so a decision that *arrived* looked
+  identical to one that never did. **Proof-verification failure** returns
+  through `reject_with`, which does not log, and cannot write an audit row —
+  there is no proven actor to attribute it to, and an unverified `from` is not
+  an identity. It is now a `warn!`, because a broken proof (rotated key, wrong
+  signer, malformed payload) and a wallet/routing failure have opposite causes
+  and previously looked the same from the VTA side. The **`add_approval` race**
+  (pending read, then gone before the approval lands) now records an audit row
+  under the existing `denied:no_pending` outcome. (#760)
+* Everything else #760 proposed was discarded deliberately: `record_consent`
+  (#739) already instruments every other decision outcome and emits it to the
+  `audit` target, so five of that patch's six lines would have been duplicates.
+
 ### vta-service 0.12.14 / vta-sdk 0.19.23 — `hostingPath` is retired, not reinterpreted
 
 * **`hostingPath` never meant anything, and 0.12.12 gave it a meaning the live

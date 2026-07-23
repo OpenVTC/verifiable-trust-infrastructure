@@ -123,6 +123,20 @@ pub(super) async fn handle_decision(
     let approver = match crate::auth::di_proof::verify_trust_task_proof(&doc).await {
         Ok(did) => did,
         Err(e) => {
+            // The only decision path that reaches no audit row: every later
+            // rejection records one, but this one has no *proven* actor to
+            // attribute it to, and an unverified `from` is not an identity.
+            //
+            // Log it anyway. Without this line, a decision that arrives and
+            // fails verification is indistinguishable from one that never
+            // arrived — and those have opposite causes: a broken proof (key
+            // rotated, wrong signer, malformed payload) versus wallet/routing.
+            // An operator watching an update loop needs to tell them apart.
+            tracing::warn!(
+                error = %e,
+                "task-consent decision arrived but failed proof verification; \
+                 no approver could be attributed"
+            );
             return reject_with(
                 &doc,
                 RejectReason::PermissionDenied {
@@ -252,6 +266,20 @@ pub(super) async fn handle_decision(
     let updated = match consent::add_approval(ks, &pending.digest, &approver, now).await {
         Ok(Some(p)) => p,
         Ok(None) => {
+            // The pending was read above but is gone by the time the approval
+            // is recorded — it lapsed, or a concurrent decision resolved it.
+            // Rare, and the only rejection after a proven signer that recorded
+            // nothing, which made it look identical to a decision that never
+            // arrived.
+            crate::audit::record_consent(
+                &state.audit_ks,
+                "consent.decision",
+                &approver,
+                &pending.type_uri,
+                "denied:no_pending",
+                Some("the pending vanished between lookup and approval (lapsed or concurrently resolved)"),
+            )
+            .await;
             return reject_with(
                 &doc,
                 RejectReason::TaskFailed {
