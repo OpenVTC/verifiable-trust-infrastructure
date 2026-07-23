@@ -4,3 +4,9 @@ docs/
 *.md
 !README.md
 .claude/
+# Keep enclave signing keys and Nitro runtime state out of the build context.
+# The Nitro build uses selective per-crate COPYs, but excluding these avoids
+# shipping private keys / large EIF artifacts to the Docker daemon.
+signing/
+.deploy-nitro/
+*.txt
