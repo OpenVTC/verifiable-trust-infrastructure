@@ -13,17 +13,6 @@
 [advisories]
 version = 2
 ignore = [
-  { id = "GHSA-cq8v-f236-94qc", reason = """
-  rand 0.8 soundness issue: `rand::rng()` is unsound when wrapped by a
-  custom logger that attempts to source entropy from `ThreadRng` during
-  signal handling. We use `rand::random()` and `rand::rng().fill_bytes()`
-  directly, with no custom logger wrapper — the unsafe interaction does
-  not occur in our code.
-
-  Pulled transitively by jsonwebtoken 10.3.0 (latest), rsa 0.9.10, and
-  ssi-crypto 0.2.1. Drop this ignore when any of those release a version
-  that depends on rand 0.9.3+.
-  """ },
 
   { id = "RUSTSEC-2026-0099", reason = """
   rustls-webpki 0.101.x accepts name constraints for certificates
@@ -60,28 +49,6 @@ ignore = [
   rustls-webpki 0.101 ships a fix.
   """ },
 
-  { id = "GHSA-82j2-j2ch-gfr8", reason = """
-  rustls-webpki: index-out-of-bounds panic in `bit_string_flags()`
-  reachable through `BorrowedCertRevocationList::from_der()` via the
-  `issuingDistributionPoint` CRL extension when the BIT STRING
-  content is exactly `[0x00]`. Fixed in 0.103.13; 0.101.x and 0.102.x
-  branches are not patched.
-
-  Same precondition and same transitive path as RUSTSEC-2026-0104:
-  the upstream advisory is explicit that "CRL checking is opt-in" —
-  only applications that pass `RevocationOptions` to
-  `verify_for_usage()` and load attacker-influenced CRL bytes are
-  affected. Our 0.101.x copy lives behind AWS SDK's
-  `aws-smithy-http-client` → `hyper-rustls` 0.24 → rustls 0.21 used
-  for AWS API endpoint TLS; that path does not enable revocation
-  checking and never fetches CRLs. The default (and our actual)
-  rustls config is unaffected.
-
-  No RUSTSEC ID assigned at the time of writing (advisory published
-  2026-04-24). Drop when AWS SDK retires the rustls 0.21 code path,
-  or when rustls-webpki 0.101 ships a backported fix.
-  """ },
-
   { id = "RUSTSEC-2025-0134", reason = """
   rustls-pemfile is unmaintained. Pulled transitively (in two
   different versions) through the AWS SDK rustls 0.21 path —
@@ -92,22 +59,6 @@ ignore = [
 
   Drop when AWS SDK retires the rustls 0.21 code path; both 0.27
   hyper-rustls and rustls 0.23 have moved to rustls-pki-types.
-  """ },
-
-  { id = "RUSTSEC-2023-0071", reason = """
-  rsa 0.9.x: Marvin Attack — potential key recovery through timing
-  sidechannels in RSA decryption. Pulled transitively by
-  jsonwebtoken 10.3.0; no other path through our graph.
-
-  Not exploitable in our code. JWT verification only checks
-  signatures, never decrypts. Our access tokens use EdDSA
-  (Ed25519), not RSA — the rsa code path is dead in our build.
-  Our only RSA decryption is the KMS CMS unwrap on the Nitro
-  attested bootstrap path, which we deliberately migrated to
-  `aws-lc-rs` in 0.5 specifically to drop this exposure.
-
-  Drop when jsonwebtoken stops depending on `rsa`, or when the
-  `rsa` crate ships a constant-time implementation.
   """ },
 
   { id = "RUSTSEC-2024-0370", reason = """
@@ -151,6 +102,25 @@ ignore = [
   is the only flagged risk.
 
   Drop when uniffi (0.28.x) removes its `paste` dependency.
+  """ },
+
+  { id = "RUSTSEC-2026-0215", reason = """
+  smallstr 0.3.1 is unmaintained. Not a vulnerability — no CVE, no known
+  exploit; the crate is a `SmallVec`-backed string type and the advisory is
+  purely a maintenance-status signal.
+
+  Transitive-only and deep: smallstr <- json-syntax <- json-ld <-
+  ssi-json-ld <- ssi-claims-core <- ssi-dids-core <-
+  affinidi-did-resolver-cache-sdk. Nothing in this workspace names it, and
+  we do not choose it — the `ssi-*` stack does, for JSON-LD parsing.
+
+  No safe upgrade exists (all versions are affected), so there is nothing to
+  bump to. The suggested replacements (compact_str, smol_str) are a change
+  for the `ssi-json-ld`/`json-syntax` maintainers to make, not something we
+  can force from here without forking the JSON-LD stack.
+
+  Drop this ignore when json-syntax releases a version off smallstr and the
+  `ssi-*` chain picks it up.
   """ },
 ]
 
