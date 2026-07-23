@@ -579,12 +579,21 @@ async fn a_context_admin_approval_lets_a_cross_context_requester_execute() {
     );
 }
 
-/// The dual: an approval from someone who is a set member but is **not** an admin
-/// of the DID's context confers nothing. The decision is accepted (they are in
-/// the set), but the re-submit cannot execute — authority can only be delegated
-/// by someone who holds it.
+/// The dual: when the only set member is **not** an admin of the DID's context,
+/// there is no approval anyone could give that would let the task execute —
+/// authority can only be delegated by someone who holds it.
+///
+/// The task is therefore refused **at submission**, before any consent ceremony
+/// is minted (#748). It used to mint a pending, accept the approval, hand back a
+/// grant carrying an empty delegation, and only then forbid the re-submit — a
+/// ceremony whose outcome was decided before it began, and which in production
+/// looped: approved, still forbidden, no actionable error.
+///
+/// So the guarantee under test is unchanged and strictly stronger: a
+/// non-context-admin's approval confers no execution. What moved is *when* we
+/// say so, and that the refusal now names the context and the gap.
 #[tokio::test]
-async fn an_approval_from_a_non_context_admin_confers_no_execution() {
+async fn an_unsatisfiable_elevation_is_refused_before_any_consent_ceremony() {
     let (router, ctx) = build_test_app_with(TestAppOptions {
         provisionable_vta: true,
         ..Default::default()
@@ -630,41 +639,39 @@ async fn an_approval_from_a_non_context_admin_confers_no_execution() {
             "document": { "@context": ["https://www.w3.org/ns/did/v1"], "id": did, "alsoKnownAs": ["did:example:nope"] }
         }),
     );
-    let (_, rejected) = post(&router, &deleg_token, &update).await;
-    let d = &rejected["payload"]["details"];
-
-    // The approver is in the set, so the decision itself is accepted and a grant
-    // is minted — but it carries no delegated context.
-    let decision = sign_as(
-        &ops,
-        envelope(
-            TASK_CONSENT_DECISION,
-            &ops.did,
-            &ctx.vta_did,
-            json!({ "challenge": d["challenge"], "payloadDigest": d["payloadDigest"], "decision": "approve" }),
-        ),
-    );
-    let (status, _granted) = post(&router, &deleg_token, &decision).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "a set member's decision is accepted"
-    );
-
-    // The re-submit must NOT execute: the grant conferred no authority over
-    // `default`, and the requester never held it.
-    let resubmit = envelope(
-        WEBVH_UPDATE,
-        requester,
-        &ctx.vta_did,
-        update["payload"].clone(),
-    );
-    let (status, refused) = post(&router, &deleg_token, &resubmit).await;
+    let (status, refused) = post(&router, &deleg_token, &update).await;
     assert_ne!(
         status,
         StatusCode::OK,
-        "an approval from a non-context-admin must not confer execution: {refused}"
+        "an elevation no approver can confer must be refused, not executed: {refused}"
     );
+
+    // The refusal has to be actionable: an operator reading it must learn which
+    // context is missing and who would have to hold it. A bare "forbidden" is
+    // what sent this into a loop in production.
+    let payload = refused["payload"].to_string();
+    assert!(
+        payload.contains("consent cannot confer"),
+        "the refusal must say the elevation is unsatisfiable, not merely forbidden: {refused}"
+    );
+    assert!(
+        payload.contains("`default`"),
+        "the refusal must name the context the requester lacks: {refused}"
+    );
+    assert!(
+        payload.contains("`operators`"),
+        "the refusal must name the approver set that cannot confer it: {refused}"
+    );
+
+    // Nothing to approve: no ceremony was minted, so there is no challenge for
+    // an approver to sign. This is the part that used to happen and shouldn't.
+    let details = &refused["payload"]["details"];
+    assert!(
+        details["challenge"].is_null() && details["consentRequests"].is_null(),
+        "no consent ceremony may be minted for a task that could never execute: {refused}"
+    );
+
+    // And of course nothing ran.
     assert_eq!(
         update_keys_in_force(&ctx, &did).await,
         keys_before,
