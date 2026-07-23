@@ -334,6 +334,11 @@ pub fn validate_approve_scope_grant(
                     "approve scope must name at least one context (or use 'all')".into(),
                 ));
             }
+            // `--approve-contexts ''` parses to `[""]`, which is not empty and
+            // so cleared the check above while naming no context at all.
+            for c in cs {
+                crate::context_path::validate_context_path(c)?;
+            }
             for c in cs {
                 caller.require_context(c)?;
             }
@@ -718,6 +723,16 @@ pub fn validate_acl_modification(
     caller: &AuthClaims,
     target_contexts: &[String],
 ) -> Result<(), AppError> {
+    // Shape first, for every caller. `validate_context_path` existed all along
+    // but was never called on the ACL write path, so a malformed id — most
+    // reachably `""`, which is what `--contexts ''` actually parses to — was
+    // storable. Super admins reached it most easily, since their check below
+    // returns before any per-context work happens. An empty id is not an
+    // identifier and matches nothing in `has_context_access`, so an entry
+    // holding one is inert while looking scoped.
+    for ctx in target_contexts {
+        crate::context_path::validate_context_path(ctx)?;
+    }
     if caller.is_super_admin() {
         return Ok(());
     }
@@ -1511,5 +1526,49 @@ mod tests {
             validate_approve_scope_grant(&ctx_admin, &ApproveScope::Contexts(vec![])).is_err(),
             "empty scope must name a context or use all"
         );
+    }
+
+    /// `--contexts ''` / `--approve-contexts ''` parse to `[""]`, not to `[]`
+    /// — verified against clap 4 rather than assumed. A one-element list of
+    /// the empty string cleared every `is_empty()` guard while naming no
+    /// context, and nothing on the ACL write path validated the id's shape.
+    /// A super admin hit this most easily: its authority check returns before
+    /// any per-context work.
+    #[test]
+    fn blank_context_ids_are_rejected_on_every_acl_write_path() {
+        let blank = vec![String::new()];
+
+        assert!(
+            validate_acl_modification(&super_admin_claims(), &blank).is_err(),
+            "a super admin must not store a context named empty-string"
+        );
+        assert!(
+            validate_acl_modification(&context_admin_claims(&["ctx-a"]), &blank).is_err(),
+            "nor may a context admin"
+        );
+        assert!(
+            validate_approve_scope_grant(
+                &super_admin_claims(),
+                &ApproveScope::Contexts(blank.clone())
+            )
+            .is_err(),
+            "an approve scope of [\"\"] names no context"
+        );
+
+        // Other malformed shapes go the same way, now that the write path
+        // validates at all.
+        for bad in ["/ctx", "ctx/", "a//b", "ev il"] {
+            assert!(
+                validate_acl_modification(&super_admin_claims(), &[bad.to_string()]).is_err(),
+                "{bad} must be rejected"
+            );
+        }
+
+        // The legitimate shapes still pass, including the empty *list* that
+        // means super admin.
+        validate_acl_modification(&super_admin_claims(), &[])
+            .expect("an empty list is still how super admin is expressed");
+        validate_acl_modification(&super_admin_claims(), &["acme/eng".to_string()])
+            .expect("a well-formed nested path is still accepted");
     }
 }

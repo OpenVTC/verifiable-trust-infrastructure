@@ -1679,7 +1679,11 @@ pub(crate) enum AclCommands {
         /// Human-readable label
         #[arg(long)]
         label: Option<String>,
-        /// Comma-separated context IDs (empty = unrestricted)
+        /// Comma-separated context IDs. Omit the flag entirely to leave the
+        /// list empty — which means *unrestricted* only for `--role admin`
+        /// (super admin) and *no access at all* for every other role. Do not
+        /// pass `--contexts ''`: that parses to one context named empty-string,
+        /// not to an empty list, and is rejected.
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
         /// Optional expiry — accepts `N[s|m|h|d|w]` (e.g. `24h`, `7d`). When
@@ -1698,7 +1702,8 @@ pub(crate) enum AclCommands {
         step_up_require: Option<String>,
         /// Grant approve-authority over ALL contexts: this DID may *approve*
         /// (confer) a change across every context while being able to *act* in
-        /// none. Super-admin only. Pair with `--role reader --contexts ''`.
+        /// none. Super-admin only. Pair with `--role reader` and simply omit
+        /// `--contexts`.
         #[arg(long)]
         approve_all: bool,
         /// Grant approve-authority scoped to these contexts (comma-separated):

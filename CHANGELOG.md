@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### vti-common 0.11.13 / vta-cli-common 0.10.9 / vta-service 0.12.16 / pnm-cli 0.11.5 — ACL contexts: say what an empty list means, and stop storing a blank one
+
+* **An empty `allowed_contexts` rendered as `(unrestricted)` for every role,
+  which is the opposite of the truth for all but one.** `is_super_admin`
+  requires `Role::Admin` *and* an empty list; `has_context_access` otherwise
+  iterates the list, and an empty list matches nothing. So a least-privilege
+  approver — the shape the `--approve-all` help text itself recommends —
+  displayed as holding blanket read access while able to act nowhere, and an
+  operator auditing for over-broad grants saw `(unrestricted)` on rows that were
+  inert. `format_contexts` is now role-aware in both copies (`pnm` and the
+  offline `vta acl`), rendering `(none — acts nowhere)` for non-admin. The test
+  that asserted the old behaviour pinned the bug, not the contract. (#746)
+* **`--contexts ''` stores a context named empty-string.** Verified against
+  clap 4 rather than assumed: the empty value parses to `[""]`, not `[]`. That
+  one-element list cleared every `is_empty()` guard while naming no context, and
+  **nothing on the ACL write path validated a context id's shape at all** —
+  `validate_context_path` existed and was never called there. A super admin
+  reached it most easily, since its authority check returns before any
+  per-context work. Both `validate_acl_modification` and
+  `validate_approve_scope_grant` now validate each id, which also rejects
+  `/ctx`, `ctx/`, `a//b` and ids containing spaces. The `--approve-all` help no
+  longer recommends the broken invocation — omit `--contexts` instead. (#747)
+
 ### vta-service 0.12.15 — the consent decisions that reached no audit row
 
 * Two decision paths recorded nothing, so a decision that *arrived* looked

@@ -7,11 +7,28 @@ use vta_sdk::prelude::*;
 
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
 
-pub fn format_contexts(contexts: &[String]) -> String {
-    if contexts.is_empty() {
+/// Human-readable context list — **role-aware**, because an empty
+/// `allowed_contexts` means opposite things depending on the role.
+///
+/// `AuthClaims::is_super_admin` requires `Role::Admin` *and* an empty list;
+/// `has_context_access` otherwise iterates `allowed_contexts`, and an empty
+/// list matches nothing. So empty means "every context" for an admin and
+/// "no context at all" for every other role.
+///
+/// Rendering both as `(unrestricted)` misled in both directions on a
+/// security-relevant display: a correctly-scoped least-privilege approver
+/// looked like a blanket grant, and an operator auditing for over-broad
+/// access saw `(unrestricted)` on rows that were in fact inert.
+pub fn format_contexts(role: &str, contexts: &[String]) -> String {
+    if !contexts.is_empty() {
+        return contexts.join(", ");
+    }
+    if role == "admin" {
+        // `format_role` already renders this entry's role as "super admin",
+        // so the two columns read together without repeating the term.
         "(unrestricted)".to_string()
     } else {
-        contexts.join(", ")
+        "(none — acts nowhere)".to_string()
     }
 }
 
@@ -70,7 +87,7 @@ pub async fn cmd_acl_list(
         print_full_list_title("ACL Entries", resp.entries.len());
         for entry in &resp.entries {
             let label = entry.label.as_deref().unwrap_or("—");
-            let contexts = format_contexts(&entry.allowed_contexts);
+            let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
             let role = format_role(&entry.role, &entry.allowed_contexts);
             let approve = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts);
             let mut fields: Vec<(&str, &str)> = vec![
@@ -100,7 +117,7 @@ pub async fn cmd_acl_list(
         .iter()
         .map(|entry| {
             let label = entry.label.clone().unwrap_or_else(|| "\u{2014}".into());
-            let contexts = format_contexts(&entry.allowed_contexts);
+            let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
 
             Row::new(vec![
                 Cell::from(entry.did.clone()).style(Style::default().fg(Color::DarkGray)),
@@ -154,7 +171,7 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
     );
     println!(
         "Contexts:         {}",
-        format_contexts(&entry.allowed_contexts)
+        format_contexts(&entry.role, &entry.allowed_contexts)
     );
     if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
         println!("Approve:          {scope}");
@@ -205,7 +222,10 @@ pub async fn cmd_acl_create(
     if let Some(label) = &entry.label {
         println!("  Label:      {label}");
     }
-    println!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
+    println!(
+        "  Contexts:   {}",
+        format_contexts(&entry.role, &entry.allowed_contexts)
+    );
     if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
         println!("  Approve:    {scope}");
     }
@@ -255,7 +275,10 @@ pub async fn cmd_acl_update(
     if let Some(label) = &entry.label {
         println!("  Label:    {label}");
     }
-    println!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+    println!(
+        "  Contexts: {}",
+        format_contexts(&entry.role, &entry.allowed_contexts)
+    );
     if let Some(approver) = &step_up_approver {
         if approver.is_empty() {
             println!("  Step-up approver: (cleared)");
@@ -288,9 +311,36 @@ mod tests {
 
     // ── format_contexts ────────────────────────────────────────────
 
+    /// Empty means "every context" only for an admin. This test previously
+    /// asserted `(unrestricted)` for an empty list regardless of role, which
+    /// pinned the bug rather than the behaviour.
     #[test]
-    fn test_format_contexts_empty_shows_unrestricted() {
-        assert_eq!(format_contexts(&[]), "(unrestricted)");
+    fn test_format_contexts_empty_is_role_dependent() {
+        assert_eq!(format_contexts("admin", &[]), "(unrestricted)");
+        for role in ["reader", "initiator", "application"] {
+            assert_eq!(
+                format_contexts(role, &[]),
+                "(none — acts nowhere)",
+                "empty contexts must not read as unrestricted for role {role}"
+            );
+        }
+    }
+
+    /// The shape the `--approve-all` help text itself recommends: a reader
+    /// with no contexts whose authority is entirely `approve_scope`. It acts
+    /// nowhere, and the display must not suggest otherwise.
+    #[test]
+    fn test_least_privilege_approver_does_not_read_as_unrestricted() {
+        let contexts: Vec<String> = vec![];
+        assert_eq!(
+            format_contexts("reader", &contexts),
+            "(none — acts nowhere)"
+        );
+        assert_eq!(format_role("reader", &contexts), "reader");
+        assert_eq!(
+            format_approve_scope(false, &["openvtc".to_string()]).as_deref(),
+            Some("contexts [openvtc]")
+        );
     }
 
     #[test]
@@ -314,13 +364,13 @@ mod tests {
     #[test]
     fn test_format_contexts_single() {
         let ctx = vec!["vta".to_string()];
-        assert_eq!(format_contexts(&ctx), "vta");
+        assert_eq!(format_contexts("reader", &ctx), "vta");
     }
 
     #[test]
     fn test_format_contexts_multiple() {
         let ctx = vec!["vta".to_string(), "payments".to_string()];
-        assert_eq!(format_contexts(&ctx), "vta, payments");
+        assert_eq!(format_contexts("reader", &ctx), "vta, payments");
     }
 
     // ── format_role ────────────────────────────────────────────────

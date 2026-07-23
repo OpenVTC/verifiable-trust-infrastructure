@@ -40,7 +40,7 @@ pub async fn run_acl_list(
         if let Some(label) = &entry.label {
             eprintln!("  Label:    {label}");
         }
-        eprintln!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+        eprintln!("  Contexts: {}", format_contexts(entry));
         eprintln!("  Created:  {}", format_timestamp(entry.created_at));
         eprintln!();
     }
@@ -167,17 +167,26 @@ fn print_entry_details(entry: &AclEntry) {
     if let Some(label) = &entry.label {
         eprintln!("  Label:      {label}");
     }
-    eprintln!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
+    eprintln!("  Contexts:   {}", format_contexts(entry));
     eprintln!("  Created:    {}", format_timestamp(entry.created_at));
     eprintln!("  Created by: {}", entry.created_by);
     eprintln!();
 }
 
-fn format_contexts(contexts: &[String]) -> String {
-    if contexts.is_empty() {
+/// Role-aware, for the same reason as the `pnm` copy in
+/// `vta-cli-common::commands::acl`: an empty `allowed_contexts` grants every
+/// context to an admin (`is_super_admin`) and none to any other role
+/// (`has_context_access` iterates the list, and an empty list matches nothing).
+/// Rendering both as `(unrestricted)` said the opposite of the truth for every
+/// non-admin entry.
+fn format_contexts(entry: &AclEntry) -> String {
+    if !entry.allowed_contexts.is_empty() {
+        return entry.allowed_contexts.join(", ");
+    }
+    if entry.role == Role::Admin {
         "(unrestricted)".into()
     } else {
-        contexts.join(", ")
+        "(none — acts nowhere)".into()
     }
 }
 
