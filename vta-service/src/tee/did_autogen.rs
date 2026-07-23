@@ -230,6 +230,18 @@ pub async fn maybe_generate_vta_did(
         .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
         .await?;
 
+    // Also store the did.jsonl in the WEBVH keyspace keyed by the DID. Both
+    // the public `/.well-known/did.jsonl` route (`serve_canonical`) and the
+    // internal self-DID resolver preload read via `webvh_store::get_did_log`,
+    // keyed by the DID — without this write the VTA's own did:webvh is
+    // unresolvable (well-known 404s, preload WARN fires) so no client can
+    // authcrypt to it. Feature-gated to match `webvh_store`.
+    #[cfg(feature = "webvh")]
+    {
+        let webvh_ks = apply_enc(store.keyspace(crate::keyspaces::WEBVH)?);
+        crate::webvh_store::store_did_log(&webvh_ks, &final_did, &log_content).await?;
+    }
+
     // Also store in bootstrap keyspace (no encryption) so the parent proxy
     // can read it and write did.jsonl to disk for the operator.
     let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
