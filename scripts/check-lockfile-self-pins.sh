@@ -43,6 +43,16 @@
 # refreshes the pin immediately after publishing the crate, which is the only
 # moment the refresh is actually possible.
 #
+# STATUS: the workspace now carries a `[patch.crates-io]` entry for every crate
+# that was being pulled back in (see the root Cargo.toml), so the registry
+# copies no longer exist and this guard passes with "nothing to check". That is
+# the expected steady state, not a sign the check has been defeated.
+#
+# Keep it anyway. It is the tripwire that says a NEW self-pin has appeared —
+# a fresh dev-dependency chain reaching one of our crates — and needs its own
+# patch entry. Without it, the first sign would be a dependent published against
+# stale source.
+#
 # Usage: scripts/check-lockfile-self-pins.sh
 # Portable to macOS bash 3.2 / BSD userland.
 set -euo pipefail

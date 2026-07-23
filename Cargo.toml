@@ -321,3 +321,47 @@ unsafe_op_in_unsafe_fn = "warn"
 needless_pass_by_value = "allow"
 too_many_arguments = "allow"
 type_complexity = "allow"
+
+# Make the workspace copy of `vta-sdk` the ONLY one in the graph.
+#
+# A transitive dev-dependency pulls our own crate back in from crates.io —
+#
+#   vtc-service [dev-dependencies]
+#     -> affinidi-messaging-test-mediator
+#       -> affinidi-messaging-mediator
+#         -> vta-sdk   (registry, NOT the workspace path copy)
+#
+# so without this, Cargo.lock carries two `vta-sdk` nodes: the path copy at the
+# local version and a registry copy pinned at whatever was current when that
+# dependency was last resolved. That second node is a standing hazard. It goes
+# stale the instant we publish, `cargo publish --locked` verifies dependents
+# against it, and a dependent therefore gets built against the PREVIOUS
+# release's source — silently, because the workspace's own path-dep build stays
+# green throughout. That is how pnm-cli 0.11.2 was verified against vta-sdk
+# 0.19.11 minutes after 0.19.12 shipped, and sat unpublished for three releases.
+#
+# Refreshing the pin after each publish was the previous fix, and it can only
+# happen in the publish job (the version does not exist until then), which means
+# committing to a protected branch from CI — blocked by the org ruleset, so the
+# refresh PR could not be opened and main kept going stale. Seven releases in a
+# row ended that way.
+#
+# Patching removes the second node instead of chasing it. Note the patch is
+# workspace-local: `cargo publish`'s packaged verification build does not see it
+# and resolves `vta-sdk` from the registry, picking the newest published
+# version — which, in a release run, is the one published moments earlier in the
+# same loop. So the property the self-pin was trying to guarantee now holds by
+# construction.
+#
+# Trade-off worth knowing: the published `affinidi-messaging-mediator` now
+# compiles against our local `vta-sdk` rather than the published one. A
+# `vta-sdk` change that breaks it surfaces here immediately instead of after a
+# release — but it is a combination that does not exist in the wild, so a
+# breaking change within `0.19.x` shows up as a confusing build failure in a
+# third-party crate.
+#
+# One entry per crate that gets pulled back in. `scripts/check-lockfile-self-pins.sh`
+# is what tells you a new one has appeared: it now passes with "nothing to
+# check", and that is the expected steady state.
+[patch.crates-io]
+vta-sdk = { path = "vta-sdk" }

@@ -401,7 +401,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.19.22 (registry+https://github.com/rust-lang/crates.io-index)",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -2486,7 +2486,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -3287,7 +3287,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -6765,7 +6765,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vta-cli-common",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10081,7 +10081,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.19",
  "tokio",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "vti-common",
  "x25519-dalek",
 ]
@@ -10114,7 +10114,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10137,7 +10137,7 @@ dependencies = [
  "tracing-subscriber",
  "trust-tasks-rs",
  "uniffi",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10198,39 +10198,6 @@ dependencies = [
  "x25519-dalek",
  "x509-parser 0.18.1",
  "zeroize",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.19.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90eab9c3036db79750b8113d7439f0d92ddb90f140b3ab5cc07403c0d1d08681"
-dependencies = [
- "affinidi-crypto",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-tdk",
- "base64 0.22.1",
- "chrono",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.4.3",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "url",
- "uuid",
 ]
 
 [[package]]
@@ -10315,7 +10282,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "vta-service",
  "vti-common",
  "vti-secrets",
@@ -10337,7 +10304,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
- "vta-sdk 0.19.22",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -10411,7 +10378,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "vtc-service",
  "vti-common",
  "vti-secrets",
@@ -10463,7 +10430,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "webauthn-rs",
  "zeroize",
 ]
@@ -10490,7 +10457,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "vta-service",
  "vti-common",
 ]
@@ -10519,7 +10486,7 @@ dependencies = [
  "tokio",
  "tracing",
  "vaultrs",
- "vta-sdk 0.19.22",
+ "vta-sdk",
  "vti-common",
 ]
 
