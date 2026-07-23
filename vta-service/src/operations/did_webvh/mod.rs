@@ -1440,6 +1440,13 @@ pub(super) enum WebvhTransport<'a> {
     DIDComm {
         bridge: &'a DIDCommBridge,
         server_did: String,
+        /// A REST endpoint the same server also advertises, if any.
+        ///
+        /// Agent-name operations exist only over REST — the hosting server's
+        /// DIDComm dispatch table has no agent-name verbs — so they fall back
+        /// to this rather than refusing on a server that advertises both, which
+        /// is the normal deployment shape.
+        rest_url: Option<String>,
     },
 }
 
@@ -1467,6 +1474,7 @@ impl<'a> WebvhTransport<'a> {
                 Ok(Self::DIDComm {
                     bridge: didcomm_bridge,
                     server_did: server.did.clone(),
+                    rest_url: transport::resolve_rest_endpoint(&resolved.doc.service),
                 })
             }
             Some(transport::ResolvedTransport::Rest { url }) => {
@@ -1495,7 +1503,9 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<RequestUriResponse, AppError> {
         match self {
             Self::Rest(c) => c.request_uri(path, domain).await,
-            Self::DIDComm { bridge, server_did } => {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
                 WebvhDIDCommClient::new(bridge, server_did)
                     .request_uri(path, domain)
                     .await
@@ -1511,7 +1521,9 @@ impl<'a> WebvhTransport<'a> {
     ) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content, domain).await,
-            Self::DIDComm { bridge, server_did } => {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
                 WebvhDIDCommClient::new(bridge, server_did)
                     .publish_did(mnemonic, log_content, domain)
                     .await
@@ -1586,7 +1598,9 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm { bridge, server_did } => {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
                 WebvhDIDCommClient::new(bridge, server_did)
                     .publish_did(mnemonic, log_content, domain)
                     .await
@@ -1616,7 +1630,9 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm { bridge, server_did } => {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
                 WebvhDIDCommClient::new(bridge, server_did)
                     .delete_did(mnemonic, domain)
                     .await
@@ -1648,10 +1664,48 @@ impl<'a> WebvhTransport<'a> {
                 }
                 Err(e) => Err(e),
             },
-            Self::DIDComm { bridge, server_did } => {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
                 WebvhDIDCommClient::new(bridge, server_did)
                     .register_did_atomic(path, did_log, force, domain)
                     .await
+            }
+        }
+    }
+
+    /// A REST client able to serve agent-name operations, or a clear error.
+    ///
+    /// These operations exist over REST only — the hosting server's
+    /// transport-agnostic DIDComm dispatch table carries no agent-name verbs.
+    /// Refusing outright on a DIDComm-preferred server was wrong, though,
+    /// because a deployed server normally advertises `WebVHHosting` *and*
+    /// `DIDCommMessaging` together: the REST endpoint was sitting unused in the
+    /// same document that selected DIDComm.
+    ///
+    /// `owned` gives a client constructed here somewhere to live for as long as
+    /// the borrow the caller holds; on the REST transport it stays empty and the
+    /// existing client — which may already carry an access token — is reused.
+    fn agent_name_client<'c>(
+        &'c mut self,
+        owned: &'c mut Option<WebvhClient>,
+    ) -> Result<&'c mut WebvhClient, AppError> {
+        match self {
+            Self::Rest(c) => Ok(c),
+            Self::DIDComm {
+                rest_url,
+                server_did,
+                ..
+            } => {
+                let url = rest_url.as_deref().ok_or_else(|| {
+                    AppError::Validation(format!(
+                        "agent-name operations need a REST endpoint, and server DID \
+                         {server_did} advertises none; the hosting server exposes \
+                         agent names only via REST"
+                    ))
+                })?;
+                *owned = Some(WebvhClient::new(url, server_did)?);
+                Ok(owned.as_mut().expect("just assigned"))
             }
         }
     }
@@ -1669,13 +1723,8 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
-        let Self::Rest(c) = self else {
-            return Err(AppError::Validation(
-                "agent-name operations are not supported over the DIDComm transport; \
-                 the hosting server exposes them only via REST"
-                    .to_string(),
-            ));
-        };
+        let mut owned = None;
+        let c = self.agent_name_client(&mut owned)?;
         match c.list_agent_names(mnemonic, domain).await {
             Ok(v) => Ok(v),
             Err(AppError::Unauthorized(_)) => {
@@ -1699,13 +1748,8 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
-        let Self::Rest(c) = self else {
-            return Err(AppError::Validation(
-                "agent-name operations are not supported over the DIDComm transport; \
-                 the hosting server exposes them only via REST"
-                    .to_string(),
-            ));
-        };
+        let mut owned = None;
+        let c = self.agent_name_client(&mut owned)?;
         match c.check_agent_name(name, domain).await {
             Ok(v) => Ok(v),
             Err(AppError::Unauthorized(_)) => {
@@ -1731,13 +1775,8 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<(), AppError> {
-        let Self::Rest(c) = self else {
-            return Err(AppError::Validation(
-                "agent-name operations are not supported over the DIDComm transport; \
-                 the hosting server exposes them only via REST"
-                    .to_string(),
-            ));
-        };
+        let mut owned = None;
+        let c = self.agent_name_client(&mut owned)?;
         let op = verb.endpoint();
         match c.agent_name_op(op, mnemonic, name, did_log, domain).await {
             Ok(()) => Ok(()),
