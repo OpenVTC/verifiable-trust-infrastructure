@@ -750,6 +750,7 @@ didcomm_handler!(
                 allowed_contexts: body.allowed_contexts,
                 step_up_approver: body.step_up_approver,
                 step_up_require: body.step_up_require,
+                approve_scope: body.approve_scope,
             },
             "didcomm",
         )

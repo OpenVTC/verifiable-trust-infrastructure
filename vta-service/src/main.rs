@@ -1199,6 +1199,49 @@ enum AuthCommands {
 
 #[derive(Subcommand)]
 enum AclCommands {
+    /// Create an ACL entry.
+    ///
+    /// **Break-glass: no authorization check is performed.** There is no
+    /// authenticated caller on this surface — it is direct store access by
+    /// whoever holds the filesystem, so `validate_role_assignment`,
+    /// `validate_acl_modification` and `validate_approve_scope_grant` are not
+    /// consulted, exactly as `vta acl update` already does. That is deliberate
+    /// and is the point of the surface; it is stated here so its absence does
+    /// not read as an oversight.
+    ///
+    /// `vta import-did` is not a substitute: it hardcodes an admin role with
+    /// empty contexts and sits behind the bootstrap seal, so it cannot mint a
+    /// reader entry or set an approve scope.
+    Create {
+        /// The DID this entry authorizes
+        #[arg(long)]
+        did: String,
+        /// Role (admin, initiator, application, reader)
+        #[arg(long)]
+        role: String,
+        /// Human-readable label
+        #[arg(long)]
+        label: Option<String>,
+        /// Comma-separated context IDs. Omit for an empty list, which is
+        /// unrestricted for `--role admin` and no access at all otherwise.
+        #[arg(long, value_delimiter = ',')]
+        contexts: Vec<String>,
+        /// Optional expiry — `N[s|m|h|d|w]` (e.g. `24h`, `7d`).
+        #[arg(long)]
+        expires: Option<String>,
+        /// Delegated step-up approver VID (`stepUp.approver`).
+        #[arg(long)]
+        step_up_approver: Option<String>,
+        /// Per-entry step-up override (`self` | `delegated`).
+        #[arg(long)]
+        step_up_require: Option<String>,
+        /// Grant approve-authority over ALL contexts.
+        #[arg(long, conflicts_with = "approve_contexts")]
+        approve_all: bool,
+        /// Grant approve-authority scoped to these contexts (comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        approve_contexts: Vec<String>,
+    },
     /// List all ACL entries
     List {
         /// Filter by context
@@ -1235,6 +1278,17 @@ enum AclCommands {
         /// `stepUp.require`). Empty string clears it; omit to keep unchanged.
         #[arg(long)]
         step_up_require: Option<String>,
+        /// Grant approve-authority over ALL contexts.
+        #[arg(long, conflicts_with_all = ["approve_contexts", "approve_none"])]
+        approve_all: bool,
+        /// Replace approve-authority with exactly these contexts.
+        #[arg(long, value_delimiter = ',', conflicts_with = "approve_none")]
+        approve_contexts: Option<Vec<String>>,
+        /// Revoke this entry's approve-authority entirely. An explicit flag,
+        /// because an empty list cannot mean both "confer nothing" and "leave
+        /// unchanged".
+        #[arg(long)]
+        approve_none: bool,
     },
     /// Delete an ACL entry
     Delete {
@@ -1726,7 +1780,11 @@ async fn main() {
             // SEALED CHECK: update and delete modify ACL
             match &command {
                 AclCommands::List { .. } | AclCommands::Get { .. } => {}
-                AclCommands::Update { .. } | AclCommands::Delete { .. } => {
+                AclCommands::Create { .. }
+                | AclCommands::Update { .. }
+                | AclCommands::Delete { .. } => {
+                    // Create modifies the ACL, so it is sealed like the other
+                    // two writes rather than treated as a read.
                     check_seal(&cli.config).await;
                 }
             }
@@ -1735,6 +1793,31 @@ async fn main() {
                     acl_cli::run_acl_list(cli.config, context, role).await
                 }
                 AclCommands::Get { did } => acl_cli::run_acl_get(cli.config, did).await,
+                AclCommands::Create {
+                    did,
+                    role,
+                    label,
+                    contexts,
+                    expires,
+                    step_up_approver,
+                    step_up_require,
+                    approve_all,
+                    approve_contexts,
+                } => {
+                    acl_cli::run_acl_create(
+                        cli.config,
+                        did,
+                        role,
+                        label,
+                        contexts,
+                        expires,
+                        step_up_approver,
+                        step_up_require,
+                        approve_all,
+                        approve_contexts,
+                    )
+                    .await
+                }
                 AclCommands::Update {
                     did,
                     role,
@@ -1742,6 +1825,9 @@ async fn main() {
                     contexts,
                     step_up_approver,
                     step_up_require,
+                    approve_all,
+                    approve_contexts,
+                    approve_none,
                 } => {
                     acl_cli::run_acl_update(
                         cli.config,
@@ -1751,6 +1837,9 @@ async fn main() {
                         contexts,
                         step_up_approver,
                         step_up_require,
+                        approve_all,
+                        approve_contexts,
+                        approve_none,
                     )
                     .await
                 }

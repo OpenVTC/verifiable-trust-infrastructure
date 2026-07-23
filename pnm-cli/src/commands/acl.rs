@@ -47,7 +47,12 @@ pub(crate) async fn run(
             contexts,
             step_up_approver,
             step_up_require,
+            approve_all,
+            approve_contexts,
+            approve_none,
         } => {
+            let approve_scope =
+                acl::approve_scope_from_flags(approve_all, approve_contexts, approve_none);
             acl::cmd_acl_update(
                 client,
                 &did,
@@ -56,6 +61,7 @@ pub(crate) async fn run(
                 contexts,
                 step_up_approver,
                 step_up_require,
+                approve_scope,
             )
             .await
         }

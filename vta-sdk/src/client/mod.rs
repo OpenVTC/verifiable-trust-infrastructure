@@ -1356,6 +1356,7 @@ mod tests {
             allowed_contexts: None,
             step_up_approver: None,
             step_up_require: None,
+            approve_scope: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();

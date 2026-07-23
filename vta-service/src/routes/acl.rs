@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use vta_sdk::protocols::acl_management::{create::CreateAclResultBody, list::ListAclResultBody};
 
-use crate::acl::Role;
+use crate::acl::{ApproveScope, Role};
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::operations;
@@ -139,6 +139,15 @@ pub struct UpdateAclRequest {
     /// string clears; `None` leaves unchanged).
     #[serde(default)]
     pub step_up_require: Option<String>,
+    /// Set the approve scope to exactly this value; omit to leave unchanged.
+    ///
+    /// Clearing is `{"kind":"none"}` — an explicit value, not absence. Unlike
+    /// create, which takes `approve_all_contexts` + `approve_contexts` as two
+    /// independent fields, the update path carries the enum itself: with two
+    /// fields there is no way to distinguish "revoke this approver" from
+    /// "leave it alone", and revoking is the case that matters most.
+    #[serde(default)]
+    pub approve_scope: Option<ApproveScope>,
 }
 
 /// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry.
@@ -175,6 +184,7 @@ pub async fn update_acl(
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,
             step_up_require: req.step_up_require,
+            approve_scope: req.approve_scope,
         },
         "rest",
     )

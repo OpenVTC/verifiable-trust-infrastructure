@@ -1164,7 +1164,11 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => acl::cmd_acl_update(&client, &did, role, label, contexts, None, None).await,
+            } => {
+                // cnm exposes no approve-scope flags; pass `None` so the
+                // scope is left unchanged rather than silently cleared.
+                acl::cmd_acl_update(&client, &did, role, label, contexts, None, None, None).await
+            }
             AclCommands::Delete { did } => acl::cmd_acl_delete(&client, &did).await,
         },
         Commands::AuthCredential { command } => match command {

@@ -157,6 +157,7 @@ pub(super) async fn handle_update(
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,
             step_up_require: req.step_up_require,
+            approve_scope: req.approve_scope,
         },
         TRANSPORT_TRUST_TASK,
     )

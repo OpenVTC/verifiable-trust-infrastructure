@@ -451,6 +451,11 @@ pub struct UpdateAclRequest {
     /// an empty string to clear; `None` leaves the current value unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step_up_require: Option<String>,
+    /// Set the approve scope to exactly this value; `None` leaves it unchanged.
+    /// Clearing is `Some(ApproveScope::None)` — an explicit value, since an
+    /// empty list cannot mean both "confer nothing" and "leave alone".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approve_scope: Option<crate::acl::ApproveScope>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

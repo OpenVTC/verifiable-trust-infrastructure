@@ -3,6 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
+use vta_sdk::acl::ApproveScope;
 use vta_sdk::prelude::*;
 
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
@@ -246,6 +247,26 @@ pub async fn cmd_acl_create(
     Ok(())
 }
 
+/// Resolve the three mutually-exclusive approve flags into the wire value.
+///
+/// `None` means "leave unchanged" — which is why revoking needs its own flag
+/// rather than an empty `--approve-contexts`: an empty list cannot mean both
+/// "confer nothing" and "don't touch it".
+pub fn approve_scope_from_flags(
+    approve_all: bool,
+    approve_contexts: Option<Vec<String>>,
+    approve_none: bool,
+) -> Option<ApproveScope> {
+    if approve_none {
+        Some(ApproveScope::None)
+    } else if approve_all {
+        Some(ApproveScope::All)
+    } else {
+        approve_contexts.map(ApproveScope::Contexts)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_acl_update(
     client: &VtaClient,
     did: &str,
@@ -254,16 +275,19 @@ pub async fn cmd_acl_update(
     contexts: Option<Vec<String>>,
     step_up_approver: Option<String>,
     step_up_require: Option<String>,
+    approve_scope: Option<ApproveScope>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref r) = role {
         validate_role(r)?;
     }
+    let approve_scope_echo = approve_scope.clone();
     let req = UpdateAclRequest {
         role,
         label,
         allowed_contexts: contexts,
         step_up_approver: step_up_approver.clone(),
         step_up_require: step_up_require.clone(),
+        approve_scope,
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -292,6 +316,16 @@ pub async fn cmd_acl_update(
         } else {
             println!("  Step-up require:  {require}");
         }
+    }
+    // Echo the scope only when this call set it, so "unchanged" is visibly
+    // different from "set to confer nothing".
+    if let Some(scope) = &approve_scope_echo {
+        let rendered = match scope {
+            ApproveScope::None => "(revoked — confers nothing)".to_string(),
+            ApproveScope::All => "all contexts".to_string(),
+            ApproveScope::Contexts(cs) => format!("contexts [{}]", cs.join(", ")),
+        };
+        println!("  Approve:  {rendered}");
     }
     Ok(())
 }

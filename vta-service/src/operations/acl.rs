@@ -28,6 +28,17 @@ pub struct UpdateAclParams {
     /// `Some` sets the per-entry step-up override (empty string clears); `None`
     /// leaves it unchanged.
     pub step_up_require: Option<String>,
+    /// `Some` sets the approve scope to exactly that value; `None` leaves it
+    /// unchanged.
+    ///
+    /// The patch-semantics question this settles: **clear is
+    /// `Some(ApproveScope::None)`, not absence.** Reusing the wire enum rather
+    /// than mirroring create's `approve_all_contexts: bool` +
+    /// `approve_contexts: Vec<String>` pair is what makes that expressible —
+    /// with two independent fields there is no way to distinguish "revoke this
+    /// approver's authority" from "don't touch it", and revoking is the case
+    /// that matters most.
+    pub approve_scope: Option<ApproveScope>,
 }
 
 /// Parse a wire `stepUp.require` value into a [`StepUpMode`]. Only `self` and
@@ -356,6 +367,21 @@ pub async fn update_acl(
         entry.allowed_contexts = allowed_contexts;
     }
 
+    if let Some(scope) = params.approve_scope {
+        // The same grant check `create` applies, unchanged: `All` stays
+        // super-admin-only and a scoped grant still requires the caller to hold
+        // each context. Nothing about reaching this by update rather than by
+        // create relaxes who may confer what.
+        validate_approve_scope_grant(auth, &scope)?;
+        // Contexts named in an approve scope must exist, as on create — a scope
+        // naming a context that was never provisioned confers nothing and reads
+        // as though it does.
+        if let ApproveScope::Contexts(ref cs) = scope {
+            require_contexts_exist(contexts_ks, cs).await?;
+        }
+        entry.approve_scope = scope;
+    }
+
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, did = %did, "ACL entry updated");
@@ -610,6 +636,12 @@ mod tests {
         }
     }
 
+    /// Admin with no context restriction — `is_super_admin` is exactly that
+    /// pair, which is the whole subject of #746.
+    fn super_admin(did: &str) -> AuthClaims {
+        ctx_admin(did, &[])
+    }
+
     async fn seed_target(acl_ks: &KeyspaceHandle, did: &str, contexts: &[&str]) {
         store_acl_entry(
             acl_ks,
@@ -741,6 +773,205 @@ mod tests {
     /// has no admin rights over ctx-B. Pre-fix `update_acl` accepted
     /// this because it only validated the *new* set against caller
     /// scope; the new symmetric-diff check rejects it.
+    /// #744: before this, `approve_scope` was settable only at create time,
+    /// so narrowing or revoking an approver meant delete-and-recreate — and a
+    /// failed recreate leaves the DID with no ACL entry at all.
+    #[tokio::test]
+    async fn update_acl_sets_and_revokes_approve_scope() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+        let target = "did:key:zApprover";
+        seed_target(&acl_ks, target, &["ctx-a"]).await;
+
+        let admin = super_admin("did:key:zRoot");
+        let set = |scope| UpdateAclParams {
+            role: None,
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: Some(scope),
+        };
+
+        // Narrow: All -> a single context, without touching the entry.
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(ApproveScope::All),
+            "test",
+        )
+        .await
+        .expect("super admin may grant approve-all");
+        assert_eq!(
+            get_acl_entry(&acl_ks, target)
+                .await
+                .unwrap()
+                .unwrap()
+                .approve_scope,
+            ApproveScope::All
+        );
+
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(ApproveScope::Contexts(vec!["ctx-b".into()])),
+            "test",
+        )
+        .await
+        .expect("narrowing to a scoped grant");
+        assert_eq!(
+            get_acl_entry(&acl_ks, target)
+                .await
+                .unwrap()
+                .unwrap()
+                .approve_scope,
+            ApproveScope::Contexts(vec!["ctx-b".into()])
+        );
+
+        // Revoke — the case that has to be expressible, and is `Some(None)`
+        // rather than absence.
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(ApproveScope::None),
+            "test",
+        )
+        .await
+        .expect("revoking confers nothing");
+        assert_eq!(
+            get_acl_entry(&acl_ks, target)
+                .await
+                .unwrap()
+                .unwrap()
+                .approve_scope,
+            ApproveScope::None
+        );
+    }
+
+    /// Omitting the field leaves the existing scope alone — the distinction
+    /// that made a flat bool/list pair unusable for this.
+    #[tokio::test]
+    async fn update_acl_leaves_approve_scope_alone_when_absent() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let target = "did:key:zApprover";
+        seed_target(&acl_ks, target, &["ctx-a"]).await;
+        let admin = super_admin("did:key:zRoot");
+
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            UpdateAclParams {
+                role: None,
+                label: None,
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: Some(ApproveScope::All),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+
+        // A label-only edit must not disturb the scope.
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            UpdateAclParams {
+                role: None,
+                label: Some("renamed".into()),
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: None,
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+
+        let entry = get_acl_entry(&acl_ks, target).await.unwrap().unwrap();
+        assert_eq!(entry.label.as_deref(), Some("renamed"));
+        assert_eq!(
+            entry.approve_scope,
+            ApproveScope::All,
+            "scope must survive an unrelated edit"
+        );
+    }
+
+    /// The grant check is the same one `create` applies — reaching it by
+    /// update does not relax who may confer what.
+    #[tokio::test]
+    async fn update_acl_applies_the_same_approve_grant_check_as_create() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+        let target = "did:key:zApprover";
+        seed_target(&acl_ks, target, &["ctx-a"]).await;
+
+        let ctx_admin_a = ctx_admin("did:key:zCallerA", &["ctx-a"]);
+        let err = update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &ctx_admin_a,
+            target,
+            UpdateAclParams {
+                role: None,
+                label: None,
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: Some(ApproveScope::All),
+            },
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "approve-all is super-admin only: {err:?}"
+        );
+
+        let err = update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &ctx_admin_a,
+            target,
+            UpdateAclParams {
+                role: None,
+                label: None,
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: Some(ApproveScope::Contexts(vec!["ctx-b".into()])),
+            },
+            "test",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "cannot confer a context it lacks: {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn update_acl_rejects_shrink_across_caller_scope() {
         let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
@@ -761,6 +992,7 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
+                approve_scope: None,
             },
             "test",
         )
@@ -796,6 +1028,7 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
+                approve_scope: None,
             },
             "test",
         )
@@ -828,6 +1061,7 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
+                approve_scope: None,
             },
             "test",
         )
@@ -996,6 +1230,7 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-ghost".into()]),
+                approve_scope: None,
             },
             "test",
         )

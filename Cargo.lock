@@ -2472,7 +2472,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -6743,7 +6743,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pnm-cli"
-version = "0.11.5"
+version = "0.11.6"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
@@ -10063,7 +10063,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.9"
+version = "0.10.10"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10142,7 +10142,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.19.23"
+version = "0.19.24"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10202,7 +10202,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.16"
+version = "0.12.17"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10391,7 +10391,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.13"
+version = "0.11.14"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

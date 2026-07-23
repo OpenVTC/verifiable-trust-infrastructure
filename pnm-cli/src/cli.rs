@@ -1733,6 +1733,21 @@ pub(crate) enum AclCommands {
         /// empty string to clear it; omit to leave it unchanged.
         #[arg(long)]
         step_up_require: Option<String>,
+        /// Grant approve-authority over ALL contexts. Super-admin only.
+        #[arg(long, conflicts_with_all = ["approve_contexts", "approve_none"])]
+        approve_all: bool,
+        /// Replace approve-authority with exactly these contexts
+        /// (comma-separated). Requires the caller to administer each.
+        #[arg(long, value_delimiter = ',', conflicts_with = "approve_none")]
+        approve_contexts: Option<Vec<String>>,
+        /// Revoke this entry's approve-authority entirely.
+        ///
+        /// An explicit flag rather than an empty list, because "confer
+        /// nothing" and "leave the scope alone" are different intents and an
+        /// empty value cannot mean both. Omitting all three approve flags
+        /// leaves the scope unchanged.
+        #[arg(long)]
+        approve_none: bool,
     },
     /// Delete an ACL entry
     Delete {

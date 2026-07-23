@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.24 / vti-common 0.11.14 / vta-service 0.12.17 / vta-cli-common 0.10.10 / pnm-cli 0.11.6 / cnm-cli 0.11.4 — approve scope is changeable, and the offline CLI can create
+
+* **`approve_scope` was settable at create time only**, on every surface — REST,
+  DIDComm, `pnm`, offline `vta`. Narrowing, widening or revoking an approver
+  meant delete-and-recreate, which is worse than it sounds for exactly these
+  entries: `ApproveScope::All` is super-admin-only to grant, so a non-super-admin
+  operator whose recreate is refused has already landed the delete and left the
+  DID with **no ACL entry at all**. It is also non-atomic over DIDComm, where an
+  `Ok` means accepted-locally rather than applied, and it loses
+  `created_at` / `created_by`. All four update paths now carry it. (#744)
+* **Clearing is `Some(ApproveScope::None)`, not absence.** The update bodies
+  carry the enum rather than mirroring create's `approve_all_contexts: bool` +
+  `approve_contexts: Vec<String>` pair, because two independent fields cannot
+  distinguish "revoke this approver" from "leave it alone" — and revoking is the
+  case that matters most. On the CLIs that is an explicit `--approve-none`
+  flag, for the same reason: an empty list cannot mean both.
+* **`ApproveScope` moves to `vta-sdk`** (`vta_sdk::acl`), re-exported from
+  `vti-common` — the arrangement already used for `context_path`. The DIDComm
+  `UpdateAclBody` lives in the SDK and must be constructible by clients that
+  never link the server crates. Only the shape moves; every authorization rule
+  over it (`validate_approve_scope_grant`) stays in `vti-common`. The wire shape
+  is unchanged and now pinned by a round-trip test.
+* **`vta acl create` exists.** The offline surface had `list`/`get`/`update`/
+  `delete` but no create, and the only offline entry-minting path (`vta
+  import-did`) hardcodes an admin role with empty contexts behind the bootstrap
+  seal — so there was no offline route to an approver entry at all. Like the
+  existing offline `update`, it is **break-glass: no authorization check**,
+  because the surface has no authenticated caller (it is direct store access by
+  whoever holds the filesystem). The help text says so, so the absent
+  super-admin check does not read as an oversight. Context-id *shape* validation
+  still applies — that is not an authorization check, and the break-glass path
+  should not be the one that plants a malformed id in the store. (#745)
+
 ### vti-common 0.11.13 / vta-cli-common 0.10.9 / vta-service 0.12.16 / pnm-cli 0.11.5 — ACL contexts: say what an empty list means, and stop storing a blank one
 
 * **An empty `allowed_contexts` rendered as `(unrestricted)` for every role,

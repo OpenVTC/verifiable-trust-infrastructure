@@ -260,52 +260,15 @@ impl DeviceBinding {
     }
 }
 
-/// A DID's authority to **confer** access through an approval — task-consent
-/// delegation (`compute_delegated_contexts`) and delegated step-up ratification
-/// ([`delegated_any_approver_covers`]) — **without** any authority to act.
+/// A DID's authority to **confer** access through an approval, re-exported
+/// from the SDK.
 ///
-/// Read only by those two conferral paths; it never feeds `require_admin` or
-/// `has_context_access`, so an approver can bless a change in a context while
-/// being unable to make one. This is the axis that lets an approver be
-/// least-privilege: `role: Reader`, `allowed_contexts: []` (acts nowhere),
-/// `approve_scope: All` (may authorize anywhere).
-///
-/// Default [`ApproveScope::None`]: an entry confers nothing unless explicitly
-/// granted this — strictly additive and fail-closed. Pre-existing rows omit the
-/// field and deserialise as `None`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "contexts")]
-pub enum ApproveScope {
-    /// Confers nothing (the default).
-    #[default]
-    None,
-    /// May confer any context — a cross-context authorizer. Granting this is
-    /// super-admin-only (see [`validate_approve_scope_grant`]).
-    All,
-    /// May confer these contexts (and their subtrees), and only these.
-    Contexts(Vec<String>),
-}
-
-impl ApproveScope {
-    /// Whether an approval by a holder of this scope may confer `context_id`.
-    ///
-    /// Segment-aware ancestry, matching [`AuthClaims::has_context_access`], so an
-    /// approver scoped to a parent context covers its whole subtree.
-    pub fn covers(&self, context_id: &str) -> bool {
-        match self {
-            ApproveScope::None => false,
-            ApproveScope::All => true,
-            ApproveScope::Contexts(cs) => cs
-                .iter()
-                .any(|c| crate::context_path::is_ancestor_or_self(c, context_id)),
-        }
-    }
-
-    /// Whether this scope confers nothing.
-    pub fn confers_nothing(&self) -> bool {
-        matches!(self, ApproveScope::None)
-    }
-}
+/// The type lives in `vta-sdk` because the DIDComm and Trust Task update
+/// bodies carry it and must be constructible by clients that never link the
+/// server crates. Only the *shape* is shared — every authorization rule over
+/// it ([`validate_approve_scope_grant`] below) stays here. Same arrangement as
+/// [`crate::context_path`].
+pub use vta_sdk::acl::ApproveScope;
 
 /// Validate that `caller` may grant `scope` on an ACL entry.
 ///
