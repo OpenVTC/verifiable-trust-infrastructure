@@ -19,13 +19,13 @@ autobins = false
 
 [dev-dependencies]
 # Embedded mediator fixture from affinidi-tdk-rs.
-affinidi-messaging-test-mediator = "0.2"
+affinidi-messaging-test-mediator = { version = "0.2", features = ["tsp"] }
 
 # VTA: enable the `test-support` feature so we can stand up complete VTA
 # state (in-memory keyspaces, default `AppConfig`, bootstrap helpers)
 # from outside the crate.
 vta-service = { path = "../../vta-service", features = ["test-support", "didcomm", "webvh", "rest"] }
-vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "sealed-transfer", "provision-integration", "provision-client"] }
+vta-sdk = { path = "../../vta-sdk", features = ["client", "didcomm", "session", "tsp", "sealed-transfer", "provision-integration", "provision-client"] }
 vti-common = { path = "../../vti-common" }
 
 affinidi-tdk = { workspace = true }

@@ -1678,7 +1678,7 @@ impl TspPingSession {
             .parse()
             .map_err(|e| format!("messaging/ping type URI parse: {e}"))?;
         let mut doc: TrustTask<serde_json::Value> =
-            TrustTask::new(id, type_uri, serde_json::json!({ "nonce": nonce }));
+            TrustTask::new(id.clone(), type_uri, serde_json::json!({ "nonce": nonce }));
         doc.issuer = Some(self.client_did.clone());
         doc.recipient = Some(vta_did.to_string());
         let body = serde_json::to_vec(&doc)?;
@@ -1705,15 +1705,48 @@ impl TspPingSession {
                 Ok(Err(e)) => return Err(Box::new(e)),
                 Err(_) => return Err("TSP ping timed out waiting for reply".into()),
             };
-            // The VTA's reply is sealed to us; a frame we can unpack and parse
-            // as a JSON trust-task envelope is the pong. (Our ephemeral-ish
-            // client DID has no other TSP traffic, so the first such frame is
-            // our reply.) Frames that don't unpack are skipped.
-            if let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
-                && serde_json::from_slice::<serde_json::Value>(&payload).is_ok()
-            {
+            // The VTA's reply is sealed to us. Unpack it, then check it is *our*
+            // reply before believing it.
+            //
+            // "First frame that unpacks and parses as JSON" is not good enough:
+            // this DID's mediator inbox is durable, so every reply that a
+            // previous probe never collected is still queued and gets flushed
+            // onto the socket the moment we connect. Accepting the first frame
+            // meant a probe could measure a pong from an earlier run — reporting
+            // a healthy round trip, at an invented latency, against a VTA that
+            // might not have answered at all. A stale frame must not be able to
+            // turn a broken transport green.
+            //
+            // Correlation is the Trust-Task `threadId`, which the responder sets
+            // to our request `id` (`doc.respond_with`); the echoed `nonce` is
+            // accepted as a fallback for a responder that replies with a fresh
+            // document instead of a threaded `#response`. Anything else is
+            // someone else's traffic or a leftover: skip it and keep waiting
+            // within the caller's budget.
+            let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
+            else {
+                continue; // not sealed to us / not TSP — not our business
+            };
+            let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&payload) else {
+                continue; // not a Trust-Task document
+            };
+
+            let threaded = doc.get("threadId").and_then(|v| v.as_str()) == Some(id.as_str());
+            let echoed_nonce = doc
+                .get("payload")
+                .and_then(|p| p.get("nonce"))
+                .and_then(|v| v.as_str())
+                == Some(nonce.as_str());
+            if threaded || echoed_nonce {
                 return Ok(start.elapsed().as_millis());
             }
+            tracing::debug!(
+                thread_id = doc
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<none>"),
+                "TSP ping: skipping an uncorrelated frame (stale inbox entry or other traffic)"
+            );
         }
     }
 
@@ -1859,12 +1892,42 @@ impl TspSession {
         doc.recipient = Some(vta_did.to_string());
         let body = serde_json::to_vec(&doc)?;
 
+        self.send_document(vta_did, mediator_did, &body).await
+    }
+
+    /// Send an already-built Trust-Task document to `vta_did`, routed through
+    /// `mediator_did`. `body` is the serialized document itself — TSP carries
+    /// the Trust-Task bytes directly, with no DIDComm envelope around them (the
+    /// VTA's `tsp_inbound::dispatch_one` hands the payload straight to
+    /// `dispatch_trust_task_core`).
+    ///
+    /// This is the generalisation of [`announce`](Self::announce), which is
+    /// just this with a `messaging/ping/0.1` body. The same properties hold:
+    ///
+    /// - **Send-only, lock-free.** It never touches `ws`, so it is safe to call
+    ///   while a `receive_next` is blocked holding that lock — which is the
+    ///   normal state of a client running an inbox loop.
+    /// - **Fire-and-forget.** The VTA seals its reply and routes it back over
+    ///   TSP, so the response document arrives on
+    ///   [`receive_next`](Self::receive_next) like any other frame. There is no
+    ///   correlation here; a caller that needs the reply must match it off the
+    ///   inbox itself (e.g. on the document's `id`/`type`).
+    ///
+    /// The sender is proven by TSP itself, so the VTA derives authorization
+    /// from the sealed `sender_vid` (intrinsic-sender auth) — no bearer token
+    /// and no prior REST authentication is involved.
+    pub async fn send_document(
+        &self,
+        vta_did: &str,
+        mediator_did: &str,
+        body: &[u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.atm
             .tsp()
             .send_routed(
                 &self.profile,
                 &[mediator_did.to_string(), vta_did.to_string()],
-                &body,
+                body,
             )
             .await?;
         Ok(())
@@ -1872,10 +1935,20 @@ impl TspSession {
 
     /// Wait up to `timeout_secs` for the next inbound TSP frame that unpacks to a
     /// Trust-Task payload, and return that payload as a JSON string — the
-    /// unpacked inner document (e.g. a `task-consent/request`). Returns `None`
-    /// if nothing arrived within the timeout or the websocket closed. TSP
-    /// control frames (which don't unpack to an application payload) are skipped
-    /// within the remaining budget rather than surfaced. Call again to poll on.
+    /// unpacked inner document (e.g. a `task-consent/request`). TSP control
+    /// frames (which don't unpack to an application payload) are skipped within
+    /// the remaining budget rather than surfaced. Call again to poll on.
+    ///
+    /// Three outcomes, deliberately distinct:
+    /// - `Ok(Some(doc))` — an application message.
+    /// - `Ok(None)` — **idle**: nothing arrived within `timeout_secs`, or the
+    ///   session was already [`shutdown`](Self::shutdown). Poll again.
+    /// - `Err(_)` — the connection is **gone** (closed by the mediator, or a
+    ///   socket error). Polling again cannot help; reconnect.
+    ///
+    /// A closed socket used to be reported as `Ok(None)`, which made a dead
+    /// inbox look exactly like a quiet one — callers spun on it forever instead
+    /// of reconnecting. Keep these three cases distinct.
     ///
     /// The plaintext is the *inner* document the sender packed, not a DIDComm
     /// envelope: TSP carries the Trust-Task bytes directly, so callers parse the
@@ -1901,7 +1974,22 @@ impl TspSession {
             };
             let frame = match tokio::time::timeout(remaining, ws.recv()).await {
                 Ok(Ok(Some(bytes))) => bytes,
-                Ok(Ok(None)) => return Ok(None), // websocket closed
+                // Closed socket is an ERROR, not `Ok(None)`.
+                //
+                // `Ok(None)` means "nothing arrived, ask again" — the caller's
+                // normal idle path. A closed websocket is the opposite: asking
+                // again can never produce anything. Conflating them meant a
+                // dropped inbox was indistinguishable from a quiet one, so a
+                // polling loop would spin on `recv()` returning `None`
+                // immediately, forever — burning CPU and never reconnecting,
+                // because nothing ever signalled that the connection had gone.
+                //
+                // Surfacing it as `Err` lets the supervisor do its job: the
+                // mobile listen loop already treats an error as a drop and
+                // reconnects with backoff.
+                Ok(Ok(None)) => {
+                    return Err("TSP websocket closed by the mediator".into());
+                }
                 Ok(Err(e)) => return Err(Box::new(e)),
                 Err(_) => return Ok(None), // timed out with nothing to hand back
             };
