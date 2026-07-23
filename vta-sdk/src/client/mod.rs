@@ -873,6 +873,20 @@ impl VtaClient {
     /// DIDComm path (which drops the HTTP status) still fails loudly.
     fn extract_trust_task_payload(doc: serde_json::Value) -> Result<serde_json::Value, VtaError> {
         if let Some(payload) = doc.get("payload") {
+            // A failed task still carries a `payload` — the error envelope goes
+            // *inside* it (`{ code, message, retryable }`). Treating "a payload
+            // is present" as success therefore hands the caller an error object
+            // to deserialise as a result, and the caller reports whatever field
+            // its result type happened to be missing. The real message — which
+            // may be as specific as "not supported over the DIDComm transport" —
+            // is discarded, and the failure reads like a schema mismatch.
+            //
+            // Keyed on `code` + `message`, mirroring the service's own denial
+            // check (`vta-service`'s trust-task `denial_code`, which reads
+            // `payload.code`).
+            if let Some(err) = Self::trust_task_error(payload) {
+                return Err(err);
+            }
             return Ok(payload.clone());
         }
         let reason = doc
@@ -882,6 +896,19 @@ impl VtaClient {
             .map(str::to_string)
             .unwrap_or_else(|| doc.to_string());
         Err(VtaError::Protocol(format!("trust task rejected: {reason}")))
+    }
+
+    /// Recognise a trust-task error envelope carried inside `payload`.
+    ///
+    /// Requires **both** `code` and `message` to be strings: `code` alone is a
+    /// plausible field on a legitimate result body, so demanding the pair keeps
+    /// a successful response from being mistaken for a failure.
+    fn trust_task_error(payload: &serde_json::Value) -> Option<VtaError> {
+        let code = payload.get("code")?.as_str()?;
+        let message = payload.get("message")?.as_str()?;
+        Some(VtaError::Protocol(format!(
+            "trust task failed [{code}]: {message}"
+        )))
     }
 
     /// Seal a cleartext `VaultSecret` JSON for `vault/upsert`'s `sealedSecret`
@@ -1121,6 +1148,64 @@ impl VtaClient {
 mod tests {
     use super::*;
     use crate::keys::KeyType;
+
+    // ── extract_trust_task_payload ──────────────────────────────────
+
+    /// A successful task returns its payload untouched.
+    #[test]
+    fn extract_returns_a_success_payload() {
+        let doc = serde_json::json!({
+            "id": "urn:uuid:1", "type": "spec/vta/x/1.0",
+            "payload": { "did": "did:webvh:QmScid:example.com", "names": [] },
+        });
+        let got = VtaClient::extract_trust_task_payload(doc).expect("should succeed");
+        assert_eq!(got["did"], "did:webvh:QmScid:example.com");
+    }
+
+    /// The regression: a *failed* task also carries a `payload`, holding the
+    /// error envelope. Returning it as success made callers deserialise an error
+    /// object as a result and report a missing field, hiding the real cause.
+    ///
+    /// This is the exact envelope seen from `list_agent_names`.
+    #[test]
+    fn extract_surfaces_an_error_envelope_inside_the_payload() {
+        let doc = serde_json::json!({
+            "id": "urn:uuid:1", "type": "spec/vta/webvh/agent-name/list/1.0",
+            "payload": {
+                "code": "internalError",
+                "message": "list_agent_names: validation error: agent-name operations \
+                            are not supported over the DIDComm transport; the hosting \
+                            server exposes them only via REST",
+                "retryable": true,
+            },
+        });
+        let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
+        let msg = err.to_string();
+        assert!(msg.contains("internalError"), "{msg}");
+        assert!(
+            msg.contains("not supported over the DIDComm transport"),
+            "the actionable part of the message must survive: {msg}"
+        );
+    }
+
+    /// `code` without `message` is not treated as an error — a result body may
+    /// legitimately carry a `code`, so both are required before failing.
+    #[test]
+    fn extract_does_not_mistake_a_code_field_for_an_error() {
+        let doc = serde_json::json!({
+            "payload": { "code": "GB", "country": "United Kingdom" },
+        });
+        let got = VtaClient::extract_trust_task_payload(doc).expect("code alone is not an error");
+        assert_eq!(got["code"], "GB");
+    }
+
+    /// A rejection with no payload at all still reports its reason.
+    #[test]
+    fn extract_reports_a_rejection_without_a_payload() {
+        let doc = serde_json::json!({ "id": "urn:uuid:1", "reason": "not authorized" });
+        let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
+        assert!(err.to_string().contains("not authorized"), "{err}");
+    }
 
     // ── encode_path_segment ─────────────────────────────────────────
 
