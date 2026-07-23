@@ -129,7 +129,34 @@ Anything else. Declare them in `requiredVars` (must be provided) or
 - `URL` — the public endpoint (mediator URL, hosting URL, etc.)
 - `ACCEPT` — DIDComm accept list
 - `ROUTING_KEYS` — DIDComm routing DIDs
-- `HOSTING_PATH` — where a hosting server publishes DID logs
+
+### Retired: `HOSTING_PATH` / `hostingPath`
+
+The `did-host-http*` templates used to stamp a `hostingPath` beside `uri` in
+the `WebVHHosting` endpoint. **It has been removed, and a `hostingPath` found
+in an existing document carries no meaning — ignore it.**
+
+It never had one. No caller ever supplied `HOSTING_PATH`
+(`build_webvh_provision_ask` in `affinidi-webvh-service` sets `URL` and nothing
+else), so every document that carries the field carries this template's own
+default, `/webvh`. No server in the ecosystem ever read it back. It described
+neither of the two paths a reader might assume:
+
+- **Not the DID-log location.** That is derived from the DID identifier itself
+  — `did:webvh:<scid>:<domain>[:<path>]` resolves to
+  `https://<domain>/<path>/did.jsonl`. `webvh.storm.ws` advertises
+  `hostingPath: "/webvh"` and serves its logs at the root
+  (`/magic-depart/did.jsonl` → 200, `/webvh/magic-depart/did.jsonl` → 404).
+- **Not the REST control-plane base.** The hosting service nests its whole API
+  at `/api` off the origin root and has no prefix setting to configure
+  (`/api/health` → 200, `/webvh/api/health` → 404 on that same host).
+
+The REST base for a `WebVHHosting` endpoint is **`serviceEndpoint.uri`, alone**.
+#756 joined the prefix onto it on the untested assumption that it was the
+control-plane base, which would have 404'd every REST-only server advertising
+one; #759 settled it against the live deployment and reverted the join. Add a
+field to a signed, permanent document only once something writes it *and*
+something reads it.
 
 ## Scopes and resolution
 

@@ -659,10 +659,20 @@ fn did_host_http_builtin_renders_end_to_end() {
 
     let doc = tpl.render(&vars).unwrap();
     assert_eq!(doc["service"][0]["type"], "WebVHHosting");
-    // Default path applied.
     assert_eq!(
-        doc["service"][0]["serviceEndpoint"]["hostingPath"],
-        "/webvh"
+        doc["service"][0]["serviceEndpoint"]["uri"],
+        "https://host.example.com"
+    );
+    // The endpoint carries the origin and nothing else. `hostingPath`
+    // used to sit beside it, always at this template's own default —
+    // no caller ever set HOSTING_PATH and no server ever read it back —
+    // until a consumer mistook it for the REST base and 404'd (#759).
+    assert!(
+        doc["service"][0]["serviceEndpoint"]
+            .get("hostingPath")
+            .is_none(),
+        "hostingPath must not be emitted: {}",
+        doc["service"][0]["serviceEndpoint"]
     );
 }
 
@@ -1045,9 +1055,10 @@ fn did_host_http_tsp_advertises_hosting_then_tsp_only() {
     );
     // HTTP resolution endpoint first, then TSP; no DIDComm entry.
     assert_eq!(services[0]["type"], "WebVHHosting");
-    assert_eq!(
-        services[0]["serviceEndpoint"]["hostingPath"], "/webvh",
-        "default hosting path applied"
+    assert!(
+        services[0]["serviceEndpoint"].get("hostingPath").is_none(),
+        "hostingPath must not be emitted (#759): {}",
+        services[0]["serviceEndpoint"]
     );
     assert_eq!(services[1]["id"], "did:webvh:QmTEST:example.com#tsp");
     assert_eq!(services[1]["type"], "TSPTransport");

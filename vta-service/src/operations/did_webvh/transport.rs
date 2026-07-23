@@ -25,6 +25,26 @@
 //! entry, wherever it sits, wins over every REST entry. This keeps
 //! third-party DIDs that emit non-canonical orderings working
 //! without surprising the operator.
+//!
+//! ## `hostingPath` is not the REST base
+//!
+//! The `did-host-http*` templates used to stamp a `hostingPath` beside
+//! `uri` in the `WebVHHosting` endpoint. It described nothing: no
+//! caller ever set the `HOSTING_PATH` var, so every document carried
+//! the template's own default (`/webvh`), and no server in the
+//! ecosystem ever read the field back. #756 mistook it for a
+//! control-plane prefix and joined it onto the base; the live
+//! deployment says otherwise —
+//!
+//! ```text
+//! GET https://webvh.storm.ws/api/health        -> 200 {"status":"ok"}
+//! GET https://webvh.storm.ws/webvh/api/health  -> 404
+//! ```
+//!
+//! — and the hosting service nests its whole API at `/api` off the
+//! origin root, with no prefix setting to configure. The REST base is
+//! `serviceEndpoint.uri` alone. `hostingPath` is ignored on read, and
+//! the templates no longer emit it (#759).
 
 /// Service-type string emitted on DIDComm endpoints (per DIDComm v2).
 pub(crate) const SVC_DIDCOMM: &str = "DIDCommMessaging";
@@ -43,29 +63,6 @@ pub(crate) const SVC_WEBVH_HOSTING_LEGACY: &str = "WebVHHostingService";
 pub(crate) trait ServiceEntry {
     fn types(&self) -> &[String];
     fn endpoint_uri(&self) -> Option<String>;
-    /// The `hostingPath` the endpoint advertises, if any.
-    ///
-    /// A hosting server may serve its control plane under a prefix rather than
-    /// at the origin root — `webvh.storm.ws` advertises `/webvh`. The DID
-    /// templates have emitted this field all along, and nothing read it, so
-    /// every REST request was built against the bare origin and 404'd on any
-    /// server that uses one.
-    fn hosting_path(&self) -> Option<String> {
-        None
-    }
-}
-
-/// Join an advertised origin and its optional hosting path into a base URL.
-///
-/// Both halves arrive from a DID document, so neither's punctuation can be
-/// assumed: the origin may carry a trailing slash and the path may or may not
-/// lead with one.
-fn join_base(uri: &str, hosting_path: Option<&str>) -> String {
-    let base = uri.trim_matches('"').trim_end_matches('/');
-    match hosting_path.map(|p| p.trim_matches('"').trim_matches('/')) {
-        Some(p) if !p.is_empty() => format!("{base}/{p}"),
-        _ => base.to_string(),
-    }
 }
 
 /// Outcome of walking a server's service array.
@@ -96,7 +93,7 @@ pub(crate) fn resolve_server_transport<S: ServiceEntry>(
         if svc.types().iter().any(is_webvh_rest)
             && let Some(raw) = svc.endpoint_uri()
         {
-            let url = join_base(&raw, svc.hosting_path().as_deref());
+            let url = raw.trim_matches('"').trim_end_matches('/').to_string();
             if url.is_empty() {
                 continue;
             }
@@ -136,118 +133,59 @@ impl ServiceEntry for affinidi_tdk::did_common::service::Service {
     fn endpoint_uri(&self) -> Option<String> {
         self.service_endpoint.get_uri()
     }
-    fn hosting_path(&self) -> Option<String> {
-        // `Endpoint` models only `uri`; `hostingPath` sits beside it in the
-        // same object, reachable through the untyped map form.
-        use affinidi_tdk::did_common::service::Endpoint;
-        let Endpoint::Map(value) = &self.service_endpoint else {
-            return None;
-        };
-        let obj = match value {
-            serde_json::Value::Array(a) => a.first()?,
-            other => other,
-        };
-        obj.get("hostingPath")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── hostingPath ─────────────────────────────────────────────────
+    // ── hostingPath is not the REST base ────────────────────────────
 
-    /// The live failure this fixes: `webvh.storm.ws` advertises
-    /// `{"uri":"https://webvh.storm.ws","hostingPath":"/webvh"}`, and every
-    /// REST request was built against the bare origin — so the control plane at
-    /// `/webvh/api/...` answered 404.
+    /// Regression guard for #756/#759, pinned against the live document.
+    ///
+    /// This is the verbatim `WebVHHosting` entry `webvh.storm.ws` publishes,
+    /// parsed by the same concrete `Service` type the resolver hands us. #756
+    /// read the `hostingPath` beside `uri` as a control-plane prefix and
+    /// dialled `https://webvh.storm.ws/webvh/api/...`; that server answers
+    /// `/api/health` with 200 and `/webvh/api/health` with 404, so the base is
+    /// the origin alone. Anyone tempted to join the two halves again should
+    /// re-probe a live server first.
     #[test]
-    fn rest_base_includes_the_advertised_hosting_path() {
-        let services = vec![TestService::with_hosting_path(
-            &["WebVHHosting"],
-            Some("https://webvh.storm.ws"),
-            Some("/webvh"),
-        )];
+    fn advertised_hosting_path_is_ignored_on_the_live_document() {
+        let svc: affinidi_tdk::did_common::service::Service = serde_json::from_str(
+            r#"{
+                "id": "did:webvh:QmUcyd...:webvh.storm.ws#webvh-hosting",
+                "type": "WebVHHosting",
+                "serviceEndpoint": {
+                    "hostingPath": "/webvh",
+                    "uri": "https://webvh.storm.ws"
+                }
+            }"#,
+        )
+        .expect("the live WebVHHosting entry parses");
         assert_eq!(
-            resolve_server_transport(&services),
+            resolve_server_transport(std::slice::from_ref(&svc)),
             Some(ResolvedTransport::Rest {
-                url: "https://webvh.storm.ws/webvh".to_string()
+                url: "https://webvh.storm.ws".to_string()
             })
         );
     }
 
-    /// Neither half's punctuation can be assumed — both come from a document.
-    #[test]
-    fn rest_base_join_is_slash_tolerant() {
-        for (uri, path) in [
-            ("https://h.example/", "/webvh"),
-            ("https://h.example", "webvh"),
-            ("https://h.example/", "webvh/"),
-        ] {
-            let services = vec![TestService::with_hosting_path(
-                &["WebVHHosting"],
-                Some(uri),
-                Some(path),
-            )];
-            assert_eq!(
-                resolve_server_transport(&services),
-                Some(ResolvedTransport::Rest {
-                    url: "https://h.example/webvh".to_string()
-                }),
-                "uri={uri} path={path}"
-            );
-        }
-    }
-
-    /// A server serving at the origin root is unchanged — no empty segment.
-    #[test]
-    fn rest_base_is_unchanged_without_a_hosting_path() {
-        for path in [None, Some(""), Some("/")] {
-            let services = vec![TestService::with_hosting_path(
-                &["WebVHHosting"],
-                Some("https://h.example"),
-                path,
-            )];
-            assert_eq!(
-                resolve_server_transport(&services),
-                Some(ResolvedTransport::Rest {
-                    url: "https://h.example".to_string()
-                }),
-                "path={path:?}"
-            );
-        }
-    }
-
-    // ── resolve_rest_endpoint ───────────────────────────────────────
-
     struct TestService {
         types: Vec<String>,
         uri: Option<String>,
-        hosting_path: Option<String>,
     }
     impl TestService {
         fn new(types: &[&str], uri: Option<&str>) -> Self {
             Self {
                 types: types.iter().map(|s| s.to_string()).collect(),
                 uri: uri.map(String::from),
-                hosting_path: None,
-            }
-        }
-        fn with_hosting_path(types: &[&str], uri: Option<&str>, path: Option<&str>) -> Self {
-            Self {
-                hosting_path: path.map(String::from),
-                ..Self::new(types, uri)
             }
         }
     }
     impl ServiceEntry for TestService {
         fn types(&self) -> &[String] {
             &self.types
-        }
-        fn hosting_path(&self) -> Option<String> {
-            self.hosting_path.clone()
         }
         fn endpoint_uri(&self) -> Option<String> {
             self.uri.clone()

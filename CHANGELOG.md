@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### vta-service 0.12.14 / vta-sdk 0.19.23 — `hostingPath` is retired, not reinterpreted
+
+* **`hostingPath` never meant anything, and 0.12.12 gave it a meaning the live
+  deployment contradicts.** No caller ever supplied `HOSTING_PATH`
+  (`build_webvh_provision_ask` sets `URL` alone), so every document carrying the
+  field carries the `did-host-http*` templates' own default, `/webvh`; and
+  nothing in `affinidi-webvh-service`, `didwebvh-rs`, or the TDK ever read it
+  back. A field with no producer and no consumer, in permanent signed documents.
+* **`join_base` is reverted.** The REST base for a `WebVHHosting` endpoint is
+  `serviceEndpoint.uri` alone. Reading the prefix as the control-plane base
+  would have 404'd every REST-only server advertising one — it sat on
+  `resolve_server_transport`, not just the agent-name path that motivated it,
+  and that path had already moved to DIDComm, so nothing was exercising it.
+  `webvh.storm.ws` answers `/api/health` with 200 and `/webvh/api/health` with
+  404; `did-hosting-control` nests its whole API at `/api` off the origin root
+  with no prefix setting to configure.
+* **The three `did-host-http*` templates no longer emit the field**, so new
+  documents stop making a claim nothing backs. Existing documents keep it
+  harmlessly — the read side ignores it. `docs/02-vta/did-templates.md` replaces
+  the (never-true) "where a hosting server publishes DID logs" definition with a
+  retirement note carrying the evidence. (#759, #762)
+
 ### vta-service 0.12.13 — agent names over DIDComm, dropping the REST detour
 
 * Agent-name operations had no DIDComm form, so a DIDComm-transport VTA either
@@ -9,11 +31,15 @@
   The hosting server now dispatches all six verbs itself
   (`spec/did-management/agent-name/{verb}/0.1`), so the detour is gone. (#758)
 
-### vta-service 0.12.12 — honour the `hostingPath` a webvh server advertises
+### vta-service 0.12.12 — honour the `hostingPath` a webvh server advertises — **reverted in 0.12.14**
 
 * A hosting server may serve its control plane under a path prefix rather than
   at the origin root, and `webvh.storm.ws` advertises exactly that. The DID
   templates have emitted `hostingPath` all along; it is now actually used. (#756)
+* **Superseded.** That premise was never checked against a live server and is
+  wrong — `webvh.storm.ws` serves its control plane at the origin root, and the
+  advertised `/webvh` was this workspace's own template default rather than
+  anything the server published. Do not build on this entry; see 0.12.14. (#759)
 
 ### vta-service 0.12.11 — use the REST endpoint a server already advertises for agent names
 

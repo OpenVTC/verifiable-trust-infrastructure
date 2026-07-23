@@ -10142,7 +10142,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.19.22"
+version = "0.19.23"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10202,7 +10202,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.13"
+version = "0.12.14"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",

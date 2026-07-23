@@ -6,7 +6,6 @@
   "methods": ["webvh", "web"],
   "requiredVars": ["URL", "MEDIATOR_DID"],
   "optionalVars": {
-    "HOSTING_PATH": "/webvh",
     "WEBVH_SERVER": null
   },
   "defaults": {
@@ -43,8 +42,7 @@
         "id": "{DID}#webvh-hosting",
         "type": "WebVHHosting",
         "serviceEndpoint": {
-          "uri": "{URL}",
-          "hostingPath": "{HOSTING_PATH}"
+          "uri": "{URL}"
         }
       },
       {
