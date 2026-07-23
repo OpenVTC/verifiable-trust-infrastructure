@@ -213,10 +213,15 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
         response: NsmIoBuffer,
     }
 
+    // Mirrors the kernel `struct nsm_iovec { __u64 addr; __u64 len; }`.
+    // `len` MUST be u64: a u32 here leaves 4 bytes of uninitialized padding
+    // under #[repr(C)], which the kernel reads as the high bits of the 64-bit
+    // length — inflating it to a garbage value and failing the ioctl with
+    // EMSGSIZE (os error 90).
     #[repr(C)]
     struct NsmIoBuffer {
         addr: u64,
-        len: u32,
+        len: u64,
     }
 
     // NSM_IOCTL_REQUEST: _IOWR(0x0A, 0, struct nsm_message)
@@ -228,11 +233,11 @@ fn nsm_ioctl(fd: std::os::unix::io::RawFd, request: &[u8]) -> Result<Vec<u8>, Ap
     let mut msg = NsmMessage {
         request: NsmIoBuffer {
             addr: request.as_ptr() as u64,
-            len: request.len() as u32,
+            len: request.len() as u64,
         },
         response: NsmIoBuffer {
             addr: response_buf.as_mut_ptr() as u64,
-            len: response_buf.len() as u32,
+            len: response_buf.len() as u64,
         },
     };
 
