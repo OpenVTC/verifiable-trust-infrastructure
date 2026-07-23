@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+### vta-service 0.12.13 — agent names over DIDComm, dropping the REST detour
+
+* Agent-name operations had no DIDComm form, so a DIDComm-transport VTA either
+  refused them or reached sideways to the hosting server's REST control plane.
+  The hosting server now dispatches all six verbs itself
+  (`spec/did-management/agent-name/{verb}/0.1`), so the detour is gone. (#758)
+
+### vta-service 0.12.12 — honour the `hostingPath` a webvh server advertises
+
+* A hosting server may serve its control plane under a path prefix rather than
+  at the origin root, and `webvh.storm.ws` advertises exactly that. The DID
+  templates have emitted `hostingPath` all along; it is now actually used. (#756)
+
+### vta-service 0.12.11 — use the REST endpoint a server already advertises for agent names
+
+* Managing an agent name failed on a server perfectly able to serve the request:
+  agent-name operations are not supported over DIDComm, and the hosting server
+  exposes them only via REST. Both true, and together the wrong conclusion —
+  the advertised REST endpoint is now used. (#755)
+
+### vta-sdk 0.19.22 — surface a trust-task error carried inside the payload
+
+* A failed trust task still returns a `payload`, with the error envelope
+  *inside* it as `{ code, message, retryable }`. `extract_trust_task_payload`
+  treated the presence of a payload as success, so callers deserialised an error
+  object as a result and reported whichever field their result type happened to
+  be missing — while the real message was discarded. (#753)
+
+### Release hygiene — the `vta-sdk` lockfile self-pin is gone, not refreshed
+
+* A transitive dev-dependency (`vtc-service` → `affinidi-messaging-test-mediator`
+  → `affinidi-messaging-mediator` → `vta-sdk`) pulled our own crate back in from
+  crates.io, so `Cargo.lock` carried a second, registry-sourced `vta-sdk` node.
+  It went stale the instant we published, and `cargo publish --locked` verifies
+  dependents against it — which is how pnm-cli 0.11.2 was built against vta-sdk
+  0.19.11 minutes after 0.19.12 shipped.
+* Refreshing it can only happen inside the publish job, which means committing to
+  a protected branch from CI; the org ruleset forbids that, so the workflow opens
+  a PR instead and cannot ("GitHub Actions is not permitted to create or approve
+  pull requests"). Seven consecutive releases ended with an orphaned refresh
+  branch and a stale `main`, cleared by hand each time (#754 was the last of
+  those); the seven orphaned branches have been deleted.
+* `[patch.crates-io] vta-sdk = { path = "vta-sdk" }` removes the second node
+  entirely — nothing to go stale, no refresh to run, no token or org setting
+  required. Publishing is unaffected: the patch is workspace-local, so
+  `cargo publish`'s verification build resolves `vta-sdk` from the registry and
+  picks the newest published version, which in a release run is the one published
+  moments earlier in the same loop. (#757)
+* Trade-off: the published `affinidi-messaging-mediator` now compiles against the
+  local `vta-sdk`. A breaking change within `0.19.x` surfaces in CI rather than
+  after a release, but as a build failure inside a third-party crate.
+
+### vta-service 0.12.10 — the consent e2e test matches #748's fail-fast contract
+
+* #748 made an unsatisfiable elevation fail at submission instead of minting a
+  consent ceremony that could never execute, but the test asserting the old
+  behaviour was not updated, so `main` was red. The test now asserts the new
+  contract: the task is refused up front, the refusal names the context and the
+  approver set that cannot confer it, and no challenge is minted. (#752)
+
+### vta-sdk 0.19.21 — the TSP ping measures its own reply
+
+* `TspPingSession::ping` accepted the first frame that unpacked and parsed as
+  JSON. The mediator inbox is durable, so a reply an earlier probe never
+  collected is flushed onto the socket on connect — meaning the probe could
+  report a healthy round trip, at an invented latency, off a pong from a previous
+  run. That is what disguised a total TSP delivery outage as intermittent.
+* The reply is now correlated on the Trust-Task `threadId` (falling back to the
+  echoed `nonce`), so a stale frame cannot satisfy a probe. (#750)
+* The underlying transport faults were upstream in `affinidi-tdk-rs`
+  (affinidi/affinidi-tdk-rs#646): the mediator never marked raw-TSP websockets
+  live, so anything arriving after connect was stored and never pushed, and the
+  SDK separately dropped packed frames that landed between polls. Fixed and
+  published in mediator 0.17.7 / messaging-sdk 0.18.62.
+
 ### vtc-service 0.11.19 / vta-sdk 0.19.20 — Phase 4: the remaining vtc families move to `spec/vtc`
 
 * Every remaining VTC Trust Task with a canonical counterpart is repointed:

@@ -169,6 +169,9 @@ jobs:
       - name: Version-bump guard for changed publishable crates
         run: bash scripts/check-version-bumps.sh "${{ github.event.pull_request.base.sha }}"
 
+      - name: Changelog guard for bumped publishable crates
+        run: bash scripts/check-changelogs.sh "${{ github.event.pull_request.base.sha }}"
+
   lockfile-self-pins:
     # Sibling guard to release-guards: the version bump can be correct and the
     # release still break if Cargo.lock pins a stale crates.io copy of one of
