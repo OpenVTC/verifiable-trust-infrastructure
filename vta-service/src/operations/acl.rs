@@ -8,9 +8,9 @@ use vta_sdk::protocols::acl_management::{
 };
 
 use crate::acl::{
-    AclEntry, ApproveScope, Role, delete_acl_entry, get_acl_entry, is_acl_entry_visible,
-    list_acl_entries, store_acl_entry, validate_acl_modification, validate_approve_scope_grant,
-    validate_role_assignment,
+    AclEntry, ApproveScope, Role, acl_entry_can_act_in, delete_acl_entry, get_acl_entry,
+    is_acl_entry_visible, list_acl_entries, store_acl_entry, validate_acl_modification,
+    validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -267,8 +267,13 @@ pub async fn list_acl(
     let entries: Vec<CreateAclResultBody> = all_entries
         .iter()
         .filter(|e| is_acl_entry_visible(auth, e))
+        // Shared with the offline `vta acl list` so the two surfaces cannot
+        // answer the same question differently. The previous `contains()`
+        // omitted super-admin entries, which do hold every context — an
+        // operator auditing "who can reach context X" never saw them — and
+        // missed entries scoped to an ancestor of X.
         .filter(|e| match context_filter {
-            Some(ctx) => e.allowed_contexts.contains(&ctx.to_string()),
+            Some(ctx) => acl_entry_can_act_in(e, ctx),
             None => true,
         })
         .map(to_result_body)

@@ -762,6 +762,32 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
             .all(|c| approver.allowed_contexts.contains(c))
 }
 
+/// Whether `entry` holds authority to act in `context_id` — the predicate
+/// behind every "which entries are relevant to this context?" filter.
+///
+/// One function because the two `acl list --context` implementations answered
+/// this differently, and both were wrong in a different direction. The offline
+/// CLI matched `allowed_contexts.is_empty() || contains(ctx)`, so an
+/// **empty list matched every context**; the online operation matched
+/// `contains(ctx)`, so an **empty list matched none**. Same command, opposite
+/// answers, and neither is the truth: an empty list means unrestricted for
+/// [`Role::Admin`] (a super-admin does hold every context) and *nothing at all*
+/// for every other role (which therefore holds none).
+///
+/// Ancestry is segment-aware, matching [`AuthClaims::has_context_access`] and
+/// the VTC's equivalent filter: an entry scoped to a parent context does grant
+/// its subtree, so it genuinely carries a child id. Both VTA filters compared
+/// with `contains`, so neither surfaced it.
+pub fn acl_entry_can_act_in(entry: &AclEntry, context_id: &str) -> bool {
+    if entry.is_super_admin() {
+        return true;
+    }
+    entry
+        .allowed_contexts
+        .iter()
+        .any(|allowed| crate::context_path::is_ancestor_or_self(allowed, context_id))
+}
+
 /// Check whether an ACL entry is visible to the caller.
 ///
 /// Super admins see all entries. Context admins only see entries whose
@@ -1349,6 +1375,65 @@ mod tests {
         let err = validate_acl_modification(&caller, &["ctx1".into(), "ctx3".into()])
             .expect_err("mixed own+foreign must be rejected");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    // ── acl_entry_can_act_in ────────────────────────────────────────
+
+    /// A super-admin holds every context, so a context filter must surface it.
+    /// The online `list_acl` used a bare `contains()` and omitted these — an
+    /// operator auditing "who can reach context X" never saw the entries with
+    /// the most authority over it.
+    #[test]
+    fn can_act_in_includes_super_admins() {
+        let super_admin = sample_entry("did:key:zSuper", Role::Admin);
+        assert!(acl_entry_can_act_in(&super_admin, "anything"));
+    }
+
+    /// An acts-nowhere entry holds none. The offline `vta acl list` matched
+    /// `is_empty() || contains()` and surfaced these under *every* context.
+    #[test]
+    fn can_act_in_excludes_acts_nowhere_entries() {
+        for role in [Role::Reader, Role::Application, Role::Initiator] {
+            let entry = sample_entry("did:key:zNowhere", role.clone());
+            assert!(
+                !acl_entry_can_act_in(&entry, "anything"),
+                "{role:?} with no contexts acts nowhere"
+            );
+        }
+    }
+
+    /// Hierarchy-aware, matching `has_context_access` and the VTC's filter.
+    /// Both VTA filters used `contains`, so neither surfaced a parent-scoped
+    /// entry under a child id.
+    #[test]
+    fn can_act_in_covers_the_subtree() {
+        let entry = scoped_entry("did:key:zParent", Role::Reader, &["parent"]);
+        assert!(acl_entry_can_act_in(&entry, "parent"), "self");
+        assert!(acl_entry_can_act_in(&entry, "parent/child"), "subtree");
+        assert!(!acl_entry_can_act_in(&entry, "other"), "unrelated");
+        assert!(
+            !acl_entry_can_act_in(&entry, "parentless"),
+            "a string prefix is not an ancestor"
+        );
+    }
+
+    /// The two implementations this replaces disagreed on exactly one input
+    /// class — an empty `allowed_contexts` — and the disagreement was total:
+    /// one matched every context, the other none. Pin both halves together so
+    /// a future edit cannot reintroduce either reading.
+    #[test]
+    fn can_act_in_resolves_the_offline_online_disagreement() {
+        let ctx = "openvtc";
+        // Offline said yes to this, online said no. Correct answer: yes.
+        assert!(acl_entry_can_act_in(
+            &sample_entry("did:key:zA", Role::Admin),
+            ctx
+        ));
+        // Offline said yes to this, online said no. Correct answer: no.
+        assert!(!acl_entry_can_act_in(
+            &sample_entry("did:key:zB", Role::Reader),
+            ctx
+        ));
     }
 
     // ── is_acl_entry_visible ────────────────────────────────────────

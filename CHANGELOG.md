@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### vti-common 0.11.15 / vta-service 0.12.19 — make `acl list --context` answer the same way on both surfaces
+
+* The two implementations of the context filter disagreed on exactly one input
+  class, and disagreed totally. Offline (`vta acl list --context`) matched
+  `allowed_contexts.is_empty() || contains(ctx)`, so an **empty list matched
+  every context**. Online (`operations::acl::list_acl`) matched
+  `contains(ctx)`, so an **empty list matched none**. Same command, opposite
+  answers.
+
+* Neither was right. An empty list means unrestricted for `Role::Admin` and
+  *nothing at all* for every other role, so the correct filter includes
+  super-admins (offline had them, online silently dropped them — an operator
+  auditing "who can reach context X" never saw the entries with the most
+  authority over it) and excludes acts-nowhere entries (online had this right,
+  offline listed them under every context).
+
+* Both also compared with `contains`, missing entries scoped to an *ancestor*
+  of the queried context, which do grant it. The VTC's equivalent filter has
+  been hierarchy-aware all along; the VTA's now matches.
+
+* One `acl_entry_can_act_in` predicate in `vti-common` now backs both call
+  sites, so they cannot drift again.
+
+### vta-service 0.12.17 — fix a vault scope gate that ignored the caller's role
 ### vta-service 0.12.18 — fix a vault scope gate that ignored the caller's role
 
 * **Security.** `enforce_context_scope`, the gate on every vault trust task,

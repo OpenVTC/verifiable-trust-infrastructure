@@ -1,6 +1,6 @@
 use crate::acl::{
-    AclEntry, ApproveScope, Role, delete_acl_entry, get_acl_entry, list_acl_entries,
-    store_acl_entry,
+    AclEntry, ApproveScope, Role, acl_entry_can_act_in, delete_acl_entry, get_acl_entry,
+    list_acl_entries, store_acl_entry,
 };
 use crate::config::AppConfig;
 use crate::store::Store;
@@ -134,7 +134,10 @@ pub async fn run_acl_list(
         entries.retain(|e| &e.role == role);
     }
     if let Some(ref ctx) = context {
-        entries.retain(|e| e.allowed_contexts.is_empty() || e.allowed_contexts.contains(ctx));
+        // Shared with the online `list_acl` so the two surfaces cannot answer
+        // the same question differently. The previous `is_empty() ||
+        // contains()` matched an *acts-nowhere* entry under every context.
+        entries.retain(|e| acl_entry_can_act_in(e, ctx));
     }
 
     if entries.is_empty() {
