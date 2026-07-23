@@ -1,4 +1,4 @@
-//! Regression pin for FTL-28605 on the vault secret-unseal path.
+//! Regression pin for the forged-sender auth bypass on the vault secret-unseal path.
 //!
 //! `operations::vault::upsert::unseal_secret` unpacks a DIDComm-authcrypt JWE
 //! and cross-checks the enclosed sender against the authenticated caller.

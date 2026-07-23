@@ -46,18 +46,22 @@ pub async fn unseal_secret(
     // sender. Accepting those here would defeat the sender cross-check below
     // (a plaintext `from` is attacker-controlled) and the "sealed" secret
     // wouldn't be sealed at all. Require encrypted + authenticated.
-    if !metadata.encrypted || !metadata.authenticated {
-        return Err(UnsealError::UnpackFailed(
-            "sealed secret must be an authenticated (authcrypt) DIDComm envelope".to_string(),
-        ));
-    }
+    vti_common::auth::require_authcrypt(
+        metadata.encrypted,
+        metadata.authenticated,
+        "sealed secret",
+    )
+    .map_err(UnsealError::UnpackFailed)?;
 
     // Cross-check: the authcrypt sender's DID must equal the authenticated
-    // caller.
-    let sender = msg
-        .from
+    // caller. Bind to the cryptographically-authenticated sender key
+    // (`encrypted_from_kid`), NOT the plaintext `from`: `atm.unpack`
+    // proves the `skid` sender key but never checks it equals the inner `from`,
+    // which is attacker-controlled.
+    let sender = metadata
+        .encrypted_from_kid
         .as_deref()
-        .map(|s| s.split('#').next().unwrap_or(s).to_string())
+        .map(|kid| kid.split('#').next().unwrap_or(kid).to_string())
         .ok_or(UnsealError::MissingSender)?;
     if sender != caller_did {
         return Err(UnsealError::SenderMismatch {

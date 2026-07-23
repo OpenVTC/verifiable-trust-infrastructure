@@ -655,7 +655,7 @@ pub struct TestAppOptions {
     /// Optional messaging (ATM) handle to wire into `AppState.atm`. The
     /// default (`None`) leaves the app REST-only, so the DIDComm branch of
     /// `POST /auth/` short-circuits on "ATM not configured". Tests that need
-    /// to exercise `atm.unpack` (e.g. the FTL-28605 plaintext-forgery guard)
+    /// to exercise `atm.unpack` (e.g. the plaintext-forgery guard)
     /// build an offline ATM via [`build_offline_atm`] and pass it here.
     pub atm: Option<affinidi_tdk::messaging::ATM>,
 }

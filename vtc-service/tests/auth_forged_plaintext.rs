@@ -1,4 +1,4 @@
-//! Regression pin for FTL-28605 (VTA-001), VTC side.
+//! Regression pin for the forged-sender auth bypass, VTC side.
 //!
 //! The VTC's `POST /v1/auth/` handler shares the vulnerable pattern the VTA
 //! had: it unpacks an incoming DIDComm envelope via `atm.unpack` and derives
@@ -112,7 +112,7 @@ async fn plaintext_didcomm_with_forged_sender_is_rejected() {
     mock.shutdown().await;
 }
 
-/// Regression pin for FTL-28605 on the VTC refresh path. `POST
+/// Regression pin for the forged-sender auth bypass on the VTC refresh path. `POST
 /// /v1/auth/refresh` unpacks a DIDComm envelope and binds `msg.from` to
 /// the session DID (`signer_did`) inside `handle_refresh`. The opaque
 /// refresh token is the primary credential, but a plaintext (forgeable)

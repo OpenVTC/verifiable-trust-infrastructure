@@ -246,7 +246,7 @@ enum InboundGate {
     NotEncrypted,
     /// Encrypted, but the sender is anonymous or not cryptographically
     /// verified — reply `unauthorized`. This is the branch that stops a
-    /// plaintext/forged sender from reaching a handler (FTL-28605 / #620).
+    /// plaintext/forged sender from reaching a handler.
     Unauthenticated,
     /// Encrypted with a cryptographically-verified, non-anonymous sender —
     /// dispatch to the handler as this DID.
@@ -268,7 +268,7 @@ impl InboundGate {
 /// `allow_anonymous_sender(false)` (framework `middleware/policy.rs::check`).
 ///
 /// `sender` is the transport-reported sender DID; `verified` is whether the
-/// transport *cryptographically authenticated* it (`#620`). The only
+/// transport *cryptographically authenticated* it. The only
 /// dispatchable frame is an encrypted one whose sender is both present and
 /// verified — so a plaintext frame (`encrypted == false`), an anonymous read
 /// (`sender == None`), or an unverified/forged sender (`verified == false`)
@@ -283,7 +283,7 @@ fn inbound_gate(encrypted: bool, sender: Option<&str>, verified: bool) -> Inboun
         return InboundGate::NotEncrypted;
     }
     match sender {
-        // `Some` iff the sender is cryptographically authenticated (#620);
+        // `Some` iff the sender is cryptographically authenticated;
         // absence collapses the framework's NotAuthenticated / AnonymousSender
         // / MissingSenderDid violations into one branch.
         Some(did) if verified => InboundGate::Authenticated(did.to_string()),
@@ -446,7 +446,7 @@ mod tests {
         );
     }
 
-    /// FTL-28605 / #620 core: an encrypted frame whose sender is present but
+    /// Core case: an encrypted frame whose sender is present but
     /// NOT cryptographically verified (a forged / plaintext-authenticated
     /// `from`) must be refused — never dispatched as that DID.
     #[test]
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(inbound_gate(true, None, true), InboundGate::Unauthenticated);
     }
 
-    /// A plaintext frame (the exact FTL-28605 exploit shape: forged `from`,
+    /// A plaintext frame (the exact forged-sender exploit shape: forged `from`,
     /// no encryption) is refused at the encryption gate, before the sender is
     /// even considered.
     #[test]

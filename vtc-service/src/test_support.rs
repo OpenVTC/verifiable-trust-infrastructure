@@ -504,7 +504,7 @@ impl MockVtc {
     /// Like [`start`](Self::start) but wires an offline messaging (ATM) handle
     /// into `AppState.atm`, so the DIDComm branch of `POST /v1/auth/` reaches
     /// `atm.unpack` instead of short-circuiting on "ATM not configured". Used
-    /// by the FTL-28605 plaintext-forgery regression, which must exercise the
+    /// by the plaintext-forgery regression, which must exercise the
     /// authcrypt guard rather than the missing-ATM early return. Build the
     /// handle with [`build_offline_atm`].
     pub async fn start_with_atm(atm: affinidi_tdk::messaging::ATM) -> MockVtc {

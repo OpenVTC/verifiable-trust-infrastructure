@@ -115,7 +115,7 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
     );
 }
 
-/// Regression pin for FTL-28605 (VTA-001): a remote unauthenticated
+/// Regression pin for the forged-sender auth bypass: a remote unauthenticated
 /// attacker must not be able to obtain an admin JWT by POSTing a
 /// **plaintext** DIDComm message with a forged `from` field.
 ///
@@ -251,7 +251,7 @@ async fn refresh_endpoint_rejects_unknown_token_with_401() {
     );
 }
 
-/// Regression pin for FTL-28605 on the refresh path: a plaintext
+/// Regression pin for the forged-sender auth bypass on the refresh path: a plaintext
 /// DIDComm `auth/refresh/0.1` envelope must be rejected by the same
 /// authcrypt guard as `/auth/`. The opaque refresh token is the primary
 /// credential, but the DIDComm path binds `msg.from` to the session DID

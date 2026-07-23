@@ -173,22 +173,20 @@ pub async fn authenticate(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // Reject plaintext / unauthenticated DIDComm envelopes. The signer DID is
-    // taken verbatim from `msg.from` below and trusted downstream by
-    // `handle_authenticate` (which only checks `signer_did == session.did`), so
-    // it MUST originate from a cryptographically-authenticated envelope.
-    // `atm.unpack` happily parses a plaintext DIDComm message — one with a
-    // `type` field but no JWE/JWS layer — returning an attacker-controlled
-    // `from` with `authenticated: false`. Legitimate clients authcrypt this
-    // message (`pack_encrypted` → both flags true), so requiring both is
-    // correct and does not break the supported flow. Without this gate a remote
-    // unauthenticated caller could forge `from: <admin DID>` and be issued an
-    // admin JWT (FTL-28605).
-    if !metadata.encrypted || !metadata.authenticated {
-        return Err(AppError::Authentication(
-            "authenticate message must be an authenticated (authcrypt) DIDComm envelope".into(),
-        ));
-    }
+    // Reject non-authcrypt envelopes AND bind the plaintext `from` to the
+    // cryptographically-authenticated sender key. `atm.unpack` proves
+    // the `skid` sender key (surfaced as `encrypted_from_kid`) but never checks
+    // it equals the inner `from`; an attacker can authcrypt with their own key
+    // (both flags true) while claiming a victim's `from`. The returned DID is
+    // the proven signer that `handle_authenticate` binds to `session.did`.
+    let sender_base = vti_common::auth::bind_authcrypt_sender(
+        msg.from.as_deref(),
+        metadata.encrypted,
+        metadata.authenticated,
+        metadata.encrypted_from_kid.as_deref(),
+        "authenticate message",
+    )
+    .map_err(AppError::Authentication)?;
 
     // Canonical Trust-Task URI only. The legacy
     // `affinidi.com/atm/1.0/authenticate` alias was removed once the SDK's
@@ -207,16 +205,6 @@ pub async fn authenticate(
     let session_id = msg.body["session_id"]
         .as_str()
         .ok_or_else(|| AppError::Authentication("missing session_id in message body".into()))?
-        .to_string();
-
-    let sender_did = msg
-        .from
-        .as_deref()
-        .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
-    let sender_base = sender_did
-        .split('#')
-        .next()
-        .unwrap_or(sender_did)
         .to_string();
 
     let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
@@ -362,17 +350,18 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // Same authcrypt gate as `/auth/` (FTL-28605): the refresh token is the
-    // primary credential, but `msg.from` is fed to `handle_refresh` as
-    // `signer_did` and bound to the session's DID. A plaintext DIDComm envelope
-    // yields an attacker-controlled `from` with `authenticated: false`, which
-    // would defeat that binding — so require an authenticated (authcrypt)
-    // envelope here too.
-    if !metadata.encrypted || !metadata.authenticated {
-        return Err(AppError::Authentication(
-            "refresh message must be an authenticated (authcrypt) DIDComm envelope".into(),
-        ));
-    }
+    // Same authcrypt + sender-binding gate as `/auth/`: the refresh
+    // token is the primary credential, but `msg.from` is fed to `handle_refresh`
+    // as `signer_did` and bound to the session's DID. Bind it to the proven
+    // authcrypt sender key so a forged/plaintext `from` can't defeat that.
+    let sender_base = vti_common::auth::bind_authcrypt_sender(
+        msg.from.as_deref(),
+        metadata.encrypted,
+        metadata.authenticated,
+        metadata.encrypted_from_kid.as_deref(),
+        "refresh message",
+    )
+    .map_err(AppError::Authentication)?;
 
     // Canonical Trust-Task URI only; the legacy
     // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
@@ -387,17 +376,13 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
         .as_str()
         .ok_or_else(|| AppError::Authentication("missing refresh_token in message body".into()))?
         .to_string();
-    let sender_base = msg
-        .from
-        .as_deref()
-        .map(|s| s.split('#').next().unwrap_or(s).to_string());
 
     let backend = crate::auth::VtaAuthBackend::from_state(&state).await?;
     let resp = vti_common::auth::handlers::handle_refresh(
         &backend,
         vti_common::auth::RefreshInput {
             refresh_token,
-            signer_did: sender_base,
+            signer_did: Some(sender_base),
         },
     )
     .await?;
