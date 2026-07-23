@@ -106,29 +106,6 @@ pub(crate) fn resolve_server_transport<S: ServiceEntry>(
     None
 }
 
-/// The REST endpoint a server advertises, if any — **regardless** of whether it
-/// also advertises DIDComm.
-///
-/// [`resolve_server_transport`] returns as soon as it sees a DIDComm service,
-/// which is right for the operations both transports implement. Agent-name
-/// operations are not among them: the hosting server's transport-agnostic
-/// DIDComm dispatch table carries no agent-name verbs, so they exist over REST
-/// alone.
-///
-/// A deployed hosting server normally advertises `WebVHHosting` *and*
-/// `DIDCommMessaging` together. Without this, the DIDComm preference hides the
-/// REST endpoint sitting in the same document, and an agent-name call fails on
-/// a server that is perfectly able to serve it.
-pub(crate) fn resolve_rest_endpoint<S: ServiceEntry>(services: &[S]) -> Option<String> {
-    services.iter().find_map(|svc| {
-        if !svc.types().iter().any(is_webvh_rest) {
-            return None;
-        }
-        let url = join_base(&svc.endpoint_uri()?, svc.hosting_path().as_deref());
-        (!url.is_empty()).then_some(url)
-    })
-}
-
 #[inline]
 fn is_didcomm(t: &String) -> bool {
     t == SVC_DIDCOMM
@@ -194,10 +171,6 @@ mod tests {
             Some("/webvh"),
         )];
         assert_eq!(
-            resolve_rest_endpoint(&services).as_deref(),
-            Some("https://webvh.storm.ws/webvh")
-        );
-        assert_eq!(
             resolve_server_transport(&services),
             Some(ResolvedTransport::Rest {
                 url: "https://webvh.storm.ws/webvh".to_string()
@@ -219,8 +192,10 @@ mod tests {
                 Some(path),
             )];
             assert_eq!(
-                resolve_rest_endpoint(&services).as_deref(),
-                Some("https://h.example/webvh"),
+                resolve_server_transport(&services),
+                Some(ResolvedTransport::Rest {
+                    url: "https://h.example/webvh".to_string()
+                }),
                 "uri={uri} path={path}"
             );
         }
@@ -236,80 +211,16 @@ mod tests {
                 path,
             )];
             assert_eq!(
-                resolve_rest_endpoint(&services).as_deref(),
-                Some("https://h.example"),
+                resolve_server_transport(&services),
+                Some(ResolvedTransport::Rest {
+                    url: "https://h.example".to_string()
+                }),
                 "path={path:?}"
             );
         }
     }
 
     // ── resolve_rest_endpoint ───────────────────────────────────────
-
-    /// The case that motivated this: a server advertising BOTH transports.
-    /// `resolve_server_transport` picks DIDComm, and the REST endpoint must
-    /// still be discoverable — agent-name operations exist only over REST.
-    #[test]
-    fn rest_endpoint_is_found_even_when_didcomm_is_advertised() {
-        let services = vec![
-            TestService::new(&["WebVHHosting"], Some("https://host.example/")),
-            TestService::new(&["DIDCommMessaging"], Some("did:webvh:QmMED:med.example")),
-        ];
-        // DIDComm still wins for transport selection...
-        assert!(matches!(
-            resolve_server_transport(&services),
-            Some(ResolvedTransport::DIDComm)
-        ));
-        // ...but the REST endpoint is not hidden by that preference.
-        assert_eq!(
-            resolve_rest_endpoint(&services).as_deref(),
-            Some("https://host.example")
-        );
-    }
-
-    /// Order must not matter — the DIDComm entry may come first.
-    #[test]
-    fn rest_endpoint_is_order_independent() {
-        let services = vec![
-            TestService::new(&["DIDCommMessaging"], Some("did:webvh:QmMED:med.example")),
-            TestService::new(&["WebVHHosting"], Some("https://host.example")),
-        ];
-        assert_eq!(
-            resolve_rest_endpoint(&services).as_deref(),
-            Some("https://host.example")
-        );
-    }
-
-    /// The legacy service type is accepted here too, matching
-    /// `resolve_server_transport`.
-    #[test]
-    fn rest_endpoint_accepts_the_legacy_type() {
-        let services = vec![TestService::new(
-            &["WebVHHostingService"],
-            Some("https://legacy.example"),
-        )];
-        assert_eq!(
-            resolve_rest_endpoint(&services).as_deref(),
-            Some("https://legacy.example")
-        );
-    }
-
-    /// A DIDComm-only server genuinely has nowhere to send an agent-name call,
-    /// and must report that rather than inventing an endpoint.
-    #[test]
-    fn rest_endpoint_is_none_for_a_didcomm_only_server() {
-        let services = vec![TestService::new(
-            &["DIDCommMessaging"],
-            Some("did:webvh:QmMED:med.example"),
-        )];
-        assert_eq!(resolve_rest_endpoint(&services), None);
-    }
-
-    /// An advertised-but-empty URI is not an endpoint.
-    #[test]
-    fn rest_endpoint_ignores_an_empty_uri() {
-        let services = vec![TestService::new(&["WebVHHosting"], Some(""))];
-        assert_eq!(resolve_rest_endpoint(&services), None);
-    }
 
     struct TestService {
         types: Vec<String>,

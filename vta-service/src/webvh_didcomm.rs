@@ -73,6 +73,35 @@ const TASK_DID_DELETE_RESPONSE: &str =
 const TASK_DID_PROBLEM_REPORT: &str =
     "https://trusttasks.org/spec/did-management/did/problem-report/0.1";
 
+// Agent names. These had no DIDComm form until the hosting server gained
+// them, so a DIDComm-transport VTA could not manage names at all — it either
+// refused, or reached sideways to the server's REST control plane. Same
+// `spec/did-management/...` family as the verbs above; the server answers
+// them from the same `did_ops` functions its REST routes use, so the two
+// transports return identical payloads.
+const TASK_AGENT_NAME_SET: &str = "https://trusttasks.org/spec/did-management/agent-name/set/0.1";
+const TASK_AGENT_NAME_SET_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/set/0.1#response";
+const TASK_AGENT_NAME_REMOVE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/remove/0.1";
+const TASK_AGENT_NAME_REMOVE_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/remove/0.1#response";
+const TASK_AGENT_NAME_ENABLE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/enable/0.1";
+const TASK_AGENT_NAME_ENABLE_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/enable/0.1#response";
+const TASK_AGENT_NAME_DISABLE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/disable/0.1";
+const TASK_AGENT_NAME_DISABLE_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/disable/0.1#response";
+const TASK_AGENT_NAME_LIST: &str = "https://trusttasks.org/spec/did-management/agent-name/list/0.1";
+const TASK_AGENT_NAME_LIST_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/list/0.1#response";
+const TASK_AGENT_NAME_CHECK: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/check/0.1";
+const TASK_AGENT_NAME_CHECK_RESPONSE: &str =
+    "https://trusttasks.org/spec/did-management/agent-name/check/0.1#response";
+
 /// Build the `did/check-name/0.1` reservation body.
 ///
 /// `path == None` is the auto-assign case: the `path` field is OMITTED
@@ -351,6 +380,182 @@ impl<'a> WebvhDIDCommClient<'a> {
             .await?;
         Ok(())
     }
+
+    // ── Agent names ────────────────────────────────────────────────────
+    //
+    // The four mutating verbs share a body and a `{record}` response, so they
+    // share one submit. `didLog` carries the newly signed document: the server
+    // requires `set`/`enable` to claim the name in `alsoKnownAs` and
+    // `remove`/`disable` not to, which is what makes the registry and the
+    // document agree.
+
+    async fn agent_name_verb(
+        &self,
+        task: &str,
+        response_task: &str,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        let mut body = serde_json::Map::new();
+        body.insert("mnemonic".to_string(), serde_json::json!(mnemonic));
+        body.insert("name".to_string(), serde_json::json!(name));
+        body.insert("didLog".to_string(), serde_json::json!(did_log));
+        if let Some(d) = domain {
+            body.insert("domain".to_string(), serde_json::json!(d));
+        }
+        self.bridge
+            .send_and_wait(
+                self.server_did,
+                task,
+                serde_json::Value::Object(body),
+                response_task,
+                TASK_DID_PROBLEM_REPORT,
+                30,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Bind or refresh `name` on `mnemonic`.
+    pub async fn set_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_verb(
+            TASK_AGENT_NAME_SET,
+            TASK_AGENT_NAME_SET_RESPONSE,
+            mnemonic,
+            name,
+            did_log,
+            domain,
+        )
+        .await
+    }
+
+    /// Release `name` — it stops resolving and anyone may reclaim it.
+    pub async fn remove_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_verb(
+            TASK_AGENT_NAME_REMOVE,
+            TASK_AGENT_NAME_REMOVE_RESPONSE,
+            mnemonic,
+            name,
+            did_log,
+            domain,
+        )
+        .await
+    }
+
+    /// Resume serving a parked `name`.
+    pub async fn enable_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_verb(
+            TASK_AGENT_NAME_ENABLE,
+            TASK_AGENT_NAME_ENABLE_RESPONSE,
+            mnemonic,
+            name,
+            did_log,
+            domain,
+        )
+        .await
+    }
+
+    /// Park `name` — it stops resolving but stays reserved to this DID.
+    pub async fn disable_agent_name(
+        &self,
+        mnemonic: &str,
+        name: &str,
+        did_log: &str,
+        domain: Option<&str>,
+    ) -> Result<(), AppError> {
+        self.agent_name_verb(
+            TASK_AGENT_NAME_DISABLE,
+            TASK_AGENT_NAME_DISABLE_RESPONSE,
+            mnemonic,
+            name,
+            did_log,
+            domain,
+        )
+        .await
+    }
+
+    /// Read the DID's agent-name registry, parked names included.
+    ///
+    /// The registry — not the DID document — is the only place a parked name
+    /// is visible, since dropping the `alsoKnownAs` claim is *how* parking
+    /// stops it resolving. `agentNames` is always present, so an absent field
+    /// is a contract violation rather than an empty registry.
+    pub async fn list_agent_names(
+        &self,
+        mnemonic: &str,
+        domain: Option<&str>,
+    ) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
+        let mut body = serde_json::Map::new();
+        body.insert("mnemonic".to_string(), serde_json::json!(mnemonic));
+        if let Some(d) = domain {
+            body.insert("domain".to_string(), serde_json::json!(d));
+        }
+        let resp = self
+            .bridge
+            .send_and_wait(
+                self.server_did,
+                TASK_AGENT_NAME_LIST,
+                serde_json::Value::Object(body),
+                TASK_AGENT_NAME_LIST_RESPONSE,
+                TASK_DID_PROBLEM_REPORT,
+                30,
+            )
+            .await?;
+        let names = resp.body.get("agentNames").ok_or_else(|| {
+            AppError::Internal("agent-name list response has no 'agentNames'".to_string())
+        })?;
+        serde_json::from_value(names.clone())
+            .map_err(|e| AppError::Internal(format!("agent-name list response parse error: {e}")))
+    }
+
+    /// Is `name` free to claim on this domain?
+    ///
+    /// A reserved name answers `available: false, reserved: true` rather than
+    /// erroring, so the caller can tell "taken" from "never allowed".
+    pub async fn check_agent_name(
+        &self,
+        name: &str,
+        domain: Option<&str>,
+    ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
+        let mut body = serde_json::Map::new();
+        body.insert("name".to_string(), serde_json::json!(name));
+        if let Some(d) = domain {
+            body.insert("domain".to_string(), serde_json::json!(d));
+        }
+        let resp = self
+            .bridge
+            .send_and_wait(
+                self.server_did,
+                TASK_AGENT_NAME_CHECK,
+                serde_json::Value::Object(body),
+                TASK_AGENT_NAME_CHECK_RESPONSE,
+                TASK_DID_PROBLEM_REPORT,
+                30,
+            )
+            .await?;
+        serde_json::from_value(resp.body)
+            .map_err(|e| AppError::Internal(format!("agent-name check response parse error: {e}")))
+    }
 }
 
 #[cfg(test)]
@@ -369,15 +574,15 @@ mod tests {
             !body.contains_key("path"),
             "auto-assign must omit `path`; got {body:?}"
         );
-        assert_eq!(body.get("reserve"), Some(&json!(true)));
+        assert_eq!(body.get("reserve"), Some(&serde_json::json!(true)));
     }
 
     /// An explicit label travels verbatim under `reserve: true`.
     #[test]
     fn explicit_path_is_sent() {
         let body = build_check_name_body(Some("alice"), None);
-        assert_eq!(body.get("path"), Some(&json!("alice")));
-        assert_eq!(body.get("reserve"), Some(&json!(true)));
+        assert_eq!(body.get("path"), Some(&serde_json::json!("alice")));
+        assert_eq!(body.get("reserve"), Some(&serde_json::json!(true)));
     }
 
     /// `.well-known` (the root-DID marker) is sent as a normal path —
@@ -385,14 +590,17 @@ mod tests {
     #[test]
     fn well_known_is_sent_as_path() {
         let body = build_check_name_body(Some(".well-known"), None);
-        assert_eq!(body.get("path"), Some(&json!(".well-known")));
+        assert_eq!(body.get("path"), Some(&serde_json::json!(".well-known")));
     }
 
     /// The optional `domain` rides along only when present.
     #[test]
     fn domain_included_only_when_present() {
         let with = build_check_name_body(Some("alice"), Some("acme.example.com"));
-        assert_eq!(with.get("domain"), Some(&json!("acme.example.com")));
+        assert_eq!(
+            with.get("domain"),
+            Some(&serde_json::json!("acme.example.com"))
+        );
         let without = build_check_name_body(Some("alice"), None);
         assert!(!without.contains_key("domain"));
     }
@@ -402,7 +610,7 @@ mod tests {
     /// makes the host emit; the parser must read through `record`.
     #[test]
     fn parses_spec_record_shaped_response() {
-        let body = json!({
+        let body = serde_json::json!({
             "available": true,
             "reserved": true,
             "record": {
@@ -429,7 +637,7 @@ mod tests {
     /// must still accept them so a VTA can talk to an un-upgraded host.
     #[test]
     fn parses_legacy_flat_response() {
-        let body = json!({
+        let body = serde_json::json!({
             "available": true,
             "reserved": true,
             "mnemonic": "alice",
@@ -446,7 +654,7 @@ mod tests {
     /// to surface — wrongly — as a 500 on every re-run.)
     #[test]
     fn not_reserved_and_unavailable_is_a_conflict() {
-        let body = json!({ "available": false, "reserved": false });
+        let body = serde_json::json!({ "available": false, "reserved": false });
         let err = parse_check_name_response(body).expect_err("must error");
         assert!(
             matches!(err, crate::error::AppError::Conflict(_)),
@@ -464,7 +672,7 @@ mod tests {
     /// already-taken conflict.
     #[test]
     fn not_reserved_but_available_is_an_internal_anomaly() {
-        let body = json!({ "available": true, "reserved": false });
+        let body = serde_json::json!({ "available": true, "reserved": false });
         let err = parse_check_name_response(body).expect_err("must error");
         assert!(
             matches!(err, crate::error::AppError::Internal(_)),
@@ -480,7 +688,7 @@ mod tests {
     /// loudly rather than returning an empty `did_url` downstream.
     #[test]
     fn reserved_without_did_url_errors() {
-        let body = json!({
+        let body = serde_json::json!({
             "reserved": true,
             "record": { "mnemonic": "alice" }
         });

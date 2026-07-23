@@ -1440,13 +1440,6 @@ pub(super) enum WebvhTransport<'a> {
     DIDComm {
         bridge: &'a DIDCommBridge,
         server_did: String,
-        /// A REST endpoint the same server also advertises, if any.
-        ///
-        /// Agent-name operations exist only over REST — the hosting server's
-        /// DIDComm dispatch table has no agent-name verbs — so they fall back
-        /// to this rather than refusing on a server that advertises both, which
-        /// is the normal deployment shape.
-        rest_url: Option<String>,
     },
 }
 
@@ -1474,7 +1467,6 @@ impl<'a> WebvhTransport<'a> {
                 Ok(Self::DIDComm {
                     bridge: didcomm_bridge,
                     server_did: server.did.clone(),
-                    rest_url: transport::resolve_rest_endpoint(&resolved.doc.service),
                 })
             }
             Some(transport::ResolvedTransport::Rest { url }) => {
@@ -1674,42 +1666,6 @@ impl<'a> WebvhTransport<'a> {
         }
     }
 
-    /// A REST client able to serve agent-name operations, or a clear error.
-    ///
-    /// These operations exist over REST only — the hosting server's
-    /// transport-agnostic DIDComm dispatch table carries no agent-name verbs.
-    /// Refusing outright on a DIDComm-preferred server was wrong, though,
-    /// because a deployed server normally advertises `WebVHHosting` *and*
-    /// `DIDCommMessaging` together: the REST endpoint was sitting unused in the
-    /// same document that selected DIDComm.
-    ///
-    /// `owned` gives a client constructed here somewhere to live for as long as
-    /// the borrow the caller holds; on the REST transport it stays empty and the
-    /// existing client — which may already carry an access token — is reused.
-    fn agent_name_client<'c>(
-        &'c mut self,
-        owned: &'c mut Option<WebvhClient>,
-    ) -> Result<&'c mut WebvhClient, AppError> {
-        match self {
-            Self::Rest(c) => Ok(c),
-            Self::DIDComm {
-                rest_url,
-                server_did,
-                ..
-            } => {
-                let url = rest_url.as_deref().ok_or_else(|| {
-                    AppError::Validation(format!(
-                        "agent-name operations need a REST endpoint, and server DID \
-                         {server_did} advertises none; the hosting server exposes \
-                         agent names only via REST"
-                    ))
-                })?;
-                *owned = Some(WebvhClient::new(url, server_did)?);
-                Ok(owned.as_mut().expect("just assigned"))
-            }
-        }
-    }
-
     /// Park (`enable == false`) or resume (`enable == true`) an agent name,
     /// with one-shot 401 retry. REST-only: the hosting server exposes the
     /// agent-name endpoints over REST only, so a DIDComm-transport server is
@@ -1723,8 +1679,20 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<Vec<crate::webvh_client::AgentNameEntryWire>, AppError> {
-        let mut owned = None;
-        let c = self.agent_name_client(&mut owned)?;
+        // DIDComm is a first-class path now, not a fallback: the hosting
+        // server dispatches the agent-name verbs itself, so there is nothing
+        // to reach sideways to REST for. Auth is the transport's own — no
+        // bearer token, hence no 401 retry on this arm.
+        let c = match self {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
+                return WebvhDIDCommClient::new(bridge, server_did)
+                    .list_agent_names(mnemonic, domain)
+                    .await;
+            }
+            Self::Rest(c) => c,
+        };
         match c.list_agent_names(mnemonic, domain).await {
             Ok(v) => Ok(v),
             Err(AppError::Unauthorized(_)) => {
@@ -1748,8 +1716,16 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<crate::webvh_client::AgentNameAvailabilityWire, AppError> {
-        let mut owned = None;
-        let c = self.agent_name_client(&mut owned)?;
+        let c = match self {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
+                return WebvhDIDCommClient::new(bridge, server_did)
+                    .check_agent_name(name, domain)
+                    .await;
+            }
+            Self::Rest(c) => c,
+        };
         match c.check_agent_name(name, domain).await {
             Ok(v) => Ok(v),
             Err(AppError::Unauthorized(_)) => {
@@ -1775,8 +1751,34 @@ impl<'a> WebvhTransport<'a> {
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<(), AppError> {
-        let mut owned = None;
-        let c = self.agent_name_client(&mut owned)?;
+        let c = match self {
+            Self::DIDComm {
+                bridge, server_did, ..
+            } => {
+                let client = WebvhDIDCommClient::new(bridge, server_did);
+                return match verb {
+                    update::AgentNameVerb::Set => {
+                        client.set_agent_name(mnemonic, name, did_log, domain).await
+                    }
+                    update::AgentNameVerb::Remove => {
+                        client
+                            .remove_agent_name(mnemonic, name, did_log, domain)
+                            .await
+                    }
+                    update::AgentNameVerb::Enable => {
+                        client
+                            .enable_agent_name(mnemonic, name, did_log, domain)
+                            .await
+                    }
+                    update::AgentNameVerb::Disable => {
+                        client
+                            .disable_agent_name(mnemonic, name, did_log, domain)
+                            .await
+                    }
+                };
+            }
+            Self::Rest(c) => c,
+        };
         let op = verb.endpoint();
         match c.agent_name_op(op, mnemonic, name, did_log, domain).await {
             Ok(()) => Ok(()),
