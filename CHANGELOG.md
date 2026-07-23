@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### vta-service 0.12.18 — fix a vault scope gate that ignored the caller's role
+
+* **Security.** `enforce_context_scope`, the gate on every vault trust task,
+  treated *any* empty `allowed_contexts` as super-admin scope without checking
+  the role:
+
+  ```rust
+  if auth.allowed_contexts.is_empty() {
+      return Ok(()); // Super-admin (or unscoped) sees everything.
+  }
+  ```
+
+  An empty list only means unrestricted for `Role::Admin` —
+  `AuthClaims::is_super_admin` requires the role *and* the empty list, and
+  `has_context_access` otherwise iterates the list, where empty matches
+  nothing. So for every other role the entry is authorized **nowhere**, and
+  this gate said the opposite.
+
+  `Role::Reader` derives `Capability::VaultRead`, so a least-privilege approver
+  — `--role reader` with no contexts, the shape the `--approve-all` help text
+  recommends, whose authority is entirely `approve_scope` — passed the gate for
+  every context and could read the credential vault community-wide.
+  `Role::Initiator` derives `VaultWrite`, so the same shape reached
+  `handle_upsert`.
+
+  The gate now delegates to `has_context_access`, the predicate the REST routes
+  already use. That also fixes a second defect in the same function: it
+  compared contexts with `==`, so a context admin was denied its own subtree,
+  which `has_context_access`'s segment-aware ancestry allows.
+
+  The list handler's defence-in-depth narrowing had the identical `is_empty()`
+  skip — an authorized-nowhere caller got every entry in every context — and is
+  gated on `is_super_admin` now.
+
+  Regression tests cover the reader and initiator shapes, the super-admin path
+  that must keep working, and the subtree case. Verified to fail against the
+  previous implementation.
 ### vta-sdk 0.19.24 / vti-common 0.11.14 / vta-service 0.12.17 / vta-cli-common 0.10.10 / pnm-cli 0.11.6 / cnm-cli 0.11.4 — approve scope is changeable, and the offline CLI can create
 
 * **`approve_scope` was settable at create time only**, on every surface — REST,

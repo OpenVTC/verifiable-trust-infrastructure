@@ -436,9 +436,22 @@ fn require_capability(
     }
 }
 
-/// Reject if the caller's `allowed_contexts` is non-empty AND `context_id`
-/// (if supplied) is not in the allowed list. Empty allowed_contexts means
-/// super-admin scope.
+/// Reject if the caller may not act in `context_id` (when one is supplied).
+///
+/// Delegates to [`AuthClaims::has_context_access`] — the predicate the REST
+/// routes already gate on — rather than testing `allowed_contexts` directly.
+/// It previously did the latter, treating *any* empty `allowed_contexts` as
+/// super-admin scope, which was wrong twice over:
+///
+/// - an empty list only means unrestricted for [`Role::Admin`]
+///   (`AuthClaims::is_super_admin` requires the role *and* the empty list); for
+///   every other role it means the entry is authorized **nowhere**. A
+///   least-privilege approver (`role: reader`, no contexts, authority only to
+///   *confer* via `approve_scope`) carries `VaultRead` by role derivation, so
+///   the old check handed it vault access in every context — the exact opposite
+///   of its intent;
+/// - it compared contexts with `==`, so a context admin was denied its own
+///   subtree, which `has_context_access`'s segment-aware ancestry allows.
 fn enforce_context_scope(
     auth: &AuthClaims,
     context_id: Option<&str>,
@@ -447,10 +460,7 @@ fn enforce_context_scope(
     let Some(ctx) = context_id else {
         return Ok(()); // No context filter — caller's full visibility applies.
     };
-    if auth.allowed_contexts.is_empty() {
-        return Ok(()); // Super-admin (or unscoped) sees everything.
-    }
-    if auth.allowed_contexts.iter().any(|c| c == ctx) {
+    if auth.has_context_access(ctx) {
         return Ok(());
     }
     Err(reject_with(
@@ -625,13 +635,19 @@ pub(super) async fn handle_list(
         Err(e) => return app_error_to_reject(&doc, e),
     };
 
-    // If the caller's role is scoped to a subset of contexts and they
-    // queried without a `contextId` filter, narrow the result set to
-    // visible contexts only. This is defence-in-depth in addition to
-    // `enforce_context_scope` — that path covers the explicit-filter case;
-    // this one covers the implicit-all-contexts case.
-    if !auth.allowed_contexts.is_empty() && req.context_id.is_none() {
-        entries.retain(|e| auth.allowed_contexts.iter().any(|c| c == &e.context_id));
+    // If the caller is not a super-admin and queried without a `contextId`
+    // filter, narrow the result set to visible contexts only. This is
+    // defence-in-depth in addition to `enforce_context_scope` — that path
+    // covers the explicit-filter case; this one covers the
+    // implicit-all-contexts case.
+    //
+    // Gated on `is_super_admin` rather than on `allowed_contexts` being
+    // non-empty: an authorized-nowhere caller has an empty list too, and the
+    // old test skipped the narrowing for it entirely — returning every entry
+    // in every context to a caller entitled to none. Same defect as the
+    // explicit-filter path above.
+    if !auth.is_super_admin() && req.context_id.is_none() {
+        entries.retain(|e| auth.has_context_access(&e.context_id));
     }
 
     // M1 pagination: single page. Apply page_size as a hard truncation.
@@ -1928,6 +1944,107 @@ fn password_post_error_to_reject(
         PasswordPostError::ResponseParse(msg) => RejectReason::InternalError {
             reason: format!("vault/proxy-login: response parse failure — {msg}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod context_scope_tests {
+    use super::enforce_context_scope;
+    use crate::auth::AuthClaims;
+    use serde_json::json;
+    use trust_tasks_rs::{TrustTask, TypeUri};
+    use vti_common::acl::Role;
+
+    fn claims(role: Role, contexts: &[&str]) -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zTestSubject".into(),
+            role,
+            allowed_contexts: contexts.iter().map(|c| c.to_string()).collect(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        }
+    }
+
+    fn doc() -> TrustTask<serde_json::Value> {
+        let uri: TypeUri = vta_sdk::trust_tasks::TASK_VAULT_LIST_0_2
+            .parse()
+            .expect("list uri");
+        TrustTask::new("urn:uuid:test", uri, json!({}))
+    }
+
+    /// The escalation this gate was fixed for. A least-privilege approver is
+    /// `role: reader` with **no** contexts — it acts nowhere, and its authority
+    /// is entirely `approve_scope`. `Role::Reader` derives
+    /// `Capability::VaultRead`, so it reaches this gate; the previous
+    /// implementation treated any empty `allowed_contexts` as super-admin scope
+    /// and let it read the credential vault in every context.
+    #[test]
+    fn authorized_nowhere_caller_is_denied_every_context() {
+        let auth = claims(Role::Reader, &[]);
+        assert!(
+            enforce_context_scope(&auth, Some("openvtc"), &doc()).is_err(),
+            "a reader with no contexts must not pass the vault scope gate"
+        );
+        assert!(
+            enforce_context_scope(&auth, Some("anything-else"), &doc()).is_err(),
+            "…for any context, not just one"
+        );
+    }
+
+    /// `Role::Initiator` carries `VaultWrite`, so the same shape reached the
+    /// upsert path — a write, not just a read.
+    #[test]
+    fn authorized_nowhere_initiator_is_denied_too() {
+        assert!(
+            enforce_context_scope(&claims(Role::Initiator, &[]), Some("openvtc"), &doc()).is_err()
+        );
+    }
+
+    /// The same empty list on an admin *is* how a super-admin is spelled, and
+    /// must keep working — the fix must not tighten that path.
+    #[test]
+    fn super_admin_still_passes_every_context() {
+        let auth = claims(Role::Admin, &[]);
+        assert!(
+            enforce_context_scope(&auth, Some("openvtc"), &doc()).is_ok(),
+            "super admin must pass for any context"
+        );
+    }
+
+    /// Second defect in the same gate: it compared with `==`, so a context
+    /// admin was refused its own subtree even though `has_context_access`
+    /// grants it.
+    #[test]
+    fn context_admin_covers_its_own_subtree() {
+        let auth = claims(Role::Admin, &["parent"]);
+        assert!(
+            enforce_context_scope(&auth, Some("parent"), &doc()).is_ok(),
+            "own context"
+        );
+        assert!(
+            enforce_context_scope(&auth, Some("parent/child"), &doc()).is_ok(),
+            "own subtree"
+        );
+        assert!(
+            enforce_context_scope(&auth, Some("other"), &doc()).is_err(),
+            "unrelated context still denied"
+        );
+        assert!(
+            enforce_context_scope(&auth, Some("parentless"), &doc()).is_err(),
+            "a string prefix is not an ancestor"
+        );
+    }
+
+    /// No `contextId` filter supplied — the gate defers to the caller's full
+    /// visibility, which the query handler then narrows.
+    #[test]
+    fn absent_context_filter_defers_to_caller_visibility() {
+        assert!(
+            enforce_context_scope(&claims(Role::Reader, &[]), None, &doc()).is_ok(),
+            "no filter, no gate"
+        );
     }
 }
 
