@@ -168,10 +168,27 @@ pub async fn authenticate(
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(&body)
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+
+    // Reject plaintext / unauthenticated DIDComm envelopes. The signer DID is
+    // taken verbatim from `msg.from` below and trusted downstream by
+    // `handle_authenticate` (which only checks `signer_did == session.did`), so
+    // it MUST originate from a cryptographically-authenticated envelope.
+    // `atm.unpack` happily parses a plaintext DIDComm message — one with a
+    // `type` field but no JWE/JWS layer — returning an attacker-controlled
+    // `from` with `authenticated: false`. Legitimate clients authcrypt this
+    // message (`pack_encrypted` → both flags true), so requiring both is
+    // correct and does not break the supported flow. Without this gate a remote
+    // unauthenticated caller could forge `from: <admin DID>` and be issued an
+    // admin JWT (FTL-28605).
+    if !metadata.encrypted || !metadata.authenticated {
+        return Err(AppError::Authentication(
+            "authenticate message must be an authenticated (authcrypt) DIDComm envelope".into(),
+        ));
+    }
 
     // Canonical Trust-Task URI only. The legacy
     // `affinidi.com/atm/1.0/authenticate` alias was removed once the SDK's
@@ -340,10 +357,22 @@ pub async fn refresh(State(state): State<AppState>, body: String) -> Result<Resp
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(&body)
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+
+    // Same authcrypt gate as `/auth/` (FTL-28605): the refresh token is the
+    // primary credential, but `msg.from` is fed to `handle_refresh` as
+    // `signer_did` and bound to the session's DID. A plaintext DIDComm envelope
+    // yields an attacker-controlled `from` with `authenticated: false`, which
+    // would defeat that binding — so require an authenticated (authcrypt)
+    // envelope here too.
+    if !metadata.encrypted || !metadata.authenticated {
+        return Err(AppError::Authentication(
+            "refresh message must be an authenticated (authcrypt) DIDComm envelope".into(),
+        ));
+    }
 
     // Canonical Trust-Task URI only; the legacy
     // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.

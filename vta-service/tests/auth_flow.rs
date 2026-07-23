@@ -51,6 +51,18 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+/// POST a raw string body (the `/auth/` handler reads `body: String`
+/// directly, so the DIDComm envelope goes on the wire verbatim).
+fn post_raw(uri: &str, body: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "text/plain")
+        .header("x-forwarded-for", "203.0.113.1")
+        .body(Body::from(body))
+        .unwrap()
+}
+
 /// `POST /auth/challenge` returns a session_id + challenge nonce and
 /// persists the challenge so the matching `POST /auth/` can look it up.
 /// Requires an ACL entry — the challenge endpoint is gated on caller
@@ -103,6 +115,95 @@ async fn challenge_endpoint_issues_session_and_persists_it() {
     );
 }
 
+/// Regression pin for FTL-28605 (VTA-001): a remote unauthenticated
+/// attacker must not be able to obtain an admin JWT by POSTing a
+/// **plaintext** DIDComm message with a forged `from` field.
+///
+/// The attack: the challenge + session_id handed out by
+/// `/auth/challenge` are public, and `atm.unpack` parses a plaintext
+/// DIDComm envelope (a JSON with a `type` field but no JWE/JWS layer),
+/// returning an attacker-controlled `from` with `authenticated: false`.
+/// The `/auth/` handler previously discarded that metadata and trusted
+/// `msg.from` as the proven signer, so `from: <admin DID>` echoing the
+/// public challenge minted an admin token.
+///
+/// The fix rejects any envelope that isn't authenticated + encrypted
+/// (legitimate clients authcrypt via `pack_encrypted`). This test wires
+/// a real (offline) ATM so the request reaches `atm.unpack` and the new
+/// guard — *not* the "ATM not configured" short-circuit — then drives
+/// the exact exploit and asserts a 401 attributable to the guard.
+#[tokio::test]
+async fn plaintext_didcomm_with_forged_sender_is_rejected() {
+    use vta_service::test_support::{TestAppOptions, build_offline_atm, build_test_app_with};
+
+    let (router, ctx) = build_test_app_with(TestAppOptions {
+        atm: Some(build_offline_atm().await),
+        ..Default::default()
+    })
+    .await;
+
+    let admin_did = "did:key:z6MkForgedAdminTarget";
+    let entry = vti_common::acl::AclEntry::new(admin_did, vti_common::acl::Role::Admin, "test")
+        .with_created_at(1);
+    vti_common::acl::store_acl_entry(&ctx.acl_ks, &entry)
+        .await
+        .expect("seed admin ACL");
+
+    // Step 1 — obtain the public challenge + session_id for the target
+    // admin DID (no secret involved; the endpoint is pre-auth).
+    let (status, body) = request(
+        &router,
+        post_json("/auth/challenge", json!({"did": admin_did})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "challenge issuance: {body}");
+    let session_id = body["sessionId"].as_str().expect("sessionId");
+    let challenge = body["challenge"].as_str().expect("challenge");
+
+    // Step 2 — craft a plaintext DIDComm message forging `from` = admin
+    // DID. No encryption, no signature; `body` (not `payload`) means it
+    // is a DIDComm envelope, not a Trust Task, so it reaches `atm.unpack`.
+    let forged = json!({
+        "id": "attacker-supplied-id",
+        "typ": "application/didcomm-plain+json",
+        "type": "https://trusttasks.org/spec/auth/authenticate/0.1",
+        "from": admin_did,
+        "to": ["did:key:z6MkVtaServiceUnderTest"],
+        "body": { "challenge": challenge, "session_id": session_id },
+    });
+
+    let (status, body) = request(&router, post_raw("/auth/", forged.to_string())).await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a plaintext DIDComm message with a forged sender must be rejected, not issued an admin JWT; got body: {body}"
+    );
+    // The 401 must come from the authcrypt guard, not the ATM-not-configured
+    // short-circuit — otherwise the test would pass without exercising the fix.
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("authenticated (authcrypt) DIDComm envelope"),
+        "401 must be attributable to the plaintext/authcrypt guard, got: {body}"
+    );
+    assert!(
+        body.get("tokens").is_none() && body.get("access_token").is_none(),
+        "no token may be issued for a forged plaintext message: {body}"
+    );
+
+    // The challenge session must remain unconsumed (still in
+    // ChallengeSent), so the forged attempt didn't advance auth state.
+    let session = vti_common::auth::session::get_session(&ctx.sessions_ks, session_id)
+        .await
+        .expect("session lookup")
+        .expect("challenge session still present");
+    assert_eq!(
+        session.state,
+        vti_common::auth::session::SessionState::ChallengeSent,
+        "forged authenticate attempt must not transition the session to Authenticated"
+    );
+}
+
 /// `POST /auth/refresh` with a malformed refresh token returns 401, not
 /// 500. Pre-fix-bundle, a parse-failure on the refresh token bubbled
 /// up as an internal error; this test pins the user-facing 401 so a
@@ -147,6 +248,53 @@ async fn refresh_endpoint_rejects_unknown_token_with_401() {
         status,
         StatusCode::UNAUTHORIZED,
         "unknown refresh token must surface as 401"
+    );
+}
+
+/// Regression pin for FTL-28605 on the refresh path: a plaintext
+/// DIDComm `auth/refresh/0.1` envelope must be rejected by the same
+/// authcrypt guard as `/auth/`. The opaque refresh token is the primary
+/// credential, but the DIDComm path binds `msg.from` to the session DID
+/// inside `handle_refresh`; accepting a plaintext (forgeable) sender
+/// would defeat that binding, so the envelope must be authcrypt.
+///
+/// A DIDComm envelope carries `body` (not `payload`), so it falls past
+/// `try_refresh_trust_task` to `atm.unpack` and hits the guard. No valid
+/// refresh token is needed — the guard runs before the token is read.
+#[tokio::test]
+async fn plaintext_didcomm_refresh_is_rejected() {
+    use vta_service::test_support::{TestAppOptions, build_offline_atm, build_test_app_with};
+
+    let (router, _ctx) = build_test_app_with(TestAppOptions {
+        atm: Some(build_offline_atm().await),
+        ..Default::default()
+    })
+    .await;
+
+    let forged = json!({
+        "id": "attacker-supplied-id",
+        "typ": "application/didcomm-plain+json",
+        "type": "https://trusttasks.org/spec/auth/refresh/0.1",
+        "from": "did:key:z6MkForgedAdminTarget",
+        "to": ["did:key:z6MkVtaServiceUnderTest"],
+        "body": { "refresh_token": "stolen-or-guessed-token" },
+    });
+
+    let (status, body) = request(&router, post_raw("/auth/refresh", forged.to_string())).await;
+
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a plaintext DIDComm refresh must be rejected by the authcrypt guard; got: {body}"
+    );
+    let err = body["error"].as_str().unwrap_or_default();
+    assert!(
+        err.contains("authenticated (authcrypt) DIDComm envelope"),
+        "401 must be attributable to the refresh authcrypt guard, got: {body}"
+    );
+    assert!(
+        body.get("tokens").is_none(),
+        "no token may be issued for a forged plaintext refresh: {body}"
     );
 }
 

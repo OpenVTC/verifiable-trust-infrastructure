@@ -36,10 +36,21 @@ pub async fn unseal_secret(
     caller_did: &str,
     jwe: &str,
 ) -> Result<VaultSecret, UnsealError> {
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(jwe)
         .await
         .map_err(|e| UnsealError::UnpackFailed(e.to_string()))?;
+
+    // The envelope must actually be authcrypt: `unpack` also accepts plaintext
+    // and anoncrypt, either of which yields an unauthenticated (or absent)
+    // sender. Accepting those here would defeat the sender cross-check below
+    // (a plaintext `from` is attacker-controlled) and the "sealed" secret
+    // wouldn't be sealed at all. Require encrypted + authenticated.
+    if !metadata.encrypted || !metadata.authenticated {
+        return Err(UnsealError::UnpackFailed(
+            "sealed secret must be an authenticated (authcrypt) DIDComm envelope".to_string(),
+        ));
+    }
 
     // Cross-check: the authcrypt sender's DID must equal the authenticated
     // caller.
