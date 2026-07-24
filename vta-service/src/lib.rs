@@ -13,7 +13,12 @@ pub use vta_sdk::crypto_init;
 
 pub mod acl;
 pub mod acl_sweeper;
-pub mod audit;
+/// Structured audit logging (the `audit!` tracing macro + audit-keyspace
+/// persistence helpers), extracted to the `vta-audit` crate and re-exported so
+/// every `crate::audit::{record,record_consent,…}` path and `audit!(…)` call
+/// site is unchanged. The macro is `#[macro_export]`ed from `vta-audit`, so
+/// `use crate::audit::{self, audit}` resolves the same as before.
+pub use vta_audit as audit;
 pub mod auth;
 pub mod backup_bundle_store;
 pub mod backup_bundle_sweeper;
