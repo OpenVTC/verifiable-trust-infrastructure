@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
-use affinidi_messaging_core::{Inbound, MessageTransport, Protocol};
+use affinidi_messaging_core::{Inbound, MessageTransport, Protocol, ReceivedMessage};
 use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
 use affinidi_messaging_didcomm::Message;
 use affinidi_tdk::common::TDKSharedState;
@@ -267,8 +267,9 @@ impl InboundGate {
 /// `require_encrypted(true)` + `require_authenticated(true)` +
 /// `allow_anonymous_sender(false)` (framework `middleware/policy.rs::check`).
 ///
-/// `sender` is the transport-reported sender DID; `verified` is whether the
-/// transport *cryptographically authenticated* it. The only
+/// Reads the transport-reported flags off the inbound [`ReceivedMessage`]:
+/// `message.encrypted`, `message.sender`, and `message.verified` (whether the
+/// transport *cryptographically authenticated* the sender). The only
 /// dispatchable frame is an encrypted one whose sender is both present and
 /// verified — so a plaintext frame (`encrypted == false`), an anonymous read
 /// (`sender == None`), or an unverified/forged sender (`verified == false`)
@@ -278,15 +279,15 @@ impl InboundGate {
 /// sender, exactly as the removed middleware layer guaranteed. There is NO
 /// discovery exemption: the old policy layer required authcrypt for discovery
 /// too, so requiring it here is behaviour-preserving.
-fn inbound_gate(encrypted: bool, sender: Option<&str>, verified: bool) -> InboundGate {
-    if !encrypted {
+fn inbound_gate(message: &ReceivedMessage) -> InboundGate {
+    if !message.encrypted {
         return InboundGate::NotEncrypted;
     }
-    match sender {
+    match message.sender.as_deref() {
         // `Some` iff the sender is cryptographically authenticated;
         // absence collapses the framework's NotAuthenticated / AnonymousSender
         // / MissingSenderDid violations into one branch.
-        Some(did) if verified => InboundGate::Authenticated(did.to_string()),
+        Some(did) if message.verified => InboundGate::Authenticated(did.to_string()),
         _ => InboundGate::Unauthenticated,
     }
 }
@@ -315,11 +316,7 @@ async fn handle_didcomm(
     // `from` so every handler's `auth_from_message` / `ctx.sender_did` sees
     // only the proven sender (or `None`, which those reject).
     let plaintext_from = msg.from.clone();
-    let gate = inbound_gate(
-        inbound.message.encrypted,
-        inbound.message.sender.as_deref(),
-        inbound.message.verified,
-    );
+    let gate = inbound_gate(&inbound.message);
     let auth_sender = gate.authenticated_sender().map(str::to_string);
     msg.from = auth_sender.clone();
 
@@ -433,15 +430,30 @@ async fn handle_tsp(
 #[cfg(test)]
 mod tests {
     use super::{InboundGate, inbound_gate};
+    use affinidi_messaging_core::{Protocol, ReceivedMessage};
 
     const SENDER: &str = "did:key:z6MkSenderUnderTest";
+
+    /// A minimal inbound [`ReceivedMessage`] carrying the three flags the gate
+    /// reads; the rest are fixed filler (the gate ignores them).
+    fn received(encrypted: bool, sender: Option<&str>, verified: bool) -> ReceivedMessage {
+        ReceivedMessage {
+            id: "urn:uuid:test".to_string(),
+            sender: sender.map(str::to_string),
+            recipient: "did:key:z6MkRecipient".to_string(),
+            payload: Vec::new(),
+            protocol: Protocol::DIDComm,
+            verified,
+            encrypted,
+        }
+    }
 
     /// The happy path: an encrypted frame from a verified, non-anonymous
     /// sender is dispatched as that DID.
     #[test]
     fn encrypted_and_verified_sender_is_authenticated() {
         assert_eq!(
-            inbound_gate(true, Some(SENDER), true),
+            inbound_gate(&received(true, Some(SENDER), true)),
             InboundGate::Authenticated(SENDER.to_string()),
         );
     }
@@ -452,12 +464,12 @@ mod tests {
     #[test]
     fn unverified_sender_is_rejected() {
         assert_eq!(
-            inbound_gate(true, Some(SENDER), false),
+            inbound_gate(&received(true, Some(SENDER), false)),
             InboundGate::Unauthenticated,
         );
         // And it must NOT leak the forged DID as a dispatchable sender.
         assert_eq!(
-            inbound_gate(true, Some(SENDER), false).authenticated_sender(),
+            inbound_gate(&received(true, Some(SENDER), false)).authenticated_sender(),
             None,
         );
     }
@@ -468,11 +480,14 @@ mod tests {
     #[test]
     fn anonymous_encrypted_sender_is_rejected() {
         assert_eq!(
-            inbound_gate(true, None, false),
+            inbound_gate(&received(true, None, false)),
             InboundGate::Unauthenticated,
         );
         // Even a "verified" flag with no sender DID can't authenticate.
-        assert_eq!(inbound_gate(true, None, true), InboundGate::Unauthenticated);
+        assert_eq!(
+            inbound_gate(&received(true, None, true)),
+            InboundGate::Unauthenticated,
+        );
     }
 
     /// A plaintext frame (the exact forged-sender exploit shape: forged `from`,
@@ -481,18 +496,18 @@ mod tests {
     #[test]
     fn plaintext_frame_is_rejected() {
         assert_eq!(
-            inbound_gate(false, Some(SENDER), false),
+            inbound_gate(&received(false, Some(SENDER), false)),
             InboundGate::NotEncrypted,
         );
         // Not-encrypted dominates: even a "verified" plaintext sender is
         // refused (an unreachable flag combo in practice, but the gate must
         // never dispatch an unencrypted frame).
         assert_eq!(
-            inbound_gate(false, Some(SENDER), true),
+            inbound_gate(&received(false, Some(SENDER), true)),
             InboundGate::NotEncrypted,
         );
         assert_eq!(
-            inbound_gate(false, Some(SENDER), true).authenticated_sender(),
+            inbound_gate(&received(false, Some(SENDER), true)).authenticated_sender(),
             None,
         );
     }
