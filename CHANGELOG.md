@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### vta-keys 0.1.0 / vta-service 0.12.28 — extract key management into its own crate
+
+Third decomposition step (after `vta-keyspaces`+`vta-vault` in #780 and
+`vta-config` in #781). With config a crate, `keys` became a clean leaf — it
+reaches only into `vta-keyspaces`, `vta-config`, `vti-common`, `vti-secrets`,
+`vta-sdk`, never into any `vta-service` internal.
+
+* **New `vta-keys`** — master-seed storage, BIP-32 hierarchical key derivation,
+  AES-GCM key wrapping, imported-key handling, and the seed-store backend
+  selection (`create_seed_store`), ~2.8k lines extracted from
+  `vta-service/src/keys/`. Security-sensitive: seed material stays in
+  `zeroize`-guarded buffers. `vta-service` re-exports it as `crate::keys`, so
+  every `crate::keys::…` reference (36 files) is unchanged and
+  `vta_service::keys` keeps resolving for `vta-enclave`. The eight seed-store
+  backend features (`aws-secrets` … `keyring`, `tee`) each chain to the
+  matching `vta-keys/*` feature.
+
+* **Pure move, verified hard.** Files moved as git renames (history preserved).
+  Only two `pub(crate)` encoders (`encode_private_multibase` /
+  `encode_public_multibase`, used by `operations::keys`, `provision_integration`,
+  and `did_webvh`) become `pub` at the crate boundary — no other visibility or
+  logic change. 36 key tests run in the new crate; `operations::keys` (12) and
+  the `operations::backup` seed→derive→store→export→import→re-derive round-trip
+  (39) pass unchanged in `vta-service`; `vta-enclave` builds with `tee`, which
+  compiles the KMS seed-store path. `vta-service` drops ~2.8k source lines
+  (→ ~101.3k).
+
+* Unblocks the subsystem crates that need keys — `tee`, `backup`, `webvh` — for
+  subsequent phases.
+
 ### vta-config 0.1.0 / vta-service 0.12.27 — extract the VTA config types into their own crate
 
 Second step of decomposing `vta-service` into subsystem crates (after

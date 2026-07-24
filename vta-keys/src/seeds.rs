@@ -7,10 +7,10 @@ use sha2::Sha256;
 use tracing::{info, warn};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::error::AppError;
-use crate::keys::imported;
-use crate::keys::seed_store::SeedStore;
-use crate::store::KeyspaceHandle;
+use crate::imported;
+use crate::seed_store::SeedStore;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 const ACTIVE_SEED_ID_KEY: &str = "active_seed_id";
 const NONCE_LEN: usize = 12;
@@ -528,10 +528,10 @@ pub async fn reconcile_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use std::pin::Pin;
     use tokio::sync::Mutex;
     use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
 
     /// In-memory seed store whose `set` persists (so rotation is permitted).
     struct MockSeedStore(Mutex<Option<Vec<u8>>>);
@@ -563,7 +563,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let keys_ks = store.keyspace(vta_keyspaces::KEYS).unwrap();
         save_seed_record(
             &keys_ks,
             &SeedRecord {

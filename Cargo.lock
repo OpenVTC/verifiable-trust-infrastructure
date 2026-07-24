@@ -10131,6 +10131,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-keys"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "affinidi-crypto",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "bip39",
+ "chrono",
+ "ed25519-dalek",
+ "ed25519-dalek-bip32",
+ "hex",
+ "hkdf 0.13.0",
+ "hmac 0.13.0",
+ "multibase",
+ "p256",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "vta-config",
+ "vta-keyspaces",
+ "vta-sdk",
+ "vti-common",
+ "vti-secrets",
+ "x25519-dalek",
+ "zeroize",
+]
+
+[[package]]
 name = "vta-keyspaces"
 version = "0.1.0"
 
@@ -10237,7 +10271,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.27"
+version = "0.12.28"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10319,6 +10353,7 @@ dependencies = [
  "uuid",
  "vta-cli-common",
  "vta-config",
+ "vta-keys",
  "vta-keyspaces",
  "vta-sdk",
  "vta-service",

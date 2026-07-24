@@ -77,6 +77,7 @@ jobs:
             vti-secrets
             vta-keyspaces
             vta-config
+            vta-keys
             vta-vault
             vta-cli-common
             vtc-service

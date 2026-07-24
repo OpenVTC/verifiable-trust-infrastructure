@@ -4,11 +4,11 @@
 //! the shared `vti-secrets` crate (issue #501) so external integrations can
 //! reuse them without depending on `vta-service`. This module re-exports them
 //! and keeps the `&AppConfig`-taking [`create_seed_store`] wrapper, so every
-//! existing `crate::keys::seed_store::*` call site is unchanged — the
+//! existing `crate::seed_store::*` call site is unchanged — the
 //! extraction is behaviour-preserving.
 
-use crate::config::AppConfig;
-use crate::error::AppError;
+use vta_config::AppConfig;
+use vti_common::error::AppError;
 
 pub use vti_secrets::SeedStore;
 pub use vti_secrets::seed_store::PlaintextSeedStore;

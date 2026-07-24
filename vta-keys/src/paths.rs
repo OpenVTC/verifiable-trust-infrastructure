@@ -1,6 +1,6 @@
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
 use tracing::debug;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 use vti_common::store::counter;
 
 /// Construct a full derivation path from a base and index.
@@ -75,11 +75,11 @@ pub async fn allocate_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use std::collections::HashSet;
     use std::sync::Arc;
     use tempfile::TempDir;
     use vti_common::config::StoreConfig as VtiStoreConfig;
+    use vti_common::store::Store;
 
     /// Regression test for the BIP-32 derivation-path race: launching N
     /// concurrent `allocate_path` calls against the same base must
@@ -94,7 +94,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let keys_ks = Arc::new(store.keyspace(crate::keyspaces::KEYS).expect("keyspace"));
+        let keys_ks = Arc::new(store.keyspace(vta_keyspaces::KEYS).expect("keyspace"));
 
         let base = "m/26'/0'";
         let n = 64usize;
