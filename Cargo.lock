@@ -10103,6 +10103,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_ignored",
+ "tempfile",
+ "toml 1.1.3+spec-1.1.0",
+ "tracing",
+ "vti-common",
+ "vti-secrets",
+]
+
+[[package]]
 name = "vta-enclave"
 version = "0.7.6"
 dependencies = [
@@ -10224,7 +10237,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.26"
+version = "0.12.27"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10305,6 +10318,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
+ "vta-config",
  "vta-keyspaces",
  "vta-sdk",
  "vta-service",

@@ -1,6 +1,6 @@
-use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use vti_common::error::AppError;
 
 // Re-export shared config types
 pub use vti_common::config::{

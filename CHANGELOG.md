@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### vta-config 0.1.0 / vta-service 0.12.27 — extract the VTA config types into their own crate
+
+Second step of decomposing `vta-service` into subsystem crates (after
+`vta-keyspaces` + `vta-vault` in #780). Analysis of the next candidates
+(`tee`, `backup`) showed they are **not** clean leaves — both reach into
+`crate::config` (`AppConfig`) and `crate::keys`, which live in `vta-service`.
+So does every other remaining subsystem. The genuine next step is therefore to
+extract the shared core they depend on, beginning with config.
+
+* **New `vta-config`** — the `AppConfig` TOML shape and its sub-configs
+  (`PolicyConfig`; under the `tee` feature `TeeConfig` / `TeeKmsConfig` /
+  `TeeMode`), composing the shared config types from `vti-common` and
+  `vti-secrets`. A near-leaf: it depends only on `vti-common`, `vti-secrets`,
+  `serde`/`toml`/`tracing`. `vta-service` re-exports it as `crate::config`, so
+  every `crate::config::…` reference — 64 files — is unchanged, and
+  `vta_service::config` keeps resolving for `vta-enclave`. The `tee` feature
+  gates the same items it did before, wired to `vta-config/tee`.
+
+* **Pure move, no behaviour change.** `config.rs` moved as a git rename
+  (history preserved); its 7 tests run in the new crate. `vta-service` and
+  `vta-enclave` (which consumes `vta_service::config` and the `tee` feature)
+  build unchanged. `vta-service` drops by ~1k source lines.
+
+* This unblocks the rest of the decomposition: with config a crate, `vta-keys`
+  becomes extractable next (it needs only `AppConfig` from the core), and after
+  that `tee` / `backup` / `webvh`.
+
 ### vta-keyspaces 0.1.0 / vta-vault 0.1.0 / vta-service 0.12.26 — begin decomposing `vta-service` into subsystem crates
 
 `vta-service` is a 114k-line crate — 44% of the workspace and one compile unit,

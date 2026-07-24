@@ -17,7 +17,12 @@ pub mod audit;
 pub mod auth;
 pub mod backup_bundle_store;
 pub mod backup_bundle_sweeper;
-pub mod config;
+/// VTA configuration types, extracted to the `vta-config` crate. Re-exported as
+/// `crate::config` so every `crate::config::…` path stays unchanged, and so
+/// `vta_service::config` keeps resolving for `vta-enclave`. The `tee` cargo
+/// feature gates the same `TeeConfig` / `TeeMode` items, wired to
+/// `vta-config/tee` in `Cargo.toml`.
+pub use vta_config as config;
 pub mod consent_sweeper;
 pub mod contexts;
 pub mod deprecation;
