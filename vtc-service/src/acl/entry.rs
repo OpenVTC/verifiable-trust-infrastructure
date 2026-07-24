@@ -62,6 +62,26 @@ pub struct VtcAclEntry {
 }
 
 impl VtcAclEntry {
+    /// This entry's authority to **act**, decoded from `(role,
+    /// allowed_contexts)` through the shared rule.
+    ///
+    /// Use this rather than reading `allowed_contexts` directly: an empty list
+    /// means *unrestricted* for an admin and *nothing at all* for every other
+    /// role, so a bare `is_empty()` gets one of the two backwards. See
+    /// [`vti_common::acl::ActScope`] and
+    /// `docs/05-design-notes/acl-scope-semantics.md`.
+    pub fn act_scope(&self) -> vti_common::acl::ActScope {
+        vti_common::acl::act_scope_for(&crate::acl::as_vti_role(&self.role), &self.allowed_contexts)
+    }
+
+    /// Whether this entry is a **super-admin**: an admin whose scope is
+    /// unrestricted (community-wide).
+    pub fn is_super_admin(&self) -> bool {
+        self.act_scope().is_unrestricted()
+    }
+}
+
+impl VtcAclEntry {
     /// Returns `true` once this entry has passed its
     /// `expires_at`. Permanent entries (`None`) never expire.
     pub fn is_expired(&self, now_unix: u64) -> bool {
@@ -164,6 +184,42 @@ mod tests {
         let parsed = decode(&bytes).unwrap();
         assert_eq!(parsed.role, VtcRole::Custom("editor".into()));
         assert_eq!(parsed, entry);
+    }
+
+    /// The VTA and the VTC must decode an empty scope set identically, or the
+    /// two services disagree on what an entry means. Admin + empty is
+    /// community-wide; every other role + empty acts nowhere.
+    #[test]
+    fn act_scope_decodes_empty_scopes_by_role() {
+        let mut admin = sample_entry(None);
+        admin.role = VtcRole::Admin;
+        assert_eq!(admin.act_scope(), vti_common::acl::ActScope::All);
+        assert!(admin.is_super_admin());
+        assert!(admin.act_scope().covers("anything"));
+
+        for role in [VtcRole::Member, VtcRole::Custom("editor".into())] {
+            let mut e = sample_entry(None);
+            e.role = role.clone();
+            assert_eq!(
+                e.act_scope(),
+                vti_common::acl::ActScope::None,
+                "{role:?} with no scopes acts nowhere"
+            );
+            assert!(!e.is_super_admin());
+            assert!(!e.act_scope().covers("anything"));
+        }
+    }
+
+    /// A scoped entry covers its subtree, matching the VTA and the VTC's own
+    /// hierarchy-aware `acl/list` filter.
+    #[test]
+    fn act_scope_is_subtree_aware() {
+        let mut e = sample_entry(None);
+        e.allowed_contexts = vec!["parent".into()];
+        assert!(e.act_scope().covers("parent"));
+        assert!(e.act_scope().covers("parent/child"));
+        assert!(!e.act_scope().covers("parentless"));
+        assert!(!e.is_super_admin(), "a scoped entry is never a super-admin");
     }
 
     fn sample_entry(expires_at: Option<u64>) -> VtcAclEntry {

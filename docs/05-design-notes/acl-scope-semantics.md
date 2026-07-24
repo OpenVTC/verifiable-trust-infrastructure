@@ -1,7 +1,6 @@
 # ACL scope semantics — the two axes
 
-**Status:** implemented for the VTA. The VTC's parallel ACL surface still
-decodes by hand — see [Remaining work](#remaining-work).
+**Status:** implemented (VTA + VTC).
 
 An ACL entry answers two independent questions, and they must never be
 conflated:
@@ -42,6 +41,10 @@ That decode is `vti_common::acl::act_scope_for`, reached in practice via
 `AclEntry::act_scope()` / `AuthClaims::act_scope()`. Storage, JWT claims, and
 every wire body are unchanged — this is a read-path abstraction, not a
 migration.
+
+The VTC shares the same decode: `VtcAclEntry::act_scope()` maps its own role
+enum through `as_vti_role` and calls the same `act_scope_for`, so the two
+services cannot disagree about what an empty scope set means.
 
 The type and its `covers()` predicate live in `vta-sdk` beside `ApproveScope`,
 so the two axes read as one model. The *decode* stays in `vti-common` because
@@ -126,11 +129,6 @@ Both are flagged where they occur.
 - **The two conflations above**, each as its own reviewed change. Note the
   first one interacts with the read/manage split: a context admin still cannot
   *create* the least-privilege approver that they can now *audit*.
-- **The VTC.** `vtc-service` has a parallel ACL surface with the same idiom
-  (`routes/acl.rs`, `acl_cli.rs`). It needs its own `act_scope()` accessor
-  because `VtcAclEntry` is a distinct type with its own role enum, mapped via
-  `as_vti_role`. Until then the two services can still drift on what an empty
-  scope set means.
 - **`reader + All`** ("may read every context, admin nowhere") is expressible
   in the type but unreachable through the decode table, since `All` requires
   `Role::Admin`. If it is ever wanted it needs a stored representation — i.e.

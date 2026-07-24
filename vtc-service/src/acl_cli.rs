@@ -19,7 +19,8 @@ use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::acl::{
-    VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries, store_acl_entry,
+    ActScope, VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, list_acl_entries,
+    store_acl_entry,
 };
 use crate::config::AppConfig;
 use crate::store::Store;
@@ -70,10 +71,14 @@ pub async fn run_acl_list(config_path: Option<PathBuf>) -> CliResult {
             Some(t) if t <= now => "EXPIRED".to_string(),
             Some(t) => format!("{}s", t - now),
         };
-        let contexts = if e.allowed_contexts.is_empty() {
-            String::new()
-        } else {
-            format!("[{}]", e.allowed_contexts.join(","))
+        // Decode through `ActScope` rather than testing the list: an empty
+        // scope set means community-wide for an admin and *nothing at all* for
+        // every other role, and rendering both as blank left the two looking
+        // identical on an operator display. Scoped entries keep the bracketed
+        // form.
+        let contexts = match e.act_scope() {
+            ActScope::Contexts(cs) => format!("[{}]", cs.join(",")),
+            other => other.to_string(),
         };
         let did = shorten_did(&e.did);
         if show_names {
