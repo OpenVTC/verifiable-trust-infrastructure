@@ -236,12 +236,6 @@ async fn authenticate_and_mint(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // Reject non-authcrypt envelopes AND bind the plaintext `from` to the
-    // cryptographically-authenticated sender key. `atm.unpack` proves
-    // the `skid` sender key (surfaced as `encrypted_from_kid`) but never checks
-    // it equals the inner `from`; an attacker can authcrypt with their own key
-    // (both flags true) while claiming a victim's `from`. The returned DID is
-    // the proven signer that `handle_authenticate` binds to `session.did`.
     let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
 
@@ -777,10 +771,8 @@ pub async fn refresh(
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
 
-    // Same authcrypt + sender-binding gate as `/auth/`: the refresh
-    // token is the primary credential, but `msg.from` is fed to `handle_refresh`
-    // as `signer_did` and bound to the session's DID. Bind it to the proven
-    // authcrypt sender key so a forged/plaintext `from` can't defeat that.
+    // The opaque refresh token is the credential, but `handle_refresh` still
+    // binds `msg.from` to the session DID — so require the same authcrypt gate.
     let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
