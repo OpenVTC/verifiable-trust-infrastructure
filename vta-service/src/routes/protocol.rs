@@ -1355,6 +1355,7 @@ async fn try_run_first_enable_handshake(
     use crate::messaging::transient_handshake::{
         TransientHandshakeContext, run_transient_handshake,
     };
+    use affinidi_tdk::common::config::TDKConfig;
     use affinidi_tdk::secrets_resolver::SecretsResolver;
 
     let Some(secrets_resolver) = state.secrets_resolver.as_ref() else {
@@ -1385,11 +1386,36 @@ async fn try_run_first_enable_handshake(
         return Ok(());
     }
 
+    // The mediator handshake proves control of the VTA's OWN did:webvh by
+    // resolving it. For a serverless did:webvh the sidecar cannot fetch the
+    // document (it is not hosted anywhere), so resolution succeeds only from
+    // the resolver's local cache. That cache is seeded at boot but webvh is a
+    // mutable method and the entry expires after the cache TTL. Re-seed it now
+    // so enable works regardless of how long the VTA has been running.
+    #[cfg(feature = "webvh")]
+    {
+        let mut reseed = resolver.clone();
+        crate::server::preload_self_did_document(&mut reseed, &vta_did, Some(&state.webvh_ks))
+            .await;
+    }
+
+    // The transient handshake spins up its own TDK/ATM to trust-ping the new
+    // mediator. It MUST resolve DIDs through the VTA's own (network-mode)
+    // resolver: in a TEE that resolver is bridged to a parent-side sidecar,
+    // whereas a default TDK resolver resolves locally and has no enclave
+    // egress — so resolving the mediator DID would fail with a network error.
+    // Mirrors the resolver wiring in `messaging::service` and the auth ATM.
+    let tdk_config = TDKConfig::builder()
+        .with_did_resolver(resolver.clone())
+        .with_load_environment(false)
+        .build()
+        .ok();
+
     run_transient_handshake(
         TransientHandshakeContext {
             vta_did,
             secrets,
-            tdk_config: None,
+            tdk_config,
         },
         resolver,
         &state.telemetry,

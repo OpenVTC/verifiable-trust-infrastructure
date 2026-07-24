@@ -1819,7 +1819,7 @@ async fn init_auth(
 /// Best-effort and fail-safe: if local state is missing or malformed we warn and
 /// keep the last-known-good cache entry (never evict, never poison), falling back
 /// to normal resolver behaviour where none exists.
-async fn preload_self_did_document(
+pub(crate) async fn preload_self_did_document(
     did_resolver: &mut DIDCacheClient,
     vta_did: &str,
     webvh_ks: Option<&KeyspaceHandle>,
