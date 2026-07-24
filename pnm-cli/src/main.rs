@@ -62,6 +62,7 @@ async fn main() {
     // handlers — picks up the setting without threading a bool through
     // every signature.
     vta_cli_common::render::set_full_display(cli.full_display);
+    vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
     if cli.json {
         vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
     }
@@ -287,6 +288,12 @@ async fn main() {
         Commands::AuthCredential { command } => {
             commands::auth_credential::run(&client, command).await
         }
+        // `agent-names` is intercepted here rather than routed through the
+        // legacy `WebvhCommands` bridge below — that enum is slated for
+        // removal, so new surfaces should not grow it.
+        Commands::DidMgmt {
+            command: cli::DidMgmtCommands::AgentNames { command },
+        } => commands::agent_names::run(&client, command).await,
         Commands::DidMgmt { command } => commands::webvh::run(&client, command.into()).await,
         Commands::Audit { command } => commands::audit::run(&client, command).await,
         Commands::Backup { command } => commands::backup::run(&client, command).await,

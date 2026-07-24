@@ -40,6 +40,11 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
         };
         store_acl_entry(&acl_ks, &entry).await?;
         eprintln!("ACL entry created: {} (admin)", did);
+        // The label was already being stored and never shown, so an operator
+        // who named the key had no confirmation it took.
+        if let Some(ref label) = args.label {
+            eprintln!("Name: {label}");
+        }
     }
 
     // Persist all writes

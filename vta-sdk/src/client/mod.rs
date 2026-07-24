@@ -1166,24 +1166,25 @@ mod tests {
     /// error envelope. Returning it as success made callers deserialise an error
     /// object as a result and report a missing field, hiding the real cause.
     ///
-    /// This is the exact envelope seen from `list_agent_names`.
+    /// Shaped after a rejected `set_agent_name`, where the actionable detail
+    /// lives only in the message — the caller cannot act on `internalError`
+    /// alone, but "that name is taken" tells them exactly what to do next.
     #[test]
     fn extract_surfaces_an_error_envelope_inside_the_payload() {
         let doc = serde_json::json!({
-            "id": "urn:uuid:1", "type": "spec/vta/webvh/agent-name/list/1.0",
+            "id": "urn:uuid:1", "type": "spec/vta/webvh/agent-name/set/1.0",
             "payload": {
                 "code": "internalError",
-                "message": "list_agent_names: validation error: agent-name operations \
-                            are not supported over the DIDComm transport; the hosting \
-                            server exposes them only via REST",
-                "retryable": true,
+                "message": "set_agent_name: name_taken: `ops` is already bound on \
+                            webvh.storm.ws",
+                "retryable": false,
             },
         });
         let err = VtaClient::extract_trust_task_payload(doc).expect_err("must be an error");
         let msg = err.to_string();
         assert!(msg.contains("internalError"), "{msg}");
         assert!(
-            msg.contains("not supported over the DIDComm transport"),
+            msg.contains("name_taken"),
             "the actionable part of the message must survive: {msg}"
         );
     }

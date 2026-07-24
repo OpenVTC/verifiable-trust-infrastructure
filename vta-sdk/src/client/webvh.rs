@@ -8,6 +8,8 @@ use crate::error::VtaError;
 
 #[cfg(feature = "client")]
 use crate::protocols::did_management;
+#[cfg(feature = "client")]
+use crate::protocols::did_management::agent_name;
 
 #[cfg(feature = "client")]
 impl VtaClient {
@@ -276,5 +278,144 @@ impl VtaClient {
             },
         )
         .await
+    }
+
+    // ── Agent names ───────────────────────────────────────────────────
+    //
+    // An agent name is a human-memorable `domain/@name` that resolves to a
+    // DID. Binding one edits the DID document's `alsoKnownAs` and republishes
+    // the signed log — that claim is the *sole* authorisation for the hosting
+    // server's `/@name` redirect, which is why every verb here goes through
+    // the VTA rather than talking to the host directly: only the VTA can sign.
+    //
+    // These are trust-task-only by design — there is no bespoke REST route,
+    // and none is needed: `dispatch_trust_task` posts to `/api/trust-tasks`
+    // on a REST transport and rides the DIDComm envelope otherwise, so both
+    // transports reach the same handler.
+
+    /// Bind `name` to `did`, adding `https://{domain}/@{name}` to the
+    /// document's `alsoKnownAs` and republishing.
+    ///
+    /// The hosting server refuses a binding whose document does not claim it,
+    /// so a success here means the claim is live.
+    pub async fn set_agent_name(
+        &self,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameResultBody, VtaError> {
+        self.agent_name_verb(crate::trust_tasks::TASK_WEBVH_AGENT_NAME_SET_1_0, did, name)
+            .await
+    }
+
+    /// Release `name` entirely, dropping the claim from the document.
+    ///
+    /// Distinct from [`disable_agent_name`](Self::disable_agent_name): remove
+    /// frees the name for anyone else to claim, disable parks it so it stops
+    /// resolving while staying reserved to this DID.
+    pub async fn remove_agent_name(
+        &self,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameResultBody, VtaError> {
+        self.agent_name_verb(
+            crate::trust_tasks::TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
+            did,
+            name,
+        )
+        .await
+    }
+
+    /// Stop `name` resolving while keeping it reserved to this DID.
+    ///
+    /// Drops the claim from the document — the reservation lives in the
+    /// hosting server's registry, not in the DID.
+    pub async fn disable_agent_name(
+        &self,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameResultBody, VtaError> {
+        self.agent_name_verb(
+            crate::trust_tasks::TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
+            did,
+            name,
+        )
+        .await
+    }
+
+    /// Bring a parked name back into service, re-adding its claim.
+    pub async fn enable_agent_name(
+        &self,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameResultBody, VtaError> {
+        self.agent_name_verb(
+            crate::trust_tasks::TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
+            did,
+            name,
+        )
+        .await
+    }
+
+    /// Every name bound to `did`, including parked ones.
+    ///
+    /// Read live from the hosting control plane's registry, which is
+    /// authoritative — a parked name is absent from the DID document by
+    /// design, so the document alone cannot answer this.
+    pub async fn list_agent_names(
+        &self,
+        did: &str,
+    ) -> Result<agent_name::AgentNameListResultBody, VtaError> {
+        self.dispatch_trust_task(
+            crate::trust_tasks::TASK_WEBVH_AGENT_NAME_LIST_1_0,
+            serde_json::json!({ "did": did }),
+            30,
+        )
+        .await
+        .and_then(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| VtaError::Protocol(format!("agent-name list decode: {e}")))
+        })
+    }
+
+    /// Whether `name` is free on the domain `did` is hosted under.
+    ///
+    /// Advisory only — the name can be taken between this call and a
+    /// [`set_agent_name`](Self::set_agent_name), which is why `set` reports
+    /// its own conflict rather than relying on a prior check.
+    pub async fn check_agent_name(
+        &self,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameCheckResultBody, VtaError> {
+        self.dispatch_trust_task(
+            crate::trust_tasks::TASK_WEBVH_AGENT_NAME_CHECK_1_0,
+            serde_json::json!({ "did": did, "name": name }),
+            30,
+        )
+        .await
+        .and_then(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| VtaError::Protocol(format!("agent-name check decode: {e}")))
+        })
+    }
+
+    /// The four mutating verbs share a body and differ only by task URI.
+    async fn agent_name_verb(
+        &self,
+        task_uri: &str,
+        did: &str,
+        name: &str,
+    ) -> Result<agent_name::AgentNameResultBody, VtaError> {
+        // Republishing a signed log is slower than a plain read; the DID
+        // document is rebuilt, re-signed and pushed to the host.
+        let payload = self
+            .dispatch_trust_task(
+                task_uri,
+                serde_json::json!({ "did": did, "name": name }),
+                60,
+            )
+            .await?;
+        serde_json::from_value(payload)
+            .map_err(|e| VtaError::Protocol(format!("agent-name response decode: {e}")))
     }
 }

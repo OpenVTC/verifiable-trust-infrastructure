@@ -1268,3 +1268,91 @@ mod agent_name_tests {
         );
     }
 }
+
+/// Cross-repo contract: what we write into `alsoKnownAs` must be what the
+/// DID-hosting server can read back out of the published log.
+///
+/// The host does not pattern-match our string. It parses each `alsoKnownAs`
+/// entry with `agent_names::AgentName::parse` and keeps the ones whose
+/// `authority()` equals the domain it is serving
+/// (`did-hosting-common::did_ops::extract_agent_names`). If our emitted form
+/// ever stops satisfying that parser, nothing errors anywhere — the claim is
+/// simply never indexed and the name silently 404s. So these tests use the
+/// host's own parser rather than re-asserting our format against itself.
+#[cfg(test)]
+mod agent_name_host_contract {
+    use super::edit_agent_name;
+
+    const DOMAIN: &str = "webvh.storm.ws";
+
+    /// Pull the `alsoKnownAs` entries out of a document, as the host would.
+    fn claims(doc: &serde_json::Value) -> Vec<String> {
+        doc.get("alsoKnownAs")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn what_we_write_is_what_the_host_parses() {
+        let mut doc = serde_json::json!({});
+        edit_agent_name(&mut doc, DOMAIN, "ops", true);
+
+        let entries = claims(&doc);
+        assert_eq!(entries.len(), 1, "expected exactly one claim: {entries:?}");
+
+        let parsed = agent_names::AgentName::parse(&entries[0])
+            .expect("the host must be able to parse what we emit");
+        assert_eq!(
+            parsed.authority(),
+            DOMAIN,
+            "the host keeps only entries whose authority matches the domain \
+             it serves; a mismatch means the name is never indexed"
+        );
+        assert_eq!(parsed.local_name(), "ops");
+    }
+
+    #[test]
+    fn a_removed_claim_leaves_nothing_for_the_host_to_index() {
+        let mut doc = serde_json::json!({});
+        edit_agent_name(&mut doc, DOMAIN, "ops", true);
+        edit_agent_name(&mut doc, DOMAIN, "ops", false);
+        assert!(
+            claims(&doc).is_empty(),
+            "a released name must leave no claim behind — the host rebuilds \
+             its index from the document on every publish"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_also_known_as_entry_survives_and_is_ignored() {
+        // `alsoKnownAs` legitimately holds other identifier types; the host
+        // skips what it cannot parse rather than erroring, and so must we.
+        let mut doc = serde_json::json!({ "alsoKnownAs": ["did:web:other.example"] });
+        edit_agent_name(&mut doc, DOMAIN, "ops", true);
+        let entries = claims(&doc);
+        assert!(entries.iter().any(|e| e == "did:web:other.example"));
+        assert_eq!(entries.len(), 2);
+
+        edit_agent_name(&mut doc, DOMAIN, "ops", false);
+        assert_eq!(
+            claims(&doc),
+            vec!["did:web:other.example".to_string()],
+            "removing our name must not disturb identifiers we do not own"
+        );
+    }
+
+    #[test]
+    fn a_name_on_another_domain_is_not_ours_to_serve() {
+        // The host drops entries whose authority is not the domain it serves.
+        // Confirms our writer never emits one that would be silently dropped.
+        let mut doc = serde_json::json!({});
+        edit_agent_name(&mut doc, DOMAIN, "ops", true);
+        let parsed = agent_names::AgentName::parse(&claims(&doc)[0]).unwrap();
+        assert_ne!(parsed.authority(), "evil.example");
+    }
+}

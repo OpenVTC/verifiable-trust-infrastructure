@@ -49,6 +49,15 @@ struct Cli {
     #[arg(long, global = true)]
     full_display: bool,
 
+    /// Resolve verified agent names for the DIDs shown.
+    ///
+    /// Off by default because it costs network: one DID resolution plus an
+    /// outbound fetch per name a document claims, per DID on screen. A claim
+    /// that does not round-trip back to its DID is marked `[unverified]`
+    /// rather than believed — `alsoKnownAs` alone is self-asserted.
+    #[arg(long, global = true)]
+    resolve_agent_names: bool,
+
     /// Emit list output as JSON instead of a human-readable table.
     /// Use this for automation: `cnm acl list --json | jq …`.
     #[arg(long, global = true)]
@@ -866,6 +875,7 @@ async fn main() {
     // Propagate --full-display to the shared render module so list
     // commands from vta-cli-common pick it up.
     vta_cli_common::render::set_full_display(cli.full_display);
+    vta_cli_common::display::set_resolve_agent_names(cli.resolve_agent_names);
     if cli.json {
         vta_cli_common::render::set_output_format(vta_cli_common::render::OutputFormat::Json);
     }

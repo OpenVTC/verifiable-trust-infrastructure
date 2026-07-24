@@ -2,13 +2,18 @@
 name = "vta-cli-common"
 description = "Shared CLI command handlers and rendering helpers for VTA CLIs"
 readme = "README.md"
-version = "0.10.12"
+version = "0.10.13"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[features]
+# Verified agent-name resolution behind `--resolve-agent-names`.
+# Forwarded to `vta-sdk`; off by default because a lookup costs network.
+agent-names = ["vta-sdk/agent-names"]
 
 [dependencies]
 vta-sdk = { path = "../vta-sdk", version = "0.19", features = [

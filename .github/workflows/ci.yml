@@ -40,6 +40,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `cargo test --workspace` builds a test binary for every crate with
+      # full debuginfo, and the total (target/ plus the linker's scratch)
+      # runs the ubuntu-latest runner's ~14 GB of free root disk right to the
+      # edge. It began failing intermittently with "No space left on device"
+      # while linking the largest binary (libvta_service). The preinstalled
+      # Android SDK, .NET and GHC toolchains are ~20 GB we never use, so
+      # reclaiming them buys comfortable headroom. Test-only: no other job
+      # links the whole workspace at once, so none needs this.
+      # NB: do NOT remove $AGENT_TOOLSDIRECTORY (/opt/hostedtoolcache) — it
+      # holds the runner's node, and vtc-service's build.rs shells out to
+      # `npm run build` for the admin UI. Android + .NET + GHC are ~13 GB we
+      # never touch and are safe to reclaim.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
 

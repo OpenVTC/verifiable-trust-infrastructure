@@ -9,7 +9,7 @@ use vti_common::acl::{Role, act_scope_for};
 
 use crate::display::{
     NAME_HEADER, NameBook, NameSource, book_from_acl, did_cell, full_display_pairs, name_cell,
-    named_did_cell,
+    named_did_cell, resolve_agent_names_into,
 };
 use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
 
@@ -92,6 +92,15 @@ pub async fn cmd_acl_list(
     // always holds an ACL entry of their own.
     let mut book = NameBook::new();
     book_from_acl(&mut book, &resp.entries);
+    // Opt-in, and only over the DIDs actually on screen — including the
+    // `created_by` column, which is where an unfamiliar DID most often shows up.
+    resolve_agent_names_into(
+        &mut book,
+        resp.entries
+            .iter()
+            .flat_map(|e| [e.did.as_str(), e.created_by.as_str()]),
+    )
+    .await;
 
     if is_full_display() {
         print_full_list_title("ACL Entries", resp.entries.len());
@@ -188,6 +197,7 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
 
     let mut book = NameBook::new();
     book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
+    resolve_agent_names_into(&mut book, [entry.did.as_str()]).await;
 
     // Name above DID, DID in full — a single-entry view is where an operator
     // copies an identifier from.

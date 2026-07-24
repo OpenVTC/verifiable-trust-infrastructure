@@ -19,6 +19,8 @@
 //! listing also names the `Created By` column, because a granting admin is
 //! very often another entry's subject. No lookup, no round trip.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ratatui::{
     style::{Color, Style},
     widgets::Cell,
@@ -117,6 +119,57 @@ pub fn full_display_pairs(book: &NameBook, did: &str) -> Vec<(&'static str, Stri
     }
 }
 
+// ── Agent-name resolution toggle ────────────────────────────────────
+//
+// Global `--resolve-agent-names`. Off by default: a verified lookup is a DID
+// resolution plus an outbound HTTPS fetch per claimed name, per DID on
+// screen, against hosts we do not control. On a fifty-row `acl list` that is
+// fifty fan-outs, so the operator asks for it rather than paying for it by
+// accident.
+
+static RESOLVE_AGENT_NAMES: AtomicBool = AtomicBool::new(false);
+
+/// Register the operator's `--resolve-agent-names` choice. Called once at
+/// CLI startup.
+pub fn set_resolve_agent_names(enabled: bool) {
+    RESOLVE_AGENT_NAMES.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether agent-name resolution was requested.
+#[must_use]
+pub fn resolve_agent_names() -> bool {
+    RESOLVE_AGENT_NAMES.load(Ordering::Relaxed)
+}
+
+/// Add verified agent names to `book` for each DID in `dids`.
+///
+/// No-op unless `--resolve-agent-names` was passed. Each name is
+/// round-tripped before being trusted (see
+/// [`vta_sdk::display_name::agent_name`]); a claim that does not lead back to
+/// its DID still lands in the book, but as `AgentName { verified: false }`,
+/// which ranks below every local label and renders tagged.
+///
+/// Failures are swallowed per DID — an unreachable name server degrades that
+/// row to its local name or bare DID rather than failing the command.
+#[cfg(feature = "agent-names")]
+pub async fn resolve_agent_names_into<'a>(
+    book: &mut NameBook,
+    dids: impl IntoIterator<Item = &'a str>,
+) {
+    if !resolve_agent_names() {
+        return;
+    }
+    vta_sdk::display_name::agent_name::fill_book(book, dids).await;
+}
+
+/// Without the `agent-names` feature there is nothing to resolve.
+#[cfg(not(feature = "agent-names"))]
+pub async fn resolve_agent_names_into<'a>(
+    _book: &mut NameBook,
+    _dids: impl IntoIterator<Item = &'a str>,
+) {
+}
+
 // ── Book builders ───────────────────────────────────────────────────
 //
 // Each takes a response the command already fetched. Adding one here is
@@ -136,12 +189,30 @@ pub fn book_from_acl(book: &mut NameBook, entries: &[vta_sdk::client::AclEntryRe
 }
 
 /// Fill `book` from a context listing: each context's `name` names its DID.
-pub fn book_from_contexts(book: &mut NameBook, contexts: &[vta_sdk::contexts::ContextRecord]) {
+pub fn book_from_contexts(book: &mut NameBook, contexts: &[vta_sdk::client::ContextResponse]) {
     for ctx in contexts {
         if let Some(did) = &ctx.did {
             book.insert(did, DisplayName::new(&ctx.name, NameSource::ContextName));
         }
     }
+}
+
+/// Best-effort book from the two listings that name DIDs on a VTA: the ACL
+/// (subject labels) and the contexts (each context's name, for its own DID).
+///
+/// For surfaces whose own response carries no name — hosted `did:webvh`
+/// records, sealed-bundle banners, mediator tables. Both fetches are
+/// swallowed on failure: naming is decoration, and a caller who may read
+/// their own DIDs but not the ACL must still get their output.
+pub async fn book_from_vta(client: &vta_sdk::client::VtaClient) -> NameBook {
+    let mut book = NameBook::new();
+    if let Ok(acl) = client.list_acl(None).await {
+        book_from_acl(&mut book, &acl.entries);
+    }
+    if let Ok(ctxs) = client.list_contexts().await {
+        book_from_contexts(&mut book, &ctxs.contexts);
+    }
+    book
 }
 
 /// Fill `book` from a webvh hosting-server listing.

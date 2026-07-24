@@ -102,3 +102,107 @@ pub struct AgentNameCheckResultBody {
     /// but well-formed, which is distinct from a malformed name (an error).
     pub reserved: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Wire shapes crossing to the DID-hosting control plane. Casing drift is
+    // this workspace's recurring defect class — an `allowed_contexts` that
+    // should have been `allowedContexts` once silently minted a super-admin
+    // (#656/#658) — so these pin the serialised key names, not just that the
+    // types round-trip through themselves.
+
+    #[test]
+    fn request_bodies_serialise_camel_case() {
+        let v = serde_json::to_value(AgentNameBody {
+            did: "did:webvh:QmScid:example.com".into(),
+            name: "ops".into(),
+        })
+        .unwrap();
+        assert_eq!(v["did"], "did:webvh:QmScid:example.com");
+        assert_eq!(v["name"], "ops");
+
+        let v = serde_json::to_value(AgentNameCheckBody {
+            did: "did:webvh:QmScid:example.com".into(),
+            name: "ops".into(),
+        })
+        .unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 2, "no stray fields");
+    }
+
+    #[test]
+    fn created_at_is_camel_case_on_the_wire() {
+        // The one multi-word field in the family, and therefore the only one
+        // where a missing `rename_all` would show up.
+        let v = serde_json::to_value(AgentNameEntry {
+            name: "ops".into(),
+            enabled: true,
+            created_at: 1_700_000_000,
+        })
+        .unwrap();
+        assert!(
+            v.get("createdAt").is_some(),
+            "expected camelCase `createdAt`, got {v}"
+        );
+        assert!(v.get("created_at").is_none(), "snake_case leaked: {v}");
+    }
+
+    #[test]
+    fn a_parked_entry_deserialises_from_the_host_shape() {
+        // Exactly what did-hosting emits in `agentNames`.
+        let entry: AgentNameEntry = serde_json::from_value(serde_json::json!({
+            "name": "ops",
+            "enabled": false,
+            "createdAt": 1_700_000_000_u64,
+        }))
+        .unwrap();
+        assert!(
+            !entry.enabled,
+            "parked must survive the round trip — it is the difference \
+             between a name being reserved and being free"
+        );
+    }
+
+    #[test]
+    fn check_result_distinguishes_reserved_from_taken() {
+        // Three distinct outcomes share two booleans, so the combination
+        // carries the meaning: reserved names are unavailable but well-formed.
+        let reserved: AgentNameCheckResultBody = serde_json::from_value(serde_json::json!({
+            "name": "admin", "domain": "example.com",
+            "available": false, "reserved": true,
+        }))
+        .unwrap();
+        assert!(reserved.reserved && !reserved.available);
+
+        let taken: AgentNameCheckResultBody = serde_json::from_value(serde_json::json!({
+            "name": "ops", "domain": "example.com",
+            "available": false, "reserved": false,
+        }))
+        .unwrap();
+        assert!(!taken.reserved && !taken.available);
+    }
+
+    #[test]
+    fn list_result_carries_an_empty_registry() {
+        // A DID with no names is a normal answer, not an error — the DIDComm
+        // and REST read paths both have to render it the same way.
+        let r: AgentNameListResultBody = serde_json::from_value(serde_json::json!({
+            "did": "did:webvh:QmScid:example.com",
+            "names": [],
+        }))
+        .unwrap();
+        assert!(r.names.is_empty());
+    }
+
+    #[test]
+    fn result_body_reports_whether_the_name_resolves() {
+        let v = serde_json::to_value(AgentNameResultBody {
+            did: "did:webvh:QmScid:example.com".into(),
+            name: "ops".into(),
+            enabled: false,
+        })
+        .unwrap();
+        assert_eq!(v["enabled"], false);
+    }
+}
