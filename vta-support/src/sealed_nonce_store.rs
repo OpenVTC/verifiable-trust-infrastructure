@@ -17,7 +17,7 @@ use std::pin::Pin;
 use tokio::sync::Mutex;
 use vta_sdk::sealed_transfer::{NonceStore, SealedTransferError};
 
-use crate::store::KeyspaceHandle;
+use vti_common::store::KeyspaceHandle;
 
 const KEY_PREFIX: &str = "sealed-nonce:";
 

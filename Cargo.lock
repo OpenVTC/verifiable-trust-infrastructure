@@ -10271,7 +10271,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.28"
+version = "0.12.29"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10357,6 +10357,7 @@ dependencies = [
  "vta-keyspaces",
  "vta-sdk",
  "vta-service",
+ "vta-support",
  "vta-vault",
  "vti-common",
  "vti-secrets",
@@ -10366,6 +10367,26 @@ dependencies = [
  "wiremock",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "vta-support"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ed25519-dalek",
+ "hex",
+ "multibase",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vta-config",
+ "vta-keyspaces",
+ "vta-sdk",
+ "vti-common",
 ]
 
 [[package]]

@@ -24,7 +24,11 @@ pub mod backup_bundle_sweeper;
 /// `vta-config/tee` in `Cargo.toml`.
 pub use vta_config as config;
 pub mod consent_sweeper;
-pub mod contexts;
+/// Shared mid-layer services (trust-context store, sealed-transfer seal
+/// helper, anti-replay nonce store), extracted to the `vta-support` crate and
+/// re-exported so every `crate::{contexts,seal,sealed_nonce_store}::…` path is
+/// unchanged.
+pub use vta_support::contexts;
 pub mod deprecation;
 pub mod did_templates;
 pub mod didcomm_bridge;
@@ -45,8 +49,8 @@ pub mod operations;
 pub mod policy;
 #[cfg(feature = "rest")]
 pub mod routes;
-pub mod seal;
-pub mod sealed_nonce_store;
+pub use vta_support::seal;
+pub use vta_support::sealed_nonce_store;
 pub mod server;
 pub mod status;
 pub mod store;
