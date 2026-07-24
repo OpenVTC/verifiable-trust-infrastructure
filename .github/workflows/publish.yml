@@ -80,6 +80,7 @@ jobs:
             vta-keys
             vta-support
             vta-vault
+            vta-webvh
             vta-cli-common
             vtc-service
             vta-service

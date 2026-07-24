@@ -10271,7 +10271,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.29"
+version = "0.12.30"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10359,6 +10359,7 @@ dependencies = [
  "vta-service",
  "vta-support",
  "vta-vault",
+ "vta-webvh",
  "vti-common",
  "vti-secrets",
  "vti-webauthn",
@@ -10416,6 +10417,27 @@ dependencies = [
  "vta-keyspaces",
  "vta-sdk",
  "vti-common",
+]
+
+[[package]]
+name = "vta-webvh"
+version = "0.1.0"
+dependencies = [
+ "affinidi-tdk",
+ "chrono",
+ "ed25519-dalek",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
+ "vta-keyspaces",
+ "vta-sdk",
+ "vti-common",
+ "wiremock",
+ "zeroize",
 ]
 
 [[package]]

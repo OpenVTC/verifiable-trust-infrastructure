@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use vta_sdk::webvh::{WebvhDidRecord, WebvhServerRecord};
 use zeroize::ZeroizeOnDrop;
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 fn server_key(id: &str) -> String {
     format!("server:{id}")
@@ -202,9 +202,9 @@ pub async fn set_published_version(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use chrono::Utc;
     use vti_common::config::StoreConfig as VtiStoreConfig;
+    use vti_common::store::Store;
 
     async fn setup_ks() -> (tempfile::TempDir, KeyspaceHandle) {
         let dir = tempfile::tempdir().unwrap();
@@ -212,7 +212,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let ks = store.keyspace(vta_keyspaces::WEBVH).unwrap();
         (dir, ks)
     }
 
