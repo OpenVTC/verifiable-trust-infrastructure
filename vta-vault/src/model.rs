@@ -185,7 +185,7 @@ pub struct StoredCredential {
     ///
     /// Two **reserved** keys carry the BBS pseudonym holder secrets for a
     /// `bbs-2023` credential issued in **holder-binding** mode (see
-    /// [`crate::vault::bbs`]): [`BBS_PROVER_NYM_TAG`] (the holder's link secret
+    /// [`crate::bbs`]): [`BBS_PROVER_NYM_TAG`] (the holder's link secret
     /// `prover_nym`) and [`BBS_SECRET_PROVER_BLIND_TAG`] (`secret_prover_blind`),
     /// both base64url-no-pad. They are present only for pseudonym credentials and
     /// are co-encrypted at rest with the rest of the record. Storing them here —
@@ -200,7 +200,7 @@ pub struct StoredCredential {
     pub body: Vec<u8>,
     /// **Archival** lifecycle state — orthogonal to `status` (which is
     /// *validity*, status-list driven and overwritten by
-    /// [`crate::vault::status::refresh_status`]). Reuses the password-vault
+    /// [`crate::status::refresh_status`]). Reuses the password-vault
     /// [`VaultStatus`]. `Active` by default (and for records stored before
     /// the lifecycle existed). `Archived`/`Deleted` credentials are excluded
     /// from query/present; a `Deleted` credential is a recoverable tombstone

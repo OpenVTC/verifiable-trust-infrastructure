@@ -376,7 +376,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }
@@ -627,7 +627,7 @@ mod tests {
         assert_eq!(got.body, stored.body);
         let by_type = storage::find_by_index(
             &vault,
-            crate::vault::IndexField::Type,
+            crate::IndexField::Type,
             "https://openvtc.org/credentials/MembershipCredential",
         )
         .await

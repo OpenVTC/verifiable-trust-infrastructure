@@ -535,7 +535,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }

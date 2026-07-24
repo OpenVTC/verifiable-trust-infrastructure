@@ -10118,6 +10118,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-keyspaces"
+version = "0.1.0"
+
+[[package]]
 name = "vta-mcp"
 version = "0.1.5"
 dependencies = [
@@ -10220,7 +10224,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.25"
+version = "0.12.26"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10301,8 +10305,10 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
+ "vta-keyspaces",
  "vta-sdk",
  "vta-service",
+ "vta-vault",
  "vti-common",
  "vti-secrets",
  "vti-webauthn",
@@ -10311,6 +10317,35 @@ dependencies = [
  "wiremock",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "vta-vault"
+version = "0.1.0"
+dependencies = [
+ "affinidi-bbs",
+ "affinidi-crypto",
+ "affinidi-data-integrity",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-sd-jwt",
+ "affinidi-sd-jwt-vc",
+ "affinidi-secrets-resolver",
+ "affinidi-status-list",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "vta-keyspaces",
+ "vta-sdk",
+ "vti-common",
 ]
 
 [[package]]

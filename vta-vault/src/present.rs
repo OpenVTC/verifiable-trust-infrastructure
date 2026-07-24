@@ -425,9 +425,9 @@ fn credential_temporally_valid(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::consent::{ConsentGrant, create as create_consent, withdraw};
-    use crate::vault::mint::{MintRequest, mint_sd_jwt_vc};
-    use crate::vault::model::StoredCredential;
+    use crate::consent::{ConsentGrant, create as create_consent, withdraw};
+    use crate::mint::{MintRequest, mint_sd_jwt_vc};
+    use crate::model::StoredCredential;
     use affinidi_sd_jwt::error::SdJwtError;
     use affinidi_sd_jwt::hasher::Sha256Hasher;
     use affinidi_sd_jwt::signer::{JwtSigner, JwtVerifier};
@@ -448,7 +448,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }
@@ -644,7 +644,7 @@ mod tests {
     #[cfg(feature = "bbs")]
     #[tokio::test]
     async fn present_bbs_discloses_only_consented_claims() {
-        use crate::vault::bbs::{present_bbs, receive_bbs};
+        use crate::bbs::{present_bbs, receive_bbs};
         use affinidi_bbs as bbs;
         use affinidi_data_integrity::bbs_2023_transform::{
             sign_base_document, verify_derived_proof,
@@ -746,7 +746,7 @@ mod tests {
     #[cfg(feature = "bbs")]
     #[tokio::test]
     async fn present_bbs_holder_bound_is_per_verifier_pseudonymous() {
-        use crate::vault::bbs::{issue_bbs_pseudonym_for_test, present_bbs, receive_bbs_pseudonym};
+        use crate::bbs::{issue_bbs_pseudonym_for_test, present_bbs, receive_bbs_pseudonym};
         use affinidi_bbs as bbs;
         use affinidi_data_integrity::bbs_2023_transform::verify_pseudonym_derived_proof;
 

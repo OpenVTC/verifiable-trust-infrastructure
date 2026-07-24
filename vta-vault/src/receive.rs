@@ -598,7 +598,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }
@@ -681,7 +681,7 @@ mod tests {
         // Findable by type via the 1.1 index.
         let by_type = storage::find_by_index(
             &vault,
-            crate::vault::IndexField::Type,
+            crate::IndexField::Type,
             "https://openvtc.org/credentials/MembershipCredential",
         )
         .await
@@ -690,7 +690,7 @@ mod tests {
         assert_eq!(by_type[0].id, "cred-1");
 
         // Findable by issuer via the 1.1 index.
-        let by_issuer = storage::find_by_index(&vault, crate::vault::IndexField::IssuerDid, &did)
+        let by_issuer = storage::find_by_index(&vault, crate::IndexField::IssuerDid, &did)
             .await
             .unwrap();
         assert_eq!(by_issuer.len(), 1);
@@ -737,7 +737,7 @@ mod tests {
         // Nothing was stored, and no stray index row points at it.
         assert!(storage::get(&vault, "cred-exp").await.unwrap().is_none());
         assert!(
-            storage::find_by_index(&vault, crate::vault::IndexField::IssuerDid, &did)
+            storage::find_by_index(&vault, crate::IndexField::IssuerDid, &did)
                 .await
                 .unwrap()
                 .is_empty()
@@ -898,12 +898,7 @@ mod tests {
         assert_eq!(cred.subject_did.as_deref(), Some("did:key:zMember"));
         assert_eq!(cred.issuer_did.as_deref(), Some("did:web:issuer.example"));
         assert!(cred.types.contains(&"MembershipCredential".to_string()));
-        assert!(
-            crate::vault::storage::get(&vault, "c1")
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert!(crate::storage::get(&vault, "c1").await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -917,12 +912,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "{err:?}");
-        assert!(
-            crate::vault::storage::get(&vault, "c1")
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(crate::storage::get(&vault, "c1").await.unwrap().is_none());
     }
 
     #[tokio::test]

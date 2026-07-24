@@ -100,7 +100,7 @@ pub async fn find_by_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::model::{CredentialFormat, CredentialPurpose, CredentialStatus};
+    use crate::model::{CredentialFormat, CredentialPurpose, CredentialStatus};
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -117,7 +117,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         let ks = match key {
             Some(k) => ks.with_encryption(k),
@@ -347,7 +347,7 @@ mod tests {
         // key, so this plain handle returns the actual on-disk ciphertext —
         // the genuine "at rest" bytes, not a decrypted view.
         let plain = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("plain vault handle");
         assert!(!plain.is_encrypted());
         let raw = plain

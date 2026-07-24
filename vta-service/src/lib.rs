@@ -46,7 +46,12 @@ pub mod tee;
 /// `handle_trust_task` handler dispatch through `dispatch_trust_task_core`
 /// here, so it lives at the crate root rather than under `routes::` (P2.4).
 pub mod trust_tasks;
-pub mod vault;
+/// The holder credential vault, extracted to the `vta-vault` crate. Re-exported
+/// as `crate::vault` so every `crate::vault::…` path (dispatch handlers, the
+/// sweeper, `credential_exchange`) keeps resolving unchanged. The `bbs` /
+/// `webvh` cargo features gate the same code they did before, wired through to
+/// `vta-vault/bbs` and `vta-vault/webvh` in `Cargo.toml`.
+pub use vta_vault as vault;
 pub mod vault_sweeper;
 #[cfg(feature = "webvh")]
 pub mod webvh_auth;
