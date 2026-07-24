@@ -47,6 +47,23 @@ tsp = [
   "dep:uuid",
   "dep:tokio",
 ]
+# Verified agent names in `display_name`. Reads the `alsoKnownAs` entries a
+# resolved DID Document claims and round-trips each one — resolving the name
+# forward and requiring it to lead back to the same DID — before any of them
+# is shown unqualified. `alsoKnownAs` on its own is self-asserted: the
+# agent-name specification's two-sided binding protects the name→DID
+# direction, not the reverse, so a document claiming
+# `mybank.com/@treasury` proves nothing without the round trip.
+#
+# Off by default because each lookup costs a DID resolution plus an outbound
+# HTTPS fetch per claimed name. Turn it on (and pass `--resolve-agent-names`)
+# once DIDs in this workspace actually publish names.
+agent-names = [
+  "dep:agent-names",
+  "dep:affinidi-did-common",
+  "dep:affinidi-did-resolver-cache-sdk",
+  "affinidi-did-resolver-cache-sdk/agent-names",
+]
 client = [
   "dep:reqwest",
   "dep:tracing",
@@ -216,6 +233,9 @@ rustls = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 affinidi-did-resolver-cache-sdk = { workspace = true, optional = true }
+# `display_name::agent_name` only — see the `agent-names` feature.
+agent-names = { workspace = true, optional = true }
+affinidi-did-common = { workspace = true, optional = true }
 keyring-core = { workspace = true, optional = true }
 azure_security_keyvault_secrets = { workspace = true, optional = true }
 azure_identity = { workspace = true, optional = true }

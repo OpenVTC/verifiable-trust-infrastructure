@@ -946,6 +946,7 @@ pub async fn run_context_delete(
     use crate::auth::AuthClaims;
     use crate::operations::Keyspaces;
     use vta_cli_common::commands::contexts::{confirm_destructive, render_delete_context_preview};
+    use vta_cli_common::display::{NameBook, NameSource};
 
     let app_config = AppConfig::load(config_path)?;
     let store = Store::open(&app_config.store)?;
@@ -973,7 +974,18 @@ pub async fn run_context_delete(
     )
     .await?;
 
-    let has_resources = render_delete_context_preview(&id, &preview);
+    // Name the DIDs in the confirmation prompt from the local ACL rows. The
+    // offline path is exactly as destructive as the online one, so it gets
+    // the same help deciding. Best-effort — a read failure degrades to bare
+    // DIDs rather than blocking the delete.
+    let mut book = NameBook::new();
+    if let Ok(entries) = vti_common::acl::list_acl_entries(&acl_ks).await {
+        for entry in &entries {
+            book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
+        }
+    }
+
+    let has_resources = render_delete_context_preview(&id, &preview, &book);
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");
         return Ok(());

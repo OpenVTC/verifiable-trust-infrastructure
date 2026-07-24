@@ -105,10 +105,15 @@ pub mod credentials;
 pub mod did_key;
 pub mod did_secrets;
 pub mod did_templates;
+// DID → human-readable display name. The single seam every operator-facing
+// surface (PNM/CNM CLIs, VTC operator CLI, VTC admin UI) renders DIDs
+// through. Core is dependency-light and always compiled; the one source that
+// needs the network (a verified agent name) is behind `agent-names`.
 #[cfg(feature = "client")]
 pub mod didcomm_light;
 #[cfg(feature = "session")]
 pub mod didcomm_session;
+pub mod display_name;
 // Pins rustls to the aws-lc-rs backend; every binary calls this at startup.
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;

@@ -4,7 +4,8 @@ use ratatui::text::Span;
 use ratatui::widgets::{Cell, Row, Table};
 use vta_sdk::prelude::*;
 
-use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
+use crate::display::{NameBook, book_from_acl, named_did_cell};
+use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
 
 /// Display audit logs with beautiful colored formatting.
 pub async fn cmd_list_audit_logs(
@@ -16,6 +17,15 @@ pub async fn cmd_list_audit_logs(
     if result.entries.is_empty() {
         println!("  No audit log entries found.");
         return Ok(());
+    }
+
+    // Audit rows carry only an actor DID — "who did this" is exactly the
+    // question a log is read to answer, so it is worth one extra request to
+    // put names on them. Best-effort: an operator may hold audit-read without
+    // ACL-read, and a naming failure must never fail the command.
+    let mut book = NameBook::new();
+    if let Ok(acl) = client.list_acl(None).await {
+        book_from_acl(&mut book, &acl.entries);
     }
 
     if is_full_display() {
@@ -31,16 +41,21 @@ pub async fn cmd_list_audit_logs(
             let resource = entry.resource.as_deref().unwrap_or("—");
             let channel = entry.channel.as_deref().unwrap_or("—");
             let context = entry.context_id.as_deref().unwrap_or("—");
-            print_full_entry(&[
-                ("ID", &entry.id),
-                ("Timestamp", &ts),
-                ("Action", &entry.action),
-                ("Actor", &entry.actor),
-                ("Resource", resource),
-                ("Channel", channel),
-                ("Context", context),
-                ("Outcome", &entry.outcome),
-            ]);
+            let mut fields = vec![
+                ("ID", entry.id.clone()),
+                ("Timestamp", ts),
+                ("Action", entry.action.clone()),
+            ];
+            if let Some(name) = book.name_of(&entry.actor) {
+                fields.push(("Actor", name));
+            }
+            // Actor DID stays in full — an audit trail is evidence.
+            fields.push(("Actor DID", entry.actor.clone()));
+            fields.push(("Resource", resource.to_string()));
+            fields.push(("Channel", channel.to_string()));
+            fields.push(("Context", context.to_string()));
+            fields.push(("Outcome", entry.outcome.clone()));
+            print_full_entry_owned(&fields);
         }
         return Ok(());
     }
@@ -81,22 +96,15 @@ pub async fn cmd_list_audit_logs(
                 Style::default()
             };
 
-            // Truncate actor DID for display
-            let actor_display = if entry.actor.len() > 30 {
-                format!("{}…", &entry.actor[..29])
-            } else {
-                entry.actor.clone()
-            };
-
+            // Actor: the entry's name when we have one, else the shortened
+            // DID. (The previous `&entry.actor[..29]` sliced on a byte
+            // boundary and would panic on a multi-byte character.)
             let resource_display = entry.resource.as_deref().unwrap_or("\u{2014}");
 
             Row::new(vec![
                 Cell::from(Span::styled(ts, Style::default().fg(Color::DarkGray))),
                 Cell::from(Span::styled(entry.action.clone(), action_style)),
-                Cell::from(Span::styled(
-                    actor_display,
-                    Style::default().fg(Color::DarkGray),
-                )),
+                named_did_cell(&book, &entry.actor),
                 Cell::from(resource_display.to_string()),
                 Cell::from(Span::styled(entry.outcome.clone(), outcome_style)),
             ])

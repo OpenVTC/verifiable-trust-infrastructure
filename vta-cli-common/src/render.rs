@@ -71,6 +71,15 @@ pub fn print_full_entry(pairs: &[(&str, &str)]) {
     println!();
 }
 
+/// [`print_full_entry`] for owned values. `crate::display::full_display_pairs`
+/// builds `(&'static str, String)` pairs — it has to, since a display name is
+/// computed rather than borrowed from the response — so this saves every call
+/// site the same re-borrowing dance.
+pub fn print_full_entry_owned(pairs: &[(&str, String)]) {
+    let borrowed: Vec<(&str, &str)> = pairs.iter().map(|(l, v)| (*l, v.as_str())).collect();
+    print_full_entry(&borrowed);
+}
+
 /// Print a bold section heading used above a list of full-display
 /// entries. Matches the title style of the table-mode block borders.
 pub fn print_full_list_title(title: &str, count: usize) {

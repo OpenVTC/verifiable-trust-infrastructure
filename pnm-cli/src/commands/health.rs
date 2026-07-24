@@ -39,12 +39,21 @@ pub(crate) async fn run(
                 println!("  {CYAN}{:<13}{RESET} {vta_did}", "DID");
                 if let Some(ref resolver) = did_resolver {
                     match resolver.resolve(vta_did).await {
-                        Ok(_) => {
+                        Ok(resolved) => {
                             let method = vta_did
                                 .strip_prefix("did:")
                                 .and_then(|s| s.split(':').next())
                                 .unwrap_or("?");
                             println!("                {GREEN}✓{RESET} resolves ({method})");
+                            // Names the document claims via `alsoKnownAs`.
+                            // Free — the document is already in hand — and
+                            // marked as claims because that half of the
+                            // binding is self-asserted until resolved forward.
+                            for claim in &resolved.doc.also_known_as {
+                                println!(
+                                    "                {DIM}claims (unverified): {claim}{RESET}"
+                                );
+                            }
                         }
                         Err(e) => {
                             println!("                {RED}✗{RESET} resolution failed: {e}")

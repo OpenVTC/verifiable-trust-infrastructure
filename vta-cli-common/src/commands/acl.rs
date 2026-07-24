@@ -7,7 +7,11 @@ use vta_sdk::acl::ApproveScope;
 use vta_sdk::prelude::*;
 use vti_common::acl::{Role, act_scope_for};
 
-use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
+use crate::display::{
+    NAME_HEADER, NameBook, NameSource, book_from_acl, did_cell, full_display_pairs, name_cell,
+    named_did_cell,
+};
+use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
 
 /// Human-readable context list — **role-aware**, because an empty
 /// `allowed_contexts` means opposite things depending on the role.
@@ -83,74 +87,95 @@ pub async fn cmd_acl_list(
         return Ok(());
     }
 
+    // One pass over the entries names every subject from its label — and,
+    // for free, the `Created By` column too, since a granting admin nearly
+    // always holds an ACL entry of their own.
+    let mut book = NameBook::new();
+    book_from_acl(&mut book, &resp.entries);
+
     if is_full_display() {
         print_full_list_title("ACL Entries", resp.entries.len());
         for entry in &resp.entries {
-            let label = entry.label.as_deref().unwrap_or("—");
             let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
             let role = format_role(&entry.role, &entry.allowed_contexts);
             let approve = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts);
-            let mut fields: Vec<(&str, &str)> = vec![
-                ("DID", &entry.did),
-                ("Role", &role),
-                ("Label", label),
-                ("Contexts", &contexts),
-            ];
-            if let Some(a) = &approve {
+
+            // Name + full DID. Full display exists so an operator can copy a
+            // complete identifier, so the DID is never abbreviated here.
+            let mut fields = full_display_pairs(&book, &entry.did);
+            fields.push(("Role", role));
+            // The raw label is normally what the Name line already shows; keep
+            // it only when something higher-ranked (an agent name) displaced it.
+            if let Some(label) = entry.label.as_deref()
+                && book.name_of(&entry.did).as_deref() != Some(label)
+            {
+                fields.push(("Label", label.to_string()));
+            }
+            fields.push(("Contexts", contexts));
+            if let Some(a) = approve {
                 fields.push(("Approve", a));
             }
-            fields.push(("Created By", &entry.created_by));
-            print_full_entry(&fields);
+            fields.push(("Created By", book.render_inline(&entry.created_by)));
+            print_full_entry_owned(&fields);
         }
         return Ok(());
     }
 
+    // Only give up a column to names if at least one entry has one — on a VTA
+    // where nothing has been labelled, a column of dashes is worse than no
+    // column.
+    let show_names = book.names_any(resp.entries.iter().map(|e| e.did.as_str()));
+
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let header = Row::new(vec!["DID", "Role", "Label", "Contexts", "Created By"])
-        .style(header_style)
-        .bottom_margin(1);
+    let mut header_cells = vec!["DID", "Role", "Contexts", "Created By"];
+    if show_names {
+        header_cells.insert(0, NAME_HEADER);
+    }
+    let header = Row::new(header_cells).style(header_style).bottom_margin(1);
 
     let rows: Vec<Row> = resp
         .entries
         .iter()
         .map(|entry| {
-            let label = entry.label.clone().unwrap_or_else(|| "\u{2014}".into());
             let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
-
-            Row::new(vec![
-                Cell::from(entry.did.clone()).style(Style::default().fg(Color::DarkGray)),
+            let mut cells = vec![
+                did_cell(&entry.did),
                 Cell::from(format_role(&entry.role, &entry.allowed_contexts)),
-                Cell::from(label),
                 Cell::from(contexts),
-                Cell::from(entry.created_by.clone()).style(Style::default().fg(Color::DarkGray)),
-            ])
+                named_did_cell(&book, &entry.created_by),
+            ];
+            if show_names {
+                cells.insert(0, name_cell(&book, &entry.did));
+            }
+            Row::new(cells)
         })
         .collect();
 
     let title = format!(" ACL Entries ({}) ", resp.entries.len());
 
-    // `Created By` and `DID` hold full did:key values (~57 chars); use
-    // `Min` rather than fixed `Length` so they expand on wide terminals
-    // instead of truncating. Role / Contexts are short and bounded.
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(60),    // DID
-            Constraint::Length(12), // Role
-            Constraint::Min(16),    // Label
-            Constraint::Length(24), // Contexts
-            Constraint::Min(52),    // Created By
-        ],
-    )
-    .header(header)
-    .column_spacing(2)
-    .block(
-        Block::bordered()
-            .title(title)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    // DIDs are abbreviated by `shorten_did` (SCID squeezed, domain tail kept),
+    // which frees the width the name column needs. `--full-display` and
+    // `--json` still carry every DID in full.
+    let mut constraints = vec![
+        Constraint::Min(34),    // DID
+        Constraint::Length(12), // Role
+        Constraint::Length(24), // Contexts
+        Constraint::Min(30),    // Created By
+    ];
+    if show_names {
+        constraints.insert(0, Constraint::Min(16));
+    }
+
+    let table = Table::new(rows, constraints)
+        .header(header)
+        .column_spacing(2)
+        .block(
+            Block::bordered()
+                .title(title)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
 
     let height = resp.entries.len() as u16 + 4;
     print_widget(table, height);
@@ -160,15 +185,30 @@ pub async fn cmd_acl_list(
 
 pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn std::error::Error>> {
     let entry = client.get_acl(did).await?;
-    println!("DID:              {}", entry.did);
+
+    let mut book = NameBook::new();
+    book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
+
+    // Name above DID, DID in full — a single-entry view is where an operator
+    // copies an identifier from.
+    match book.name_of(&entry.did) {
+        Some(name) => {
+            println!("Name:             {name}");
+            println!("DID:              {}", entry.did);
+        }
+        None => println!("DID:              {}", entry.did),
+    }
     println!(
         "Role:             {}",
         format_role(&entry.role, &entry.allowed_contexts)
     );
-    println!(
-        "Label:            {}",
-        entry.label.as_deref().unwrap_or("(not set)")
-    );
+    // Normally the Name line above; shown separately only when something
+    // higher-ranked (a verified agent name) displaced the operator's label.
+    if let Some(label) = entry.label.as_deref()
+        && book.name_of(&entry.did).as_deref() != Some(label)
+    {
+        println!("Label:            {label}");
+    }
     println!(
         "Contexts:         {}",
         format_contexts(&entry.role, &entry.allowed_contexts)
