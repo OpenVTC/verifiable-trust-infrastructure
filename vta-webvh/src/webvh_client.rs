@@ -10,10 +10,10 @@ const WEBVH_HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 use tracing::{debug, info, warn};
 use url::{Host, Url};
 
-use crate::error::AppError;
 use crate::webvh_auth::{
     ChallengeContext, VtaSigningIdentity, build_authenticate_message, build_refresh_message,
 };
+use vti_common::error::AppError;
 
 pub struct WebvhClient {
     http: reqwest::Client,

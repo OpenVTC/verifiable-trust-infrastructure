@@ -52,7 +52,7 @@ use affinidi_tdk::didcomm::Message;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 /// DIDComm `type` URI for the initial authenticate request — the
 /// canonical `spec/auth/authenticate/0.1` per dtgwg-trust-tasks-tf.

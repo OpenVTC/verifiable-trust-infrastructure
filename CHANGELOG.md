@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### vta-webvh 0.1.0 / vta-service 0.12.30 — extract the WebVH hosting infrastructure
+
+Fifth decomposition step. With the clean-leaf and mid-layer services out, the
+next coherent seam is the WebVH hosting infrastructure — a self-contained
+cluster that the big `operations/did_webvh` DID-lifecycle subsystem sits on top
+of.
+
+* **New `vta-webvh`** — `webvh_store` (the local `did:webvh` DID-record +
+  server-record store), `webvh_client` (the HTTP client to a remote `did:webvh`
+  hosting server), and `webvh_auth` (the DID-auth handshake the client uses),
+  ~2.4k lines from `vta-service`. `webvh_client` and `webvh_auth` are a
+  mutually-coupled pair; together with the store they depend only on
+  `vti-common`, `vta-keyspaces`, `vta-sdk`, and `affinidi-tdk` — never on
+  `vta-service`. Re-exported (behind the `webvh` feature) as
+  `crate::{webvh_store,webvh_client,webvh_auth}`, so all 37 consumer files are
+  unchanged and `vta-enclave` is unaffected.
+
+* **Pure move, no behaviour change.** Files moved as git renames (history
+  preserved); the modules' 48 tests run in the new crate. The only edits were
+  repointing three thin re-export back-references (`crate::error`,
+  `crate::store` → `vti_common::…`; `crate::keyspaces::WEBVH` →
+  `vta_keyspaces::WEBVH`). `vta-service` drops ~2.4k lines (→ ~98k).
+
+* `webvh_didcomm` stays in `vta-service` for now — it depends on
+  `didcomm_bridge`, which is part of the messaging subsystem still to be
+  untangled. Extracting it (with `operations/did_webvh`) into `vta-webvh` is a
+  later step once that coupling clears.
+
 ### vta-support 0.1.0 / vta-service 0.12.29 — group the clean mid-layer services into one crate
 
 Fourth decomposition step. The clean-leaf extractions (keyspaces, vault,
