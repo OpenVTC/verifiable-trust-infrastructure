@@ -11,8 +11,8 @@ use tracing::{debug, info, warn};
 
 use vti_common::consent::{ConsentGrant, PendingConsent};
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 fn now_epoch() -> u64 {
     std::time::SystemTime::now()
@@ -72,7 +72,7 @@ pub async fn sweep_expired(
 }
 
 async fn audit_expire(audit_ks: &KeyspaceHandle, agent: &str) {
-    if let Err(e) = crate::audit::record(
+    if let Err(e) = vta_audit::record(
         audit_ks,
         "consent.expire",
         "system:sweeper",

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### vta-sweepers 0.1.0 / vta-service 0.12.32 — extract the background TTL sweepers
+
+Seventh decomposition step, enabled by the `vta-audit` extraction (#788): with
+`audit` now a foundation crate, the periodic-maintenance sweepers no longer
+reach into `vta-service` at all.
+
+* **New `vta-sweepers`** — `acl_sweeper` (expires time-limited ACL grants),
+  `consent_sweeper` (expires stale pending-consent + consumed grants), and
+  `vault_sweeper` (hard-purges grace-expired soft-deleted vault entries),
+  ~0.4k lines. Each depends only on the foundation/leaf crates (`vti-common`,
+  `vta-audit`, `vta-keyspaces`, and — for the vault sweeper — `vta-vault`).
+  `vta-service` re-exports each as `crate::{acl_sweeper,consent_sweeper,
+  vault_sweeper}`, so the storage-thread sweep loop in `server.rs` and the
+  other call sites are unchanged.
+
+* **Pure move, no behaviour change.** Files moved as git renames (history
+  preserved); the modules' 3 tests run in the new crate. The only edits were
+  repointing the back-references now that their targets are extracted crates
+  (`crate::audit` → `vta_audit`, `crate::vault` → `vta_vault`, `crate::acl` /
+  `crate::store` / `crate::error` → `vti_common::…`,
+  `crate::keyspaces` → `vta_keyspaces`).
+
+* `backup_bundle_sweeper` stays in `vta-service`: unlike the three above it is
+  coupled to `backup_bundle_store` (the backup subsystem's sealed-bundle
+  store), so the two move together with a future `vta-backup` extraction.
+
 ### vta-audit 0.1.0 / vta-service 0.12.31 — extract structured audit logging into a foundation crate
 
 Sixth decomposition step. `audit` is the single most-depended-on leaf — every

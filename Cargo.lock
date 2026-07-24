@@ -10281,7 +10281,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.31"
+version = "0.12.32"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10369,6 +10369,7 @@ dependencies = [
  "vta-sdk",
  "vta-service",
  "vta-support",
+ "vta-sweepers",
  "vta-vault",
  "vta-webvh",
  "vti-common",
@@ -10398,6 +10399,22 @@ dependencies = [
  "vta-config",
  "vta-keyspaces",
  "vta-sdk",
+ "vti-common",
+]
+
+[[package]]
+name = "vta-sweepers"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+ "vta-audit",
+ "vta-keyspaces",
+ "vta-vault",
  "vti-common",
 ]
 
