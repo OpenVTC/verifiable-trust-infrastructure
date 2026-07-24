@@ -10078,6 +10078,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-audit"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "uuid",
+ "vta-sdk",
+ "vti-common",
+]
+
+[[package]]
 name = "vta-cli-common"
 version = "0.10.13"
 dependencies = [
@@ -10271,7 +10281,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.30"
+version = "0.12.31"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10351,6 +10361,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
+ "vta-audit",
  "vta-cli-common",
  "vta-config",
  "vta-keys",

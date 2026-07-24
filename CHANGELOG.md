@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### vta-audit 0.1.0 / vta-service 0.12.31 — extract structured audit logging into a foundation crate
+
+Sixth decomposition step. `audit` is the single most-depended-on leaf — every
+subsystem emits `audit!(…)` events — so it belongs *below* the subsystems as a
+shared foundation crate, not inside `vta-service`.
+
+* **New `vta-audit`** — the `audit!` tracing macro plus the audit-keyspace
+  persistence helpers (`record`, `record_with_detail`, `record_consent`,
+  `cleanup_expired_logs`), ~0.2k lines. Depends only on `vti-common` and
+  `vta-sdk`. The macro is now `#[macro_export]`ed (its body was already
+  fully-qualified `::tracing::…`, so no path rewriting was needed).
+  `vta-service` re-exports the crate as `crate::audit`, so all consumers —
+  `crate::audit::record*` calls and `use crate::audit::{self, audit}` macro
+  imports alike — are unchanged.
+
+* **Pure move, no behaviour change.** The file moved as a git rename (history
+  preserved); the only edits were repointing the two thin re-export
+  back-references (`crate::error`, `crate::store` → `vti_common::…`) and the
+  macro export.
+
+* Unblocks the sweeper cluster (`acl_sweeper`, `consent_sweeper`,
+  `vault_sweeper`), whose only remaining back-reference is now into this
+  foundation crate rather than into `vta-service` proper.
+
 ### vta-webvh 0.1.0 / vta-service 0.12.30 — extract the WebVH hosting infrastructure
 
 Fifth decomposition step. With the clean-leaf and mid-layer services out, the

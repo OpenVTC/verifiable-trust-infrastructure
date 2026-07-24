@@ -10,12 +10,13 @@
 
 use vta_sdk::protocols::audit_management::list::AuditLogEntry;
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 /// Emit a structured audit event to the tracing subsystem.
 ///
 /// Uses `INFO` for successful outcomes and `ERROR` for failures (e.g. `denied:*`).
+#[macro_export]
 macro_rules! audit {
     ($action:expr, actor = $actor:expr, resource = $resource:expr, outcome = $outcome:expr) => {
         if $outcome.starts_with("success") {
@@ -58,8 +59,6 @@ macro_rules! audit {
         }
     };
 }
-
-pub(crate) use audit;
 
 /// Persist an audit log entry to the audit keyspace.
 ///
