@@ -52,6 +52,16 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) full_display: bool,
 
+    /// Resolve verified agent names for the DIDs shown.
+    ///
+    /// Off by default because it costs network: one DID resolution plus an
+    /// outbound fetch per name a document claims, per DID on screen. A name
+    /// is shown as this DID's only if resolving it leads back to that same
+    /// DID — `alsoKnownAs` alone is self-asserted, so a claim that does not
+    /// round-trip is marked `[unverified]` rather than believed.
+    #[arg(long, global = true)]
+    pub(crate) resolve_agent_names: bool,
+
     /// Emit list output as JSON instead of a human-readable table.
     /// Use this for automation: `pnm acl list --json | jq …`.
     #[arg(long, global = true)]
@@ -877,6 +887,68 @@ pub(crate) enum DidMgmtCommands {
         #[command(subcommand)]
         command: DidMgmtDidCommands,
     },
+    /// Manage agent names — human-memorable `domain/@name` shortcuts that
+    /// resolve to one of your hosted DIDs.
+    ///
+    /// Binding a name edits the DID document's `alsoKnownAs` and republishes
+    /// the signed log. That claim is what authorises the hosting server to
+    /// serve the `/@name` redirect, so a name only ever resolves for a DID
+    /// that has actually claimed it.
+    AgentNames {
+        #[command(subcommand)]
+        command: DidMgmtAgentNameCommands,
+    },
+}
+
+/// `pnm did-mgmt agent-names {…}` — bind and inspect agent names.
+#[derive(Subcommand)]
+pub(crate) enum DidMgmtAgentNameCommands {
+    /// Bind a name to a hosted DID.
+    Set {
+        /// The hosted DID to bind the name to.
+        #[arg(long)]
+        did: String,
+        /// The name's local part — no `@`, 2-63 chars of `[a-z0-9-]`,
+        /// alphanumeric at both ends. The domain comes from the DID.
+        #[arg(long)]
+        name: String,
+    },
+    /// Release a name entirely, freeing it for anyone else to claim.
+    ///
+    /// To stop a name resolving while keeping it reserved to this DID, use
+    /// `disable` instead.
+    Remove {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// Park a name: stop it resolving, keep it reserved to this DID.
+    Disable {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// Bring a parked name back into service.
+    Enable {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// List every name bound to a DID, including parked ones.
+    List {
+        #[arg(long)]
+        did: String,
+    },
+    /// Check whether a name is free on the DID's hosting domain.
+    Check {
+        #[arg(long)]
+        did: String,
+        #[arg(long)]
+        name: String,
+    },
 }
 
 /// `pnm did-mgmt servers {…}` — controller-side server registry.
@@ -1118,6 +1190,12 @@ impl From<DidMgmtCommands> for WebvhCommands {
                 }
                 DidMgmtServerCommands::Remove { id } => WebvhCommands::RemoveServer { id },
             },
+            // Intercepted in `main.rs` before this bridge is reached — agent
+            // names are a new surface and deliberately have no legacy
+            // `WebvhCommands` equivalent to bridge into.
+            DidMgmtCommands::AgentNames { .. } => {
+                unreachable!("agent-names is dispatched before the legacy bridge")
+            }
             DidMgmtCommands::Dids { command } => match command {
                 DidMgmtDidCommands::Create {
                     context,

@@ -94,6 +94,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
                         .and_then(|s| s.split(':').next())
                         .unwrap_or("?");
                     eprintln!("                {GREEN}✓{RESET} resolves ({method})");
+                    print_claimed_names(&resolved.doc.also_known_as);
 
                     // Look for mediator DID in DIDCommMessaging service
                     for svc in &resolved.doc.service {
@@ -150,12 +151,13 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
             && let Some(did) = mediator_did
         {
             match resolver.resolve(did).await {
-                Ok(_) => {
+                Ok(resolved) => {
                     let method = did
                         .strip_prefix("did:")
                         .and_then(|s| s.split(':').next())
                         .unwrap_or("?");
                     eprintln!("                {GREEN}✓{RESET} resolves ({method})");
+                    print_claimed_names(&resolved.doc.also_known_as);
                 }
                 Err(e) => eprintln!("                {RED}✗ resolution failed: {e}{RESET}"),
             }
@@ -307,4 +309,20 @@ async fn send_trust_ping(
 
     atm.graceful_shutdown().await;
     Ok(elapsed)
+}
+
+/// Report the agent names a resolved DID Document claims via `alsoKnownAs`.
+///
+/// Free — the document is already in hand — and genuinely diagnostic here:
+/// `vtc status` is where an operator checks what their community's DID
+/// actually advertises.
+///
+/// Reported as *claims*, never as the DID's name. That half of the
+/// agent-name binding is self-asserted; confirming one means resolving the
+/// name forward and checking it leads back to this same DID, which is what
+/// `vta_sdk::display_name::agent_name` does.
+fn print_claimed_names(also_known_as: &[String]) {
+    for claim in also_known_as {
+        eprintln!("                {DIM}claims (unverified): {claim}{RESET}");
+    }
 }

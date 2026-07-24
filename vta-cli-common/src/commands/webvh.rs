@@ -6,7 +6,12 @@ use ratatui::{
 use vta_sdk::client::{AddWebvhServerRequest, CreateDidWebvhRequest, UpdateWebvhServerRequest};
 use vta_sdk::prelude::*;
 
-use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
+use crate::display::{
+    NAME_HEADER, NameBook, book_from_vta, book_from_webvh_servers, did_cell, full_display_pairs,
+    name_cell, resolve_agent_names_into,
+};
+
+use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
 
 pub async fn cmd_webvh_server_add(
     client: &VtaClient,
@@ -33,21 +38,24 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
         return Ok(());
     }
 
+    // A hosting server's `label` is its name. Routing it through the book
+    // rather than printing it directly means a verified agent name will
+    // outrank it once these DIDs publish one.
+    let mut book = NameBook::new();
+    book_from_webvh_servers(&mut book, &resp.servers);
+
     if is_full_display() {
         print_full_list_title("WebVH Servers", resp.servers.len());
         for s in &resp.servers {
-            let label = s.label.as_deref().unwrap_or("—");
             let created = s
                 .created_at
                 .with_timezone(&chrono::Local)
                 .format("%Y-%m-%d %H:%M:%S %:z")
                 .to_string();
-            print_full_entry(&[
-                ("ID", &s.id),
-                ("DID", &s.did),
-                ("Label", label),
-                ("Created", &created),
-            ]);
+            let mut fields = vec![("ID", s.id.clone())];
+            fields.extend(full_display_pairs(&book, &s.did));
+            fields.push(("Created", created));
+            print_full_entry_owned(&fields);
         }
         return Ok(());
     }
@@ -55,7 +63,7 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let header = Row::new(vec!["ID", "DID", "Label", "Created"])
+    let header = Row::new(vec!["ID", NAME_HEADER, "DID", "Created"])
         .style(header_style)
         .bottom_margin(1);
 
@@ -63,7 +71,6 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
         .servers
         .iter()
         .map(|s| {
-            let label = s.label.clone().unwrap_or_else(|| "\u{2014}".into());
             let created = s
                 .created_at
                 .with_timezone(&chrono::Local)
@@ -72,8 +79,8 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
 
             Row::new(vec![
                 Cell::from(s.id.clone()),
-                Cell::from(s.did.clone()).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(label),
+                name_cell(&book, &s.did),
+                did_cell(&s.did),
                 Cell::from(created).style(Style::default().fg(Color::DarkGray)),
             ])
         })
@@ -415,6 +422,11 @@ pub async fn cmd_webvh_did_list(
         return Ok(());
     }
 
+    let mut book = book_from_vta(client).await;
+    // Hosted DIDs are the only ones that *can* carry an agent name, so this
+    // is where `--resolve-agent-names` earns its round trips.
+    resolve_agent_names_into(&mut book, resp.dids.iter().map(|d| d.did.as_str())).await;
+
     if is_full_display() {
         print_full_list_title("WebVH DIDs", resp.dids.len());
         for d in &resp.dids {
@@ -424,14 +436,15 @@ pub async fn cmd_webvh_did_list(
                 .format("%Y-%m-%d %H:%M:%S %:z")
                 .to_string();
             let portable = if d.portable { "yes" } else { "no" };
-            print_full_entry(&[
-                ("DID", &d.did),
-                ("Context", &d.context_id),
-                ("Server", &d.server_id),
-                ("SCID", &d.scid),
-                ("Portable", portable),
-                ("Created", &created),
-            ]);
+            // A `WebvhDidRecord` carries no name of its own, so anything we
+            // show comes from the ACL / context listings fetched above.
+            let mut fields = full_display_pairs(&book, &d.did);
+            fields.push(("Context", d.context_id.clone()));
+            fields.push(("Server", d.server_id.clone()));
+            fields.push(("SCID", d.scid.clone()));
+            fields.push(("Portable", portable.to_string()));
+            fields.push(("Created", created));
+            print_full_entry_owned(&fields);
         }
         return Ok(());
     }
@@ -439,9 +452,12 @@ pub async fn cmd_webvh_did_list(
     let header_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
-    let header = Row::new(vec!["DID", "Context", "Server", "Portable", "Created"])
-        .style(header_style)
-        .bottom_margin(1);
+    let show_names = book.names_any(resp.dids.iter().map(|d| d.did.as_str()));
+    let mut header_cells = vec!["DID", "Context", "Server", "Portable", "Created"];
+    if show_names {
+        header_cells.insert(0, NAME_HEADER);
+    }
+    let header = Row::new(header_cells).style(header_style).bottom_margin(1);
 
     let rows: Vec<Row> = resp
         .dids
@@ -454,13 +470,17 @@ pub async fn cmd_webvh_did_list(
                 .format("%Y-%m-%d %H:%M")
                 .to_string();
 
-            Row::new(vec![
-                Cell::from(d.did.clone()),
+            let mut cells = vec![
+                did_cell(&d.did),
                 Cell::from(d.context_id.clone()),
                 Cell::from(d.server_id.clone()),
                 Cell::from(portable.to_string()),
                 Cell::from(created).style(Style::default().fg(Color::DarkGray)),
-            ])
+            ];
+            if show_names {
+                cells.insert(0, name_cell(&book, &d.did));
+            }
+            Row::new(cells)
         })
         .collect();
 

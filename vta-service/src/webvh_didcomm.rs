@@ -521,9 +521,15 @@ impl<'a> WebvhDIDCommClient<'a> {
                 30,
             )
             .await?;
-        let names = resp.body.get("agentNames").ok_or_else(|| {
-            AppError::Internal("agent-name list response has no 'agentNames'".to_string())
-        })?;
+        // A host predating the registry omits the field entirely. That is an
+        // empty list, not a parse error — otherwise every read against an
+        // older host fails. The REST path has always been tolerant here
+        // (`webvh_client::list_agent_names`); erroring on one transport and
+        // succeeding on the other made the same DID appear to have names or
+        // not depending on how the VTA happened to reach its host.
+        let Some(names) = resp.body.get("agentNames") else {
+            return Ok(Vec::new());
+        };
         serde_json::from_value(names.clone())
             .map_err(|e| AppError::Internal(format!("agent-name list response parse error: {e}")))
     }
@@ -561,7 +567,6 @@ impl<'a> WebvhDIDCommClient<'a> {
 #[cfg(test)]
 mod tests {
     use super::{build_check_name_body, parse_check_name_response};
-    use serde_json::json;
 
     /// Regression for `e.p.did.path-invalid`: auto-assign (`path == None`)
     /// must OMIT the `path` field, not send `""`. The host rejects a

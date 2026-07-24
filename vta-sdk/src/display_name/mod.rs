@@ -18,14 +18,21 @@
 //! verified agent name — lives in [`agent_name`] behind the `agent-names`
 //! feature and hands its result back as a [`DisplayName`] like any other.
 //!
-//! # Where names come from today
+//! # Where names come from
 //!
-//! No DID document in this workspace currently publishes an `alsoKnownAs`
-//! entry, so there are no agent names to show yet. The names that exist are
-//! local: `AclEntry.label`, `ContextRecord.name`, `WebvhServerRecord.label`,
-//! the PNM/CNM per-VTA config `name`. [`NameSource`] keeps them distinguished
-//! rather than flattening them to a string, because they are not equally
-//! trustworthy — see below.
+//! Two kinds of source, and the difference is the whole reason [`NameSource`]
+//! exists rather than a bare `String`.
+//!
+//! **Local**: `AclEntry.label`, `ContextRecord.name`,
+//! `WebvhServerRecord.label`, the PNM/CNM per-VTA config `name`. Operator-typed,
+//! from our own store, and free to read — they arrive on responses the caller
+//! already fetched.
+//!
+//! **Agent names**: `domain/@name` bound to a DID by
+//! `pnm did-mgmt agent-names set`, which writes the claim into the DID
+//! document's `alsoKnownAs` and republishes the signed log. Reading one back
+//! costs network and is opt-in per invocation (`--resolve-agent-names`), since
+//! a verified lookup is a DID resolution plus an outbound fetch per claim.
 //!
 //! # Trust
 //!

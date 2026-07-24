@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.27 / vta-cli-common 0.10.13 / pnm-cli 0.11.8 / cnm-cli 0.11.6 / vta-service 0.12.25 / vtc-service 0.11.23 — give agent names a caller
+
+* The producer machinery for agent names was already complete — inbound
+  Trust-Task handlers for all six verbs, an operations layer that edits the DID
+  document's `alsoKnownAs` and republishes the signed log, and outbound calls to
+  the DID-hosting control plane over both REST and DIDComm. What it had was no
+  caller: no `VtaClient` methods, no CLI, so the only way to reach any of it was
+  a hand-rolled Trust Task.
+
+* **`pnm did-mgmt agent-names {set,check,list,remove,enable,disable}`**, on six
+  new `VtaClient` methods. Trust-task-only, and no new REST route was needed:
+  `dispatch_trust_task` posts to `/api/trust-tasks` on a REST transport and
+  rides the DIDComm envelope otherwise, so both reach the same handler.
+
+* `remove` and `disable` are deliberately distinct and the CLI says so at the
+  point of use — remove frees the name for anyone to claim, disable parks it so
+  it stops resolving while staying reserved to this DID. `list` reads the
+  hosting registry rather than the DID document, because a parked name is
+  absent from the document by design and would otherwise be invisible.
+
+* **`--resolve-agent-names`** turns on verified name resolution in display
+  output, and `pnm-cli` now enables the `agent-names` feature that backs it —
+  without which the flag would have parsed and done nothing. Off by default: a
+  lookup is a DID resolution plus an outbound fetch per claimed name, per DID
+  on screen. Wired into `acl list` / `acl get` (including the `created_by`
+  column, where an unfamiliar DID most often appears) and the hosted-DID list,
+  which is where names can actually exist.
+
+* **Fixed a real divergence**: reading a DID's names over DIDComm treated a
+  missing `agentNames` field as an internal error while the REST path treated
+  it as an empty list. A host predating the registry omits the field entirely,
+  so the same DID appeared to have names or not depending on how the VTA
+  happened to reach its host. Both are tolerant now.
+
+* Named DIDs also reach the remaining surfaces skipped last time: the hosted
+  `did:webvh` list, the DID-hosting server list, and `vtc create-did-key`,
+  which was storing an operator-supplied label and never showing it. `vtc
+  status`, `pnm doctor` and `cnm` report the names a resolved document claims,
+  marked unverified — free, since the document is already in hand.
+
+* **Correction.** The previous entry claimed "nothing in this workspace
+  publishes `alsoKnownAs` yet". That was false: `operations::did_webvh`'s
+  `edit_agent_name` has been writing the claim and republishing all along. The
+  claim was true of DID *templates*, which is where it was checked, and wrongly
+  generalised to the workspace. The same error was repeated in the
+  `display_name` module docs; both are corrected.
+
+* **A cross-repo contract test.** What the VTA writes into `alsoKnownAs` is
+  read back by the hosting server with `agent_names::AgentName::parse`, keeping
+  only entries whose authority matches the domain it serves. If our emitted
+  form ever stops satisfying that parser nothing errors — the claim is simply
+  never indexed and the name silently 404s. The test now uses the host's own
+  parser rather than asserting our format against itself.
+
+* `cnm` gains `--resolve-agent-names` for display parity. It has no
+  `did-mgmt` surface, so it gets the flag but not the binding commands.
+
+* CI: the Test job reclaims the runner's preinstalled Android/.NET/GHC
+  toolchains before building. `cargo test --workspace` links a test binary
+  per crate with full debuginfo and had begun exhausting the runner's root
+  disk while linking the largest one; this is the standard headroom fix and
+  helps every future PR, not just this one.
+
+* `sealed_producer` banners are deliberately left showing bare, full DIDs —
+  those DIDs are minted seconds before they are printed, so there is no name to
+  show, and the operator is copying an exact identifier for handoff.
+
+
 ### vti-common 0.11.19 / vta-service 0.12.24 / vtc-service 0.11.22 — let a context admin create a least-privilege approver
 
 * `validate_acl_modification` saw only the target's context list, never its
@@ -191,10 +259,8 @@
   claim `mybank.com/@treasury`. Every claim is round-tripped (resolve the name
   forward, require it to lead back to the same DID) before being shown
   unqualified; one that fails surfaces as unverified, ranks below every local
-  source, and never renders bare. Nothing in this workspace publishes
-  `alsoKnownAs` yet, so no agent name resolves here today — this is the
-  consumer half, built so that minting names lights up every surface without
-  touching a display site.
+  source, and never renders bare. See the agent-name entry below for the
+  producer side.
 
 * `PATCH /v1/members/{did}` accepts `label`. The VTC's only human name for a
   member lives on the ACL row, which meant correcting a typo in a display name

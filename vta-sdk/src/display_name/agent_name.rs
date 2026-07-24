@@ -34,15 +34,21 @@
 //! web redirect and is not derivable from DID structure, so a constructed
 //! "likely name" would be an unverified guess wearing an authoritative API.
 //!
-//! # Nothing publishes names yet
+//! # The other half
 //!
-//! No DID template, DID document, or webvh record in this workspace emits an
-//! `alsoKnownAs` entry, so [`lookup`] returns `None` for every DID here today.
-//! That is expected: this is the consumer half, built so that minting names
-//! lights up every operator surface without a single display site changing.
+//! Names are bound by `pnm did-mgmt agent-names set`, which edits the DID
+//! document's `alsoKnownAs` and republishes the signed log
+//! (`vta-service`'s `operations::did_webvh::agent_name_op`). The hosting
+//! server serves `/@name` only for a name the signed document claims, and
+//! rebuilds its index from the log on every publish — so it structurally
+//! cannot serve a name the DID has not claimed.
+//!
+//! That is the *first* half of the binding. This module is the second: the
+//! host's guarantee says the document claims the name, not that the name
+//! leads back here. Only the round trip below establishes that.
 
 use affinidi_did_common::Document;
-use affinidi_did_resolver_cache_sdk::DIDCacheClient;
+use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use agent_names::extract_agent_names;
 
 use super::{DisplayName, NameSource};
@@ -136,6 +142,33 @@ pub async fn lookup(client: &DIDCacheClient, did: &str) -> Option<DisplayName> {
         did,
         outcomes.iter().map(|(n, d)| (n.as_str(), d.as_deref())),
     )
+}
+
+/// Resolve verified names for many DIDs into `book`, building the resolver
+/// once for the whole batch.
+///
+/// The entry point display layers use. Kept here rather than in the CLI crate
+/// because constructing a `DIDCacheClient` needs the resolver dependency this
+/// feature already pulls in.
+///
+/// Honours `PNM_RESOLVER_URL` so a CLI pointed at a shared resolver uses it
+/// here too. Per-DID failures are skipped, not propagated: an unreachable name
+/// server must degrade a row to its DID, never fail the operator's command.
+pub async fn fill_book<'a>(book: &mut super::NameBook, dids: impl IntoIterator<Item = &'a str>) {
+    let mut builder = DIDCacheConfigBuilder::default();
+    if let Ok(url) = std::env::var("PNM_RESOLVER_URL")
+        && !url.is_empty()
+    {
+        builder = builder.with_network_mode(&url);
+    }
+    let Ok(client) = DIDCacheClient::new(builder.build()).await else {
+        return;
+    };
+    for did in dids {
+        if let Some(name) = lookup(&client, did).await {
+            book.insert(did, name);
+        }
+    }
 }
 
 #[cfg(test)]
