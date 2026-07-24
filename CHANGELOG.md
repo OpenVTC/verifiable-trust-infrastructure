@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### vtc-service 0.11.24 — fix a broken test from #771 and republish
+
+* **Fixes the red `Test` job on main.** #771 ("fix: auth check") added
+  `tests/auth_forged_plaintext.rs`, whose `VtcAclEntry { … }` construction omits
+  the `updated_at` / `updated_by` fields the struct carries — so
+  `cargo test --workspace` fails to compile it
+  (`E0063: missing fields updated_at and updated_by`). CI Test has been red on
+  main since #771 merged; a genuine merge-integration miss, not a registry
+  staleness. The two `None` fields are now set, matching every other
+  `VtcAclEntry` test construction.
+
+* Bumps the crate so the fix — and #771's earlier `routes/auth.rs` security fix,
+  which #771 never bumped for — reaches crates.io. The published `0.11.23` still
+  holds pre-#771 source; `0.11.24` republishes the current source.
+
 ### vti-common 0.11.20 — publish the auth-check fix that #771 left unreleased
 
 * #771 ("fix: auth check") added `vti_common::auth::AuthcryptError` (and the
