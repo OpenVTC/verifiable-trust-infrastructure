@@ -272,7 +272,7 @@ pub async fn create_acl(
     // Block non-admin callers from granting Admin — role + context
     // bound checks must run before we touch storage.
     validate_vtc_role_assignment(&auth.0, &req_entry.role)?;
-    validate_acl_modification(&auth.0, &req_entry.scopes)?;
+    validate_acl_modification(&auth.0, &as_vti_role(&req_entry.role), &req_entry.scopes)?;
 
     let acl = state.acl_ks.clone();
     let expires_at = req_entry.expires_at.map(|t| t.timestamp() as u64);
