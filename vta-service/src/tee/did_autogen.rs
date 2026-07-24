@@ -26,6 +26,36 @@ use crate::store::{KeyspaceHandle, Store};
 /// Well-known store key for the auto-generated VTA DID.
 const VTA_DID_STORE_KEY: &str = "tee:vta_did";
 
+/// Build the `WebvhDidRecord` for the auto-generated serverless VTA DID.
+///
+/// `webvh_store` keys the record (`did:{did}`) and the log (`log:{did}`)
+/// separately. `list_services` (and did update/rotate ops) require the record
+/// via `webvh_store::get_did`; without it `GET /services` 500s with
+/// `VtaDidRecordMissing` even though the log resolves and
+/// `/.well-known/did.jsonl` serves fine. Mirrors the production
+/// `create_did_webvh` (final mode) builder: defensive defaults for the
+/// key-count fields — the next rotate/update re-scans the log and persists the
+/// corrected values. The SCID is the third colon-segment of a
+/// `did:webvh:{SCID}:{host}` identifier.
+#[cfg(feature = "webvh")]
+fn build_vta_webvh_record(did: &str) -> vta_sdk::webvh::WebvhDidRecord {
+    let scid = did.split(':').nth(2).unwrap_or_default().to_string();
+    let now = chrono::Utc::now();
+    vta_sdk::webvh::WebvhDidRecord {
+        did: did.to_string(),
+        server_id: "serverless".to_string(),
+        mnemonic: String::new(),
+        scid,
+        context_id: "vta".to_string(),
+        portable: true,
+        log_entry_count: 1,
+        pre_rotation_count: 0,
+        next_fragment_id: 1,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
 /// Check for an existing DID in the store, or auto-generate one from the template.
 ///
 /// Sets `config.vta_did` on success (either from store or newly generated).
@@ -64,6 +94,23 @@ pub async fn maybe_generate_vta_did(
         let did = String::from_utf8(did_bytes)
             .map_err(|e| AppError::Internal(format!("corrupt stored VTA DID: {e}")))?;
         info!(did = %did, "restored VTA identity from encrypted store");
+
+        // Backfill the webvh DID *record* if an earlier build persisted only
+        // the log (`log:{did}`) but not the record (`did:{did}`). Idempotent:
+        // only writes when the record is absent, so a rebuild+reboot repairs
+        // `list_services` for an already-generated DID without wiping state
+        // (which would rotate the DID). See `build_vta_webvh_record`.
+        #[cfg(feature = "webvh")]
+        {
+            let webvh_ks = apply_enc(store.keyspace(crate::keyspaces::WEBVH)?);
+            if crate::webvh_store::get_did(&webvh_ks, &did).await?.is_none() {
+                let record = build_vta_webvh_record(&did);
+                crate::webvh_store::store_did(&webvh_ks, &record).await?;
+                store.persist().await?;
+                info!(did = %did, "backfilled missing webvh DID record on restore");
+            }
+        }
+
         config.vta_did = Some(did);
         return Ok(());
     }
@@ -240,6 +287,12 @@ pub async fn maybe_generate_vta_did(
     {
         let webvh_ks = apply_enc(store.keyspace(crate::keyspaces::WEBVH)?);
         crate::webvh_store::store_did_log(&webvh_ks, &final_did, &log_content).await?;
+
+        // Store the DID *record* alongside the log so `list_services` and did
+        // update/rotate ops can find it via `webvh_store::get_did`. See
+        // `build_vta_webvh_record`.
+        let did_record = build_vta_webvh_record(&final_did);
+        crate::webvh_store::store_did(&webvh_ks, &did_record).await?;
     }
 
     // Also store in bootstrap keyspace (no encryption) so the parent proxy
