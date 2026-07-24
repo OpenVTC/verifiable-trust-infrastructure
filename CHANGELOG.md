@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+Adds `[hardened] enabled = true` in `config.toml` to bring storage
+encryption and sealed JWT key management to self-hosted (non-TEE)
+deployments — the equivalent of TEE layer 3 without requiring a
+Nitro Enclave.
+
+* **Storage encryption**: all fjall keyspaces encrypted with AES-256-GCM
+  (VAE1 format, same as TEE) using a key HKDF-SHA256-derived from the
+  master seed loaded from the external secret store (OS keyring, AWS SM,
+  GCP SM, Vault, …).
+* **Sealed JWT signing key**: random 32-byte key generated at first boot,
+  AES-GCM sealed under the storage key, SHA-256 fingerprint-verified on
+  every subsequent boot — never written to `config.toml`. Boot aborts on
+  fingerprint mismatch (tamper detection).
+* **Independent JWT key rotation**: `vta hardened rotate-jwt` deletes the
+  sealed ciphertext; new key is generated on next daemon start.
+* **All offline CLI commands** (`vta acl`, `keys`, `vault`, `webvh`,
+  `bootstrap`, etc.) transparently derive and use the storage key via the
+  new `CliStore` wrapper — no operator action needed.
+* **Setup wizard support**: `vta setup --from <file>` with a `[hardened]`
+  section generates an encrypted store from first write.
+* **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`)
+  are held in `Zeroizing<T>` / `HardenedBootSecrets` (mirrors
+  `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
+
+New source files: `vta-service/src/hardened_bootstrap.rs` (crypto + boot
+secrets) and `vta-service/src/cli_store.rs` (`CliStore` wrapper for
+offline CLI commands).
+
+See [`docs/02-vta/non-interactive-setup.md#hardened-configuration`](docs/02-vta/non-interactive-setup.md#hardened-configuration)
+for the operator guide.
+
 ### vtc-service 0.11.37 — self-remove and member-VMC are Trust Tasks
 
 0.11.36 gave the VTC a TSP inbound path, but that path reaches a verb only

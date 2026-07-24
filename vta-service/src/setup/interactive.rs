@@ -22,7 +22,9 @@ use bip39::Mnemonic;
 use dialoguer::{Confirm, Input, MultiSelect, Select};
 use serde_json::json;
 
-use crate::config::{AuditConfig, LogConfig, LogFormat, ServerConfig, ServicesConfig};
+use crate::config::{
+    AuditConfig, HardenedConfig, LogConfig, LogFormat, ServerConfig, ServicesConfig,
+};
 
 use super::{
     SetupUi, apply_inputs, derive_ws_url,
@@ -181,6 +183,35 @@ impl SetupUi for InteractiveUi<'_> {
 // ---------------------------------------------------------------------------
 // Prompt helpers — each returns a piece of WizardInputs
 // ---------------------------------------------------------------------------
+
+/// Prompt whether to enable hardened configuration.
+///
+/// The `storage_key_salt` is taken from `HardenedConfig::default()` — the
+/// same approach as TEE mode, where the salt comes from `config.rs` without
+/// prompting. Operators who need a custom salt use `--from <toml>`.
+fn prompt_hardened(p: &dyn Prompter) -> Result<HardenedConfig, DynErr> {
+    let enabled = p.confirm(
+        "Enable hardened configuration? (encrypts the fjall store and seals the JWT signing key \
+          in the bootstrap keyspace — protects against direct disk access)",
+        false,
+    )?;
+
+    if !enabled {
+        return Ok(HardenedConfig::default());
+    }
+
+    eprintln!();
+    eprintln!("  \x1b[2mHardened configuration enabled.\x1b[0m");
+    eprintln!(
+        "  \x1b[2mTo use a custom storage_key_salt, run `vta setup --from <toml>` instead.\x1b[0m"
+    );
+    eprintln!();
+
+    Ok(HardenedConfig {
+        enabled: true,
+        ..HardenedConfig::default()
+    })
+}
 
 /// Prompt which services to enable. Returns `(rest, didcomm)`; at least one.
 fn prompt_services(p: &dyn Prompter) -> Result<(bool, bool), DynErr> {
@@ -991,14 +1022,17 @@ async fn gather_inputs(
     // 10. Secrets backend.
     let secrets = configure_secrets(p).await?;
 
-    // 11. Messaging (DIDComm only).
+    // 11. Hardened configuration.
+    let hardened = prompt_hardened(p)?;
+
+    // 12. Messaging (DIDComm only).
     let messaging = if enable_didcomm {
         configure_messaging(p).await?
     } else {
         MessagingInput::Skip
     };
 
-    // 12. VTA DID.
+    // 13. VTA DID.
     let vta_did = create_vta_did(p)?;
 
     Ok(Some(WizardInputs {
@@ -1038,6 +1072,7 @@ async fn gather_inputs(
         // Staff provisioning is a non-interactive (enterprise) feature, exposed
         // only via `--from <toml>`.
         staff: Vec::new(),
+        hardened,
     }))
 }
 

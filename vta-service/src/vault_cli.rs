@@ -19,8 +19,8 @@ use vti_common::vault::{
     get_vault_entry, put_stored_vault_entry,
 };
 
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
-use crate::store::Store;
 
 pub struct VaultSeedArgs {
     /// Optional path to config.toml — falls back to the default search path
@@ -43,8 +43,8 @@ pub struct VaultSeedArgs {
 
 pub async fn run_vault_seed(args: VaultSeedArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
-    let vault_ks = store.keyspace(crate::keyspaces::VAULT)?;
+    let cs = CliStore::open(&config).await?;
+    let vault_ks = cs.keyspace(crate::keyspaces::VAULT)?;
 
     let records: Vec<StoredVaultEntry> = match (&args.entries_file, &args.context) {
         (Some(path), _) => load_records_from_file(path)?,
@@ -113,7 +113,7 @@ pub async fn run_vault_seed(args: VaultSeedArgs) -> Result<(), Box<dyn std::erro
         put_stored_vault_entry(&vault_ks, r).await?;
         eprintln!("seeded: {} ({})", r.entry.label, r.entry.id);
     }
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!();
     eprintln!("Seeded {} vault entries.", records.len());
@@ -304,8 +304,8 @@ pub struct VaultWipeArgs {
 
 pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
-    let vault_ks = store.keyspace(crate::keyspaces::VAULT)?;
+    let cs = CliStore::open(&config).await?;
+    let vault_ks = cs.keyspace(crate::keyspaces::VAULT)?;
 
     // Enumerate every key under the `vault:` prefix. We use the raw
     // iterator so a deserialise failure on a single row doesn't abort
@@ -383,7 +383,7 @@ pub async fn run_vault_wipe(args: VaultWipeArgs) -> Result<(), Box<dyn std::erro
     for key in to_delete {
         vault_ks.remove(key).await?;
     }
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!(
         "Wiped {} vault row(s){}.",

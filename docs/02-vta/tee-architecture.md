@@ -234,7 +234,10 @@ A transparent encryption layer that wraps `KeyspaceHandle`:
 /// Wraps a KeyspaceHandle to encrypt all values with AES-256-GCM.
 ///
 /// In TEE mode, all data written to fjall passes through this layer.
-/// In non-TEE mode, this layer is bypassed (identity transform).
+/// In non-TEE mode, this layer is bypassed (identity transform)
+/// unless hardened configuration is enabled (`[hardened] enabled = true`),
+/// in which case the storage key is HKDF-derived from the master seed and
+/// the same VAE1 encryption activates. See `hardened_bootstrap.rs`.
 pub struct EncryptedKeyspaceHandle {
     inner: KeyspaceHandle,
     /// AES-256-GCM key derived from master seed via HKDF
@@ -419,6 +422,11 @@ Start REST/DIDComm/Storage threads (normal flow)
 
 In non-TEE mode, the startup sequence is unchanged — `bootstrap_secrets_from_kms()`
 is skipped, and the existing SeedStore/config-based key loading is used.
+When **hardened configuration** is enabled (`[hardened] enabled = true`),
+`hardened_bootstrap::load_boot_secrets()` runs instead: it loads the master
+seed from the external secret store, HKDF-derives the storage-encryption key,
+and loads (or generates) the JWT signing key from the `bootstrap` keyspace.
+See [hardened configuration](non-interactive-setup.md#hardened-configuration) for details.
 
 ### Self-issued did:webvh identity and resolution
 

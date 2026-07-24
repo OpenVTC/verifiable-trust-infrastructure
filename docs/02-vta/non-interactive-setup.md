@@ -169,6 +169,8 @@ summary.
 - **`[secrets]`** — required; tagged enum on `backend`. See below.
 - **`[messaging]`** — optional; tagged enum on `kind`. Default `"skip"`.
 - **`[vta_did]`** — optional; tagged enum on `kind`. Default `"skip"`.
+- **`[hardened]`** — optional; disabled by default. Enables storage encryption
+  and sealed JWT key management for non-TEE deployments. See below.
 
 ### Seed-store backends
 
@@ -410,3 +412,41 @@ original from the ACL, same as the classic flow.
   treated as orphaned and falls through to the generic
   "not-configured" error path; re-run `pnm setup --name … --overwrite`
   to reset.
+
+### Hardened configuration
+
+Enables **storage encryption** (all fjall keyspaces AES-256-GCM encrypted,
+identical VAE1 format to TEE) and **sealed JWT key management** (random key
+generated at first boot, AES-GCM sealed in the `bootstrap` keyspace,
+fingerprint-verified on every subsequent boot — never written to
+`config.toml`). Disabled by default; no changes to existing behaviour unless
+`enabled = true` is set.
+
+This is the non-TEE equivalent of TEE layer 3 (encrypted storage). The trust anchor shifts from the Nitro Enclave / KMS to the configured `[secrets]` backend — pick a production-grade one.
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Enable hardened configuration. All fjall keyspaces are encrypted with AES-256-GCM (same VAE1 format as TEE). JWT signing key is randomly generated, AES-GCM sealed, and stored in the `bootstrap` keyspace — absent from `config.toml`. |
+| `storage_key_salt` | `"vta-storage-v1"` | HKDF salt for the storage-encryption key. **Set a unique value and treat it as permanent** — changing it after first boot invalidates all encrypted data. |
+
+Requires a real `[secrets]` backend (OS keyring, AWS SM, GCP SM, …). The
+`plaintext` file fallback provides no protection since an attacker who can read
+the seed file can re-derive the storage key.
+
+```toml
+[hardened]
+enabled          = true
+storage_key_salt = "my-unique-per-vta-salt"   # permanent — never change after first boot
+```
+
+To rotate the JWT signing key (invalidates all existing sessions):
+
+```bash
+# Stop the daemon, then:
+vta --config /path/to/config.toml hardened rotate-jwt
+# Restart the daemon — a new key is generated on first boot.
+```
+
+See [Secret-storage backends](secret-backends.md) for backend selection
+guidance, and [Security model](../01-concepts/security-model.md#layer-3-encrypted-storage)
+for where this fits in the defense-in-depth layers.

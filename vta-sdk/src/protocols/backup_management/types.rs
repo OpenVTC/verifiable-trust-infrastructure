@@ -150,6 +150,21 @@ impl std::fmt::Debug for BackupPayload {
     }
 }
 
+// Zeroize sensitive string fields on drop so key material is overwritten when
+// the struct goes out of scope (e.g. after the Argon2id+AES-GCM envelope is
+// written). Gated on `sealed-transfer` because that feature is what pulls in
+// the `zeroize` dependency in `vta-sdk`.
+#[cfg(feature = "sealed-transfer")]
+impl Drop for BackupPayload {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.active_seed_hex.zeroize();
+        if let Some(ref mut k) = self.jwt_signing_key {
+            k.zeroize();
+        }
+    }
+}
+
 /// An imported secret included in the backup payload.
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -165,6 +180,14 @@ impl std::fmt::Debug for ImportedSecretBackup {
             .field("key_id", &self.key_id)
             .field("private_key_hex", &"<redacted>")
             .finish()
+    }
+}
+
+#[cfg(feature = "sealed-transfer")]
+impl Drop for ImportedSecretBackup {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.private_key_hex.zeroize();
     }
 }
 

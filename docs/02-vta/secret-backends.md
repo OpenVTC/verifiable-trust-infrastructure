@@ -556,6 +556,16 @@ Is this a developer workstation?
 | Extra infra required | cloud SM | cloud SM | cloud KV | Vault | none (in-cluster) | KMS | none | none | none |
 | Production-ready | ✅ | ✅ | ✅ | ✅ | ✅ (with etcd enc.) | ✅ | dev only | dev only | never |
 
+> **Hardened configuration and secret-store backends.** When
+> `[hardened] enabled = true`, the same secret backend that holds the
+> master seed is also used to derive the **storage-encryption key** (via
+> HKDF-SHA256) and to unseal the **JWT signing key** on every daemon
+> boot. This means the backend you choose here determines the trust anchor
+> for all at-rest encryption — pick a production-grade backend (AWS SM,
+> GCP SM, Azure KV, Vault, OS keyring) rather than `plaintext` or
+> `config_seed` if you enable hardened configuration. See
+> [hardened configuration](non-interactive-setup.md#hardened-configuration) for the full details.
+
 ## Migrating between backends
 
 Every backend stores the seed as the **same hex-encoded string**, so

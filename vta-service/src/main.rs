@@ -221,6 +221,11 @@ enum Commands {
         #[command(subcommand)]
         command: AclCommands,
     },
+    /// Hardened configuration management (offline; requires `[hardened] enabled = true`).
+    Hardened {
+        #[command(subcommand)]
+        command: HardenedCommands,
+    },
     /// Manage keys (offline, no server required)
     Keys {
         #[command(subcommand)]
@@ -1188,6 +1193,21 @@ enum AuthCommands {
 }
 
 #[derive(Subcommand)]
+enum HardenedCommands {
+    /// Rotate the JWT signing key (hardened configuration).
+    ///
+    /// Deletes `hardened:jwt_ciphertext` and `hardened:jwt_fingerprint` from
+    /// the `bootstrap` keyspace. On next daemon start a new random 32-byte JWT
+    /// key is generated, sealed under the storage key, and stored — all
+    /// existing sessions and access tokens are immediately invalidated.
+    ///
+    /// Requires `[hardened] enabled = true` in `config.toml`.
+    /// The daemon must be stopped before running this command (fjall holds an
+    /// exclusive lock per data dir).
+    RotateJwt,
+}
+
+#[derive(Subcommand)]
 enum AclCommands {
     /// Create an ACL entry.
     ///
@@ -1624,6 +1644,15 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Hardened { command }) => {
+            let result = match command {
+                HardenedCommands::RotateJwt => run_hardened_rotate_jwt(cli.config).await,
+            };
+            if let Err(e) = result {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Vault { command }) => match command {
             VaultCommands::Seed {
                 entries_file,
@@ -2051,7 +2080,7 @@ async fn main() {
             }
         }
         None => {
-            let config = match AppConfig::load(cli.config) {
+            let mut config = match AppConfig::load(cli.config) {
                 Ok(config) => config,
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -2071,11 +2100,93 @@ async fn main() {
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
+            // Hardened configuration (PoC): derive the storage-encryption key and the JWT
+            // signing key from the master seed so neither secret lives in
+            // config.toml or on disk.  Mirrors what `vta-enclave` does inside a
+            // Nitro enclave without requiring KMS.  See `hardened.rs`.
+            let storage_encryption_key = if config.hardened.enabled {
+                // Gap 4: if VTA_AUTH_JWT_SIGNING_KEY is set in the environment, its
+                // value would sit in /proc/<pid>/environ visible to root even though
+                // hardened configuration never uses it (the derived/sealed key overwrites
+                // config.auth.jwt_signing_key below). Remove it from the process
+                // environment immediately so it is no longer visible after this point.
+                if std::env::var("VTA_AUTH_JWT_SIGNING_KEY").is_ok() {
+                    tracing::warn!(
+                        "SECURITY: VTA_AUTH_JWT_SIGNING_KEY was set in the environment but \
+                             hardened.enabled = true — the env var is not used and \
+                             has been removed from the process environment. Remove it from your \
+                             deployment configuration to avoid this warning."
+                    );
+                    // SAFETY: single-threaded at this point in main() — no other thread
+                    // is reading environment variables concurrently.
+                    #[allow(unused_unsafe)]
+                    unsafe {
+                        std::env::remove_var("VTA_AUTH_JWT_SIGNING_KEY")
+                    };
+                }
+
+                // Warn only when the factory would actually fall back to the plaintext
+                // file backend: no cloud/vault/k8s/config-seed field is set AND the
+                // keyring feature is not compiled in (keyring is in the default features,
+                // so this warning fires only in non-default/stripped builds).
+                let looks_like_plaintext_backend = config.secrets.seed.is_none()
+                    && config.secrets.aws_secret_name.is_none()
+                    && config.secrets.gcp_project.is_none()
+                    && config.secrets.azure_vault_url.is_none()
+                    && config.secrets.vault_addr.is_none()
+                    && config.secrets.k8s_secret_name.is_none()
+                    && !cfg!(feature = "keyring");
+                if looks_like_plaintext_backend {
+                    tracing::warn!(
+                        "hardened configuration is enabled but the [secrets] backend appears to be \
+                             the plaintext file fallback — the storage-encryption and JWT signing \
+                             keys can be re-derived by anyone who reads the seed file. Use a real \
+                             secret-store backend (OS keyring, aws-secrets, gcp-secrets, …) for \
+                             meaningful protection"
+                    );
+                }
+
+                let bootstrap_ks = store
+                    .keyspace(crate::keyspaces::BOOTSTRAP)
+                    .expect("failed to open bootstrap keyspace");
+
+                // Load seed, derive storage_key, load/generate jwt_key.
+                // HardenedBootSecrets zeroizes all fields on drop —
+                // mirrors TEE's BootstrappedSecrets pattern.
+                let boot_secrets =
+                    hardened_bootstrap::load_boot_secrets(&config, &*seed_store, &bootstrap_ks)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::error!("{e}");
+                            std::process::exit(1);
+                        });
+
+                store
+                    .persist()
+                    .await
+                    .expect("failed to persist bootstrap keyspace");
+
+                // Encode jwt_key into in-memory config — never written to config.toml.
+                // The raw [u8;32] in boot_secrets is zeroized when it drops below.
+                config.auth.jwt_signing_key = Some(BASE64.encode(boot_secrets.jwt_key));
+                let storage_key_copy = boot_secrets.storage_key;
+                // boot_secrets drops here → jwt_key and storage_key are zeroized.
+
+                tracing::info!(
+                    "hardened: storage-encryption key derived from seed, \
+                         JWT signing key loaded from bootstrap keyspace (neither stored on disk)"
+                );
+
+                Some(storage_key_copy)
+            } else {
+                None // standard non-TEE: plaintext fjall, JWT key from config.toml
+            };
+
             if let Err(e) = server::run(
                 config,
                 store,
                 seed_store,
-                None, // no storage encryption (non-TEE mode)
+                storage_encryption_key,
                 None, // no TEE context (use vta-enclave for TEE mode)
                 cli.allow_degraded,
                 cli.flush_queues,
@@ -2199,6 +2310,72 @@ fn print_banner() {
 
 /// Check if the VTA is sealed; exit with an error if so.
 /// Called before any CLI command that modifies state.
+/// `vta hardened rotate-jwt` — clear the sealed JWT signing key so the daemon
+/// generates a new random key on next boot.
+///
+/// Deletes `hardened:jwt_ciphertext` and `hardened:jwt_fingerprint` from the
+/// `bootstrap` keyspace. The daemon must be stopped before running this (fjall
+/// exclusive lock); restart it after to apply the new key. All existing sessions
+/// and access tokens are invalidated when the daemon boots with the new key.
+async fn run_hardened_rotate_jwt(
+    config_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+
+    if !config.hardened.enabled {
+        return Err(
+            "hardened.enabled is not enabled — this command only applies \
+             to VTAs running in hardened configuration"
+                .into(),
+        );
+    }
+
+    let store = store::Store::open(&config.store)?;
+    // The bootstrap keyspace is intentionally unencrypted at the keyspace level;
+    // the JWT ciphertext inside it is application-layer encrypted.
+    let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
+
+    let ct_present = bootstrap_ks
+        .get_raw(hardened_bootstrap::HARDENED_JWT_CT_KEY)
+        .await?
+        .is_some();
+    let fp_present = bootstrap_ks
+        .get_raw(hardened_bootstrap::HARDENED_JWT_FINGERPRINT_KEY)
+        .await?
+        .is_some();
+
+    if !ct_present && !fp_present {
+        eprintln!("Nothing to rotate — no sealed JWT key found in the bootstrap keyspace.");
+        return Ok(());
+    }
+
+    bootstrap_ks
+        .remove(hardened_bootstrap::HARDENED_JWT_CT_KEY)
+        .await?;
+    bootstrap_ks
+        .remove(hardened_bootstrap::HARDENED_JWT_FINGERPRINT_KEY)
+        .await?;
+    store.persist().await?;
+
+    eprintln!();
+    eprintln!("\x1b[1;32mJWT signing key rotation prepared.\x1b[0m");
+    eprintln!();
+    eprintln!("  Deleted: hardened:jwt_ciphertext");
+    eprintln!("  Deleted: hardened:jwt_fingerprint");
+    eprintln!();
+    eprintln!("  On next daemon start a new random JWT key will be generated,");
+    eprintln!("  sealed under the storage key, and stored in the bootstrap keyspace.");
+    eprintln!();
+    eprintln!("  \x1b[1;33mAll existing sessions and access tokens are invalidated\x1b[0m");
+    eprintln!("  once the daemon restarts with the new key.");
+    eprintln!();
+    eprintln!("  Restart the daemon to apply:");
+    eprintln!("    vta --config {}", config.config_path.display());
+    eprintln!();
+
+    Ok(())
+}
+
 async fn check_seal(config_path: &Option<PathBuf>) {
     let config = match AppConfig::load(config_path.clone()) {
         Ok(c) => c,
@@ -2208,7 +2385,18 @@ async fn check_seal(config_path: &Option<PathBuf>) {
         Ok(s) => s,
         Err(_) => return, // Store not openable — let the actual command handle it
     };
-    if let Err(e) = seal::require_unsealed(&store).await {
+    // In hardened configuration the ACL keyspace is encrypted — derive the storage key
+    // so the seal row can be decrypted and the proper "VTA is sealed" error is
+    // emitted instead of an opaque JSON-parse failure.
+    let acl_ks = match store.keyspace(crate::keyspaces::ACL) {
+        Ok(ks) => match cli_store::load_storage_key_for_cli(&config).await {
+            Ok(Some(key)) => ks.with_encryption(key),
+            Ok(None) => ks,
+            Err(_) => return, // seed unavailable — let the actual command surface the error
+        },
+        Err(_) => return,
+    };
+    if let Err(e) = seal::require_unsealed(&acl_ks).await {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
@@ -2221,8 +2409,8 @@ async fn run_bootstrap_admin(
     label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = store::Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = cli_store::CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     // Check if already sealed
     if let Some(existing) = seal::get_seal(&acl_ks).await? {
@@ -2270,7 +2458,7 @@ async fn run_bootstrap_admin(
     // Seal the VTA
     let seal_record = seal::seal(&acl_ks, &did).await?;
 
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!();
     eprintln!("=== VTA Bootstrapped and Sealed ===");
@@ -2531,7 +2719,11 @@ async fn auth_sign_challenge(
     let key_id = format!("{did}#{multibase}");
 
     let store = store::Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let keys_ks = match cli_store::load_storage_key_for_cli(&config).await {
+        Ok(Some(key)) => store.keyspace(crate::keyspaces::KEYS)?.with_encryption(key),
+        Ok(None) => store.keyspace(crate::keyspaces::KEYS)?,
+        Err(e) => return Err(format!("hardened: {e}").into()),
+    };
     let record: KeyRecord = keys_ks
         .get(keys::store_key(&key_id))
         .await?
@@ -2579,9 +2771,9 @@ async fn auth_sign_challenge(
 
 async fn export_admin(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = store::Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let cs = cli_store::CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     let vta_did = config.vta_did.as_deref().unwrap_or("(not set)");

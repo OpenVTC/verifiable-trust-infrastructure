@@ -2,12 +2,12 @@ use std::path::PathBuf;
 
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::keys::derivation::Bip32Extension;
 use crate::keys::seed_store::create_seed_store;
 use crate::keys::seeds::load_seed_bytes;
 use crate::keys::{self, KeyRecord, KeyStatus, KeyType};
-use crate::store::Store;
 
 /// Format a UTC `DateTime` as a readable local-timezone string with ISO offset.
 ///
@@ -32,8 +32,8 @@ pub async fn run_keys_list(
         .transpose()?;
 
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
 
     let raw = keys_ks.prefix_iter_raw("key:").await?;
 
@@ -72,8 +72,8 @@ pub async fn run_keys_secrets(
     context: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     // Resolve key IDs: explicit args or all active keys in a context
@@ -168,8 +168,8 @@ pub async fn run_keys_seeds_list(
     config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
 
     let active_id = keys::seeds::get_active_seed_id(&keys_ks).await?;
     let records = keys::seeds::list_seed_records(&keys_ks).await?;
@@ -214,8 +214,8 @@ pub async fn run_rotate_seed(
     mnemonic: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
     let seed_store = create_seed_store(&config)?;
 
     let current_id = keys::seeds::get_active_seed_id(&keys_ks).await?;
@@ -240,7 +240,7 @@ pub async fn run_rotate_seed(
 
     let new_id = keys::seeds::rotate_seed(&keys_ks, &*seed_store, mnemonic.as_deref()).await?;
 
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!();
     eprintln!("\x1b[1;32mSeed rotated successfully.\x1b[0m");

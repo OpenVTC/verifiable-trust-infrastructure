@@ -2,10 +2,12 @@ use crate::acl::{
     AclEntry, ApproveScope, ContextDirection, Role, acl_entry_matches_context, delete_acl_entry,
     get_acl_entry, list_acl_entries, store_acl_entry,
 };
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
-use crate::store::Store;
 use chrono::{TimeZone, Utc};
 use dialoguer::Confirm;
+#[allow(unused_imports)]
+use std::ops::Deref as _;
 use std::path::PathBuf;
 
 /// Create an ACL entry directly in the store.
@@ -137,8 +139,8 @@ pub async fn run_acl_list(
     }
 
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     let mut entries = list_acl_entries(&acl_ks).await?;
 
@@ -179,8 +181,8 @@ pub async fn run_acl_get(
     did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     let entry = get_acl_entry(&acl_ks, &did)
         .await?
@@ -237,8 +239,8 @@ pub async fn run_acl_update(
     let new_role = role.map(|r| Role::parse(&r)).transpose()?;
 
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     let mut entry = get_acl_entry(&acl_ks, &did)
         .await?
@@ -275,7 +277,7 @@ pub async fn run_acl_update(
     }
 
     store_acl_entry(&acl_ks, &entry).await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("ACL entry updated:\n");
     print_entry_details(&entry);
@@ -288,8 +290,8 @@ pub async fn run_acl_delete(
     skip_confirm: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     let entry = get_acl_entry(&acl_ks, &did)
         .await?
@@ -309,7 +311,7 @@ pub async fn run_acl_delete(
     }
 
     delete_acl_entry(&acl_ks, &did).await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("ACL entry deleted: {did}");
     Ok(())

@@ -65,10 +65,11 @@ pub async fn get_seal(acl_ks: &KeyspaceHandle) -> Result<Option<SealRecord>, App
 
 /// Check if the VTA is sealed, and exit with an error if it is.
 ///
-/// Call this at the top of any CLI command that modifies state.
-pub async fn require_unsealed(store: &Store) -> Result<(), AppError> {
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
-    if let Some(seal) = get_seal(&acl_ks).await? {
+/// Accepts the ACL keyspace handle directly so the caller controls whether it
+/// is encrypted (hardened configuration) or bare. Call this at the top of any CLI
+/// command that modifies state.
+pub async fn require_unsealed(acl_ks: &KeyspaceHandle) -> Result<(), AppError> {
+    if let Some(seal) = get_seal(acl_ks).await? {
         return Err(AppError::Config(format!(
             "VTA is sealed (by {} on {}). \
              Offline CLI commands are disabled. \

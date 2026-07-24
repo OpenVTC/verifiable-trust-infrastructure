@@ -228,3 +228,27 @@ kind               = "create_webvh"
 url                = "https://trust.example.com/dids/vta"
 portable           = true   # default true — DID can move to a different domain later
 pre_rotation_count = 2      # default 1; recommended 1–3
+
+# ---------------------------------------------------------------------------
+# Hardened non-TEE mode (optional; default = disabled)
+#
+# When enabled, closes two security gaps present in standard vta-service:
+#   1. Storage encryption — all 23 fjall keyspaces encrypted with AES-256-GCM
+#      (VAE1 format, same as TEE mode). Key derived from master seed via HKDF.
+#   2. JWT signing key — randomly generated on first boot, AES-GCM sealed in
+#      the `bootstrap` keyspace. Never written to config.toml.
+#
+# Requires the [secrets] backend to be a real secret store (OS keyring, cloud
+# SM, …). The plaintext file fallback defeats the protection.
+#
+# storage_key_salt: treat as a permanent constant per VTA instance. Changing
+# it after first boot invalidates all encrypted data. Set a unique value so
+# two VTAs with the same seed (e.g. disaster-recovery clone) have independent
+# storage keys.
+#
+# To rotate the JWT signing key without touching the seed:
+#   vta --config <path> hardened rotate-jwt   # daemon must be stopped
+# ---------------------------------------------------------------------------
+# [hardened]
+# enabled          = true
+# storage_key_salt = "choose-a-unique-string-per-vta"   # permanent — never change
