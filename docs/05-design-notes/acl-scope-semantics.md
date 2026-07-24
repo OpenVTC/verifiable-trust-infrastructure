@@ -106,29 +106,28 @@ surface to a context admin merely by being unrestricted.
 
 ## What this does *not* change
 
-Two conflations are preserved deliberately, because removing either is a
-change in authorization rather than in structure:
+One conflation is preserved deliberately, because removing it is a change in
+authorization rather than in structure:
 
-1. **`validate_acl_modification` still refuses an empty target to any
-   non-super-admin.** It receives `target_contexts` without a role, so it
-   cannot distinguish "grant nothing" (`None`) from "grant everything"
-   (`All`) — and refuses both. The consequence is that only a super-admin can
-   create a least-privilege approver, which is the very shape the CLI
-   recommends.
+- **`validate_acl_modification` still refuses an empty target to any
+  non-super-admin.** It receives `target_contexts` without a role, so it
+  cannot distinguish "grant nothing" (`None`) from "grant everything"
+  (`All`) — and refuses both. The consequence is that only a super-admin can
+  create a least-privilege approver, which is the very shape the CLI
+  recommends.
 
-2. **The admin path in `delegated_any_approver_covers` matches contexts with
-   exact membership, not `covers()`.** The approve-scope path in the same
-   function is ancestry-aware, so a context admin's conferral is narrower than
-   an equivalent explicit `ApproveScope` grant. Probably an oversight, but
-   widening it changes who may ratify a step-up.
+It is flagged where it occurs.
 
-Both are flagged where they occur.
+(The admin path in `delegated_any_approver_covers` used exact membership where
+the approve-scope path beside it used ancestry; that inconsistency has since
+been resolved — the admin path is ancestry-aware too, matching the ACL-gate
+rule in `hierarchical-contexts.md`.)
 
 ## Remaining work
 
-- **The two conflations above**, each as its own reviewed change. Note the
-  first one interacts with the read/manage split: a context admin still cannot
-  *create* the least-privilege approver that they can now *audit*.
+- **The remaining conflation above** (`validate_acl_modification`), as its own
+  reviewed change. It interacts with the read/manage split: a context admin
+  still cannot *create* the least-privilege approver that they can now *audit*.
 - **`reader + All`** ("may read every context, admin nowhere") is expressible
   in the type but unreachable through the decode table, since `All` requires
   `Role::Admin`. If it is ever wanted it needs a stored representation — i.e.

@@ -793,12 +793,21 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
         ActScope::All => true,
         // Context admin: the subject must itself be context-scoped, and every
         // one of its contexts must fall within the approver's. A global subject
-        // needs a super-admin approver (handled above). Exact membership, not
-        // ancestry — preserved verbatim from the pre-`ActScope` code; widening
-        // it to `covers` would be a behaviour change, not a refactor.
-        ActScope::Contexts(approver_ctxs) => match subject.act_scope() {
+        // needs a super-admin approver (handled above).
+        //
+        // Ancestry-aware, via the same `covers` the approve-scope path above
+        // uses. This was an exact `contains` until now, which made a context
+        // admin's conferral *narrower* than an equivalent explicit
+        // `ApproveScope` grant and contradicted the stated ACL-gate rule —
+        // "any `allowed_contexts` entry `is_ancestor_or_self` of the target"
+        // (`docs/05-design-notes/hierarchical-contexts.md`). The helper landed
+        // five days before this function was written and simply was not reached
+        // for. While contexts stay flat the two are identical; they diverge
+        // only once sub-contexts exist, which is exactly the case the hierarchy
+        // work intended to cover.
+        approver_scope @ ActScope::Contexts(_) => match subject.act_scope() {
             ActScope::Contexts(subject_ctxs) => {
-                subject_ctxs.iter().all(|c| approver_ctxs.contains(c))
+                subject_ctxs.iter().all(|c| approver_scope.covers(c))
             }
             _ => false,
         },
@@ -891,6 +900,68 @@ mod delegated_any_tests {
     fn subject(role: Role, contexts: &[&str]) -> AclEntry {
         AclEntry::new("did:key:zSubject", role, "did:key:zCreator")
             .with_contexts(contexts.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// A context admin of a *parent* may ratify for a subject scoped to its
+    /// subtree. This was refused until now — the admin path used exact
+    /// membership while the approve-scope path beside it used ancestry, making
+    /// admin standing narrower than an equivalent explicit `ApproveScope`
+    /// grant and contradicting the ACL-gate rule in
+    /// `docs/05-design-notes/hierarchical-contexts.md`.
+    #[test]
+    fn context_admin_covers_a_subject_in_its_subtree() {
+        let approver = admin(&["acme"]);
+        assert!(
+            delegated_any_approver_covers(&approver, &subject(Role::Reader, &["acme/eng"])),
+            "an admin of `acme` administers `acme/eng`, so it may ratify for it"
+        );
+        assert!(
+            delegated_any_approver_covers(
+                &approver,
+                &subject(Role::Reader, &["acme/eng", "acme/sales"])
+            ),
+            "…and for a subject scoped to several of its descendants"
+        );
+    }
+
+    /// The segment-aware guard still holds: a sibling with a shared string
+    /// prefix is not a descendant.
+    #[test]
+    fn context_admin_does_not_cover_a_prefix_sibling() {
+        let approver = admin(&["acme"]);
+        assert!(
+            !delegated_any_approver_covers(&approver, &subject(Role::Reader, &["acme-evil"])),
+            "`acme` must not cover `acme-evil` — segments, not string prefixes"
+        );
+    }
+
+    /// A subject holding *any* context outside the approver's subtree is still
+    /// refused — widening to ancestry must not become "covers if it covers one".
+    #[test]
+    fn context_admin_refuses_a_subject_partly_outside_its_subtree() {
+        let approver = admin(&["acme"]);
+        assert!(
+            !delegated_any_approver_covers(
+                &approver,
+                &subject(Role::Reader, &["acme/eng", "other"])
+            ),
+            "every subject context must fall within the approver's"
+        );
+    }
+
+    /// Flat contexts behave exactly as before, which is why this is safe to
+    /// change now: the two readings only diverge once sub-contexts exist.
+    #[test]
+    fn flat_contexts_are_unchanged_by_ancestry() {
+        let approver = admin(&["ctx-a"]);
+        assert!(delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Reader, &["ctx-a"])
+        ));
+        assert!(!delegated_any_approver_covers(
+            &approver,
+            &subject(Role::Reader, &["ctx-b"])
+        ));
     }
 
     #[test]
