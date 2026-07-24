@@ -231,10 +231,13 @@ async fn authenticate_and_mint(
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(body)
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+        .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
 
     // Canonical Trust-Task URI only; the legacy `affinidi.com/atm/1.0`
     // alias was removed (all VTC clients emit the canonical type).
@@ -252,16 +255,6 @@ async fn authenticate_and_mint(
     let session_id = msg.body["session_id"]
         .as_str()
         .ok_or_else(|| AppError::Authentication("missing session_id in message body".into()))?
-        .to_string();
-
-    let sender_did = msg
-        .from
-        .as_deref()
-        .ok_or_else(|| AppError::Authentication("message has no sender (from)".into()))?;
-    let sender_base = sender_did
-        .split('#')
-        .next()
-        .unwrap_or(sender_did)
         .to_string();
 
     let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
@@ -773,10 +766,15 @@ pub async fn refresh(
         .as_ref()
         .ok_or_else(|| AppError::Authentication("ATM not configured".into()))?;
 
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(&body)
         .await
         .map_err(|e| AppError::Authentication(format!("failed to unpack message: {e}")))?;
+
+    // The opaque refresh token is the credential, but `handle_refresh` still
+    // binds `msg.from` to the session DID — so require the same authcrypt gate.
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+        .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
     // Canonical Trust-Task URI only; the legacy
     // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
@@ -791,17 +789,13 @@ pub async fn refresh(
         .as_str()
         .ok_or_else(|| AppError::Authentication("missing refresh_token in message body".into()))?
         .to_string();
-    let sender_base = msg
-        .from
-        .as_deref()
-        .map(|s| s.split('#').next().unwrap_or(s).to_string());
 
     let backend = crate::auth::VtcAuthBackend::from_state(&state).await?;
     let resp = vti_common::auth::handlers::handle_refresh(
         &backend,
         vti_common::auth::RefreshInput {
             refresh_token,
-            signer_did: sender_base,
+            signer_did: Some(sender_base),
         },
     )
     .await?;

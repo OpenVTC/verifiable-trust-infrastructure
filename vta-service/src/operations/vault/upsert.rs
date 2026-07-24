@@ -36,18 +36,21 @@ pub async fn unseal_secret(
     caller_did: &str,
     jwe: &str,
 ) -> Result<VaultSecret, UnsealError> {
-    let (msg, _metadata) = atm
+    let (msg, metadata) = atm
         .unpack(jwe)
         .await
         .map_err(|e| UnsealError::UnpackFailed(e.to_string()))?;
 
-    // Cross-check: the authcrypt sender's DID must equal the authenticated
-    // caller.
-    let sender = msg
-        .from
-        .as_deref()
-        .map(|s| s.split('#').next().unwrap_or(s).to_string())
-        .ok_or(UnsealError::MissingSender)?;
+    // One call does both: reject non-authcrypt envelopes AND bind the sender to
+    // the cryptographically-authenticated key (`encrypted_from_kid`), not the
+    // attacker-controlled plaintext `from`. A missing sender maps to the
+    // `MissingSender` reject; anything else (plaintext/anoncrypt, or a `from`
+    // that doesn't match the authenticated key) is a `sealed_secret_invalid`.
+    let sender = vti_common::auth::bind_authcrypt_sender(&msg, &metadata).map_err(|e| match e {
+        vti_common::auth::AuthcryptError::NoFrom
+        | vti_common::auth::AuthcryptError::NoSenderKey => UnsealError::MissingSender,
+        other => UnsealError::UnpackFailed(other.message("sealed secret")),
+    })?;
     if sender != caller_did {
         return Err(UnsealError::SenderMismatch {
             sender,

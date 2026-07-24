@@ -498,6 +498,29 @@ impl MockVtc {
             .with_public_url("http://vtc.test")
             .build()
             .await;
+        Self::serve(vtc).await
+    }
+
+    /// Like [`start`](Self::start) but wires an offline messaging (ATM) handle
+    /// into `AppState.atm`, so the DIDComm branch of `POST /v1/auth/` reaches
+    /// `atm.unpack` instead of short-circuiting on "ATM not configured". Used
+    /// by the plaintext-forgery regression, which must exercise the
+    /// authcrypt guard rather than the missing-ATM early return. Build the
+    /// handle with [`build_offline_atm`].
+    pub async fn start_with_atm(atm: affinidi_tdk::messaging::ATM) -> MockVtc {
+        let vtc = TestVtc::builder()
+            .with_audit(true)
+            .with_signers(true)
+            .with_public_url("http://vtc.test")
+            .with_atm(atm)
+            .build()
+            .await;
+        Self::serve(vtc).await
+    }
+
+    /// Bind an ephemeral loopback port, serve the built `TestVtc`, and return
+    /// once it is bound and serving.
+    async fn serve(vtc: TestVtc) -> MockVtc {
         let router = vtc.router.clone();
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -553,6 +576,27 @@ impl Drop for MockVtc {
             handle.abort();
         }
     }
+}
+
+/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) for unit tests
+/// that need `atm.unpack` without a live mediator. No secrets and no network
+/// mode are configured, so it can unpack a **plaintext** DIDComm envelope
+/// (which needs no keys) but not decrypt a JWE — exactly what the
+/// plaintext-forgery regression needs. Pair with [`MockVtc::start_with_atm`].
+pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::messaging::config::ATMConfig;
+
+    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
+        .await
+        .expect("TDK shared state");
+    affinidi_tdk::messaging::ATM::new(
+        ATMConfig::builder().build().expect("ATM config"),
+        std::sync::Arc::new(tdk),
+    )
+    .await
+    .expect("offline ATM")
 }
 
 #[cfg(feature = "didcomm-harness")]

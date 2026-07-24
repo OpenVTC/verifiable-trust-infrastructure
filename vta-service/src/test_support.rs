@@ -651,6 +651,35 @@ pub struct TestAppOptions {
     /// applied at build time, so `create_did_webvh` finds the server.
     #[cfg(feature = "webvh")]
     pub webvh_servers: Vec<(String, String)>,
+
+    /// Optional messaging (ATM) handle to wire into `AppState.atm`. The
+    /// default (`None`) leaves the app REST-only, so the DIDComm branch of
+    /// `POST /auth/` short-circuits on "ATM not configured". Tests that need
+    /// to exercise `atm.unpack` (e.g. the plaintext-forgery guard)
+    /// build an offline ATM via [`build_offline_atm`] and pass it here.
+    pub atm: Option<affinidi_tdk::messaging::ATM>,
+}
+
+/// Build a fully-offline [`ATM`](affinidi_tdk::messaging::ATM) suitable for
+/// unit tests that need `atm.unpack` without a live mediator. No secrets and
+/// no network mode are configured, so it can unpack a **plaintext** DIDComm
+/// envelope (which needs no keys) but not decrypt a JWE. That's exactly what
+/// the plaintext-forgery regression needs: prove the handler rejects an
+/// unauthenticated envelope after unpack.
+pub async fn build_offline_atm() -> affinidi_tdk::messaging::ATM {
+    use affinidi_tdk::common::TDKSharedState;
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::messaging::config::ATMConfig;
+
+    let tdk = TDKSharedState::new(TDKConfig::builder().build().expect("TDK config"))
+        .await
+        .expect("TDK shared state");
+    affinidi_tdk::messaging::ATM::new(
+        ATMConfig::builder().build().expect("ATM config"),
+        Arc::new(tdk),
+    )
+    .await
+    .expect("offline ATM")
 }
 
 /// Spin up an in-memory router suitable for `tower::ServiceExt::oneshot`
@@ -875,7 +904,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
         #[cfg(feature = "tsp")]
         tsp_reach: Arc::new(crate::messaging::tsp_reach::TspReachability::new()),
         jwt_keys: Some(jwt_keys.clone()),
-        atm: None,
+        atm: opts.atm,
         #[cfg(feature = "tsp")]
         tsp_profile: None,
         tee: None,
@@ -1271,6 +1300,7 @@ impl MockVta {
             provisionable_vta: true,
             preseed_did_docs: vec![(server_did.clone(), server_doc)],
             webvh_servers: vec![(Self::WEBVH_SERVER_ID.to_string(), server_did)],
+            atm: None,
         };
         let mut mock = Self::serve(build_test_app_with(opts).await).await;
         mock.webvh_host = Some(host);

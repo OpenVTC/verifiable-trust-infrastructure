@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
-use affinidi_messaging_core::{Inbound, MessageTransport, Protocol};
+use affinidi_messaging_core::{Inbound, MessageTransport, Protocol, ReceivedMessage};
 use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
 use affinidi_messaging_didcomm::Message;
 use affinidi_tdk::common::TDKSharedState;
@@ -237,6 +237,61 @@ async fn handle_inbound(
     }
 }
 
+/// Outcome of the framework `MessagePolicy` gate for one inbound DIDComm frame,
+/// factored out of [`handle_didcomm`] so the policy is unit-testable without a
+/// live mediator socket. See [`inbound_gate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InboundGate {
+    /// The frame was not encrypted — reply `bad_request` ("must be encrypted").
+    NotEncrypted,
+    /// Encrypted, but the sender is anonymous or not cryptographically
+    /// verified — reply `unauthorized`. This is the branch that stops a
+    /// plaintext/forged sender from reaching a handler.
+    Unauthenticated,
+    /// Encrypted with a cryptographically-verified, non-anonymous sender —
+    /// dispatch to the handler as this DID.
+    Authenticated(String),
+}
+
+impl InboundGate {
+    /// The dispatchable sender DID, or `None` for a rejected frame.
+    fn authenticated_sender(&self) -> Option<&str> {
+        match self {
+            InboundGate::Authenticated(did) => Some(did.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Apply the framework `MessagePolicy` that gated EVERY route before dispatch:
+/// `require_encrypted(true)` + `require_authenticated(true)` +
+/// `allow_anonymous_sender(false)` (framework `middleware/policy.rs::check`).
+///
+/// Reads the transport-reported flags off the inbound [`ReceivedMessage`]:
+/// `message.encrypted`, `message.sender`, and `message.verified` (whether the
+/// transport *cryptographically authenticated* the sender). The only
+/// dispatchable frame is an encrypted one whose sender is both present and
+/// verified — so a plaintext frame (`encrypted == false`), an anonymous read
+/// (`sender == None`), or an unverified/forged sender (`verified == false`)
+/// is refused. Applied for ALL message types — not per-handler — so a handler
+/// that doesn't itself call `auth_from_message` (discovery, TEE status/
+/// attestation) still cannot be reached by an unauthenticated or anonymous
+/// sender, exactly as the removed middleware layer guaranteed. There is NO
+/// discovery exemption: the old policy layer required authcrypt for discovery
+/// too, so requiring it here is behaviour-preserving.
+fn inbound_gate(message: &ReceivedMessage) -> InboundGate {
+    if !message.encrypted {
+        return InboundGate::NotEncrypted;
+    }
+    match message.sender.as_deref() {
+        // `Some` iff the sender is cryptographically authenticated;
+        // absence collapses the framework's NotAuthenticated / AnonymousSender
+        // / MissingSenderDid violations into one branch.
+        Some(did) if message.verified => InboundGate::Authenticated(did.to_string()),
+        _ => InboundGate::Unauthenticated,
+    }
+}
+
 /// DIDComm inbound: rehydrate, stamp the verified sender, gate encryption,
 /// dispatch, pack + send the reply.
 async fn handle_didcomm(
@@ -255,17 +310,14 @@ async fn handle_didcomm(
     };
 
     // #620: the ONLY trusted sender is the cryptographically-authenticated one
-    // (`sender` filtered by `verified`). Capture the plaintext `from` first —
-    // solely as a best-effort *reply address* for anoncrypt public reads
-    // (never for auth) — then overwrite `from` so every handler's
-    // `auth_from_message` / `ctx.sender_did` sees only the proven sender (or
-    // `None`, which those reject).
+    // (`sender` filtered by `verified`, applied inside [`inbound_gate`]).
+    // Capture the plaintext `from` first — solely as a best-effort *reply
+    // address* for anoncrypt public reads (never for auth) — then overwrite
+    // `from` so every handler's `auth_from_message` / `ctx.sender_did` sees
+    // only the proven sender (or `None`, which those reject).
     let plaintext_from = msg.from.clone();
-    let auth_sender = inbound
-        .message
-        .sender
-        .clone()
-        .filter(|_| inbound.message.verified);
+    let gate = inbound_gate(&inbound.message);
+    let auth_sender = gate.authenticated_sender().map(str::to_string);
     msg.from = auth_sender.clone();
 
     // The reply target: the authenticated sender when present, else the
@@ -275,33 +327,24 @@ async fn handle_didcomm(
     let message_type = msg.typ.clone();
     let start = std::time::Instant::now();
 
-    // Faithful in-loop translation of the framework `MessagePolicy` that gated
-    // EVERY route before dispatch: require_encrypted(true) +
-    // require_authenticated(true) + allow_anonymous_sender(false) (framework
-    // `middleware/policy.rs::check`). Enforced here for ALL message types — not
-    // per-handler — so a handler that doesn't itself call `auth_from_message`
-    // (discovery, TEE status/attestation) cannot be reached by an unauthenticated
-    // or anonymous sender, exactly as the removed middleware layer guaranteed.
-    // `auth_sender` is `Some` iff the sender is cryptographically authenticated
-    // (#620), so its absence collapses the framework's NotAuthenticated /
-    // AnonymousSender / MissingSenderDid violations into one check. There is NO
-    // discovery exemption: the old policy layer required authcrypt for discovery
-    // too, so requiring it here is behaviour-preserving.
-    let reply = if !inbound.message.encrypted {
-        Some(DIDCommResponse::problem_report(ProblemReport::bad_request(
-            "DIDComm message must be encrypted",
-        )))
-    } else if auth_sender.is_none() {
-        Some(DIDCommResponse::problem_report(
+    // Faithful in-loop translation of the framework `MessagePolicy` — see
+    // [`inbound_gate`] for the full rationale (enforced for ALL message types,
+    // no discovery exemption).
+    let reply = match &gate {
+        InboundGate::NotEncrypted => Some(DIDCommResponse::problem_report(
+            ProblemReport::bad_request("DIDComm message must be encrypted"),
+        )),
+        InboundGate::Unauthenticated => Some(DIDCommResponse::problem_report(
             ProblemReport::unauthorized(
                 "DIDComm message must be authenticated (authcrypt) with a non-anonymous sender",
             ),
-        ))
-    } else {
-        let ctx = crate::messaging::shim::HandlerContext {
-            sender_did: auth_sender.clone(),
-        };
-        router::dispatch(msg, ctx, vta_state.clone(), app_state.clone()).await
+        )),
+        InboundGate::Authenticated(_) => {
+            let ctx = crate::messaging::shim::HandlerContext {
+                sender_did: auth_sender.clone(),
+            };
+            router::dispatch(msg, ctx, vta_state.clone(), app_state.clone()).await
+        }
     };
 
     info!(
@@ -381,5 +424,91 @@ async fn handle_tsp(
         .await
     {
         warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InboundGate, inbound_gate};
+    use affinidi_messaging_core::{Protocol, ReceivedMessage};
+
+    const SENDER: &str = "did:key:z6MkSenderUnderTest";
+
+    /// A minimal inbound [`ReceivedMessage`] carrying the three flags the gate
+    /// reads; the rest are fixed filler (the gate ignores them).
+    fn received(encrypted: bool, sender: Option<&str>, verified: bool) -> ReceivedMessage {
+        ReceivedMessage {
+            id: "urn:uuid:test".to_string(),
+            sender: sender.map(str::to_string),
+            recipient: "did:key:z6MkRecipient".to_string(),
+            payload: Vec::new(),
+            protocol: Protocol::DIDComm,
+            verified,
+            encrypted,
+        }
+    }
+
+    /// The happy path: an encrypted frame from a verified, non-anonymous
+    /// sender is dispatched as that DID.
+    #[test]
+    fn encrypted_and_verified_sender_is_authenticated() {
+        assert_eq!(
+            inbound_gate(&received(true, Some(SENDER), true)),
+            InboundGate::Authenticated(SENDER.to_string()),
+        );
+    }
+
+    /// Core case: an encrypted frame whose sender is present but
+    /// NOT cryptographically verified (a forged / plaintext-authenticated
+    /// `from`) must be refused — never dispatched as that DID.
+    #[test]
+    fn unverified_sender_is_rejected() {
+        assert_eq!(
+            inbound_gate(&received(true, Some(SENDER), false)),
+            InboundGate::Unauthenticated,
+        );
+        // And it must NOT leak the forged DID as a dispatchable sender.
+        assert_eq!(
+            inbound_gate(&received(true, Some(SENDER), false)).authenticated_sender(),
+            None,
+        );
+    }
+
+    /// An anonymous read (anoncrypt: encrypted, no sender) is refused — no
+    /// handler runs for an unauthenticated caller, matching the framework's
+    /// `allow_anonymous_sender(false)`.
+    #[test]
+    fn anonymous_encrypted_sender_is_rejected() {
+        assert_eq!(
+            inbound_gate(&received(true, None, false)),
+            InboundGate::Unauthenticated,
+        );
+        // Even a "verified" flag with no sender DID can't authenticate.
+        assert_eq!(
+            inbound_gate(&received(true, None, true)),
+            InboundGate::Unauthenticated,
+        );
+    }
+
+    /// A plaintext frame (the exact forged-sender exploit shape: forged `from`,
+    /// no encryption) is refused at the encryption gate, before the sender is
+    /// even considered.
+    #[test]
+    fn plaintext_frame_is_rejected() {
+        assert_eq!(
+            inbound_gate(&received(false, Some(SENDER), false)),
+            InboundGate::NotEncrypted,
+        );
+        // Not-encrypted dominates: even a "verified" plaintext sender is
+        // refused (an unreachable flag combo in practice, but the gate must
+        // never dispatch an unencrypted frame).
+        assert_eq!(
+            inbound_gate(&received(false, Some(SENDER), true)),
+            InboundGate::NotEncrypted,
+        );
+        assert_eq!(
+            inbound_gate(&received(false, Some(SENDER), true)).authenticated_sender(),
+            None,
+        );
     }
 }
