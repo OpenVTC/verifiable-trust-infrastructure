@@ -682,6 +682,18 @@ new flow, update both this section and the relevant `docs/*.md`.
 
 These are load-bearing — know they exist before adjusting nearby code.
 
+- **Never test `allowed_contexts.is_empty()`.** An empty context list on
+  an ACL entry means *unrestricted* for `Role::Admin` and *authorized
+  nowhere* for every other role, so any check that omits the role gets
+  one of the two backwards. That has already produced a display calling
+  a least-privilege approver "unrestricted" (#746), two `acl list
+  --context` filters that disagreed (#770), and a vault scope gate that
+  handed an authorized-nowhere entry cross-context credential reads
+  (#769). Go through `AclEntry::act_scope()` / `AuthClaims::act_scope()`
+  — or `has_context_access` / `can_act_in` / `is_super_admin`, which are
+  built on them — and match on the `ActScope`. Same shape as the
+  `ApproveScope` axis beside it in `vta-sdk/src/acl.rs`: act vs confer.
+  See `docs/05-design-notes/acl-scope-semantics.md`.
 - **Rate limit** on all unauth routes: `tower-governor` at 5 rps + 10
   burst per source IP (`vta-service/src/routes/mod.rs`). Keep JWT-gated
   routes off the limiter — auth is the gate.

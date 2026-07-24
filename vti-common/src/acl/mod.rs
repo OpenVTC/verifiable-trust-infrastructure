@@ -268,7 +268,33 @@ impl DeviceBinding {
 /// server crates. Only the *shape* is shared — every authorization rule over
 /// it ([`validate_approve_scope_grant`] below) stays here. Same arrangement as
 /// [`crate::context_path`].
-pub use vta_sdk::acl::ApproveScope;
+pub use vta_sdk::acl::{ActScope, ApproveScope};
+
+/// Decode the stored `(role, allowed_contexts)` pair into an explicit
+/// [`ActScope`].
+///
+/// This is the one and only interpretation of an empty `allowed_contexts`:
+///
+/// | role | `allowed_contexts` | scope |
+/// |---|---|---|
+/// | [`Role::Admin`] | `[]` | [`ActScope::All`] — super-admin |
+/// | any other | `[]` | [`ActScope::None`] — authorized nowhere |
+/// | any | non-empty | [`ActScope::Contexts`] |
+///
+/// Server-side rather than an inherent method on [`ActScope`], because the
+/// decode needs [`Role`], which lives here — `vta-sdk` shares the shape and the
+/// `covers` predicate, not the authorization policy over them.
+///
+/// **Call this (or one of the accessors built on it) instead of testing
+/// `allowed_contexts.is_empty()`.** That test is only correct when paired with
+/// the role, and every place that forgot the pairing has been a bug.
+pub fn act_scope_for(role: &Role, allowed_contexts: &[String]) -> ActScope {
+    match (role, allowed_contexts) {
+        (_, cs) if !cs.is_empty() => ActScope::Contexts(cs.to_vec()),
+        (Role::Admin, _) => ActScope::All,
+        _ => ActScope::None,
+    }
+}
 
 /// Validate that `caller` may grant `scope` on an ACL entry.
 ///
@@ -479,11 +505,22 @@ impl AclEntry {
         matches!(self.role, Role::Admin)
     }
 
-    /// Whether this entry is a **super-admin**: an admin with no context
-    /// restriction (empty `allowed_contexts` ⇒ unrestricted), mirroring
-    /// [`AuthClaims::is_super_admin`].
+    /// This entry's authority to **act**, decoded from `(role,
+    /// allowed_contexts)`. Use this rather than reading `allowed_contexts`
+    /// directly — see [`ActScope`] for why.
+    pub fn act_scope(&self) -> ActScope {
+        act_scope_for(&self.role, &self.allowed_contexts)
+    }
+
+    /// Whether this entry may act in `context_id`, honouring context ancestry.
+    pub fn can_act_in(&self, context_id: &str) -> bool {
+        self.act_scope().covers(context_id)
+    }
+
+    /// Whether this entry is a **super-admin**: an admin whose [`ActScope`] is
+    /// unrestricted, mirroring [`AuthClaims::is_super_admin`].
     pub fn is_super_admin(&self) -> bool {
-        self.is_admin() && self.allowed_contexts.is_empty()
+        self.is_admin() && self.act_scope().is_unrestricted()
     }
 
     /// Set the optimistic-concurrency version (defaults to 0).
@@ -732,9 +769,11 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
     match &approver.approve_scope {
         ApproveScope::All => return true,
         ApproveScope::Contexts(_) => {
-            if !subject.allowed_contexts.is_empty()
-                && subject
-                    .allowed_contexts
+            // A scoped grant covers a context-scoped subject all of whose
+            // contexts fall within the scope. A global (unrestricted) or
+            // acts-nowhere subject has no `Contexts` scope to match here.
+            if let ActScope::Contexts(subject_ctxs) = subject.act_scope()
+                && subject_ctxs
                     .iter()
                     .all(|c| approver.approve_scope.covers(c))
             {
@@ -749,17 +788,23 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
     if !approver.is_admin() {
         return false;
     }
-    if approver.allowed_contexts.is_empty() {
-        return true; // super-admin: covers all contexts
+    match approver.act_scope() {
+        // Super-admin: covers all contexts.
+        ActScope::All => true,
+        // Context admin: the subject must itself be context-scoped, and every
+        // one of its contexts must fall within the approver's. A global subject
+        // needs a super-admin approver (handled above). Exact membership, not
+        // ancestry — preserved verbatim from the pre-`ActScope` code; widening
+        // it to `covers` would be a behaviour change, not a refactor.
+        ActScope::Contexts(approver_ctxs) => match subject.act_scope() {
+            ActScope::Contexts(subject_ctxs) => {
+                subject_ctxs.iter().all(|c| approver_ctxs.contains(c))
+            }
+            _ => false,
+        },
+        // Unreachable: an admin is never acts-nowhere. Fail closed regardless.
+        ActScope::None => false,
     }
-    // Context admin: the subject must itself be context-scoped, and every one of
-    // its contexts must fall within the approver's. A global subject (empty
-    // contexts) requires a super-admin approver, handled by the branch above.
-    !subject.allowed_contexts.is_empty()
-        && subject
-            .allowed_contexts
-            .iter()
-            .all(|c| approver.allowed_contexts.contains(c))
 }
 
 /// Whether `entry` holds authority to act in `context_id` — the predicate
@@ -779,13 +824,7 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
 /// its subtree, so it genuinely carries a child id. Both VTA filters compared
 /// with `contains`, so neither surfaced it.
 pub fn acl_entry_can_act_in(entry: &AclEntry, context_id: &str) -> bool {
-    if entry.is_super_admin() {
-        return true;
-    }
-    entry
-        .allowed_contexts
-        .iter()
-        .any(|allowed| crate::context_path::is_ancestor_or_self(allowed, context_id))
+    entry.act_scope().covers(context_id)
 }
 
 /// Check whether an ACL entry is visible to the caller.
@@ -797,7 +836,8 @@ pub fn is_acl_entry_visible(caller: &AuthClaims, entry: &AclEntry) -> bool {
         return true;
     }
     entry
-        .allowed_contexts
+        .act_scope()
+        .named_contexts()
         .iter()
         .any(|ctx| caller.has_context_access(ctx))
 }

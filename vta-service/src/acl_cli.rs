@@ -320,18 +320,11 @@ fn print_entry_details(entry: &AclEntry) {
 /// Rendering both as `(unrestricted)` said the opposite of the truth for every
 /// non-admin entry.
 fn format_contexts(entry: &AclEntry) -> String {
-    if !entry.allowed_contexts.is_empty() {
-        return entry.allowed_contexts.join(", ");
-    }
-    if entry.role == Role::Admin {
-        "(unrestricted)".into()
-    } else {
-        "(none — acts nowhere)".into()
-    }
+    entry.act_scope().to_string()
 }
 
 fn format_role(entry: &AclEntry) -> String {
-    if entry.role == Role::Admin && entry.allowed_contexts.is_empty() {
+    if entry.is_super_admin() {
         "admin (super admin)".into()
     } else {
         entry.role.to_string()

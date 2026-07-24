@@ -31,7 +31,9 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-use crate::acl::{self, Role};
+#[cfg(test)]
+use crate::acl::Role;
+use crate::acl::{self};
 use crate::config::StoreConfig;
 use crate::error::AppError;
 use crate::store::{KeyspaceHandle, Store};
@@ -127,10 +129,8 @@ pub(crate) async fn read_unseal_state(
         .ok_or_else(|| AppError::Config("VTA is not sealed — nothing to unseal".into()))?;
 
     let entries = acl::list_acl_entries(&acl_ks).await?;
-    let super_admins: Vec<acl::AclEntry> = entries
-        .into_iter()
-        .filter(|e| e.role == Role::Admin && e.allowed_contexts.is_empty())
-        .collect();
+    let super_admins: Vec<acl::AclEntry> =
+        entries.into_iter().filter(|e| e.is_super_admin()).collect();
 
     if super_admins.is_empty() {
         return Err(AppError::Config(
