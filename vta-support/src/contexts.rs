@@ -4,8 +4,8 @@ use chrono::Utc;
 use vta_sdk::context_path::parent_path;
 use vta_sdk::context_policy::ContextPolicy;
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 fn ctx_key(id: &str) -> String {
     format!("ctx:{id}")
@@ -228,8 +228,8 @@ pub const CONTEXT_KEY_BASE: &str = "m/26'/2'";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
     use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
 
     fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -238,9 +238,7 @@ mod tests {
         })
         .expect("open store");
         (
-            store
-                .keyspace(crate::keyspaces::CONTEXTS)
-                .expect("keyspace"),
+            store.keyspace(vta_keyspaces::CONTEXTS).expect("keyspace"),
             dir,
         )
     }

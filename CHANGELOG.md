@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### vta-support 0.1.0 / vta-service 0.12.29 — group the clean mid-layer services into one crate
+
+Fourth decomposition step. The clean-leaf extractions (keyspaces, vault,
+config, keys) are done; the remaining big subsystems are tightly coupled to
+`AppState` and each other. Between them sit a few small, clean shared services,
+grouped here into one crate rather than proliferating tiny crates.
+
+* **New `vta-support`** — `contexts` (trust-context storage), `seal` (the
+  sealed-transfer producer-side seal helper), and `sealed_nonce_store` (the
+  sealed-bootstrap anti-replay nonce store), ~0.9k lines from `vta-service`.
+  Each is a self-contained near-leaf depending only on `vti-common`,
+  `vta-config`, `vta-keyspaces`, `vta-sdk`. `vta-service` re-exports each as
+  `crate::{contexts,seal,sealed_nonce_store}`, so all call sites (25 files) are
+  unchanged and `vta-enclave` is unaffected.
+
+* **Pure move, no behaviour change.** Files moved as git renames (history
+  preserved); the modules' 10 tests run in the new crate; no visibility change
+  was needed. `vta-service` drops ~0.75k lines (→ ~100.5k). `audit` was left in
+  `vta-service` deliberately: its `audit!` macro (not `#[macro_export]`) makes a
+  cross-crate move fiddly and isn't worth it for a 218-line module.
+
+* Removes these back-references from the coupled subsystems (`did_webvh`,
+  `provision_integration`, `backup`, `tee`), an incremental step toward
+  extracting them.
+
 ### vtc-service 0.11.24 — fix a broken test from #771 and republish
 
 * **Fixes the red `Test` job on main.** #771 ("fix: auth check") added

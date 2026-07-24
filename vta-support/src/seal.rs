@@ -31,12 +31,12 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
+use vta_config::StoreConfig;
 #[cfg(test)]
-use crate::acl::Role;
-use crate::acl::{self};
-use crate::config::StoreConfig;
-use crate::error::AppError;
-use crate::store::{KeyspaceHandle, Store};
+use vti_common::acl::Role;
+use vti_common::acl::{self};
+use vti_common::error::AppError;
+use vti_common::store::{KeyspaceHandle, Store};
 
 const SEAL_KEY: &str = "vta:sealed";
 
@@ -67,7 +67,7 @@ pub async fn get_seal(acl_ks: &KeyspaceHandle) -> Result<Option<SealRecord>, App
 ///
 /// Call this at the top of any CLI command that modifies state.
 pub async fn require_unsealed(store: &Store) -> Result<(), AppError> {
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
     if let Some(seal) = get_seal(&acl_ks).await? {
         return Err(AppError::Config(format!(
             "VTA is sealed (by {} on {}). \
@@ -122,7 +122,7 @@ pub(crate) async fn read_unseal_state(
     store_config: &StoreConfig,
 ) -> Result<UnsealChallenge, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
 
     let seal = get_seal(&acl_ks)
         .await?
@@ -156,7 +156,7 @@ pub(crate) async fn read_unseal_state(
 /// blocked on stdin).
 pub(crate) async fn remove_seal_marker(store_config: &StoreConfig) -> Result<bool, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
     if get_seal(&acl_ks).await?.is_none() {
         return Ok(false);
     }
@@ -339,7 +339,7 @@ fn verify_challenge_signature(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::AclEntry;
+    use vti_common::acl::AclEntry;
 
     /// Seal a fresh store under `data_dir` with a single super-admin
     /// ACL entry. The store is opened, populated, and dropped — the
@@ -349,7 +349,7 @@ mod tests {
             data_dir: data_dir.to_path_buf(),
         };
         let store = Store::open(&config).expect("open store");
-        let acl_ks = store.keyspace(crate::keyspaces::ACL).expect("acl keyspace");
+        let acl_ks = store.keyspace(vta_keyspaces::ACL).expect("acl keyspace");
 
         let entry = AclEntry::new(admin_did, Role::Admin, "test")
             .with_label(Some("test-super-admin".into()));
@@ -447,7 +447,7 @@ mod tests {
         };
         {
             let store = Store::open(&config).expect("open");
-            let acl_ks = store.keyspace(crate::keyspaces::ACL).expect("acl");
+            let acl_ks = store.keyspace(vta_keyspaces::ACL).expect("acl");
             // Seal directly without seeding a super-admin.
             seal(&acl_ks, "did:key:zPhantom").await.expect("seal");
             store.persist().await.expect("persist");
