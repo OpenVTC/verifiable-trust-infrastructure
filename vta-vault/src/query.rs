@@ -393,8 +393,8 @@ fn is_excluded_status(status: CredentialStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::model::{CredentialFormat, CredentialPurpose, CredentialStatus};
-    use crate::vault::storage::put;
+    use crate::model::{CredentialFormat, CredentialPurpose, CredentialStatus};
+    use crate::storage::put;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -405,7 +405,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }

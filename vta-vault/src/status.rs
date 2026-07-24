@@ -234,7 +234,7 @@ impl StatusListResolver for HttpStatusListResolver {
 /// when `expected_issuer` is known, bind its `issuer` to the credential whose
 /// status is being checked.
 ///
-/// 1. **Issuer binding (within the list):** [`crate::vault::di_verify`] resolves
+/// 1. **Issuer binding (within the list):** [`crate::di_verify`] resolves
 ///    the proof's signing key, requiring its `verificationMethod` to belong to
 ///    the list credential's own `issuer` (no cross-DID signing).
 /// 2. **Issuer binding (to the checked credential):** when `expected_issuer` is
@@ -252,7 +252,7 @@ async fn verify_status_list_signature(
     expected_issuer: Option<&str>,
     url: &str,
 ) -> Result<(), AppError> {
-    use crate::vault::di_verify::{credential_issuer, resolve_di_issuer_key};
+    use crate::di_verify::{credential_issuer, resolve_di_issuer_key};
 
     // Bind the list's self-asserted issuer to the credential's issuer first —
     // cheap, and it rejects a substituted (even if validly-signed) list outright.
@@ -649,9 +649,9 @@ fn next_status(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::model::{CredentialFormat, CredentialPurpose};
-    use crate::vault::query::{CredentialQuery, search};
-    use crate::vault::storage::put;
+    use crate::model::{CredentialFormat, CredentialPurpose};
+    use crate::query::{CredentialQuery, search};
+    use crate::storage::put;
     use std::collections::BTreeMap;
     use vti_common::acl::ActScope;
     use vti_common::config::StoreConfig;
@@ -664,7 +664,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }

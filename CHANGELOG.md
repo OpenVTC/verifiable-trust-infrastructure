@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### vta-keyspaces 0.1.0 / vta-vault 0.1.0 / vta-service 0.12.26 — begin decomposing `vta-service` into subsystem crates
+
+`vta-service` is a 114k-line crate — 44% of the workspace and one compile unit,
+so any library change recompiles all of it, with no enforced boundary between
+conceptually independent subsystems. This is the first step of decomposing it
+**within the workspace** into subsystem crates (we evaluated and rejected
+splitting VTA from VTC into separate *repos*: the two already have zero
+cross-dependency, and a repo split would tax the routinely-atomic
+shared-foundation changes). Pilot-first: prove the crate mechanics and the
+narrow-dependency seam on the cleanest leaf, then repeat per subsystem.
+
+* **New `vta-keyspaces`** — the 29 keyspace-name constants + the backup
+  partition (`ALL` / `BACKED_UP` / `EXCLUDED_FROM_BACKUP`), a dependency-free
+  leaf so subsystem crates can name keyspaces without depending on
+  `vta-service`. `vta-service::keyspaces` re-exports it, so every existing
+  `crate::keyspaces::*` reference is unchanged; the `no_bare_keyspace_literals`
+  guard stays in `vta-service` (it must scan that crate's source).
+
+* **New `vta-vault`** — the holder credential vault (storage, model, query,
+  receive/verify, present, status refresh, BBS, DI verify, consent), ~8.7k
+  lines, extracted from `vta-service/src/vault/`. It takes narrow dependencies
+  (`KeyspaceHandle`, `ActScope`, resolver args) and never `AppState`, which is
+  why it was the clean pilot. Re-exported as `vta-service::vault`, so the
+  dispatch handlers (`trust_tasks/vault`, `cred_vault`), the sweeper, and
+  `credential_exchange` keep their `crate::vault::…` paths unchanged. `bbs` and
+  `webvh` cargo features gate the same code they did before, wired through to
+  `vta-vault/bbs` and `vta-vault/webvh`.
+
+* **No behaviour change.** Pure extraction — 103 vault tests run in the new
+  crate; the dispatch and credential-custody (#776) tests still run in
+  `vta-service` and exercise the crate seam unchanged. `vta-enclave` (the one
+  external consumer of `vta-service` internals) is unaffected. `vta-service`
+  drops from ~113.9k to ~104.9k source lines.
 ### vta-sdk 0.19.27 / vta-cli-common 0.10.13 / pnm-cli 0.11.8 / cnm-cli 0.11.6 / vta-service 0.12.25 / vtc-service 0.11.23 — give agent names a caller
 
 * The producer machinery for agent names was already complete — inbound

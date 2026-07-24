@@ -78,14 +78,14 @@ pub fn g2_issuer_key_from_did_key(issuer_did: &str) -> Result<PublicKey, AppErro
 /// `did:key` issuers resolve locally; `did:webvh` / `did:web` issuers resolve
 /// through `did_resolver` (the verification method's `publicKeyMultibase`, a
 /// `0xeb` Multikey). The G2 analog of
-/// [`crate::vault::di_verify::resolve_di_issuer_key`] — used by the wire layer
+/// [`crate::di_verify::resolve_di_issuer_key`] — used by the wire layer
 /// (`store_issued_credential`) to receive a BBS credential delivered over
 /// DIDComm.
 pub async fn resolve_bbs_issuer_key(
     did_resolver: Option<&DIDCacheClient>,
     credential: &Value,
 ) -> Result<[u8; BLS12381_G2_LEN], AppError> {
-    let issuer_did = crate::vault::di_verify::credential_issuer(credential)
+    let issuer_did = crate::di_verify::credential_issuer(credential)
         .ok_or_else(|| AppError::Validation("bbs-2023 credential has no `issuer`".into()))?;
     let vm = credential
         .get("proof")
@@ -541,7 +541,7 @@ mod tests {
         })
         .expect("open store");
         let ks = store
-            .keyspace(crate::keyspaces::VAULT)
+            .keyspace(vta_keyspaces::VAULT)
             .expect("vault keyspace");
         (dir, store, ks)
     }

@@ -78,7 +78,11 @@ while IFS="$(printf '\t')" read -r name dir; do
   [ -n "$name" ] || continue
   manifest="$dir/Cargo.toml"
 
-  old_version=$(git show "$BASE:$manifest" 2>/dev/null | version_of)
+  # `|| true` so a crate that does not exist at BASE (a NEW publishable crate)
+  # yields an empty old_version instead of a `git show` exit-128 that
+  # `pipefail`+`set -e` would turn into a spurious guard failure. Matches the
+  # sibling handling in check-version-bumps.sh.
+  old_version=$(git show "$BASE:$manifest" 2>/dev/null | version_of || true)
   new_version=$(version_of < "$manifest" 2>/dev/null)
 
   [ -n "$new_version" ] || continue

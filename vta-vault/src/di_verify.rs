@@ -3,9 +3,9 @@
 //! Resolving the Ed25519 public key that signed a W3C Data-Integrity credential
 //! — **bound to the credential's stated `issuer`** — is needed in more than one
 //! place: receiving a DI credential into the vault
-//! ([`crate::operations::credential_exchange`]) and verifying a
+//! (`credential-exchange`) and verifying a
 //! `BitstringStatusListCredential`'s own issuer signature before trusting it
-//! ([`crate::vault::status`]). Both share the same binding rule (the signing key
+//! ([`crate::status`]). Both share the same binding rule (the signing key
 //! MUST belong to the stated issuer — otherwise a key from some *other* DID could
 //! sign a credential claiming a different issuer) and the same resolution path
 //! (`did:key` locally, `did:webvh` / `did:web` via the DID cache).
@@ -38,7 +38,7 @@ pub(crate) fn credential_issuer(credential: &Value) -> Option<String> {
 /// issuers resolve locally with no I/O even when a resolver is configured;
 /// `did:webvh` / `did:web` issuers are resolved through `did_resolver`, which
 /// must then be present.
-pub(crate) async fn resolve_di_issuer_key(
+pub async fn resolve_di_issuer_key(
     did_resolver: Option<&DIDCacheClient>,
     credential: &Value,
 ) -> Result<Vec<u8>, AppError> {
@@ -85,7 +85,7 @@ pub(crate) async fn resolve_di_issuer_key(
 
 /// Resolve a DID's verification method to its Ed25519 public-key bytes via the
 /// DID cache. Mirrors the DID-document JSON navigation in
-/// [`crate::operations::passkey_login::VtaVmResolver`] but yields raw Ed25519
+/// `passkey_login::VtaVmResolver` (in vta-service) but yields raw Ed25519
 /// bytes for Data-Integrity verification. Only `publicKeyMultibase`
 /// (Multikey-encoded) Ed25519 VMs are supported.
 async fn resolve_vm_ed25519(

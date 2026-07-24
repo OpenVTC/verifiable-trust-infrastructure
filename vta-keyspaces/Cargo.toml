@@ -1,0 +1,13 @@
+[package]
+name = "vta-keyspaces"
+description = "VTA keyspace-name registry — the shared storage vocabulary for the VTA subsystem crates"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
