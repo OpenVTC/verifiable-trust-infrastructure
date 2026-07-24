@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### vti-common 0.11.20 — publish the auth-check fix that #771 left unreleased
+
+* #771 ("fix: auth check") added `vti_common::auth::AuthcryptError` (and the
+  `bind_authcrypt_sender` binding in `auth/didcomm.rs`) and used it from
+  `vta-service`, but did **not** bump `vti-common`. crates.io therefore still
+  held the pre-#771 `0.11.19` source, so publishing `vta-service 0.12.28`
+  failed its verify build — `cannot find AuthcryptError in vti_common::auth` —
+  because it resolved the stale registry copy. This bump republishes the
+  crate with the symbol, unblocking the `vta-service` release. No source change
+  here beyond the version.
+
+  (The version-bump guard is meant to catch a source change with no bump; #771
+  slipped through it — a guard gap worth a separate look. `vtc-service` was
+  also touched by #771 without a bump; its published copy is likewise missing
+  the fix, tracked separately.)
+
 ### vta-keys 0.1.0 / vta-service 0.12.28 — extract key management into its own crate
 
 Third decomposition step (after `vta-keyspaces`+`vta-vault` in #780 and

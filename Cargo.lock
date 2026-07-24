@@ -10494,7 +10494,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.19"
+version = "0.11.20"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
