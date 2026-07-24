@@ -28,7 +28,7 @@ use uuid::Uuid;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 const TTL: Duration = Duration::from_secs(60);
 const NONCE_LEN: usize = 12;

@@ -1,0 +1,57 @@
+[package]
+name = "vta-keys"
+description = "VTA key management — master-seed storage, BIP-32 key derivation, key wrapping, and the seed-store backend selection"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Seed-store backend selection. Each activates the matching vti-secrets backend
+# so `create_seed_store` can construct it. Off by default (the local/dev VTA
+# uses the keyring or a config seed); the enclave enables `tee`.
+aws-secrets = ["vti-secrets/aws-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets"]
+vault-secrets = ["vti-secrets/vault-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets"]
+config-seed = ["vti-secrets/config-seed"]
+keyring = ["vti-secrets/keyring"]
+tee = ["vti-secrets/tee"]
+
+[dependencies]
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
+vta-config = { path = "../vta-config", version = "0.1" }
+vti-common = { path = "../vti-common", version = "0.11" }
+vti-secrets = { path = "../vti-secrets", version = "0.1" }
+vta-sdk = { path = "../vta-sdk", version = "0.19", features = ["sealed-transfer"] }
+affinidi-tdk = { workspace = true }
+affinidi-crypto = { workspace = true }
+ed25519-dalek = { workspace = true }
+ed25519-dalek-bip32 = { workspace = true }
+bip39 = "2"
+multibase = { workspace = true }
+aes-gcm = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+x25519-dalek = { workspace = true }
+p256 = "0.13"
+
+[dev-dependencies]
+tempfile = "3"

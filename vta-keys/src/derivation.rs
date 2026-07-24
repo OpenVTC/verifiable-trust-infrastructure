@@ -1,9 +1,9 @@
-use crate::error::{AppError, key_derivation_error};
-use crate::keys::seed_store::SeedStore;
+use crate::seed_store::SeedStore;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use tracing::{debug, info};
+use vti_common::error::{AppError, key_derivation_error};
 
 /// Wrapper holding a derived P-256 secret key.
 pub struct P256Secret {

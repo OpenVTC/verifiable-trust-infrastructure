@@ -1,7 +1,7 @@
 [package]
 name = "vta-service"
 description = "Service for Verifiable Trust Agents operating in Verifiable Trust Communities"
-version = "0.12.27"
+version = "0.12.28"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -38,21 +38,21 @@ cli-synthesis = ["vti-common/cli-synthesis"]
 # OS keyring backend for the VTA seed. Enables vta-sdk's keyring feature
 # so the binary can register a platform store once via
 # `vta_sdk::keyring_init::install_default_store()` at startup.
-keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring"]
-config-seed = ["vti-secrets/config-seed"]
+keyring = ["dep:keyring-core", "vta-sdk/keyring", "vti-secrets/keyring", "vta-keys/keyring"]
+config-seed = ["vti-secrets/config-seed", "vta-keys/config-seed"]
 # The backend implementations + the setup wizard's secret-enumeration
 # (`vti_secrets::discovery`) both live in `vti-secrets` now, so these features
 # just activate the matching `vti-secrets/<feature>` — vta-service no longer
 # carries the cloud SDKs / Vault / kube clients directly. (`aws-config` stays
 # below: the TEE feature uses it for KMS bootstrap.)
-aws-secrets = ["vti-secrets/aws-secrets"]
-gcp-secrets = ["vti-secrets/gcp-secrets"]
-azure-secrets = ["vti-secrets/azure-secrets"]
-vault-secrets = ["vti-secrets/vault-secrets"]
+aws-secrets = ["vti-secrets/aws-secrets", "vta-keys/aws-secrets"]
+gcp-secrets = ["vti-secrets/gcp-secrets", "vta-keys/gcp-secrets"]
+azure-secrets = ["vti-secrets/azure-secrets", "vta-keys/azure-secrets"]
+vault-secrets = ["vti-secrets/vault-secrets", "vta-keys/vault-secrets"]
 # Kubernetes Secret backend — stores the master seed in a namespaced
 # `Secret` resource. Off by default; deliberately enabled for in-cluster
 # deployments that prefer native k8s Secrets over a cloud secret manager.
-k8s-secrets = ["vti-secrets/k8s-secrets"]
+k8s-secrets = ["vti-secrets/k8s-secrets", "vta-keys/k8s-secrets"]
 tee = [
   "webvh",
   "dep:libc",
@@ -65,6 +65,7 @@ tee = [
   "dep:aes",
   "vti-secrets/tee",
   "vta-config/tee",
+  "vta-keys/tee",
 ]
 vsock-store = ["vti-common/vsock-store"]
 # Exposes the test-harness helpers (in-memory keyspaces, VTA bootstrap
@@ -98,6 +99,9 @@ vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 # VTA configuration types (AppConfig + sub-configs), extracted and re-exported
 # as `crate::config`. The `tee` feature enables `vta-config/tee`.
 vta-config = { path = "../vta-config", version = "0.1" }
+# Key management (seed store, BIP-32 derivation, wrapping), extracted and
+# re-exported as `crate::keys`. Backend features chain to `vta-keys/*`.
+vta-keys = { path = "../vta-keys", version = "0.1" }
 # Holder credential vault (storage/query/receive/present/status), extracted to
 # its own crate and re-exported as `crate::vault`. Feature edges: this crate's
 # `bbs` / `webvh` features enable `vta-vault/bbs` / `vta-vault/webvh`.

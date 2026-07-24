@@ -29,7 +29,13 @@ pub mod deprecation;
 pub mod did_templates;
 pub mod didcomm_bridge;
 pub mod error;
-pub mod keys;
+/// Key management (master seed, BIP-32 derivation, wrapping, seed-store
+/// backends), extracted to the `vta-keys` crate. Re-exported as `crate::keys`
+/// so every `crate::keys::…` path stays unchanged and `vta_service::keys` keeps
+/// resolving for `vta-enclave`. The seed-store backend features
+/// (`aws-secrets` … `keyring`, `tee`) are wired to the matching `vta-keys/*`
+/// features in `Cargo.toml`.
+pub use vta_keys as keys;
 pub mod keyspaces;
 #[cfg(feature = "didcomm")]
 pub mod messaging;

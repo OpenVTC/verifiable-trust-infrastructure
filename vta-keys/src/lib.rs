@@ -11,14 +11,14 @@ use ed25519_dalek::SigningKey;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use multibase::Base;
 
-use crate::store::KeyspaceHandle;
+use vti_common::store::KeyspaceHandle;
 
 pub use vta_sdk::keys::{KeyOrigin, KeyRecord, KeyStatus, KeyType};
 
 /// Encode raw private key bytes as multibase (Base58BTC) with multicodec prefix.
 /// This makes private key material self-describing and compatible with
 /// `Secret::from_multibase()` in the SSI ecosystem.
-pub(crate) fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
+pub fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
     let codec: &[u8] = match key_type {
         KeyType::Ed25519 => &[0x80, 0x26], // ed25519-priv (0x1300)
         KeyType::X25519 => &[0x82, 0x26],  // x25519-priv (0x1302)
@@ -31,7 +31,7 @@ pub(crate) fn encode_private_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> 
 }
 
 /// Encode raw public key bytes as multibase (Base58BTC) with multicodec prefix.
-pub(crate) fn encode_public_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
+pub fn encode_public_multibase(key_type: &KeyType, raw_bytes: &[u8]) -> String {
     let codec: &[u8] = match key_type {
         KeyType::Ed25519 => &[0xed, 0x01], // ed25519-pub
         KeyType::X25519 => &[0xec, 0x01],  // x25519-pub
@@ -352,9 +352,9 @@ pub async fn save_entity_key_records(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::derivation::Bip32Extension;
-    use crate::store::Store;
+    use crate::derivation::Bip32Extension;
     use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
 
     fn test_seed() -> Vec<u8> {
         vec![
@@ -380,7 +380,7 @@ mod tests {
     async fn test_create_store_recover_cycle() {
         let seed = test_seed();
         let (store, _dir) = temp_store();
-        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let keys_ks = store.keyspace(vta_keyspaces::KEYS).unwrap();
         let did = "did:webvh:abc123:example.com:vta";
 
         // === CREATION (first boot — derive_entity_keys + save) ===
@@ -462,7 +462,7 @@ mod tests {
                 data_dir: dir.path().to_path_buf(),
             };
             let store = Store::open(&config).unwrap();
-            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+            let keys_ks = store.keyspace(vta_keyspaces::KEYS).unwrap();
 
             let derived = derive_entity_keys(&seed, "m/44'/0'", "signing", "ka", &keys_ks)
                 .await
@@ -481,7 +481,7 @@ mod tests {
                 data_dir: dir.path().to_path_buf(),
             };
             let store = Store::open(&config).unwrap();
-            let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+            let keys_ks = store.keyspace(vta_keyspaces::KEYS).unwrap();
 
             let signing: KeyRecord = keys_ks
                 .get(store_key(&format!("{did}#key-0")))
@@ -518,7 +518,7 @@ mod tests {
     async fn test_path_allocation_produces_unique_keys() {
         let seed = test_seed();
         let (store, _dir) = temp_store();
-        let keys_ks = store.keyspace(crate::keyspaces::KEYS).unwrap();
+        let keys_ks = store.keyspace(vta_keyspaces::KEYS).unwrap();
 
         let base = "m/44'/0'";
         let mut pub_keys = Vec::new();
