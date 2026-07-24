@@ -11,9 +11,9 @@
 
 use tracing::{debug, info, warn};
 
-use crate::acl::{AclEntry, delete_acl_entry};
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::acl::{AclEntry, delete_acl_entry};
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 fn now_epoch() -> u64 {
     std::time::SystemTime::now()
@@ -80,7 +80,7 @@ pub async fn sweep_expired(
             // matches the format `cli:vault-seed` uses elsewhere)
             // because no human / consumer triggered this — it's a
             // background timer firing on a previously-set TTL.
-            if let Err(e) = crate::audit::record(
+            if let Err(e) = vta_audit::record(
                 audit_ks,
                 "acl.expire",
                 "system:sweeper",
@@ -109,9 +109,9 @@ pub async fn sweep_expired(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acl::{Role, store_acl_entry};
-    use crate::store::Store;
+    use vti_common::acl::{Role, store_acl_entry};
     use vti_common::config::StoreConfig;
+    use vti_common::store::Store;
 
     async fn fresh_store() -> (Store, KeyspaceHandle, KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -119,8 +119,8 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         };
         let store = Store::open(&config).unwrap();
-        let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
-        let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
+        let acl_ks = store.keyspace(vta_keyspaces::ACL).unwrap();
+        let audit_ks = store.keyspace(vta_keyspaces::AUDIT).unwrap();
         (store, acl_ks, audit_ks, dir)
     }
 
@@ -148,7 +148,7 @@ mod tests {
 
         // Expired entry: gone.
         assert!(
-            crate::acl::get_acl_entry(&acl_ks, &expired.did)
+            vti_common::acl::get_acl_entry(&acl_ks, &expired.did)
                 .await
                 .unwrap()
                 .is_none(),
@@ -156,14 +156,14 @@ mod tests {
         );
         // Live-TTL + permanent: still there.
         assert!(
-            crate::acl::get_acl_entry(&acl_ks, &live_ttl.did)
+            vti_common::acl::get_acl_entry(&acl_ks, &live_ttl.did)
                 .await
                 .unwrap()
                 .is_some(),
             "live-TTL entry must NOT be pruned"
         );
         assert!(
-            crate::acl::get_acl_entry(&acl_ks, &permanent.did)
+            vti_common::acl::get_acl_entry(&acl_ks, &permanent.did)
                 .await
                 .unwrap()
                 .is_some(),

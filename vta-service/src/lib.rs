@@ -12,13 +12,17 @@
 pub use vta_sdk::crypto_init;
 
 pub mod acl;
-pub mod acl_sweeper;
 /// Structured audit logging (the `audit!` tracing macro + audit-keyspace
 /// persistence helpers), extracted to the `vta-audit` crate and re-exported so
 /// every `crate::audit::{record,record_consent,…}` path and `audit!(…)` call
 /// site is unchanged. The macro is `#[macro_export]`ed from `vta-audit`, so
 /// `use crate::audit::{self, audit}` resolves the same as before.
 pub use vta_audit as audit;
+/// Background TTL sweepers (ACL grant expiry, pending-consent expiry,
+/// soft-deleted-vault purge), extracted to the `vta-sweepers` crate and
+/// re-exported so every `crate::{acl_sweeper,consent_sweeper,vault_sweeper}::…`
+/// path (the storage-thread sweep loop, provision-integration) is unchanged.
+pub use vta_sweepers::{acl_sweeper, consent_sweeper, vault_sweeper};
 pub mod auth;
 pub mod backup_bundle_store;
 pub mod backup_bundle_sweeper;
@@ -28,7 +32,6 @@ pub mod backup_bundle_sweeper;
 /// feature gates the same `TeeConfig` / `TeeMode` items, wired to
 /// `vta-config/tee` in `Cargo.toml`.
 pub use vta_config as config;
-pub mod consent_sweeper;
 /// Shared mid-layer services (trust-context store, sealed-transfer seal
 /// helper, anti-replay nonce store), extracted to the `vta-support` crate and
 /// re-exported so every `crate::{contexts,seal,sealed_nonce_store}::…` path is
@@ -72,7 +75,6 @@ pub mod trust_tasks;
 /// `webvh` cargo features gate the same code they did before, wired through to
 /// `vta-vault/bbs` and `vta-vault/webvh` in `Cargo.toml`.
 pub use vta_vault as vault;
-pub mod vault_sweeper;
 /// WebVH hosting infrastructure (DID-record store, hosting-server HTTP client,
 /// and its DID-auth handshake), extracted to the `vta-webvh` crate and
 /// re-exported so every `crate::{webvh_store,webvh_client,webvh_auth}::…` path

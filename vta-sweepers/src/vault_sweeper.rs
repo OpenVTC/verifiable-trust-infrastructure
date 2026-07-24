@@ -6,7 +6,7 @@
 //! from the storage thread's interval loop alongside the ACL/consent sweepers
 //! — hard-purges any tombstone whose grace window has elapsed: the password
 //! entry's secret is zeroised by the keyspace `remove`, and a credential's
-//! secondary index is torn down by [`crate::vault::storage::delete`].
+//! secondary index is torn down by [`vta_vault::storage::delete`].
 //!
 //! Each purge is audited as `vault.purge` / `vault.cred.purge` (actor
 //! `system:sweeper`, outcome `success:grace-expired`) — the same trail shape
@@ -17,10 +17,10 @@ use tracing::{debug, info, warn};
 
 use vti_common::vault::{StoredVaultEntry, VaultStatus, delete_vault_entry};
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
-use crate::vault::model::StoredCredential;
-use crate::vault::storage as cred_storage;
+use vta_vault::model::StoredCredential;
+use vta_vault::storage as cred_storage;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 /// Sweep the shared `vault` keyspace, hard-purging every soft-deleted password
 /// entry and credential whose grace window has elapsed.
@@ -96,7 +96,7 @@ fn is_purgeable(status: VaultStatus, grace_until: Option<&str>, now: &str) -> bo
 }
 
 async fn audit_purge(audit_ks: &KeyspaceHandle, action: &str, id: &str, context_id: Option<&str>) {
-    if let Err(e) = crate::audit::record(
+    if let Err(e) = vta_audit::record(
         audit_ks,
         action,
         "system:sweeper",
