@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### vta-service 0.12.23 — enforce credential custody on the credential-vault surface
+
+* **Security.** `StoredCredential.context_id` is documented as the **custody**
+  axis — "which context in *this* VTA owns the credential" — and no path
+  enforced it. Every credential-vault trust task gated on the caller's
+  *capability* and then read or mutated by id, so a caller scoped to one
+  context reached another's credentials. Verified with a repro before fixing:
+  a `ctx-a` caller received `{"credential":{"id":"cred-in-ctx-b"}}` from
+  `get`, and both contexts' rows from `query`.
+
+* Affected: `query` and `get` (read), `archive` / `unarchive` / `restore`
+  (mutate), and `delete` / `purge` (destroy). **`delete --force` was the
+  worst** — it hard-deleted by id without loading the record at all, so custody
+  could not be checked even in principle and a scoped caller could destroy
+  another context's credential outright.
+
+* One `caller_may_access_custody(&ActScope, Option<&str>)` predicate now backs
+  every path. In `search` it sits with the existing lifecycle and status
+  post-filters, where the full record is already loaded, so it costs nothing —
+  the descriptor returned to callers carries no `context_id`, making a
+  downstream filter impossible without re-reading every hit.
+
+* Inaccessible credentials conflate to **not-found**, matching how archived and
+  absent ones are already reported, so the gate is not an enumeration oracle.
+  An absent id stays idempotent-success on `delete --force`.
+
+* **Unscoped (`context_id: None`) credentials remain readable by any caller.**
+  That is how rows written before the field existed deserialize, and how a
+  multi-context or super-admin `receive` still stores today. Denying it would
+  retroactively hide legacy credentials from the scoped callers using them, so
+  it is a deliberate compatibility carve-out — tightening it needs a backfill
+  of `context_id` first.
+
+* The credential-**exchange** presentation path (`match_vault`) is deliberately
+  unchanged and passes `ActScope::All`: that is the holder presenting its own
+  store to a verifier, governed by the context-policy guardrail and consent, a
+  different question from "may this caller read this context's credentials".
+
+* Same defect class as #769, in the sibling file that fix did not cover.
+
 ### vtc-service 0.11.21 — decode ACL scope the same way the VTA does
 
 * The VTC's ACL surface read `allowed_contexts.is_empty()` by hand in three
@@ -173,7 +213,6 @@
 * One `acl_entry_can_act_in` predicate in `vti-common` now backs both call
   sites, so they cannot drift again.
 
-### vta-service 0.12.17 — fix a vault scope gate that ignored the caller's role
 ### vta-service 0.12.18 — fix a vault scope gate that ignored the caller's role
 
 * **Security.** `enforce_context_scope`, the gate on every vault trust task,

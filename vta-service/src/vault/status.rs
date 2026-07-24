@@ -653,6 +653,7 @@ mod tests {
     use crate::vault::query::{CredentialQuery, search};
     use crate::vault::storage::put;
     use std::collections::BTreeMap;
+    use vti_common::acl::ActScope;
     use vti_common::config::StoreConfig;
     use vti_common::store::Store;
 
@@ -791,7 +792,7 @@ mod tests {
             issuer_did: Some("did:web:issuer.example".into()),
             ..Default::default()
         };
-        assert_eq!(search(&vault, &q).await.unwrap().len(), 1);
+        assert_eq!(search(&vault, &q, &ActScope::All).await.unwrap().len(), 1);
 
         let resolver = MockResolver::new(Some(42), StatusPurpose::Revocation);
         let outcome = refresh_status(&vault, "cred-revoked", &resolver)
@@ -812,7 +813,7 @@ mod tests {
         assert_eq!(stored.status, CredentialStatus::Revoked);
 
         // CRITICAL (§14 invariant 5): the revoked credential is EXCLUDED from search.
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert!(
             hits.is_empty(),
             "a revoked credential must not be surfaced by search, got {hits:?}"
@@ -845,7 +846,7 @@ mod tests {
             issuer_did: Some("did:web:issuer.example".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-ok");
     }
