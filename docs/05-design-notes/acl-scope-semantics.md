@@ -69,6 +69,38 @@ been a bug:
 Go through `act_scope()` — or `has_context_access` / `can_act_in` /
 `is_super_admin`, which are built on it — and match on the result.
 
+## Reading is not managing
+
+Two predicates, deliberately separate:
+
+| predicate | includes | gates |
+|---|---|---|
+| `is_acl_entry_visible` | act-scope overlap | update, delete |
+| `is_acl_entry_auditable` | that, **plus** approve-scope reaching the caller | list, get |
+
+A least-privilege approver names no context on the act axis, so it never
+overlapped a context admin's scope — meaning an admin could not see who was
+able to authorize a change in their own context. Conferral is authority, and
+authority in your context should be auditable by its admin.
+
+**Keeping them separate is load-bearing, not tidiness.** An entry can
+administer *someone else's* context while conferring into yours. Folding
+conferral into the single visibility predicate would have made that entry
+deletable by you — `delete_acl`'s only other guard is
+`validate_role_assignment`, which a context admin passes — turning a read
+widening into privilege escalation. Pinned at both layers by
+`auditable_does_not_confer_manage_authority` and
+`delete_acl_refuses_an_entry_that_acts_outside_callers_contexts`.
+
+A mutation refused on an entry the caller can nonetheless read returns
+`Forbidden` explaining the split, rather than the usual `NotFound`: there is
+nothing left to conceal about a row they can already list, and "not found"
+would be a lie. Entries the caller cannot read at all still conflate to
+`NotFound`, so the enumeration guard is intact.
+
+The act axis is unchanged — an unrestricted (super-admin) entry still does not
+surface to a context admin merely by being unrestricted.
+
 ## What this does *not* change
 
 Two conflations are preserved deliberately, because removing either is a
@@ -91,15 +123,9 @@ Both are flagged where they occur.
 
 ## Remaining work
 
-- **The two widenings above**, each as its own reviewed change.
-- **A read/manage split.** `is_acl_entry_visible` gates *both* the list/get
-  reads and the update/delete mutations. Because it follows only the act axis,
-  a least-privilege approver is invisible to the very context admins whose
-  contexts it can confer — an admin cannot audit who may authorize a change in
-  their own context. The fix is a second, read-only predicate that also follows
-  the approve axis; it must **not** be a wider `is_acl_entry_visible`, because
-  an entry can administer someone else's context while conferring into yours,
-  and folding the two would make that entry deletable by you.
+- **The two conflations above**, each as its own reviewed change. Note the
+  first one interacts with the read/manage split: a context admin still cannot
+  *create* the least-privilege approver that they can now *audit*.
 - **The VTC.** `vtc-service` has a parallel ACL surface with the same idiom
   (`routes/acl.rs`, `acl_cli.rs`). It needs its own `act_scope()` accessor
   because `VtcAclEntry` is a distinct type with its own role enum, mapped via

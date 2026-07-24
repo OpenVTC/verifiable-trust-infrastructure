@@ -827,10 +827,18 @@ pub fn acl_entry_can_act_in(entry: &AclEntry, context_id: &str) -> bool {
     entry.act_scope().covers(context_id)
 }
 
-/// Check whether an ACL entry is visible to the caller.
+/// Whether an ACL entry is within the caller's authority to **manage**.
 ///
-/// Super admins see all entries. Context admins only see entries whose
-/// `allowed_contexts` overlap with their own.
+/// Super admins may manage any entry. A context admin may manage an entry only
+/// if the entry *acts* in a context the caller holds — so neither an
+/// unrestricted ([`ActScope::All`]) nor an acts-nowhere ([`ActScope::None`])
+/// entry is manageable by a context admin, neither naming a context to overlap.
+///
+/// This is the predicate the **mutation** paths gate on (update, delete). It
+/// deliberately ignores [`ApproveScope`]: an entry may confer into your context
+/// while acting entirely inside someone else's, and being able to *see* such an
+/// entry must not become authority to delete it. For the read paths, see
+/// [`is_acl_entry_auditable`].
 pub fn is_acl_entry_visible(caller: &AuthClaims, entry: &AclEntry) -> bool {
     if caller.is_super_admin() {
         return true;
@@ -840,6 +848,36 @@ pub fn is_acl_entry_visible(caller: &AuthClaims, entry: &AclEntry) -> bool {
         .named_contexts()
         .iter()
         .any(|ctx| caller.has_context_access(ctx))
+}
+
+/// Whether an ACL entry should be **readable** by the caller — the superset of
+/// [`is_acl_entry_visible`] used by `acl list` / `acl get`.
+///
+/// Adds entries holding *conferral* authority over a context the caller
+/// administers. A least-privilege approver acts nowhere, so it names no context
+/// on the act axis and was invisible to the very admins whose contexts it can
+/// confer: an operator asking "who can authorize a change in my context?" could
+/// not see the answer. Conferral is authority, and authority in your context
+/// should be auditable by its admin.
+///
+/// **Read-only by construction.** Widening what an admin may see is not
+/// widening what they may do, and keeping this separate from
+/// [`is_acl_entry_visible`] is what stops it from becoming that — an entry can
+/// administer someone else's context while conferring into yours, and a single
+/// merged predicate would have made that entry deletable by you.
+///
+/// The act axis is unchanged: an unrestricted (super-admin) entry still does
+/// not surface to a context admin merely by being unrestricted.
+pub fn is_acl_entry_auditable(caller: &AuthClaims, entry: &AclEntry) -> bool {
+    if is_acl_entry_visible(caller, entry) {
+        return true;
+    }
+    match &entry.approve_scope {
+        // Confers everywhere, therefore into the caller's contexts too.
+        ApproveScope::All => true,
+        ApproveScope::Contexts(cs) => cs.iter().any(|ctx| caller.has_context_access(ctx)),
+        ApproveScope::None => false,
+    }
 }
 
 #[cfg(test)]
@@ -1474,6 +1512,107 @@ mod tests {
             &sample_entry("did:key:zB", Role::Reader),
             ctx
         ));
+    }
+
+    // ── is_acl_entry_auditable ──────────────────────────────────────
+
+    /// The audit gap this closes: a least-privilege approver acts nowhere, so
+    /// it names no context on the act axis and never overlapped a context
+    /// admin's scope — leaving that admin unable to see who could authorize a
+    /// change in their own context.
+    #[test]
+    fn auditable_surfaces_an_approver_scoped_to_the_callers_context() {
+        let caller = context_admin_claims(&["ctx1"]);
+        let approver = AclEntry::new("did:key:zApprover", Role::Reader, "did:key:zSetup")
+            .with_approve_scope(ApproveScope::Contexts(vec!["ctx1".into()]));
+
+        assert!(
+            !is_acl_entry_visible(&caller, &approver),
+            "acts nowhere, so it is not the caller's to manage"
+        );
+        assert!(
+            is_acl_entry_auditable(&caller, &approver),
+            "but it confers in ctx1, so ctx1's admin must be able to see it"
+        );
+    }
+
+    /// An `All` approver confers into every context, the caller's included.
+    #[test]
+    fn auditable_surfaces_an_approve_all_holder() {
+        let caller = context_admin_claims(&["ctx1"]);
+        let approver = AclEntry::new("did:key:zGlobal", Role::Reader, "did:key:zSetup")
+            .with_approve_scope(ApproveScope::All);
+        assert!(is_acl_entry_auditable(&caller, &approver));
+    }
+
+    /// Conferral is subtree-aware, matching `ApproveScope::covers`.
+    #[test]
+    fn auditable_follows_context_ancestry() {
+        let caller = context_admin_claims(&["parent"]);
+        let approver = AclEntry::new("did:key:zChild", Role::Reader, "did:key:zSetup")
+            .with_approve_scope(ApproveScope::Contexts(vec!["parent/child".into()]));
+        assert!(
+            is_acl_entry_auditable(&caller, &approver),
+            "an admin of the parent context administers the subtree it confers in"
+        );
+    }
+
+    /// An approver for someone else's context stays hidden — the widening is
+    /// scoped to conferral that actually reaches the caller.
+    #[test]
+    fn auditable_hides_an_approver_for_a_foreign_context() {
+        let caller = context_admin_claims(&["ctx1"]);
+        let approver = AclEntry::new("did:key:zOther", Role::Reader, "did:key:zSetup")
+            .with_approve_scope(ApproveScope::Contexts(vec!["ctx2".into()]));
+        assert!(!is_acl_entry_auditable(&caller, &approver));
+    }
+
+    /// **Read-only by construction.** The mutation predicate must not follow
+    /// the approve axis, or seeing an entry would become authority to delete
+    /// it. An entry that admins someone else's context while conferring into
+    /// ours is exactly the case that would be an escalation.
+    #[test]
+    fn auditable_does_not_confer_manage_authority() {
+        let caller = context_admin_claims(&["ctx1"]);
+        let foreign_admin = scoped_entry("did:key:zForeignAdmin", Role::Admin, &["ctx2"])
+            .with_approve_scope(ApproveScope::Contexts(vec!["ctx1".into()]));
+
+        assert!(
+            is_acl_entry_auditable(&caller, &foreign_admin),
+            "confers into ctx1, so ctx1's admin can see it"
+        );
+        assert!(
+            !is_acl_entry_visible(&caller, &foreign_admin),
+            "but it admins ctx2 — ctx1's admin must not be able to update or delete it"
+        );
+    }
+
+    /// Entries carrying no conferral are unaffected: `auditable` collapses to
+    /// `visible`, so this widens nothing for the ordinary case.
+    #[test]
+    fn auditable_matches_visible_when_nothing_is_conferred() {
+        let caller = context_admin_claims(&["ctx1"]);
+        for entry in [
+            scoped_entry("did:key:zA", Role::Reader, &["ctx1"]),
+            scoped_entry("did:key:zB", Role::Reader, &["ctx2"]),
+            sample_entry("did:key:zC", Role::Admin),
+            sample_entry("did:key:zD", Role::Reader),
+        ] {
+            assert_eq!(
+                is_acl_entry_auditable(&caller, &entry),
+                is_acl_entry_visible(&caller, &entry),
+                "{} must be unaffected by the approve axis",
+                entry.did
+            );
+        }
+    }
+
+    /// A super-admin caller sees everything either way.
+    #[test]
+    fn auditable_is_total_for_a_super_admin() {
+        let caller = super_admin_claims();
+        let entry = scoped_entry("did:key:zAny", Role::Reader, &["whatever"]);
+        assert!(is_acl_entry_auditable(&caller, &entry));
     }
 
     // ── is_acl_entry_visible ────────────────────────────────────────

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### vti-common 0.11.17 / vta-service 0.12.22 — let a context admin audit who may confer in their context
+
+* **A least-privilege approver was invisible to the admins whose contexts it
+  could confer.** It acts nowhere by design, so it names no context on the act
+  axis, so it never overlapped a context admin's scope in
+  `is_acl_entry_visible` — and an operator asking "who can authorize a change
+  in my context?" could not see the answer. Conferral is authority, and
+  authority in your context should be auditable by its admin.
+
+* The fix is a **second predicate, not a wider first one**:
+
+  | predicate | includes | gates |
+  |---|---|---|
+  | `is_acl_entry_visible` | act-scope overlap | update, delete |
+  | `is_acl_entry_auditable` | that, plus approve-scope reaching the caller | list, get |
+
+  Separate because `is_acl_entry_visible` gates *mutations* too. An entry can
+  administer someone else's context while conferring into yours; folding
+  conferral into one predicate would have made that entry deletable by you —
+  `delete_acl`'s only other guard is `validate_role_assignment`, which a
+  context admin passes — turning a read widening into privilege escalation.
+  Pinned at both the predicate and operation layers, and verified by merging
+  the two and watching those tests fail.
+
+* A mutation refused on an entry the caller can nonetheless read now returns
+  `Forbidden` explaining the split rather than `NotFound`: there is nothing
+  left to conceal about a row they can already list. Entries the caller cannot
+  read at all still conflate to `NotFound`, so the enumeration guard is intact.
+
+* The act axis is unchanged — an unrestricted (super-admin) entry still does
+  not surface to a context admin merely by being unrestricted.
 ### vta-sdk 0.19.26 / vta-cli-common 0.10.12 / pnm-cli 0.11.7 / cnm-cli 0.11.5 / vta-service 0.12.21 / vtc-service 0.11.20 — show names where we used to show DIDs
 
 * Operators read DIDs constantly and cannot. Roughly ninety sites across the
