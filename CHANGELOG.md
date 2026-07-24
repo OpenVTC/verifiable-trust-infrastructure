@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### vtc-service 0.11.21 — decode ACL scope the same way the VTA does
+
+* The VTC's ACL surface read `allowed_contexts.is_empty()` by hand in three
+  places, the same idiom that produced three separate bugs on the VTA side
+  (#746, #769, #770). `VtcAclEntry::act_scope()` now maps the community role
+  through `as_vti_role` and calls the shared `act_scope_for`, so the two
+  services cannot disagree about what an empty scope set means.
+
+* **Revoking every scope** now says which case it refused. Emptying an *admin*
+  entry's scopes silently promotes it to community-wide authority; emptying any
+  other role's leaves it inert. Both are refused, as before, but the message no
+  longer describes every entry as community-wide.
+
+* **`caller_covers_admin_target`** distinguishes an unrestricted target from an
+  acts-nowhere one rather than having both fall out of a single `is_empty()`.
+
+* **The offline `vtc acl` listing** always renders the scope. Printing nothing
+  for an empty list left "community-wide" and "acts nowhere" looking identical
+  on an operator display.
+
+* No behaviour change beyond the two clarified messages; `as_vti_role` moves
+  from the route layer to `acl::role` so the offline CLI can reach it.
+
+### vti-common 0.11.17 / vta-service 0.12.21 — let a context admin audit who may confer in their context
 ### vti-common 0.11.17 / vta-service 0.12.22 — let a context admin audit who may confer in their context
 
 * **A least-privilege approver was invisible to the admins whose contexts it

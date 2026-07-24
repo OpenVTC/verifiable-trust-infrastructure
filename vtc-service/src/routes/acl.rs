@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use crate::acl::{
-    VtcAclEntry, VtcRole, delete_acl_entry, get_acl_entry, is_acl_entry_visible, list_acl_entries,
-    store_acl_entry, validate_acl_modification, validate_vtc_role_assignment,
+    ActScope, VtcAclEntry, VtcRole, as_vti_role, delete_acl_entry, get_acl_entry,
+    is_acl_entry_visible, list_acl_entries, store_acl_entry, validate_acl_modification,
+    validate_vtc_role_assignment,
 };
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth, session::now_epoch};
 use crate::error::AppError;
@@ -602,14 +603,26 @@ pub async fn delete_acl(
                 "none of the requested scopes are held by {did}"
             )));
         }
-        // Emptying an entry's scopes would silently promote it to
-        // community-wide authority (an empty scope set is how a
-        // super-admin is spelled), which is the opposite of revoking.
-        if entry.allowed_contexts.is_empty() {
-            return Err(AppError::Conflict(format!(
-                "revoking every scope of {did} would leave an unscoped \
-                 (community-wide) entry; omit `scopes` to remove it instead"
-            )));
+        // Emptying an entry's scopes leaves it in one of two states, and
+        // neither is what "revoke these scopes" asked for: an *admin* is
+        // silently promoted to community-wide authority (an empty scope set is
+        // how a super-admin is spelled), and any other role is left inert.
+        // Decode through `ActScope` so the message can say which happened
+        // instead of describing every entry as community-wide.
+        match entry.act_scope() {
+            ActScope::All => {
+                return Err(AppError::Conflict(format!(
+                    "revoking every scope of {did} would leave an unscoped \
+                     (community-wide) entry; omit `scopes` to remove it instead"
+                )));
+            }
+            ActScope::None => {
+                return Err(AppError::Conflict(format!(
+                    "revoking every scope of {did} would leave an entry that \
+                     can act nowhere; omit `scopes` to remove it instead"
+                )));
+            }
+            ActScope::Contexts(_) => {}
         }
         entry.updated_at = Some(now_epoch());
         entry.updated_by = Some(auth.0.did.clone());
@@ -677,11 +690,7 @@ pub async fn delete_acl(
 /// match), which is fine because these helpers ignore the role
 /// field entirely.
 pub(crate) fn as_vti_acl_entry(e: &VtcAclEntry) -> vti_common::acl::AclEntry {
-    let role = match e.role {
-        VtcRole::Admin => vti_common::acl::Role::Admin,
-        _ => vti_common::acl::Role::Reader,
-    };
-    vti_common::acl::AclEntry::new(e.did.clone(), role, e.created_by.clone())
+    vti_common::acl::AclEntry::new(e.did.clone(), as_vti_role(&e.role), e.created_by.clone())
         .with_label(e.label.clone())
         .with_contexts(e.allowed_contexts.clone())
         .with_created_at(e.created_at)
@@ -700,11 +709,15 @@ fn caller_covers_admin_target(caller: &AuthClaims, target: &VtcAclEntry) -> bool
     if caller.is_super_admin() {
         return true;
     }
-    !target.allowed_contexts.is_empty()
-        && target
-            .allowed_contexts
-            .iter()
-            .all(|ctx| caller.has_context_access(ctx))
+    // Only a context-scoped target is coverable by a context admin. An
+    // unrestricted target is itself a super-admin (super-admin caller only,
+    // handled above); an acts-nowhere target names no context to check
+    // against. `ActScope` makes those two distinguishable rather than both
+    // falling out of one `is_empty()`.
+    match target.act_scope() {
+        ActScope::Contexts(cs) => cs.iter().all(|ctx| caller.has_context_access(ctx)),
+        ActScope::All | ActScope::None => false,
+    }
 }
 
 /// Did an ACL update reduce the subject's authorization?

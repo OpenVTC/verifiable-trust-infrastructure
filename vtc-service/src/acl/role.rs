@@ -279,3 +279,17 @@ mod tests {
         assert_eq!(role, VtcRole::Admin);
     }
 }
+
+/// Map a [`VtcRole`] onto the shared [`vti_common::acl::Role`] that the common
+/// ACL predicates reason over. Only `Admin` is privilege-bearing in those
+/// predicates; every other community role collapses to `Reader`.
+///
+/// Lives here rather than in the route layer because the offline break-glass
+/// CLI needs it too, and both surfaces must decode an entry's scope the same
+/// way.
+pub fn as_vti_role(role: &VtcRole) -> vti_common::acl::Role {
+    match role {
+        VtcRole::Admin => vti_common::acl::Role::Admin,
+        _ => vti_common::acl::Role::Reader,
+    }
+}
