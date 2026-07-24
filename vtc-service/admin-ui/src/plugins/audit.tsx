@@ -16,6 +16,8 @@ import { ClipboardList, RefreshCw } from "lucide-react";
 
 import { getJson } from "@/lib/api";
 import { formatIso } from "@/lib/format";
+import { useNameBook } from "@/lib/names";
+import { NamedDid } from "@/components/NamedDid";
 import { useToast } from "@/lib/toast";
 
 // Human-readable label per event kind. Falls through to the
@@ -310,6 +312,7 @@ export function Audit() {
 }
 
 function AuditRow({ env }: { env: AuditEntry }) {
+  const nameBook = useNameBook();
   const [open, setOpen] = useState(false);
   const kind = env.action;
   const description = EVENT_DESCRIPTIONS[kind];
@@ -332,9 +335,7 @@ function AuditRow({ env }: { env: AuditEntry }) {
         </td>
         <td>
           {env.actor ? (
-            <code className="truncate" title={env.actor}>
-              {env.actor}
-            </code>
+            <NamedDid book={nameBook} did={env.actor} />
           ) : (
             <span className="muted" title="Redacted by RTBF">
               redacted
@@ -343,9 +344,7 @@ function AuditRow({ env }: { env: AuditEntry }) {
         </td>
         <td>
           {env.target ? (
-            <code className="truncate" title={env.target}>
-              {env.target}
-            </code>
+            <NamedDid book={nameBook} did={env.target} />
           ) : env.ext?.vtc?.targetDidHash ? (
             <span className="muted" title="Redacted by RTBF">
               redacted

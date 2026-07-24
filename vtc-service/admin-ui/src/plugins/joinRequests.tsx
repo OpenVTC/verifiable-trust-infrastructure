@@ -17,6 +17,8 @@ import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 import { getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate } from "@/lib/format";
+import { useNameBook } from "@/lib/names";
+import { NamedDid } from "@/components/NamedDid";
 
 const TRUST_TASK_SUBMIT =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
@@ -107,6 +109,7 @@ export function JoinRequests() {
 }
 
 function JoinRequestsList() {
+  const nameBook = useNameBook();
   const [status, setStatus] = useState<JoinStatus>("pending");
   const [cursor, setCursor] = useState<string | null>(null);
   const limit = 50;
@@ -185,9 +188,7 @@ function JoinRequestsList() {
               <tr key={r.id}>
                 <td>
                   <Link to={r.id}>
-                    <code className="truncate" title={r.applicantDid}>
-                      {r.applicantDid}
-                    </code>
+                    <NamedDid book={nameBook} did={r.applicantDid} />
                   </Link>
                 </td>
                 <td>{formatDate(r.submittedAt)}</td>

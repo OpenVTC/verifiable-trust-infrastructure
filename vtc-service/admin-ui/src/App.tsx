@@ -7,6 +7,7 @@ import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api"
 import { PluginHost } from "@/components/PluginHost";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
+import { shortenDid } from "@/lib/format";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
@@ -282,7 +283,7 @@ function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
     <div className="session-badge">
       <div className="session-did" title={whoami.did}>
         <span className="session-label">Signed in as</span>
-        <code>{shortDid(whoami.did)}</code>
+        <code>{shortenDid(whoami.did)}</code>
       </div>
       <button
         type="button"
@@ -336,14 +337,6 @@ function ReloadPluginsButton() {
       </button>
     </div>
   );
-}
-
-function shortDid(did: string): string {
-  // `did:key:z6Mk…XYZ` — keep the method prefix readable + the
-  // last 6 chars so two distinct admins are still visually
-  // distinguishable in the navbar.
-  if (did.length <= 20) return did;
-  return `${did.slice(0, 12)}…${did.slice(-6)}`;
 }
 
 function SignInLoading() {

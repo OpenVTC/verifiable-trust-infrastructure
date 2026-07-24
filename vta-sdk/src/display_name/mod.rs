@@ -263,9 +263,14 @@ impl NameBook {
 /// still tell two of them apart at a glance.
 ///
 /// Inputs that aren't DIDs, and DIDs already short enough, are returned
-/// unchanged. This is a port of `shortenDid` in
-/// `vtc-service/admin-ui/src/lib/format.ts`; the two are pinned to identical
-/// output by a shared vector table (see the tests below and `format.test.ts`).
+/// unchanged.
+///
+/// This is a port of `shortenDid` in
+/// `vtc-service/admin-ui/src/lib/format.ts`. The two must agree — an operator
+/// moves between a terminal and the admin console looking at the same
+/// community, and a DID abbreviated two ways is one they re-identify on every
+/// switch. The vector table in the tests below is the authority (the console
+/// has no test runner); it is reproduced in that file's doc comment.
 #[must_use]
 pub fn shorten_did(did: &str) -> String {
     shorten_did_keep(did, DEFAULT_KEEP)
@@ -329,8 +334,9 @@ mod tests {
 
     // ── shorten_did ─────────────────────────────────────────────────
     //
-    // This table is duplicated verbatim in
-    // `vtc-service/admin-ui/src/lib/format.test.ts`. The Rust CLI and the
+    // These vectors are reproduced in the doc comment on `shortenDid` in
+    // `vtc-service/admin-ui/src/lib/format.ts`, which has no test runner of
+    // its own — this test is the authority for both. The Rust CLIs and the
     // React admin UI show the same operator the same DIDs; if they abbreviate
     // differently, the operator cannot tell whether two screens are showing
     // one identity or two. Change one side and you must change the other.

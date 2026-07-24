@@ -32,6 +32,28 @@ export function shorten(value: string, head = 8, tail = 4): string {
  * - `did:key:<multibase>` (and other 3-segment DIDs) → middle-truncate the id,
  *   keeping `keep` head + 6 tail chars.
  * - Non-DID input and already-short DIDs are returned unchanged.
+ *
+ * ## Kept in step with Rust
+ *
+ * `vta_sdk::display_name::shorten_did` is a port of this function, used by
+ * `pnm`, `cnm` and the `vtc` CLI. An operator moves between a terminal and
+ * this console looking at the same community; if the two abbreviate
+ * differently, every DID has to be re-identified on the way across.
+ *
+ * The vectors below are asserted in `shorten_did_matches_shared_vectors`
+ * (`vta-sdk/src/display_name/mod.rs`), which is the authority — this console
+ * has no test runner. Change either implementation and check both:
+ *
+ *   "alice"                                        -> "alice"
+ *   "did:webvh:QmXkAbCdEfGhIjKlMnOp:webvh.storm.ws:glenn-vta"
+ *                          -> "did:webvh:QmXkAbCdEf…:webvh.storm.ws:glenn-vta"
+ *   "did:web:QmXkAbCdEfGhIjKlMnOp:example.com"
+ *                                    -> "did:web:QmXkAbCdEf…:example.com"
+ *   "did:webvh:Qm123:example.com"           -> "did:webvh:Qm123:example.com"
+ *   "did:key:z6MkfrQjWzPQrTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ4rT"
+ *                                       -> "did:key:z6MkfrQjWz…XyZ4rT"
+ *   "did:key:z6MkfrQjWz"                       -> "did:key:z6MkfrQjWz"
+ *   "did:webvh:QmXkAbCdEfGhIjKlMnOpQrSt" -> "did:webvh:QmXkAbCdEf…OpQrSt"
  */
 export function shortenDid(did: string, keep = 10): string {
   if (!did.startsWith("did:")) return did;

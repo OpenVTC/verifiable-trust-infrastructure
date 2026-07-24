@@ -19,6 +19,8 @@ import {
 } from "@/lib/api";
 import { CopyButton } from "@/components/CopyButton";
 import { useToast } from "@/lib/toast";
+import { useNameBook } from "@/lib/names";
+import { NamedDid } from "@/components/NamedDid";
 
 /// QR capacity ceiling: a version-40 QR at error-correction level L holds
 /// ~2,953 bytes. A signed VIC is typically ~1.5–2.5 KB, so it usually fits; we
@@ -27,6 +29,7 @@ import { useToast } from "@/lib/toast";
 const QR_MAX_CHARS = 2900;
 
 export function Invitations() {
+  const nameBook = useNameBook();
   const toast = useToast();
   const queryClient = useQueryClient();
   const [did, setDid] = useState("");
@@ -128,7 +131,7 @@ export function Invitations() {
 
       {result && (
         <section className="card">
-          <h3>Invitation for {result.subjectDid}</h3>
+          <h3>Invitation for {nameBook.nameOrDid(result.subjectDid)}</h3>
           {result.validUntil && (
             <p className="muted">
               Valid until <code>{result.validUntil}</code>
@@ -177,7 +180,7 @@ export function Invitations() {
               {invitations.data.map((inv: InvitationListItem) => (
                 <tr key={inv.id}>
                   <td>
-                    <code className="truncate">{inv.subjectDid}</code>
+                    <NamedDid book={nameBook} did={inv.subjectDid} />
                   </td>
                   <td>{inv.role ?? "member"}</td>
                   <td>{inv.issuedAt.slice(0, 10)}</td>
