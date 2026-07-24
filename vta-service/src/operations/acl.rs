@@ -210,7 +210,7 @@ pub async fn create_acl(
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
     validate_role_assignment(auth, &role)?;
-    validate_acl_modification(auth, &allowed_contexts)?;
+    validate_acl_modification(auth, &role, &allowed_contexts)?;
     // Granting approve-authority is its own privilege check: `all` is
     // super-admin-only, a scoped grant requires the caller to hold each context.
     validate_approve_scope_grant(auth, &approve_scope)?;
@@ -371,12 +371,12 @@ pub async fn update_acl(
                 }
             }
         }
-        // Also keep the original full-shape check so the
-        // empty-`allowed_contexts` super-admin-only invariant is
-        // preserved on the *resulting* entry (a context admin can't
-        // produce an unrestricted entry by edit any more than by
-        // create).
-        validate_acl_modification(auth, &allowed_contexts)?;
+        // Also keep the full-shape check so the *resulting* entry is one
+        // the caller could have created directly: `entry.role` is the
+        // post-patch role, so an admin+empty result stays super-admin-only
+        // while a non-admin+empty (acts-nowhere) result is allowed — the same
+        // rule as create.
+        validate_acl_modification(auth, &entry.role, &allowed_contexts)?;
         // Validate only the *added* contexts. Removals are fine
         // (they only narrow scope); pre-existing contexts were
         // already validated at their original insertion point and
@@ -1281,6 +1281,97 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(body.allowed_contexts, vec!["ctx-real".to_string()]);
+    }
+
+    /// The acts-nowhere widening, end to end: a context admin can now mint a
+    /// least-privilege approver for its own context — a reader that acts
+    /// nowhere and confers `ctx-a` via `approve_scope`. Both privilege gates
+    /// pass: the act scope is `None` (grants nothing to act), and the approve
+    /// scope names only a context the caller administers.
+    #[tokio::test]
+    async fn context_admin_can_mint_a_least_privilege_approver() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let body = create_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &caller,
+            "did:key:zApprover",
+            Role::Reader,
+            None,
+            Vec::new(), // acts nowhere
+            None,
+            None,
+            None,
+            ApproveScope::Contexts(vec!["ctx-a".into()]),
+            "test",
+        )
+        .await
+        .expect("a context admin may create a least-privilege approver for its own context");
+        assert!(
+            body.allowed_contexts.is_empty(),
+            "the approver acts nowhere"
+        );
+        assert!(body.approve_contexts.contains(&"ctx-a".to_string()));
+    }
+
+    /// …but the conferral half is still gated: the same caller cannot mint an
+    /// approver for a context it does not administer.
+    #[tokio::test]
+    async fn context_admin_cannot_confer_a_foreign_context_via_the_approver() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let err = create_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &caller,
+            "did:key:zApprover",
+            Role::Reader,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            ApproveScope::Contexts(vec!["ctx-b".into()]),
+            "test",
+        )
+        .await
+        .expect_err("conferring ctx-b requires administering it");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// …and the unrestricted case stays closed: a context admin still cannot
+    /// create an admin with no contexts (a super-admin).
+    #[tokio::test]
+    async fn context_admin_still_cannot_mint_a_super_admin() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let err = create_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &caller,
+            "did:key:zWouldBeSuper",
+            Role::Admin,
+            None,
+            Vec::new(), // admin + empty = super-admin
+            None,
+            None,
+            None,
+            ApproveScope::None,
+            "test",
+        )
+        .await
+        .expect_err("a context admin must not mint a super-admin");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
     }
 
     /// Regression test: an Initiator whose `allowed_contexts` overlaps

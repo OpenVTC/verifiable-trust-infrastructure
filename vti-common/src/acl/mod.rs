@@ -721,6 +721,7 @@ pub fn validate_role_assignment(caller: &AuthClaims, target_role: &Role) -> Resu
 ///   they themselves have access to.
 pub fn validate_acl_modification(
     caller: &AuthClaims,
+    target_role: &Role,
     target_contexts: &[String],
 ) -> Result<(), AppError> {
     // Shape first, for every caller. `validate_context_path` existed all along
@@ -728,23 +729,41 @@ pub fn validate_acl_modification(
     // reachably `""`, which is what `--contexts ''` actually parses to — was
     // storable. Super admins reached it most easily, since their check below
     // returns before any per-context work happens. An empty id is not an
-    // identifier and matches nothing in `has_context_access`, so an entry
-    // holding one is inert while looking scoped.
+    // identifier and matches nothing in `covers`, so an entry holding one is
+    // inert while looking scoped.
     for ctx in target_contexts {
         crate::context_path::validate_context_path(ctx)?;
     }
     if caller.is_super_admin() {
         return Ok(());
     }
-    if target_contexts.is_empty() {
-        return Err(AppError::Forbidden(
-            "only super admin can create unrestricted accounts".into(),
-        ));
+    // The target's authority to *act*, decoded from its own role and contexts —
+    // which is why the role is required. Previously this function saw only the
+    // context list and refused *any* empty target, unable to tell an
+    // unrestricted grant from an acts-nowhere one. That barred a context admin
+    // from creating a least-privilege approver (acts nowhere, confers via
+    // `approve_scope`) — the very shape the CLI recommends — for no reason
+    // beyond the ambiguity.
+    match act_scope_for(target_role, target_contexts) {
+        // Unrestricted (admin + no contexts): a super-admin grant, and only a
+        // super-admin may confer it.
+        ActScope::All => Err(AppError::Forbidden(
+            "only super admin can create an unrestricted (super-admin) account".into(),
+        )),
+        // Acts nowhere (any other role + no contexts): grants no authority to
+        // act at all, so anyone who may manage the ACL may create it. Whatever
+        // *conferral* such an entry carries is a separate grant, gated
+        // independently by `validate_approve_scope_grant`, so a context admin
+        // still cannot confer a context it does not hold.
+        ActScope::None => Ok(()),
+        // Scoped: the caller must administer every named context.
+        ActScope::Contexts(cs) => {
+            for ctx in &cs {
+                caller.require_context(ctx)?;
+            }
+            Ok(())
+        }
     }
-    for ctx in target_contexts {
-        caller.require_context(ctx)?;
-    }
-    Ok(())
 }
 
 /// Authorization predicate for **`delegated-any`** step-up: may `approver`
@@ -1495,34 +1514,56 @@ mod tests {
     // ── validate_acl_modification ───────────────────────────────────
 
     #[test]
-    fn acl_modification_super_admin_can_create_unrestricted() {
-        validate_acl_modification(&super_admin_claims(), &[]).expect("super admin unrestricted");
-        validate_acl_modification(&super_admin_claims(), &["any-ctx".into()])
+    fn acl_modification_super_admin_can_create_anything() {
+        // admin + no contexts = super-admin (unrestricted)
+        validate_acl_modification(&super_admin_claims(), &Role::Admin, &[])
+            .expect("super admin unrestricted");
+        validate_acl_modification(&super_admin_claims(), &Role::Reader, &["any-ctx".into()])
             .expect("super admin any-context");
     }
 
     #[test]
     fn acl_modification_context_admin_cannot_create_unrestricted() {
-        // Empty allowed_contexts on a new entry = super admin. A scoped
-        // admin trying to create one would escape their scope.
-        let err = validate_acl_modification(&context_admin_claims(&["ctx1"]), &[])
-            .expect_err("context admin must not create unrestricted");
+        // admin + no contexts decodes to `All` — a super-admin grant — and
+        // only a super-admin may confer it.
+        let err = validate_acl_modification(&context_admin_claims(&["ctx1"]), &Role::Admin, &[])
+            .expect_err("context admin must not create an unrestricted entry");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+    }
+
+    /// The widening: a *non-admin* with no contexts decodes to `None` — acts
+    /// nowhere, grants no authority to act — so a context admin may create it.
+    /// This is how a least-privilege approver is minted; its conferral is gated
+    /// separately by `validate_approve_scope_grant`.
+    #[test]
+    fn acl_modification_context_admin_can_create_acts_nowhere() {
+        for role in [
+            Role::Reader,
+            Role::Application,
+            Role::Initiator,
+            Role::Monitor,
+        ] {
+            validate_acl_modification(&context_admin_claims(&["ctx1"]), &role, &[]).unwrap_or_else(
+                |e| panic!("context admin must be able to create an acts-nowhere {role:?}: {e:?}"),
+            );
+        }
     }
 
     #[test]
     fn acl_modification_context_admin_confined_to_own_contexts() {
         let caller = context_admin_claims(&["ctx1", "ctx2"]);
-        validate_acl_modification(&caller, &["ctx1".into()]).expect("own context ok");
-        validate_acl_modification(&caller, &["ctx1".into(), "ctx2".into()])
+        validate_acl_modification(&caller, &Role::Reader, &["ctx1".into()])
+            .expect("own context ok");
+        validate_acl_modification(&caller, &Role::Reader, &["ctx1".into(), "ctx2".into()])
             .expect("all-own contexts ok");
 
-        let err = validate_acl_modification(&caller, &["ctx3".into()])
+        let err = validate_acl_modification(&caller, &Role::Reader, &["ctx3".into()])
             .expect_err("foreign context must be rejected");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
 
-        let err = validate_acl_modification(&caller, &["ctx1".into(), "ctx3".into()])
-            .expect_err("mixed own+foreign must be rejected");
+        let err =
+            validate_acl_modification(&caller, &Role::Reader, &["ctx1".into(), "ctx3".into()])
+                .expect_err("mixed own+foreign must be rejected");
         assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
     }
 
@@ -1837,11 +1878,12 @@ mod tests {
         let blank = vec![String::new()];
 
         assert!(
-            validate_acl_modification(&super_admin_claims(), &blank).is_err(),
+            validate_acl_modification(&super_admin_claims(), &Role::Reader, &blank).is_err(),
             "a super admin must not store a context named empty-string"
         );
         assert!(
-            validate_acl_modification(&context_admin_claims(&["ctx-a"]), &blank).is_err(),
+            validate_acl_modification(&context_admin_claims(&["ctx-a"]), &Role::Reader, &blank)
+                .is_err(),
             "nor may a context admin"
         );
         assert!(
@@ -1857,16 +1899,21 @@ mod tests {
         // validates at all.
         for bad in ["/ctx", "ctx/", "a//b", "ev il"] {
             assert!(
-                validate_acl_modification(&super_admin_claims(), &[bad.to_string()]).is_err(),
+                validate_acl_modification(&super_admin_claims(), &Role::Reader, &[bad.to_string()])
+                    .is_err(),
                 "{bad} must be rejected"
             );
         }
 
         // The legitimate shapes still pass, including the empty *list* that
         // means super admin.
-        validate_acl_modification(&super_admin_claims(), &[])
-            .expect("an empty list is still how super admin is expressed");
-        validate_acl_modification(&super_admin_claims(), &["acme/eng".to_string()])
-            .expect("a well-formed nested path is still accepted");
+        validate_acl_modification(&super_admin_claims(), &Role::Admin, &[])
+            .expect("admin + empty list is still how super admin is expressed");
+        validate_acl_modification(
+            &super_admin_claims(),
+            &Role::Reader,
+            &["acme/eng".to_string()],
+        )
+        .expect("a well-formed nested path is still accepted");
     }
 }

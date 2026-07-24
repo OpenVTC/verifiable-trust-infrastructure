@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### vti-common 0.11.19 / vta-service 0.12.24 / vtc-service 0.11.22 — let a context admin create a least-privilege approver
+
+* `validate_acl_modification` saw only the target's context list, never its
+  role, so it could not tell an *acts-nowhere* entry (any non-admin role, no
+  contexts) from an *unrestricted* one (admin, no contexts) — and refused both
+  to a non-super-admin. That barred a context admin from creating the very
+  shape the CLI recommends: a reader that acts nowhere and confers a context it
+  administers via `approve_scope` (a least-privilege approver).
+
+* The function now takes the target role and decodes it into an `ActScope`.
+  `All` (unrestricted) stays super-admin-only; `None` (acts nowhere) grants no
+  authority to act, so any caller who may manage the ACL may create it. The
+  *conferral* half is unchanged — `validate_approve_scope_grant` still requires
+  the caller to administer every context an approver confers — so a context
+  admin can mint an approver for its own contexts and no others, and still
+  cannot mint a super-admin.
+
+* This is the last of the two conflations `ActScope` (#772) was introduced to
+  make resolvable. It is safe now, and was not before, because the "an
+  acts-nowhere entry grants nothing" premise it rests on is finally true on
+  every read path — the credential-vault custody gaps that violated it silently
+  were closed in #776. The two changes are related: this one should not have
+  landed ahead of that one.
+
+* Callers updated in all three services; behaviour is otherwise unchanged (the
+  scoped and unrestricted cases decide exactly as before). Verified
+  load-bearing: reverting the `None` arm to refuse fails both the unit test and
+  the end-to-end `create_acl` test.
+
 ### vti-common 0.11.18 — make delegated-any step-up ratification ancestry-aware
 
 * The admin path of `delegated_any_approver_covers` matched a subject's
