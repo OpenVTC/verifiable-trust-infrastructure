@@ -14,8 +14,8 @@
 
 pub use vta_sdk::did_templates::DidTemplateRecord;
 
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 const GLOBAL_PREFIX: &str = "tpl:global:";
 const CONTEXT_PREFIX: &str = "tpl:ctx:";

@@ -18,8 +18,8 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::backup_bundle_store::{self, BundleKind, BundleRecord, BundleState, verify_token};
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 /// Download the encrypted bytes of an export bundle. One-shot: on
 /// success the record transitions to `ExportDownloaded` (terminal) and

@@ -82,6 +82,7 @@ jobs:
             vta-support
             vta-vault
             vta-sweepers
+            vta-backup
             vta-webvh
             vta-cli-common
             vtc-service

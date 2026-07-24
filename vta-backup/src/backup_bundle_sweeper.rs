@@ -26,8 +26,8 @@ use chrono::{Duration, Utc};
 use tracing::{debug, info, warn};
 
 use crate::backup_bundle_store::{self, BundleRecord, BundleState};
-use crate::error::AppError;
-use crate::store::KeyspaceHandle;
+use vti_common::error::AppError;
+use vti_common::store::KeyspaceHandle;
 
 /// How long a terminal bundle's record sticks around before the
 /// retention pass deletes it. Long enough for operator audit
@@ -184,13 +184,11 @@ mod tests {
 
     async fn setup() -> (tempfile::TempDir, KeyspaceHandle, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::store::Store::open(&VtiStoreConfig {
+        let store = vti_common::store::Store::open(&VtiStoreConfig {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store
-            .keyspace(crate::keyspaces::BACKUP_BUNDLES_SWEEPER_TEST)
-            .unwrap();
+        let ks = store.keyspace(crate::BACKUP_BUNDLES_SWEEPER_TEST).unwrap();
         let blob_dir = dir.path().join("backups");
         tokio::fs::create_dir_all(&blob_dir).await.unwrap();
         (dir, ks, blob_dir)

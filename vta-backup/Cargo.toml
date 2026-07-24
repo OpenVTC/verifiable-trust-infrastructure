@@ -1,0 +1,45 @@
+[package]
+name = "vta-backup"
+description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
+readme = "README.md"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Gates the webvh-keyspace field access on the shared `Keyspaces` bundle.
+webvh = ["vta-keyspaces/webvh"]
+# Gates the TEE KMS bootstrap re-encryption hook during import. The actual KMS
+# call is injected by `vta-service` via the `BootstrapReEncryptor` trait.
+tee = ["vta-config/tee", "dep:async-trait"]
+
+[dependencies]
+vti-common = { path = "../vti-common", version = "0.11" }
+vta-sdk = { path = "../vta-sdk", version = "0.19" }
+vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
+vta-keys = { path = "../vta-keys", version = "0.1" }
+vta-config = { path = "../vta-config", version = "0.1" }
+vta-support = { path = "../vta-support", version = "0.1" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
+aes-gcm = { workspace = true }
+argon2 = "0.5"
+async-trait = { version = "0.1", optional = true }
+
+[dev-dependencies]
+vta-webvh = { path = "../vta-webvh", version = "0.1" }
+tempfile = "3"
+toml = { workspace = true }

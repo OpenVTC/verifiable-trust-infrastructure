@@ -32,7 +32,7 @@ pub(super) async fn handle_initiate_export(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = descriptors::DescriptorDeps::from_app_state(state);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::initiate_export(&deps, auth, req).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
@@ -50,7 +50,7 @@ pub(super) async fn handle_complete_export(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = descriptors::DescriptorDeps::from_app_state(state);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::complete_export(&deps, auth, req).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
@@ -68,7 +68,7 @@ pub(super) async fn handle_initiate_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = descriptors::DescriptorDeps::from_app_state(state);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::initiate_import(&deps, auth, req).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
@@ -87,7 +87,7 @@ pub(super) async fn handle_finalize_import(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = descriptors::DescriptorDeps::from_app_state(state);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::finalize_import(&deps, auth, req).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
@@ -105,7 +105,7 @@ pub(super) async fn handle_abort(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let deps = descriptors::DescriptorDeps::from_app_state(state);
+    let deps = crate::operations::descriptor_deps_from_app_state(state);
     match descriptors::abort_bundle(&deps, auth, req).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),

@@ -566,7 +566,7 @@ didcomm_handler!(
     context_management::DELETE_CONTEXT_RESULT,
     context_management::delete::DeleteContextBody,
     |s, auth, body| {
-        let ks = operations::Keyspaces::from_vta_state(s);
+        let ks = operations::keyspaces_from_vta_state(s);
         operations::contexts::delete_context(&ks, &auth, &body.id, body.force, "didcomm").await
     }
 );
@@ -1131,7 +1131,7 @@ pub async fn handle_backup_export(
     let body: vta_sdk::protocols::backup_management::types::ExportRequest =
         serde_json::from_value(message.body).map_err(handler_err)?;
     let config = state.config.read().await;
-    let ks = operations::Keyspaces::from_vta_state(&state);
+    let ks = operations::keyspaces_from_vta_state(&state);
     let envelope = app_try!(
         operations::backup::export_backup(
             &ks,
@@ -1187,7 +1187,7 @@ pub async fn handle_backup_import(
         &body.password
     ));
 
-    let ks = operations::Keyspaces::from_vta_state(&state);
+    let ks = operations::keyspaces_from_vta_state(&state);
     let result = app_try!(
         operations::backup::apply_import(
             &payload,
@@ -1195,6 +1195,8 @@ pub async fn handle_backup_import(
             &state.seed_store,
             &state.config,
             None, // Store for TEE re-encryption (handled on restart)
+            #[cfg(feature = "tee")]
+            None, // store is None above, so the TEE re-encryption path is skipped
         )
         .await
     );

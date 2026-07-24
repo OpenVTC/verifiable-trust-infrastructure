@@ -2,7 +2,7 @@
 name = "vta-keyspaces"
 description = "VTA keyspace-name registry — the shared storage vocabulary for the VTA subsystem crates"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -10,4 +10,11 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Gates the `webvh` field on the shared `Keyspaces` handle bundle, mirroring
+# the consumer crates' `webvh` feature.
+webvh = []
+
 [dependencies]
+# For `KeyspaceHandle` in the shared `Keyspaces` handle bundle.
+vti-common = { path = "../vti-common", version = "0.11" }

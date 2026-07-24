@@ -198,7 +198,7 @@ pub(super) async fn handle_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let ks = operations::Keyspaces::from_app_state(state);
+    let ks = operations::keyspaces_from_app_state(state);
     match operations::contexts::delete_context(&ks, auth, &req.id, req.force, TRANSPORT_TRUST_TASK)
         .await
     {
