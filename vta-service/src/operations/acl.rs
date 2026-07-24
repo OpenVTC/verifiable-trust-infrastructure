@@ -9,8 +9,8 @@ use vta_sdk::protocols::acl_management::{
 
 use crate::acl::{
     AclEntry, ApproveScope, Role, acl_entry_can_act_in, delete_acl_entry, get_acl_entry,
-    is_acl_entry_visible, list_acl_entries, store_acl_entry, validate_acl_modification,
-    validate_approve_scope_grant, validate_role_assignment,
+    is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
+    validate_acl_modification, validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -150,6 +150,27 @@ async fn require_contexts_exist(
     Ok(())
 }
 
+/// Error for a mutation the caller may not perform on `entry`.
+///
+/// Conflates to `NotFound` in the normal case — a caller who cannot see an
+/// entry must not learn it exists by watching the error change. But an entry
+/// that is *auditable* (it confers into a context the caller administers) is
+/// already readable by this caller through `acl get` / `acl list`, so there is
+/// nothing left to conceal, and "not found" would be a lie about a row they
+/// can list. Those get a `Forbidden` naming why managing it is a different
+/// question from seeing it.
+fn not_manageable(auth: &AuthClaims, entry: &AclEntry, did: &str, verb: &str) -> AppError {
+    if is_acl_entry_auditable(auth, entry) {
+        AppError::Forbidden(format!(
+            "{did} is visible to you because it may confer in a context you administer, \
+             but it acts outside your contexts — only an admin of the contexts it acts in \
+             can {verb} it"
+        ))
+    } else {
+        AppError::NotFound(format!("ACL entry not found for DID: {did}"))
+    }
+}
+
 fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
     let (approve_all_contexts, approve_contexts) = match &e.approve_scope {
         ApproveScope::All => (true, Vec::new()),
@@ -246,7 +267,9 @@ pub async fn get_acl(
     let entry = get_acl_entry(acl_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
-    if !is_acl_entry_visible(auth, &entry) {
+    // Read path: an entry that can *confer* into a context the caller
+    // administers is authority in that context, so its admin can audit it.
+    if !is_acl_entry_auditable(auth, &entry) {
         return Err(AppError::NotFound(format!(
             "ACL entry not found for DID: {did}"
         )));
@@ -266,7 +289,7 @@ pub async fn list_acl(
     let all_entries = list_acl_entries(acl_ks).await?;
     let entries: Vec<CreateAclResultBody> = all_entries
         .iter()
-        .filter(|e| is_acl_entry_visible(auth, e))
+        .filter(|e| is_acl_entry_auditable(auth, e))
         // Shared with the offline `vta acl list` so the two surfaces cannot
         // answer the same question differently. The previous `contains()`
         // omitted super-admin entries, which do hold every context — an
@@ -302,9 +325,7 @@ pub async fn update_acl(
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
 
     if !is_acl_entry_visible(auth, &entry) {
-        return Err(AppError::NotFound(format!(
-            "ACL entry not found for DID: {did}"
-        )));
+        return Err(not_manageable(auth, &entry, did, "update"));
     }
 
     if let Some(ref role) = params.role {
@@ -428,9 +449,7 @@ pub async fn delete_acl(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {did}")))?;
     if !is_acl_entry_visible(auth, &entry) {
-        return Err(AppError::NotFound(format!(
-            "ACL entry not found for DID: {did}"
-        )));
+        return Err(not_manageable(auth, &entry, did, "delete"));
     }
 
     // Caller must be at least as privileged as the entry they are
@@ -655,6 +674,119 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    // ── read/manage split ───────────────────────────────────────────
+
+    /// Seed the escalation-shaped entry: it *administers* ctx-b while
+    /// *conferring* into ctx-a. A ctx-a admin must be able to read it and must
+    /// not be able to mutate it.
+    async fn seed_foreign_admin_conferring_into(
+        acl_ks: &KeyspaceHandle,
+        did: &str,
+        admins: &[&str],
+        confers: &[&str],
+    ) {
+        store_acl_entry(
+            acl_ks,
+            &AclEntry::new(did, Role::Admin, "seed")
+                .with_contexts(admins.iter().map(|s| s.to_string()).collect())
+                .with_approve_scope(ApproveScope::Contexts(
+                    confers.iter().map(|s| s.to_string()).collect(),
+                )),
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The audit gap: a least-privilege approver conferring into the caller's
+    /// context is now readable by that context's admin.
+    #[tokio::test]
+    async fn get_acl_surfaces_an_approver_conferring_into_callers_context() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let target = "did:key:zApproverRead";
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new(target, Role::Reader, "seed")
+                .with_approve_scope(ApproveScope::Contexts(vec!["ctx-a".into()])),
+        )
+        .await
+        .unwrap();
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let body = get_acl(&acl_ks, &caller, target, "test")
+            .await
+            .expect("an approver in my context must be auditable");
+        assert_eq!(body.did, target);
+        let _ = (audit_ks, contexts_ks);
+    }
+
+    /// …and appears in the listing, which is where an operator actually audits.
+    #[tokio::test]
+    async fn list_acl_includes_an_approver_conferring_into_callers_context() {
+        let (_store, acl_ks, _audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        store_acl_entry(
+            &acl_ks,
+            &AclEntry::new("did:key:zApproverList", Role::Reader, "seed")
+                .with_approve_scope(ApproveScope::All),
+        )
+        .await
+        .unwrap();
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let body = list_acl(&acl_ks, &caller, None, "test").await.unwrap();
+        assert!(
+            body.entries
+                .iter()
+                .any(|e| e.did == "did:key:zApproverList"),
+            "an approve-all holder must be auditable by every context admin"
+        );
+    }
+
+    /// The escalation the split exists to prevent: reading an entry that
+    /// confers into your context must not let you delete it when it
+    /// administers someone else's.
+    #[tokio::test]
+    async fn delete_acl_refuses_an_entry_that_acts_outside_callers_contexts() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+        let target = "did:key:zForeignAdmin";
+        seed_foreign_admin_conferring_into(&acl_ks, target, &["ctx-b"], &["ctx-a"]).await;
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        // Readable…
+        get_acl(&acl_ks, &caller, target, "test")
+            .await
+            .expect("confers into ctx-a, so ctx-a's admin may read it");
+        // …but not deletable, and the error says why rather than lying.
+        let err = delete_acl(&acl_ks, &audit_ks, &caller, target, "test")
+            .await
+            .expect_err("ctx-a admin must not delete an entry that administers ctx-b");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "expected Forbidden (the row is already readable), got {err:?}"
+        );
+    }
+
+    /// An entry the caller cannot read at all still conflates to `NotFound` —
+    /// the split must not turn the enumeration guard into an oracle.
+    #[tokio::test]
+    async fn delete_acl_still_conflates_a_wholly_invisible_entry_to_not_found() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a", "ctx-b"]).await;
+        let target = "did:key:zInvisible";
+        seed_target(&acl_ks, target, &["ctx-b"]).await;
+
+        let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
+        let err = delete_acl(&acl_ks, &audit_ks, &caller, target, "test")
+            .await
+            .expect_err("not visible, not auditable");
+        assert!(
+            matches!(err, AppError::NotFound(_)),
+            "expected NotFound so existence is not disclosed, got {err:?}"
+        );
     }
 
     #[test]
