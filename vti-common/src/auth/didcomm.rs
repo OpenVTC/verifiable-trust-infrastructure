@@ -14,8 +14,11 @@
 //! gives the direct-`unpack` callers (the REST `/auth/*` handlers, vault unseal)
 //! the same guarantee in one call: it does the authcrypt gate **and** the
 //! `from == skid` binding, returning the proven sender or a typed
-//! [`AuthcryptError`]. It takes primitive fields rather than the SDK metadata
-//! struct so `vti-common` needn't depend on the messaging SDK.
+//! [`AuthcryptError`]. It takes the just-unpacked `(message, metadata)` pair
+//! directly, so a caller never re-derives `from` or the flags by hand.
+
+use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::messaging::messages::compat::UnpackMetadata;
 
 /// Why binding an authcrypt sender failed. Auth handlers render it with
 /// [`AuthcryptError::message`]; the vault path matches specific variants to map
@@ -64,25 +67,27 @@ impl AuthcryptError {
 /// matches the DID of the key that actually authenticated it, returning that
 /// cryptographically-bound sender DID (with any `#fragment` stripped).
 ///
-/// This is the single entry point for direct-`unpack` callers: it folds the
+/// This is the single entry point for direct-`unpack` callers: pass the
+/// `(message, metadata)` pair straight from `atm.unpack` and it folds the
 /// authcrypt requirement and the addressing-consistency check into one call.
-/// `from` is the inner message's `from` header; `encrypted_from_kid` is the
-/// authenticated sender key id from unpack metadata. Callers pass the returned
-/// (proven) sender on to authorization; they must **not** trust `from` on their
-/// own. See the module docs for the rationale.
+/// The encrypted/authenticated flags and the authenticated sender key id come
+/// from `metadata`; the claimed `from` comes from the decrypted `message`.
+/// Callers pass the returned (proven) sender on to authorization; they must
+/// **not** trust `message.from` on their own. See the module docs.
 pub fn bind_authcrypt_sender(
-    from: Option<&str>,
-    encrypted: bool,
-    authenticated: bool,
-    encrypted_from_kid: Option<&str>,
+    message: &Message,
+    metadata: &UnpackMetadata,
 ) -> Result<String, AuthcryptError> {
-    if !(encrypted && authenticated) {
+    if !(metadata.encrypted && metadata.authenticated) {
         return Err(AuthcryptError::NotAuthcrypt);
     }
-    let kid = encrypted_from_kid.ok_or(AuthcryptError::NoSenderKey)?;
+    let kid = metadata
+        .encrypted_from_kid
+        .as_deref()
+        .ok_or(AuthcryptError::NoSenderKey)?;
     let key_did = base_did(kid);
 
-    match from.map(base_did) {
+    match message.from.as_deref().map(base_did) {
         Some(from_did) if from_did == key_did => Ok(key_did.to_string()),
         Some(from_did) => Err(AuthcryptError::Mismatch {
             claimed: from_did.to_string(),
@@ -100,21 +105,45 @@ fn base_did(did: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     const DID: &str = "did:key:z6MkSender";
     const KID: &str = "did:key:z6MkSender#z6MkSender";
+
+    /// A minimal unpacked `Message` carrying (or omitting) a `from` header.
+    fn msg(from: Option<&str>) -> Message {
+        let builder = Message::build(
+            "urn:uuid:test".to_string(),
+            "https://example.org/test/1.0".to_string(),
+            json!({}),
+        );
+        match from {
+            Some(f) => builder.from(f.to_string()).finalize(),
+            None => builder.finalize(),
+        }
+    }
+
+    /// Unpack metadata with the given authcrypt flags + sender key id.
+    fn meta(encrypted: bool, authenticated: bool, kid: Option<&str>) -> UnpackMetadata {
+        UnpackMetadata {
+            encrypted,
+            authenticated,
+            encrypted_from_kid: kid.map(str::to_string),
+            ..Default::default()
+        }
+    }
 
     /// Happy path: authcrypt with a `from` matching the authenticated key's DID
     /// returns the bound base DID (fragment stripped on both sides).
     #[test]
     fn binds_matching_sender() {
         assert_eq!(
-            bind_authcrypt_sender(Some(DID), true, true, Some(KID)),
+            bind_authcrypt_sender(&msg(Some(DID)), &meta(true, true, Some(KID))),
             Ok(DID.to_string()),
         );
         // `from` may itself carry a fragment; still binds to the base DID.
         assert_eq!(
-            bind_authcrypt_sender(Some(KID), true, true, Some(KID)),
+            bind_authcrypt_sender(&msg(Some(KID)), &meta(true, true, Some(KID))),
             Ok(DID.to_string()),
         );
     }
@@ -125,10 +154,8 @@ mod tests {
     #[test]
     fn rejects_sender_mismatch() {
         let err = bind_authcrypt_sender(
-            Some("did:key:z6MkAdminVictim"),
-            true,
-            true,
-            Some("did:key:z6MkAttacker#z6MkAttacker"),
+            &msg(Some("did:key:z6MkAdminVictim")),
+            &meta(true, true, Some("did:key:z6MkAttacker#z6MkAttacker")),
         )
         .expect_err("forged from must be rejected");
         assert_eq!(
@@ -151,7 +178,7 @@ mod tests {
     #[test]
     fn rejects_plaintext() {
         assert_eq!(
-            bind_authcrypt_sender(Some(DID), false, false, Some(KID)),
+            bind_authcrypt_sender(&msg(Some(DID)), &meta(false, false, Some(KID))),
             Err(AuthcryptError::NotAuthcrypt),
         );
     }
@@ -161,7 +188,7 @@ mod tests {
     #[test]
     fn rejects_anoncrypt() {
         assert_eq!(
-            bind_authcrypt_sender(None, true, false, None),
+            bind_authcrypt_sender(&msg(None), &meta(true, false, None)),
             Err(AuthcryptError::NotAuthcrypt),
         );
     }
@@ -171,7 +198,7 @@ mod tests {
     #[test]
     fn rejects_missing_sender_key() {
         assert_eq!(
-            bind_authcrypt_sender(Some(DID), true, true, None),
+            bind_authcrypt_sender(&msg(Some(DID)), &meta(true, true, None)),
             Err(AuthcryptError::NoSenderKey),
         );
     }
@@ -180,7 +207,7 @@ mod tests {
     #[test]
     fn rejects_missing_from() {
         assert_eq!(
-            bind_authcrypt_sender(None, true, true, Some(KID)),
+            bind_authcrypt_sender(&msg(None), &meta(true, true, Some(KID))),
             Err(AuthcryptError::NoFrom),
         );
     }

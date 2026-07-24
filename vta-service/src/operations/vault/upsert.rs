@@ -46,13 +46,7 @@ pub async fn unseal_secret(
     // attacker-controlled plaintext `from`. A missing sender maps to the
     // `MissingSender` reject; anything else (plaintext/anoncrypt, or a `from`
     // that doesn't match the authenticated key) is a `sealed_secret_invalid`.
-    let sender = vti_common::auth::bind_authcrypt_sender(
-        msg.from.as_deref(),
-        metadata.encrypted,
-        metadata.authenticated,
-        metadata.encrypted_from_kid.as_deref(),
-    )
-    .map_err(|e| match e {
+    let sender = vti_common::auth::bind_authcrypt_sender(&msg, &metadata).map_err(|e| match e {
         vti_common::auth::AuthcryptError::NoFrom
         | vti_common::auth::AuthcryptError::NoSenderKey => UnsealError::MissingSender,
         other => UnsealError::UnpackFailed(other.message("sealed secret")),

@@ -242,13 +242,8 @@ async fn authenticate_and_mint(
     // it equals the inner `from`; an attacker can authcrypt with their own key
     // (both flags true) while claiming a victim's `from`. The returned DID is
     // the proven signer that `handle_authenticate` binds to `session.did`.
-    let sender_base = vti_common::auth::bind_authcrypt_sender(
-        msg.from.as_deref(),
-        metadata.encrypted,
-        metadata.authenticated,
-        metadata.encrypted_from_kid.as_deref(),
-    )
-    .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+        .map_err(|e| AppError::Authentication(e.message("authenticate message")))?;
 
     // Canonical Trust-Task URI only; the legacy `affinidi.com/atm/1.0`
     // alias was removed (all VTC clients emit the canonical type).
@@ -786,13 +781,8 @@ pub async fn refresh(
     // token is the primary credential, but `msg.from` is fed to `handle_refresh`
     // as `signer_did` and bound to the session's DID. Bind it to the proven
     // authcrypt sender key so a forged/plaintext `from` can't defeat that.
-    let sender_base = vti_common::auth::bind_authcrypt_sender(
-        msg.from.as_deref(),
-        metadata.encrypted,
-        metadata.authenticated,
-        metadata.encrypted_from_kid.as_deref(),
-    )
-    .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
+    let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
+        .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
     // Canonical Trust-Task URI only; the legacy
     // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
