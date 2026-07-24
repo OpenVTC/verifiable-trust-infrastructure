@@ -5,6 +5,7 @@ use ratatui::{
 };
 use vta_sdk::acl::ApproveScope;
 use vta_sdk::prelude::*;
+use vti_common::acl::{Role, act_scope_for};
 
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
 
@@ -21,16 +22,14 @@ use crate::render::{is_full_display, print_full_entry, print_full_list_title, pr
 /// looked like a blanket grant, and an operator auditing for over-broad
 /// access saw `(unrestricted)` on rows that were in fact inert.
 pub fn format_contexts(role: &str, contexts: &[String]) -> String {
-    if !contexts.is_empty() {
-        return contexts.join(", ");
-    }
-    if role == "admin" {
-        // `format_role` already renders this entry's role as "super admin",
-        // so the two columns read together without repeating the term.
-        "(unrestricted)".to_string()
-    } else {
-        "(none — acts nowhere)".to_string()
-    }
+    // The wire form carries the role as a string, so parse it back before
+    // decoding. An unrecognised role falls to the most restrictive reading:
+    // a display must never invent authority it cannot confirm.
+    //
+    // `format_role` already renders an unrestricted admin as "super admin", so
+    // the two columns read together without repeating the term.
+    let role = Role::parse(role).unwrap_or(Role::Monitor);
+    act_scope_for(&role, contexts).to_string()
 }
 
 pub fn format_role(role: &str, contexts: &[String]) -> String {

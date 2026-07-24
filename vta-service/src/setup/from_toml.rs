@@ -1528,10 +1528,7 @@ async fn seed_initial_admin(
     }
 
     let entries = acl::list_acl_entries(&acl_ks).await?;
-    let existing_super_admins: Vec<_> = entries
-        .iter()
-        .filter(|e| e.role == acl::Role::Admin && e.allowed_contexts.is_empty())
-        .collect();
+    let existing_super_admins: Vec<_> = entries.iter().filter(|e| e.is_super_admin()).collect();
     if !existing_super_admins.is_empty() {
         return Err(format!(
             "found {} existing super admin(s); refusing to seed another during setup",

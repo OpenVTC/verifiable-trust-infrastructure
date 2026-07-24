@@ -7,7 +7,7 @@ use axum_extra::headers::Authorization;
 use axum_extra::headers::authorization::Bearer;
 use tracing::warn;
 
-use crate::acl::Role;
+use crate::acl::{ActScope, Role, act_scope_for};
 use crate::auth::jwt::JwtKeys;
 use crate::auth::session::{SessionState, get_session};
 use crate::error::AppError;
@@ -189,16 +189,28 @@ impl AuthClaims {
         }
     }
 
-    /// Returns `true` if the caller is an admin with unrestricted access
-    /// (empty `allowed_contexts`).
-    pub fn is_super_admin(&self) -> bool {
-        self.role == Role::Admin && self.allowed_contexts.is_empty()
+    /// This caller's authority to **act**, decoded from `(role,
+    /// allowed_contexts)`.
+    ///
+    /// Use this — or [`has_context_access`](Self::has_context_access), which is
+    /// built on it — rather than inspecting `allowed_contexts` directly. An
+    /// empty list means *unrestricted* for [`Role::Admin`] and *nothing at all*
+    /// for every other role; a call site that tests `is_empty()` without the
+    /// role gets one of those two cases backwards. See [`ActScope`].
+    pub fn act_scope(&self) -> ActScope {
+        act_scope_for(&self.role, &self.allowed_contexts)
     }
 
-    /// Returns `true` if the caller has access to the given context — as a super
-    /// admin, or because one of their `allowed_contexts` is `context_id` itself
-    /// **or an ancestor of it** (folder-level authority: admin of a parent
-    /// context covers the whole subtree).
+    /// Returns `true` if the caller is an admin whose [`ActScope`] is
+    /// unrestricted.
+    pub fn is_super_admin(&self) -> bool {
+        self.role == Role::Admin && self.act_scope().is_unrestricted()
+    }
+
+    /// Returns `true` if the caller may act in the given context — because
+    /// their [`ActScope`] is unrestricted, or because it names `context_id`
+    /// itself **or an ancestor of it** (folder-level authority: admin of a
+    /// parent context covers the whole subtree).
     ///
     /// Ancestry is the segment-aware
     /// [`is_ancestor_or_self`](crate::context_path::is_ancestor_or_self) — a
@@ -206,11 +218,7 @@ impl AuthClaims {
     /// (single-segment, childless) contexts this is identical to the previous
     /// exact match.
     pub fn has_context_access(&self, context_id: &str) -> bool {
-        self.is_super_admin()
-            || self
-                .allowed_contexts
-                .iter()
-                .any(|allowed| crate::context_path::is_ancestor_or_self(allowed, context_id))
+        self.act_scope().covers(context_id)
     }
 
     /// Clone these claims with `extra` contexts merged into `allowed_contexts`.

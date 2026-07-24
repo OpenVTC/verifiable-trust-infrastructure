@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.25 / vti-common 0.11.16 / vta-cli-common 0.10.11 / vta-service 0.12.20 — decode an ACL entry's authority to act in one place
+
+* **`allowed_contexts` means opposite things depending on the role** —
+  unrestricted for `Role::Admin`, *nothing at all* for every other role — and
+  call sites kept reading it without the role. That produced a display calling
+  a least-privilege approver "unrestricted" (#746), two `acl list --context`
+  filters that disagreed with each other and with the truth (#770), and a vault
+  scope gate that handed an authorized-nowhere entry credential-vault reads in
+  every context (#769). Three bugs, one cause: the decode was open-coded at
+  every call site.
+
+* **`ActScope`** (`None` / `All` / `Contexts`) is now that decode, done once.
+  It sits in `vta-sdk/src/acl.rs` beside `ApproveScope`, with deliberately
+  identical variants, an identical `covers()`, and the same fail-closed
+  default — so "what may this DID do" and "what may it confer" read as one
+  model rather than an enum and a convention.
+
+* **Nothing is stored or sent in the new shape.** Unlike `ApproveScope`, the
+  act axis stays `(role, allowed_contexts)` on disk and on the wire;
+  `ActScope` is computed on read via `vti_common::acl::act_scope_for`, reached
+  through `AclEntry::act_scope()` / `AuthClaims::act_scope()`. No migration, no
+  wire change, existing rows untouched. The decode lives server-side because it
+  needs `Role`, which `vta-sdk` cannot see — the same shape/policy split #768
+  used for `ApproveScope`.
+
+* `is_super_admin`, `has_context_access`, `can_act_in`, `is_acl_entry_visible`,
+  `acl_entry_can_act_in`, `delegated_any_approver_covers` and both ACL displays
+  now route through it. Behaviour is unchanged throughout — including two
+  conflations preserved deliberately and flagged in place, since removing
+  either is an authorization change rather than a structural one.
+
+* `docs/05-design-notes/acl-scope-semantics.md` documents the model and what
+  remains; CLAUDE.md gains the workspace rule.
+
 ### vti-common 0.11.15 / vta-service 0.12.19 — make `acl list --context` answer the same way on both surfaces
 
 * The two implementations of the context filter disagreed on exactly one input
