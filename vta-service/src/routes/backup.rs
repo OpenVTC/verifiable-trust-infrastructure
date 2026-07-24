@@ -27,7 +27,7 @@ pub async fn export(
     Json(req): Json<ExportRequest>,
 ) -> Result<Json<BackupEnvelope>, AppError> {
     let config = state.config.read().await;
-    let ks = operations::Keyspaces::from_app_state(&state);
+    let ks = operations::keyspaces_from_app_state(&state);
     let envelope = operations::backup::export_backup(
         &ks,
         &*state.seed_store,
@@ -80,13 +80,15 @@ pub async fn import(
     // Full import — decrypt once (skip building a throwaway preview)
     let payload = operations::backup::decrypt_backup(&req.backup, &req.password)?;
 
-    let ks = operations::Keyspaces::from_app_state(&state);
+    let ks = operations::keyspaces_from_app_state(&state);
     let result = operations::backup::apply_import(
         &payload,
         &ks,
         &state.seed_store,
         &state.config,
         None, // Store passed for TEE re-encryption (REST has no store access; handled on restart)
+        #[cfg(feature = "tee")]
+        None, // store is None above, so the TEE re-encryption path is skipped
     )
     .await?;
 

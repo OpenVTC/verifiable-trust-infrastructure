@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### vta-backup 0.1.0 / vta-keyspaces 0.1.1 / vta-support 0.1.1 / vta-service 0.12.33 — extract the backup subsystem (with dependency inversion) + did-template storage
+
+Eighth decomposition step, and the first to use **dependency inversion** rather
+than a pure move — bundled with two clean pure-moves to land several
+extractions in a single review/release cycle.
+
+* **New `vta-backup`** — the encrypted full-state export/import operations
+  (Argon2id + AES-256-GCM), the compatibility check, the two-phase descriptor
+  flow, the sealed backup-bundle store, and its TTL sweeper (~3.7k lines from
+  `vta-service`). Re-exported so `crate::operations::backup::…` and
+  `crate::{backup_bundle_store,backup_bundle_sweeper}::…` are unchanged. Its 59
+  tests run in the new crate (with slim local test fixtures so it needs no
+  dependency on `vta-service`).
+
+  Two `vta-service`-specific glue points were **inverted** rather than moved:
+  - The `AppState`-borrowing constructors (`DescriptorDeps::from_app_state`)
+    became free functions in `vta-service`
+    (`operations::descriptor_deps_from_app_state`); the `DescriptorDeps` struct
+    itself moved to `vta-backup`.
+  - The TEE KMS re-encryption step of an import is now injected through a
+    `vta_backup::BootstrapReEncryptor` trait whose sole implementation
+    (`vta-service`) wraps `tee::kms_bootstrap::re_encrypt_bootstrap_secrets`.
+
+* **`vta-keyspaces` 0.1.1** — the shared `Keyspaces<'a>` handle bundle (used by
+  backup + contexts + messaging) moved here from `vta-service::operations`, so a
+  subsystem crate can take it without depending on `vta-service`. Its
+  `AppState` / `VtaState` constructors became free functions
+  (`operations::keyspaces_from_app_state` / `_from_vta_state`). Additive — every
+  existing `"0.1"` pin still resolves.
+
+* **`vta-support` 0.1.1** — the DID-template storage module (`tpl:` keyspace,
+  ~0.1k lines) moved from `vta-service`, re-exported as `crate::did_templates`.
+  A clean pure-move (only `crate::error` / `crate::store` → `vti_common::…`).
+
+* **`backup_bundle_sweeper` note:** unlike the three generic sweepers extracted
+  in the previous step, the backup-bundle sweeper is coupled to
+  `backup_bundle_store` and moved *with* it into `vta-backup`.
+
+* No behaviour change: 720 `vta-service` lib tests + 59 `vta-backup` tests pass;
+  all feature combos, the enclave build, and the workspace build are green.
+  `vta-service` drops ~3.9k lines (→ ~93k).
+
 ### vta-sweepers 0.1.0 / vta-service 0.12.32 — extract the background TTL sweepers
 
 Seventh decomposition step, enabled by the `vta-audit` extraction (#788): with

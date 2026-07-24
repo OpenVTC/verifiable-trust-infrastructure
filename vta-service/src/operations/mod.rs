@@ -2,7 +2,12 @@ pub mod acl;
 #[cfg(feature = "tee")]
 pub mod attestation;
 pub mod audit;
-pub mod backup;
+/// Backup/restore export/import operations, extracted to the `vta-backup`
+/// crate and re-exported so every `crate::operations::backup::…` path is
+/// unchanged. The `AppState`-borrowing constructor and the TEE re-encryption
+/// glue stay here (see `descriptor_deps_from_app_state` /
+/// `VtaBootstrapReEncryptor` below) because they know `vta-service` types.
+pub use vta_backup::ops as backup;
 pub mod cache;
 pub mod config;
 pub mod contexts;
@@ -58,47 +63,75 @@ pub mod step_up_approval;
 pub mod step_up_policy;
 pub mod vault;
 
-use crate::store::KeyspaceHandle;
-
 /// Shared keyspace handles passed to operations that need multiple keyspaces.
-pub struct Keyspaces<'a> {
-    pub keys: &'a KeyspaceHandle,
-    pub acl: &'a KeyspaceHandle,
-    pub contexts: &'a KeyspaceHandle,
-    pub did_templates: &'a KeyspaceHandle,
-    pub audit: &'a KeyspaceHandle,
-    pub imported: &'a KeyspaceHandle,
-    #[cfg(feature = "webvh")]
-    pub webvh: &'a KeyspaceHandle,
+/// The struct itself lives in `vta-keyspaces` (a pure field bundle with no
+/// `vta-service` dependency); the `AppState` / `VtaState` constructors stay
+/// here as free functions because they know those concrete state types.
+pub use vta_keyspaces::Keyspaces;
+
+/// Borrow keyspaces from an `AppState`.
+pub fn keyspaces_from_app_state(s: &crate::server::AppState) -> Keyspaces<'_> {
+    Keyspaces {
+        keys: &s.keys_ks,
+        acl: &s.acl_ks,
+        contexts: &s.contexts_ks,
+        did_templates: &s.did_templates_ks,
+        audit: &s.audit_ks,
+        imported: &s.imported_ks,
+        #[cfg(feature = "webvh")]
+        webvh: &s.webvh_ks,
+    }
 }
 
-impl<'a> Keyspaces<'a> {
-    /// Borrow keyspaces from an `AppState`.
-    pub fn from_app_state(s: &'a crate::server::AppState) -> Self {
-        Self {
-            keys: &s.keys_ks,
-            acl: &s.acl_ks,
-            contexts: &s.contexts_ks,
-            did_templates: &s.did_templates_ks,
-            audit: &s.audit_ks,
-            imported: &s.imported_ks,
-            #[cfg(feature = "webvh")]
-            webvh: &s.webvh_ks,
-        }
+/// Borrow keyspaces from a `VtaState` (DIDComm handlers).
+#[cfg(feature = "didcomm")]
+pub fn keyspaces_from_vta_state(s: &crate::messaging::router::VtaState) -> Keyspaces<'_> {
+    Keyspaces {
+        keys: &s.keys_ks,
+        acl: &s.acl_ks,
+        contexts: &s.contexts_ks,
+        did_templates: &s.did_templates_ks,
+        audit: &s.audit_ks,
+        imported: &s.imported_ks,
+        #[cfg(feature = "webvh")]
+        webvh: &s.webvh_ks,
     }
+}
 
-    /// Borrow keyspaces from a `VtaState` (DIDComm handlers).
-    #[cfg(feature = "didcomm")]
-    pub fn from_vta_state(s: &'a crate::messaging::router::VtaState) -> Self {
-        Self {
-            keys: &s.keys_ks,
-            acl: &s.acl_ks,
-            contexts: &s.contexts_ks,
-            did_templates: &s.did_templates_ks,
-            audit: &s.audit_ks,
-            imported: &s.imported_ks,
-            #[cfg(feature = "webvh")]
-            webvh: &s.webvh_ks,
-        }
+/// Borrow a backup `DescriptorDeps` (the two-phase export/import flow) from an
+/// `AppState`. The struct lives in `vta-backup`; this constructor stays here
+/// because it knows `AppState` and wires the TEE re-encryption hook.
+pub fn descriptor_deps_from_app_state(
+    s: &crate::server::AppState,
+) -> backup::descriptors::DescriptorDeps<'_> {
+    backup::descriptors::DescriptorDeps {
+        bundles_ks: &s.backup_bundles_ks,
+        blob_dir: &s.backup_blob_dir,
+        keyspaces: keyspaces_from_app_state(s),
+        seed_store: &s.seed_store,
+        config: &s.config,
+        store: None, // TEE-only path; not threaded here yet.
+        #[cfg(feature = "tee")]
+        re_encryptor: Some(&VtaBootstrapReEncryptor),
+    }
+}
+
+/// The sole [`vta_backup::BootstrapReEncryptor`] implementation: wraps
+/// `vta-service`'s TEE KMS bootstrap re-encryption so `vta-backup`'s import op
+/// can invoke it without depending on the `tee` module.
+#[cfg(feature = "tee")]
+struct VtaBootstrapReEncryptor;
+
+#[cfg(feature = "tee")]
+#[async_trait::async_trait]
+impl vta_backup::BootstrapReEncryptor for VtaBootstrapReEncryptor {
+    async fn re_encrypt(
+        &self,
+        kms: &crate::config::TeeKmsConfig,
+        store: &crate::store::Store,
+        seed: &[u8],
+        jwt: &[u8; 32],
+    ) -> Result<(), crate::error::AppError> {
+        crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(kms, store, seed, jwt).await
     }
 }

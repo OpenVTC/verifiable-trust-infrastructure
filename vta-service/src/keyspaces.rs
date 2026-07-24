@@ -12,13 +12,6 @@
 
 pub use vta_keyspaces::*;
 
-/// Test-only keyspaces (descriptor sweeper tests open isolated keyspaces so a
-/// run can't clobber the shared `backup_bundles`).
-#[cfg(test)]
-pub const BACKUP_BUNDLES_TEST: &str = "backup_bundles_test";
-#[cfg(test)]
-pub const BACKUP_BUNDLES_SWEEPER_TEST: &str = "backup_bundles_sweeper_test";
-
 #[cfg(test)]
 mod tests {
     /// Guard (the "CI grep"): no bare `.keyspace("literal")` anywhere in the

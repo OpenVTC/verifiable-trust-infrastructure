@@ -24,8 +24,12 @@ pub use vta_audit as audit;
 /// path (the storage-thread sweep loop, provision-integration) is unchanged.
 pub use vta_sweepers::{acl_sweeper, consent_sweeper, vault_sweeper};
 pub mod auth;
-pub mod backup_bundle_store;
-pub mod backup_bundle_sweeper;
+/// Backup/restore subsystem, extracted to the `vta-backup` crate. The sealed
+/// backup-bundle store + its TTL sweeper are re-exported so every
+/// `crate::{backup_bundle_store,backup_bundle_sweeper}::…` path is unchanged;
+/// the export/import operations are re-exported as `crate::operations::backup`
+/// (see `operations/mod.rs`).
+pub use vta_backup::{backup_bundle_store, backup_bundle_sweeper};
 /// VTA configuration types, extracted to the `vta-config` crate. Re-exported as
 /// `crate::config` so every `crate::config::…` path stays unchanged, and so
 /// `vta_service::config` keeps resolving for `vta-enclave`. The `tee` cargo
@@ -38,7 +42,9 @@ pub use vta_config as config;
 /// unchanged.
 pub use vta_support::contexts;
 pub mod deprecation;
-pub mod did_templates;
+/// DID-template storage (the `tpl:` keyspace), extracted to the `vta-support`
+/// crate and re-exported so every `crate::did_templates::…` path is unchanged.
+pub use vta_support::did_templates;
 pub mod didcomm_bridge;
 pub mod error;
 /// Key management (master seed, BIP-32 derivation, wrapping, seed-store

@@ -12,9 +12,29 @@
 //! `path_counter:` … record families inside a keyspace) are a separate concern
 //! and are not yet centralised.
 //!
-//! This is a dependency-free leaf crate: it holds only the shared vocabulary so
-//! that every VTA subsystem crate can name keyspaces without depending on
-//! `vta-service`.
+//! A near-leaf crate: it holds the shared keyspace vocabulary (the name
+//! constants) plus the [`Keyspaces`] handle bundle, so that every VTA subsystem
+//! crate can name and pass keyspaces without depending on `vta-service`. Its
+//! only dependency is `vti-common` (for `KeyspaceHandle`).
+
+use vti_common::store::KeyspaceHandle;
+
+/// Shared bundle of borrowed keyspace handles passed to operations that need
+/// several keyspaces at once.
+///
+/// The struct is a pure field bundle — the constructors that borrow it from a
+/// concrete `AppState` / `VtaState` live in `vta-service` (they know those
+/// types), so this stays free of any `vta-service` dependency.
+pub struct Keyspaces<'a> {
+    pub keys: &'a KeyspaceHandle,
+    pub acl: &'a KeyspaceHandle,
+    pub contexts: &'a KeyspaceHandle,
+    pub did_templates: &'a KeyspaceHandle,
+    pub audit: &'a KeyspaceHandle,
+    pub imported: &'a KeyspaceHandle,
+    #[cfg(feature = "webvh")]
+    pub webvh: &'a KeyspaceHandle,
+}
 
 /// Master seed + key records (`key:`, `seed:`, `path_counter:`,
 /// `active_seed_id`, `imported_kek_salt`, …) and the backup import sentinel.

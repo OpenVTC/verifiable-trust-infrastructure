@@ -247,7 +247,7 @@ pub async fn delete_context_handler(
     Path(id): Path<String>,
     Query(query): Query<DeleteContextQuery>,
 ) -> Result<StatusCode, AppError> {
-    let ks = operations::Keyspaces::from_app_state(&state);
+    let ks = operations::keyspaces_from_app_state(&state);
     operations::contexts::delete_context(&ks, &auth.0, &id, query.force, "rest").await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -30,14 +30,14 @@ use vta_sdk::protocols::backup_management::descriptors::{
 };
 use vta_sdk::protocols::backup_management::types::BackupEnvelope;
 
-use crate::auth::AuthClaims;
 use crate::backup_bundle_store::{
     self, BundleKind, BundleRecord, BundleState, BundleToken, mint_token,
 };
-use crate::config::AppConfig;
-use crate::error::AppError;
-use crate::keys::seed_store::SeedStore;
-use crate::store::{KeyspaceHandle, Store};
+use vta_config::AppConfig;
+use vta_keys::seed_store::SeedStore;
+use vti_common::auth::AuthClaims;
+use vti_common::error::AppError;
+use vti_common::store::{KeyspaceHandle, Store};
 
 /// Default bundle TTL — 5 minutes per the design doc. Operators
 /// can override via the (future) `VTA_BACKUP_BUNDLE_TTL_SECS` env
@@ -64,25 +64,15 @@ pub const MAX_OPEN_BUNDLES_PER_DID: usize = 3;
 pub struct DescriptorDeps<'a> {
     pub bundles_ks: &'a KeyspaceHandle,
     pub blob_dir: &'a Path,
-    pub keyspaces: super::super::Keyspaces<'a>,
+    pub keyspaces: vta_keyspaces::Keyspaces<'a>,
     pub seed_store: &'a Arc<dyn SeedStore>,
     pub config: &'a tokio::sync::RwLock<AppConfig>,
     pub store: Option<&'a Store>,
-}
-
-impl<'a> DescriptorDeps<'a> {
-    /// Borrow from an `AppState`. The owning `s` outlives the
-    /// returned deps.
-    pub fn from_app_state(s: &'a crate::server::AppState) -> Self {
-        Self {
-            bundles_ks: &s.backup_bundles_ks,
-            blob_dir: &s.backup_blob_dir,
-            keyspaces: super::super::Keyspaces::from_app_state(s),
-            seed_store: &s.seed_store,
-            config: &s.config,
-            store: None, // TEE-only path; not threaded here yet.
-        }
-    }
+    /// TEE-only injected KMS re-encryption hook for the import commit path
+    /// (see [`crate::BootstrapReEncryptor`]). `None` outside Mode-B; supplied
+    /// by `vta-service`'s `operations::descriptor_deps_from_app_state`.
+    #[cfg(feature = "tee")]
+    pub re_encryptor: Option<&'a dyn crate::BootstrapReEncryptor>,
 }
 
 // ─── initiate-export ──────────────────────────────────────────────────
@@ -354,6 +344,8 @@ pub async fn finalize_import(
             deps.seed_store,
             deps.config,
             deps.store,
+            #[cfg(feature = "tee")]
+            deps.re_encryptor,
         )
         .await?;
 
@@ -635,7 +627,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let ks = store.keyspace(crate::keyspaces::BACKUP_BUNDLES).unwrap();
+        let ks = store.keyspace(vta_keyspaces::BACKUP_BUNDLES).unwrap();
         (dir, ks)
     }
 

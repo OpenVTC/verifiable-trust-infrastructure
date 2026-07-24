@@ -27,14 +27,14 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use chrono::Utc;
 use tracing::info;
 
-use crate::auth::AuthClaims;
-use crate::error::AppError;
-use crate::keys::KeyOrigin;
-use crate::keys::imported;
-use crate::keys::seed_store::SeedStore;
-use crate::keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
-use crate::seal::{SealRecord, get_seal};
-use crate::store::{KeyspaceHandle, RawKvPair};
+use vta_keys::KeyOrigin;
+use vta_keys::imported;
+use vta_keys::seed_store::SeedStore;
+use vta_keys::seeds::{SeedRecord, get_active_seed_id, save_seed_record, set_active_seed_id};
+use vta_support::seal::{SealRecord, get_seal};
+use vti_common::auth::AuthClaims;
+use vti_common::error::AppError;
+use vti_common::store::{KeyspaceHandle, RawKvPair};
 
 use vta_sdk::protocols::backup_management::types::*;
 
@@ -74,14 +74,14 @@ const MIN_P_COST: u32 = 1;
 
 /// Assemble and encrypt a backup of the entire VTA state.
 pub async fn export_backup(
-    ks: &super::Keyspaces<'_>,
+    ks: &vta_keyspaces::Keyspaces<'_>,
     seed_store: &dyn SeedStore,
-    config: &crate::config::AppConfig,
+    config: &vta_config::AppConfig,
     auth: &AuthClaims,
     password: &str,
     include_audit: bool,
 ) -> Result<BackupEnvelope, AppError> {
-    // The keyspaces captured here are exactly `crate::keyspaces::BACKED_UP`
+    // The keyspaces captured here are exactly `vta_keyspaces::BACKED_UP`
     // ({keys, acl, contexts, audit, imported_secrets, webvh}). That registry
     // partitions every keyspace into BACKED_UP vs EXCLUDED_FROM_BACKUP and a
     // guard test (`keyspaces::tests::backup_partition_is_total`) keeps the
@@ -399,7 +399,7 @@ fn check_vta_did_compatibility(
 /// flight. Written (and persisted) before the keyspaces are cleared and
 /// removed only after every record is back; if a crash interrupts the
 /// import, this survives and boot refuses to start on the resulting hybrid
-/// state (see `crate::server::run`). Lives in the keys keyspace under a
+/// state (see `vta-service`'s `server::run`). Lives in the keys keyspace under a
 /// prefix no clear/scan touches.
 pub const IMPORT_IN_PROGRESS_KEY: &str = "backup:import_in_progress";
 
@@ -462,10 +462,11 @@ fn recompute_subcontext_counters(
 #[cfg_attr(not(feature = "tee"), allow(unused_variables))]
 pub async fn apply_import(
     payload: &BackupPayload,
-    ks: &super::Keyspaces<'_>,
+    ks: &vta_keyspaces::Keyspaces<'_>,
     seed_store: &Arc<dyn SeedStore>,
-    config: &tokio::sync::RwLock<crate::config::AppConfig>,
-    store: Option<&crate::store::Store>,
+    config: &tokio::sync::RwLock<vta_config::AppConfig>,
+    store: Option<&vti_common::store::Store>,
+    #[cfg(feature = "tee")] re_encryptor: Option<&dyn crate::BootstrapReEncryptor>,
 ) -> Result<ImportResult, AppError> {
     // vta_did cross-check: refuse to overwrite a different VTA's
     // identity with this backup. A fresh install (running_did is None)
@@ -550,9 +551,7 @@ pub async fn apply_import(
 
     // 5. Write key records
     for kr in &payload.key_records {
-        keys_ks
-            .insert(crate::keys::store_key(&kr.key_id), kr)
-            .await?;
+        keys_ks.insert(vta_keys::store_key(&kr.key_id), kr).await?;
     }
 
     // 6. Write context records + counters
@@ -760,7 +759,7 @@ pub async fn apply_import(
     #[cfg(feature = "tee")]
     if let Some(store) = store {
         let cfg = config.read().await;
-        if let crate::config::TeeMode::Required = cfg.tee.mode
+        if let vta_config::TeeMode::Required = cfg.tee.mode
             && let Some(ref kms_config) = cfg.tee.kms
         {
             let jwt_key_bytes: Option<[u8; 32]> =
@@ -770,13 +769,18 @@ pub async fn apply_import(
                         .and_then(|b| b.try_into().ok())
                 });
             if let Some(jwt_key) = jwt_key_bytes {
-                crate::tee::kms_bootstrap::re_encrypt_bootstrap_secrets(
-                    kms_config,
-                    store,
-                    &seed_bytes,
-                    &jwt_key,
-                )
-                .await?;
+                // The KMS call lives in `vta-service`'s `tee` module; it is
+                // injected here as `re_encryptor` (see
+                // [`crate::BootstrapReEncryptor`]). Absent it (should not
+                // happen in a Mode-B `vta-service`), fail closed rather than
+                // silently skip re-encryption.
+                let re = re_encryptor.ok_or_else(|| {
+                    AppError::Internal(
+                        "TEE import requires a BootstrapReEncryptor but none was supplied".into(),
+                    )
+                })?;
+                re.re_encrypt(kms_config, store, &seed_bytes, &jwt_key)
+                    .await?;
             } else {
                 info!("no JWT key in backup — skipping KMS re-encryption");
             }
@@ -822,7 +826,7 @@ fn encrypt_payload(
     payload: &BackupPayload,
     password: &str,
     include_audit: bool,
-    config: &crate::config::AppConfig,
+    config: &vta_config::AppConfig,
 ) -> Result<BackupEnvelope, AppError> {
     let plaintext =
         serde_json::to_vec(payload).map_err(|e| AppError::Internal(format!("serialize: {e}")))?;
@@ -993,9 +997,9 @@ async fn clear_keyspace(ks: &KeyspaceHandle, prefixes: &[&str]) -> Result<(), Ap
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Store;
-    use crate::webvh_store::{WebvhServerAuthRecord, store_server_auth};
+    use vta_webvh::webvh_store::{WebvhServerAuthRecord, store_server_auth};
     use vti_common::config::StoreConfig as VtiStoreConfig;
+    use vti_common::store::Store;
 
     /// Pre-existing daemon REST auth-cache records must be wiped by
     /// the restore path. Otherwise a backup imported on a different
@@ -1012,7 +1016,7 @@ mod tests {
             data_dir: dir.path().into(),
         })
         .unwrap();
-        let webvh_ks = store.keyspace(crate::keyspaces::WEBVH).unwrap();
+        let webvh_ks = store.keyspace(vta_keyspaces::WEBVH).unwrap();
 
         // Plant a stale auth record (as if a previous VTA installation
         // had cached daemon REST tokens here).
@@ -1032,7 +1036,7 @@ mod tests {
             .unwrap();
 
         // The stale auth record must be gone.
-        let remaining = crate::webvh_store::get_server_auth(&webvh_ks, "prod")
+        let remaining = vta_webvh::webvh_store::get_server_auth(&webvh_ks, "prod")
             .await
             .unwrap();
         assert!(
@@ -1058,7 +1062,7 @@ mod tests {
             .await
             .unwrap();
 
-        let ks = super::super::Keyspaces {
+        let ks = vta_keyspaces::Keyspaces {
             keys: &ts.keys_ks,
             acl: &ts.acl_ks,
             contexts: &ts.contexts_ks,
@@ -1125,7 +1129,7 @@ mod tests {
         }
     }
 
-    fn test_config() -> crate::config::AppConfig {
+    fn test_config() -> vta_config::AppConfig {
         toml::from_str("").unwrap()
     }
 
@@ -1149,8 +1153,10 @@ mod tests {
         }
     }
 
-    fn import_keyspaces<'a>(ts: &'a crate::test_support::TestStore) -> super::super::Keyspaces<'a> {
-        super::super::Keyspaces {
+    fn import_keyspaces<'a>(
+        ts: &'a crate::test_support::TestStore,
+    ) -> vta_keyspaces::Keyspaces<'a> {
+        vta_keyspaces::Keyspaces {
             keys: &ts.keys_ks,
             acl: &ts.acl_ks,
             contexts: &ts.contexts_ks,
@@ -1179,12 +1185,20 @@ mod tests {
         payload.path_counters = vec![(format!("path_counter:{base}"), 1)];
         payload.acl_entries = vec![]; // exercise only the counter path here
 
-        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
-            .await
-            .expect("import");
+        apply_import(
+            &payload,
+            &import_keyspaces(&ts),
+            &seed_store,
+            &config,
+            None,
+            #[cfg(feature = "tee")]
+            None,
+        )
+        .await
+        .expect("import");
 
         // Allocating under the same base must NOT hand back the in-use index 0.
-        let next = crate::keys::paths::allocate_path(&ts.keys_ks, base)
+        let next = vta_keys::paths::allocate_path(&ts.keys_ks, base)
             .await
             .expect("alloc");
         assert_eq!(
@@ -1215,11 +1229,19 @@ mod tests {
         payload.path_counters = vec![];
         payload.acl_entries = vec![];
 
-        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
-            .await
-            .expect("import");
+        apply_import(
+            &payload,
+            &import_keyspaces(&ts),
+            &seed_store,
+            &config,
+            None,
+            #[cfg(feature = "tee")]
+            None,
+        )
+        .await
+        .expect("import");
 
-        let next = crate::keys::paths::allocate_path(&ts.keys_ks, base)
+        let next = vta_keys::paths::allocate_path(&ts.keys_ks, base)
             .await
             .expect("alloc");
         assert_eq!(
@@ -1252,9 +1274,17 @@ mod tests {
         payload.acl_entries = vec![]; // ensure the full form is what's used
         payload.acl_entries_full = vec![full];
 
-        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
-            .await
-            .expect("import");
+        apply_import(
+            &payload,
+            &import_keyspaces(&ts),
+            &seed_store,
+            &config,
+            None,
+            #[cfg(feature = "tee")]
+            None,
+        )
+        .await
+        .expect("import");
 
         let restored: AclEntry = ts
             .acl_ks
@@ -1289,9 +1319,17 @@ mod tests {
         let mut payload = test_payload();
         payload.acl_entries = vec![];
 
-        apply_import(&payload, &import_keyspaces(&ts), &seed_store, &config, None)
-            .await
-            .expect("import");
+        apply_import(
+            &payload,
+            &import_keyspaces(&ts),
+            &seed_store,
+            &config,
+            None,
+            #[cfg(feature = "tee")]
+            None,
+        )
+        .await
+        .expect("import");
 
         assert!(
             ts.keys_ks
