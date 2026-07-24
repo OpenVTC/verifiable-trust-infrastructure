@@ -203,7 +203,11 @@ pub(super) async fn handle_query(
         Ok(q) => q,
         Err(resp) => return resp,
     };
-    match search(&state.vault_ks, &query).await {
+    // Custody gate: only credentials owned by a context the caller can act in
+    // (plus unscoped/legacy rows). Applied inside `search`, where the full
+    // record is in hand — the descriptor returned to the caller carries no
+    // `context_id` to filter on out here.
+    match search(&state.vault_ks, &query, &auth.act_scope()).await {
         Ok(credentials) => success_response(&doc, QueryResponse { credentials }),
         Err(e) => app_error_to_reject(&doc, e),
     }
@@ -260,10 +264,16 @@ pub(super) async fn handle_get(
         Err(resp) => return resp,
     };
     match storage::get(&state.vault_ks, &req.id).await {
-        // An archived / soft-deleted credential's body must not be handed out
-        // for presentation — conflate it with not-found (same enumeration
-        // stance as a genuinely absent id).
-        Ok(Some(stored)) if stored.is_active() => {
+        // Custody gate first: a credential owned by another context is
+        // conflated with not-found, exactly like an archived or absent one, so
+        // the caller cannot probe for ids outside their contexts.
+        Ok(Some(stored))
+            if stored.is_active()
+                && crate::vault::query::caller_may_access_custody(
+                    &auth.act_scope(),
+                    stored.context_id.as_deref(),
+                ) =>
+        {
             match serde_json::from_slice::<Value>(&stored.body) {
                 Ok(credential) => success_response(&doc, GetResponse { credential }),
                 Err(e) => reject_with(
@@ -409,6 +419,16 @@ async fn cred_transition(
         Ok(None) => return cred_not_found(&doc, verb, &req.id),
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    // Custody gate, same as the read paths: a credential owned by another
+    // context is conflated with not-found. Mutating it would be worse than
+    // reading it — an operator scoped to one context could archive or delete
+    // another's credentials.
+    if !crate::vault::query::caller_may_access_custody(
+        &auth.act_scope(),
+        cred.context_id.as_deref(),
+    ) {
+        return cred_not_found(&doc, verb, &req.id);
+    }
     if let Err(e) = transition(&mut cred) {
         return cred_lifecycle_reject(&doc, verb, &req.id, e);
     }
@@ -436,7 +456,26 @@ pub(super) async fn handle_delete(
 
     // Forced hard delete bypasses the grace window entirely (and works even on
     // an absent id — idempotent, like the storage primitive).
+    //
+    // Custody must still be checked, which means loading the record first: this
+    // path previously deleted by id without reading anything, so a caller
+    // scoped to one context could destroy another context's credential outright.
+    // An absent id stays idempotent-success (nothing to own); a present but
+    // inaccessible one conflates to not-found, the same answer an absent id
+    // gives, so nothing is disclosed.
     if req.force {
+        match storage::get(&state.vault_ks, &req.id).await {
+            Ok(Some(cred))
+                if !crate::vault::query::caller_may_access_custody(
+                    &auth.act_scope(),
+                    cred.context_id.as_deref(),
+                ) =>
+            {
+                return cred_not_found(&doc, "delete", &req.id);
+            }
+            Err(e) => return app_error_to_reject(&doc, e),
+            _ => {}
+        }
         if let Err(e) = storage::delete(&state.vault_ks, &req.id).await {
             return app_error_to_reject(&doc, e);
         }
@@ -455,6 +494,12 @@ pub(super) async fn handle_delete(
         Ok(None) => return cred_not_found(&doc, "delete", &req.id),
         Err(e) => return app_error_to_reject(&doc, e),
     };
+    if !crate::vault::query::caller_may_access_custody(
+        &auth.act_scope(),
+        cred.context_id.as_deref(),
+    ) {
+        return cred_not_found(&doc, "delete", &req.id);
+    }
     let now = Utc::now();
     let grace_days = state.config.read().await.vault.grace_days;
     let grace_until = (now + chrono::Duration::days(grace_days as i64)).to_rfc3339();
@@ -484,7 +529,14 @@ pub(super) async fn handle_purge(
     // `storage::delete` is idempotent (absent id is a no-op); surface a
     // not_found only when there was genuinely nothing to purge.
     match storage::get(&state.vault_ks, &req.id).await {
-        Ok(Some(_)) => {}
+        Ok(Some(cred)) => {
+            if !crate::vault::query::caller_may_access_custody(
+                &auth.act_scope(),
+                cred.context_id.as_deref(),
+            ) {
+                return cred_not_found(&doc, "purge", &req.id);
+            }
+        }
         Ok(None) => return cred_not_found(&doc, "purge", &req.id),
         Err(e) => return app_error_to_reject(&doc, e),
     }
@@ -522,6 +574,212 @@ mod tests {
         assert!(
             generated.starts_with("urn:uuid:"),
             "fallback id is a urn:uuid: {generated}"
+        );
+    }
+
+    // ── custody-context enforcement on the read paths ───────────────
+
+    /// Store a credential owned by `context_id`, indexed so `search` can find
+    /// it by purpose.
+    async fn seed_credential(
+        vault_ks: &crate::store::KeyspaceHandle,
+        id: &str,
+        context_id: Option<&str>,
+    ) {
+        use crate::vault::model::{CredentialFormat, CredentialStatus, StoredCredential};
+        use vti_common::vault::VaultStatus;
+        let cred = StoredCredential {
+            id: id.into(),
+            format: CredentialFormat::EddsaJcs2022,
+            types: vec!["MembershipCredential".into()],
+            schema_id: None,
+            community_did: None,
+            context_id: context_id.map(str::to_string),
+            subject_did: None,
+            issuer_did: Some("did:key:zIssuer".into()),
+            purpose: None,
+            status: CredentialStatus::Unknown,
+            valid_from: None,
+            valid_until: None,
+            received_at: "2026-01-01T00:00:00Z".into(),
+            source: None,
+            tags: Default::default(),
+            body: serde_json::to_vec(&json!({"id": id})).unwrap(),
+            lifecycle: VaultStatus::Active,
+            archived_at: None,
+            deleted_at: None,
+            grace_until: None,
+        };
+        crate::vault::storage::put(vault_ks, &cred).await.unwrap();
+    }
+
+    fn get_doc(id: &str) -> TrustTask<Value> {
+        let uri: trust_tasks_rs::TypeUri = vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_GET_0_1
+            .parse()
+            .expect("get uri");
+        TrustTask::new("urn:uuid:test-get", uri, json!({ "id": id }))
+    }
+
+    fn query_doc() -> TrustTask<Value> {
+        let uri: trust_tasks_rs::TypeUri = vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_QUERY_0_1
+            .parse()
+            .expect("query uri");
+        TrustTask::new(
+            "urn:uuid:test-query",
+            uri,
+            json!({ "issuerDid": "did:key:zIssuer" }),
+        )
+    }
+
+    /// `context_id` is documented as the **custody** axis — "which context in
+    /// *this* VTA owns the credential" — and the owning context's policy is
+    /// meant to govern disclosure. A caller scoped to ctx-a must not be able to
+    /// fetch a credential owned by ctx-b.
+    #[tokio::test]
+    async fn get_refuses_a_credential_owned_by_another_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-b", Some("ctx-b")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let outcome = handle_get(&state, &auth, get_doc("cred-in-ctx-b")).await;
+        let body = String::from_utf8_lossy(&outcome.body).to_string();
+        assert!(
+            !body.contains("cred-in-ctx-b") || body.contains("not found"),
+            "a ctx-a caller must not receive a ctx-b credential body; got {body}"
+        );
+    }
+
+    /// The caller's own context still works — the gate must not deny everything.
+    #[tokio::test]
+    async fn get_allows_a_credential_owned_by_the_callers_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-a", Some("ctx-a")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let outcome = handle_get(&state, &auth, get_doc("cred-in-ctx-a")).await;
+        let body = String::from_utf8_lossy(&outcome.body).to_string();
+        assert!(
+            body.contains("cred-in-ctx-a"),
+            "the caller's own context must still be readable; got {body}"
+        );
+    }
+
+    /// The query path is the bulk equivalent: a filtered search must not return
+    /// another context's credentials.
+    #[tokio::test]
+    async fn query_excludes_credentials_owned_by_another_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-a", Some("ctx-a")).await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-b", Some("ctx-b")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let outcome = handle_query(&state, &auth, query_doc()).await;
+        let body = String::from_utf8_lossy(&outcome.body).to_string();
+        assert!(
+            body.contains("cred-in-ctx-a"),
+            "own-context credential must be returned; got {body}"
+        );
+        assert!(
+            !body.contains("cred-in-ctx-b"),
+            "another context's credential must not be returned; got {body}"
+        );
+    }
+
+    /// A super-admin (no context restriction) still sees everything.
+    #[tokio::test]
+    async fn super_admin_still_reads_every_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-anywhere", Some("ctx-b")).await;
+
+        let auth = auth_scoped(&[]);
+        let outcome = handle_get(&state, &auth, get_doc("cred-anywhere")).await;
+        let body = String::from_utf8_lossy(&outcome.body).to_string();
+        assert!(
+            body.contains("cred-anywhere"),
+            "super admin must still read any context; got {body}"
+        );
+    }
+
+    fn lifecycle_doc(task: &str, id: &str, force: bool) -> TrustTask<Value> {
+        let uri: trust_tasks_rs::TypeUri = task.parse().expect("uri");
+        TrustTask::new(
+            "urn:uuid:test-lifecycle",
+            uri,
+            json!({ "id": id, "force": force }),
+        )
+    }
+
+    /// Mutating another context's credential is worse than reading it. The
+    /// lifecycle verbs shared the read paths' missing gate.
+    #[tokio::test]
+    async fn archive_refuses_a_credential_owned_by_another_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-b", Some("ctx-b")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let doc = lifecycle_doc(
+            vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_ARCHIVE_0_1,
+            "cred-in-ctx-b",
+            false,
+        );
+        let _ = handle_archive(&state, &auth, doc).await;
+
+        let after = crate::vault::storage::get(&state.vault_ks, "cred-in-ctx-b")
+            .await
+            .unwrap()
+            .expect("credential must survive");
+        assert!(
+            after.is_active(),
+            "a ctx-a caller must not archive a ctx-b credential"
+        );
+    }
+
+    /// `delete --force` hard-deletes by id and previously never loaded the
+    /// record, so custody could not be checked at all — a scoped caller could
+    /// destroy another context's credential outright.
+    #[tokio::test]
+    async fn force_delete_refuses_a_credential_owned_by_another_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-b", Some("ctx-b")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let doc = lifecycle_doc(
+            vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_DELETE_0_1,
+            "cred-in-ctx-b",
+            true,
+        );
+        let _ = handle_delete(&state, &auth, doc).await;
+
+        assert!(
+            crate::vault::storage::get(&state.vault_ks, "cred-in-ctx-b")
+                .await
+                .unwrap()
+                .is_some(),
+            "a ctx-a caller must not hard-delete a ctx-b credential"
+        );
+    }
+
+    /// …and the caller's own context still works, so the gate is not a blanket
+    /// denial.
+    #[tokio::test]
+    async fn force_delete_allows_the_callers_own_context() {
+        let (state, _dir) = crate::test_support::build_signing_test_app_state().await;
+        seed_credential(&state.vault_ks, "cred-in-ctx-a", Some("ctx-a")).await;
+
+        let auth = auth_scoped(&["ctx-a"]);
+        let doc = lifecycle_doc(
+            vta_sdk::trust_tasks::TASK_VAULT_CREDENTIALS_DELETE_0_1,
+            "cred-in-ctx-a",
+            true,
+        );
+        let _ = handle_delete(&state, &auth, doc).await;
+
+        assert!(
+            crate::vault::storage::get(&state.vault_ks, "cred-in-ctx-a")
+                .await
+                .unwrap()
+                .is_none(),
+            "the caller's own credential must still be deletable"
         );
     }
 

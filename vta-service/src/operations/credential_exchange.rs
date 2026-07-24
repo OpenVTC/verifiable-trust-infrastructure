@@ -51,6 +51,7 @@ use crate::vault::consent::{self, ConsentGrant};
 use crate::vault::model::{CredentialFormat, StoredCredential};
 use crate::vault::query::CredentialQuery as VaultQuery;
 use crate::vault::{self};
+use vti_common::acl::ActScope;
 
 /// Receive a credential delivered in a credential-exchange `issue` message into
 /// the holder's `vault`. Infers the credential format from the body, resolves
@@ -507,6 +508,16 @@ async fn gather_for_query(
                     // verifier (the include_* opt-ins are management-only).
                     ..Default::default()
                 },
+                // Unrestricted **deliberately**: this is the holder presenting
+                // its own store to a verifier, not an operator reading the
+                // credential-vault API. Disclosure here is governed by the
+                // context-policy guardrail in `present_query` (which verifier,
+                // which types) plus consent — a different question from "may
+                // this caller read this context's credentials". Narrowing it to
+                // the caller's scope would change which credentials are
+                // presentable, which is not this fix's business; `match_vault`
+                // would need `auth` threaded through first.
+                &ActScope::All,
             )
             .await?;
             for descriptor in descriptors {

@@ -72,6 +72,7 @@
 //! `Unknown` → `Valid`/`Revoked` is the status task's job, run before a
 //! present.
 
+use vti_common::acl::ActScope;
 use vti_common::error::AppError;
 use vti_common::store::KeyspaceHandle;
 use vti_common::vault::{VaultStatus, default_active};
@@ -283,6 +284,7 @@ fn matches_constraint(cred: &StoredCredential, field: IndexField, value: &str) -
 pub async fn search(
     vault: &KeyspaceHandle,
     query: &CredentialQuery,
+    caller: &ActScope,
 ) -> Result<Vec<CredentialDescriptor>, AppError> {
     // No-enumeration gate: reject an unfiltered query outright, before any
     // store access. This is the load-bearing check — without an explicit
@@ -329,6 +331,14 @@ pub async fn search(
         if is_excluded_status(cred.status) {
             continue;
         }
+        // Custody gate: `context_id` records which context in *this* VTA owns
+        // the credential, and a caller must not read another context's. This
+        // sits with the other post-filters because the full record is already
+        // loaded here — the descriptor the caller receives does not carry
+        // `context_id`, so filtering downstream would mean re-reading every hit.
+        if !caller_may_access_custody(caller, cred.context_id.as_deref()) {
+            continue;
+        }
         // The anchor already matched via the index; re-check the remaining
         // constraints in memory. AND semantics: any miss drops the record.
         let all_match = constraints[1..]
@@ -339,6 +349,26 @@ pub async fn search(
         }
     }
     Ok(out)
+}
+
+/// Whether a caller holding `caller` may read a credential whose custody
+/// context is `context_id`.
+///
+/// - An unrestricted (super-admin) caller reads every context.
+/// - A scoped caller reads only the contexts its [`ActScope`] covers, honouring
+///   ancestry like every other context check.
+/// - **`None` (unscoped) is readable by any caller**, deliberately. It is how
+///   records written before the field existed deserialize, and how a
+///   multi-context or super-admin `receive` still stores today
+///   (`resolve_custody_context`). Denying it would retroactively hide legacy
+///   credentials from the scoped callers currently using them. That carve-out
+///   is a compatibility decision, not an oversight — tightening it needs a
+///   backfill of `context_id` on existing rows first.
+pub fn caller_may_access_custody(caller: &ActScope, context_id: Option<&str>) -> bool {
+    match context_id {
+        None => true,
+        Some(ctx) => caller.covers(ctx),
+    }
 }
 
 /// `true` for the **validity** states that must never appear in a search
@@ -414,7 +444,7 @@ mod tests {
             issuer_did: Some("did:web:issuer.example".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         let d = &hits[0];
         assert_eq!(d.id, "cred-1");
@@ -442,7 +472,7 @@ mod tests {
                 r#type: Some(tag.into()),
                 ..Default::default()
             };
-            let hits = search(&vault, &q).await.unwrap();
+            let hits = search(&vault, &q, &ActScope::All).await.unwrap();
             assert_eq!(hits.len(), 1, "type tag {tag} must match");
             assert_eq!(hits[0].id, "cred-1");
         }
@@ -460,7 +490,7 @@ mod tests {
             community_did: Some("did:web:acme".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
 
         let json = serde_json::to_string(&hits[0]).unwrap();
@@ -491,7 +521,7 @@ mod tests {
         // ...but a no-filter query cannot retrieve any of them.
         let empty = CredentialQuery::default();
         assert!(empty.is_empty());
-        let err = search(&vault, &empty).await.unwrap_err();
+        let err = search(&vault, &empty, &ActScope::All).await.unwrap_err();
         assert!(
             matches!(err, AppError::Validation(_)),
             "an unfiltered (enumerate-all) query must be rejected, got {err:?}"
@@ -504,7 +534,7 @@ mod tests {
             issuer_did: Some("did:web:other".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-2");
     }
@@ -530,7 +560,7 @@ mod tests {
             community_did: Some("did:web:acme".into()),
             ..Default::default()
         };
-        let mut ids = search(&vault, &q)
+        let mut ids = search(&vault, &q, &ActScope::All)
             .await
             .unwrap()
             .into_iter()
@@ -545,7 +575,7 @@ mod tests {
             purpose: Some(CredentialPurpose::Membership),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-a");
 
@@ -556,7 +586,7 @@ mod tests {
             issuer_did: Some("did:web:nobody".into()),
             ..Default::default()
         };
-        assert!(search(&vault, &q).await.unwrap().is_empty());
+        assert!(search(&vault, &q, &ActScope::All).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -570,7 +600,7 @@ mod tests {
             status: Some(CredentialStatus::Valid),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-valid");
         assert_eq!(hits[0].status, CredentialStatus::Valid);
@@ -600,7 +630,7 @@ mod tests {
             community_did: Some("did:web:acme".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-valid");
 
@@ -610,7 +640,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            search(&vault, &q).await.unwrap().is_empty(),
+            search(&vault, &q, &ActScope::All).await.unwrap().is_empty(),
             "there is no search surface that returns revoked credentials"
         );
 
@@ -619,7 +649,7 @@ mod tests {
             status: Some(CredentialStatus::Expired),
             ..Default::default()
         };
-        assert!(search(&vault, &q).await.unwrap().is_empty());
+        assert!(search(&vault, &q, &ActScope::All).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -631,7 +661,7 @@ mod tests {
             issuer_did: Some("did:web:nonexistent".into()),
             ..Default::default()
         };
-        assert!(search(&vault, &q).await.unwrap().is_empty());
+        assert!(search(&vault, &q, &ActScope::All).await.unwrap().is_empty());
     }
 
     /// By default an archived credential is hidden; `include_archived` opts it
@@ -652,7 +682,7 @@ mod tests {
             community_did: Some("did:web:acme".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &base).await.unwrap();
+        let hits = search(&vault, &base, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "cred-active");
         // The active descriptor omits the lifecycle key (defaults to active).
@@ -663,7 +693,7 @@ mod tests {
             include_archived: true,
             ..base.clone()
         };
-        let mut hits = search(&vault, &q).await.unwrap();
+        let mut hits = search(&vault, &q, &ActScope::All).await.unwrap();
         hits.sort_by(|a, b| a.id.cmp(&b.id));
         assert_eq!(hits.len(), 2);
         let arch = hits.iter().find(|d| d.id == "cred-archived").unwrap();
@@ -679,7 +709,7 @@ mod tests {
             include_deleted: true,
             ..base
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1, "include_deleted must not surface archived");
         assert_eq!(hits[0].id, "cred-active");
     }
@@ -701,13 +731,18 @@ mod tests {
             purpose: Some(CredentialPurpose::Invite),
             ..Default::default()
         };
-        assert!(search(&vault, &base).await.unwrap().is_empty());
+        assert!(
+            search(&vault, &base, &ActScope::All)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let q = CredentialQuery {
             include_archived: true,
             ..base.clone()
         };
         assert!(
-            search(&vault, &q).await.unwrap().is_empty(),
+            search(&vault, &q, &ActScope::All).await.unwrap().is_empty(),
             "include_archived must not surface a tombstone"
         );
 
@@ -716,7 +751,7 @@ mod tests {
             include_deleted: true,
             ..base
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         let d = &hits[0];
         assert_eq!(d.lifecycle, VaultStatus::Deleted);
@@ -751,7 +786,7 @@ mod tests {
             },
         ] {
             assert!(q.is_empty(), "include flags must not count as a filter");
-            let err = search(&vault, &q).await.unwrap_err();
+            let err = search(&vault, &q, &ActScope::All).await.unwrap_err();
             assert!(
                 matches!(err, AppError::Validation(_)),
                 "an include-only query must still be refused as enumeration"
@@ -777,7 +812,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            search(&vault, &q).await.unwrap().is_empty(),
+            search(&vault, &q, &ActScope::All).await.unwrap().is_empty(),
             "a revoked credential is never surfaced by search, even when archived \
              and explicitly included"
         );
@@ -795,7 +830,7 @@ mod tests {
             issuer_did: Some("did:web:issuer.example".into()),
             ..Default::default()
         };
-        let hits = search(&vault, &q).await.unwrap();
+        let hits = search(&vault, &q, &ActScope::All).await.unwrap();
         assert_eq!(hits.len(), 1);
         let json = serde_json::to_string(&hits[0]).unwrap();
         for key in ["lifecycle", "archivedAt", "deletedAt", "graceUntil"] {
