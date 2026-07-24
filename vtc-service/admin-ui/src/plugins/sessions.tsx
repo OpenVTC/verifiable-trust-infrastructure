@@ -18,6 +18,8 @@ import { ArrowDown, ArrowUp, ArrowUpDown, Smartphone } from "lucide-react";
 import { deleteJson, getJson, WhoamiResponse } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatEpoch, shorten as shortId } from "@/lib/format";
+import { useNameBook } from "@/lib/names";
+import { NamedDid } from "@/components/NamedDid";
 import { useToast } from "@/lib/toast";
 
 type SortKey = "did" | "state" | "createdAt" | "refreshExpiresAt";
@@ -59,6 +61,7 @@ async function revokeAllForDid(did: string): Promise<void> {
 }
 
 export function Sessions() {
+  const nameBook = useNameBook();
   const qc = useQueryClient();
   const toast = useToast();
   const confirm = useConfirm();
@@ -262,9 +265,7 @@ export function Sessions() {
                 return (
                   <tr key={s.sessionId}>
                     <td>
-                      <code className="truncate" title={s.did}>
-                        {s.did}
-                      </code>
+                      <NamedDid book={nameBook} did={s.did} />
                       {s.did === myDid && (
                         <span className="chip accent" title="Your DID">
                           you

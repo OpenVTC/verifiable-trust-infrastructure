@@ -24,7 +24,7 @@ import {
 
 import { deleteJson, getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
-import { formatIso as formatDate } from "@/lib/format";
+import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
@@ -325,9 +325,13 @@ function MembersList() {
         <table className="data-table">
           <thead>
             <tr>
+              {/* Name leads: it is what an operator is looking for. The DID
+                  stays in its own column rather than being replaced by the
+                  name — a member you cannot check against an identifier is a
+                  member you cannot audit. */}
+              <th>Name</th>
               <th>DID</th>
               <th>Role</th>
-              <th>Label</th>
               <th>Joined</th>
               <th>Personhood</th>
             </tr>
@@ -357,9 +361,7 @@ function MembersList() {
             {query.data?.items.map((m) => (
               <tr key={m.did}>
                 <td>
-                  <Link to={encodeURIComponent(m.did)}>
-                    <code className="truncate">{m.did}</code>
-                  </Link>
+                  {m.label ?? <span className="muted">—</span>}
                   {m.joinedViaInvitation && (
                     <Ticket
                       size={14}
@@ -371,9 +373,15 @@ function MembersList() {
                   )}
                 </td>
                 <td>
+                  <Link to={encodeURIComponent(m.did)}>
+                    <code className="truncate" title={m.did}>
+                      {shortenDid(m.did)}
+                    </code>
+                  </Link>
+                </td>
+                <td>
                   <code>{m.role}</code>
                 </td>
-                <td>{m.label ?? "—"}</td>
                 <td>{formatDate(m.joinedAt)}</td>
                 <td>
                   {m.personhood ? (

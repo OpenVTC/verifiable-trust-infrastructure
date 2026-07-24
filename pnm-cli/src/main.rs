@@ -210,8 +210,12 @@ async fn main() {
     };
     let keyring_key = config::vta_keyring_key(&slug);
 
-    // Print VTA info banner
+    // Print VTA info banner. The configured name is the operator's own label
+    // for this VTA — show it when it says more than the slug already does.
     eprintln!("  {DIM}VTA: {slug}{RESET}");
+    if !vta_config.name.is_empty() && vta_config.name != slug {
+        eprintln!("  {DIM}Name: {}{RESET}", vta_config.name);
+    }
     if let Some(ref did) = vta_config.vta_did {
         eprintln!("  {DIM}DID: {did}{RESET}");
     }

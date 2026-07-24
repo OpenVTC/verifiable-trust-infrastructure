@@ -1686,6 +1686,15 @@ async fn print_did_resolution(
 
     println!("                {GREEN}✓{RESET} resolves ({method})");
 
+    // Agent names the document claims via `alsoKnownAs`. Free to report — we
+    // already hold the document — and genuinely diagnostic in a doctor
+    // command. Reported as *claims*, not as this DID's name: `alsoKnownAs` is
+    // self-asserted, and confirming one means resolving it forward and
+    // checking it leads back here (`vta_sdk::display_name::agent_name`).
+    for claim in &resolved.doc.also_known_as {
+        println!("                {DIM}claims (unverified): {claim}{RESET}");
+    }
+
     for ka in &resolved.doc.key_agreement {
         println!("                {DIM}keyAgreement: {}{RESET}", ka.get_id());
     }

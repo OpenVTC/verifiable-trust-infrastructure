@@ -12,6 +12,8 @@
 //! (ACL plugin) or the REST `/v1/acl` surface.
 
 use crate::store::keyspaces;
+use vta_sdk::display_name::{NameBook, NameSource, shorten_did};
+
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -44,31 +46,55 @@ pub async fn run_acl_list(config_path: Option<PathBuf>) -> CliResult {
     }
     entries.sort_by(|a, b| a.did.cmp(&b.did));
 
+    // Names come from the entries' own labels. Promote them to their own
+    // leading column — the label used to be tacked onto the end behind the
+    // contexts, which is the last place an operator scans.
+    let mut book = NameBook::new();
+    for e in &entries {
+        book.insert_opt(&e.did, e.label.as_deref(), NameSource::AclLabel);
+    }
+    let show_names = book.names_any(entries.iter().map(|e| e.did.as_str()));
+
     let now = now_epoch();
-    println!(
-        "   {:<48} {:<14} {:<12} LABEL / CONTEXTS",
-        "DID", "ROLE", "EXPIRES"
-    );
+    if show_names {
+        println!(
+            "   {:<24} {:<44} {:<14} {:<12} CONTEXTS",
+            "NAME", "DID", "ROLE", "EXPIRES"
+        );
+    } else {
+        println!("   {:<44} {:<14} {:<12} CONTEXTS", "DID", "ROLE", "EXPIRES");
+    }
     for e in &entries {
         let expires = match e.expires_at {
             None => "never".to_string(),
             Some(t) if t <= now => "EXPIRED".to_string(),
             Some(t) => format!("{}s", t - now),
         };
-        let mut detail = e.label.clone().unwrap_or_default();
-        if !e.allowed_contexts.is_empty() {
-            if !detail.is_empty() {
-                detail.push_str("  ");
-            }
-            detail.push_str(&format!("contexts=[{}]", e.allowed_contexts.join(",")));
+        let contexts = if e.allowed_contexts.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]", e.allowed_contexts.join(","))
+        };
+        let did = shorten_did(&e.did);
+        if show_names {
+            let name = book.name_of(&e.did).unwrap_or_else(|| "\u{2014}".into());
+            println!(
+                "   {:<24} {:<44} {:<14} {:<12} {}",
+                name,
+                did,
+                e.role.to_string(),
+                expires,
+                contexts
+            );
+        } else {
+            println!(
+                "   {:<44} {:<14} {:<12} {}",
+                did,
+                e.role.to_string(),
+                expires,
+                contexts
+            );
         }
-        println!(
-            "   {:<48} {:<14} {:<12} {}",
-            e.did,
-            e.role.to_string(),
-            expires,
-            detail
-        );
     }
     println!(
         "\n{} entr{}.",

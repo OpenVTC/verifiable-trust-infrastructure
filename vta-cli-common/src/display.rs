@@ -1,0 +1,201 @@
+//! Terminal rendering for DIDs and their display names.
+//!
+//! The naming logic itself lives in [`vta_sdk::display_name`] — this module is
+//! the thin CLI layer on top: ANSI colour, ratatui cells, and the decision
+//! about whether a table gets a NAME column at all.
+//!
+//! # Usage
+//!
+//! A command builds a [`NameBook`] from the response it already has, then
+//! renders through it:
+//!
+//! ```ignore
+//! let mut book = NameBook::new();
+//! book_from_acl(&mut book, &resp.entries);   // one pass, no extra requests
+//! let show_names = book.names_any(resp.entries.iter().map(|e| e.did.as_str()));
+//! ```
+//!
+//! The `book_from_*` helpers are the payoff: filling the book from an ACL
+//! listing also names the `Created By` column, because a granting admin is
+//! very often another entry's subject. No lookup, no round trip.
+
+use ratatui::{
+    style::{Color, Style},
+    widgets::Cell,
+};
+
+pub use vta_sdk::display_name::{DisplayName, NameBook, NameSource, shorten_did};
+
+use crate::render::{DIM, RESET, YELLOW};
+
+/// Column heading for the name column. One constant so every table agrees.
+pub const NAME_HEADER: &str = "Name";
+
+/// Placeholder for a row with no name, used only when *some* other row in the
+/// same table has one.
+pub const UNNAMED: &str = "\u{2014}";
+
+/// A DID rendered for a fixed-width table cell: shortened, dimmed.
+#[must_use]
+pub fn did_cell(did: &str) -> Cell<'static> {
+    Cell::from(shorten_did(did)).style(Style::default().fg(Color::DarkGray))
+}
+
+/// A name cell for `did`.
+///
+/// Unverified agent names are yellow — see [`vta_sdk::display_name`] for why
+/// they must stay visually distinct from a name the operator can rely on.
+#[must_use]
+pub fn name_cell(book: &NameBook, did: &str) -> Cell<'static> {
+    match book.get(did) {
+        Some(n) if n.is_trusted() => Cell::from(n.name.clone()),
+        Some(_) => Cell::from(book.name_of(did).unwrap_or_default())
+            .style(Style::default().fg(Color::Yellow)),
+        None => Cell::from(UNNAMED).style(Style::default().fg(Color::DarkGray)),
+    }
+}
+
+/// A cell for a DID that may carry a name — used where a column holds a
+/// *reference* to some other principal (`Created By`, `Actor`, a sender)
+/// rather than the row's own subject, so there is no room for a paired name
+/// column. Falls back to the shortened DID.
+#[must_use]
+pub fn named_did_cell(book: &NameBook, did: &str) -> Cell<'static> {
+    match book.name_of(did) {
+        Some(name) => {
+            let style = if book.get(did).is_some_and(DisplayName::is_trusted) {
+                Style::default()
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            Cell::from(name).style(style)
+        }
+        None => did_cell(did),
+    }
+}
+
+/// Plain-text name-or-DID for a fixed-width column.
+///
+/// No ANSI: these go through `{:<60}`-style padding, which counts escape
+/// bytes as width and would wreck the alignment.
+#[must_use]
+pub fn name_or_did(book: &NameBook, did: &str) -> String {
+    book.name_of(did).unwrap_or_else(|| shorten_did(did))
+}
+
+/// One-line rendering for prose, confirmations and progress messages:
+/// `mediator-prod (did:webvh:QmXk…9f2:example.com)`.
+///
+/// Colours the name when it is an unverified claim; leaves it plain
+/// otherwise. Falls back to the shortened DID alone.
+#[must_use]
+pub fn inline(book: &NameBook, did: &str) -> String {
+    match book.name_of(did) {
+        Some(name) => {
+            let short = shorten_did(did);
+            if book.get(did).is_some_and(DisplayName::is_trusted) {
+                format!("{name} {DIM}({short}){RESET}")
+            } else {
+                format!("{YELLOW}{name}{RESET} {DIM}({short}){RESET}")
+            }
+        }
+        None => shorten_did(did),
+    }
+}
+
+/// Key-value pairs for a `--full-display` block: a `Name` line *above* the
+/// `DID` line, and the DID in full — abbreviating it is the one thing full
+/// display exists to avoid.
+///
+/// Returns just the DID pair when the DID has no name, so unnamed entries
+/// don't grow a `Name: —` line.
+#[must_use]
+pub fn full_display_pairs(book: &NameBook, did: &str) -> Vec<(&'static str, String)> {
+    match book.name_of(did) {
+        Some(name) => vec![("Name", name), ("DID", did.to_string())],
+        None => vec![("DID", did.to_string())],
+    }
+}
+
+// ── Book builders ───────────────────────────────────────────────────
+//
+// Each takes a response the command already fetched. Adding one here is
+// preferable to naming DIDs at the call site, so that every command that
+// touches the same response type gets the same names.
+
+/// Fill `book` from an ACL listing.
+///
+/// Names every entry's subject from its `label`. The `created_by` DIDs are
+/// *not* inserted — they carry no label of their own — but they resolve
+/// anyway whenever the granting admin also holds an ACL entry, which is the
+/// common case.
+pub fn book_from_acl(book: &mut NameBook, entries: &[vta_sdk::client::AclEntryResponse]) {
+    for entry in entries {
+        book.insert_opt(&entry.did, entry.label.as_deref(), NameSource::AclLabel);
+    }
+}
+
+/// Fill `book` from a context listing: each context's `name` names its DID.
+pub fn book_from_contexts(book: &mut NameBook, contexts: &[vta_sdk::contexts::ContextRecord]) {
+    for ctx in contexts {
+        if let Some(did) = &ctx.did {
+            book.insert(did, DisplayName::new(&ctx.name, NameSource::ContextName));
+        }
+    }
+}
+
+/// Fill `book` from a webvh hosting-server listing.
+pub fn book_from_webvh_servers(book: &mut NameBook, servers: &[vta_sdk::webvh::WebvhServerRecord]) {
+    for s in servers {
+        book.insert_opt(&s.did, s.label.as_deref(), NameSource::ServerLabel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DID: &str = "did:webvh:QmScidAbCdEfGhIj:example.com:ops";
+
+    #[test]
+    fn full_display_keeps_the_did_whole() {
+        let mut book = NameBook::new();
+        book.insert(DID, DisplayName::new("ops", NameSource::AclLabel));
+        let pairs = full_display_pairs(&book, DID);
+        assert_eq!(pairs[0], ("Name", "ops".to_string()));
+        assert_eq!(
+            pairs[1],
+            ("DID", DID.to_string()),
+            "full display must never abbreviate — that is what it is for"
+        );
+    }
+
+    #[test]
+    fn unnamed_entries_get_no_name_line() {
+        let book = NameBook::new();
+        let pairs = full_display_pairs(&book, DID);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "DID");
+    }
+
+    #[test]
+    fn inline_marks_an_unverified_claim() {
+        let mut book = NameBook::new();
+        book.insert(
+            DID,
+            DisplayName::new(
+                "mybank.com/@treasury",
+                NameSource::AgentName { verified: false },
+            ),
+        );
+        let out = inline(&book, DID);
+        assert!(out.contains("unverified"));
+        assert!(out.contains(YELLOW), "an unchecked claim must stand out");
+    }
+
+    #[test]
+    fn inline_falls_back_to_the_shortened_did() {
+        let book = NameBook::new();
+        assert_eq!(inline(&book, DID), shorten_did(DID));
+    }
+}

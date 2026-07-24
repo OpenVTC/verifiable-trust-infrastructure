@@ -25,6 +25,8 @@ use vta_sdk::protocol::{
     DisableDidcommRequest, EnableDidcommConflictBody, EnableDidcommRequest, UpdateDidcommRequest,
 };
 
+use crate::display::{NAME_HEADER, NameBook, UNNAMED, book_from_acl, inline, shorten_did};
+
 // ── services list ──────────────────────────────────────────────────
 
 /// `pnm services list` — show current REST + DIDComm advertisements.
@@ -334,6 +336,23 @@ pub async fn cmd_services_didcomm_rollback(
     Ok(())
 }
 
+/// Best-effort names for mediator / peer DIDs.
+///
+/// Neither the drain set nor the telemetry report carries a label, so the only
+/// local source is the ACL — which does cover mediators an operator has
+/// granted an entry to. Peer *senders* are not in our ACL and stay bare until
+/// agent names exist; they are the clearest case for that feature.
+///
+/// Failure is ignored on purpose. Naming is decoration, and an operator who
+/// can read the drain set but not the ACL must still get their table.
+async fn mediator_name_book(client: &VtaClient) -> NameBook {
+    let mut book = NameBook::new();
+    if let Ok(acl) = client.list_acl(None).await {
+        book_from_acl(&mut book, &acl.entries);
+    }
+    book
+}
+
 // ── services didcomm drain {list, cancel} ─────────────────────────
 
 pub async fn cmd_services_didcomm_drain_list(
@@ -346,15 +365,27 @@ pub async fn cmd_services_didcomm_drain_list(
     }
     println!("Drain set ({} mediator(s)):", resp.entries.len());
     println!();
+
+    let book = mediator_name_book(client).await;
+    let show_names = book.names_any(resp.entries.iter().map(|e| e.mediator_did.as_str()));
+
     let header_did = "MEDIATOR DID";
     let header_until = "DRAIN UNTIL";
-    println!("  {header_did:<60}  {header_until}");
+    if show_names {
+        println!("  {:<24}  {header_did:<46}  {header_until}", NAME_HEADER);
+    } else {
+        println!("  {header_did:<46}  {header_until}");
+    }
     for e in &resp.entries {
-        println!(
-            "  {:<60}  {}",
-            truncate(&e.mediator_did, 60),
-            e.drains_until
-        );
+        let did = shorten_did(&e.mediator_did);
+        if show_names {
+            let name = book
+                .name_of(&e.mediator_did)
+                .unwrap_or_else(|| UNNAMED.into());
+            println!("  {:<24}  {:<46}  {}", name, did, e.drains_until);
+        } else {
+            println!("  {:<46}  {}", did, e.drains_until);
+        }
     }
     Ok(())
 }
@@ -394,30 +425,52 @@ pub async fn cmd_services_report(
                 println!("  Window: (all time) → {}", report.until);
             }
             println!();
+            // Peer sender DIDs have no label anywhere in our store, so most
+            // will stay bare until agent names land — which is exactly the
+            // surface they are for.
+            let book = mediator_name_book(client).await;
+
             if report.mediators.is_empty() {
                 println!("  No inbound DIDComm messages recorded.");
             } else {
                 println!("  Per-mediator inbound counts (most recent first):");
+                let show_names =
+                    book.names_any(report.mediators.iter().map(|m| m.mediator_did.as_str()));
                 let header_did = "MEDIATOR DID";
                 let header_count = "INBOUND";
-                println!("    {header_did:<60}  {header_count:>10}  LAST SEEN");
-                for m in &report.mediators {
+                if show_names {
                     println!(
-                        "    {:<60}  {:>10}  {}",
-                        truncate(&m.mediator_did, 60),
-                        m.inbound_count,
-                        m.last_seen
+                        "    {:<24}  {header_did:<46}  {header_count:>10}  LAST SEEN",
+                        NAME_HEADER
                     );
+                } else {
+                    println!("    {header_did:<46}  {header_count:>10}  LAST SEEN");
+                }
+                for m in &report.mediators {
+                    let did = shorten_did(&m.mediator_did);
+                    if show_names {
+                        let name = book
+                            .name_of(&m.mediator_did)
+                            .unwrap_or_else(|| UNNAMED.into());
+                        println!(
+                            "    {:<24}  {:<46}  {:>10}  {}",
+                            name, did, m.inbound_count, m.last_seen
+                        );
+                    } else {
+                        println!("    {:<46}  {:>10}  {}", did, m.inbound_count, m.last_seen);
+                    }
                 }
             }
             if !report.senders.is_empty() {
                 println!();
                 println!("  Senders by last-seen mediator:");
                 for s in &report.senders {
+                    // Prose, not a fixed-width column, so both sides carry
+                    // their DID alongside the name.
                     println!(
                         "    {} → {} (at {})",
-                        truncate(&s.sender_did, 50),
-                        truncate(&s.last_seen_mediator, 50),
+                        inline(&book, &s.sender_did),
+                        inline(&book, &s.last_seen_mediator),
                         s.last_seen_at
                     );
                 }
@@ -487,15 +540,5 @@ impl std::str::FromStr for ReportFormat {
             "table" => Ok(Self::Table),
             other => Err(format!("unknown format `{other}` — use `json` or `table`")),
         }
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max - 1).collect();
-        out.push('…');
-        out
     }
 }

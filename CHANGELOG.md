@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### vta-sdk 0.19.26 / vta-cli-common 0.10.12 / pnm-cli 0.11.7 / cnm-cli 0.11.5 / vta-service 0.12.21 / vtc-service 0.11.20 — show names where we used to show DIDs
+
+* Operators read DIDs constantly and cannot. Roughly ninety sites across the
+  three CLIs printed raw DIDs, and each abbreviated them its own way: a
+  29-*byte* slice in `audit` (which would panic on a multi-byte character),
+  50- and 60-char truncations in `services`, and a fourth strategy again in the
+  VTC admin console. Nothing anywhere mapped a DID to a human name at render
+  time.
+
+* New `vta_sdk::display_name`. A `NameBook` is a `DID → name` map a command
+  fills from a response it has *already fetched*, then queries while
+  rendering — not a resolver, and it performs no lookups of its own. That
+  shape is what makes naming free: an ACL listing names every subject from its
+  label and, with no extra request, the `Created By` column too, since a
+  granting admin is nearly always another entry's subject.
+
+* `shorten_did` replaces all four truncators. It abbreviates the opaque
+  `did:webvh` SCID and keeps the domain/path tail — the half that actually
+  identifies the agent — instead of clipping the end. Ported from the admin
+  console's `shortenDid`, with a vector table pinning the two to identical
+  output; an operator moving between a terminal and the console should not
+  have to re-identify the same DID.
+
+* Tables gain a `Name` column only when at least one row has a name. On a VTA
+  where nothing has been labelled, a column of dashes is worse than no column.
+  DIDs are never *replaced* by names — the name leads, the identifier follows,
+  and `--full-display` and `--json` still carry every DID in full. A name the
+  operator cannot cross-check against an identifier is a name they cannot
+  audit, and these are the screens where ACL grants get approved.
+
+* `--json` output is unchanged. No field was renamed, removed, or reshaped, so
+  scripts piping `pnm acl list --json` through `jq` are unaffected.
+
+* Named DIDs now appear in: `pnm/cnm acl list|get`, `audit` (actor), `services
+  didcomm drain list`, `services report` (mediators + senders), the
+  context-delete confirmation — where an operator is deciding which principals
+  lose access — `vtc acl list`, and the VTC console's members, ACL, sessions,
+  join-requests, invitations, audit and relationship-graph views.
+
+* **Agent names are wired but inert.** New optional `agent-names` feature on
+  `vta-sdk` reads the names a DID's document claims via `alsoKnownAs`. Those
+  claims are *self-asserted* — the agent-name specification's two-sided binding
+  protects the name→DID direction, not the reverse — so a hostile DID can
+  claim `mybank.com/@treasury`. Every claim is round-tripped (resolve the name
+  forward, require it to lead back to the same DID) before being shown
+  unqualified; one that fails surfaces as unverified, ranks below every local
+  source, and never renders bare. Nothing in this workspace publishes
+  `alsoKnownAs` yet, so no agent name resolves here today — this is the
+  consumer half, built so that minting names lights up every surface without
+  touching a display site.
+
+* `PATCH /v1/members/{did}` accepts `label`. The VTC's only human name for a
+  member lives on the ACL row, which meant correcting a typo in a display name
+  took a full `acl/grant` re-grant.
+
+* Breaking, internal: `vta_cli_common::commands::contexts::render_delete_context_preview`
+  takes a `&NameBook`. Both call sites (the online `pnm contexts delete` and
+  the offline `vta contexts delete`) are updated.
+
 ### vta-sdk 0.19.25 / vti-common 0.11.16 / vta-cli-common 0.10.11 / vta-service 0.12.20 — decode an ACL entry's authority to act in one place
 
 * **`allowed_contexts` means opposite things depending on the role** —

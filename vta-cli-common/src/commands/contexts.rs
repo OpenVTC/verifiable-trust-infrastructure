@@ -11,6 +11,7 @@ use vta_sdk::prelude::*;
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 use vta_sdk::sealed_transfer::SealedPayloadV1;
 
+use crate::display::{NameBook, book_from_acl, inline};
 use crate::render::{is_full_display, print_full_entry, print_full_list_title, print_widget};
 use crate::sealed_producer::{SealedRecipient, seal_for_recipient};
 
@@ -396,6 +397,7 @@ pub async fn cmd_context_update_did(
 pub fn render_delete_context_preview(
     id: &str,
     preview: &vta_sdk::protocols::context_management::delete::DeleteContextPreviewResultBody,
+    book: &NameBook,
 ) -> bool {
     let has_resources = !preview.keys.is_empty()
         || !preview.webvh_dids.is_empty()
@@ -418,10 +420,14 @@ pub fn render_delete_context_preview(
         }
     }
 
+    // This is a destructive confirmation: the operator is deciding whether
+    // these principals should lose access. A list of opaque DIDs is the
+    // hardest possible form in which to make that call, so every DID here
+    // renders name-first with its identifier alongside.
     if !preview.webvh_dids.is_empty() {
         println!("  WebVH DIDs ({}):", preview.webvh_dids.len());
         for did in &preview.webvh_dids {
-            println!("    - {did}");
+            println!("    - {}", inline(book, did));
         }
     }
 
@@ -431,7 +437,7 @@ pub fn render_delete_context_preview(
             preview.acl_entries_removed.len()
         );
         for did in &preview.acl_entries_removed {
-            println!("    - {did}");
+            println!("    - {}", inline(book, did));
         }
     }
 
@@ -441,7 +447,7 @@ pub fn render_delete_context_preview(
             preview.acl_entries_updated.len()
         );
         for did in &preview.acl_entries_updated {
-            println!("    - {did}");
+            println!("    - {}", inline(book, did));
         }
     }
 
@@ -469,7 +475,14 @@ pub async fn cmd_context_delete(
     // Fetch a preview of what will be removed
     let preview = client.preview_delete_context(id).await?;
 
-    let has_resources = render_delete_context_preview(id, &preview);
+    // Best-effort naming for the confirmation prompt — a failure here must
+    // never block a deletion the operator is entitled to perform.
+    let mut book = NameBook::new();
+    if let Ok(acl) = client.list_acl(None).await {
+        book_from_acl(&mut book, &acl.entries);
+    }
+
+    let has_resources = render_delete_context_preview(id, &preview, &book);
 
     if has_resources && !force && !confirm_destructive("Proceed with deletion?")? {
         println!("Aborted.");

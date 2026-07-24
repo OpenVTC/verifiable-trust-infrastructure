@@ -20,7 +20,7 @@ use serde_json::Value as JsonValue;
 use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
 
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
-use crate::auth::AdminAuth;
+use crate::auth::{AdminAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::MemberResponse;
@@ -33,6 +33,13 @@ use crate::server::AppState;
 #[derive(utoipa::ToSchema)]
 pub struct UpdateMemberRequest {
     pub role: Option<VtcRole>,
+    /// Human-readable name for this member, shown wherever their DID is
+    /// rendered (admin UI, `vtc acl list`).
+    ///
+    /// The label lives on the ACL row, so until now it was writable only via
+    /// `acl/grant` — a whole re-grant to correct a typo in a display name.
+    /// An empty string clears it; omitting the field leaves it unchanged.
+    pub label: Option<String>,
     pub publish_consent: Option<bool>,
     pub departure_preference: Option<Disposition>,
     pub extensions: Option<JsonValue>,
@@ -123,6 +130,31 @@ pub async fn update_member(
     }
     if !fields_changed.is_empty() {
         store_member(&state.members_ks, &member).await?;
+    }
+
+    // The label lives on the ACL row, not the member row. Written before any
+    // role change so the ceremony (which re-reads the ACL entry) picks it up
+    // rather than overwriting it from a stale copy.
+    if let Some(ref requested) = req.label {
+        let trimmed = requested.trim();
+        let new_label = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        if new_label != acl.label {
+            changes.push(FieldChange {
+                field: "label".into(),
+                old: acl.label.clone().map(JsonValue::String),
+                new: new_label.clone().map(JsonValue::String),
+            });
+            let mut updated = acl.clone();
+            updated.label = new_label;
+            updated.updated_at = Some(now_epoch());
+            updated.updated_by = Some(auth.0.did.clone());
+            crate::acl::store_acl_entry(&state.acl_ks, &updated).await?;
+            fields_changed.push("label".into());
+        }
     }
 
     // Role change → the role-change ceremony.

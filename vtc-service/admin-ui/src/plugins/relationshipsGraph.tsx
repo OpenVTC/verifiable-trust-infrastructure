@@ -11,7 +11,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Share2 } from "lucide-react";
 
 import { fetchRelationshipsGraph, type RelationshipsGraph } from "@/lib/api";
-import { shorten } from "@/lib/format";
+import { useNameBook } from "@/lib/names";
+import { NamedDid } from "@/components/NamedDid";
 
 const SIZE = 600;
 const C = SIZE / 2;
@@ -24,6 +25,7 @@ interface Placed {
 }
 
 export function Relationships() {
+  const nameBook = useNameBook();
   const [selected, setSelected] = useState<string | null>(null);
 
   const query = useQuery<RelationshipsGraph>({
@@ -157,7 +159,7 @@ export function Relationships() {
                     fontSize="10"
                     fill="var(--text-muted)"
                   >
-                    {shorten(p.did, 8, 4)}
+                    {nameBook.nameOrDid(p.did)}
                   </text>
                 </g>
               );
@@ -179,7 +181,7 @@ export function Relationships() {
             {selected && (
               <>
                 <p>
-                  <code className="truncate">{selected}</code>
+                  <NamedDid book={nameBook} did={selected} />
                 </p>
                 {selectedEdges.length === 0 ? (
                   <p className="muted">No relationships.</p>
@@ -190,12 +192,12 @@ export function Relationships() {
                         {e.issuerDid === selected ? (
                           <>
                             → vouched for{" "}
-                            <code>{shorten(e.subjectDid, 8, 4)}</code>
+                            <code>{nameBook.nameOrDid(e.subjectDid)}</code>
                           </>
                         ) : (
                           <>
                             ← vouched for by{" "}
-                            <code>{shorten(e.issuerDid, 8, 4)}</code>
+                            <code>{nameBook.nameOrDid(e.issuerDid)}</code>
                           </>
                         )}
                       </li>
