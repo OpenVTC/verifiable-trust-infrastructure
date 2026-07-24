@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### vti-common 0.11.18 — make delegated-any step-up ratification ancestry-aware
+
+* The admin path of `delegated_any_approver_covers` matched a subject's
+  contexts against the approver's with exact `contains`, while the
+  approve-scope path in the same function used ancestry-aware `covers`. So a
+  context admin of `acme` could **not** ratify a delegated AAL2 step-up for a
+  subject scoped to `acme/eng`, even though it administers that subtree — and
+  an equivalent explicit `ApproveScope` grant *could*.
+
+* That contradicted the stated ACL-gate rule — "any `allowed_contexts` entry
+  `is_ancestor_or_self` of the target" (`hierarchical-contexts.md`). The helper
+  landed (#257) five days before this function was written (#329) and was
+  simply not reached for. The admin path now uses the same `covers`, so admin
+  standing and explicit conferral agree.
+
+* Behaviour is identical while contexts are flat — the two readings diverge
+  only once sub-contexts exist, which is the case the hierarchy feature was
+  built for. Resolves one of the two conflations #772 left flagged.
+
 ### vta-service 0.12.23 — enforce credential custody on the credential-vault surface
 
 * **Security.** `StoredCredential.context_id` is documented as the **custody**
