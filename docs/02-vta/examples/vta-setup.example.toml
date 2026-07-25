@@ -35,10 +35,20 @@ vta_name    = "trust-prod-1"
 # DIDComm-only or private-network deployments.
 public_url  = "https://trust.example.com"
 
-# What to do if `data_dir` already exists.
+# What to do if `data_dir` already holds a store. Only consulted when a
+# store is actually present — an existing-but-empty directory (a mounted
+# Docker volume, a Kubernetes PVC, a path you created yourself) is
+# initialized into without complaint.
 #   "error"  (default) — refuse and exit
-#   "delete" — recursively wipe and re-init (CI re-run pattern)
+#   "delete" — wipe the directory's *contents* and re-init (CI re-run
+#              pattern; keeps the directory itself, so it works on a
+#              mount point)
+#   "reuse"  — initialize into it, keeping whatever is already there
 data_dir_exists = "error"
+
+# Permit overwriting an existing `config_path`. The file is only written
+# once setup has otherwise succeeded, so a failed run leaves it intact.
+overwrite_config = false
 
 # Seed an initial super-admin and seal the VTA atomically with the rest of
 # setup. Equivalent to running `vta bootstrap-admin --did <X>` after
