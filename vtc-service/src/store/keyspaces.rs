@@ -36,6 +36,11 @@ pub const SCHEMAS: &str = "schemas";
 pub const ENDORSEMENTS: &str = "endorsements";
 pub const AUDIT: &str = "audit";
 pub const AUDIT_KEY: &str = "audit_key";
+/// Signed audit checkpoints (#708) — periodic Ed25519-signed commitments to
+/// the audit chain head *and its entry count*, which is what makes truncation
+/// detectable. Separate from [`AUDIT`] so a checkpoint is not just another row
+/// in the keyspace an adversary is assumed to control.
+pub const AUDIT_CHECKPOINT: &str = "audit_checkpoint";
 /// Single-use ledger for redeemed Invitation Credentials (VICs): one
 /// row per consumed VIC `id`, written when a VIC-driven join is
 /// admitted. Read at verify time to set `Invitation.consumed`.
@@ -75,6 +80,7 @@ pub const ALL: &[&str] = &[
     ENDORSEMENTS,
     AUDIT,
     AUDIT_KEY,
+    AUDIT_CHECKPOINT,
     CONSUMED_INVITATIONS,
     INVITATIONS,
     OUTBOX,
@@ -104,6 +110,11 @@ pub const BACKED_UP: &[&str] = &[
     ENDORSEMENTS,
     AUDIT,
     AUDIT_KEY,
+    // Required, not optional: restoring the audit log without its
+    // checkpoints reads as mass truncation — every signed checkpoint would
+    // attest to more entries than the restored log holds, so a legitimate
+    // restore would look exactly like the attack this mechanism detects.
+    AUDIT_CHECKPOINT,
     // A consumed VIC must stay consumed across a restore, else a
     // restored community could re-redeem a single-use invitation.
     CONSUMED_INVITATIONS,
@@ -139,7 +150,7 @@ mod tests {
     /// keyspace is added to one without the other, this trips.
     #[test]
     fn all_matches_app_state_keyspace_count() {
-        assert_eq!(ALL.len(), 24, "ALL must list every AppState keyspace");
+        assert_eq!(ALL.len(), 25, "ALL must list every AppState keyspace");
     }
 
     /// The backup census (P3.9): every keyspace is either backed up or

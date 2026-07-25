@@ -352,6 +352,194 @@ pub struct VerifyResponse {
     /// Where the chain broke. Absent when `verified` is true.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_break: Option<ChainBreakReport>,
+    /// Signed-checkpoint verification (#708) — the half of this endpoint that
+    /// a store-level adversary cannot satisfy.
+    pub checkpoints: CheckpointReport,
+}
+
+/// Signed-checkpoint verification result.
+///
+/// **This, not `verified`, is what resists a store-level adversary.** The
+/// chain is an unkeyed SHA-256, so `verified: true` only means "nobody edited
+/// the log carelessly". `checkpoints.status: "consistent"` means the log still
+/// matches an Ed25519 commitment made with the community key — which an
+/// adversary holding only the store cannot forge.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct CheckpointReport {
+    /// One of `noCheckpoints`, `consistent`, `truncated`, `headMismatch`,
+    /// or `chainBroken`.
+    pub status: String,
+    /// Human-readable detail. Always populated for a non-`consistent`
+    /// status so an operator reading the JSON knows what they are looking at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// Checkpoints found and signature-verified.
+    pub verified_checkpoints: usize,
+    /// Entries covered by the newest signed checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attested_entries: Option<u64>,
+    /// Chainable entries written **since** the newest checkpoint.
+    ///
+    /// These are the residual exposure: covered by the (forgeable) hash chain
+    /// but by no signature, so they can still be truncated undetectably. The
+    /// checkpoint interval bounds how large this gets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unattested_entries: Option<u64>,
+    /// When the newest checkpoint was signed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub newest_checkpoint_at: Option<String>,
+}
+
+/// Verify the signed-checkpoint chain and measure the live log against it.
+///
+/// Never returns `Err`: a verification endpoint that 500s on a checkpoint
+/// problem tells an operator less than one that reports the problem. Every
+/// failure becomes a `status` an operator can act on.
+///
+/// The community's *current* signing key is used to resolve every
+/// `verificationMethod`. That is correct today (no rotation has happened) and
+/// is the known limitation to lift next: a checkpoint signed under a retired
+/// key must stay verifiable, which means resolving the DID document's key
+/// history rather than assuming the live signer. Recorded on the
+/// `verification_method` field so the data needed is already being persisted.
+async fn verify_checkpoint_state(state: &AppState) -> CheckpointReport {
+    use vti_common::audit::{CheckpointAudit, CheckpointBreak, verify_checkpoints};
+
+    let broken = |detail: String| CheckpointReport {
+        status: "chainBroken".to_string(),
+        detail: Some(detail),
+        verified_checkpoints: 0,
+        attested_entries: None,
+        unattested_entries: None,
+        newest_checkpoint_at: None,
+    };
+
+    let checkpoints =
+        match crate::audit_checkpoint::load_checkpoints(&state.audit_checkpoint_ks).await {
+            Ok(c) => c,
+            Err(e) => return broken(format!("could not load checkpoints: {e}")),
+        };
+
+    let Some(signer) = state.credential_signer.as_ref() else {
+        return broken(
+            "no community signing key is available, so checkpoint signatures cannot be \
+             verified"
+                .to_string(),
+        );
+    };
+    let public = signer.public_bytes().to_vec();
+
+    let newest = match verify_checkpoints(&checkpoints, |_vm| Some(public.clone())) {
+        Ok(n) => n,
+        Err(brk) => {
+            let detail = match brk {
+                CheckpointBreak::BadSignature {
+                    index,
+                    checkpoint_id,
+                } => format!(
+                    "checkpoint {index} ({checkpoint_id}) has an invalid signature — it was \
+                     forged, altered, or signed by a key this community does not control"
+                ),
+                CheckpointBreak::BrokenLink {
+                    index,
+                    checkpoint_id,
+                } => format!(
+                    "checkpoint {index} ({checkpoint_id}) does not link to its predecessor — \
+                     a checkpoint was deleted, reordered, or inserted"
+                ),
+                CheckpointBreak::CountWentBackwards {
+                    index,
+                    checkpoint_id,
+                    previous,
+                    claimed,
+                } => format!(
+                    "checkpoint {index} ({checkpoint_id}) attests to {claimed} entries after \
+                     an earlier one attested to {previous}; the audit log only grows"
+                ),
+            };
+            return broken(detail);
+        }
+    };
+
+    let (chain_state, _unparseable) =
+        match crate::audit_checkpoint::measure_chain(&state.audit_ks).await {
+            Ok(m) => m,
+            Err(e) => return broken(format!("could not measure the audit chain: {e}")),
+        };
+
+    let outcome = match crate::audit_checkpoint::audit_against_checkpoint(
+        &state.audit_ks,
+        newest,
+        &chain_state,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return broken(format!("could not compare the log to its checkpoint: {e}")),
+    };
+
+    let verified_checkpoints = checkpoints.len();
+    match outcome {
+        CheckpointAudit::NoCheckpoints => CheckpointReport {
+            status: "noCheckpoints".to_string(),
+            detail: Some(
+                "no signed checkpoints exist, so the audit log carries only unkeyed-chain \
+                 tamper-evidence: a store-level adversary could truncate or restamp it \
+                 undetectably"
+                    .to_string(),
+            ),
+            verified_checkpoints,
+            attested_entries: None,
+            unattested_entries: None,
+            newest_checkpoint_at: None,
+        },
+        CheckpointAudit::Consistent {
+            checkpoint_at,
+            attested_entries,
+            unattested_entries,
+        } => CheckpointReport {
+            status: "consistent".to_string(),
+            detail: None,
+            verified_checkpoints,
+            attested_entries: Some(attested_entries),
+            unattested_entries: Some(unattested_entries),
+            newest_checkpoint_at: Some(checkpoint_at.to_rfc3339()),
+        },
+        CheckpointAudit::Truncated { attested, found } => CheckpointReport {
+            status: "truncated".to_string(),
+            detail: Some(format!(
+                "TRUNCATION: the log holds {found} chainable entries but a checkpoint signed \
+                 with the community key attests to {attested}. Entries have been deleted."
+            )),
+            verified_checkpoints,
+            attested_entries: Some(attested),
+            unattested_entries: None,
+            newest_checkpoint_at: newest.map(|c| c.checkpoint_at.to_rfc3339()),
+        },
+        CheckpointAudit::HeadMismatch {
+            head_event_id,
+            found,
+        } => CheckpointReport {
+            status: "headMismatch".to_string(),
+            detail: Some(if found {
+                format!(
+                    "the envelope {head_event_id} that a signed checkpoint anchors to has been \
+                     rewritten — its entry hash no longer matches the attested head"
+                )
+            } else {
+                format!(
+                    "the envelope {head_event_id} that a signed checkpoint anchors to is \
+                     missing from the log"
+                )
+            }),
+            verified_checkpoints,
+            attested_entries: newest.map(|c| c.entry_count),
+            unattested_entries: None,
+            newest_checkpoint_at: newest.map(|c| c.checkpoint_at.to_rfc3339()),
+        },
+    }
 }
 
 /// A detected break, flattened for the wire.
@@ -384,7 +572,13 @@ pub struct ChainBreakReport {
 /// an unkeyed SHA-256, so an adversary with write access to the store
 /// can forge a suffix and restamp every envelope after it, and a
 /// truncation to a valid prefix is indistinguishable from a quiet
-/// period. Closing that needs signed checkpoints — see
+/// period.
+///
+/// That is what the `checkpoints` block closes (#708). Read it as the
+/// load-bearing half of this response: `verified: true` with
+/// `checkpoints.status: "truncated"` means the surviving log is internally
+/// consistent *and* provably shorter than the community key attested to —
+/// i.e. exactly the attack the chain alone cannot see. See
 /// `docs/05-design-notes/vtc-audit-checkpoints.md`.
 #[utoipa::path(
     get, path = "/audit/verify", tag = "audit",
@@ -439,6 +633,7 @@ pub async fn verify_audit_chain(
     }
 
     let verified = chain_break.is_none();
+    let checkpoints = verify_checkpoint_state(&state).await;
     let response = VerifyResponse {
         verified,
         entries_examined: verifier.index(),
@@ -447,6 +642,7 @@ pub async fn verify_audit_chain(
         unparseable_skipped: unparseable,
         head: verifier.head().map(hex::encode),
         chain_break,
+        checkpoints,
     };
 
     // Warn, not info, on failure: a broken audit chain is the kind of

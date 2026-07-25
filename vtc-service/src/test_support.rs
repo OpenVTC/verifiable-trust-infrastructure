@@ -228,6 +228,9 @@ impl TestVtcBuilder {
         let endorsements_ks = store.keyspace("endorsements").expect("endorsements ks");
         let audit_ks = store.keyspace("audit").expect("audit ks");
         let audit_key_ks = store.keyspace("audit_key").expect("audit_key ks");
+        let audit_checkpoint_ks = store
+            .keyspace("audit_checkpoint")
+            .expect("audit_checkpoint ks");
         let consumed_invitations_ks = store
             .keyspace("consumed_invitations")
             .expect("consumed_invitations ks");
@@ -349,6 +352,7 @@ impl TestVtcBuilder {
             endorsements_ks,
             audit_ks,
             audit_key_ks,
+            audit_checkpoint_ks,
             outbox_ks,
             consumed_invitations_ks,
             invitations_ks,

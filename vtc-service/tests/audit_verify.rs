@@ -201,3 +201,257 @@ async fn non_super_admin_is_refused() {
         "the audit chain is the community-wide god view"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Signed checkpoints (#708)
+// ---------------------------------------------------------------------------
+//
+// The chain tests above cover what an unkeyed SHA-256 can prove. These cover
+// what it *cannot*: an adversary who holds the store can restamp a forged
+// suffix or truncate to a valid prefix and the chain still verifies. Only a
+// signature made with a key that is not in the store contradicts that.
+
+use vti_common::audit::{AuditCheckpoint, CheckpointClaim};
+
+/// A fixture whose `credential_signer` is present, so checkpoints can be
+/// signed and verified. (`build()` above has no signer — checkpoint status
+/// there is `chainBroken`, which is itself asserted below.)
+async fn build_signed() -> Fixture {
+    let vtc = TestVtc::builder()
+        .with_audit(true)
+        .with_signers(true)
+        .build()
+        .await;
+    Fixture {
+        router: vtc.router.clone(),
+        state: vtc.state.clone(),
+        vtc,
+    }
+}
+
+/// Sign a checkpoint over the audit log's current state and persist it —
+/// what the periodic emitter does on a tick.
+async fn checkpoint_now(fix: &Fixture) -> AuditCheckpoint {
+    let signer = fix
+        .state
+        .credential_signer
+        .as_ref()
+        .expect("fixture built with signers");
+    let key = signer
+        .ed25519_signing_key()
+        .expect("community key is Ed25519");
+    vtc_service::audit_checkpoint::emit_checkpoint(
+        &fix.state.audit_ks,
+        &fix.state.audit_checkpoint_ks,
+        &key,
+        signer.assertion_method_id(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("emit")
+    .expect("there were new entries to attest")
+}
+
+#[tokio::test]
+async fn a_log_with_no_checkpoints_says_so_rather_than_looking_clean() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 3).await;
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    // The chain is fine...
+    assert_eq!(body["verified"], true, "body: {body}");
+    // ...but nothing has attested to it, and that must be visible.
+    assert_eq!(
+        body["checkpoints"]["status"], "noCheckpoints",
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_checkpointed_log_verifies_as_consistent() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 4).await;
+    let cp = checkpoint_now(&fix).await;
+    assert!(
+        cp.entry_count >= 4,
+        "checkpoint should cover the seeded rows"
+    );
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["verified"], true, "body: {body}");
+    assert_eq!(body["checkpoints"]["status"], "consistent", "body: {body}");
+    assert_eq!(body["checkpoints"]["verifiedCheckpoints"], 1);
+    assert_eq!(body["checkpoints"]["unattestedEntries"], 0);
+}
+
+/// **The whole point of #708.**
+///
+/// Delete a *suffix* of the log. The remaining prefix is a perfectly valid
+/// chain — `verified` stays `true`, exactly as it did before checkpoints
+/// existed — but it is now shorter than a signature made with the community
+/// key attests to, and that contradiction cannot be manufactured from the
+/// store alone.
+#[tokio::test]
+async fn truncating_the_log_is_caught_even_though_the_chain_still_verifies() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 6).await;
+    let cp = checkpoint_now(&fix).await;
+    let attested = cp.entry_count;
+
+    // Delete the newest two rows — the cheapest way to erase an incident,
+    // and one that needs no forgery at all.
+    let mut rows = fix
+        .state
+        .audit_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap();
+    rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+    assert!(rows.len() >= 3);
+    for (key, _) in rows.iter().rev().take(2) {
+        fix.state.audit_ks.remove(key.clone()).await.unwrap();
+    }
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["verified"], true,
+        "a truncated prefix is still a valid chain — that is the whole problem: {body}"
+    );
+    assert_eq!(body["checkpoints"]["status"], "truncated", "body: {body}");
+    assert_eq!(body["checkpoints"]["attestedEntries"], attested);
+    assert!(
+        body["checkpoints"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("TRUNCATION"),
+        "the detail must name the finding: {body}"
+    );
+}
+
+/// Deleting the checkpoints that contradict a truncated log must not restore
+/// a clean bill of health — otherwise the mechanism protects nothing.
+#[tokio::test]
+async fn deleting_a_checkpoint_is_itself_detected() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+
+    seed_audit_rows(&fix, &token, 2).await;
+    checkpoint_now(&fix).await;
+    seed_audit_rows(&fix, &token, 2).await;
+    checkpoint_now(&fix).await;
+
+    // Remove the *first* checkpoint, leaving the second orphaned.
+    let mut rows = fix
+        .state
+        .audit_checkpoint_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap();
+    rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+    assert_eq!(rows.len(), 2, "expected two checkpoints");
+    fix.state
+        .audit_checkpoint_ks
+        .remove(rows[0].0.clone())
+        .await
+        .unwrap();
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert!(
+        body["checkpoints"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("deleted"),
+        "detail should explain the broken checkpoint link: {body}"
+    );
+}
+
+/// A checkpoint minted by someone who holds the store but not the community
+/// key must not verify — that is the entire security argument for signing
+/// with the community key rather than the audit HMAC key.
+#[tokio::test]
+async fn a_checkpoint_forged_with_a_foreign_key_is_rejected() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 3).await;
+
+    let attacker = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32]);
+    let signer = fix.state.credential_signer.as_ref().unwrap();
+    let forged = AuditCheckpoint::sign(
+        CheckpointClaim {
+            checkpoint_id: uuid::Uuid::new_v4(),
+            head: [0u8; 32],
+            entry_count: 0,
+            head_event_id: uuid::Uuid::nil(),
+            checkpoint_at: chrono::Utc::now(),
+            prev_checkpoint: None,
+            // Names the community's real key — but is not signed by it.
+            verification_method: signer.assertion_method_id().to_string(),
+        },
+        &attacker,
+    );
+    fix.state
+        .audit_checkpoint_ks
+        .insert(forged.storage_key(), &forged)
+        .await
+        .unwrap();
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert!(
+        body["checkpoints"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid signature"),
+        "detail should name the bad signature: {body}"
+    );
+}
+
+/// Entries written since the last checkpoint are the live truncation window.
+/// They are real exposure, so the endpoint reports them rather than letting
+/// "consistent" imply everything is signed.
+#[tokio::test]
+async fn entries_written_after_a_checkpoint_are_reported_as_unattested() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 2).await;
+    let cp = checkpoint_now(&fix).await;
+    seed_audit_rows(&fix, &token, 3).await;
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checkpoints"]["status"], "consistent", "body: {body}");
+    assert_eq!(body["checkpoints"]["attestedEntries"], cp.entry_count);
+    assert!(
+        body["checkpoints"]["unattestedEntries"].as_u64().unwrap() >= 3,
+        "the post-checkpoint tail must be surfaced: {body}"
+    );
+}
+
+/// Without a community signing key there is nothing to verify against, and
+/// the endpoint must say so rather than report a green checkpoint status.
+#[tokio::test]
+async fn a_vtc_with_no_signing_key_cannot_claim_checkpoint_health() {
+    let fix = build().await; // no signers
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 2).await;
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["checkpoints"]["status"], "chainBroken", "body: {body}");
+    assert!(
+        body["checkpoints"]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no community signing key"),
+        "body: {body}"
+    );
+}

@@ -81,6 +81,49 @@ pub async fn cmd_verify(
         );
     }
 
+    // Signed checkpoints (#708) — the half that resists a store-level
+    // adversary. Printed after the chain result and *before* the exit
+    // decision, because a green chain over a truncated log is precisely the
+    // case an operator must not skim past.
+    let checkpoints = &body["checkpoints"];
+    let cp_status = checkpoints["status"].as_str().unwrap_or("unknown");
+    let cp_detail = checkpoints["detail"].as_str();
+    let cp_broken = matches!(cp_status, "truncated" | "headMismatch" | "chainBroken");
+    println!();
+    match cp_status {
+        "consistent" => {
+            let attested = checkpoints["attestedEntries"].as_u64().unwrap_or(0);
+            let unattested = checkpoints["unattestedEntries"].as_u64().unwrap_or(0);
+            let count = checkpoints["verifiedCheckpoints"].as_u64().unwrap_or(0);
+            println!(
+                "{GREEN}✓ signed checkpoints consistent{RESET} {DIM}({count} verified){RESET}"
+            );
+            println!("  {DIM}attested entries:{RESET} {attested}");
+            if let Some(at) = checkpoints["newestCheckpointAt"].as_str() {
+                println!("  {DIM}newest checkpoint:{RESET} {at}");
+            }
+            if unattested > 0 {
+                // Not a failure, but not nothing: this tail is covered by the
+                // forgeable chain only, so it is the live truncation window.
+                println!(
+                    "  {DIM}unattested tail:  {RESET} {unattested}                      {DIM}(written since the last checkpoint — signed by nothing yet){RESET}"
+                );
+            }
+        }
+        "noCheckpoints" => {
+            println!("{RED}! no signed checkpoints{RESET}");
+            if let Some(d) = cp_detail {
+                println!("  {DIM}{d}{RESET}");
+            }
+        }
+        _ => {
+            println!("{RED}✗ signed checkpoints FAILED ({cp_status}){RESET}");
+            if let Some(d) = cp_detail {
+                println!("  {RED}{d}{RESET}");
+            }
+        }
+    }
+
     if let Some(brk) = body.get("chainBreak").filter(|v| !v.is_null()) {
         let kind = brk["kind"].as_str().unwrap_or("?");
         let index = brk["index"].as_u64().unwrap_or(0);
@@ -101,11 +144,26 @@ pub async fn cmd_verify(
     if !verified {
         println!();
         println!(
-            "{DIM}Note: a passing chain proves internal consistency, not authenticity —\n\
-             the chain is unsigned, so an adversary with store write access can\n\
-             restamp a forged suffix. Verify an out-of-band copy before concluding.{RESET}"
+            "{DIM}Note: the chain alone proves internal consistency, not authenticity —\n\
+             it is unsigned, so an adversary with store write access can restamp a\n\
+             forged suffix. The checkpoint result above is the signed half.{RESET}"
         );
         return Err("audit chain verification failed".into());
+    }
+
+    // A broken checkpoint result must fail the command even when the chain
+    // verifies — that combination *is* the store-level attack: an internally
+    // consistent log that the community key says is missing entries. Exiting
+    // 0 here would make `cnm audit verify || alert` silent for the one attack
+    // checkpoints exist to catch.
+    if cp_broken {
+        println!();
+        println!(
+            "{RED}The hash chain is internally consistent but contradicts a signature made\n\
+             with the community key. That is what a store-level tamper looks like:\n\
+             the surviving log was re-stamped to look correct.{RESET}"
+        );
+        return Err("audit checkpoint verification failed".into());
     }
     Ok(())
 }

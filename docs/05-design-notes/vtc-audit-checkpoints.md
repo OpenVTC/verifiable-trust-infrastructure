@@ -1,9 +1,59 @@
 # Signed audit checkpoints
 
-**Status:** proposed — not implemented.
+**Status:** **implemented** (#708, vtc-service 0.11.26). This note is now
+the rationale record; the code is `vti_common::audit::checkpoint` (type +
+signature scheme) and `vtc_service::audit_checkpoint` (emitter + verifier).
 **Context:** issue #537 tier 3. The `prev_hash` chain shipped in #555;
-`GET /v1/audit/verify` (this PR) exposes it. This note covers what is
-still missing and why it matters.
+`GET /v1/audit/verify` exposed it in #703.
+
+## What shipped, against this design
+
+Everything in the Proposal section below, plus:
+
+- `AuditCheckpoint.verification_method` — the `verificationMethod` URI of the
+  signing key, recorded per checkpoint so one signed under a retired key stays
+  verifiable. The note called for rotation to be handled; this is the field
+  that makes it possible.
+- `CheckpointBreak::CountWentBackwards` — `entry_count` must be monotonic
+  across the checkpoint chain. Without it, an adversary could re-link a
+  genuinely-signed *older* checkpoint into a later position and lower the
+  attested count without forging anything.
+- `emit_checkpoint` **refuses** to sign when the live log already holds fewer
+  entries than the last checkpoint attests to. Signing there would launder a
+  truncation into a fresh "this is fine".
+- `unattestedEntries` on the verify response — entries written since the last
+  checkpoint, covered by the forgeable chain but no signature. That tail is
+  the live truncation window and is now visible rather than implied.
+
+### Open questions, resolved
+
+- **Cadence** — time-based, default 15 minutes, `[audit_checkpoints]
+  interval_secs`, `0` disables. Count-based triggering was **not** implemented:
+  doing it honestly needs a running entry counter in `AuditWriter`, and
+  approximating it by polling more often means walking the whole audit keyspace
+  on a timer. A shorter interval is the cheaper knob, and it bounds the window
+  in *time* regardless of traffic — which is what an incident responder
+  reasons about. Rationale is restated on the module so it is not lost.
+- **Backup interaction** — `AUDIT_CHECKPOINT` is in `BACKED_UP`. Required, not
+  optional: restoring the audit log without its checkpoints reads as mass
+  truncation.
+- **External anchoring** — still out of scope, still the next step.
+- **Chain-head durability** — not taken. `measure_chain` still walks the
+  keyspace, matching what `/audit/verify` already did. The checkpoint keyspace
+  now makes an O(1) head pointer easy; it is a follow-up.
+
+### Known limitation
+
+`verify_checkpoint_state` resolves every `verificationMethod` to the VTC's
+*current* signing key. Correct until the community key rotates, at which point
+checkpoints signed under the retired key stop verifying. The fix is to resolve
+the DID document's key history — the per-checkpoint `verification_method` is
+already persisted for exactly that, so this is a verifier change with no data
+migration.
+
+---
+
+*Original note follows.*
 
 ## The problem the chain does not solve
 

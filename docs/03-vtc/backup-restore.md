@@ -17,7 +17,11 @@ AES-256-GCM encryption of:
   `community`, `members`, `join_requests`, `policies`, `active_policies`,
   `status_lists`, `relationships`, `relationships_by_did`, `endorsement_types`,
   `schemas`, `endorsements`, and `audit_key`. The `audit` log is included only
-  when you pass `include_audit: true`.
+  when you pass `include_audit: true` — and when it is, its signed checkpoints
+  (`audit_checkpoint`) come with it. That pairing is not optional: a log
+  restored without its checkpoints holds fewer entries than every signed
+  checkpoint attests to, so `cnm audit verify` would report the restore as
+  **truncation**.
 - **The signing key bundle** — so the backup is a *complete* disaster-recovery
   artifact: a restore re-establishes the VTC's ability to sign (status-list
   re-issue, VMC minting), not just its data.

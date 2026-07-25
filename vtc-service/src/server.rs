@@ -116,6 +116,9 @@ pub struct AppState {
     pub endorsements_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
+    /// Signed audit checkpoints (#708). Read by `GET /v1/audit/verify`,
+    /// written by the periodic `CheckpointEmitter`.
+    pub audit_checkpoint_ks: KeyspaceHandle,
     /// Durable delivery-layer outbox (D2 P1a). Backs
     /// [`vti_common::outbox_store::VtiOutboxStore`] for the messaging
     /// service's `Guaranteed` sends so delivery-critical work survives a
@@ -385,6 +388,7 @@ pub async fn run(
     let endorsements_ks = store.keyspace(keyspaces::ENDORSEMENTS)?;
     let audit_ks = store.keyspace(keyspaces::AUDIT)?;
     let audit_key_ks = store.keyspace(keyspaces::AUDIT_KEY)?;
+    let audit_checkpoint_ks = store.keyspace(keyspaces::AUDIT_CHECKPOINT)?;
     let consumed_invitations_ks = store.keyspace(keyspaces::CONSUMED_INVITATIONS)?;
     let invitations_ks = store.keyspace(keyspaces::INVITATIONS)?;
     let outbox_ks = store.keyspace(keyspaces::OUTBOX)?;
@@ -605,6 +609,7 @@ pub async fn run(
         endorsements_ks,
         audit_ks,
         audit_key_ks,
+        audit_checkpoint_ks: audit_checkpoint_ks.clone(),
         outbox_ks,
         consumed_invitations_ks,
         invitations_ks,
@@ -887,6 +892,37 @@ pub async fn run(
         boot_cfg.join_requests.clone(),
         shutdown_rx.clone(),
     );
+
+    // #708: spawn the signed-checkpoint emitter. Without it the audit chain
+    // is unkeyed all the way down — a store-level adversary can restamp a
+    // forged suffix or truncate the log to a valid prefix, and `verify` cannot
+    // tell. Requires the credential signer: checkpoints are signed with the
+    // *community* Ed25519 key, deliberately not the audit HMAC key (which
+    // lives in the same store the adversary is assumed to have reached, and
+    // whose symmetric verification would make every verifier a forger).
+    match state.credential_signer.as_ref().and_then(|s| {
+        s.ed25519_signing_key()
+            .map(|k| (k, s.assertion_method_id().to_string()))
+    }) {
+        Some((signing_key, verification_method)) => {
+            crate::audit_checkpoint::CheckpointEmitter::spawn(
+                state.audit_ks.clone(),
+                state.audit_checkpoint_ks.clone(),
+                signing_key,
+                verification_method,
+                boot_cfg.audit_checkpoints.clone(),
+                shutdown_rx.clone(),
+            );
+        }
+        None => {
+            // Not fatal — a VTC with no key material yet still runs — but it
+            // must not look like checkpointing is on when it isn't.
+            tracing::warn!(
+                "no community signing key available; audit checkpoints will NOT be \
+                 emitted and the audit log has only unkeyed-chain tamper-evidence"
+            );
+        }
+    }
 
     // M0.10: consume + audit any pending emergency-bootstrap marker
     // left behind by `vtc admin emergency-bootstrap`. The marker is
