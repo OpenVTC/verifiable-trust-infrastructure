@@ -36,8 +36,8 @@ use url::Url;
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use crate::config::{
-    AppConfig, AuditConfig, AuthConfig, LogConfig, MessagingConfig, SecretsConfig, ServerConfig,
-    ServicesConfig, StoreConfig,
+    AppConfig, AuditConfig, AuthConfig, LogConfig, MessagingConfig, SecretBackend, SecretsConfig,
+    ServerConfig, ServicesConfig, StoreConfig,
 };
 use crate::contexts::store_context;
 use crate::keys::seed_store::{SeedStore, create_seed_store};
@@ -1145,10 +1145,30 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
+/// The explicit `[secrets] backend` selector matching an operator's wizard
+/// choice. Every generated config states its backend outright rather than
+/// leaving `create_seed_store` to infer one from which fields are populated
+/// — inference cannot express "plaintext" at all on a build with `keyring`
+/// compiled in, so the wizard's plaintext option used to silently produce a
+/// keyring-backed VTA.
+fn backend_selector(input: &SecretsBackendInput) -> SecretBackend {
+    match input {
+        SecretsBackendInput::Keyring { .. } => SecretBackend::Keyring,
+        SecretsBackendInput::ConfigSeed => SecretBackend::ConfigSeed,
+        SecretsBackendInput::Aws { .. } => SecretBackend::Aws,
+        SecretsBackendInput::Gcp { .. } => SecretBackend::Gcp,
+        SecretsBackendInput::Azure { .. } => SecretBackend::Azure,
+        SecretsBackendInput::Vault { .. } => SecretBackend::Vault,
+        SecretsBackendInput::Kubernetes { .. } => SecretBackend::Kubernetes,
+        SecretsBackendInput::Plaintext => SecretBackend::Plaintext,
+    }
+}
+
 fn secrets_config_from_input(
     input: &SecretsBackendInput,
 ) -> Result<SecretsConfig, Box<dyn std::error::Error>> {
-    Ok(match input {
+    let selector = backend_selector(input);
+    let mut config = match input {
         SecretsBackendInput::Keyring { service } => {
             #[cfg(not(feature = "keyring"))]
             {
@@ -1341,12 +1361,17 @@ fn secrets_config_from_input(
             // the seed store can be created during setup *and* the booted VTA
             // can re-open it. The flag is serialized into `[secrets]` in the
             // generated config.toml, so plaintext deployments stay runnable.
+            //
+            // `allow_plaintext` is only the *permission*; `backend` below is
+            // what actually selects plaintext over the compiled-in keyring.
             SecretsConfig {
                 allow_plaintext: true,
                 ..SecretsConfig::default()
             }
         }
-    })
+    };
+    config.backend = Some(selector);
+    Ok(config)
 }
 
 fn scratch_config_for_seed_store(
@@ -1757,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn plaintext_backend_sets_allow_plaintext() {
+    fn plaintext_backend_sets_allow_plaintext_and_selects_itself() {
         // Selecting the plaintext backend must opt in to the plaintext
         // seed-store fallback (P0.9). Otherwise `create_seed_store` errors
         // during setup and the booted VTA can't re-open the seed. The flag
@@ -1768,13 +1793,47 @@ mod tests {
             secrets.allow_plaintext,
             "plaintext backend must set allow_plaintext = true"
         );
+        // …and `allow_plaintext` alone is not enough. It is a *permission*
+        // to fall back, not a request: with `keyring` compiled in (the
+        // default) the implicit chain hits the keyring arm first, so an
+        // operator who chose "Plaintext file" in the wizard used to get a
+        // keyring-backed VTA. The explicit selector is what makes it stick.
+        assert_eq!(
+            secrets.backend,
+            Some(SecretBackend::Plaintext),
+            "the wizard must state the backend it was asked for"
+        );
 
-        // And it round-trips into the written config as `allow_plaintext = true`.
+        // Both round-trip into the written config.
         let toml_out = toml::to_string(&secrets).expect("secrets config serializes");
         assert!(
             toml_out.contains("allow_plaintext = true"),
             "generated config must carry the flag, got:\n{toml_out}"
         );
+        assert!(
+            toml_out.contains("backend = \"plaintext\""),
+            "generated config must carry the selector, got:\n{toml_out}"
+        );
+    }
+
+    #[test]
+    fn every_wizard_backend_choice_states_its_selector() {
+        // No wizard choice may lean on implicit resolution — that is how
+        // plaintext silently became keyring.
+        let cases: Vec<(SecretsBackendInput, SecretBackend)> = vec![
+            #[cfg(feature = "keyring")]
+            (
+                SecretsBackendInput::Keyring {
+                    service: "vta".into(),
+                },
+                SecretBackend::Keyring,
+            ),
+            (SecretsBackendInput::Plaintext, SecretBackend::Plaintext),
+        ];
+        for (input, expected) in cases {
+            let secrets = secrets_config_from_input(&input).expect("converts");
+            assert_eq!(secrets.backend, Some(expected), "for {input:?}");
+        }
     }
 
     /// Register an in-memory keyring so the seed-store step works without an

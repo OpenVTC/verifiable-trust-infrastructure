@@ -29,9 +29,31 @@ backends and the factory live in the shared **`vti-secrets`** crate
 VTI integration can reuse them without depending on `vta-service`.
 `vta-service` re-exports them from `keys::seed_store` and keeps a thin
 `create_seed_store(&config)` wrapper, so first-party call sites are
-unchanged. At startup that wrapper walks the configured backends in
-priority order and returns the first one whose feature is compiled in
-**and** whose config is populated:
+unchanged.
+
+### Selecting a backend explicitly (recommended)
+
+Set `secrets.backend` and the named backend is built, with its required
+fields validated:
+
+```toml
+[secrets]
+backend = "vault"          # keyring | config_seed | aws | gcp | azure | vault | kubernetes | plaintext
+addr        = "https://vault.example.com:8200"
+secret_path = "vta/master-seed"
+```
+
+An explicit selector **wins outright** — a missing required field, or a
+backend whose Cargo feature isn't compiled into this binary, is a hard
+config error, never a silent substitution of a different backend. The
+setup wizard always writes this key, so every generated `config.toml`
+states its backend.
+
+### Implicit resolution (legacy)
+
+Omit `secrets.backend` and the wrapper walks the backends in priority
+order, returning the first whose feature is compiled in **and** whose
+selector field is populated:
 
 | Priority | Backend | Cargo feature | Activates when… |
 |---|---|---|---|
@@ -43,6 +65,14 @@ priority order and returns the first one whose feature is compiled in
 | 6 | Config-seed | `config-seed` | `secrets.seed` is set |
 | 7 | OS keyring | `keyring` | always (the default) |
 | 8 | Plaintext file | always available | unconditional fallback |
+
+Note what this chain **cannot** express: plaintext has no selector field
+of its own and the keyring arm matches unconditionally, so on any build
+with `keyring` compiled in (the default) implicit resolution can never
+reach plaintext. `secrets.allow_plaintext` is a *permission* to fall
+back, not a request — `backend = "plaintext"` is how you ask for it.
+The same shadowing applies to any backend sitting below a configured
+one; prefer the explicit selector.
 
 If no secure-backend feature is compiled and no config is set, the
 service falls back to a plaintext file in the data directory and
@@ -460,17 +490,23 @@ the seed sits on disk in plaintext.
 If you find yourself reaching for this in production, use Vault or a
 cloud secret manager instead.
 
-### Plaintext file (fallback only)
+### Plaintext file
 
 File: `vti-secrets/src/seed_store/plaintext.rs`
 
 Always available, no Cargo feature required. Stores the seed as a
-hex string in `<data_dir>/seed.hex`. The service emits a `WARN` log
-line at startup when this backend is selected:
+hex string in `<data_dir>/seed.plaintext`. It takes **two** keys — one
+to select it, one to accept the consequence:
 
+```toml
+[secrets]
+backend         = "plaintext"   # which backend
+allow_plaintext = true          # yes, I accept a cleartext master seed
 ```
-WARN no secure seed store backend available — falling back to plaintext file storage
-```
+
+Without `backend = "plaintext"` it is unreachable on a keyring build;
+without `allow_plaintext = true` it is a hard config error. The service
+emits a `WARN` log line at startup when this backend is selected.
 
 Use only when first-boot-bringing-up a VTA in a sandbox where you
 plan to migrate to a real backend before any production traffic hits

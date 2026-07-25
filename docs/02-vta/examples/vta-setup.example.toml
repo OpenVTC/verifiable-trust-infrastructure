@@ -119,7 +119,11 @@ service = "vta-prod"   # default "vta"; use a unique name per VTA on the same ho
 # [secrets]
 # backend = "config_seed"
 
-# Plaintext file under `data_dir`. Dev only.
+# Plaintext file under `data_dir`. Dev only. The wizard writes BOTH
+# `backend = "plaintext"` (which backend) and `allow_plaintext = true`
+# (yes, a cleartext master seed is acceptable) into the generated
+# config.toml — plaintext needs both, and is otherwise unreachable on a
+# build with the `keyring` feature compiled in.
 # [secrets]
 # backend = "plaintext"
 

@@ -163,6 +163,35 @@ path still needed the VTA's REST surface.
   crate (`affinidi-messaging-delivery`), so a recurrence would not be caught by
   the upstream test. No network, no deployed VTA — runs unignored in CI.
 
+### vti-secrets 0.1.7 / vta-config 0.1.1 — `[secrets] backend` selects the seed store explicitly
+
+Choosing "Plaintext file" in the setup wizard silently produced a
+**keyring-backed** VTA. `create_seed_store` inferred the backend from whichever
+selector field was populated, and plaintext has no field of its own —
+`allow_plaintext` is a *permission* to fall back, not a request. With `keyring`
+compiled in (the default) the keyring arm matched unconditionally, so the
+plaintext arm below it was unreachable. The same shadowing hid any backend
+sitting under a configured one.
+
+* **New `secrets.backend`** (`keyring` | `config_seed` | `aws` | `gcp` |
+  `azure` | `vault` | `kubernetes` | `plaintext`). When set it wins outright:
+  that backend is built and its required fields are validated. Mirrors
+  `vtc_service::config::SecretBackend`, so the VTA and VTC now share one
+  vocabulary.
+
+* **Fail closed.** A backend named on a binary built without its Cargo feature
+  is a hard config error rather than a silent fall-through to keyring or
+  plaintext — the same P0.8 stance the VTC already took.
+
+* **The setup wizard always writes it**, so every generated `config.toml`
+  states its backend instead of leaving it to inference. Plaintext now needs
+  both keys: `backend = "plaintext"` (which backend) and
+  `allow_plaintext = true` (accepting a cleartext master seed).
+
+* **Backward compatible.** Omitting `secrets.backend` keeps the legacy implicit
+  priority chain exactly as it was, and the field is skipped on serialize when
+  unset, so existing configs neither change behaviour nor grow a key.
+
 ### vta-tee 0.1.0 / vta-policy 0.1.0 / vta-keys 0.1.1 / vti-common 0.11.21 / vta-service 0.12.34 — extract the TEE and policy subsystems
 
 Ninth decomposition step — two subsystem extractions in one PR, each unblocked
