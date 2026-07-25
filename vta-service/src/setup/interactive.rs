@@ -1071,6 +1071,20 @@ mod tests {
         Bool(bool),
         Index(usize),
         Indices(Vec<usize>),
+        /// Pick a `select` option by its **label** rather than its position.
+        ///
+        /// Prefer this over [`Answer::Index`] whenever the option list depends
+        /// on which features are compiled. The secrets-backend menu is the
+        /// motivating case: it is built up feature by feature (`aws-secrets`,
+        /// `config-seed`, `keyring`, …), so `Index(0)` means "OS keyring" in the
+        /// default build and "Config file" once `config-seed` is on. That
+        /// silently picked the wrong backend, which skipped the keyring-service
+        /// prompt, which shifted every later answer by one — surfacing as a
+        /// bogus "expected Index answer for prompt: VTA DID" far downstream.
+        ///
+        /// Matching on the label is immune to options being added, removed, or
+        /// reordered, and fails at the *right* prompt when a label disappears.
+        Label(&'static str),
     }
 
     /// Head-less [`Prompter`] that replays a fixed script of answers. Panics on
@@ -1119,10 +1133,17 @@ mod tests {
                 _ => panic!("expected Bool answer for prompt: {prompt}"),
             }
         }
-        fn select(&self, prompt: &str, _items: &[&str], _default: usize) -> Result<usize, DynErr> {
+        fn select(&self, prompt: &str, items: &[&str], _default: usize) -> Result<usize, DynErr> {
             match self.next(prompt) {
                 Answer::Index(i) => Ok(i),
-                _ => panic!("expected Index answer for prompt: {prompt}"),
+                Answer::Label(want) => items.iter().position(|it| *it == want).ok_or_else(|| {
+                    format!(
+                        "scripted label {want:?} is not an option for prompt {prompt:?}; \
+                         available: {items:?}"
+                    )
+                    .into()
+                }),
+                _ => panic!("expected Index or Label answer for prompt: {prompt}"),
             }
         }
         fn multiselect(
@@ -1148,9 +1169,13 @@ mod tests {
     /// advanced server options — exercises the divergence-prone mappings.
     #[tokio::test]
     async fn interactive_matches_equivalent_toml() {
-        // Scripted answers, in the exact order the prompts fire. Backend Select
-        // is index 0 = "OS keyring" (the only cloud-free backend in the default
-        // feature set besides plaintext).
+        // Scripted answers, in the exact order the prompts fire.
+        //
+        // Selects whose option list varies with the compiled feature set use
+        // `Answer::Label` rather than `Answer::Index` — see [`Answer::Label`].
+        // The secrets-backend menu is the one that bites: it is assembled
+        // feature by feature, so a positional answer picks a different backend
+        // under `config-seed`/`aws-secrets`/… than it does by default.
         let answers = vec![
             text("/tmp/vta-golden/config.toml"), // config path (doesn't exist)
             text("golden-vta"),                  // vta name
@@ -1167,13 +1192,14 @@ mod tests {
             // unifies `tee` onto this binary via vta-enclave).
             #[cfg(feature = "tee")]
             text(""), // TEE-only: remote DID resolver URL (skip)
-            text("90"),                                // audit retention
-            text("/tmp/vta-golden/data"),              // data dir (doesn't exist)
-            Answer::Bool(true),                        // configure advanced server opts?
-            text("https://app.example.com"),           // cors origins
-            Answer::Bool(true),                        // trust_xff
-            Answer::Bool(true),                        // webauthn
-            Answer::Index(0),                          // secrets backend = keyring
+            text("90"),                      // audit retention
+            text("/tmp/vta-golden/data"),    // data dir (doesn't exist)
+            Answer::Bool(true),              // configure advanced server opts?
+            text("https://app.example.com"), // cors origins
+            Answer::Bool(true),              // trust_xff
+            Answer::Bool(true),              // webauthn
+            // Label, not index: the backend menu grows with features (config-seed etc.).
+            Answer::Label("OS keyring"),
             text("golden-keyring"),                    // keyring service
             Answer::Index(1),                          // messaging = create mediator
             text("mediator"),                          // mediator context
@@ -1269,9 +1295,9 @@ mod tests {
             text("28"),                                             // audit retention
             text(data_dir.to_str().unwrap()),                       // data dir — exists, but empty
             Answer::Bool(false),                                    // advanced server opts? no
-            Answer::Index(0),                                       // secrets backend = keyring
-            text("vta"),                                            // keyring service
-            Answer::Index(1),                                       // VTA DID = did:key
+            Answer::Label("OS keyring"), // label, not index: menu grows with features
+            text("vta"),                 // keyring service
+            Answer::Index(1),            // VTA DID = did:key
         ];
         let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
             .await
@@ -1356,7 +1382,7 @@ mod tests {
                 text("28"),               // audit retention
                 text(data_dir.to_str().unwrap()), // data dir — holds a store
                 Answer::Index(choice),    // reuse / delete
-                Answer::Index(0),         // secrets backend = keyring
+                Answer::Label("OS keyring"), // label, not index: menu grows with features
                 text("vta"),              // keyring service
                 Answer::Index(2),         // messaging = skip
                 Answer::Index(1),         // VTA DID = did:key
@@ -1389,8 +1415,9 @@ mod tests {
             text("28"),                    // audit retention
             text("/tmp/vta-golden2/data"), // data dir
             Answer::Bool(false),           // advanced server opts? no
-            Answer::Index(0),              // secrets backend = keyring
-            text("vta"),                   // keyring service
+            // Label, not index: the backend menu grows with features (config-seed etc.).
+            Answer::Label("OS keyring"),
+            text("vta"), // keyring service
             // messaging skipped (REST only)
             Answer::Index(0),                       // VTA DID = create_webvh
             text("https://t.example.com/dids/vta"), // webvh url

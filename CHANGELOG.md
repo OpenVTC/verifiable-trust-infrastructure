@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+### vta-service 0.12.38 — make the wizard's scripted prompts feature-proof, and actually run them in CI
+
+The setup wizard's two golden tests (`interactive_matches_equivalent_toml`,
+`advanced_existing_keys_mode_maps_through`) failed under `--features config-seed`
+and had been failing since that feature landed. CI never noticed because the
+`Feature combos` job only runs `cargo check`, so nothing in CI *executed* a
+wizard test under any non-default backend set.
+
+**Cause.** `ScriptedPrompter` replayed answers **positionally**, ignoring the
+prompt and its option list. The secrets-backend menu is assembled feature by
+feature (`aws-secrets`, `config-seed`, `keyring`, …), so `Answer::Index(0)` meant
+"OS keyring" by default but "Config file" once `config-seed` was on. That picked
+the wrong backend, which meant the wizard never asked for a keyring service name,
+which meant the *next* scripted answer was eaten by the wrong prompt — surfacing
+as a bogus `expected Index answer for prompt: VTA DID` several prompts downstream.
+A positional script cannot survive a menu whose length is a build-time property.
+
+**Fix.** New `Answer::Label(&str)` picks a `select` option by its label, resolved
+against the `items` the harness already received and previously discarded. The two
+backend answers now say `Answer::Label("OS keyring")`. This is immune to options
+being added, removed, or reordered, and when a label genuinely disappears it fails
+at the *right* prompt with the available options listed, instead of derailing the
+script.
+
+Verified across seven feature sets — default, `config-seed`,
+`config-seed,keyring`, `aws-secrets,keyring`, `vault-secrets,keyring`,
+`k8s-secrets,keyring`, and `config-seed,vault-secrets,k8s-secrets,keyring` — all
+green. Previously only the default set passed.
+
+**This also fixes the two tests #795 added** (`a_pre_created_empty_data_dir_is_
+never_asked_about`, `existing_store_offers_reuse_and_delete`), which reached for
+the same `Answer::Index(0), // secrets backend = keyring` idiom and so were
+broken under `config-seed` the moment they landed. All five wizard tests now use
+`Answer::Label` for that select. The new CI step below would have caught them —
+it is what flagged them here.
+
+**CI.** `Feature combos` gained a step that *runs* these tests under
+`config-seed` and under `config-seed,vault-secrets,k8s-secrets`. Every other step
+in that job only compiles; the wizard is the one place a feature flag changes
+behaviour rather than just what builds, so compiling it was never going to catch
+this.
+
+Pre-existing `Answer::Index` uses for fixed menus (log format, messaging kind,
+VTA DID kind, advanced mode) are unchanged — those option lists don't vary by
+feature.
+
 ### vti-common 0.11.22 / vta-service 0.12.37 — setup no longer treats a pre-created data directory as a conflict
 
 `vta setup` refused to run against any `data_dir` that already existed, offering
