@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### vtc-service 0.11.25 / vta-service 0.12.35 — clear the workspace clippy warnings
+
+`cargo clippy --workspace --all-targets` emitted twelve warnings; it is now
+silent. No behaviour change.
+
+* Test-module imports in `did_peer.rs` / `did_webvh.rs` now carry the
+  `config-seed` gate their only consumer already had, instead of reading as
+  unused whenever that feature is off.
+* `edit_did_document` and `vtc-service`'s `as_vti_role` moved above their file's
+  `mod tests` ("items after a test module"), so tests stay last.
+* Two `.err().expect(..)` calls in `provision_integration/preconditions.rs`
+  became `.expect_err(..)`.
+* Dropped two unused `SHOW_TASK` constants from the `vtc-service` endorsement and
+  removal tests, left behind by the spec/vtc Trust Task migration.
+
+Known unrelated gap, not fixed here: `setup::interactive`'s two scripted-wizard
+tests fail under `--features config-seed`, because the wizard skips its "Seed
+storage backend" select when only one backend is compiled and a second one shifts
+every scripted answer. CI never builds that combo.
+
 ### vta-mobile-core 0.6.15 / vta-sdk 0.19.28 / vta-service 0.12.35 — a device can submit Trust Tasks with no REST API
 
 Completes the mobile no-REST loop: a device could already *receive* over both

@@ -189,8 +189,10 @@ fn websocket_service_uri(service_uri: &str) -> Result<String, Box<dyn std::error
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the `config-seed`-gated test below reads an ACL entry back; `Role`
+    // already arrives via `use super::*`.
+    #[cfg(feature = "config-seed")]
     use crate::acl::get_acl_entry;
-    use vti_common::acl::Role;
 
     /// `vta create-did-peer --context <ctx> --mediator-url <uri> --admin
     /// --export-secrets` must run fully non-interactive and, in one shot:

@@ -31,7 +31,6 @@ const PUBLIC_URL: &str = "https://vtc.example.com";
 const REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
 const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
-const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/show/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
 const ADMIN_DID: &str = "did:key:zEndAdmin";
 const ISSUER_DID: &str = "did:key:zEndIssuer";

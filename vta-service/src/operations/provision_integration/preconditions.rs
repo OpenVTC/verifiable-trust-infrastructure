@@ -520,8 +520,7 @@ mod tests {
 
         let err = resolve_target_context(&a, &ks, None, false)
             .await
-            .err()
-            .expect("ambiguous");
+            .expect_err("ambiguous");
         match err {
             ResolveContextError::Ambiguous(amb) => {
                 assert_eq!(
@@ -541,8 +540,7 @@ mod tests {
 
         let err = resolve_target_context(&a, &ks, Some("ctx-absent".into()), false)
             .await
-            .err()
-            .expect("not found");
+            .expect_err("not found");
         assert!(
             matches!(err, ResolveContextError::Op(AppError::NotFound(_))),
             "expected Op(NotFound)",

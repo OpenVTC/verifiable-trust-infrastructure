@@ -351,7 +351,55 @@ pub async fn run_create_did_webvh(
     Ok(())
 }
 
-#[cfg(test)]
+fn edit_did_document(
+    doc: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::process::Command;
+
+    let json = serde_json::to_string_pretty(&doc)?;
+
+    // Write to a named temp file with .json extension for editor syntax highlighting
+    let mut tmp = tempfile::Builder::new().suffix(".json").tempfile()?;
+    tmp.write_all(json.as_bytes())?;
+    tmp.flush()?;
+    let path = tmp.path().to_path_buf();
+
+    // Resolve editor: $VISUAL > $EDITOR > fallback
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    // Open editor and wait
+    let status = Command::new(&editor)
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("failed to launch editor '{editor}': {e}"))?;
+
+    if !status.success() {
+        return Err(format!("editor exited with {status}").into());
+    }
+
+    // Read back and parse
+    let edited = std::fs::read_to_string(&path)?;
+    let new_doc: serde_json::Value =
+        serde_json::from_str(&edited).map_err(|e| format!("invalid JSON from editor: {e}"))?;
+
+    // Basic validation: must be an object with "id" field
+    if !new_doc.is_object() || !new_doc.get("id").is_some_and(|v| v.is_string()) {
+        return Err("DID document must be a JSON object with an \"id\" field".into());
+    }
+
+    // Show the updated document
+    eprintln!(
+        "\x1b[2mUpdated DID Document:\n{}\x1b[0m",
+        serde_json::to_string_pretty(&new_doc)?
+    );
+
+    Ok(new_doc)
+}
+
+#[cfg(all(test, feature = "config-seed"))]
 mod tests {
     use super::*;
     use crate::acl::get_acl_entry;
@@ -370,7 +418,6 @@ mod tests {
     /// Gated on `config-seed` so the seed store is the in-config backend (no
     /// OS keyring), making the test hermetic. Run with:
     /// `cargo test -p vta-service --bin vta --features config-seed`.
-    #[cfg(feature = "config-seed")]
     #[tokio::test]
     async fn create_did_webvh_url_admin_export_is_noninteractive_and_grants_admin() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -465,52 +512,4 @@ mod tests {
         assert_eq!(entry.role, Role::Admin);
         assert_eq!(entry.allowed_contexts, vec!["agents".to_string()]);
     }
-}
-
-fn edit_did_document(
-    doc: serde_json::Value,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    use std::io::Write;
-    use std::process::Command;
-
-    let json = serde_json::to_string_pretty(&doc)?;
-
-    // Write to a named temp file with .json extension for editor syntax highlighting
-    let mut tmp = tempfile::Builder::new().suffix(".json").tempfile()?;
-    tmp.write_all(json.as_bytes())?;
-    tmp.flush()?;
-    let path = tmp.path().to_path_buf();
-
-    // Resolve editor: $VISUAL > $EDITOR > fallback
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
-
-    // Open editor and wait
-    let status = Command::new(&editor)
-        .arg(&path)
-        .status()
-        .map_err(|e| format!("failed to launch editor '{editor}': {e}"))?;
-
-    if !status.success() {
-        return Err(format!("editor exited with {status}").into());
-    }
-
-    // Read back and parse
-    let edited = std::fs::read_to_string(&path)?;
-    let new_doc: serde_json::Value =
-        serde_json::from_str(&edited).map_err(|e| format!("invalid JSON from editor: {e}"))?;
-
-    // Basic validation: must be an object with "id" field
-    if !new_doc.is_object() || !new_doc.get("id").is_some_and(|v| v.is_string()) {
-        return Err("DID document must be a JSON object with an \"id\" field".into());
-    }
-
-    // Show the updated document
-    eprintln!(
-        "\x1b[2mUpdated DID Document:\n{}\x1b[0m",
-        serde_json::to_string_pretty(&new_doc)?
-    );
-
-    Ok(new_doc)
 }
