@@ -3,7 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
-use crate::error::{AppError, tee_attestation_error};
+use vti_common::error::{AppError, tee_attestation_error};
 
 use super::provider::{StructuralCheckOutcome, TeeProvider};
 use super::types::{AttestationReport, TeeStatus, TeeType};

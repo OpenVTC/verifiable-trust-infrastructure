@@ -15,13 +15,13 @@ use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use serde_json::json;
 use tracing::info;
 
-use crate::config::AppConfig;
-use crate::contexts;
-use crate::error::AppError;
-use crate::keys;
-use crate::keys::seed_store::SeedStore;
-use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::store::{KeyspaceHandle, Store};
+use vta_config::AppConfig;
+use vta_keys as keys;
+use vta_keys::seed_store::SeedStore;
+use vta_keys::seeds::{get_active_seed_id, load_seed_bytes};
+use vta_support::contexts;
+use vti_common::error::AppError;
+use vti_common::store::{KeyspaceHandle, Store};
 
 /// Well-known store key for the auto-generated VTA DID.
 const VTA_DID_STORE_KEY: &str = "tee:vta_did";
@@ -56,8 +56,8 @@ pub async fn maybe_generate_vta_did(
             ks
         }
     };
-    let keys_ks = apply_enc(store.keyspace(crate::keyspaces::KEYS)?);
-    let contexts_ks = apply_enc(store.keyspace(crate::keyspaces::CONTEXTS)?);
+    let keys_ks = apply_enc(store.keyspace(vta_keyspaces::KEYS)?);
+    let contexts_ks = apply_enc(store.keyspace(vta_keyspaces::CONTEXTS)?);
 
     // Check if DID already exists in the store (subsequent boot)
     if let Some(did_bytes) = keys_ks.get_raw(VTA_DID_STORE_KEY).await? {
@@ -129,14 +129,8 @@ pub async fn maybe_generate_vta_did(
 
     // Generate pre-rotation keys (default: 1)
     let (next_key_hashes, pre_rotation_keys) =
-        crate::operations::did_webvh::derive_pre_rotation_keys(
-            &seed,
-            &ctx.base_path,
-            "VTA",
-            &keys_ks,
-            1,
-        )
-        .await?;
+        vta_keys::derivation::derive_pre_rotation_keys(&seed, &ctx.base_path, "VTA", &keys_ks, 1)
+            .await?;
 
     // Build parameters
     let parameters = WebVHParameters {
@@ -232,7 +226,7 @@ pub async fn maybe_generate_vta_did(
 
     // Also store in bootstrap keyspace (no encryption) so the parent proxy
     // can read it and write did.jsonl to disk for the operator.
-    let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
+    let bootstrap_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
     bootstrap_ks
         .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
         .await?;

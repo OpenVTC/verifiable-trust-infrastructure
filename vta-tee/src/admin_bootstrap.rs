@@ -17,11 +17,11 @@
 
 use tracing::info;
 
-use crate::acl::{AclEntry, Role, store_acl_entry};
-use crate::config::AppConfig;
-use crate::contexts;
-use crate::error::AppError;
-use crate::store::{KeyspaceHandle, Store};
+use vta_config::AppConfig;
+use vta_support::contexts;
+use vti_common::acl::{AclEntry, Role, store_acl_entry};
+use vti_common::error::AppError;
+use vti_common::store::{KeyspaceHandle, Store};
 
 /// Sentinel indicating the TEE first-boot carve-out has been closed. Written
 /// either by `maybe_bootstrap_admin` (when an operator DID is configured) or
@@ -60,9 +60,9 @@ pub async fn maybe_bootstrap_admin(
             ks
         }
     };
-    let keys_ks = apply_enc(store.keyspace(crate::keyspaces::KEYS)?);
-    let contexts_ks = apply_enc(store.keyspace(crate::keyspaces::CONTEXTS)?);
-    let acl_ks = apply_enc(store.keyspace(crate::keyspaces::ACL)?);
+    let keys_ks = apply_enc(store.keyspace(vta_keyspaces::KEYS)?);
+    let contexts_ks = apply_enc(store.keyspace(vta_keyspaces::CONTEXTS)?);
+    let acl_ks = apply_enc(store.keyspace(vta_keyspaces::ACL)?);
 
     // One-time migration: if the legacy pre-Phase-3 credential row is still in
     // the store, the old endpoint retrieving it is gone. Move any operator
@@ -76,7 +76,7 @@ pub async fn maybe_bootstrap_admin(
         info!("migrating legacy tee:admin_credential row — carve-out now closed");
         keys_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await?;
         // Old row might also be mirrored in the bootstrap keyspace.
-        if let Ok(bootstrap_ks) = store.keyspace(crate::keyspaces::BOOTSTRAP) {
+        if let Ok(bootstrap_ks) = store.keyspace(vta_keyspaces::BOOTSTRAP) {
             let _ = bootstrap_ks.remove(LEGACY_ADMIN_CREDENTIAL_KEY).await;
         }
         keys_ks

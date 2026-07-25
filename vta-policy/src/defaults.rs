@@ -15,7 +15,7 @@ pub const DEFAULT_POLICY_ID: &str = "default";
 
 /// The baseline Rego, embedded at compile time. Validated by a test below so a
 /// broken default can never ship.
-pub const DEFAULT_POLICY_REGO: &str = include_str!("../../policies/default.rego");
+pub const DEFAULT_POLICY_REGO: &str = include_str!("../policies/default.rego");
 
 /// Install the baseline policy iff the policy keyspace is empty.
 ///
@@ -79,7 +79,7 @@ const CONFIG_CONSENT_PRIORITY: i32 = 100;
 /// underneath to handle every task these rules do not name.
 pub async fn reconcile_config_consent_policy(
     policy_ks: &KeyspaceHandle,
-    rules: &[crate::config::RequireConsentRule],
+    rules: &[vta_config::RequireConsentRule],
     now_rfc3339: &str,
 ) -> Result<(), AppError> {
     if rules.is_empty() {
@@ -127,7 +127,7 @@ pub async fn reconcile_config_consent_policy(
 /// everything else — which lets `decide()` fall through to the baseline. The
 /// guards are mutually exclusive by construction (distinct URIs), so no two
 /// complete rules ever conflict.
-fn synthesize_consent_rego(rules: &[crate::config::RequireConsentRule]) -> String {
+fn synthesize_consent_rego(rules: &[vta_config::RequireConsentRule]) -> String {
     let mut out = String::from("package vta.policy\n\nimport rego.v1\n\n");
     out.push_str(
         "# Generated from [policy.require_consent] in config.toml. Do not edit — \
@@ -169,8 +169,8 @@ fn rego_string(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StoreConfig;
-    use crate::store::Store;
+    use vta_config::StoreConfig;
+    use vti_common::store::Store;
 
     async fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -178,7 +178,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        (store.keyspace(crate::keyspaces::POLICY).unwrap(), dir)
+        (store.keyspace(vta_keyspaces::POLICY).unwrap(), dir)
     }
 
     #[test]
@@ -231,10 +231,10 @@ mod tests {
         assert_eq!(all[0].id, "operator");
     }
 
-    use crate::config::RequireConsentRule;
-    use crate::policy::types::{
+    use crate::types::{
         Consumer, Discloses, Disposition, Exposure, PolicyInput, PolicyRequest, SideEffectLevel,
     };
+    use vta_config::RequireConsentRule;
 
     const UPDATE_URI: &str = "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
     const OTHER_URI: &str = "https://trusttasks.org/spec/vault/release/0.1";
@@ -275,11 +275,11 @@ mod tests {
         }
     }
 
-    async fn decide_for(ks: &KeyspaceHandle, type_uri: &str) -> crate::policy::PolicyDecision {
+    async fn decide_for(ks: &KeyspaceHandle, type_uri: &str) -> crate::PolicyDecision {
         let policies = storage::load_active_for_context(ks, "default")
             .await
             .unwrap();
-        crate::policy::decide(&policies, &input_for(type_uri))
+        crate::decide(&policies, &input_for(type_uri))
     }
 
     /// The whole point: a config rule makes the named task require consent — with

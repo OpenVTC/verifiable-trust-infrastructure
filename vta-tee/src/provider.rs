@@ -1,4 +1,4 @@
-use crate::error::AppError;
+use vti_common::error::AppError;
 
 use super::types::{AttestationReport, TeeStatus, TeeType};
 

@@ -105,7 +105,7 @@ pub fn build_policy_input(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::types::{Discloses, SideEffectLevel};
+    use crate::types::{Discloses, SideEffectLevel};
     use serde_json::json;
 
     #[test]

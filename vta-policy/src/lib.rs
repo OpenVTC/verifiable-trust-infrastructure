@@ -10,7 +10,7 @@
 //!
 //! - **Code decides, registry describes.** The authoritative `sideEffects` /
 //!   `exposure` classification fed into [`types::PolicyInput`] comes from the
-//!   compiled dispatch table ([`crate::trust_tasks`]), NOT from the published
+//!   compiled dispatch table (the trust-task dispatch table), NOT from the published
 //!   registry. Whoever controls the registry must not be able to lower the
 //!   consent bar. (SPEC §7.3 items 13–14.)
 //! - **Fail closed.** Every path that cannot produce an explicit `allow` — no

@@ -21,7 +21,7 @@ use serde::Serialize;
 use tracing::{info, warn};
 use zeroize::Zeroize;
 
-use crate::error::{AppError, tee_attestation_error};
+use vti_common::error::{AppError, tee_attestation_error};
 
 /// Holds the BIP-39 entropy bytes during the export window.
 pub struct MnemonicExportGuard {

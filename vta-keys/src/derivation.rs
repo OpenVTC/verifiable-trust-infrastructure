@@ -1,9 +1,66 @@
+use crate::PreRotationKeyData;
+use crate::paths::allocate_path;
 use crate::seed_store::SeedStore;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use rand::Rng;
 use tracing::{debug, info};
 use vti_common::error::{AppError, key_derivation_error};
+use vti_common::store::KeyspaceHandle;
+
+/// Derive `count` BIP-32 pre-rotation keys under `base`, returning their
+/// public-key-multibase hashes (for `next_key_hashes`) and the full
+/// [`PreRotationKeyData`] records. Each key allocates a fresh derivation path
+/// from the keys keyspace, so a peek/commit sees monotonically increasing
+/// paths. Used by the did:webvh create/update ops and by TEE first-boot DID
+/// autogen.
+pub async fn derive_pre_rotation_keys(
+    seed: &[u8],
+    base: &str,
+    label: &str,
+    keys_ks: &KeyspaceHandle,
+    count: u32,
+) -> Result<(Vec<String>, Vec<PreRotationKeyData>), AppError> {
+    if count == 0 {
+        return Ok((vec![], vec![]));
+    }
+
+    let root = ExtendedSigningKey::from_seed(seed)
+        .map_err(|e| AppError::Internal(format!("failed to create BIP-32 root key: {e}")))?;
+
+    let mut hashes = Vec::with_capacity(count as usize);
+    let mut key_data = Vec::with_capacity(count as usize);
+
+    for i in 0..count {
+        let path = allocate_path(keys_ks, base)
+            .await
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let derivation_path: DerivationPath = path
+            .parse()
+            .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
+        let derived_key = root
+            .derive(&derivation_path)
+            .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
+
+        let secret = Secret::generate_ed25519(None, Some(derived_key.signing_key.as_bytes()));
+        let pub_mb = secret
+            .get_public_keymultibase()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+        let hash = secret
+            .get_public_keymultibase_hash()
+            .map_err(|e| AppError::Internal(format!("{e}")))?;
+
+        key_data.push(PreRotationKeyData {
+            path,
+            public_key: pub_mb,
+            label: format!("{label} pre-rotation key {i}"),
+        });
+
+        hashes.push(hash);
+    }
+
+    Ok((hashes, key_data))
+}
 
 /// Wrapper holding a derived P-256 secret key.
 pub struct P256Secret {

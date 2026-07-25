@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### vta-tee 0.1.0 / vta-policy 0.1.0 / vta-keys 0.1.1 / vti-common 0.11.21 / vta-service 0.12.34 — extract the TEE and policy subsystems
+
+Ninth decomposition step — two subsystem extractions in one PR, each unblocked
+by a small enabling move.
+
+* **New `vta-tee`** — the TEE bootstrap subsystem (~4k lines): attestation
+  providers (Nitro / SEV-SNP / simulated), KMS attest/decrypt + storage-key
+  derivation + CMS unwrap, the DynamoDB anti-rollback anchor MAC, Mode-B admin
+  bootstrap + carve-out, first-boot DID autogen, and the mnemonic-export guard.
+  Re-exported (behind the `tee` feature) as `crate::tee`, so `vta_service::tee::…`
+  keeps resolving for `vta-enclave` and every call site. Its 32 tests run in the
+  new crate. The KMS/AWS dep stack (`aws-sdk-kms`, `aws-sdk-dynamodb`,
+  `aws-config`, `aes`, `cbc`) moved out of `vta-service` with it.
+
+  *Enabling move:* `derive_pre_rotation_keys` (a pure BIP-32 key operation) moved
+  from `operations::did_webvh` to **`vta-keys` 0.1.1** — it was `tee`'s only
+  coupling into `vta-service`, and it removed a `did_webvh` coupling too.
+
+* **New `vta-policy`** — the policy subsystem (~2.3k lines): the regorus (Rego)
+  engine, the default policy bundle, the DTTE consent model, decision
+  evaluators, and policy storage. Re-exported as `crate::policy`. Its 37 tests
+  run in the new crate; the `policies/default.rego` bundle moved with it.
+
+  *Enabling move:* the `Guards` / `WebvhPathCounter` executor-precondition types
+  moved from `vta-service`'s trust-task planner to **`vti-common` 0.11.21**
+  (`vti_common::guards`) — the planner's only shared type with the consent model,
+  re-exported from `planner` so its own references are unchanged.
+
+* No behaviour change: 687 `vta-service` lib tests + 32 `vta-tee` + 37
+  `vta-policy` tests pass; all feature combos, the enclave build, and the
+  workspace build are green. `vta-service` drops ~6.3k lines (→ ~87k).
+
 ### vta-backup 0.1.0 / vta-keyspaces 0.1.1 / vta-support 0.1.1 / vta-service 0.12.33 — extract the backup subsystem (with dependency inversion) + did-template storage
 
 Eighth decomposition step, and the first to use **dependency inversion** rather

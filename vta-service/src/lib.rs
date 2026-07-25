@@ -60,7 +60,10 @@ pub mod messaging;
 #[cfg(feature = "rest")]
 pub mod metrics;
 pub mod operations;
-pub mod policy;
+/// Policy subsystem (regorus engine, default policy bundle, consent model,
+/// decision evaluators), extracted to the `vta-policy` crate and re-exported so
+/// every `crate::policy::…` path is unchanged.
+pub use vta_policy as policy;
 #[cfg(feature = "rest")]
 pub mod routes;
 pub use vta_support::seal;
@@ -68,8 +71,12 @@ pub use vta_support::sealed_nonce_store;
 pub mod server;
 pub mod status;
 pub mod store;
+/// TEE bootstrap subsystem (attestation providers, KMS attest/decrypt, the
+/// anchor MAC, first-boot DID autogen), extracted to the `vta-tee` crate and
+/// re-exported as `crate::tee` so `vta_service::tee::…` keeps resolving for
+/// `vta-enclave` and every existing call site.
 #[cfg(feature = "tee")]
-pub mod tee;
+pub use vta_tee as tee;
 /// Transport-neutral Trust-Task dispatch subsystem. Both the REST route
 /// (`routes::trust_tasks`-mounted `dispatch_trust_task`) and the DIDComm
 /// `handle_trust_task` handler dispatch through `dispatch_trust_task_core`
