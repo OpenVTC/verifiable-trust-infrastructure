@@ -8,8 +8,46 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Which seed-store backend to build, stated explicitly.
+///
+/// Mirrors `vtc_service::config::SecretBackend` and the wizard's
+/// `SecretsBackendInput` discriminator, so operators meet one vocabulary
+/// across the setup TOML, the generated `config.toml`, and the VTC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretBackend {
+    /// OS keyring (libsecret / Keychain / Credential Manager).
+    Keyring,
+    /// Hex-encoded seed inlined in `[secrets] seed` (config-seed feature).
+    ConfigSeed,
+    /// AWS Secrets Manager.
+    Aws,
+    /// GCP Secret Manager.
+    Gcp,
+    /// Azure Key Vault.
+    Azure,
+    /// HashiCorp Vault (KV v2).
+    Vault,
+    /// Kubernetes `Secret`.
+    Kubernetes,
+    /// Plaintext file under the data dir — NOT secure, dev/test only.
+    Plaintext,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SecretsConfig {
+    /// Explicit backend selector. When set it wins outright:
+    /// [`create_seed_store`](crate::create_seed_store) builds exactly this
+    /// backend and validates its required fields, rather than inferring the
+    /// backend from whichever selector field happens to be populated.
+    ///
+    /// Omit to keep the legacy implicit priority chain. Setting it is the
+    /// only way to reach a backend that sits *below* a compiled-in one in
+    /// that chain — `plaintext` in particular is unreachable implicitly on
+    /// any build with `keyring` compiled in (the default), because the
+    /// keyring arm matches unconditionally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<SecretBackend>,
     /// Hex-encoded BIP-32 seed (config-seed feature)
     pub seed: Option<String>,
     /// AWS Secrets Manager secret name (aws-secrets feature)
@@ -131,6 +169,7 @@ fn default_vault_approle_mount() -> String {
 impl Default for SecretsConfig {
     fn default() -> Self {
         Self {
+            backend: None,
             seed: None,
             aws_secret_name: None,
             aws_region: None,

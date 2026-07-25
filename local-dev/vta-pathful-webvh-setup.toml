@@ -16,7 +16,8 @@
 config_path     = "/tmp/vta-dev-path/config.toml"
 data_dir        = "/tmp/vta-dev-path/data"
 public_url      = "http://localhost:3000"
-data_dir_exists = "delete"   # re-run friendly; wipes and re-inits on each setup call
+data_dir_exists  = "delete"  # re-run friendly; wipes the data dir contents on each setup call
+overwrite_config = true      # …and replaces the previous run's config.toml
 
 [server]
 host = "0.0.0.0"

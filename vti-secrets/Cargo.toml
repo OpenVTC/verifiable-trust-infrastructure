@@ -2,7 +2,7 @@
 name = "vti-secrets"
 description = "Pluggable secret-store backends + integration onboarding flow for Verifiable Trust Infrastructure"
 readme = "README.md"
-version = "0.1.6"
+version = "0.1.7"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -89,6 +89,7 @@ keyring-core = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

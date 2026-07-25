@@ -9,7 +9,7 @@ pub use vti_common::config::{
 // The `[secrets]` config shape + its seed-store backends live in the shared
 // `vti-secrets` crate (issue #501). Re-exported here so `AppConfig.secrets`
 // and every `crate::config::SecretsConfig` reference are unchanged.
-pub use vti_secrets::SecretsConfig;
+pub use vti_secrets::{SecretBackend, SecretsConfig};
 
 /// Policy Decision Point configuration.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

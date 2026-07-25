@@ -147,11 +147,12 @@ summary.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `config_path` | yes | — | Where to write `config.toml`. Refuses to overwrite an existing file. |
+| `config_path` | yes | — | Where to write `config.toml`. Refuses to overwrite an existing file unless `overwrite_config` is set. |
+| `overwrite_config` | no | `false` | Permit overwriting an existing `config_path`. The file is written only after everything else succeeds, so a failed run never destroys it. |
 | `data_dir` | yes | — | On-disk fjall store location. |
 | `vta_name` | no | `null` | Human-readable name. |
 | `public_url` | no | `null` | Used as the `VTARest` service endpoint when minting a DID. |
-| `data_dir_exists` | no | `"error"` | What to do if `data_dir` already exists. `"delete"` for CI re-runs. |
+| `data_dir_exists` | no | `"error"` | What to do if `data_dir` already holds a **store**. `"delete"` wipes the directory's contents (not the directory — so it works on a mount point) for CI re-runs; `"reuse"` initializes into it as-is. An existing-but-empty `data_dir` is never a conflict: see [Mounted data directories](#mounted-data-directories). |
 | `admin_did` | no | `null` | If set, seeds a super-admin and seals the VTA atomically. Must start with `did:`. See [`seal-and-unseal.md`](seal-and-unseal.md) for the consequences of sealing at setup time and the recommended seal-last alternative. |
 | `admin_label` | no | `null` | Label on the seeded admin's ACL row. |
 | `staff` | no | `[]` | Array of `[[staff]]` entries — each creates a context, applies its `context_policy`, and seeds a context-scoped ACL row (the bounded *user*). See [Enterprise: owner + bounded staff](#enterprise-owner--bounded-staff). |
@@ -259,10 +260,11 @@ the VTA's persistent state.
 For pipelines that re-run setup against a clean state each time:
 
 ```toml
-config_path     = "/srv/vta/config.toml"
-data_dir        = "/srv/vta/data"
-data_dir_exists = "delete"     # wipe on re-run
-admin_did       = "did:key:..."
+config_path      = "/srv/vta/config.toml"
+overwrite_config = true        # replace the previous run's config
+data_dir         = "/srv/vta/data"
+data_dir_exists  = "delete"    # wipe on re-run
+admin_did        = "did:key:..."
 
 [secrets]
 backend = "aws"
@@ -272,13 +274,32 @@ secret_name = "vta/ci/seed"
 Then in your pipeline:
 
 ```bash
-rm -f /srv/vta/config.toml             # config_path overwrite is also blocked
 vta setup --from setup.toml
 vta --config /srv/vta/config.toml &    # ready to serve
 ```
 
 The seed is generated fresh on each run, so the AWS secret value
 changes each time — fine for CI, not what you want in production.
+
+## Mounted data directories
+
+`data_dir` is routinely a Docker volume, a bind mount, or a Kubernetes
+PVC — and the container runtime creates that path *before* the container
+starts. Setup accounts for this:
+
+- **The existence check is store presence, not directory presence.** An
+  empty `/app/vta-data` is a normal first-boot state and is initialized
+  into silently. `data_dir_exists` is consulted only when the directory
+  actually holds a fjall store.
+- **`"delete"` clears the directory's contents, not the directory.**
+  `rmdir` on a mount point fails with `EBUSY` on Linux (and a sharing
+  violation on Windows) however empty it is, so removing the mount point
+  itself is never attempted.
+- **Setup refuses to run over an initialized VTA.** If the store already
+  carries master seed generation 0, setup stops rather than minting a
+  second master seed on top of the first, which would orphan every key
+  derived from the original. Choose `"delete"` if you genuinely want to
+  start over.
 
 ## Validation and errors
 

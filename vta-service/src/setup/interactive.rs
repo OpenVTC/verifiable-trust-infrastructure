@@ -790,21 +790,25 @@ async fn gather_inputs(
         .unwrap_or_else(|| {
             std::env::var("VTA_CONFIG_PATH").unwrap_or_else(|_| "config.toml".into())
         });
-    let config_path =
-        PathBuf::from(p.text("Config file path", Some(&default_path), false, None)?);
+    let config_path = PathBuf::from(
+        p.text("Config file path", Some(&default_path), false, None)?
+            .trim(),
+    );
+    // Record the operator's intent; do *not* delete the file here. Gathering
+    // is a further dozen prompts, any of which can cancel — deleting now
+    // would leave an operator who backs out at the data-directory question
+    // with no config and a VTA that no longer starts. The engine overwrites
+    // it at the end, once everything else has succeeded.
+    let mut overwrite_config = false;
     if config_path.exists() {
-        let overwrite = p.confirm(
+        if !p.confirm(
             &format!("{} already exists. Overwrite?", config_path.display()),
             false,
-        )?;
-        if !overwrite {
+        )? {
             eprintln!("Setup cancelled.");
             return Ok(None);
         }
-        // The engine refuses to overwrite; the operator just confirmed they
-        // want to, so clear the way.
-        std::fs::remove_file(&config_path)
-            .map_err(|e| format!("could not remove {}: {e}", config_path.display()))?;
+        overwrite_config = true;
     }
 
     // 2. VTA name.
@@ -918,22 +922,40 @@ async fn gather_inputs(
         .expect("validated above");
     let audit = AuditConfig { retention_days };
 
-    // 8. Data directory + existing-dir policy.
-    let data_dir = PathBuf::from(p.text("Data directory", Some("data/vta"), false, None)?);
+    // 8. Data directory + existing-store policy. Trimmed because operators
+    //    paste paths, and a stray trailing space silently becomes part of
+    //    the path on Unix (and a different path again on Windows).
+    let data_dir = PathBuf::from(
+        p.text("Data directory", Some("data/vta"), false, None)?
+            .trim(),
+    );
     let mut data_dir_exists = ExistingDataDirPolicy::default();
-    if data_dir.exists() {
-        let delete = p.confirm(
-            &format!(
-                "Data directory \"{}\" already exists. Delete and start fresh?",
-                data_dir.display()
-            ),
-            false,
+    // Ask only when the directory holds an actual store. An empty
+    // directory — the normal state of a freshly-mounted Docker volume or a
+    // path the operator just created — is initialized into silently.
+    if vti_common::store::local_store_exists(&data_dir) {
+        eprintln!();
+        eprintln!(
+            "  Data directory \"{}\" already contains a VTA store.",
+            data_dir.display()
+        );
+        eprintln!();
+        let choice = p.select(
+            "How should setup proceed?",
+            &[
+                "Cancel setup (leave the existing data untouched)",
+                "Keep the existing contents and initialize into it",
+                "Delete everything in it and start fresh",
+            ],
+            0,
         )?;
-        if delete {
-            data_dir_exists = ExistingDataDirPolicy::Delete;
-        } else {
-            eprintln!("Setup cancelled.");
-            return Ok(None);
+        match choice {
+            1 => data_dir_exists = ExistingDataDirPolicy::Reuse,
+            2 => data_dir_exists = ExistingDataDirPolicy::Delete,
+            _ => {
+                eprintln!("Setup cancelled.");
+                return Ok(None);
+            }
         }
     }
 
@@ -981,6 +1003,7 @@ async fn gather_inputs(
 
     Ok(Some(WizardInputs {
         config_path,
+        overwrite_config,
         vta_name,
         public_url,
         data_dir,
@@ -1242,6 +1265,134 @@ mod tests {
             "interactive-gathered inputs must equal the equivalent --from TOML\n\
              interactive = {a:#}\n--from = {b:#}"
         );
+    }
+
+    /// A `data_dir` that exists but holds no store is *not* a conflict, so
+    /// the wizard must not ask about it at all. This is the reported
+    /// failure: a Docker volume / K8s PVC / hand-created directory is
+    /// always there before setup runs, and the old `exists()` gate offered
+    /// only "delete everything" or "cancel".
+    ///
+    /// The scripted prompter panics on an unexpected prompt kind or a
+    /// short script, so a spurious question fails the test loudly.
+    #[tokio::test]
+    async fn a_pre_created_empty_data_dir_is_never_asked_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("vta-data");
+        std::fs::create_dir_all(&data_dir).expect("pre-create the mount point");
+
+        let answers = vec![
+            text(dir.path().join("config.toml").to_str().unwrap()), // doesn't exist
+            text(""),                                               // vta name (skip)
+            Answer::Indices(vec![0]),                               // services: REST only
+            text("0.0.0.0"),                                        // host
+            text("8100"),                                           // port
+            text("https://t.example.com"),                          // REST URL
+            text("info"),                                           // log level
+            Answer::Index(0),                                       // log format
+            #[cfg(feature = "tee")]
+            text(""),            // TEE-only: remote DID resolver URL (skip)
+            text("28"),                                             // audit retention
+            text(data_dir.to_str().unwrap()),                       // data dir — exists, but empty
+            Answer::Bool(false),                                    // advanced server opts? no
+            Answer::Label("OS keyring"), // label, not index: menu grows with features
+            text("vta"),                 // keyring service
+            Answer::Index(1),            // VTA DID = did:key
+        ];
+        let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
+            .await
+            .expect("gather should succeed")
+            .expect("an empty data directory must not cancel setup");
+
+        assert_eq!(
+            gathered.data_dir_exists,
+            ExistingDataDirPolicy::Error,
+            "with nothing to lose the policy stays at its fail-closed default"
+        );
+        assert!(!gathered.overwrite_config);
+    }
+
+    /// Backing out at the data-directory question must leave the operator's
+    /// existing `config.toml` exactly where it was. The wizard used to
+    /// delete it up-front, so an operator who answered "no" here was left
+    /// with no config and a VTA that no longer started.
+    #[tokio::test]
+    async fn cancelling_at_the_data_dir_prompt_leaves_the_config_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        const ORIGINAL: &str = "vta_did = \"did:key:zExistingInstall\"\n";
+        std::fs::write(&config_path, ORIGINAL).unwrap();
+
+        // A directory that looks like a store: fjall's version marker is
+        // exactly what `local_store_exists` (and fjall itself) keys on.
+        let data_dir = dir.path().join("vta-data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("version"), b"fjall").unwrap();
+
+        let answers = vec![
+            text(config_path.to_str().unwrap()), // config path — exists
+            Answer::Bool(true),                  // overwrite? yes
+            text(""),                            // vta name (skip)
+            Answer::Indices(vec![1]),            // services: DIDComm only (no URL prompts)
+            text("info"),                        // log level
+            Answer::Index(0),                    // log format
+            #[cfg(feature = "tee")]
+            text(""), // TEE-only: remote DID resolver URL (skip)
+            text("28"),                          // audit retention
+            text(data_dir.to_str().unwrap()),    // data dir — holds a store
+            Answer::Index(0),                    // → cancel
+        ];
+        let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
+            .await
+            .expect("cancelling is not an error");
+
+        assert!(gathered.is_none(), "cancelling must abort setup");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            ORIGINAL,
+            "cancelling must not have touched the operator's config"
+        );
+        assert!(
+            data_dir.join("version").is_file(),
+            "cancelling must not have touched the operator's data"
+        );
+    }
+
+    /// The other two answers to the same question map to the policies that
+    /// let setup proceed.
+    #[tokio::test]
+    async fn existing_store_offers_reuse_and_delete() {
+        for (choice, expected) in [
+            (1, ExistingDataDirPolicy::Reuse),
+            (2, ExistingDataDirPolicy::Delete),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let data_dir = dir.path().join("vta-data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            std::fs::write(data_dir.join("version"), b"fjall").unwrap();
+
+            let answers = vec![
+                text(dir.path().join("config.toml").to_str().unwrap()),
+                text(""),                 // vta name (skip)
+                Answer::Indices(vec![1]), // services: DIDComm only
+                text("info"),             // log level
+                Answer::Index(0),         // log format
+                #[cfg(feature = "tee")]
+                text(""), // TEE-only: remote DID resolver URL (skip)
+                text("28"),               // audit retention
+                text(data_dir.to_str().unwrap()), // data dir — holds a store
+                Answer::Index(choice),    // reuse / delete
+                Answer::Label("OS keyring"), // label, not index: menu grows with features
+                text("vta"),              // keyring service
+                Answer::Index(2),         // messaging = skip
+                Answer::Index(1),         // VTA DID = did:key
+            ];
+            let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
+                .await
+                .expect("gather should succeed")
+                .expect("choosing reuse/delete must not cancel");
+            assert_eq!(gathered.data_dir_exists, expected, "choice {choice}");
+        }
     }
 
     /// The advanced webvh "use existing keys" mode maps to the right
