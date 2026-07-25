@@ -48,6 +48,22 @@ pub(super) enum Transport {
         rest_client: Option<Client>,
         rest_url: Option<String>,
     },
+    /// TSP — the workspace's highest-preference transport.
+    ///
+    /// Carries the **Trust-Task** surface only ([`VtaClient::rpc_tt`]). The
+    /// VTA's TSP inbound dispatcher hands each unpacked payload straight to
+    /// `dispatch_trust_task_core`, so a trust task routes over TSP unchanged —
+    /// but the older DIDComm *protocol-message* surface ([`VtaClient::rpc`],
+    /// e.g. `key-management/1.0/sign-request`) has no TSP dispatcher behind it
+    /// and reports `UnsupportedTransport` naming DIDComm.
+    #[cfg(feature = "tsp")]
+    Tsp {
+        session: std::sync::Arc<crate::session::TspSession>,
+        vta_did: String,
+        mediator_did: String,
+        rest_client: Option<Client>,
+        rest_url: Option<String>,
+    },
 }
 
 /// HTTP/DIDComm client for the VTA service API.
@@ -133,6 +149,22 @@ pub(super) fn encode_path_segment(s: &str) -> String {
         .replace('#', "%23")
         .replace('?', "%3F")
         .replace('/', "%2F")
+}
+
+/// The error for a legacy DIDComm *protocol message* attempted over TSP.
+///
+/// TSP carries Trust Tasks; the VTA's TSP inbound dispatcher feeds every
+/// unpacked payload to `dispatch_trust_task_core` and has no handler for the
+/// older `key-management/1.0/*`-style protocol messages. Refusing here — rather
+/// than sending a frame the VTA would answer with an error, or silently doing
+/// nothing — names the transport that does serve the operation.
+#[cfg(feature = "tsp")]
+fn unsupported_over_tsp(msg_type: &str) -> VtaError {
+    VtaError::UnsupportedTransport(format!(
+        "'{msg_type}' is a DIDComm protocol message, which TSP does not carry \
+         (TSP carries Trust Tasks). Reach this operation over DIDComm:\n  \
+         <cli> --transport didcomm <command>"
+    ))
 }
 
 // ── REST helpers ────────────────────────────────────────────────────
@@ -265,6 +297,9 @@ impl VtaClient {
             Transport::Rest { auth, .. } => auth.lock().await.expires_at,
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => None,
+            // No token to expire: TSP authenticates by proven sender VID.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => None,
         }
     }
 
@@ -367,6 +402,70 @@ impl VtaClient {
         })
     }
 
+    /// Connect via **TSP** through a mediator — the transport-agnostic
+    /// counterpart to [`connect_didcomm`](Self::connect_didcomm), so consumers
+    /// switch transport by construction rather than by rewriting call sites.
+    ///
+    /// `mediator_did` is the VTA's `#tsp` (`TSPTransport`) service endpoint —
+    /// the mediator the VTA is a local account on. Get it from
+    /// [`resolve_vta_endpoint`](crate::session::resolve_vta_endpoint), which
+    /// reads it from that entry rather than assuming it matches the DIDComm
+    /// mediator.
+    ///
+    /// `rest_url` is an optional fallback for the REST-only operations
+    /// (`health()`, the descriptor uploads) exactly as on the DIDComm client.
+    ///
+    /// # What routes over TSP
+    ///
+    /// The **Trust-Task surface** — the VTA's TSP inbound dispatcher feeds each
+    /// unpacked payload to the same `dispatch_trust_task_core` spine REST and
+    /// DIDComm use, so those operations are byte-identical across transports.
+    /// The older DIDComm protocol-message surface (`key-management/1.0/*` and
+    /// friends) has no TSP dispatcher behind it and reports
+    /// [`VtaError::UnsupportedTransport`] naming DIDComm — deliberately, rather
+    /// than sending a frame the VTA would answer with an error.
+    ///
+    /// # Authentication
+    ///
+    /// None to perform. TSP `unpack` yields a cryptographically **proven**
+    /// sender VID, which the VTA resolves straight to its ACL grant — the same
+    /// intrinsic-sender model as DIDComm authcrypt. There is no challenge, no
+    /// bearer token, and no holder proof inside the document; the REST token
+    /// dance has no TSP analogue. [`set_token`](Self::set_token) is a no-op
+    /// here for that reason.
+    ///
+    /// # You MUST call [`shutdown`](Self::shutdown) when done
+    ///
+    /// The same live-session leak contract as
+    /// [`connect_didcomm`](Self::connect_didcomm): the mediator permits one
+    /// websocket per DID, so a leaked session makes the next connect for this
+    /// DID fight the old one.
+    #[cfg(feature = "tsp")]
+    pub async fn connect_tsp(
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let session =
+            crate::session::TspSession::connect(client_did, private_key_multibase, mediator_did)
+                .await
+                .map_err(|e| VtaError::TspTransport(e.to_string()))?;
+
+        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+
+        Ok(Self {
+            transport: Transport::Tsp {
+                session: std::sync::Arc::new(session),
+                vta_did: vta_did.to_string(),
+                mediator_did: mediator_did.to_string(),
+                rest_client,
+                rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
+            },
+        })
+    }
+
     /// Set the Bearer token for authenticated requests (REST only, no-op for DIDComm).
     ///
     /// Can be called from sync or async contexts. For async contexts, use
@@ -381,6 +480,9 @@ impl VtaClient {
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {}
+            // Intrinsic-sender auth — there is no bearer token on this path.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => {}
         }
     }
 
@@ -392,6 +494,8 @@ impl VtaClient {
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {}
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => {}
         }
     }
 
@@ -411,6 +515,8 @@ impl VtaClient {
             Transport::Rest { base_url, .. } => Some(base_url),
             #[cfg(feature = "session")]
             Transport::DIDComm { rest_url, .. } => rest_url.as_deref(),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { rest_url, .. } => rest_url.as_deref(),
         }
     }
 
@@ -424,6 +530,8 @@ impl VtaClient {
             Transport::Rest { .. } => None,
             #[cfg(feature = "session")]
             Transport::DIDComm { session, .. } => Some(&session.vta_did),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { vta_did, .. } => Some(vta_did),
         }
     }
 
@@ -440,6 +548,10 @@ impl VtaClient {
             Transport::DIDComm {
                 session, rest_url, ..
             } => rest_url.as_deref().unwrap_or(&session.vta_did),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp {
+                vta_did, rest_url, ..
+            } => rest_url.as_deref().unwrap_or(vta_did),
         }
     }
 
@@ -454,6 +566,12 @@ impl VtaClient {
     pub async fn shutdown(&self) {
         #[cfg(feature = "session")]
         if let Transport::DIDComm { session, .. } = &self.transport {
+            session.shutdown().await;
+        }
+        // Same one-websocket-per-DID contract as DIDComm: a leaked TSP session
+        // makes the next connect for this DID fight the old one.
+        #[cfg(feature = "tsp")]
+        if let Transport::Tsp { session, .. } = &self.transport {
             session.shutdown().await;
         }
     }
@@ -706,6 +824,8 @@ impl VtaClient {
                     .send_and_wait(msg_type, body, result_type, timeout)
                     .await
             }
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
         }
     }
 
@@ -736,6 +856,8 @@ impl VtaClient {
                     .await?;
                 Ok(())
             }
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
         }
     }
 
@@ -771,6 +893,15 @@ impl VtaClient {
                 serde_json::from_value(payload)
                     .map_err(|e| VtaError::Protocol(format!("trust-task response decode: {e}")))
             }
+            // Same trust-task path as DIDComm — `dispatch_trust_task` picks the
+            // transport, so this surface needed no per-operation work to reach
+            // TSP.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => {
+                let payload = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                serde_json::from_value(payload)
+                    .map_err(|e| VtaError::Protocol(format!("trust-task response decode: {e}")))
+            }
         }
     }
 
@@ -796,6 +927,11 @@ impl VtaClient {
             }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {
+                let _ = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
+                Ok(())
+            }
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => {
                 let _ = self.dispatch_trust_task(tt_uri, payload, timeout).await?;
                 Ok(())
             }
@@ -848,6 +984,42 @@ impl VtaClient {
                     return Err(VtaError::from_http(status, body));
                 }
                 let response_doc: serde_json::Value = resp.json().await?;
+                Self::extract_trust_task_payload(response_doc)
+            }
+            // The whole typed VTA surface over TSP. The VTA's inbound
+            // dispatcher hands the unpacked payload straight to
+            // `dispatch_trust_task_core` — the same spine REST and DIDComm use
+            // — so the request and reply documents are byte-identical across
+            // all three transports. No envelope wrapper: TSP carries the
+            // Trust-Task bytes directly.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp {
+                session,
+                vta_did,
+                mediator_did,
+                ..
+            } => {
+                // `issuer`/`recipient` are set here and not in the shared `doc`
+                // above because only a mediator transport knows both DIDs; the
+                // REST leg posts to an already-addressed endpoint.
+                let mut doc = doc;
+                doc["issuer"] = serde_json::Value::String(session.client_did().to_string());
+                doc["recipient"] = serde_json::Value::String(vta_did.clone());
+                let body = serde_json::to_vec(&doc)
+                    .map_err(|e| VtaError::Protocol(format!("trust-task encode: {e}")))?;
+
+                let reply = session
+                    .request(
+                        vta_did,
+                        mediator_did,
+                        &body,
+                        std::time::Duration::from_secs(timeout),
+                    )
+                    .await
+                    .map_err(|e| VtaError::TspTransport(e.to_string()))?;
+
+                let response_doc: serde_json::Value = serde_json::from_str(&reply)
+                    .map_err(|e| VtaError::Protocol(format!("trust-task reply decode: {e}")))?;
                 Self::extract_trust_task_payload(response_doc)
             }
             #[cfg(feature = "session")]
@@ -926,6 +1098,16 @@ impl VtaClient {
                  (REST clients hold no key material to authcrypt with)"
                     .into(),
             )),
+            // A TSP client *has* key material, but the seal is specifically a
+            // `didcomm-authcrypt` JWE — a wire format tied to the DIDComm
+            // stack, not to holding keys. Producing one here would need the
+            // DIDComm packer this transport deliberately does not carry.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "sealing a vault secret produces a didcomm-authcrypt JWE, which \
+                 requires the DIDComm transport:\n  <cli> --transport didcomm <command>"
+                    .into(),
+            )),
         }
     }
 
@@ -939,6 +1121,12 @@ impl VtaClient {
             Transport::DIDComm { session, .. } => session.open_from_vta(jwe).await,
             Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
                 "opening a sealed vault secret requires the DIDComm transport".into(),
+            )),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "opening a sealed vault secret unwraps a didcomm-authcrypt JWE, which \
+                 requires the DIDComm transport:\n  <cli> --transport didcomm <command>"
+                    .into(),
             )),
         }
     }
@@ -955,6 +1143,14 @@ impl VtaClient {
         match &self.transport {
             #[cfg(feature = "session")]
             Transport::DIDComm { session, .. } => session.receive_next(timeout_secs).await,
+            // TSP has a real receive path: `TspSession::receive_next` hands
+            // back frames that matched no in-flight `request` — i.e. exactly
+            // the unsolicited pushes this method is for.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { session, .. } => session
+                .receive_next(timeout_secs)
+                .await
+                .map_err(|e| VtaError::TspTransport(e.to_string())),
             Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
                 "receiving inbound messages requires the DIDComm transport".into(),
             )),
@@ -991,6 +1187,14 @@ impl VtaClient {
             Transport::Rest { .. } => Err(VtaError::UnsupportedTransport(
                 "one-way DIDComm send requires the DIDComm transport \
                  (REST clients hold no key material to authcrypt with)"
+                    .into(),
+            )),
+            // Named for the DIDComm wire format it emits. TSP's own
+            // fire-and-forget send is `TspSession::send_document`.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "one-way DIDComm send requires the DIDComm transport:\n  \
+                 <cli> --transport didcomm <command>"
                     .into(),
             )),
         }
@@ -1038,6 +1242,20 @@ impl VtaClient {
                     "health check not available via DIDComm (no REST URL)".into(),
                 )),
             },
+            #[cfg(feature = "tsp")]
+            Transport::Tsp {
+                rest_client,
+                rest_url,
+                ..
+            } => match (rest_client, rest_url) {
+                (Some(client), Some(url)) => {
+                    let resp = client.get(format!("{url}/health")).send().await?;
+                    Self::handle_response(resp).await
+                }
+                _ => Err(VtaError::UnsupportedTransport(
+                    "health check not available via TSP (no REST URL)".into(),
+                )),
+            },
         }
     }
 
@@ -1062,6 +1280,12 @@ impl VtaClient {
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
                 "step-up policy read is REST-only in the SDK".into(),
+            )),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "step-up policy read is REST-only in the SDK; over TSP send the \
+                 `auth/step-up/policy/0.2` trust task instead"
+                    .into(),
             )),
         }
     }
@@ -1092,6 +1316,12 @@ impl VtaClient {
             Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
                 "step-up policy set is REST-only in the SDK; send the \
                  auth/step-up/policy/0.2 trust-task over DIDComm instead"
+                    .into(),
+            )),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "step-up policy set is REST-only in the SDK; send the \
+                 auth/step-up/policy/0.2 trust-task over TSP instead"
                     .into(),
             )),
         }
@@ -1140,6 +1370,10 @@ impl VtaClient {
                 // DIDComm sessions are always authenticated
                 Ok(true)
             }
+            // Same reasoning: the sender VID is proven by the TSP unpack, so
+            // there is no token that could be invalid or expired.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Ok(true),
         }
     }
 }

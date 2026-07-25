@@ -2,7 +2,7 @@
 name = "vta-keys"
 description = "VTA key management — master-seed storage, BIP-32 key derivation, key wrapping, and the seed-store backend selection"
 readme = "README.md"
-version = "0.1.1"
+version = "0.1.2"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -29,7 +29,7 @@ vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vta-config = { path = "../vta-config", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.11" }
 vti-secrets = { path = "../vti-secrets", version = "0.1" }
-vta-sdk = { path = "../vta-sdk", version = "0.19", features = ["sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.20", features = ["sealed-transfer"] }
 affinidi-tdk = { workspace = true }
 affinidi-crypto = { workspace = true }
 ed25519-dalek = { workspace = true }

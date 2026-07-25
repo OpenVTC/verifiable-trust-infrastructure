@@ -6,7 +6,7 @@ use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use serde::{Deserialize, Serialize};
 use serde_json;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::credentials::CredentialBundle;
 use crate::protocols::auth::{AuthenticateResponse, ChallengeRequest, ChallengeResponse};
@@ -560,7 +560,17 @@ impl SessionStore {
                 mediator_did,
                 rest_url,
             } => (vta_did, mediator_did, rest_url),
-            VtaEndpoint::Rest { .. } => {
+            // A TSP-advertising VTA may *also* advertise DIDComm. This function
+            // is explicitly the DIDComm path (its caller wants a
+            // `DIDCommSession`), so take the DIDComm mediator out of the TSP
+            // result rather than refusing a VTA that plainly offers one.
+            VtaEndpoint::Tsp {
+                vta_did,
+                didcomm_mediator_did: Some(mediator_did),
+                rest_url,
+                ..
+            } => (vta_did, mediator_did, rest_url),
+            VtaEndpoint::Tsp { .. } | VtaEndpoint::Rest { .. } => {
                 return Err(format!(
                     "VTA '{session_vta_did}' does not advertise a DIDComm service endpoint. \
                      Use SessionStore::ensure_authenticated for REST, or \
@@ -632,13 +642,25 @@ impl SessionStore {
 
     /// Like [`connect`](Self::connect) but with an explicit transport choice.
     ///
-    /// [`TransportChoice::Auto`] keeps the priority order documented on
-    /// [`connect`]. Its DIDComm connects are bounded (see
-    /// [`DIDCOMM_CONNECT_TIMEOUT_DEFAULT`]): an unreachable mediator errors out
-    /// pointing at `--transport rest` rather than hanging.
+    /// [`TransportChoice::Auto`] implements the workspace preference order —
+    /// **TSP > DIDComm > REST** — and falls back *loudly*; see the enum's docs
+    /// for why that policy and not a hard failure. Every mediator connect is
+    /// bounded ([`TSP_CONNECT_TIMEOUT_DEFAULT`],
+    /// [`DIDCOMM_CONNECT_TIMEOUT_DEFAULT`]) so an unreachable mediator errors
+    /// out naming a recovery flag rather than hanging — without that ceiling,
+    /// `Auto` preferring TSP would convert today's working DIDComm story into
+    /// an indefinite hang with no output.
+    ///
+    /// [`TransportChoice::Tsp`] forces TSP: errors if the VTA advertises no
+    /// `#tsp` service (naming what it *does* advertise), and errors rather than
+    /// falling back if the connect times out.
+    ///
+    /// [`TransportChoice::Didcomm`] forces DIDComm, ignoring an advertised
+    /// `#tsp` — the recovery path when TSP is broken but the DIDComm mediator
+    /// is healthy.
     ///
     /// [`TransportChoice::Rest`] forces REST — ignoring the mediator hint and
-    /// any advertised DIDComm — using `url_override`, else the `#vta-rest`
+    /// any advertised TSP/DIDComm — using `url_override`, else the `#vta-rest`
     /// service on the VTA's DID document. Errors if the VTA advertises neither
     /// and no `url_override` was given; unlike the auto path it will *not* fall
     /// back to a URL synthesized from the DID's domain, which for a hosted
@@ -680,8 +702,13 @@ impl SessionStore {
             return Ok(client);
         }
 
-        // Priority 1: Explicit mediator DID from config → DIDComm directly
-        if let Some(mediator_did) = mediator_did_hint {
+        // Priority 1: Explicit mediator DID from config → DIDComm directly.
+        // Skipped under `--transport tsp`: the hint names a *DIDComm* mediator,
+        // so honouring it would silently serve DIDComm to an operator who
+        // explicitly asked for TSP.
+        if let Some(mediator_did) = mediator_did_hint
+            && transport != TransportChoice::Tsp
+        {
             debug!(mediator_did, "connecting via DIDComm (config mediator_did)");
             let client = connect_didcomm_bounded(
                 &session.client_did,
@@ -696,11 +723,95 @@ impl SessionStore {
 
         // Priority 2: Resolve VTA DID for transport selection
         match resolve_vta_endpoint(&session_vta_did).await {
+            Ok(VtaEndpoint::Tsp {
+                vta_did,
+                mediator_did,
+                didcomm_mediator_did,
+                rest_url,
+            }) => {
+                // Forced DIDComm ignores the advertised `#tsp` entirely.
+                if transport == TransportChoice::Didcomm {
+                    let Some(didcomm_mediator_did) = didcomm_mediator_did else {
+                        return Err(no_didcomm_endpoint_error(
+                            &vta_did,
+                            true,
+                            rest_url.is_some(),
+                        ));
+                    };
+                    debug!("connecting via DIDComm (forced --transport didcomm)");
+                    let client = connect_didcomm_bounded(
+                        &session.client_did,
+                        &session.private_key,
+                        &vta_did,
+                        &didcomm_mediator_did,
+                        rest_url,
+                    )
+                    .await?;
+                    return Ok(client);
+                }
+
+                match connect_tsp_bounded(
+                    &session.client_did,
+                    &session.private_key,
+                    &vta_did,
+                    &mediator_did,
+                    rest_url.clone(),
+                )
+                .await
+                {
+                    Ok(client) => return Ok(client),
+                    // Forced TSP never falls back — that is the whole point of
+                    // asking for it by name.
+                    Err(e) if transport == TransportChoice::Tsp => return Err(e),
+                    Err(e) => {
+                        // `Auto` falls back, but never quietly: a TSP
+                        // deployment that never works must not look like one
+                        // that was never enabled. See `TransportChoice`.
+                        warn!(
+                            vta_did = %vta_did,
+                            tsp_mediator_did = %mediator_did,
+                            error = %e,
+                            "TSP is advertised but the connect failed; falling back \
+                             (use --transport tsp to make this fatal, or \
+                             --transport didcomm to stop trying TSP)"
+                        );
+                    }
+                }
+
+                if let Some(didcomm_mediator_did) = didcomm_mediator_did {
+                    debug!("connecting via DIDComm (fallback from TSP)");
+                    let client = connect_didcomm_bounded(
+                        &session.client_did,
+                        &session.private_key,
+                        &vta_did,
+                        &didcomm_mediator_did,
+                        rest_url,
+                    )
+                    .await?;
+                    return Ok(client);
+                }
+                if let Some(url) = rest_url {
+                    debug!(url = %url, "connecting via REST (fallback from TSP)");
+                    let token = self.ensure_authenticated(&url, key).await?;
+                    let client = crate::client::VtaClient::new(&url);
+                    client.set_token(token);
+                    return Ok(client);
+                }
+                // TSP-only VTA whose TSP is down: there is nothing to fall back
+                // to, so report the TSP failure rather than a generic one.
+                return Err(tsp_unreachable_error(&mediator_did, tsp_connect_timeout()).into());
+            }
             Ok(VtaEndpoint::DIDComm {
                 vta_did,
                 mediator_did,
                 rest_url,
             }) => {
+                // `--transport tsp` against a VTA that only speaks DIDComm is an
+                // error, not a silent downgrade — R6.4: name what it *does*
+                // advertise so the operator can pick.
+                if transport == TransportChoice::Tsp {
+                    return Err(no_tsp_endpoint_error(&vta_did, true, rest_url.is_some()));
+                }
                 debug!("connecting via DIDComm");
                 let client = connect_didcomm_bounded(
                     &session.client_did,
@@ -713,6 +824,12 @@ impl SessionStore {
                 return Ok(client);
             }
             Ok(VtaEndpoint::Rest { url }) => {
+                if transport == TransportChoice::Tsp {
+                    return Err(no_tsp_endpoint_error(&session_vta_did, false, true));
+                }
+                if transport == TransportChoice::Didcomm {
+                    return Err(no_didcomm_endpoint_error(&session_vta_did, false, true));
+                }
                 debug!(url = %url, "connecting via REST (from DID doc)");
                 let token = self.ensure_authenticated(&url, key).await?;
                 let client = crate::client::VtaClient::new(&url);
@@ -721,6 +838,23 @@ impl SessionStore {
             }
             Err(e) => {
                 debug!(error = %e, "DID resolution failed, trying URL-based fallback");
+                // A forced mediator transport cannot be served from a URL
+                // fallback — there is no mediator DID to route through — so
+                // stop here rather than silently continuing to the REST path.
+                if matches!(transport, TransportChoice::Tsp | TransportChoice::Didcomm) {
+                    return Err(format!(
+                        "--transport {}: could not resolve VTA DID '{session_vta_did}', so its \
+                         advertised transports are unknown: {e}\n\nRetry without forcing a \
+                         transport, or reach the VTA over REST:\n  \
+                         <cli> --transport rest --url https://vta.example.com <command>",
+                        if transport == TransportChoice::Tsp {
+                            "tsp"
+                        } else {
+                            "didcomm"
+                        }
+                    )
+                    .into());
+                }
             }
         }
 
@@ -1110,13 +1244,37 @@ pub async fn challenge_response(
 // ── DIDComm-preferred connection ─────────────────────────────────────
 
 /// Result of resolving a VTA DID's service endpoints.
+///
+/// Each variant names the transport the SDK would *connect over*, and carries
+/// the lower-preference endpoints alongside it so a caller that has to fall
+/// back does not re-resolve. Preference order is the workspace's:
+/// **TSP > DIDComm > REST**.
+///
+/// `#[non_exhaustive]`: this enum gained [`Tsp`](Self::Tsp) in 0.20 and may
+/// gain further transports. Match with a `_` arm.
+#[non_exhaustive]
 pub enum VtaEndpoint {
-    /// REST-only (no DIDCommMessaging service found).
+    /// No TSP or DIDComm service advertised.
     Rest { url: String },
-    /// DIDComm preferred, with optional REST fallback.
+    /// DIDComm advertised (but no TSP), with optional REST fallback.
     DIDComm {
         vta_did: String,
         mediator_did: String,
+        rest_url: Option<String>,
+    },
+    /// TSP advertised — the highest-preference transport.
+    ///
+    /// `mediator_did` is read from the `#tsp` (`TSPTransport`) entry, **not**
+    /// assumed to equal the DIDComm mediator. In a dual-transport deployment
+    /// they are usually the same mediator, but nothing requires that, and a
+    /// TSP-only node has no DIDComm entry to borrow from.
+    Tsp {
+        vta_did: String,
+        mediator_did: String,
+        /// The DIDComm mediator, when the VTA advertises that too — the
+        /// fallback [`TransportChoice::Auto`] drops to if the TSP connect
+        /// times out.
+        didcomm_mediator_did: Option<String>,
         rest_url: Option<String>,
     },
 }
@@ -1124,17 +1282,45 @@ pub enum VtaEndpoint {
 /// Operator transport selection for
 /// [`SessionStore::connect_with_transport`] (the `pnm`/`cnm` connect path).
 ///
-/// `#[non_exhaustive]`: TSP is the workspace's preferred transport
-/// (TSP > DIDComm > REST) and will land here as a variant, as may an
-/// explicit `Didcomm`. Match with a `_` arm.
+/// `#[non_exhaustive]`: further transports may land here. Match with a `_` arm.
+///
+/// # Auto's fallback policy
+///
+/// [`Auto`](Self::Auto) implements the workspace preference order
+/// **TSP > DIDComm > REST**, and **falls back loudly**: if the VTA advertises
+/// TSP but its mediator does not answer within
+/// [`TSP_CONNECT_TIMEOUT_DEFAULT`], `Auto` logs a `WARN` naming the mediator
+/// DID and the deadline, then tries DIDComm, then REST.
+///
+/// This is a deliberate choice between two bad options, recorded here because
+/// it is not recoverable from the code. Failing hard would make a
+/// dual-transport VTA *less* available than it is today — an operator whose
+/// TSP mediator broke would lose access to a VTA that still speaks DIDComm
+/// perfectly well, which is a regression caused purely by enabling TSP.
+/// Falling back *silently* is the other failure: a TSP deployment that never
+/// works would be invisible, and everyone would quietly run on DIDComm
+/// believing TSP was live. The `WARN` is what makes the fallback a diagnosis
+/// rather than a cover-up.
+///
+/// Operators who need the strict behaviour have it: [`Tsp`](Self::Tsp) never
+/// falls back.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TransportChoice {
-    /// Prefer DIDComm when advertised, else REST. The default.
+    /// TSP when advertised, else DIDComm, else REST. The default.
     #[default]
     Auto,
-    /// Force REST, ignoring any advertised DIDComm. Recovery path when a VTA's
-    /// mediator is unreachable (auto would pick DIDComm and hang).
+    /// Force TSP. Errors — naming the transports the VTA *does* advertise — if
+    /// it advertises no `#tsp` service, and errors rather than falling back if
+    /// the TSP connect times out.
+    Tsp,
+    /// Force DIDComm, ignoring an advertised `#tsp`. The recovery path when a
+    /// VTA's TSP endpoint is broken but its DIDComm mediator is healthy;
+    /// previously this existed only by accident, as "whatever `Auto` picks".
+    Didcomm,
+    /// Force REST, ignoring any advertised TSP or DIDComm. Recovery path when a
+    /// VTA's mediator is unreachable (auto would pick a mediator transport and
+    /// hang).
     Rest,
 }
 
@@ -1152,18 +1338,41 @@ pub enum TransportChoice {
 const DIDCOMM_CONNECT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
 
 fn didcomm_connect_timeout() -> Duration {
-    parse_connect_timeout(std::env::var("VTA_DIDCOMM_CONNECT_TIMEOUT_SECS").ok())
+    parse_connect_timeout(
+        std::env::var("VTA_DIDCOMM_CONNECT_TIMEOUT_SECS").ok(),
+        DIDCOMM_CONNECT_TIMEOUT_DEFAULT,
+    )
 }
 
-/// Env-var parsing for [`didcomm_connect_timeout`], split out so it is
-/// testable without touching process environment. Garbage and `0` fall back to
-/// the default — a zero deadline would fail every connect instantly, which is
+/// How long a TSP connect may take before we give up.
+///
+/// The TSP websocket goes to the **same mediator** the DIDComm client does, and
+/// sits behind the same reconnect/backoff loop, so it needs the same ceiling
+/// for the same reason: without it, `Auto` preferring TSP would turn a working
+/// DIDComm-fallback story into an indefinite hang with no output — i.e.
+/// enabling TSP on a VTA would make it *less* reachable.
+///
+/// Its own env override rather than sharing the DIDComm one: an operator
+/// diagnosing a slow TSP mediator should be able to stretch that deadline
+/// without also loosening the DIDComm ceiling they rely on to fail fast.
+const TSP_CONNECT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(30);
+
+fn tsp_connect_timeout() -> Duration {
+    parse_connect_timeout(
+        std::env::var("VTA_TSP_CONNECT_TIMEOUT_SECS").ok(),
+        TSP_CONNECT_TIMEOUT_DEFAULT,
+    )
+}
+
+/// Env-var parsing for the connect deadlines, split out so it is testable
+/// without touching process environment. Garbage and `0` fall back to
+/// `default` — a zero deadline would fail every connect instantly, which is
 /// worse than the hang it replaces.
-fn parse_connect_timeout(raw: Option<String>) -> Duration {
+fn parse_connect_timeout(raw: Option<String>, default: Duration) -> Duration {
     raw.and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|secs| *secs > 0)
         .map(Duration::from_secs)
-        .unwrap_or(DIDCOMM_CONNECT_TIMEOUT_DEFAULT)
+        .unwrap_or(default)
 }
 
 /// [`crate::client::VtaClient::connect_didcomm`] under a deadline.
@@ -1224,16 +1433,150 @@ fn no_rest_endpoint_error(vta_did: &str) -> Box<dyn std::error::Error> {
     .into()
 }
 
+/// [`crate::client::VtaClient::connect_tsp`] under a deadline.
+///
+/// The TSP twin of [`connect_didcomm_bounded`]; see
+/// [`TSP_CONNECT_TIMEOUT_DEFAULT`] for why the ceiling is not optional.
+#[cfg_attr(not(feature = "tsp"), allow(unused_variables))]
+async fn connect_tsp_bounded(
+    client_did: &str,
+    private_key: &str,
+    vta_did: &str,
+    mediator_did: &str,
+    rest_url: Option<String>,
+) -> Result<crate::client::VtaClient, Box<dyn std::error::Error>> {
+    #[cfg(not(feature = "tsp"))]
+    {
+        // Reached only when this build can't speak TSP but the VTA advertises
+        // it. Say that plainly — the alternative is an operator staring at a
+        // VTA that offers TSP and a client that silently never picks it.
+        Err(format!(
+            "VTA '{vta_did}' advertises TSP, but this build of the SDK/CLI was compiled \
+             without the `tsp` feature, so it cannot connect over it.\n\n\
+             Rebuild with `--features tsp`, or select another transport:\n  \
+             <cli> --transport didcomm <command>\n  \
+             <cli> --transport rest <command>"
+        )
+        .into())
+    }
+    #[cfg(feature = "tsp")]
+    {
+        let timeout = tsp_connect_timeout();
+        match tokio::time::timeout(
+            timeout,
+            crate::client::VtaClient::connect_tsp(
+                client_did,
+                private_key,
+                vta_did,
+                mediator_did,
+                rest_url,
+            ),
+        )
+        .await
+        {
+            Ok(result) => Ok(result?),
+            Err(_) => Err(tsp_unreachable_error(mediator_did, timeout).into()),
+        }
+    }
+}
+
+/// The message an operator sees when a VTA advertises TSP but its mediator
+/// does not answer.
+///
+/// Distinct from [`mediator_unreachable_error`] on purpose (R6.4): "TSP is
+/// advertised and the mediator went silent" and "the VTA advertises no TSP at
+/// all" are different faults with different fixes, and one shared hint is
+/// exactly what that rule exists to prevent. Names the mediator DID so the
+/// operator knows *which* endpoint to go look at.
+fn tsp_unreachable_error(mediator_did: &str, timeout: Duration) -> String {
+    format!(
+        "Timed out after {}s connecting to the VTA's TSP mediator:\n  {mediator_did}\n\n\
+         The VTA advertises TSP (`#tsp`), but that mediator did not answer. Reach the \
+         VTA over another transport:\n  \
+         <cli> --transport didcomm <command>\n  \
+         <cli> --transport rest <command>\n\n\
+         Raise the deadline for a slow link with VTA_TSP_CONNECT_TIMEOUT_SECS.",
+        timeout.as_secs()
+    )
+}
+
+/// The message an operator sees when `--transport tsp` has no `#tsp` service to
+/// force. Lists what the VTA *does* advertise, so the next command is obvious
+/// rather than guessed (compare [`no_rest_endpoint_error`]).
+fn no_tsp_endpoint_error(
+    vta_did: &str,
+    has_didcomm: bool,
+    has_rest: bool,
+) -> Box<dyn std::error::Error> {
+    format!(
+        "--transport tsp: VTA '{vta_did}' does not advertise a TSP service (`#tsp`, \
+         type `TSPTransport`) in its DID document, so there is no TSP endpoint to \
+         force.\n\n{}\n\nTo start advertising TSP on the VTA itself:\n  \
+         pnm services tsp enable",
+        advertised_hint(has_didcomm, has_rest)
+    )
+    .into()
+}
+
+/// As [`no_tsp_endpoint_error`], for `--transport didcomm`.
+fn no_didcomm_endpoint_error(
+    vta_did: &str,
+    has_tsp: bool,
+    has_rest: bool,
+) -> Box<dyn std::error::Error> {
+    let offers = match (has_tsp, has_rest) {
+        (true, true) => {
+            "It advertises TSP and REST:\n  <cli> --transport tsp <command>\n  <cli> --transport rest <command>"
+        }
+        (true, false) => "It advertises TSP:\n  <cli> --transport tsp <command>",
+        (false, true) => "It advertises REST:\n  <cli> --transport rest <command>",
+        (false, false) => "It advertises no other transport this client can use.",
+    };
+    format!(
+        "--transport didcomm: VTA '{vta_did}' does not advertise a DIDComm service \
+         (`DIDCommMessaging`) in its DID document, so there is no mediator to \
+         force.\n\n{offers}"
+    )
+    .into()
+}
+
+/// "It advertises X" phrasing shared by the forced-transport errors.
+fn advertised_hint(has_didcomm: bool, has_rest: bool) -> &'static str {
+    match (has_didcomm, has_rest) {
+        (true, true) => {
+            "It advertises DIDComm and REST:\n  <cli> --transport didcomm <command>\n  <cli> --transport rest <command>"
+        }
+        (true, false) => "It advertises DIDComm:\n  <cli> --transport didcomm <command>",
+        (false, true) => "It advertises REST:\n  <cli> --transport rest <command>",
+        (false, false) => "It advertises no other transport this client can use.",
+    }
+}
+
 /// Resolve a VTA DID to discover available transport endpoints.
 ///
-/// Performs a single DID resolution and extracts:
-/// - `DIDCommMessaging` service → mediator DID (preferred transport)
-/// - `#vta-rest` service → REST URL (fallback)
+/// Performs a single DID resolution and reads every advertised transport via
+/// [`ServiceCapabilities::from_did_document`] — the workspace's one
+/// implementation of "which protocols does this party speak", which matches on
+/// service **`type`** (`TSPTransport` / `DIDCommMessaging` / `VTARest`), never
+/// on the `#id` fragment, and accepts `type` as either a string or an array.
 ///
-/// Returns `VtaEndpoint::DIDComm` if a mediator is found, otherwise `VtaEndpoint::Rest`.
+/// Returns the highest-preference transport advertised (**TSP > DIDComm >
+/// REST**), carrying the lower-preference endpoints with it so a caller that
+/// falls back does not resolve twice.
+///
+/// # The TSP-only case
+///
+/// A document with `TSPTransport` and no `DIDCommMessaging` resolves as
+/// [`VtaEndpoint::Tsp`]. It previously fell through both extractions and
+/// returned a REST URL *synthesized from the DID's own domain* — an endpoint
+/// that need not exist. That shape is not hypothetical: this crate ships
+/// `did-host-tsp` and `did-host-http-tsp` templates, so the SDK could mint a
+/// node it could not then resolve.
 pub async fn resolve_vta_endpoint(
     vta_did: &str,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
+    use crate::protocol::matching::ServiceCapabilities;
+
     debug!(vta_did, "resolving VTA DID for transport selection");
 
     let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
@@ -1250,24 +1593,46 @@ pub async fn resolve_vta_endpoint(
         }
     };
 
-    // Look for #vta-rest service endpoint
-    let rest_url = resolved
-        .doc
-        .find_service("vta-rest")
-        .and_then(|svc| svc.service_endpoint.get_uri())
+    // Round-trip the typed document through JSON so the shared matcher — which
+    // is defined over an already-resolved `serde_json::Value` — is the single
+    // place service types are interpreted. The alternative, a second bespoke
+    // extraction over the typed `doc.service` array, is exactly what left TSP
+    // invisible here while `matching.rs` had understood it all along.
+    let doc_json = serde_json::to_value(&resolved.doc)
+        .map_err(|e| format!("could not re-serialize resolved DID document: {e}"))?;
+    let caps = ServiceCapabilities::from_did_document(&doc_json);
+
+    let rest_url = caps
+        .rest
+        .as_deref()
         .map(|u| u.trim_matches('"').trim_end_matches('/').to_string());
 
-    // Look for DIDCommMessaging service with a DID-based endpoint (mediator)
-    let mediator_did = resolved
-        .doc
-        .service
-        .iter()
-        .filter(|svc| svc.type_.iter().any(|t| t == "DIDCommMessaging"))
-        .flat_map(|svc| svc.service_endpoint.get_uris())
-        .map(|u| u.trim_matches('"').to_string())
-        .find(|u| u.starts_with("did:"));
+    // TSP and DIDComm both advertise a *mediator DID*, not a transport URL —
+    // the real endpoint lives in the mediator's own document. Anything that
+    // isn't a DID is a misconfigured entry we cannot route through, so it is
+    // ignored rather than handed onward as a mediator.
+    let mediator_of = |endpoint: Option<&String>| -> Option<String> {
+        endpoint
+            .map(|u| u.trim_matches('"').to_string())
+            .filter(|u| u.starts_with("did:"))
+    };
+    let tsp_mediator_did = mediator_of(caps.tsp.as_ref());
+    let didcomm_mediator_did = mediator_of(caps.didcomm.as_ref());
 
-    if let Some(mediator_did) = mediator_did {
+    if let Some(mediator_did) = tsp_mediator_did {
+        debug!(
+            mediator_did = %mediator_did,
+            didcomm_mediator_did = ?didcomm_mediator_did,
+            rest_url = ?rest_url,
+            "TSP endpoint found (highest preference)"
+        );
+        Ok(VtaEndpoint::Tsp {
+            vta_did: vta_did.to_string(),
+            mediator_did,
+            didcomm_mediator_did,
+            rest_url,
+        })
+    } else if let Some(mediator_did) = didcomm_mediator_did {
         debug!(mediator_did = %mediator_did, rest_url = ?rest_url, "DIDComm endpoint found");
         Ok(VtaEndpoint::DIDComm {
             vta_did: vta_did.to_string(),
@@ -1717,12 +2082,10 @@ impl TspPingSession {
             // might not have answered at all. A stale frame must not be able to
             // turn a broken transport green.
             //
-            // Correlation is the Trust-Task `threadId`, which the responder sets
-            // to our request `id` (`doc.respond_with`); the echoed `nonce` is
-            // accepted as a fallback for a responder that replies with a fresh
-            // document instead of a threaded `#response`. Anything else is
-            // someone else's traffic or a leftover: skip it and keep waiting
-            // within the caller's budget.
+            // Correlation goes through [`correlates`] — the one implementation
+            // of "is this frame the reply to that request", shared with
+            // `TspSession::request`. Anything else is someone else's traffic or
+            // a leftover: skip it and keep waiting within the caller's budget.
             let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
             else {
                 continue; // not sealed to us / not TSP — not our business
@@ -1731,13 +2094,7 @@ impl TspPingSession {
                 continue; // not a Trust-Task document
             };
 
-            let threaded = doc.get("threadId").and_then(|v| v.as_str()) == Some(id.as_str());
-            let echoed_nonce = doc
-                .get("payload")
-                .and_then(|p| p.get("nonce"))
-                .and_then(|v| v.as_str())
-                == Some(nonce.as_str());
-            if threaded || echoed_nonce {
+            if correlates(&doc, &id, Some(&nonce)) {
                 return Ok(start.elapsed().as_millis());
             }
             tracing::debug!(
@@ -1814,6 +2171,58 @@ pub struct TspSession {
     ws: tokio::sync::Mutex<Option<affinidi_tdk::messaging::TspWebSocket>>,
     /// This client's DID — the `issuer` on an [`announce`](Self::announce) frame.
     client_did: String,
+    /// In-flight [`request`](Self::request) waiters, keyed by request document
+    /// `id`. Whichever task currently holds `ws` reads frames on behalf of
+    /// *all* of them and hands each reply to its own waiter.
+    pending: tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>,
+    /// Inbound documents that matched no in-flight request — VTA-pushed
+    /// `task-consent/request`s and the like. Parked here rather than dropped,
+    /// so a request waiting on an unrelated reply cannot eat a push.
+    parked: tokio::sync::Mutex<std::collections::VecDeque<String>>,
+}
+
+/// One in-flight [`TspSession::request`]: how to recognise its reply, and where
+/// to deliver it.
+#[cfg(feature = "tsp")]
+struct PendingRequest {
+    /// Echoed-`nonce` fallback for a responder that replies with a fresh
+    /// document instead of a threaded `#response`.
+    nonce: Option<String>,
+    tx: tokio::sync::oneshot::Sender<String>,
+}
+
+/// Does `doc` correlate to the request identified by `request_id` (and
+/// optionally `nonce`)?
+///
+/// The single implementation of "is this frame the reply to that request",
+/// shared by [`TspPingSession::ping`] and [`TspSession::request`]. It was
+/// written for the ping path and welded there; every other caller would
+/// otherwise have re-derived `threadId` matching from the raw inner document.
+///
+/// Correlation is the Trust-Task `threadId`, which a responder sets to the
+/// request's `id` (`doc.respond_with`). The echoed `payload.nonce` is accepted
+/// as a fallback for a responder that replies with a fresh document rather than
+/// a threaded `#response`.
+///
+/// **Why this cannot be "the first frame that parses".** The client's mediator
+/// inbox is durable and flushes on connect, so every reply a previous process
+/// run never collected is queued and lands the moment we reconnect. Accepting
+/// the first frame therefore returns a *stale* reply — which is the exact fault
+/// that made the #749 delivery bug look intermittent.
+#[cfg(feature = "tsp")]
+fn correlates(doc: &serde_json::Value, request_id: &str, nonce: Option<&str>) -> bool {
+    if doc.get("threadId").and_then(|v| v.as_str()) == Some(request_id) {
+        return true;
+    }
+    match nonce {
+        Some(n) => {
+            doc.get("payload")
+                .and_then(|p| p.get("nonce"))
+                .and_then(|v| v.as_str())
+                == Some(n)
+        }
+        None => false,
+    }
 }
 
 #[cfg(feature = "tsp")]
@@ -1859,7 +2268,16 @@ impl TspSession {
             profile,
             ws: tokio::sync::Mutex::new(Some(ws)),
             client_did: client_did.to_string(),
+            pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            parked: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
         })
+    }
+
+    /// This client's DID — the proven sender VID the VTA authorizes against,
+    /// and the `issuer` on documents sent through this session.
+    #[must_use]
+    pub fn client_did(&self) -> &str {
+        &self.client_did
     }
 
     /// Announce this client's TSP reachability to `vta_did` by sending a
@@ -1960,49 +2378,284 @@ impl TspSession {
     ) -> Result<Option<String>, Box<dyn std::error::Error>> {
         use std::time::{Duration, Instant};
 
-        let mut guard = self.ws.lock().await;
-        let ws = match guard.as_mut() {
-            Some(w) => w,
-            None => return Ok(None), // already shut down
-        };
-        let budget = Duration::from_secs(timeout_secs);
-        let start = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         loop {
-            let remaining = match budget.checked_sub(start.elapsed()) {
-                Some(r) => r,
-                None => return Ok(None),
+            // A frame an in-flight `request` read off the socket but did not
+            // want is ours. Drain that before touching the socket, or a push
+            // that already arrived would sit unseen behind a fresh read.
+            if let Some(doc) = self.parked.lock().await.pop_front() {
+                return Ok(Some(doc));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+
+            let mut guard = self.ws.lock().await;
+            let Some(ws) = guard.as_mut() else {
+                return Ok(None); // already shut down
             };
+            // Bounded so the socket lock is released periodically even while
+            // idle — otherwise a long-polling `receive_next` would hold it for
+            // its whole budget and stall every concurrent `request`.
+            let slice = PUMP_SLICE.min(deadline.saturating_duration_since(Instant::now()));
+            // Bound before the `match` — see `await_reply`.
+            let outcome = self.pump_once(ws, slice).await?;
+            match outcome {
+                // Not addressed to any in-flight request → it is a push, and
+                // pushes are what this method is for.
+                PumpOutcome::Uncorrelated(doc) => return Ok(Some(doc)),
+                PumpOutcome::Delivered | PumpOutcome::Idle => {
+                    drop(guard);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Send `document` to `vta_did` and wait for **its** reply.
+    ///
+    /// This is the piece that made TSP a transport rather than a probe: without
+    /// it a consumer could `send_document` and could `receive_next`, but could
+    /// not ask for *the reply to request X* — so nothing above the raw frame
+    /// level (trust tasks, credential flows, join ceremonies) could be routed
+    /// over TSP.
+    ///
+    /// Properties, each of which is load-bearing:
+    ///
+    /// - **Correlated, never "first frame that parses".** Replies are matched
+    ///   by [`correlates`] — `threadId`, falling back to an echoed `nonce`. The
+    ///   mediator inbox is durable and flushes on connect, so an uncorrelated
+    ///   read can hand back a reply from a *previous process run*.
+    /// - **Concurrent.** Several `request`s may be in flight on one session.
+    ///   Whichever one currently holds the socket reads on behalf of all of
+    ///   them and delivers each reply to its own waiter, so a slow request
+    ///   cannot serialise a fast one, and one request's read cannot consume
+    ///   another's reply.
+    /// - **Pushes survive.** A frame matching no in-flight request is parked
+    ///   for [`receive_next`](Self::receive_next), not discarded — a
+    ///   `task-consent/request` must not be eaten by a request waiting on
+    ///   something unrelated.
+    /// - **Finite.** Every wait is bounded by `timeout` (R1.2).
+    ///
+    /// # Authentication
+    ///
+    /// There is no token dance on this path and no holder proof in the
+    /// document. TSP `unpack` yields a **cryptographically proven sender VID**,
+    /// and the VTA's inbound dispatcher (`tsp_inbound::dispatch_one`) resolves
+    /// that VID straight to its ACL grant before dispatching on the shared
+    /// trust-task spine — the same intrinsic-sender model as DIDComm authcrypt,
+    /// and the reason the REST bearer-token flow has no TSP analogue. An
+    /// unknown or unauthorized sender gets a `permission_denied` trust-task
+    /// envelope back, not a drop.
+    pub async fn request(
+        &self,
+        vta_did: &str,
+        mediator_did: &str,
+        document: &[u8],
+        timeout: std::time::Duration,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+
+        let parsed: serde_json::Value = serde_json::from_slice(document)
+            .map_err(|e| format!("TSP request document is not JSON: {e}"))?;
+        let request_id = parsed
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or("TSP request document has no `id` to correlate its reply on")?
+            .to_string();
+        let nonce = parsed
+            .get("payload")
+            .and_then(|p| p.get("nonce"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(
+            request_id.clone(),
+            PendingRequest {
+                nonce: nonce.clone(),
+                tx,
+            },
+        );
+
+        // Registered *before* sending: a reply can land while `send_routed` is
+        // still returning, and a waiter registered afterwards would miss it.
+        //
+        // Both results are flattened to `String` **before** the deregistering
+        // `.await` below. A `Box<dyn Error>` is not `Send`, and holding one
+        // across an await makes this future `!Send` — and with it every caller,
+        // including `VtaClient::dispatch_trust_task`, whose future `vta-mcp`
+        // requires to be `Send`. Because `vta-mcp` doesn't enable the `tsp`
+        // feature itself, that break only appears once Cargo's feature
+        // unification turns TSP on for a workspace build, a long way from here.
+        // Pinned by `tsp_futures_are_send`.
+        let sent = self
+            .send_document(vta_did, mediator_did, document)
+            .await
+            .map_err(|e| e.to_string());
+        if sent.is_err() {
+            self.pending.lock().await.remove(&request_id);
+        }
+        sent?;
+
+        let deadline = Instant::now() + timeout;
+        let outcome = self
+            .await_reply(&request_id, &mut rx, deadline)
+            .await
+            .map_err(|e| e.to_string());
+        // Always deregister — a timed-out or failed request must not leave a
+        // waiter behind for the pump to deliver into.
+        self.pending.lock().await.remove(&request_id);
+        Ok(outcome?)
+    }
+
+    /// Wait for `request_id`'s reply, taking a turn at pumping the socket
+    /// whenever it is free.
+    ///
+    /// Leader/followers: whoever holds `ws` reads and demultiplexes for
+    /// everyone; the rest park on their oneshot. Contending for the lock in the
+    /// same `select!` as the oneshot is what lets a follower take over the
+    /// moment the leader finishes, with no background task to supervise and no
+    /// change to [`shutdown`](Self::shutdown) semantics.
+    ///
+    /// Returns `String` errors, not `Box<dyn Error>`: the latter is not `Send`,
+    /// and a `Box` living across any of the awaits in this loop would make the
+    /// whole call chain `!Send`. Keeping the internals `String`-typed makes
+    /// that mistake structurally impossible rather than merely tested for.
+    async fn await_reply(
+        &self,
+        request_id: &str,
+        rx: &mut tokio::sync::oneshot::Receiver<String>,
+        deadline: std::time::Instant,
+    ) -> Result<String, String> {
+        use std::time::Instant;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "timed out waiting for the TSP reply to request '{request_id}'"
+                ));
+            }
+
+            tokio::select! {
+                biased;
+
+                // Someone else's pump already delivered our reply.
+                delivered = &mut *rx => {
+                    return delivered.map_err(|_| {
+                        "TSP session shut down while waiting for a reply".to_string()
+                    });
+                }
+
+                // We are the leader for as long as we hold this.
+                mut guard = self.ws.lock() => {
+                    let Some(ws) = guard.as_mut() else {
+                        return Err("TSP session was shut down".to_string());
+                    };
+                    let slice = PUMP_SLICE.min(remaining);
+                    // Bound before the `match`: a scrutinee temporary lives for
+                    // the whole match body, which contains an `.await`.
+                    let outcome = self.pump_once(ws, slice).await?;
+                    match outcome {
+                        PumpOutcome::Uncorrelated(doc) => {
+                            // Not ours and not any other waiter's — park it for
+                            // the push consumer instead of dropping it.
+                            self.parked.lock().await.push_back(doc);
+                        }
+                        PumpOutcome::Delivered | PumpOutcome::Idle => {}
+                    }
+                    // Release before looping so a follower can take a turn.
+                    drop(guard);
+                }
+
+                () = tokio::time::sleep(remaining) => {
+                    return Err(format!(
+                        "timed out waiting for the TSP reply to request '{request_id}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Read at most one application frame off `ws` within `slice`, unpack it,
+    /// and route it: to the waiter it correlates with, or back to the caller as
+    /// [`PumpOutcome::Uncorrelated`].
+    ///
+    /// Frames that don't unpack are TSP control/relationship traffic and are
+    /// skipped within the slice rather than surfaced.
+    /// `String` errors for the same reason as [`await_reply`](Self::await_reply).
+    async fn pump_once(
+        &self,
+        ws: &mut affinidi_tdk::messaging::TspWebSocket,
+        slice: std::time::Duration,
+    ) -> Result<PumpOutcome, String> {
+        use std::time::Instant;
+
+        let until = Instant::now() + slice;
+        loop {
+            let remaining = until.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(PumpOutcome::Idle);
+            }
             let frame = match tokio::time::timeout(remaining, ws.recv()).await {
                 Ok(Ok(Some(bytes))) => bytes,
-                // Closed socket is an ERROR, not `Ok(None)`.
+                // Closed socket is an ERROR, not "nothing arrived".
                 //
-                // `Ok(None)` means "nothing arrived, ask again" — the caller's
-                // normal idle path. A closed websocket is the opposite: asking
-                // again can never produce anything. Conflating them meant a
-                // dropped inbox was indistinguishable from a quiet one, so a
-                // polling loop would spin on `recv()` returning `None`
-                // immediately, forever — burning CPU and never reconnecting,
+                // "Nothing arrived, ask again" is the caller's normal idle
+                // path. A closed websocket is the opposite: asking again can
+                // never produce anything. Conflating them meant a dropped inbox
+                // was indistinguishable from a quiet one, so a polling loop
+                // would spin forever, burning CPU and never reconnecting,
                 // because nothing ever signalled that the connection had gone.
                 //
                 // Surfacing it as `Err` lets the supervisor do its job: the
                 // mobile listen loop already treats an error as a drop and
                 // reconnects with backoff.
-                Ok(Ok(None)) => {
-                    return Err("TSP websocket closed by the mediator".into());
-                }
-                Ok(Err(e)) => return Err(Box::new(e)),
-                Err(_) => return Ok(None), // timed out with nothing to hand back
+                Ok(Ok(None)) => return Err("TSP websocket closed by the mediator".to_string()),
+                Ok(Err(e)) => return Err(e.to_string()),
+                Err(_) => return Ok(PumpOutcome::Idle),
             };
-            // A frame sealed to us that unpacks to a UTF-8 body is an application
-            // message; hand its plaintext to the caller. Frames that don't unpack
-            // are TSP control/relationship traffic — skip and keep waiting.
-            match self.atm.tsp().unpack_bytes(&self.profile, &frame).await {
-                Ok((payload, _sender)) => {
-                    let json = String::from_utf8(payload)
-                        .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
-                    return Ok(Some(json));
+
+            let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
+            else {
+                continue; // not sealed to us / TSP control traffic
+            };
+            let json = String::from_utf8(payload)
+                .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
+
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&json) else {
+                // Not a Trust-Task document, so it can correlate with nothing.
+                // Hand it up rather than drop it — the push consumer decides.
+                return Ok(PumpOutcome::Uncorrelated(json));
+            };
+
+            let mut pending = self.pending.lock().await;
+            let hit = pending
+                .iter()
+                .find(|(id, p)| correlates(&doc, id, p.nonce.as_deref()))
+                .map(|(id, _)| id.clone());
+            match hit {
+                Some(id) => {
+                    if let Some(p) = pending.remove(&id) {
+                        // A dropped receiver (the requester timed out and left)
+                        // is not an error — the frame is simply no longer
+                        // wanted by anyone.
+                        let _ = p.tx.send(json);
+                    }
+                    return Ok(PumpOutcome::Delivered);
                 }
-                Err(_) => continue,
+                None => {
+                    drop(pending);
+                    debug!(
+                        thread_id = doc
+                            .get("threadId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("<none>"),
+                        "TSP frame matched no in-flight request (push, or a stale inbox entry)"
+                    );
+                    return Ok(PumpOutcome::Uncorrelated(json));
+                }
             }
         }
     }
@@ -2010,11 +2663,35 @@ impl TspSession {
     /// Close the TSP websocket and shut down the ATM connection. Takes `&self`
     /// (the session is shared across the FFI boundary).
     pub async fn shutdown(&self) {
+        // Drop every waiter first so an in-flight `request` fails fast with
+        // "session shut down" instead of blocking until its own deadline on a
+        // socket that is about to disappear.
+        self.pending.lock().await.clear();
         if let Some(ws) = self.ws.lock().await.take() {
             let _ = ws.close().await;
         }
         self.atm.graceful_shutdown().await;
     }
+}
+
+/// How long one turn at the socket lasts before the holder must release it.
+///
+/// Bounds lock hand-off latency: with several requests in flight, a follower
+/// waits at most this long to become leader after the current one goes idle.
+/// Short enough that concurrency feels immediate, long enough that an idle
+/// session is not spinning on the mutex.
+#[cfg(feature = "tsp")]
+const PUMP_SLICE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What one turn at the socket produced.
+#[cfg(feature = "tsp")]
+enum PumpOutcome {
+    /// A frame arrived and went to the request that was waiting for it.
+    Delivered,
+    /// A frame arrived that no in-flight request wanted.
+    Uncorrelated(String),
+    /// The slice elapsed with no application frame.
+    Idle,
 }
 
 fn now_epoch() -> u64 {
@@ -2302,24 +2979,151 @@ mod tests {
 
     #[test]
     fn connect_timeout_defaults_when_unset_or_junk() {
-        assert_eq!(parse_connect_timeout(None), DIDCOMM_CONNECT_TIMEOUT_DEFAULT);
-        assert_eq!(
-            parse_connect_timeout(Some("not-a-number".into())),
-            DIDCOMM_CONNECT_TIMEOUT_DEFAULT
-        );
+        let d = DIDCOMM_CONNECT_TIMEOUT_DEFAULT;
+        assert_eq!(parse_connect_timeout(None, d), d);
+        assert_eq!(parse_connect_timeout(Some("not-a-number".into()), d), d);
         // Zero would fail every connect instantly — worse than the hang.
-        assert_eq!(
-            parse_connect_timeout(Some("0".into())),
-            DIDCOMM_CONNECT_TIMEOUT_DEFAULT
-        );
+        assert_eq!(parse_connect_timeout(Some("0".into()), d), d);
     }
 
     #[test]
     fn connect_timeout_honours_env_override() {
         assert_eq!(
-            parse_connect_timeout(Some(" 90 ".into())),
+            parse_connect_timeout(Some(" 90 ".into()), DIDCOMM_CONNECT_TIMEOUT_DEFAULT),
             Duration::from_secs(90)
         );
+    }
+
+    /// TSP carries its **own** deadline default, so an operator stretching the
+    /// TSP ceiling doesn't silently loosen the DIDComm one they rely on to fail
+    /// fast (and vice versa).
+    #[test]
+    fn tsp_connect_timeout_is_independent_of_the_didcomm_one() {
+        assert_eq!(
+            parse_connect_timeout(None, TSP_CONNECT_TIMEOUT_DEFAULT),
+            TSP_CONNECT_TIMEOUT_DEFAULT
+        );
+        assert_eq!(
+            parse_connect_timeout(Some("120".into()), TSP_CONNECT_TIMEOUT_DEFAULT),
+            Duration::from_secs(120)
+        );
+    }
+
+    /// R6.4: "TSP advertised but the mediator went silent" and "no TSP
+    /// advertised at all" are different faults with different fixes. One shared
+    /// hint for both is exactly what that rule exists to prevent.
+    #[test]
+    fn tsp_failure_modes_have_distinct_messages() {
+        let unreachable =
+            tsp_unreachable_error("did:web:mediator.example.com", Duration::from_secs(30));
+        assert!(
+            unreachable.contains("did:web:mediator.example.com"),
+            "must name the mediator that went silent: {unreachable}"
+        );
+        assert!(unreachable.contains("VTA_TSP_CONNECT_TIMEOUT_SECS"));
+
+        let not_advertised =
+            no_tsp_endpoint_error("did:webvh:x:vta.example", true, true).to_string();
+        assert!(
+            !not_advertised.contains("Timed out"),
+            "a VTA that never advertised TSP did not time out: {not_advertised}"
+        );
+        // Names what it *does* advertise, so the next command is obvious.
+        assert!(not_advertised.contains("--transport didcomm"));
+        assert!(not_advertised.contains("--transport rest"));
+    }
+
+    /// The advertised-transport hint must not offer a transport the VTA does
+    /// not have — that would send the operator into a second dead end.
+    #[test]
+    fn no_tsp_error_only_offers_transports_that_exist() {
+        let didcomm_only = no_tsp_endpoint_error("did:key:z6Mk", true, false).to_string();
+        assert!(didcomm_only.contains("--transport didcomm"));
+        assert!(!didcomm_only.contains("--transport rest"));
+
+        let rest_only = no_tsp_endpoint_error("did:key:z6Mk", false, true).to_string();
+        assert!(rest_only.contains("--transport rest"));
+        assert!(!rest_only.contains("--transport didcomm"));
+
+        let neither = no_tsp_endpoint_error("did:key:z6Mk", false, false).to_string();
+        assert!(neither.contains("no other transport"));
+    }
+
+    // ── TSP reply correlation ─────────────────────────────────────
+
+    /// The property that makes TSP request/response safe: a frame that is not
+    /// *this* request's reply must not be accepted as one.
+    ///
+    /// The mediator inbox is durable and flushes on connect, so every reply a
+    /// previous process run never collected lands the moment we reconnect.
+    /// "First frame that parses" would therefore return a stale reply — the
+    /// exact fault that made the #749 delivery bug look intermittent.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_stale_frame_is_not_mistaken_for_our_reply() {
+        let stale = serde_json::json!({
+            "id": "urn:uuid:reply-to-something-else",
+            "threadId": "urn:uuid:a-previous-run",
+            "payload": { "nonce": "some-other-nonce" },
+        });
+        assert!(!correlates(
+            &stale,
+            "urn:uuid:our-request",
+            Some("our-nonce")
+        ));
+    }
+
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn thread_id_correlates() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:the-reply",
+            "threadId": "urn:uuid:our-request",
+            "payload": {},
+        });
+        assert!(correlates(&reply, "urn:uuid:our-request", None));
+    }
+
+    /// Fallback for a responder that answers with a fresh document rather than
+    /// a threaded `#response`.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn echoed_nonce_correlates_when_thread_id_is_absent() {
+        let reply = serde_json::json!({
+            "id": "urn:uuid:fresh-doc",
+            "payload": { "nonce": "our-nonce" },
+        });
+        assert!(correlates(
+            &reply,
+            "urn:uuid:our-request",
+            Some("our-nonce")
+        ));
+        // ...but only when we actually sent a nonce to echo.
+        assert!(!correlates(&reply, "urn:uuid:our-request", None));
+    }
+
+    /// A document with neither field correlates with nothing — it is a push,
+    /// and must be parked for the receive consumer rather than eaten.
+    #[cfg(feature = "tsp")]
+    #[test]
+    fn a_push_correlates_with_no_request() {
+        let push = serde_json::json!({
+            "id": "urn:uuid:pushed",
+            "type": "https://trusttasks.org/spec/task-consent/request/0.1",
+            "payload": { "taskId": "t1" },
+        });
+        assert!(!correlates(
+            &push,
+            "urn:uuid:our-request",
+            Some("our-nonce")
+        ));
+    }
+
+    #[test]
+    fn forced_didcomm_error_names_the_alternatives() {
+        let msg = no_didcomm_endpoint_error("did:webvh:x:vta.example", true, false).to_string();
+        assert!(msg.contains("--transport tsp"));
+        assert!(!msg.contains("--transport rest"));
     }
 
     /// The whole point of bounding the connect is that the operator learns the
@@ -2340,5 +3144,33 @@ mod tests {
         let msg = no_rest_endpoint_error("did:webvh:scid:host.example.com").to_string();
         assert!(msg.contains("--url"));
         assert!(msg.contains("did:webvh:scid:host.example.com"));
+    }
+}
+
+/// Every `TspSession` future must be `Send`.
+///
+/// Not a nicety: `VtaClient::dispatch_trust_task` awaits `request`, and
+/// `vta-mcp` puts that future behind `#[tool]`, which demands `Send`. A single
+/// `Box<dyn Error>` (not `Send`) held across one `.await` inside `request` is
+/// enough to make the whole chain `!Send` — and because `vta-mcp` does not
+/// enable the `tsp` feature itself, it only breaks once Cargo's feature
+/// unification turns TSP on for a workspace-wide build. That is a long way from
+/// the edit that caused it, so pin it here where the mistake is made.
+///
+/// A compile-time check: if these stop being `Send`, this module fails to
+/// build.
+#[cfg(all(test, feature = "tsp"))]
+mod tsp_send_assertions {
+    use std::time::Duration;
+
+    fn assert_send<T: Send>(_: T) {}
+
+    #[allow(dead_code)]
+    fn tsp_futures_are_send(s: &super::TspSession) {
+        assert_send(s.request("did:vta", "did:mediator", b"{}", Duration::from_secs(1)));
+        assert_send(s.receive_next(1));
+        assert_send(s.send_document("did:vta", "did:mediator", b"{}"));
+        assert_send(s.announce("did:vta", "did:mediator"));
+        assert_send(s.shutdown());
     }
 }

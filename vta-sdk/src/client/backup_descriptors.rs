@@ -192,6 +192,14 @@ impl VtaClient {
                 base_url,
                 auth,
             } => (client, base_url, auth),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => {
+                return Err(VtaError::Validation(
+                    "backup descriptor pattern is REST-only; \
+                     this client is on TSP transport"
+                        .into(),
+                ));
+            }
             #[cfg(feature = "session")]
             Transport::DIDComm { .. } => {
                 return Err(VtaError::Validation(
@@ -256,6 +264,10 @@ impl VtaClient {
                     "DIDComm transport has no REST client for blob download".into(),
                 )
             })?,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
+                VtaError::Validation("TSP transport has no REST client for blob download".into())
+            })?,
         };
         let resp = client
             .get(transport_url)
@@ -284,6 +296,10 @@ impl VtaClient {
             #[cfg(feature = "session")]
             Transport::DIDComm { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
                 VtaError::Validation("DIDComm transport has no REST client for blob upload".into())
+            })?,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { rest_client, .. } => rest_client.as_ref().ok_or_else(|| {
+                VtaError::Validation("TSP transport has no REST client for blob upload".into())
             })?,
         };
         let resp = client

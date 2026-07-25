@@ -2,7 +2,7 @@
 name = "vta-backup"
 description = "VTA backup/restore subsystem — encrypted full-state export/import, the sealed backup-bundle store, and its TTL sweeper"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -19,7 +19,7 @@ tee = ["vta-config/tee", "dep:async-trait"]
 
 [dependencies]
 vti-common = { path = "../vti-common", version = "0.11" }
-vta-sdk = { path = "../vta-sdk", version = "0.19" }
+vta-sdk = { path = "../vta-sdk", version = "0.20" }
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vta-keys = { path = "../vta-keys", version = "0.1" }
 vta-config = { path = "../vta-config", version = "0.1" }

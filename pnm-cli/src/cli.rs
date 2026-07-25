@@ -11,11 +11,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 /// Transport to use when connecting to the VTA.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub(crate) enum TransportOpt {
-    /// Prefer DIDComm when the VTA advertises it, else REST.
+    /// Prefer TSP when the VTA advertises it, else DIDComm, else REST.
+    /// Falls back loudly (a WARN naming the mediator) if an advertised TSP
+    /// endpoint doesn't answer.
     #[default]
     Auto,
-    /// Force REST even when DIDComm is advertised — recovers a VTA whose
-    /// mediator is unreachable.
+    /// Force TSP. Fails — rather than falling back — if the VTA advertises no
+    /// `#tsp` service or its TSP mediator doesn't answer.
+    Tsp,
+    /// Force DIDComm, ignoring an advertised `#tsp`. Recovers a VTA whose TSP
+    /// endpoint is broken but whose mediator is healthy.
+    Didcomm,
+    /// Force REST even when a mediator transport is advertised — recovers a VTA
+    /// whose mediator is unreachable.
     Rest,
 }
 
@@ -23,6 +31,8 @@ impl From<TransportOpt> for vta_sdk::session::TransportChoice {
     fn from(opt: TransportOpt) -> Self {
         match opt {
             TransportOpt::Auto => Self::Auto,
+            TransportOpt::Tsp => Self::Tsp,
+            TransportOpt::Didcomm => Self::Didcomm,
             TransportOpt::Rest => Self::Rest,
         }
     }
@@ -67,9 +77,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) json: bool,
 
-    /// Force a transport instead of auto-selecting. `rest` skips DIDComm even
-    /// when the VTA advertises it — the recovery path when a mediator is
-    /// unreachable.
+    /// Force a transport instead of auto-selecting. Auto prefers TSP, then
+    /// DIDComm, then REST. `tsp` / `didcomm` pin a mediator transport and fail
+    /// rather than fall back; `rest` skips both — the recovery path when a
+    /// mediator is unreachable.
     #[arg(long, value_enum, default_value_t = TransportOpt::Auto, global = true)]
     pub(crate) transport: TransportOpt,
 

@@ -56,6 +56,16 @@ impl VtaClient {
                 )
                 .await
             }
+            // `provision_integration_didcomm` speaks the DIDComm
+            // `provision-integration/1.0` message, which has no TSP binding
+            // yet. Refuse plainly rather than send a frame the VTA cannot
+            // dispatch — the sealed bundle is too important to fail obscurely.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "provision-integration has no TSP binding yet; relay it over REST or \
+                 DIDComm:\n  <cli> --transport didcomm bootstrap provision-integration …"
+                    .into(),
+            )),
         }
     }
 }

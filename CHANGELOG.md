@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.0 — TSP is a selectable transport, not just a probe (BREAKING)
+
+TSP has worked on the wire since #749/#750, but nothing between "the wire works"
+and "a client can choose it" existed. A consumer could *ping* a TSP VTA and could
+*receive* pushes; it could not transact with one. Three gaps, closed together
+because each is useless without the others.
+
+**Discovery (#765).** `session::resolve_vta_endpoint` never read the `#tsp`
+service. It ran its own two-field extraction (`#vta-rest` + `DIDCommMessaging`)
+even though `protocol::matching::ServiceCapabilities::from_did_document` — which
+matches on service `type`, tolerates `type` as string-or-array, and had
+understood `TSPTransport` all along — was sitting beside it. That duplication
+*was* the bug, so discovery now routes through the shared matcher rather than
+gaining a third bespoke branch.
+
+Two consequences. A TSP-enabled VTA is no longer invisible: every SDK consumer
+can see it advertises TSP. And a **TSP-only** document no longer falls through
+both extractions to `url_from_did()`, which returned a REST URL synthesized from
+the DID's own domain — an endpoint that need not exist. This SDK ships
+`did-host-tsp` and `did-host-http-tsp` templates, so it could mint a node it
+could not then resolve.
+
+`ResolvedVta` gains `tsp_mediator_did` and `advertised()`, deliberately separate
+from "the transport we connected over" — a probe needs both, independently
+sourced. Conflating them is what rendered a TSP-advertising VTA as
+"DIDComm (in use) · only transport offered".
+
+**Selection (#766).** `TransportChoice` gains `Tsp` and `Didcomm`, and `Auto`
+now implements the documented precedence **TSP > DIDComm > REST** (it previously
+meant "DIDComm when advertised, else REST" — the precedence was documented
+everywhere and implemented nowhere). `Didcomm` did not exist even implicitly:
+forcing DIDComm was only available as "whatever `Auto` happens to pick".
+
+`Auto` **falls back loudly**: an advertised-but-unanswering TSP mediator logs a
+`WARN` naming the mediator and deadline, then tries DIDComm, then REST. Failing
+hard would make a dual-transport VTA *less* available than before, purely for
+having enabled TSP; falling back silently would make a permanently-broken TSP
+deployment invisible. `--transport tsp` never falls back, for operators who want
+the strict behaviour.
+
+TSP connects are bounded (`VTA_TSP_CONNECT_TIMEOUT_SECS`, 30s default) with
+their **own** ceiling rather than sharing the DIDComm one — the TSP websocket
+hits the same mediator behind the same reconnect/backoff loop, so without a
+deadline `Auto` preferring TSP would turn a working DIDComm fallback into an
+indefinite hang. Per R6.4, "TSP advertised but the mediator went silent" and "no
+TSP advertised at all" get distinct messages, the latter naming the transports
+the VTA *does* offer.
+
+**The client (#767).** `TspSession::request(vta_did, mediator_did, document,
+timeout)` — correlated request/response, which is what makes TSP a transport:
+
+- Replies match on `threadId` (fallback: echoed `nonce`), never "first frame
+  that parses". The mediator inbox is durable and flushes on connect, so an
+  uncorrelated read returns a reply from a *previous process run* — the fault
+  that made the #749 delivery bug look intermittent. The correlation logic was
+  written for `TspPingSession::ping` and welded there; it is now one shared
+  `correlates` helper both paths use.
+- Concurrent requests share one session. Whichever caller holds the socket
+  demultiplexes for all of them (leader/followers), so a slow request cannot
+  serialise a fast one and one request's read cannot consume another's reply.
+  `receive_next` previously took the socket lock for its entire timeout budget.
+- Frames matching no in-flight request are **parked** for `receive_next`, not
+  discarded — a pushed `task-consent/request` must not be eaten by a request
+  waiting on something unrelated.
+- Every wait has a finite deadline (R1.2).
+
+`VtaClient::connect_tsp` mirrors `connect_didcomm`, and `Transport::Tsp` plugs
+into `dispatch_trust_task` — the single funnel — so the **whole Trust-Task
+surface** works over TSP with no per-operation work. The older DIDComm
+*protocol-message* surface (`key-management/1.0/*`) has no TSP dispatcher behind
+it and returns `UnsupportedTransport` naming DIDComm, rather than sending a frame
+the VTA cannot dispatch.
+
+**Authentication, stated explicitly** (the issue asked for this in writing):
+there is no token dance and no holder proof on the TSP path. TSP `unpack` yields
+a cryptographically proven sender VID, which `tsp_inbound::dispatch_one` resolves
+straight to its ACL grant before dispatching on the shared spine — the same
+intrinsic-sender model as DIDComm authcrypt. The REST bearer-token flow has no
+TSP analogue; `set_token` is a no-op on this transport.
+
+New `VtaError::TspTransport`, distinct from `DidcommTransport`: the two fail for
+different reasons and have different recovery flags.
+
+**Breaking.** `VtaEndpoint` gains a `Tsp` variant. It was not `#[non_exhaustive]`
+(unlike `TransportChoice`), so an exhaustive downstream match no longer compiles;
+it is `#[non_exhaustive]` now, so this is the last time. Hence 0.19 → 0.20.
+`ResolvedVta` gains two fields. CLIs gain `--transport tsp` and
+`--transport didcomm`.
+
+A compile-time pin (`tsp_send_assertions`) asserts every `TspSession` future is
+`Send`. One `Box<dyn Error>` held across one `.await` makes the whole chain
+`!Send` — including `VtaClient::dispatch_trust_task`, which `vta-mcp` puts behind
+`#[tool]`. Because `vta-mcp` doesn't enable the `tsp` feature itself, that break
+only surfaces once Cargo's feature unification turns TSP on for a workspace-wide
+build, a long way from the edit that caused it. It bit during this change; the
+private helpers are now `String`-typed so it cannot recur silently.
+
+Closes #765, #766, #767.
+
+### Dependent crates — `vta-sdk` 0.20 pin bump only
+
+No behavioural change; each of these only re-pins `vta-sdk = "0.19"` → `"0.20"`,
+which the version guard counts as a source change. `pnm-cli` 0.11.10 and
+`cnm-cli` 0.11.7 additionally expose the new `--transport tsp` /
+`--transport didcomm` flags (documented above).
+
+- `vta-audit` 0.1.1
+- `vta-backup` 0.1.1
+- `vta-cli-common` 0.10.15
+- `vta-keys` 0.1.2
+- `vta-service` 0.12.39
+- `vta-support` 0.1.2
+- `vta-vault` 0.1.1
+- `vta-webvh` 0.1.1
+- `vtc-client` 0.1.5
+- `vtc-service` 0.11.26
+- `vti-common` 0.11.23
+- `vti-secrets` 0.1.8
+
 ### vta-service 0.12.38 — make the wizard's scripted prompts feature-proof, and actually run them in CI
 
 The setup wizard's two golden tests (`interactive_matches_equivalent_toml`,

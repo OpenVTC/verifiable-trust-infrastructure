@@ -146,13 +146,23 @@ Two facts from the reference code:
 
 ## 3. Protocol matching — the load-bearing new logic (D4)
 
-Today's transport selection is **one-directional and shape-sniffing**:
-`vta-sdk/src/session.rs::resolve_vta_endpoint` walks a counterparty DID doc, and
-`integration/auth.rs::decide_transport` picks DIDComm-if-mediator-DID-else-REST.
+Transport selection **was** one-directional and shape-sniffing:
+`vta-sdk/src/session.rs::resolve_vta_endpoint` walked a counterparty DID doc, and
+`integration/auth.rs::decide_transport` picked DIDComm-if-mediator-DID-else-REST.
 The WakeHandle convention treats *a DID as DIDComm, a URL as REST*.
 
 That heuristic **breaks under TSP**: a TSP VID is also a DID, so "endpoint is a DID ⇒
 DIDComm" is ambiguous. The fix is structural.
+
+> **Status (vta-sdk 0.20, #765).** §3.1 has landed. `protocol::matching`
+> (`ServiceCapabilities` / `select_protocol`) is the workspace's one
+> implementation of service-`type` matching, and `resolve_vta_endpoint` now
+> routes through it rather than carrying its own extraction — which is what had
+> left `#tsp` unread on the client side while the matcher already understood it.
+> `VtaEndpoint::Tsp` and `ResolvedVta::tsp_mediator_did` surface the result;
+> `TransportChoice` (#766) selects on it and `TspSession::request` /
+> `VtaClient::connect_tsp` (#767) transact over it. The second resolution hop
+> below (mediator DID → delivery URL) stays inside the TSP stack.
 
 ### 3.1 Capability discovery (read from the DID document)
 
