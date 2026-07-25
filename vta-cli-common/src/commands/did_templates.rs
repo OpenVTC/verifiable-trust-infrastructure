@@ -59,34 +59,45 @@ pub fn cmd_validate(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Resolve an `init <kind>` argument to an exact [`BUILTIN_NAMES`] entry.
+///
+/// Accepts either the canonical name verbatim or a short role alias. Returns
+/// `None` for anything else.
+///
+/// Role aliases map onto the canonical *shape* names, where `http` = a
+/// WebVHHosting endpoint and `didcomm` = a DIDCommMessaging endpoint: a control
+/// node serves both, a daemon publishes DID logs only, and a witness/watcher is
+/// reached over DIDComm only.
+///
+/// The legacy `webvh-*` names were retired after their one-release deprecation
+/// window, matching the builtin loader — see
+/// `did_templates::builtin::legacy_template_aliases_are_removed`.
+fn resolve_builtin_kind(kind: &str) -> Option<&'static str> {
+    let name = match kind {
+        "mediator" => "didcomm-mediator",
+        "agent" => "ai-agent",
+        "did-hosting" | "hosting" | "daemon" => "did-host-http",
+        "control" => "did-host-http-didcomm",
+        "witness" | "watcher" | "server" => "did-host-didcomm",
+        other => *BUILTIN_NAMES.iter().find(|n| **n == other)?,
+    };
+    Some(name)
+}
+
 /// `pnm did-templates init <kind>` / `cnm did-templates init <kind>`.
 ///
 /// Emit a starter template on stdout by forking an embedded built-in. The
-/// operator can redirect to a file, edit, and upload. `kind` is a built-in
-/// name (`didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`,
-/// `did-hosting-server`).
+/// operator can redirect to a file, edit, and upload. `kind` is a canonical
+/// built-in name (`didcomm-mediator`, `did-host-http`, `did-host-http-didcomm`,
+/// `did-host-didcomm`, …) or a short role alias — see
+/// [`resolve_builtin_kind`].
 pub fn cmd_init(kind: String) -> Result<(), Box<dyn std::error::Error>> {
-    // Accept either the exact builtin name, a short alias, or a legacy
-    // webvh-* name (resolved via the builtin loader's alias table).
-    let builtin_name = match kind.as_str() {
-        "mediator" => "didcomm-mediator",
-        "agent" => "ai-agent",
-        "did-hosting" | "hosting" | "daemon" => "did-hosting-daemon",
-        "control" => "did-hosting-control",
-        "witness" | "watcher" | "server" => "did-hosting-server",
-        // Legacy aliases — silently resolve to the renamed templates.
-        "webvh-hosting" => "did-hosting-daemon",
-        "webvh-control" => "did-hosting-control",
-        "webvh-daemon" => "did-hosting-daemon",
-        "webvh-server" => "did-hosting-server",
-        other if BUILTIN_NAMES.contains(&other) => other,
-        other => {
-            eprintln!(
-                "{RED}\u{2717}{RESET} Unknown builtin kind '{other}'. Available: {}",
-                BUILTIN_NAMES.join(", ")
-            );
-            return Err("unknown builtin".into());
-        }
+    let Some(builtin_name) = resolve_builtin_kind(&kind) else {
+        eprintln!(
+            "{RED}\u{2717}{RESET} Unknown builtin kind '{kind}'. Available: {}",
+            BUILTIN_NAMES.join(", ")
+        );
+        return Err("unknown builtin".into());
     };
 
     // Load the builtin, re-serialize as pretty-printed JSON for editing.
@@ -504,4 +515,76 @@ pub fn cmd_list_builtins() -> Result<(), Box<dyn std::error::Error>> {
     let height = BUILTIN_NAMES.len() as u16 + 4;
     print_widget(table, height);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Every** `init` alias must resolve to a builtin the loader actually
+    /// has. This is the check that was missing: the `did-hosting-*` →
+    /// `did-host-*` rename updated `BUILTIN_NAMES` and `load_embedded` but not
+    /// this alias table, so seven of the nine aliases resolved to names that no
+    /// longer existed and `init` failed with "builtin template not found".
+    ///
+    /// Asserting against `load_embedded` rather than a hardcoded list is the
+    /// point — a future rename that misses one side fails here.
+    #[test]
+    fn every_init_alias_resolves_to_a_loadable_builtin() {
+        for alias in [
+            "mediator",
+            "agent",
+            "did-hosting",
+            "hosting",
+            "daemon",
+            "control",
+            "witness",
+            "watcher",
+            "server",
+        ] {
+            let resolved = resolve_builtin_kind(alias)
+                .unwrap_or_else(|| panic!("alias '{alias}' resolved to nothing"));
+            assert!(
+                BUILTIN_NAMES.contains(&resolved),
+                "alias '{alias}' → '{resolved}', which is not in BUILTIN_NAMES"
+            );
+            assert!(
+                load_embedded(resolved).is_ok(),
+                "alias '{alias}' → '{resolved}', which the loader cannot load"
+            );
+        }
+    }
+
+    /// Every canonical name is accepted verbatim, not just via an alias.
+    #[test]
+    fn canonical_builtin_names_pass_through() {
+        for name in BUILTIN_NAMES {
+            assert_eq!(
+                resolve_builtin_kind(name),
+                Some(*name),
+                "canonical name '{name}' must pass through unchanged"
+            );
+        }
+    }
+
+    /// The retired `webvh-*` aliases must not come back. Their one-release
+    /// window closed; a stale name should fail loudly rather than resolve.
+    #[test]
+    fn retired_webvh_aliases_are_rejected() {
+        for old in [
+            "webvh-hosting",
+            "webvh-control",
+            "webvh-daemon",
+            "webvh-server",
+            "did-hosting-control",
+            "did-hosting-daemon",
+            "did-hosting-server",
+        ] {
+            assert_eq!(
+                resolve_builtin_kind(old),
+                None,
+                "retired alias '{old}' must no longer resolve"
+            );
+        }
+    }
 }
