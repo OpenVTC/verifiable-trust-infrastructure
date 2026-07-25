@@ -24,7 +24,6 @@ use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const SELF_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/self-remove/0.1";
-const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
 const ADMIN_REMOVE_TASK: &str = "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
 const POLICY_UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const POLICY_ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";

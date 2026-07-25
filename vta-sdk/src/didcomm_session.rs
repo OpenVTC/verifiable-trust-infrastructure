@@ -582,9 +582,29 @@ impl DIDCommSession {
                 let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
                 Ok(Some(json))
             }
-            // Stream ended (service shut down) — nothing more to receive.
-            Ok(None) => Ok(None),
-            // Poll window elapsed with nothing.
+            // Stream ended — nothing more will EVER arrive on this session.
+            //
+            // Distinguish the two ways that happens, because they need opposite
+            // reactions from the caller:
+            //   * we called `shutdown()` — expected teardown, report idle;
+            //   * anything else (mediator dropped us, delivery layer died) — the
+            //     session is dead and must be rebuilt.
+            //
+            // Reporting the second as `Ok(None)` made a dead session look like a
+            // quiet one: a polling loop would treat "stream ended" as "nothing
+            // yet", call again, get the same answer instantly, and spin at full
+            // tilt forever without reconnecting. `Err` is what makes the
+            // supervisor reconnect instead.
+            Ok(None) => {
+                if self.shutdown.load(Ordering::Acquire) {
+                    Ok(None)
+                } else {
+                    Err(VtaError::DidcommTransport(
+                        "mediator inbound stream ended — session is no longer live".into(),
+                    ))
+                }
+            }
+            // Poll window elapsed with nothing — the ordinary idle case.
             Err(_) => Ok(None),
         }
     }

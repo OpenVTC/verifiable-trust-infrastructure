@@ -184,6 +184,25 @@ pub async fn run_inbound_loop(
     let mut stream = messaging.service.subscribe();
     info!("VTA messaging connected to mediator — inbound messages will be processed");
 
+    // Handlers run concurrently, bounded by a semaphore.
+    //
+    // This loop used to `await` `handle_inbound` inline, so the VTA processed
+    // exactly one inbound frame at a time — across BOTH protocols, since one
+    // mediator websocket carries DIDComm and TSP together (one socket per DID).
+    // A single slow handler therefore stalled every other caller's traffic, and
+    // a hanging one wedged inbound messaging entirely.
+    //
+    // Spawning is safe because the dispatch spine is already concurrent: the
+    // REST route runs `dispatch_trust_task_core` under axum with no such
+    // serialisation, so handlers cannot have been relying on it.
+    //
+    // Bounded rather than unbounded: an unbounded spawn turns a burst (or a
+    // hostile sender) into unbounded task and memory growth. At the cap, the
+    // loop waits for a permit — degrading to the old serialised behaviour under
+    // extreme load instead of falling over.
+    const MAX_INFLIGHT_INBOUND: usize = 32;
+    let inflight = Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_INBOUND));
+
     loop {
         tokio::select! {
             maybe = stream.next() => {
@@ -191,15 +210,34 @@ pub async fn run_inbound_loop(
                     warn!("VTA inbound stream ended — messaging dispatcher stopping");
                     break;
                 };
-                handle_inbound(
-                    inbound,
-                    &messaging,
-                    &app_state,
-                    &vta_state,
-                    &vta_did,
-                    &mediator_did,
-                )
-                .await;
+
+                // Acquire before spawning so the cap actually bounds in-flight
+                // work; the permit is released when the handler task ends.
+                let permit = match Arc::clone(&inflight).acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("inbound concurrency semaphore closed — stopping");
+                        break;
+                    }
+                };
+
+                let messaging = Arc::clone(&messaging);
+                let app_state = app_state.clone();
+                let vta_state = Arc::clone(&vta_state);
+                let vta_did = vta_did.clone();
+                let mediator_did = mediator_did.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    handle_inbound(
+                        inbound,
+                        &messaging,
+                        &app_state,
+                        &vta_state,
+                        &vta_did,
+                        &mediator_did,
+                    )
+                    .await;
+                });
             }
             _ = shutdown.cancelled() => {
                 info!("VTA messaging stopping (shutdown signalled)");
