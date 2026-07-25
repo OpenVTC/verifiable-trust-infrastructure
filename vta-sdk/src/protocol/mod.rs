@@ -169,6 +169,10 @@ impl VtaClient {
             crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
                 "enable_didcomm is REST-only".into(),
             )),
+            #[cfg(feature = "tsp")]
+            crate::client::Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "enable_didcomm is REST-only".into(),
+            )),
         }
     }
 
@@ -191,6 +195,10 @@ impl VtaClient {
             }
             #[cfg(feature = "session")]
             crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
+                "didcomm status is REST-only in the SDK".into(),
+            )),
+            #[cfg(feature = "tsp")]
+            crate::client::Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
                 "didcomm status is REST-only in the SDK".into(),
             )),
         }

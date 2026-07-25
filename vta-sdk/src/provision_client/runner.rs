@@ -546,6 +546,7 @@ mod tests {
     fn resolved(mediator_did: Option<&str>, rest_url: Option<&str>) -> ResolvedVta {
         ResolvedVta {
             vta_did: "did:webvh:vta.test".into(),
+            tsp_mediator_did: None,
             mediator_did: mediator_did.map(str::to_string),
             rest_url: rest_url.map(str::to_string),
         }

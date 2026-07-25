@@ -2,7 +2,7 @@
 name = "vta-vault"
 description = "VTA holder credential vault — storage, query, receive/verify, present, and status refresh for credentials a holder stores on a VTA"
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 publish.workspace = true
 authors.workspace = true
@@ -25,7 +25,7 @@ webvh = ["dep:reqwest", "vta-sdk/client"]
 [dependencies]
 vta-keyspaces = { path = "../vta-keyspaces", version = "0.1" }
 vti-common = { path = "../vti-common", version = "0.11", features = ["encryption"] }
-vta-sdk = { path = "../vta-sdk", version = "0.19", features = ["didcomm", "sealed-transfer"] }
+vta-sdk = { path = "../vta-sdk", version = "0.20", features = ["didcomm", "sealed-transfer"] }
 affinidi-crypto = { workspace = true }
 affinidi-secrets-resolver = { workspace = true }
 affinidi-data-integrity = { workspace = true }

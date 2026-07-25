@@ -51,6 +51,14 @@ pub enum VtaError {
     #[error("didcomm transport error: {0}")]
     DidcommTransport(String),
 
+    /// TSP transport failure (seal/route/websocket). Network-ish — caller may
+    /// want to retry. Kept distinct from [`Self::DidcommTransport`] rather than
+    /// folded into it: the two transports fail for different reasons and have
+    /// different recovery flags, and one shared message is what R6.4 exists to
+    /// prevent.
+    #[error("tsp transport error: {0}")]
+    TspTransport(String),
+
     /// Remote endpoint returned a DIDComm problem-report whose `code`
     /// did not match any of the standard `e.p.msg.*` taxonomy variants
     /// (which map to the typed REST-aligned variants above). Inspect
@@ -348,6 +356,11 @@ impl VtaError {
             Self::DidcommTransport(_) => {
                 Some("Mediator or peer unreachable. Retry after checking mediator connectivity.")
             }
+            Self::TspTransport(_) => Some(
+                "The VTA's TSP mediator is unreachable or rejected the frame. Retry, or \
+                 reach the VTA over another transport: `--transport didcomm` / \
+                 `--transport rest`.",
+            ),
             #[cfg(feature = "client")]
             Self::Network(_) => Some(
                 "Network error reaching the VTA. Confirm the URL is correct and the \

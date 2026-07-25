@@ -236,6 +236,10 @@ impl VtaClient {
             Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
                 "wrapping key not needed for DIDComm transport".into(),
             )),
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => Err(VtaError::UnsupportedTransport(
+                "wrapping key not needed for TSP transport".into(),
+            )),
         }
     }
 
