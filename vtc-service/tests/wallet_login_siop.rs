@@ -412,3 +412,221 @@ async fn wallet_login_rejects_iss_not_matching_session() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+// ---------------------------------------------------------------------------
+// Mediator-less refresh (#783)
+// ---------------------------------------------------------------------------
+//
+// The fixture above is built with **no ATM** (`TestVtc` defaults `atm: None`),
+// which is what makes these tests load-bearing: before the REST fast-path,
+// `POST /v1/auth/refresh` went straight to `atm.unpack` and every request here
+// died on "ATM not configured". A REST-only wallet could log in without a
+// mediator but could not spend the refresh token it was handed — so it re-ran
+// the whole SIOP round-trip on each access-token expiry.
+
+const REFRESH_TYPE: &str = "https://trusttasks.org/spec/auth/refresh/0.1";
+
+/// A canonical `auth/refresh/0.1` Trust Task document. `refreshToken` is
+/// camelCase per the generated spec payload (R3.1) — deliberately *not* the
+/// DIDComm body's snake_case `refresh_token`, so one document builder serves
+/// both the VTA and the VTC over REST.
+fn refresh_doc(refresh_token: &str) -> Value {
+    json!({
+        "id": "urn:uuid:11111111-2222-3333-4444-555555555555",
+        "type": REFRESH_TYPE,
+        "payload": { "refreshToken": refresh_token },
+    })
+}
+
+/// POST with an explicit `Trust-Task` header — the header-gated `/v1/auth/*`
+/// surface used by CLI/SDK clients (the `/v1/wallet/*` aliases are exempt).
+async fn post_with_task_header(
+    router: &axum::Router,
+    path: &str,
+    task: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let res = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", "application/json")
+                .header("Trust-Task", task)
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+/// Run a full wallet login and return the whole `{ session, tokens }` body.
+async fn wallet_login_tokens(fix: &Fixture, sk: &SigningKey, holder: &str, kid: &str) -> Value {
+    let (session_id, challenge) = get_challenge(&fix.router, holder).await;
+    let now = now_epoch();
+    let id_token = sign_id_token(sk, kid, holder, holder, VTC_DID, &challenge, now, now + 300);
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/",
+        json!({ "type": AUTH_TYPE, "payload": { "id_token": id_token, "session_id": session_id } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    body
+}
+
+#[tokio::test]
+async fn rest_only_login_then_refresh_needs_no_didcomm() {
+    let (sk, holder, kid) = holder_identity(20);
+    let fix = build_fixture(&holder).await;
+
+    // Leg 1 — SIOP login over plain REST.
+    let login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let refresh_token = login["tokens"]["refreshToken"]
+        .as_str()
+        .expect("login must issue a refresh token")
+        .to_string();
+    let first_access = login["tokens"]["accessToken"].as_str().unwrap().to_string();
+
+    // Leg 2 — spend it on the header-exempt wallet alias. No mediator, no
+    // DIDComm envelope, no `Trust-Task` header.
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/refresh",
+        refresh_doc(&refresh_token),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "REST refresh failed: {body}");
+    let new_access = body["tokens"]["accessToken"]
+        .as_str()
+        .expect("refresh must mint an access token");
+    assert!(!new_access.is_empty());
+    assert_ne!(
+        new_access, first_access,
+        "refresh must mint a *new* access token, not echo the old one"
+    );
+    // The session survives rotation and still names the same subject.
+    assert_eq!(body["session"]["subject"].as_str(), Some(holder.as_str()));
+}
+
+#[tokio::test]
+async fn rest_refresh_rotates_and_the_old_token_is_dead() {
+    // RFC 6749 §10.4: every successful refresh mints a new refresh token and
+    // retires the presented one. A replayed token must read as "not found" —
+    // the same shape a revoked token gives, so a leak is not distinguishable
+    // from a revocation by probing.
+    let (sk, holder, kid) = holder_identity(21);
+    let fix = build_fixture(&holder).await;
+
+    let login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let first = login["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&first)).await;
+    assert_eq!(status, StatusCode::OK, "first refresh failed: {body}");
+    let second = body["tokens"]["refreshToken"]
+        .as_str()
+        .expect("rotation must return a new refresh token");
+    assert_ne!(second, first, "refresh token must rotate");
+
+    // Replay the spent token.
+    let (status, body) =
+        post_json(&fix.router, "/v1/wallet/auth/refresh", refresh_doc(&first)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a spent refresh token must not work twice: {body}"
+    );
+}
+
+#[tokio::test]
+async fn rest_refresh_also_works_on_the_header_gated_route() {
+    // The CLI/SDK surface. Same handler, same document — it just arrives on
+    // `/v1/auth/refresh` behind the `Trust-Task` gate instead of the
+    // header-exempt wallet alias.
+    let (sk, holder, kid) = holder_identity(22);
+    let fix = build_fixture(&holder).await;
+
+    let login = wallet_login_tokens(&fix, &sk, &holder, &kid).await;
+    let refresh_token = login["tokens"]["refreshToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (status, body) = post_with_task_header(
+        &fix.router,
+        "/v1/auth/refresh",
+        REFRESH_TYPE,
+        refresh_doc(&refresh_token),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "header-gated REST refresh failed: {body}"
+    );
+    assert!(
+        body["tokens"]["accessToken"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
+        "expected rotated tokens, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn rest_refresh_rejects_an_unknown_token() {
+    let (_sk, holder, _kid) = holder_identity(23);
+    let fix = build_fixture(&holder).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/refresh",
+        refresh_doc("rt_never-issued-by-this-vtc"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "an unissued refresh token must be rejected: {body}"
+    );
+}
+
+#[tokio::test]
+async fn rest_refresh_rejects_a_malformed_payload() {
+    // The document *is* an `auth/refresh/0.1` Trust Task, so the fast-path
+    // owns it and must fail loudly rather than fall through to the DIDComm
+    // path and report the misleading "ATM not configured" / "failed to unpack".
+    // `refresh::Payload` is `deny_unknown_fields`, so the snake_case spelling
+    // is a hard error, not a silently-missing token.
+    let (_sk, holder, _kid) = holder_identity(24);
+    let fix = build_fixture(&holder).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/wallet/auth/refresh",
+        json!({
+            "id": "urn:uuid:99999999-9999-9999-9999-999999999999",
+            "type": REFRESH_TYPE,
+            "payload": { "refresh_token": "wrong-casing" },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "got {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("invalid refresh payload"),
+        "the error must name the payload as the problem, got: {body}"
+    );
+}
