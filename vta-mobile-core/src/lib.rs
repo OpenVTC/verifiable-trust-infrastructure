@@ -42,6 +42,7 @@ mod proof;
 // so the crate layout matches the mapped design from day one.
 pub mod consent;
 pub mod didcomm;
+pub mod display_name;
 pub mod keys;
 pub mod mediator;
 pub mod push;
