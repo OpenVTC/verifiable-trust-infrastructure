@@ -248,6 +248,18 @@ jobs:
       - name: vta-sdk client + sealed-transfer + provision-integration
         run: cargo check -p vta-sdk --features client,sealed-transfer,provision-integration
 
+      # Every step above only *compiles*. The setup wizard's scripted-prompt
+      # tests are the one place where a feature flag changes behaviour rather
+      # than just what compiles: each secrets backend adds an option to the
+      # backend menu, which shifts the answer script. `cargo check` cannot see
+      # that, so these two tests sat broken under `config-seed` — the only combo
+      # that both adds a backend and is cheap to build — until someone ran it by
+      # hand. Run them, don't just build them.
+      - name: vta-service setup wizard under extra secrets backends
+        run: |
+          cargo test -p vta-service --bin vta --features config-seed setup::interactive
+          cargo test -p vta-service --bin vta --features config-seed,vault-secrets,k8s-secrets setup::interactive
+
   enclave:
     # The Nitro enclave binary uses a TEE-only feature combo that the
     # default `check` job never touches. Linux-only because vsock-store
