@@ -11,14 +11,42 @@ strictly downward — no cycles. There are two leaf crates with no internal
 workspace deps (`vti-common`, `vta-sdk`); everything else depends on one
 or both of them, plus optionally on `vta-cli-common`.
 
+`vta-service` has been **decomposed into subsystem crates** (#780–#791, nine
+steps, ~114k → ~87k lines). Each subsystem is re-exported from `vta-service`, so
+`crate::policy::…`, `vta_service::tee::…`, and `crate::operations::backup::…`
+still resolve — **but new code should depend on the subsystem crate directly**,
+not reach through the facade. Before proposing a further extraction, read
+`docs/05-design-notes/vta-service-decomposition.md`, which records the technique
+and — importantly — where the program stops.
+
 ```
-Leaf crates:
+Layer 0 (leaves):
   vti-common   (no internal deps)
   vta-sdk      (no internal deps)
-
   vti-secrets     → vti-common (+ vta-sdk under the `onboarding` feature)
+
+Layer 1 (VTA foundations):
+  vta-keyspaces   → vti-common
+  vta-config      → vti-common, vti-secrets
+  vta-audit       → vta-sdk, vti-common
+
+Layer 2 (VTA subsystems):
+  vta-support     → vta-config, vta-keyspaces, vta-sdk, vti-common
+  vta-keys        → vta-config, vta-keyspaces, vta-sdk, vti-common, vti-secrets
+  vta-vault       → vta-keyspaces, vta-sdk, vti-common
+  vta-webvh       → vta-keyspaces, vta-sdk, vti-common
+  vta-policy      → vta-config, vta-keyspaces, vti-common
+
+Layer 3 (composed subsystems):
+  vta-tee         → vta-config, vta-keys, vta-keyspaces, vta-support, vti-common
+  vta-backup      → vta-config, vta-keys, vta-keyspaces, vta-sdk, vta-support,
+                    vta-webvh, vti-common
+  vta-sweepers    → vta-audit, vta-keyspaces, vta-vault, vti-common
+
+Layer 4 (the spine + consumers):
   vta-cli-common  → vta-sdk, vti-common
-  vta-service     → vti-common, vti-secrets, vta-sdk, vta-cli-common
+  vta-service     → every vta-* subsystem above, + vti-common, vti-secrets,
+                    vta-sdk, vta-cli-common
   vtc-service     → vti-common, vti-secrets, vta-sdk
   pnm-cli         → vta-sdk, vta-cli-common
   cnm-cli         → vta-sdk, vta-cli-common
@@ -28,10 +56,21 @@ Leaf crates:
 
 | Crate | Role |
 |---|---|
-| `vti-common` | Shared foundation: JWT auth, ACL, `Store`/`KeyspaceHandle` enum (local fjall + vsock), `AppError`, config types, identifier validation (`identifier.rs`), `secure_file` (owner-only file hardening), pluggable telemetry sink (`telemetry::TelemetrySink`, default ring buffer), the `SeedStore` trait |
+| `vti-common` | Shared foundation: JWT auth, ACL, `Store`/`KeyspaceHandle` enum (local fjall + vsock), `AppError`, config types, identifier validation (`identifier.rs`), `secure_file` (owner-only file hardening), pluggable telemetry sink (`telemetry::TelemetrySink`, default ring buffer), the `SeedStore` trait, `guards` (executor preconditions) |
 | `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
-| `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags. Plus (feature `onboarding`) `IntegrationOnboarding` — the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper. Lets external VTI integrations onboard + store secrets exactly like first-party ones without depending on `vta-service`. The backend implementations are shared by **both** the VTA (`vta-service::keys::seed_store`) and the VTC (`vtc-service::keys::seed_store`, which keeps its own factory for VTC-specific storage locations / `*SecretStore` naming) |
-| `vta-service` | VTA logic (library) + local/dev binary. Routes, operations (provision-integration, did-webvh, contexts, backup, **protocol management**), setup wizards (interactive + `--from <toml>`), DIDComm bridge + `messaging::*` (registry, drain store/sweeper, handshake, live prover, transient handshake) |
+| `vti-secrets` | Shared secret-store backends (AWS / GCP / Azure / Vault / Kubernetes / keyring / config-seed / TEE-KMS / plaintext) + the `create_seed_store(&secrets, &data_dir)` factory + `SecretsConfig`, all behind the same feature flags. Plus (feature `onboarding`) `IntegrationOnboarding` — the ephemeral-`did:key` → ACL-grant → auto-rotate cold-start helper. Lets external VTI integrations onboard + store secrets exactly like first-party ones without depending on `vta-service`. The backend implementations are shared by **both** the VTA (`vta-keys::seed_store`) and the VTC (`vtc-service::keys::seed_store`, which keeps its own factory for VTC-specific storage locations / `*SecretStore` naming) |
+| `vta-keyspaces` | Keyspace-name registry — the `const` names every `store.keyspace(..)` call uses, plus the backup partition (`ALL` / `BACKED_UP` / `EXCLUDED_FROM_BACKUP`, pinned by a census test). Dependency-free leaf |
+| `vta-config` | `AppConfig` TOML shape + sub-configs (`PolicyConfig`; under `tee`, `TeeConfig` / `TeeKmsConfig` / `TeeMode`), composed over `vti-common`'s shared config types |
+| `vta-audit` | Structured audit logging for security-relevant operations, so any subsystem can emit audit events without depending on the whole service. `AuditLogEntry.detail` carries the operator `reason` |
+| `vta-support` | Shared mid-layer services — trust-context storage (the BIP-32 key-hierarchy roots) and the other clean glue subsystems need |
+| `vta-keys` | **Key management**: master-seed storage, BIP-32 hierarchical derivation, key wrapping (AES-GCM), imported-key handling, `create_seed_store` backend selection, `derive_pre_rotation_keys` |
+| `vta-vault` | **Holder credential vault**: storage, query, receive/verify, present, status refresh, and the archival lifecycle (`VaultStatus {Active,Archived,Deleted}`) |
+| `vta-webvh` | WebVH hosting infrastructure for the `did:webvh` lifecycle and its other consumers |
+| `vta-policy` | Policy subsystem: the regorus (Rego) engine + default bundle, the DTTE consent model, decision evaluators, policy storage |
+| `vta-tee` | TEE bootstrap: attestation providers (Nitro / SEV-SNP / simulated), KMS attest/decrypt, storage-key derivation, CMS unwrap, the DynamoDB anti-rollback anchor MAC, Mode-B admin bootstrap + carve-out, the mnemonic-export guard. Behind the `tee` feature — keeps the AWS SDK stack out of the default build graph |
+| `vta-backup` | Encrypted full-state export/import (Argon2id + AES-256-GCM), the `vta_did` compatibility check, the two-phase descriptor flow, the sealed bundle store + its TTL sweeper. TEE re-encryption is injected via the `BootstrapReEncryptor` trait |
+| `vta-sweepers` | Background TTL sweepers for the core keyspaces (acl / consent / vault) |
+| `vta-service` | The VTA **spine** (library) + local/dev binary — what remains after the subsystem extractions: `routes/` (HTTP surface), `trust_tasks/` (dispatch spine), `messaging/*` (DIDComm + TSP bridge: registry, drain store/sweeper, handshake, live prover, transient handshake), `operations/` (orchestration: provision-integration, did-webvh, contexts, protocol management), `setup/` (wizards, interactive + `--from <toml>`), and the offline CLI surfaces. Re-exports every subsystem crate above |
 | `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
 | `vtc-service` | Verifiable Trust Community service (community lifecycle, separate JWT audience) |
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
@@ -41,20 +80,21 @@ Leaf crates:
 | `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
 Hot spots to know about (file size in source lines, sorted descending):
-- `vta-service/src/operations/provision_integration/mod.rs` (~1.8k lines)
+- `vta-service/src/operations/provision_integration/mod.rs` (~2.4k lines)
   — orchestrates template render → key mint → ACL wire-up → VC issue
   → seal. Split into a module directory; the seal helper extracted to
   `seal.rs` is the canonical place for new payload variants.
-- `vta-service/src/tee/kms_bootstrap.rs` (~1.65k lines) — KMS attest/
+- `vta-service/src/operations/did_webvh/mod.rs` (~2.05k lines) —
+  WebVH DID lifecycle + `did.jsonl` publication, used by every
+  protocol-management operation that mutates the VTA's own DID.
+- `vta-tee/src/kms_bootstrap.rs` (~1.8k lines) — KMS attest/
   decrypt, JWT fingerprint check, storage-key derivation, MODE_B_LOCK
-  carve-out gating.
+  carve-out gating. **Moved out of `vta-service` in #791**; still
+  reachable as `vta_service::tee::…` via the re-export facade.
 - `vta-service/src/messaging/registry.rs` (~1.3k lines) — the
   `MediatorListenerRegistry`: active-mediator membership, drain
   windows, sticky outbound routing, telemetry emission. Load-bearing
   for the protocol-management surface.
-- `vta-service/src/operations/did_webvh/mod.rs` (~1.15k lines) —
-  WebVH DID lifecycle + `did.jsonl` publication, used by every
-  protocol-management operation that mutates the VTA's own DID.
 - `vta-sdk/src/sealed_transfer/` — HPKE seal/open, armor, assertions
   (`DidSigned`, `Attested`, `PinnedOnly`).
 - `vta-service/src/messaging/{drain_store,drain_sweeper,handshake,live_prover,transient_handshake}.rs`
@@ -347,7 +387,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   Ed25519 pubkey + bundle_id + producer's Ed25519 pubkey via SHA-256.
 - **Carve-out**: Single-use. `BOOTSTRAP_CARVEOUT_CLOSED_KEY` flips on
   first success; subsequent calls return 410.
-- **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-service/src/tee/`.
+- **Code**: `vta-service/src/routes/bootstrap.rs`, `vta-tee/src/`.
 - **Docs**: `sealed-bootstrap.md`, `docs/02-vta/tee-architecture.md`.
 
 ### DIDComm challenge-response auth
@@ -580,8 +620,8 @@ new flow, update both this section and the relevant `docs/*.md`.
   consumer use paths (enumeration resistance).
 - **Code**: `vti-common/src/vault/mod.rs` (`VaultStatus`, lifecycle
   methods, `LifecycleError`), `vta-service/src/trust_tasks/{vault,
-  cred_vault,mod}.rs`, `vta-service/src/vault/{model,status,query,
-  present}.rs`, `vta-service/src/vault_sweeper.rs`,
+  cred_vault,mod}.rs`, `vta-vault/src/{model,status,query,
+  present}.rs`, `vta-sweepers/src/vault_sweeper.rs`,
   `vta_sdk::client::vault`, `vta_cli_common::commands::{vault,cred_vault}`
   (`pnm vault {archive,unarchive,restore,purge}`, `delete --force`,
   `list --status`; `pnm cred-vault {receive,query,get,archive,unarchive,
@@ -594,10 +634,10 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Crypto**: Argon2id KDF (≥12-char password) + AES-256-GCM.
 - **Compatibility check**: import cross-checks the backup's `vta_did`
   against the running VTA via `check_vta_did_compatibility`
-  (`vta-service/src/operations/backup.rs:286-307`). A fresh-install VTA
+  (`vta-backup/src/ops/mod.rs`). A fresh-install VTA
   accepts any backup; a configured VTA rejects backups whose `vta_did`
   doesn't match. Tested at `backup.rs:867-911`.
-- **Code**: `vta-service/src/operations/backup.rs`.
+- **Code**: `vta-backup/src/ops/`, `vta-backup/src/backup_bundle_store.rs`.
 - **VTC counterpart** (P3.9): same shape for the VTC — `POST
   /backup/{export,import}` (super-admin, preview/confirm), Argon2id +
   AES-256-GCM, `check_vtc_did_compatibility` (mismatch → 409). Backs up
@@ -654,7 +694,7 @@ new flow, update both this section and the relevant `docs/*.md`.
   Use this to find legitimate `--domain` values for the same
   server before the first create / register.
 - **Code**: `vta-service/src/webvh_didcomm.rs`,
-  `vta-service/src/webvh_client.rs`,
+  `vta-webvh/src/webvh_client.rs`,
   `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
   `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
   `vta_sdk::client::VtaClient::list_webvh_server_domains`,
@@ -703,7 +743,7 @@ These are load-bearing — know they exist before adjusting nearby code.
   are rejected. Don't add a "shared" audience.
 - **Mnemonic export window** (`MnemonicExportGuard`) — one-shot, timed,
   zeroized on drop. Don't cache the plaintext anywhere.
-- **JWT key fingerprint** on TEE boot (`vta-service/src/tee/kms_bootstrap.rs`)
+- **JWT key fingerprint** on TEE boot (`vta-tee/src/kms_bootstrap.rs`)
   detects KMS ciphertext tampering or key rotation. Do not widen the
   "first boot after upgrade" silent-store path.
 - **Carve-out** (`BOOTSTRAP_CARVEOUT_CLOSED_KEY`) on `/bootstrap/request`

@@ -146,6 +146,10 @@ How to operate and integrate against a VTC.
 In-flight or historical design documents kept for context. These
 are implementer-facing rather than operator-facing.
 
+- **[vta-service decomposition](05-design-notes/vta-service-decomposition.md)** —
+  how the ~114k-line VTA crate was split into subsystem crates, the
+  extraction technique, and the rule for where the program stops.
+  **Read this before proposing a further extraction.**
 - **[VTC MVP spec](05-design-notes/vtc-mvp.md)** — full
   specification for the VTC's Phase 0–5 build (the source of truth
   the implementation tracks).
