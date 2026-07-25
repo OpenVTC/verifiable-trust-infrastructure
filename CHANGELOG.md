@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### vta-mobile-core 0.6.15 / vta-sdk 0.19.28 / vta-service 0.12.35 — a device can submit Trust Tasks with no REST API
+
+Completes the mobile no-REST loop: a device could already *receive* over both
+DIDComm and TSP, but had no way to submit a signed document back, so every reply
+path still needed the VTA's REST surface.
+
+* **`vta-mobile-core`: `MediatorSession::send_trust_task`** (+ a
+  `send_trust_task_one_way` counterpart) — submits an already-signed Trust Task
+  document as the body of a `binding/didcomm/0.1/envelope` message and awaits its
+  `#response`, demuxed by `thid`. No bearer token: the message is
+  authcrypt-packed, so the VTA proves the sender DID and derives authorization
+  from it (intrinsic-sender auth). Safe to call while a `receive_next` loop runs.
+
+* **`vta-mobile-core`: `TspMediatorSession::send_trust_task`** — the TSP
+  counterpart, making the TSP session bidirectional. Deliberately
+  fire-and-forget: TSP has no `thid` demux, so the VTA's reply arrives as an
+  ordinary inbound frame and the caller correlates it off the inbox on
+  `threadId`. Sending takes no socket lock, so it is safe to call while
+  `receive_next` holds one; an in-place wait would deadlock.
+
+* **`vta-sdk`: a dead DIDComm session no longer looks like an idle one.**
+  `DIDCommSession::receive_next` returned `Ok(None)` both when the poll window
+  elapsed *and* when the inbound stream ended. A supervisor polling for work
+  therefore treated "stream ended" as "nothing yet", called again, got the same
+  answer instantly, and spun at full tilt forever without reconnecting. Now
+  reports `Ok(None)` only for an expected teardown (`shutdown()` was called) and
+  `Err(DidcommTransport)` otherwise, which is what makes a supervisor reconnect.
+
+* **`vta-service`: inbound messaging is concurrent, bounded at 32 in flight.**
+  `run_inbound_loop` awaited each `handle_inbound` inline, so the VTA processed
+  exactly one inbound frame at a time — across *both* protocols, since one
+  mediator websocket carries DIDComm and TSP together. A single slow handler
+  stalled every other caller's traffic and a hanging one wedged inbound messaging
+  entirely. Handlers now spawn under a semaphore; at the cap the loop waits for a
+  permit, degrading to the old serialised behaviour under extreme load rather
+  than growing tasks unboundedly. Safe because the dispatch spine was already
+  concurrent — the REST route runs `dispatch_trust_task_core` under axum with no
+  such serialisation.
+
+* **Regression test: hermetic TSP routing** (`tests/e2e/tests/tsp_round_trip.rs`).
+  Pins that a TSP frame routes between two local mediator accounts and is
+  readable on **both** socket modes — the raw-TSP socket the device reads and the
+  store-and-pickup socket the VTA's inbound loop reads — each paired with a
+  DIDComm control over the same fixture, plus a 10-round burst case because the
+  original failure was intermittent. Guards the silent-drop bug fixed upstream in
+  `affinidi-messaging-mediator` 0.17.7 (tdk #646); the VTA drives a different
+  crate (`affinidi-messaging-delivery`), so a recurrence would not be caught by
+  the upstream test. No network, no deployed VTA — runs unignored in CI.
+
 ### vta-tee 0.1.0 / vta-policy 0.1.0 / vta-keys 0.1.1 / vti-common 0.11.21 / vta-service 0.12.34 — extract the TEE and policy subsystems
 
 Ninth decomposition step — two subsystem extractions in one PR, each unblocked

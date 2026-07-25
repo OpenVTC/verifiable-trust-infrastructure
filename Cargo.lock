@@ -10228,7 +10228,7 @@ dependencies = [
 
 [[package]]
 name = "vta-mobile-core"
-version = "0.6.14"
+version = "0.6.15"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -10269,7 +10269,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.19.27"
+version = "0.19.28"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10331,7 +10331,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.34"
+version = "0.12.35"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
