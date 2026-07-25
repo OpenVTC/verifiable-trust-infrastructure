@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### vti-common 0.11.22 / vta-service 0.12.37 — setup no longer treats a pre-created data directory as a conflict
+
+`vta setup` refused to run against any `data_dir` that already existed, offering
+only "delete everything" or "cancel". That made containerized first-boot
+impossible: Docker volumes, bind mounts, and Kubernetes PVCs all create the
+mount path *before* the container starts, so a completely fresh install always
+hit the prompt — and answering "yes" then failed too, because
+`remove_dir_all` removes the directory itself and `rmdir` on a mount point
+returns `EBUSY` however empty it is. Reported against `/app/vta-data`.
+
+* **The gate is store presence, not directory presence.** New
+  `vti_common::store::local_store_exists` probes for fjall's own `version`
+  marker — the same file `fjall::Database` uses to decide "recover" versus
+  "create new", so the two cannot drift. An existing-but-storeless `data_dir`
+  is initialized into silently, with no prompt.
+
+* **`data_dir_exists = "delete"` clears the directory's contents, not the
+  directory.** Same destruction, but it succeeds on a mount point.
+
+* **New `data_dir_exists = "reuse"`** plus a matching third option in the
+  interactive prompt, which is now a three-way choice (cancel / keep contents /
+  wipe) instead of a yes-no with no survivable answer.
+
+* **Setup fails closed over an initialized VTA.** Re-running setup mints a
+  fresh master seed as generation 0; on top of an existing seed that orphans
+  every key derived from the original. All policies — including `reuse` — now
+  refuse when generation 0 is already present.
+
+* **The wizard no longer deletes `config.toml` while it is still asking
+  questions.** It used to remove the file at the config-path prompt, so an
+  operator who backed out at the data-directory question a dozen prompts later
+  was left with no config and a VTA that would not start. Intent is now carried
+  as `overwrite_config` (new `WizardInputs` field, `--from <toml>`-settable,
+  default `false`) and the file is written only once everything else has
+  succeeded. `--from` callers that relied on the previous "delete it first"
+  behaviour are unaffected; those that want in-place re-runs can set
+  `overwrite_config = true` instead of `rm`-ing the file.
+
+* The data-directory and config-path answers are trimmed, so a pasted path with
+  stray whitespace no longer becomes a subtly different path.
 ### vta-cli-common 0.10.14 / pnm-cli 0.11.9 / vta-service 0.12.36 — retire the pre-Banyan CLI shims, and fix the `init` aliases they hid
 
 Sunsets the compatibility shims left over from the `webvh` → `did-mgmt` and
@@ -122,6 +162,35 @@ path still needed the VTA's REST surface.
   `affinidi-messaging-mediator` 0.17.7 (tdk #646); the VTA drives a different
   crate (`affinidi-messaging-delivery`), so a recurrence would not be caught by
   the upstream test. No network, no deployed VTA — runs unignored in CI.
+
+### vti-secrets 0.1.7 / vta-config 0.1.1 — `[secrets] backend` selects the seed store explicitly
+
+Choosing "Plaintext file" in the setup wizard silently produced a
+**keyring-backed** VTA. `create_seed_store` inferred the backend from whichever
+selector field was populated, and plaintext has no field of its own —
+`allow_plaintext` is a *permission* to fall back, not a request. With `keyring`
+compiled in (the default) the keyring arm matched unconditionally, so the
+plaintext arm below it was unreachable. The same shadowing hid any backend
+sitting under a configured one.
+
+* **New `secrets.backend`** (`keyring` | `config_seed` | `aws` | `gcp` |
+  `azure` | `vault` | `kubernetes` | `plaintext`). When set it wins outright:
+  that backend is built and its required fields are validated. Mirrors
+  `vtc_service::config::SecretBackend`, so the VTA and VTC now share one
+  vocabulary.
+
+* **Fail closed.** A backend named on a binary built without its Cargo feature
+  is a hard config error rather than a silent fall-through to keyring or
+  plaintext — the same P0.8 stance the VTC already took.
+
+* **The setup wizard always writes it**, so every generated `config.toml`
+  states its backend instead of leaving it to inference. Plaintext now needs
+  both keys: `backend = "plaintext"` (which backend) and
+  `allow_plaintext = true` (accepting a cleartext master seed).
+
+* **Backward compatible.** Omitting `secrets.backend` keeps the legacy implicit
+  priority chain exactly as it was, and the field is skipped on serialize when
+  unset, so existing configs neither change behaviour nor grow a key.
 
 ### vta-tee 0.1.0 / vta-policy 0.1.0 / vta-keys 0.1.1 / vti-common 0.11.21 / vta-service 0.12.34 — extract the TEE and policy subsystems
 

@@ -36,12 +36,12 @@ use url::Url;
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 
 use crate::config::{
-    AppConfig, AuditConfig, AuthConfig, LogConfig, MessagingConfig, SecretsConfig, ServerConfig,
-    ServicesConfig, StoreConfig,
+    AppConfig, AuditConfig, AuthConfig, LogConfig, MessagingConfig, SecretBackend, SecretsConfig,
+    ServerConfig, ServicesConfig, StoreConfig,
 };
 use crate::contexts::store_context;
 use crate::keys::seed_store::{SeedStore, create_seed_store};
-use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
+use crate::keys::seeds::{SeedRecord, get_seed_record, save_seed_record, set_active_seed_id};
 use crate::operations;
 use crate::operations::did_webvh::CreateDidWebvhParams;
 use crate::store::{KeyspaceHandle, Store};
@@ -59,8 +59,16 @@ use super::{SetupUi, SilentUi, create_seed_context, generate_mnemonic_silent};
 #[serde(deny_unknown_fields)]
 pub struct WizardInputs {
     /// Output path for the generated `config.toml`. The setup wizard refuses
-    /// to overwrite an existing file; delete it first if you want to re-run.
+    /// to overwrite an existing file unless `overwrite_config` is set.
     pub config_path: PathBuf,
+
+    /// Permit overwriting an existing `config_path`.
+    ///
+    /// The file is not touched until the engine writes the finished config at
+    /// the very end, so a setup run that fails — or that the operator
+    /// cancels — leaves the existing config intact.
+    #[serde(default)]
+    pub overwrite_config: bool,
 
     /// Optional human-readable name for this VTA. Surfaced in `vta config
     /// show` and `pnm setup`.
@@ -184,14 +192,51 @@ fn default_services() -> ServicesConfig {
     }
 }
 
+/// What to do when `data_dir` already holds a store.
+///
+/// Only consulted when [`vti_common::store::local_store_exists`] reports a
+/// store — an existing-but-storeless directory (a mounted volume, a PVC, an
+/// operator's `mkdir`) is initialized into without asking, because it carries
+/// nothing to lose.
 #[derive(Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExistingDataDirPolicy {
-    /// Refuse to proceed if `data_dir` already exists.
+    /// Refuse to proceed if `data_dir` already holds a store.
     #[default]
     Error,
-    /// Recursively delete `data_dir` before initializing the store.
+    /// Delete the *contents* of `data_dir` before initializing the store.
+    ///
+    /// The directory itself is kept: `data_dir` is routinely a mount point
+    /// (Docker volume, K8s PVC), and `rmdir` on a mount point fails with
+    /// `EBUSY` no matter how empty it is.
     Delete,
+    /// Initialize into `data_dir` as-is, keeping whatever is already there.
+    ///
+    /// Setup still refuses to run over a store that already holds an
+    /// initialized VTA — that would mint a fresh master seed on top of the
+    /// existing one and orphan every key derived from it.
+    Reuse,
+}
+
+/// Delete everything *inside* `dir`, leaving `dir` itself in place.
+///
+/// `remove_dir_all` is wrong here: it removes the directory too, and
+/// `data_dir` is commonly a mount point, where the final `rmdir` fails with
+/// `EBUSY` (Linux) or a sharing violation (Windows) — after the contents are
+/// already gone. Clearing entry-by-entry is destructive in exactly the same
+/// way but succeeds on a mounted target.
+fn clear_dir_contents(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        // `DirEntry::file_type` does not follow symlinks, so a symlinked
+        // directory is unlinked (remove_file) rather than recursed into.
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Per-backend seed-store config. The `backend` discriminator selects the
@@ -531,12 +576,13 @@ pub async fn apply_inputs(
     inputs: WizardInputs,
     ui: &dyn SetupUi,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Refuse to overwrite an existing config — same stance as the
-    //    interactive wizard. Operators who want a re-run can delete the
-    //    file first.
-    if inputs.config_path.exists() {
+    // 1. Refuse to overwrite an existing config unless the operator asked
+    //    for it. Note this only *checks* — the file is not written (and so
+    //    not destroyed) until step 13, so a failure or a cancel anywhere in
+    //    between leaves the operator's existing install untouched.
+    if inputs.config_path.exists() && !inputs.overwrite_config {
         return Err(format!(
-            "config file {} already exists — delete it first to re-run setup",
+            "config file {} already exists — set overwrite_config = true (or delete it) to re-run setup",
             inputs.config_path.display()
         )
         .into());
@@ -546,20 +592,28 @@ pub async fn apply_inputs(
     //    needs `services.didcomm = true`, and so on.
     validate_inputs(&inputs)?;
 
-    // 3. Handle data_dir conflict per policy.
-    if inputs.data_dir.exists() {
+    // 3. Handle data_dir conflict per policy. The gate is "does this
+    //    directory hold a *store*", not "does this directory exist" — a
+    //    Docker volume, a K8s PVC, and an operator's `mkdir` all pre-create
+    //    an empty data_dir, and refusing those makes containerized
+    //    first-boot impossible.
+    if vti_common::store::local_store_exists(&inputs.data_dir) {
         match inputs.data_dir_exists {
             ExistingDataDirPolicy::Error => {
                 return Err(format!(
-                    "data directory {} already exists — set data_dir_exists = \"delete\" to wipe and re-init",
+                    "data directory {} already holds a store — set data_dir_exists = \"delete\" \
+                     to wipe it, or \"reuse\" to initialize into it",
                     inputs.data_dir.display()
                 )
                 .into());
             }
             ExistingDataDirPolicy::Delete => {
-                std::fs::remove_dir_all(&inputs.data_dir)
-                    .map_err(|e| format!("delete {}: {e}", inputs.data_dir.display()))?;
-                eprintln!("  Deleted existing data directory.");
+                clear_dir_contents(&inputs.data_dir)
+                    .map_err(|e| format!("clear {}: {e}", inputs.data_dir.display()))?;
+                eprintln!("  Deleted existing data directory contents.");
+            }
+            ExistingDataDirPolicy::Reuse => {
+                eprintln!("  Reusing existing data directory.");
             }
         }
     }
@@ -569,6 +623,23 @@ pub async fn apply_inputs(
         data_dir: inputs.data_dir.clone(),
     })?;
     let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+
+    // 4a. Fail closed if the store already holds an initialized VTA. Setup
+    //     mints a fresh master seed and writes it as generation 0 (step 8),
+    //     which on top of an existing seed silently orphans every key
+    //     derived from it. Reachable via `reuse`, and as a backstop for a
+    //     `delete` that did not actually clear (an odd mount, a partial
+    //     failure) — so the check guards every policy, not just `reuse`.
+    if get_seed_record(&keys_ks, 0).await?.is_some() {
+        return Err(format!(
+            "data directory {} already holds an initialized VTA (master seed generation 0) — \
+             refusing to re-run setup over it, which would mint a new master seed and orphan \
+             every existing key. Use the existing install, or set data_dir_exists = \"delete\" \
+             to start over.",
+            inputs.data_dir.display()
+        )
+        .into());
+    }
     let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
     let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
@@ -1074,10 +1145,30 @@ fn validate_inputs(inputs: &WizardInputs) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
+/// The explicit `[secrets] backend` selector matching an operator's wizard
+/// choice. Every generated config states its backend outright rather than
+/// leaving `create_seed_store` to infer one from which fields are populated
+/// — inference cannot express "plaintext" at all on a build with `keyring`
+/// compiled in, so the wizard's plaintext option used to silently produce a
+/// keyring-backed VTA.
+fn backend_selector(input: &SecretsBackendInput) -> SecretBackend {
+    match input {
+        SecretsBackendInput::Keyring { .. } => SecretBackend::Keyring,
+        SecretsBackendInput::ConfigSeed => SecretBackend::ConfigSeed,
+        SecretsBackendInput::Aws { .. } => SecretBackend::Aws,
+        SecretsBackendInput::Gcp { .. } => SecretBackend::Gcp,
+        SecretsBackendInput::Azure { .. } => SecretBackend::Azure,
+        SecretsBackendInput::Vault { .. } => SecretBackend::Vault,
+        SecretsBackendInput::Kubernetes { .. } => SecretBackend::Kubernetes,
+        SecretsBackendInput::Plaintext => SecretBackend::Plaintext,
+    }
+}
+
 fn secrets_config_from_input(
     input: &SecretsBackendInput,
 ) -> Result<SecretsConfig, Box<dyn std::error::Error>> {
-    Ok(match input {
+    let selector = backend_selector(input);
+    let mut config = match input {
         SecretsBackendInput::Keyring { service } => {
             #[cfg(not(feature = "keyring"))]
             {
@@ -1270,12 +1361,17 @@ fn secrets_config_from_input(
             // the seed store can be created during setup *and* the booted VTA
             // can re-open it. The flag is serialized into `[secrets]` in the
             // generated config.toml, so plaintext deployments stay runnable.
+            //
+            // `allow_plaintext` is only the *permission*; `backend` below is
+            // what actually selects plaintext over the compiled-in keyring.
             SecretsConfig {
                 allow_plaintext: true,
                 ..SecretsConfig::default()
             }
         }
-    })
+    };
+    config.backend = Some(selector);
+    Ok(config)
 }
 
 fn scratch_config_for_seed_store(
@@ -1686,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn plaintext_backend_sets_allow_plaintext() {
+    fn plaintext_backend_sets_allow_plaintext_and_selects_itself() {
         // Selecting the plaintext backend must opt in to the plaintext
         // seed-store fallback (P0.9). Otherwise `create_seed_store` errors
         // during setup and the booted VTA can't re-open the seed. The flag
@@ -1697,12 +1793,334 @@ mod tests {
             secrets.allow_plaintext,
             "plaintext backend must set allow_plaintext = true"
         );
+        // …and `allow_plaintext` alone is not enough. It is a *permission*
+        // to fall back, not a request: with `keyring` compiled in (the
+        // default) the implicit chain hits the keyring arm first, so an
+        // operator who chose "Plaintext file" in the wizard used to get a
+        // keyring-backed VTA. The explicit selector is what makes it stick.
+        assert_eq!(
+            secrets.backend,
+            Some(SecretBackend::Plaintext),
+            "the wizard must state the backend it was asked for"
+        );
 
-        // And it round-trips into the written config as `allow_plaintext = true`.
+        // Both round-trip into the written config.
         let toml_out = toml::to_string(&secrets).expect("secrets config serializes");
         assert!(
             toml_out.contains("allow_plaintext = true"),
             "generated config must carry the flag, got:\n{toml_out}"
+        );
+        assert!(
+            toml_out.contains("backend = \"plaintext\""),
+            "generated config must carry the selector, got:\n{toml_out}"
+        );
+    }
+
+    #[test]
+    fn every_wizard_backend_choice_states_its_selector() {
+        // No wizard choice may lean on implicit resolution — that is how
+        // plaintext silently became keyring.
+        let cases: Vec<(SecretsBackendInput, SecretBackend)> = vec![
+            #[cfg(feature = "keyring")]
+            (
+                SecretsBackendInput::Keyring {
+                    service: "vta".into(),
+                },
+                SecretBackend::Keyring,
+            ),
+            (SecretsBackendInput::Plaintext, SecretBackend::Plaintext),
+        ];
+        for (input, expected) in cases {
+            let secrets = secrets_config_from_input(&input).expect("converts");
+            assert_eq!(secrets.backend, Some(expected), "for {input:?}");
+        }
+    }
+
+    /// Register an in-memory keyring so the seed-store step works without an
+    /// OS credential store. `set_default_store` is process-global, so it is
+    /// installed exactly once for the whole test binary.
+    ///
+    /// The plaintext backend can't stand in here: with the `keyring` feature
+    /// compiled in (the default), `create_seed_store` returns a keyring store
+    /// before it ever reaches the plaintext arm.
+    #[cfg(feature = "keyring")]
+    fn install_mock_keyring() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let store = keyring_core::mock::Store::new().expect("build mock keyring store");
+            keyring_core::set_default_store(store);
+        });
+    }
+
+    /// The smallest `WizardInputs` that drives `apply_inputs` end-to-end with
+    /// no network and no operator interaction: no services, no mediator, no
+    /// DID. Each caller gets a distinct keyring service name so concurrent
+    /// tests don't share a seed entry.
+    #[cfg(feature = "keyring")]
+    fn offline_inputs(root: &Path, keyring_service: &str) -> WizardInputs {
+        install_mock_keyring();
+        WizardInputs {
+            config_path: root.join("config.toml"),
+            overwrite_config: false,
+            vta_name: None,
+            public_url: None,
+            data_dir: root.join("data"),
+            data_dir_exists: ExistingDataDirPolicy::default(),
+            services: ServicesConfig {
+                rest: false,
+                didcomm: false,
+                webauthn: false,
+                tsp: false,
+            },
+            server: ServerConfig::default(),
+            log: LogConfig::default(),
+            secrets: SecretsBackendInput::Keyring {
+                service: keyring_service.to_string(),
+            },
+            messaging: MessagingInput::Skip,
+            vta_did: VtaDidInput::Skip,
+            admin_did: None,
+            admin_label: None,
+            resolver_url: None,
+            audit: AuditConfig::default(),
+            staff: Vec::new(),
+        }
+    }
+
+    /// The master seed as the store on disk sees it — the seed *record* for
+    /// generation 0. Used to prove a wipe produced fresh key material and
+    /// that a refusal left the existing material alone.
+    #[cfg(feature = "keyring")]
+    async fn seed_record_created_at(data_dir: &Path) -> chrono::DateTime<Utc> {
+        let store = Store::open(&StoreConfig {
+            data_dir: data_dir.to_path_buf(),
+        })
+        .expect("open store");
+        let keys_ks = store
+            .keyspace(crate::keyspaces::KEYS)
+            .expect("keys keyspace");
+        get_seed_record(&keys_ks, 0)
+            .await
+            .expect("read seed record")
+            .expect("generation 0 must exist after setup")
+            .created_at
+    }
+
+    #[cfg(feature = "keyring")]
+    #[tokio::test]
+    async fn a_pre_created_empty_data_dir_is_not_a_conflict() {
+        // The reported failure: a Docker volume / K8s PVC / hand-created
+        // `mkdir` makes data_dir exist before setup ever runs, and the old
+        // `data_dir.exists()` gate turned that into "delete everything or
+        // abort" — with no third answer. An empty directory carries nothing
+        // to lose, so the default (fail-closed) policy must sail past it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let inputs = offline_inputs(dir.path(), "vta-test-precreated");
+        std::fs::create_dir_all(&inputs.data_dir).expect("pre-create the mount point");
+
+        apply_inputs(inputs, &SilentUi)
+            .await
+            .expect("setup must initialize into a pre-created empty data directory");
+
+        assert!(
+            vti_common::store::local_store_exists(&dir.path().join("data")),
+            "the store must have been created in the pre-existing directory"
+        );
+        assert!(dir.path().join("config.toml").is_file(), "config written");
+    }
+
+    #[cfg(feature = "keyring")]
+    #[tokio::test]
+    async fn setup_refuses_to_run_over_an_initialized_vta() {
+        // `reuse` must not become a foot-gun: re-running setup mints a fresh
+        // master seed as generation 0, which on top of an existing seed
+        // orphans every key derived from the original.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        apply_inputs(
+            offline_inputs(dir.path(), "vta-test-initialized"),
+            &SilentUi,
+        )
+        .await
+        .expect("first setup succeeds");
+        let seed_before = seed_record_created_at(&data_dir).await;
+
+        let mut again = offline_inputs(dir.path(), "vta-test-initialized");
+        again.data_dir_exists = ExistingDataDirPolicy::Reuse;
+        again.overwrite_config = true;
+        let err = apply_inputs(again, &SilentUi)
+            .await
+            .expect_err("re-running setup over an initialized VTA must fail");
+        assert!(
+            err.to_string().contains("already holds an initialized VTA"),
+            "got: {err}"
+        );
+
+        assert_eq!(
+            seed_record_created_at(&data_dir).await,
+            seed_before,
+            "the refusal must leave the existing master seed generation untouched"
+        );
+    }
+
+    #[cfg(feature = "keyring")]
+    #[tokio::test]
+    async fn a_failed_run_leaves_the_existing_config_intact() {
+        // The config file is only written once everything else has
+        // succeeded (step 13), so a run that dies mid-flight — or an
+        // operator who backs out — never destroys a working install.
+        let dir = tempfile::tempdir().expect("tempdir");
+        apply_inputs(
+            offline_inputs(dir.path(), "vta-test-config-intact"),
+            &SilentUi,
+        )
+        .await
+        .expect("first setup succeeds");
+
+        let config_path = dir.path().join("config.toml");
+        let config_before = std::fs::read_to_string(&config_path).expect("config written");
+
+        let mut again = offline_inputs(dir.path(), "vta-test-config-intact");
+        again.overwrite_config = true; // permitted to overwrite …
+        again.data_dir_exists = ExistingDataDirPolicy::Error; // … but this aborts first
+        let err = apply_inputs(again, &SilentUi)
+            .await
+            .expect_err("`error` policy over an existing store must fail");
+        assert!(
+            err.to_string().contains("already holds a store"),
+            "got: {err}"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            config_before,
+            "a failed run must not have touched the existing config"
+        );
+    }
+
+    #[cfg(feature = "keyring")]
+    #[tokio::test]
+    async fn delete_policy_wipes_a_store_without_removing_the_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("data");
+        apply_inputs(offline_inputs(dir.path(), "vta-test-delete"), &SilentUi)
+            .await
+            .expect("first setup succeeds");
+        let seed_before = seed_record_created_at(&data_dir).await;
+
+        // Record the directory's creation stamp so we can prove it was
+        // cleared in place rather than removed and recreated — the
+        // difference between working and failing with EBUSY on a mount point.
+        let created_before = std::fs::metadata(&data_dir)
+            .expect("metadata")
+            .created()
+            .ok();
+
+        let mut again = offline_inputs(dir.path(), "vta-test-delete");
+        again.data_dir_exists = ExistingDataDirPolicy::Delete;
+        again.overwrite_config = true;
+        apply_inputs(again, &SilentUi)
+            .await
+            .expect("`delete` policy must wipe and re-init");
+
+        assert_ne!(
+            seed_record_created_at(&data_dir).await,
+            seed_before,
+            "a wipe must produce a fresh master seed generation"
+        );
+        if let (Some(before), Ok(after)) = (created_before, std::fs::metadata(&data_dir)) {
+            assert_eq!(
+                Some(before),
+                after.created().ok(),
+                "the data directory must be cleared in place, not recreated"
+            );
+        }
+    }
+
+    #[test]
+    fn data_dir_policy_defaults_to_error_and_parses_every_variant() {
+        let base = |extra: &str| {
+            format!(
+                r#"
+                config_path = "/tmp/vta-test/config.toml"
+                data_dir    = "/tmp/vta-test/data"
+                {extra}
+
+                [secrets]
+                backend = "keyring"
+                "#
+            )
+        };
+
+        assert_eq!(
+            parse(&base("")).unwrap().data_dir_exists,
+            ExistingDataDirPolicy::Error,
+            "omitting the policy must stay fail-closed"
+        );
+        assert_eq!(
+            parse(&base(r#"data_dir_exists = "delete""#))
+                .unwrap()
+                .data_dir_exists,
+            ExistingDataDirPolicy::Delete
+        );
+        assert_eq!(
+            parse(&base(r#"data_dir_exists = "reuse""#))
+                .unwrap()
+                .data_dir_exists,
+            ExistingDataDirPolicy::Reuse,
+            "`reuse` is what lets an operator point setup at existing state"
+        );
+    }
+
+    #[test]
+    fn overwrite_config_defaults_to_false_and_round_trips() {
+        let base = |extra: &str| {
+            format!(
+                r#"
+                config_path = "/tmp/vta-test/config.toml"
+                data_dir    = "/tmp/vta-test/data"
+                {extra}
+
+                [secrets]
+                backend = "keyring"
+                "#
+            )
+        };
+
+        assert!(
+            !parse(&base("")).unwrap().overwrite_config,
+            "clobbering an operator's config must be opt-in"
+        );
+        assert!(
+            parse(&base("overwrite_config = true"))
+                .unwrap()
+                .overwrite_config
+        );
+    }
+
+    #[test]
+    fn clear_dir_contents_empties_the_dir_but_keeps_it() {
+        // The distinction that makes a mounted data_dir work: `rmdir` on a
+        // mount point fails with EBUSY no matter how empty it is, so the
+        // directory itself must survive the wipe.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        std::fs::write(root.join("version"), b"fjall").expect("file");
+        std::fs::create_dir_all(root.join("keyspaces/0/segments")).expect("nested dirs");
+        std::fs::write(root.join("keyspaces/0/segments/1.sst"), b"data").expect("nested file");
+
+        clear_dir_contents(root).expect("clearing contents should succeed");
+
+        assert!(root.is_dir(), "the directory itself must survive");
+        assert_eq!(
+            std::fs::read_dir(root).unwrap().count(),
+            0,
+            "every entry must be gone"
+        );
+        assert!(
+            !vti_common::store::local_store_exists(root),
+            "a cleared directory must no longer look like a store"
         );
     }
 

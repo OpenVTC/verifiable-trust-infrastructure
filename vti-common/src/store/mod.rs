@@ -39,6 +39,24 @@ where
 /// A key-value pair of raw bytes from a prefix scan.
 pub type RawKvPair = (Vec<u8>, Vec<u8>);
 
+/// fjall's on-disk "this directory is a database root" marker
+/// (`fjall::file::VERSION_MARKER`, which the crate does not re-export).
+const FJALL_VERSION_MARKER: &str = "version";
+
+/// Does `data_dir` already hold a local (fjall) database?
+///
+/// Probes for fjall's own version marker — the same file
+/// [`fjall::Database`] consults to decide "recover" versus "create new" —
+/// so this cannot drift from what actually opening the store would do.
+///
+/// Deliberately **not** `data_dir.exists()`. A Docker bind mount, a
+/// Kubernetes PVC, and an operator's `mkdir` all produce an
+/// existing-but-storeless directory, which is a perfectly good target for
+/// a fresh store. Only the marker means "there is state here".
+pub fn local_store_exists(data_dir: &std::path::Path) -> bool {
+    data_dir.join(FJALL_VERSION_MARKER).is_file()
+}
+
 // ===========================================================================
 // Store — dispatches to local (fjall) or vsock backend
 // ===========================================================================
@@ -791,6 +809,39 @@ mod tests {
         };
         let store = Store::open(&config).expect("failed to open store");
         (store, dir)
+    }
+
+    #[test]
+    fn local_store_exists_ignores_a_bare_directory() {
+        // The case that motivated this probe: a Docker volume / PVC /
+        // hand-created directory exists before setup ever runs. That is
+        // not "there is a store here", and setup must not treat it as a
+        // conflict.
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(
+            !local_store_exists(dir.path()),
+            "an empty directory holds no store"
+        );
+
+        std::fs::write(dir.path().join("did.jsonl"), b"{}").expect("write stray file");
+        assert!(
+            !local_store_exists(dir.path()),
+            "a non-empty directory without fjall's marker still holds no store"
+        );
+
+        assert!(
+            !local_store_exists(&dir.path().join("does-not-exist")),
+            "an absent directory holds no store"
+        );
+    }
+
+    #[test]
+    fn local_store_exists_sees_an_opened_store() {
+        let (_store, dir) = temp_store();
+        assert!(
+            local_store_exists(dir.path()),
+            "opening a store must make the probe report it"
+        );
     }
 
     #[tokio::test]

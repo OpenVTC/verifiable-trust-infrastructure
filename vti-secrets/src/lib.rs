@@ -36,5 +36,5 @@ pub mod seed_store;
 #[cfg(feature = "onboarding")]
 pub mod onboarding;
 
-pub use config::SecretsConfig;
+pub use config::{SecretBackend, SecretsConfig};
 pub use seed_store::{SeedStore, create_seed_store};
