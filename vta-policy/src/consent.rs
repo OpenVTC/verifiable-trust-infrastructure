@@ -119,10 +119,10 @@ pub struct PendingTaskConsent {
     /// re-assert: a human in the loop makes the window minutes wide, so the world
     /// can move underneath an approval.
     #[serde(default)]
-    pub state_pin: Option<crate::policy::effects::StatePin>,
+    pub state_pin: Option<crate::effects::StatePin>,
     /// Executor-internal preconditions to re-assert at execution.
     #[serde(default)]
-    pub guards: crate::trust_tasks::planner::Guards,
+    pub guards: vti_common::guards::Guards,
     /// The context whose admin authority the task acts under (webvh update: the
     /// DID's context), when the planner could determine it. An approver must
     /// administer this context for their approval to confer execution authority.
@@ -153,15 +153,15 @@ pub struct TaskConsentGrant {
     /// Carried from the pending request: what the approvers were shown, and what
     /// execution must still find true.
     #[serde(default)]
-    pub state_pin: Option<crate::policy::effects::StatePin>,
+    pub state_pin: Option<crate::effects::StatePin>,
     #[serde(default)]
-    pub guards: crate::trust_tasks::planner::Guards,
+    pub guards: vti_common::guards::Guards,
     /// Contexts this grant confers admin authority in for the single execution
     /// that consumes it. Empty for an ordinary same-context consent (the
     /// requester already held the context); populated only when the approvals
     /// came from admins of a context the requester lacked — the per-task
     /// delegation. Consumed by widening the executing `AuthClaims` via
-    /// [`crate::auth::AuthClaims::with_delegated_contexts`], never persisted.
+    /// `AuthClaims::with_delegated_contexts`, never persisted.
     #[serde(default)]
     pub delegated_contexts: Vec<String>,
     pub granted_at: u64,
@@ -353,9 +353,9 @@ pub async fn consume_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StoreConfig;
-    use crate::store::Store;
     use serde_json::json;
+    use vta_config::StoreConfig;
+    use vti_common::store::Store;
 
     async fn temp_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -363,7 +363,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .unwrap();
-        (store.keyspace(crate::keyspaces::TASK_CONSENT).unwrap(), dir)
+        (store.keyspace(vta_keyspaces::TASK_CONSENT).unwrap(), dir)
     }
 
     const T_UPDATE: &str = "https://trusttasks.org/spec/webvh/dids/update/1.0";

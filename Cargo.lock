@@ -10171,7 +10171,7 @@ dependencies = [
 
 [[package]]
 name = "vta-keys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10250,6 +10250,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vta-policy"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "regorus",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "vta-config",
+ "vta-keyspaces",
+ "vti-common",
+]
+
+[[package]]
 name = "vta-sdk"
 version = "0.19.27"
 dependencies = [
@@ -10313,9 +10331,8 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.12.33"
+version = "0.12.34"
 dependencies = [
- "aes 0.9.1",
  "aes-gcm",
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10336,15 +10353,11 @@ dependencies = [
  "agent-names",
  "argon2",
  "async-trait",
- "aws-config",
  "aws-lc-rs",
- "aws-sdk-dynamodb",
- "aws-sdk-kms",
  "axum",
  "axum-extra",
  "base64 0.22.1",
  "bip39",
- "cbc 0.2.1",
  "chrono",
  "ciborium",
  "clap",
@@ -10399,10 +10412,12 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
+ "vta-policy",
  "vta-sdk",
  "vta-service",
  "vta-support",
  "vta-sweepers",
+ "vta-tee",
  "vta-vault",
  "vta-webvh",
  "vti-common",
@@ -10449,6 +10464,39 @@ dependencies = [
  "vta-keyspaces",
  "vta-vault",
  "vti-common",
+]
+
+[[package]]
+name = "vta-tee"
+version = "0.1.0"
+dependencies = [
+ "aes 0.9.1",
+ "aes-gcm",
+ "aws-config",
+ "aws-lc-rs",
+ "aws-sdk-dynamodb",
+ "aws-sdk-kms",
+ "base64 0.22.1",
+ "bip39",
+ "cbc 0.2.1",
+ "chrono",
+ "didwebvh-rs",
+ "hex",
+ "hmac 0.13.0",
+ "libc",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "utoipa",
+ "vta-config",
+ "vta-keys",
+ "vta-keyspaces",
+ "vta-support",
+ "vti-common",
+ "zeroize",
 ]
 
 [[package]]
@@ -10598,7 +10646,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.20"
+version = "0.11.21"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

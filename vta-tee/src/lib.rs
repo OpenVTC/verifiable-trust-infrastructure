@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use tracing::{error, info, warn};
 
-use crate::config::TeeConfig;
-use crate::config::TeeMode;
-use crate::error::{AppError, tee_attestation_error};
+use vta_config::TeeConfig;
+use vta_config::TeeMode;
+use vti_common::error::{AppError, tee_attestation_error};
 
 use self::detect::detect_tee;
 use self::nitro::NitroProvider;

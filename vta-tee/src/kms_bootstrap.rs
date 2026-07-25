@@ -34,8 +34,8 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 use zeroize::Zeroize;
 
-use crate::config::TeeKmsConfig;
-use crate::error::{AppError, tee_attestation_error};
+use vta_config::TeeKmsConfig;
+use vti_common::error::{AppError, tee_attestation_error};
 
 /// Secrets bootstrapped from KMS, held only in TEE memory.
 ///
@@ -81,10 +81,10 @@ const BOOTSTRAP_JWT_FINGERPRINT_KEY: &str = "bootstrap:jwt_fingerprint";
 pub async fn bootstrap_secrets(
     kms_config: &TeeKmsConfig,
     storage_key_salt: &str,
-    store: &crate::store::Store,
+    store: &vti_common::store::Store,
 ) -> Result<BootstrappedSecrets, AppError> {
     // Bootstrap keyspace — no encryption (data is KMS-protected)
-    let bs_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
+    let bs_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
 
     let dk_ct = bs_ks.get_raw(BOOTSTRAP_DK_CT_KEY).await?;
     let seed_ct = bs_ks.get_raw(BOOTSTRAP_SEED_CT_KEY).await?;
@@ -216,11 +216,11 @@ pub async fn bootstrap_secrets(
 /// and takes the normal "subsequent boot" decrypt path.
 pub async fn re_encrypt_bootstrap_secrets(
     kms_config: &TeeKmsConfig,
-    store: &crate::store::Store,
+    store: &vti_common::store::Store,
     seed: &[u8],
     jwt_key: &[u8; 32],
 ) -> Result<(), AppError> {
-    let bs_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
+    let bs_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
 
     // Clear any existing ciphertexts first
     let _ = bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await;
@@ -268,7 +268,7 @@ fn jwt_fingerprint(key: &[u8; 32]) -> String {
 
 /// Store the JWT key fingerprint in the bootstrap keyspace.
 async fn store_jwt_fingerprint(
-    bs_ks: &crate::store::KeyspaceHandle,
+    bs_ks: &vti_common::store::KeyspaceHandle,
     key: &[u8; 32],
 ) -> Result<(), AppError> {
     let fingerprint = jwt_fingerprint(key);
@@ -293,7 +293,7 @@ async fn store_jwt_fingerprint(
 /// one-time init by setting `tee.kms.allow_fingerprint_init = true` in
 /// config; they should disable it again after the first successful boot.
 async fn verify_jwt_fingerprint(
-    bs_ks: &crate::store::KeyspaceHandle,
+    bs_ks: &vti_common::store::KeyspaceHandle,
     key: &[u8; 32],
     allow_init: bool,
 ) -> Result<(), AppError> {
@@ -454,7 +454,7 @@ fn unwrap_cms_response(
 /// real Nitro hardware the PCR-gated `Recipient` path is mandatory unless
 /// `allow_unattested_fallback` is set — but flattens the typed error class the
 /// bootstrap state machine needs into a plain [`AppError`].
-pub(crate) async fn attested_decrypt(
+pub async fn attested_decrypt(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, AppError> {
@@ -855,7 +855,7 @@ fn decrypt_cms_envelope(cms_bytes: &[u8], private_key_pkcs8: &[u8]) -> Result<Ve
 /// and ciphertext. No external DER/ASN.1 crate needed — the structure
 /// from KMS is predictable and constrained.
 mod cms_der {
-    use crate::error::{AppError, tee_attestation_error};
+    use vti_common::error::{AppError, tee_attestation_error};
 
     /// Parsed fields from a CMS EnvelopedData needed for decryption.
     pub(super) struct CmsFields {
@@ -1417,7 +1417,7 @@ mod tests {
             "JWT fingerprint key drifted from vti_common::integrity"
         );
         assert_eq!(
-            crate::tee::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY,
+            crate::admin_bootstrap::BOOTSTRAP_CARVEOUT_CLOSED_KEY,
             vti_common::integrity::CARVEOUT_KEY,
             "carve-out sentinel key drifted from vti_common::integrity"
         );

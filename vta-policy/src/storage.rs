@@ -100,8 +100,8 @@ pub async fn load_active_for_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::StoreConfig;
-    use crate::store::Store;
+    use vta_config::StoreConfig;
+    use vti_common::store::Store;
 
     async fn temp_policy_ks() -> (KeyspaceHandle, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -109,7 +109,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         })
         .expect("open store");
-        let ks = store.keyspace(crate::keyspaces::POLICY).expect("policy ks");
+        let ks = store.keyspace(vta_keyspaces::POLICY).expect("policy ks");
         // `dir` owns the backing; return it so it outlives the handle.
         (ks, dir)
     }

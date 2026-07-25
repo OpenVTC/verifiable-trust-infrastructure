@@ -168,7 +168,7 @@ pub fn evaluate_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::types::{
+    use crate::types::{
         Consumer, Discloses, Disposition, Exposure, PolicyRequest, SideEffectLevel,
     };
 

@@ -66,10 +66,9 @@ use crate::auth::AuthClaims;
 use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::keys::imported;
-use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::keys::{self, KeyType as SdkKeyType, PreRotationKeyData, encode_private_multibase};
+use crate::keys::{self, KeyType as SdkKeyType, encode_private_multibase};
 use crate::store::KeyspaceHandle;
 use crate::webvh_client::{RequestUriResponse, WebvhClient};
 use crate::webvh_didcomm::WebvhDIDCommClient;
@@ -1801,53 +1800,9 @@ impl<'a> WebvhTransport<'a> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn derive_pre_rotation_keys(
-    seed: &[u8],
-    base: &str,
-    label: &str,
-    keys_ks: &KeyspaceHandle,
-    count: u32,
-) -> Result<(Vec<String>, Vec<PreRotationKeyData>), AppError> {
-    if count == 0 {
-        return Ok((vec![], vec![]));
-    }
-
-    let root = ExtendedSigningKey::from_seed(seed)
-        .map_err(|e| AppError::Internal(format!("failed to create BIP-32 root key: {e}")))?;
-
-    let mut hashes = Vec::with_capacity(count as usize);
-    let mut key_data = Vec::with_capacity(count as usize);
-
-    for i in 0..count {
-        let path = allocate_path(keys_ks, base)
-            .await
-            .map_err(|e| AppError::Internal(format!("{e}")))?;
-        let derivation_path: DerivationPath = path
-            .parse()
-            .map_err(|e| AppError::Internal(format!("invalid derivation path: {e}")))?;
-        let derived_key = root
-            .derive(&derivation_path)
-            .map_err(|e| AppError::Internal(format!("key derivation failed: {e}")))?;
-
-        let secret = Secret::generate_ed25519(None, Some(derived_key.signing_key.as_bytes()));
-        let pub_mb = secret
-            .get_public_keymultibase()
-            .map_err(|e| AppError::Internal(format!("{e}")))?;
-        let hash = secret
-            .get_public_keymultibase_hash()
-            .map_err(|e| AppError::Internal(format!("{e}")))?;
-
-        key_data.push(PreRotationKeyData {
-            path,
-            public_key: pub_mb,
-            label: format!("{label} pre-rotation key {i}"),
-        });
-
-        hashes.push(hash);
-    }
-
-    Ok((hashes, key_data))
-}
+// `derive_pre_rotation_keys` moved to `vta_keys::derivation` (a pure BIP-32 key
+// operation reused by TEE first-boot DID autogen); imported below.
+pub(crate) use crate::keys::derivation::derive_pre_rotation_keys;
 
 #[cfg(test)]
 mod tests {

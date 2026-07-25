@@ -10,6 +10,7 @@ pub mod config;
 pub mod consent;
 pub mod context_path;
 pub mod error;
+pub mod guards;
 pub mod idempotency;
 pub mod identifier;
 pub mod integrity;

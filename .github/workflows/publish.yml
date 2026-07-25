@@ -79,7 +79,9 @@ jobs:
             vta-audit
             vta-config
             vta-keys
+            vta-policy
             vta-support
+            vta-tee
             vta-vault
             vta-sweepers
             vta-backup
