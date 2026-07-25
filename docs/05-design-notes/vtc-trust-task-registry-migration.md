@@ -1,8 +1,128 @@
 # Consolidating VTC's Trust Task surface onto the registry
 
-**Status:** proposed — not implemented.
+**Status:** **partly implemented — the residual is much smaller than this
+note assumes.** See "Where this actually stands" immediately below before
+reading anything else; the reduction analysis further down is still sound,
+but its headline numbers are stale.
 **Context:** issue #710. The manifest census (PR #711) pinned VTC's Trust
 Task surface in place; this note covers reducing and relocating it.
+
+---
+
+## Where this actually stands (measured 2026-07-25)
+
+This note was written against a 64-task surface, all on the non-conformant
+`trusttasks.org/openvtc/vtc/…` authority, and framed the work as
+"**64 → 47**". That is no longer the shape of the problem: the Phase 2 + 4
+migrations (#724–#729, #733, #743, openvtc#171–#173) executed most of it.
+
+Counting distinct Trust-Task URIs bound by `vtc-service/src/routes/mod.rs`
+on `main` today:
+
+| Form | Count | Meaning |
+|---|---:|---|
+| `trusttasks.org/spec/<slug>/<ver>` | 24 | Canonical. Group A/B promotions — **done**. |
+| `trusttasks.org/spec/vtc/<slug>/<ver>` | 33 | Already in this note's target shape — **done**. |
+| `trusttasks.org/openvtc/vtc/<slug>/<ver>` | **26** | **The residual. This is what #710 still means.** |
+| **Total bound** | **83** | |
+
+So the target shape is not a proposal any more — 33 tasks already use it and
+work. The remaining question is narrow: **move 26 URIs**, not "reduce 64 to
+47".
+
+The manifest agrees: `trust-tasks/index.json` now carries 54 `retired`
+entries (each with a `supersededBy`) and 15 `draft`.
+
+### The residual 26, reconciled against #709
+
+#709 ("20 bound tasks absent from the published manifest") is not a separate
+backlog — it overlaps this one almost exactly. Cross-referencing the 26
+residual URIs against the census test's `UNPUBLISHED_OK` table:
+
+| Bucket | Count | Work per task |
+|---|---:|---|
+| Non-conformant **and** unpublished | **15** | Author the spec **at** the new URI — one edit closes both issues |
+| Non-conformant, already published as `draft` | **11** | URI change + re-file the existing `spec.md`/`schema.json` |
+| Non-conformant, unaccounted for | **0** | — |
+| In #709 but already on a conformant URI | **5** | Authoring only; no URI change |
+
+**Group 1 — non-conformant *and* unpublished (15).** Authoring these at the
+old URI would be pure waste, which is exactly why #710 blocks #709:
+
+```
+admin/invites/manage/1.0      backup/import/1.0        members/purge/1.0
+admin/invites/revoke/1.0      ceremonies/list/1.0      members/removed/1.0
+auth/admin-session/1.0        directory/query/1.0      members/request-vmc/1.0
+auth/recognise/challenge/1.0  invitations/issue/1.0    recognition/check/1.0
+backup/export/1.0             invitations/revoke/1.0   relationships/graph/1.0
+```
+
+**Group 2 — published as `draft`, wrong URI (11).** Content exists; the URI
+and the on-disk registry shape change:
+
+```
+admin/config/export/1.0    admin/passkeys/revoke/1.0   policies/test/1.0
+admin/config/import/1.0    auth/admin-login/1.0        website/deploy/1.0
+admin/passkeys/list/1.0    config/legacy/manage/1.0    website/files/show/1.0
+admin/passkeys/register/1.0 members/promote-to-admin/1.0
+```
+
+Six of these are dispositions this note already argues for and which are
+**not** simple relocations — `auth/admin-login` collapses into
+`auth/authenticate`; `admin/passkeys/{register,revoke}` and
+`members/promote-to-admin` shed their inline-UV fields for the delegated
+`confirm/1.0` gate; `admin/config/{export,import}` are group-B promotions.
+Those four decisions stand unchanged; only the count around them moved.
+
+**Group 4 — already conformant, still unpublished (5).** Pure #709 work,
+unblocked *today*:
+
+```
+join-requests/submit/1.0 (mount-collapse alias)   spec/members/request-vmc/1.0
+members/self-remove-receipt/1.0                    spec/members/vmc/1.0
+spec/join-requests/submit-receipt/1.0
+```
+
+### Call sites, counted
+
+The "Repoint the code" step below understates the blast radius in one place
+and overstates it in another.
+
+| Location | Occurrences | Note |
+|---|---:|---|
+| `vtc-service/src/routes/mod.rs` | 29 | The bindings |
+| `vtc-service/tests/` | 21 | Test literals |
+| `vti-common/src/trust_task/` | 14 | Router, OpenAPI, doc comments |
+| `vta-sdk/src/protocols/{members,join_requests}.rs` | 6 | **Only 5 are `pub const`s that change value**, not the 15 this note claims — #724–#729 already repointed the rest |
+| `cnm-cli/src/{audit,backup}.rs` | 2 | |
+| **`vtc-service/admin-ui/src/`** | **16** | **Not mentioned anywhere in this note.** 7 TypeScript files: `lib/api.ts`, `lib/ceremony-manifest.ts`, `pages/Login.tsx`, `plugins/{acl,ceremonies,members,myPasskeys}.tsx` |
+| `trust-tasks/` (`index.json` + per-task files) | 226 | Rewritten wholesale by the move |
+| `docs/`, `tasks/` | 20 | Prose |
+
+The admin SPA is the gap worth flagging: it is compiled into the binary by
+`build.rs`, so it cannot lag the daemon by even one release. It sends
+`Trust-Task` headers as string literals and is not covered by the Rust
+type system, so nothing will catch a missed one at compile time — the
+`trust_task_manifest` census test does not see TypeScript either.
+
+### What this means for sequencing
+
+1. **#709 is no longer fully blocked.** Its Group 4 (5 tasks) is on
+   conformant URIs already and can be authored now. Only its other 15
+   overlap the URI change.
+2. **The canonical additions** (`auth/passkey/list`, the group-B generics,
+   the `policy/*` extensions) are still the first dependency — unchanged.
+3. **Add an admin-UI step** to "What has to change" between steps 4 and 5.
+4. **The `trust_task_manifest.rs` retarget** (step 6) is now the highest-value
+   piece, not the cleanup: with 83 bound URIs across three authorities, it is
+   the only thing that will tell a reviewer whether the migration is finished.
+   Consider extending it to grep the admin-UI sources for stale literals.
+
+Everything below this line — the two-planes model, the step-up decision, the
+group A/B/C dispositions, the settled decisions, the non-goals — is unchanged
+and still governs. Only the counts and the sequencing above are new.
+
+---
 
 ## Framing
 
@@ -133,6 +253,13 @@ The honest headline: **64 → 47 tasks in the `vtc/*` namespace**, with 17
 leaving. That is less than the earlier draft's optimistic "~36", and the
 work is less "delete duplicates" than "extend the canonical families so
 one definition serves both services".
+
+> **Stale count — the dispositions below are not.** Most of this reduction
+> has since shipped (#724–#729, #733, #743). 57 of the 83 currently-bound
+> URIs are already canonical or already `spec/vtc/*`; **26 remain on
+> `openvtc/vtc/*`**. Read "Where this actually stands" at the top of this
+> note for the current tally. The per-task reasoning in A1–A4, B, and C is
+> unaffected — only the arithmetic around it is.
 
 ### A1. Delete outright — 5 tasks
 
