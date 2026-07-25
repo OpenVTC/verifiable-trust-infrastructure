@@ -214,11 +214,10 @@ pub(crate) enum Commands {
     /// daemon-side hosting trust-tasks live under
     /// `spec/did-hosting/*` and are a separate concern.)
     ///
-    /// Replaces the earlier `pnm webvh …` surface. The retired
-    /// command path is still accepted (hidden) for one release —
-    /// operators get a stderr deprecation note on each invocation.
-    /// The DID method itself remains `did:webvh`; only the operator
-    /// UX category was renamed.
+    /// Replaced the earlier `pnm webvh …` surface, whose hidden alias
+    /// was retired after its one-release deprecation window. The DID
+    /// method itself remains `did:webvh`; only the operator UX
+    /// category was renamed.
     DidMgmt {
         #[command(subcommand)]
         command: DidMgmtCommands,
@@ -474,8 +473,8 @@ pub(crate) enum DidTemplateCommands {
     /// `kind` accepts either the full built-in name
     /// (`didcomm-mediator`, `did-hosting-control`, `did-hosting-daemon`, `did-hosting-server`) or a short alias
     /// (`mediator`, `control`, `did-hosting`, `hosting`, `daemon`, `witness`, `watcher`, `server`).
-    /// Legacy `webvh-control` / `webvh-daemon` / `webvh-server` names are
-    /// still accepted and resolve to the renamed templates for one release.
+    /// The legacy `webvh-*` names were retired after their one-release
+    /// deprecation window — use the canonical `did-host-*` names.
     Init {
         /// Built-in kind or alias to fork.
         kind: String,

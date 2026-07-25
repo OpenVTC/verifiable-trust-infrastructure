@@ -175,9 +175,10 @@ just minted + caller-supplied variables. Built-ins ship with the service
 `did-host-http`, `did-host-didcomm`); operators can upload more. The
 `did-host-*` names describe the DID-document shape (`http` = WebVHHosting
 endpoint, `didcomm` = DIDCommMessaging endpoint), not the service. The
-previous `webvh-*` and `did-hosting-*` template names still resolve via
-the loader's alias table for one release — update operator configs to the
-canonical `did-host-*` names before the aliases are removed.
+previous `webvh-*` and `did-hosting-*` template names **no longer resolve** —
+their one-release alias window closed, in both the builtin loader and the
+`did-templates init` CLI. Operator configs must use the canonical `did-host-*`
+names; a stale name now fails rather than silently resolving.
 
 **Before inventing a new mint-a-DID path, reach for templates first.**
 
@@ -707,13 +708,20 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
 - **Online**: `pnm did-templates list/show/create/update/delete` →
   REST `/did-templates` (global) or `/contexts/{id}/did-templates` (scoped).
-- **Built-ins**: `didcomm-mediator`, `vta-admin`, `did-hosting-control`,
-  `did-hosting-daemon`, `did-hosting-server` (shipped with the SDK,
-  always available). Three did-hosting templates by deployment role:
-  `did-hosting-control` (hosting + DIDComm), `did-hosting-daemon`
-  (hosting only), `did-hosting-server` (DIDComm only, for
-  witness/watcher). Legacy `webvh-*` names resolve via the loader's
-  alias table for one release.
+- **Built-ins** (`vta_sdk::did_templates::BUILTIN_NAMES`, shipped with
+  the SDK, always available): `ai-agent`, `ai-agent-peer`,
+  `did-host-didcomm`, `did-host-http`, `did-host-http-didcomm`,
+  `did-host-http-tsp`, `did-host-tsp`, `didcomm-mediator`,
+  `push-gateway`, `vta-admin`, `vtc-host`. The `did-host-*` names encode
+  the DID-document **shape** (`http` = WebVHHosting, `didcomm` =
+  DIDCommMessaging, `tsp` = TSPTransport), so a deployment role maps onto
+  a shape: control = `did-host-http-didcomm`, hosting daemon =
+  `did-host-http`, witness/watcher = `did-host-didcomm`. `pnm
+  did-templates init` accepts those role words as aliases. The earlier
+  `webvh-*` **and** `did-hosting-*` template names have been removed —
+  a stale name now fails instead of resolving. (`did-hosting-*` remains
+  valid as an *integration kind* and as a service/binary name; it is only
+  retired as a template name.)
 - **Code**: `vta-sdk/src/did_templates/`,
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.

@@ -107,15 +107,15 @@ conditional logic in the renderer, so the template name is a
 | Template | DID-document services | Required vars (renderer) | Required at provision time | Use for |
 |---|---|---|---|---|
 | `didcomm-mediator` | `DIDCommMessaging` URL endpoint | `URL` | — | DIDComm v2 routing mediator |
-| `did-hosting-control` | `WebVHHosting` + `DIDCommMessaging` | `URL`, `MEDIATOR_DID` | `URL` or `WEBVH_SERVER` | Control-plane node — hosts DID logs **and** accepts DIDComm (admin RPC, witness coordination, control-plane traffic) |
-| `did-hosting-daemon` | `WebVHHosting` only | `URL` | `URL` or `WEBVH_SERVER` | Pure hosting daemon — publishes DID logs over HTTP, no DIDComm. If you also need DIDComm, use `did-hosting-control` |
-| `did-hosting-server` | `DIDCommMessaging` only | `MEDIATOR_DID` | `URL` or `WEBVH_SERVER` | Witness, watcher, or any service consumed via DIDComm only — no public HTTP endpoint |
+| `did-host-http-didcomm` | `WebVHHosting` + `DIDCommMessaging` | `URL`, `MEDIATOR_DID` | `URL` or `WEBVH_SERVER` | Control-plane node — hosts DID logs **and** accepts DIDComm (admin RPC, witness coordination, control-plane traffic) |
+| `did-host-http` | `WebVHHosting` only | `URL` | `URL` or `WEBVH_SERVER` | Pure hosting daemon — publishes DID logs over HTTP, no DIDComm. If you also need DIDComm, use `did-host-http-didcomm` |
+| `did-host-didcomm` | `DIDCommMessaging` only | `MEDIATOR_DID` | `URL` or `WEBVH_SERVER` | Witness, watcher, or any service consumed via DIDComm only — no public HTTP endpoint |
 | `vta-admin` | (none) | (none) | — | Long-term admin DID for `--admin-template` rollover |
 
-Legacy `webvh-control` / `webvh-daemon` / `webvh-server` names are still
-accepted at the wire level and resolve to the renamed templates for one
-release; update operator configs to the canonical `did-hosting-*` names
-before the alias is removed.
+Legacy `webvh-control` / `webvh-daemon` / `webvh-server` names are **no longer
+accepted** — their one-release alias window has closed. Use the canonical names
+in the table above; a stale name is now rejected rather than silently
+resolved.
 
 "Required at provision time" applies in addition to the renderer's
 `requiredVars`. Any webvh-method template needs to know where its

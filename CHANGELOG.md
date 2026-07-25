@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### vta-cli-common 0.10.14 / pnm-cli 0.11.9 / vta-service 0.12.36 — retire the pre-Banyan CLI shims, and fix the `init` aliases they hid
+
+Sunsets the compatibility shims left over from the `webvh` → `did-mgmt` and
+`did-hosting-*` → `did-host-*` renames (both pre-Banyan, May–June 2026), each of
+which documented itself as lasting "one release". Clearing them surfaced a real
+bug.
+
+* **`pnm did-templates init` was broken for seven of its nine aliases.** The
+  `did-hosting-*` → `did-host-*` rename updated `BUILTIN_NAMES` and
+  `load_embedded` but not the CLI's alias table, so `init control`, `daemon`,
+  `hosting`, `did-hosting`, `server`, `witness`, and `watcher` all resolved to
+  template names that no longer existed and failed with `builtin template
+  'did-hosting-…' not found`. Only `mediator` and `agent` worked. The role words
+  now map onto the canonical shape names — control →
+  `did-host-http-didcomm`, daemon/hosting → `did-host-http`,
+  witness/watcher/server → `did-host-didcomm`.
+
+  The resolution moved into a testable `resolve_builtin_kind`, with a test that
+  asserts **every** alias resolves to something `load_embedded` can actually
+  load. That is the check whose absence let the rename half-land; a future
+  rename that misses one side now fails in CI.
+
+* **Retired the legacy `webvh-*` template aliases** from `did-templates init`,
+  matching the builtin loader, which had already dropped them (its
+  `legacy_template_aliases_are_removed` test pins that). A stale name now fails
+  loudly instead of silently resolving.
+
+* **Retired `vta`'s hidden `webvh` command alias** and its deprecation warning.
+  `pnm`'s equivalent went in an earlier release; this finishes the pair.
+  `WebvhCommands` itself stays — it is now purely internal plumbing that
+  `did-mgmt` converts into, and renaming it touches every handler.
+
+* **Dropped `pnm`'s `LEGACY_SESSION_KEY`.** Documented as load-bearing for
+  operators upgrading from pre-0.4 `pnm`, it was in fact a dead constant behind
+  `#[allow(dead_code)]` — the migration that used it was already gone, and the
+  `#[allow]` was hiding that.
+
+* **Docs corrected where they described removed behaviour**: `CLAUDE.md` and
+  `docs/02-vta/{did-templates,provision-integration}.md` all still told
+  operators the legacy aliases resolved, and two of them listed
+  `did-hosting-control/daemon/server` as built-in template names. `CLAUDE.md`
+  now carries the real `BUILTIN_NAMES` list. (`did-hosting-*` remains valid as
+  an integration kind and as a service name — only the template names were
+  retired.)
+
+Deliberately **not** removed, since neither is migration code: the
+`#[serde(default)]`/`alias` wire fields (peer interop with older VTAs, mediators,
+and clients — including `ChallengeRequest`'s `alias = "did"`, which is on the
+authentication path), and `vta-keys`' `seed_hex` archive migration, whose read
+path is what keeps keys minted under a pre-P0.7b seed generation recoverable.
+
+
 ### vtc-service 0.11.25 / vta-service 0.12.35 — clear the workspace clippy warnings
 
 `cargo clippy --workspace --all-targets` emitted twelve warnings; it is now

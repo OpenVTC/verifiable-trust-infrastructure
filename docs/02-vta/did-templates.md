@@ -212,11 +212,12 @@ template without explicit scope is **context → global → builtin**:
     endpoint or DIDComm. Use for a witness, watcher, or any service consumed
     over TSP only.
 
-  Legacy template names from two earlier generations still resolve to the
-  renamed templates for one release: `webvh-control` / `webvh-daemon` /
-  `webvh-server` and `did-hosting-control` / `did-hosting-daemon` /
-  `did-hosting-server` all map to the `did-host-*` canonical names. Update
-  operator configs to the canonical names before the aliases are removed.
+  Legacy template names from two earlier generations — `webvh-control` /
+  `webvh-daemon` / `webvh-server` and `did-hosting-control` /
+  `did-hosting-daemon` / `did-hosting-server` — **no longer resolve**. Their
+  one-release alias window has closed in both the builtin loader and
+  `did-templates init`. Use the canonical `did-host-*` names; a stale name now
+  fails with "unknown builtin kind" rather than silently resolving.
 - **Global** (`tpl:global:<name>`) — super-admin-managed. Visible across every
   context.
 - **Context** (`tpl:ctx:<id>:<name>`) — context-admin-managed (or super

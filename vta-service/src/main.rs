@@ -247,26 +247,16 @@ enum Commands {
     /// controller's registered DID-hosting servers. `vta did-mgmt
     /// dids {…}` operates on the DIDs themselves.
     ///
-    /// Replaces the earlier `vta webvh …` surface. The retired
-    /// command path is still accepted (hidden) for one release —
-    /// operators get a stderr deprecation note on each invocation.
-    /// The DID method itself remains `did:webvh`; only the operator
-    /// UX category was renamed.
+    /// Replaced the earlier `vta webvh …` surface, whose hidden alias
+    /// was retired after its one-release deprecation window. The DID
+    /// method itself remains `did:webvh`; only the operator UX
+    /// category was renamed.
     #[cfg(feature = "webvh")]
     DidMgmt {
         #[command(subcommand)]
         command: DidMgmtCommands,
     },
 
-    /// DEPRECATED — renamed to `vta did-mgmt <subcommand>`. Still
-    /// dispatched for one release; switch your scripts before the
-    /// alias is removed in the next minor.
-    #[cfg(feature = "webvh")]
-    #[command(hide = true)]
-    Webvh {
-        #[command(subcommand)]
-        command: WebvhCommands,
-    },
     /// Sealed-transfer bootstrap — seal payloads for offline consumer
     /// provisioning (mediators, webvh servers, and other complex clients).
     Bootstrap {
@@ -1854,21 +1844,13 @@ async fn main() {
         }
         #[cfg(feature = "webvh")]
         Some(Commands::DidMgmt { command }) => {
-            // Funnel the new structure through the legacy enum so the
-            // existing dispatch / seal-check / handler chain stays the
-            // single source of business logic. Drop together with the
-            // legacy `Webvh` variant in the next minor release.
+            // Funnel the new structure through `WebvhCommands` so the existing
+            // dispatch / seal-check / handler chain stays the single source of
+            // business logic. That enum is now purely internal plumbing — the
+            // operator-facing `vta webvh …` alias it was named for is gone —
+            // so it should be renamed to the did-mgmt shape and the conversion
+            // inlined; tracked separately, since it touches every handler.
             run_webvh_dispatch(cli.config.clone(), command.into()).await;
-        }
-        #[cfg(feature = "webvh")]
-        Some(Commands::Webvh { command }) => {
-            eprintln!(
-                "\x1b[1;33mwarning:\x1b[0m `vta webvh …` has been renamed to \
-                 `vta did-mgmt {{servers,dids}} …`. The old name is accepted \
-                 for one release and will be removed in the next minor. \
-                 See `vta did-mgmt --help`."
-            );
-            run_webvh_dispatch(cli.config.clone(), command).await;
         }
         Some(Commands::Bootstrap { command }) => {
             let result = match command {
