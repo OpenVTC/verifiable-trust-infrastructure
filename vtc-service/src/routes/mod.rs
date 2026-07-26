@@ -951,6 +951,13 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         // CLI clients. Mirrors did-hosting-control's header-less auth.
         .route("/wallet/auth/challenge", post(auth::challenge))
         .route("/wallet/auth/", post(auth::authenticate))
+        // Completes the wallet's loop. Without this alias the extension could
+        // log in header-free above but had to send a `Trust-Task` header (or,
+        // before the REST fast-path, an authcrypt DIDComm envelope) to spend
+        // the refresh token it was just handed — so it re-ran the whole SIOP
+        // round-trip on every access-token expiry instead. Same handler; the
+        // op `type` rides in the body exactly as it does on `/wallet/auth/`.
+        .route("/wallet/auth/refresh", post(auth::refresh))
         .routes(tt(
             routes!(auth::refresh),
             "https://trusttasks.org/spec/auth/refresh/0.1",

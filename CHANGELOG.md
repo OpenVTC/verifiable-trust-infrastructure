@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### vtc-service 0.11.27 — a REST-only client can now refresh without a mediator
+
+`POST /v1/auth/refresh` went straight to `atm.unpack` and — correctly, since
+0.11.20 — required an authcrypt DIDComm envelope. That left the VTC's auth
+surface asymmetric: a wallet could **log in** over plain REST via the SIOP
+`id_token` path, but to spend the refresh token it was handed on the way out it
+needed a mediator/DIDComm stack it otherwise never touched. In practice such a
+client re-ran the whole SIOP round-trip on every access-token expiry instead of
+refreshing. The VTA has had both halves of this loop since 0.12.x; the VTC only
+had the first.
+
+**Fix.** `refresh` now tries a canonical `auth/refresh/0.1` Trust Task document
+before falling through to `atm.unpack`, mirroring the VTA's
+`try_refresh_trust_task`. Refresh carries no proof — the opaque refresh token
+*is* the bearer credential (RFC 6749 §10.4), verified by the canonical handler's
+single-use rotating reverse index — so the REST path passes `signer_did: None`,
+exactly as the VTA does. A VTC running with no `atm` at all can now serve
+refresh.
+
+The payload is `payload.refreshToken` (camelCase, per the generated spec type
+and R3.1), byte-identical to the VTA's, so one document builder serves both
+services. The DIDComm envelope path is untouched and still gated by
+`bind_authcrypt_sender` — pinned by the existing
+`plaintext_didcomm_refresh_is_rejected` regression, which still passes because a
+plaintext DIDComm message has no `payload` member and so cannot be mistaken for
+a Trust Task.
+
+Also adds the header-exempt `POST /v1/wallet/auth/refresh` alias beside the
+existing `/v1/wallet/auth/{challenge,}` pair. The browser wallet extension posts
+with **no** `Trust-Task` header, so without this its loop was still incomplete:
+it could log in header-free but not refresh. Same handler, op `type` in the body.
+
+Closes #783.
 ### vta-sdk 0.20.0 — TSP is a selectable transport, not just a probe (BREAKING)
 
 TSP has worked on the wire since #749/#750, but nothing between "the wire works"

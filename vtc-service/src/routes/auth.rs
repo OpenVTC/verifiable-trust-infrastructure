@@ -3,6 +3,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{
@@ -740,6 +742,11 @@ mod cookie_format_tests {
 
 // ---------- POST /auth/refresh ----------
 
+/// The canonical `auth/refresh/0.1` Type URI, shared by both request shapes —
+/// the DIDComm envelope's `msg.typ` and the REST Trust Task's `type`. The
+/// legacy `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
+const REFRESH_TASK_URI: &str = <refresh::Payload as trust_tasks_rs::Payload>::TYPE_URI;
+
 /// `POST /v1/auth/refresh` — exchange the presented refresh
 /// token for a new access + refresh pair.
 ///
@@ -749,6 +756,13 @@ mod cookie_format_tests {
 /// claim, refresh-expiry check, ACL re-look-up, AAL preservation
 /// across rotation, RFC 6749 §10.4 rotation semantics — lives in
 /// the canonical handler in vti-common.
+///
+/// Two request shapes, tried in order:
+///
+/// 1. **Trust-Task `auth/refresh/0.1` document** (canonical REST) — no
+///    mediator, no DIDComm stack. See [`try_refresh_trust_task`].
+/// 2. **DIDComm authcrypt envelope** — for clients already on a mediator.
+///    Unchanged, and still gated by `bind_authcrypt_sender`.
 #[utoipa::path(
     post, path = "/auth/refresh", tag = "auth",
     request_body(content = String, description = "DIDComm envelope or Trust-Task refresh document"),
@@ -761,6 +775,13 @@ pub async fn refresh(
     State(state): State<AppState>,
     body: String,
 ) -> Result<Json<AuthenticateResponse>, AppError> {
+    // Canonical REST path, tried first so a VTC reached by a client with no
+    // DIDComm stack — and a VTC running with no `atm` at all — can still
+    // refresh. Falls through for any body that isn't such a document.
+    if let Some(resp) = try_refresh_trust_task(&state, &body).await? {
+        return Ok(Json(resp));
+    }
+
     let atm = state
         .atm
         .as_ref()
@@ -776,9 +797,8 @@ pub async fn refresh(
     let sender_base = vti_common::auth::bind_authcrypt_sender(&msg, &metadata)
         .map_err(|e| AppError::Authentication(e.message("refresh message")))?;
 
-    // Canonical Trust-Task URI only; the legacy
-    // `affinidi.com/atm/1.0/authenticate/refresh` alias was removed.
-    if msg.typ.as_str() != "https://trusttasks.org/spec/auth/refresh/0.1" {
+    // Canonical Trust-Task URI only — see [`REFRESH_TASK_URI`].
+    if msg.typ.as_str() != REFRESH_TASK_URI {
         return Err(AppError::Authentication(format!(
             "unexpected message type: {}",
             msg.typ
@@ -800,6 +820,62 @@ pub async fn refresh(
     )
     .await?;
     Ok(Json(resp))
+}
+
+/// Try to refresh from an `auth/refresh/0.1` Trust Task document — the
+/// canonical REST transport, and the VTC counterpart of the VTA's
+/// `try_refresh_trust_task`.
+///
+/// **Why this exists.** `POST /v1/auth/` already has a mediator-less path
+/// ([`authenticate_siop`]), so a wallet can *log in* to a VTC over plain
+/// REST. Without this, exercising the refresh token it was just handed
+/// required posting an authcrypt DIDComm envelope — a mediator stack the
+/// client otherwise never touched — so a genuinely REST-only client had to
+/// re-run the whole SIOP round-trip on every access-token expiry.
+///
+/// **Why there is no proof here.** Refresh carries none: the opaque refresh
+/// token in the payload *is* the bearer credential (RFC 6749 §10.4 rotation),
+/// verified server-side by the canonical handler's single-use rotating
+/// reverse-index. `signer_did` is therefore `None` — there is no proven signer
+/// to bind, and the handler reads `None` as "skip the optional signer-DID
+/// check". That is the same posture the DIDComm path ends up in: its
+/// `bind_authcrypt_sender` gate proves *who sent the envelope*, but the token
+/// is what actually authorizes the rotation. A stolen refresh token is
+/// therefore exactly as usable over REST as the token itself is — which is
+/// why rotation is single-use and a replay surfaces as "not found".
+///
+/// The wire shape is the canonical Trust Task, byte-identical to the VTA's
+/// (`payload.refreshToken`, camelCase per R3.1) rather than the DIDComm
+/// path's snake_case `refresh_token` body — so one REST client speaks to both
+/// services with one document builder.
+///
+/// Returns `Ok(None)` when the body isn't an `auth/refresh/0.1` Trust Task (→
+/// fall through to the DIDComm path); `Err` when it *is* one but is invalid.
+async fn try_refresh_trust_task(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<AuthenticateResponse>, AppError> {
+    let doc: TrustTask<serde_json::Value> = match serde_json::from_str(body) {
+        Ok(doc) => doc,
+        Err(_) => return Ok(None), // not a Trust Task document → DIDComm path
+    };
+    if doc.type_uri.to_string() != REFRESH_TASK_URI {
+        return Ok(None);
+    }
+
+    let payload: refresh::Payload = serde_json::from_value(doc.payload)
+        .map_err(|e| AppError::Authentication(format!("invalid refresh payload: {e}")))?;
+
+    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_refresh(
+        &backend,
+        vti_common::auth::RefreshInput {
+            refresh_token: payload.refresh_token.to_string(),
+            signer_did: None,
+        },
+    )
+    .await?;
+    Ok(Some(resp))
 }
 
 // ---------- GET /auth/sessions ----------
