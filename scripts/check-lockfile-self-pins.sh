@@ -53,6 +53,32 @@
 # patch entry. Without it, the first sign would be a dependent published against
 # stale source.
 #
+# ── The second failure mode: the patch itself stops applying ──────────────────
+#
+# Everything above treats a stale pin as REFRESHABLE — publish the new version,
+# run `cargo update --precise`, done. That holds for a PATCH bump (0.19.11 ->
+# 0.19.12): a dependent requiring `^0.19` accepts the new version, so the patch
+# keeps applying and the pin can be moved.
+#
+# It does NOT hold for a MINOR bump. Under 0.x semver `^0.19` excludes 0.20, so
+# the moment a patched crate goes 0.19 -> 0.20, an external dependent pinning
+# `^0.19` can no longer be satisfied by the patched path copy — cargo silently
+# stops applying the patch and reinstates the registry node the patch existed to
+# delete. No local `cargo update` can fix that; it needs the DEPENDENT's
+# requirement bumped and re-released upstream.
+#
+# The published-or-not test above cannot distinguish the two. At PR time the new
+# version is unpublished either way, so both take the "bump in flight" branch and
+# pass. That is exactly how vta-sdk 0.20.0 (#797) merged 12/12 and broke main
+# ~52s later, when the publish workflow closed the escape hatch.
+#
+# So ask the question that IS answerable locally, with no network and no
+# dependence on publish state: **is each `[patch.crates-io]` entry still
+# applying?** A patched crate must have NO registry-sourced node in Cargo.lock —
+# deleting that node is the entire point of the patch. If one is present, the
+# patch has broken. That check runs before the version comparison below and
+# fails hard, because there is no in-flight state where it is legitimately true.
+#
 # Usage: scripts/check-lockfile-self-pins.sh
 # Portable to macOS bash 3.2 / BSD userland.
 set -euo pipefail
@@ -111,14 +137,63 @@ locked=$(awk '
     next }
 ' Cargo.lock)
 
+# Crate names listed under `[patch.crates-io]` in the root manifest. Reads the
+# section between that header and the next `[`, taking the key from each
+# `name = ...` line. Table-syntax entries (`[patch.crates-io.foo]`) are matched
+# too, since a bare `[` would otherwise end the section at one.
+patched=$(awk '
+  /^\[patch\.crates-io\.[A-Za-z0-9_-]+\]/ {
+    line=$0; sub(/^\[patch\.crates-io\./, "", line); sub(/\]$/, "", line);
+    print line; next }
+  /^\[patch\.crates-io\]/ { inpatch=1; next }
+  /^\[/ { inpatch=0 }
+  inpatch && /^[A-Za-z0-9_-]+ *=/ { sub(/ *=.*$/, ""); print }
+' Cargo.toml)
+
 echo "${CYAN}=== Lockfile self-pin guard ===${NC}"
 echo ""
 
 fail=0
 found=0
 bumping=0
+
+# ── 1. Is every `[patch.crates-io]` entry still applying? ─────────────────────
+#
+# Checked first: a broken patch makes the version comparison below report the
+# right crate for the wrong reason, and suggest a `cargo update` that cannot
+# work. No crates.io call — the answer is in the lockfile.
+for p in $patched; do
+  [ -z "$p" ] && continue
+  pinned=$(printf '%s\n' "$locked" | awk -F'\t' -v n="$p" '$1 == n { print $2 }' | head -1)
+  [ -z "$pinned" ] && continue   # no registry node: the patch is applying
+
+  workspace_version=$(printf '%s\n' "$members" \
+    | awk -F'\t' -v n="$p" '$1 == n { print $2 }' | head -1)
+
+  echo "  ${RED}PATCH BROKEN${NC} $p: patched to the workspace copy${workspace_version:+ ($workspace_version)}, but Cargo.lock still carries a registry copy at $pinned"
+  echo "         An external dependent's semver requirement excludes the workspace"
+  echo "         version, so \`[patch.crates-io] $p\` no longer applies and the"
+  echo "         registry node it exists to delete is back."
+  echo ""
+  echo "         ${CYAN}cargo update cannot fix this${NC} — no published version satisfies both"
+  echo "         sides. Find the dependent still requiring the old range:"
+  echo "           cargo tree -i '$p@$pinned'"
+  echo "         then bump ITS requirement upstream, release it, and move that pin"
+  echo "         here first (the dependent's own lock entry constrains the update):"
+  echo "           cargo update -p <dependent> --precise <new-version>"
+  fail=1
+  found=1
+done
+
+# ── 2. Where a self-pin legitimately exists, does it match the workspace? ─────
 while IFS=$'\t' read -r name version; do
   [ -z "$name" ] && continue
+  # Already reported by the patch check above. Reporting it twice would offer
+  # a `cargo update --precise` that cannot work, which is the advice that sent
+  # the 0.20 incident down a dead end.
+  if printf '%s\n' "$patched" | grep -qx -- "$name"; then
+    continue
+  fi
   # Is this workspace crate also present as a registry package?
   pinned=$(printf '%s\n' "$locked" | awk -F'\t' -v n="$name" '$1 == n { print $2 }' | head -1)
   [ -z "$pinned" ] && continue
@@ -170,10 +245,14 @@ if [ "$fail" -eq 0 ]; then
     echo "${GREEN}All self-pins match the workspace versions.${NC}"
   fi
 else
-  echo "${RED}Cargo.lock pins a stale crates.io copy of a workspace crate.${NC}"
+  echo "${RED}Cargo.lock carries a crates.io copy of a workspace crate.${NC}"
   echo "\`cargo publish --locked\` verifies dependent crates against that pinned copy,"
   echo "so a dependent will be built against the OLD source and fail to compile —"
   echo "silently, since the workspace's own path-dep build stays green."
-  echo "Run the cargo update shown above and commit the Cargo.lock change."
+  echo ""
+  echo "For a ${CYAN}STALE${NC} pin: run the cargo update shown above and commit Cargo.lock."
+  echo "For a ${CYAN}PATCH BROKEN${NC} entry: the fix is upstream, not here — bump the"
+  echo "dependent's requirement, release it, then move its pin. See the note at the"
+  echo "top of this script for why no local update can resolve it."
   exit 1
 fi
