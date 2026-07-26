@@ -209,3 +209,112 @@ async fn wrong_password_rejected() {
         "{err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Audit checkpoints (#708)
+// ---------------------------------------------------------------------------
+
+/// The audit log and its signed checkpoints must travel **together**.
+///
+/// Either half alone turns a legitimate restore into the exact finding
+/// checkpoints exist to raise: checkpoints without their log attest to entries
+/// that aren't there, and a log without its checkpoints is shorter than every
+/// signed checkpoint claims. Both read as truncation to `cnm audit verify`.
+#[tokio::test]
+async fn audit_and_its_checkpoints_round_trip_together() {
+    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&a.state, a.data_dir().join("config.toml")).await;
+    let a_store = PlaintextSecretStore::new(a.data_dir());
+    a_store.set(b"signing-bundle-A").await.unwrap();
+
+    a.state
+        .audit_ks
+        .insert_raw(b"2026-07-25T10:00:00Z:e1".to_vec(), b"envelope-1".to_vec())
+        .await
+        .unwrap();
+    a.state
+        .audit_checkpoint_ks
+        .insert_raw(
+            b"2026-07-25T10:05:00Z:c1".to_vec(),
+            b"checkpoint-1".to_vec(),
+        )
+        .await
+        .unwrap();
+
+    let envelope = export_backup(&a.state, &a_store, PW, true).await.unwrap();
+
+    let b = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&b.state, b.data_dir().join("config.toml")).await;
+    let b_store = PlaintextSecretStore::new(b.data_dir());
+    import_backup(&b.state, &b_store, &envelope, PW, true)
+        .await
+        .unwrap();
+
+    let audit_rows = b.state.audit_ks.prefix_iter_raw(Vec::new()).await.unwrap();
+    let cp_rows = b
+        .state
+        .audit_checkpoint_ks
+        .prefix_iter_raw(Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(audit_rows.len(), 1, "audit log must be restored");
+    assert_eq!(
+        cp_rows.len(),
+        1,
+        "checkpoints must be restored alongside the log they attest to"
+    );
+}
+
+/// `include_audit: false` must drop **both**. Carrying the checkpoints while
+/// omitting the log would restore signed attestations to entries the restored
+/// VTC does not have.
+#[tokio::test]
+async fn excluding_the_audit_log_also_excludes_its_checkpoints() {
+    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&a.state, a.data_dir().join("config.toml")).await;
+    let a_store = PlaintextSecretStore::new(a.data_dir());
+    a_store.set(b"signing-bundle-A").await.unwrap();
+
+    a.state
+        .audit_ks
+        .insert_raw(b"2026-07-25T10:00:00Z:e1".to_vec(), b"envelope-1".to_vec())
+        .await
+        .unwrap();
+    a.state
+        .audit_checkpoint_ks
+        .insert_raw(
+            b"2026-07-25T10:05:00Z:c1".to_vec(),
+            b"checkpoint-1".to_vec(),
+        )
+        .await
+        .unwrap();
+
+    let envelope = export_backup(&a.state, &a_store, PW, false).await.unwrap();
+
+    let b = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&b.state, b.data_dir().join("config.toml")).await;
+    let b_store = PlaintextSecretStore::new(b.data_dir());
+    import_backup(&b.state, &b_store, &envelope, PW, true)
+        .await
+        .unwrap();
+
+    assert!(
+        b.state
+            .audit_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "audit log was excluded"
+    );
+    assert!(
+        b.state
+            .audit_checkpoint_ks
+            .prefix_iter_raw(Vec::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "checkpoints must be excluded with the log — restoring them alone would \
+         attest to entries that are not there"
+    );
+}

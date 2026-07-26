@@ -38,6 +38,7 @@ fn cfg_with(routing: RoutingConfig, cors: CorsConfig) -> AppConfig {
         },
         messaging: None,
         auth: Default::default(),
+        audit_checkpoints: Default::default(),
         secrets: Default::default(),
         routing,
         cors,

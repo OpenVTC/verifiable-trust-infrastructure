@@ -2,6 +2,85 @@
 
 ## Unreleased
 
+### vti-common 0.11.24 / vtc-service 0.11.28 / cnm-cli 0.11.8 — signed audit checkpoints
+
+The `prev_hash` chain (#555) and `GET /v1/audit/verify` (#703) detect
+reordering, dropping, duplication, and content edits. They do not detect the
+adversary #537 tier 3 actually named — one with **write access to the `audit`
+keyspace** — because `chain_digest` is an *unkeyed* SHA-256, so that adversary
+holds everything needed to recompute it:
+
+- **Restamping** — edit or insert an envelope, recompute its `entry_hash`, walk
+  forward restamping every successor. Verifies cleanly. No secret required.
+- **Truncation** — delete everything after some point. The remaining prefix is
+  a *valid chain*, and nothing recorded how long the log should be, so a
+  truncated log was indistinguishable from a community that went quiet. This is
+  the cheaper attack and the more serious one: it erases an incident with no
+  forgery at all.
+
+**What ships.** A periodic `AuditCheckpoint`, signed with the **community
+Ed25519 key** (the same `LocalSigner` that issues VMCs/VECs), committing to the
+chain head *and* `entry_count`. That count is the load-bearing field: a log
+shorter than a signed checkpoint attests to has lost entries, and that
+contradiction cannot be manufactured from the store alone.
+
+Not the audit HMAC key — it lives in the very store the adversary is assumed to
+have reached, and symmetric verification means whoever can *check* a checkpoint
+can also *forge* one, which reduces to the status quo. Signing with the
+community key also makes checkpoints **externally** verifiable: an auditor
+holding only the community DID can confirm the log has not been rewritten, with
+no shared secret and no daemon access.
+
+Checkpoints chain to each other, so deleting the checkpoint that contradicts a
+truncated log is itself detectable — without that, the mechanism would protect
+nothing.
+
+**Beyond the design note**, three additions the threat model demanded:
+
+- `entry_count` must be **monotonic** across the checkpoint chain. Otherwise an
+  adversary could re-link a genuinely-signed *older* checkpoint into a later
+  position and lower the attested count without forging anything.
+- `emit_checkpoint` **refuses to sign** when the live log already holds fewer
+  entries than the last checkpoint claims. Signing there would launder a
+  truncation into a fresh "this is fine".
+- Each checkpoint records the `verificationMethod` that signed it, so one
+  signed under a later-retired key stays verifiable.
+
+**Cadence** (the note left this open): time-based, default 15 minutes,
+`[audit_checkpoints] interval_secs`, `0` disables with a loud `WARN`. The
+interval is the attacker's free truncation window, so it sets residual risk
+directly. Count-based triggering was deliberately *not* implemented — doing it
+honestly needs a running entry counter in `AuditWriter`, and approximating it by
+polling more often means walking the whole audit keyspace on a timer. A shorter
+interval is the cheaper knob and bounds the window in *time* regardless of
+traffic. A tick with no new entries emits nothing.
+
+**`GET /v1/audit/verify`** gains a `checkpoints` block —
+`consistent` / `truncated` / `headMismatch` / `chainBroken` / `noCheckpoints`,
+with `attestedEntries` and `unattestedEntries`. That last one is the live
+truncation window (entries written since the last checkpoint, covered by the
+forgeable chain and no signature) and is reported rather than left implicit.
+`cnm audit verify` prints it and now **exits non-zero on a checkpoint failure
+even when the chain verifies** — that combination *is* the store-level attack,
+and exiting 0 would make `cnm audit verify || alert` silent for the one thing
+checkpoints exist to catch.
+
+**Backup.** `audit_checkpoint` is in `BACKED_UP` and gated on the same
+`include_audit` flag as `audit`. The pairing is not optional: either half alone
+turns a legitimate restore into the truncation finding — checkpoints without
+their log attest to entries that aren't there, and a log without its
+checkpoints is shorter than every checkpoint claims. Pinned by two tests.
+
+**Known limitation, recorded not hidden.** The verifier resolves every
+`verificationMethod` to the VTC's *current* signing key, so checkpoints signed
+before a community key rotation would stop verifying. The per-checkpoint
+`verification_method` is already persisted for the fix (resolve the DID
+document's key history), so it is a verifier change with no data migration.
+External anchoring — publishing the head somewhere append-only to defend
+against an adversary who *also* holds the signing key — remains out of scope
+and is the next step.
+
+Closes #708.
 ### vtc-service 0.11.27 — a REST-only client can now refresh without a mediator
 
 `POST /v1/auth/refresh` went straight to `atm.unpack` and — correctly, since

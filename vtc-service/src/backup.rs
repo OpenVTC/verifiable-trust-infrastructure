@@ -176,9 +176,16 @@ pub async fn export_backup(
 
     // Keyspace census. `audit` rows are skipped unless requested; the
     // keyspace still appears (empty) so the dump shape is stable.
+    //
+    // `audit_checkpoint` is gated on the *same* flag, and must stay that way.
+    // The two only mean anything together: checkpoints restored without their
+    // log attest to entries that aren't there (reads as total truncation), and
+    // a log restored without its checkpoints is shorter than every signed
+    // checkpoint claims (also reads as truncation). Either half alone turns a
+    // legitimate restore into the exact finding #708 exists to raise.
     let mut keyspace_dumps = Vec::with_capacity(keyspaces::BACKED_UP.len());
     for name in keyspaces::BACKED_UP {
-        if *name == keyspaces::AUDIT && !include_audit {
+        if (*name == keyspaces::AUDIT || *name == keyspaces::AUDIT_CHECKPOINT) && !include_audit {
             keyspace_dumps.push(KeyspaceDump {
                 name: (*name).to_string(),
                 rows: Vec::new(),
@@ -358,6 +365,7 @@ fn backed_up_handle<'a>(state: &'a AppState, name: &str) -> Option<&'a KeyspaceH
         x if x == CONSUMED_INVITATIONS => &state.consumed_invitations_ks,
         x if x == AUDIT => &state.audit_ks,
         x if x == AUDIT_KEY => &state.audit_key_ks,
+        x if x == AUDIT_CHECKPOINT => &state.audit_checkpoint_ks,
         _ => return None,
     })
 }

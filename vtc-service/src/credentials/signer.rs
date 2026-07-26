@@ -82,6 +82,27 @@ impl LocalSigner {
         self.secret.get_public_bytes()
     }
 
+    /// The raw Ed25519 signing key behind this signer.
+    ///
+    /// For signing **non-credential** byte strings — currently the audit
+    /// checkpoints (#708), whose signature covers a domain-tagged binary
+    /// encoding rather than a JSON-LD document. A Data Integrity proof would
+    /// be the wrong shape there: it would make a security-critical signature
+    /// depend on JSON canonicalisation agreeing between signer and verifier,
+    /// where the whole point is a byte-exact commitment.
+    ///
+    /// Not for authorization assertions — those are VCs (see the workspace
+    /// CLAUDE.md). A checkpoint asserts "the log had this head and this many
+    /// entries", which is tamper-evidence, not a grant.
+    ///
+    /// `None` if the underlying secret is not a 32-byte Ed25519 key.
+    pub fn ed25519_signing_key(&self) -> Option<ed25519_dalek::SigningKey> {
+        let bytes = self.secret.get_private_bytes();
+        <[u8; 32]>::try_from(bytes)
+            .ok()
+            .map(|b| ed25519_dalek::SigningKey::from_bytes(&b))
+    }
+
     /// Sign the supplied VC in place. Appends the
     /// `DataIntegrityProof` to `vc.proof`. Returns
     /// [`AppError::Internal`] on signing failure — every error

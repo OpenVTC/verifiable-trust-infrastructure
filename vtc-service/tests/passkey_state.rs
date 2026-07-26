@@ -53,6 +53,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
     let endorsements_ks = store.keyspace("endorsements").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
+    let audit_checkpoint_ks = store.keyspace("audit_checkpoint").unwrap();
     let outbox_ks = store.keyspace("outbox").unwrap();
     let invitations_ks = store.keyspace("invitations").unwrap();
     let consumed_invitations_ks = store.keyspace("consumed_invitations").unwrap();
@@ -110,6 +111,7 @@ fn build_state(public_url: Option<&str>) -> (AppState, tempfile::TempDir) {
         install_store: vtc_service::install::InstallTokenStore::new(install_ks),
         audit_ks,
         audit_key_ks,
+        audit_checkpoint_ks,
         outbox_ks,
         audit_writer: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,

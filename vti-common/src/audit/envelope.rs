@@ -313,7 +313,7 @@ impl ChainVerifier {
 pub(crate) const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-mod hash32_b64 {
+pub(super) mod hash32_b64 {
     use super::B64;
     use base64::Engine as _;
     use serde::{Deserialize, Deserializer, Serializer};
@@ -330,7 +330,7 @@ mod hash32_b64 {
     }
 }
 
-mod hash32_opt_b64 {
+pub(super) mod hash32_opt_b64 {
     use super::B64;
     use base64::Engine as _;
     use serde::{Deserialize, Deserializer, Serializer};

@@ -25,6 +25,11 @@ pub struct AppConfig {
     pub auth: AuthConfig,
     #[serde(default)]
     pub secrets: SecretsConfig,
+    /// Signed audit-checkpoint settings (#708). The interval is the
+    /// attacker's free truncation window, so it sets the residual risk
+    /// directly; `0` disables checkpointing.
+    #[serde(default)]
+    pub audit_checkpoints: crate::audit_checkpoint::AuditCheckpointConfig,
     #[serde(default)]
     pub routing: RoutingConfig,
     #[serde(default)]

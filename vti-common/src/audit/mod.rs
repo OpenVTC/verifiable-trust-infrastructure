@@ -24,11 +24,16 @@
 //!   the identifiers with the active key, and persists the envelope
 //!   into an `audit` keyspace.
 
+pub mod checkpoint;
 pub mod envelope;
 pub mod event;
 pub mod key_store;
 pub mod writer;
 
+pub use checkpoint::{
+    AuditCheckpoint, CheckpointAudit, CheckpointBreak, CheckpointClaim, genesis_claim,
+    verify_checkpoints,
+};
 pub use envelope::{
     AuditEnvelope, ChainBreak, ChainVerifier, EVENT_VERSION, GENESIS_HASH, SCHEMA_VERSION,
     verify_chain,
