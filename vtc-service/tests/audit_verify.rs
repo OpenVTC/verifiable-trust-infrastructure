@@ -455,3 +455,62 @@ async fn a_vtc_with_no_signing_key_cannot_claim_checkpoint_health() {
         "body: {body}"
     );
 }
+
+/// A checkpoint naming a `verificationMethod` the current signer does **not**
+/// own must not be waved through against the live key.
+///
+/// This is the bug the per-checkpoint `verificationMethod` existed to prevent
+/// and which the verifier previously had: it passed `|_vm| Some(current_key)`,
+/// so the field was decorative and *any* checkpoint was checked against
+/// whatever key happened to be live. A checkpoint claiming to be signed under
+/// some other key — a retired one, or one this community never held — was
+/// indistinguishable from one signed under the current key.
+///
+/// With no resolver configured the unknown method cannot be resolved, so the
+/// verifier reports that as its own condition rather than as a forgery. The
+/// distinction matters operationally: "the signing key is no longer published"
+/// is expected after a rotation, "this checkpoint was forged" is an incident.
+#[tokio::test]
+async fn a_checkpoint_naming_an_unknown_key_is_not_verified_against_the_live_one() {
+    let fix = build_signed().await;
+    let token = super_admin_token(&fix).await;
+    seed_audit_rows(&fix, &token, 2).await;
+
+    let signer = fix.state.credential_signer.as_ref().unwrap();
+    let key = signer.ed25519_signing_key().unwrap();
+
+    // Signed by the community's REAL key, so the signature is genuine — but it
+    // names a different verificationMethod. Under the old code this verified,
+    // because the named method was ignored entirely.
+    let cp = AuditCheckpoint::sign(
+        CheckpointClaim {
+            checkpoint_id: uuid::Uuid::new_v4(),
+            head: [0u8; 32],
+            entry_count: 0,
+            head_event_id: uuid::Uuid::nil(),
+            checkpoint_at: chrono::Utc::now(),
+            prev_checkpoint: None,
+            verification_method: "did:webvh:scid:vtc.example#key-retired".to_string(),
+        },
+        &key,
+    );
+    fix.state
+        .audit_checkpoint_ks
+        .insert(cp.storage_key(), &cp)
+        .await
+        .unwrap();
+
+    let (status, body) = verify(&fix, &token).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["checkpoints"]["status"], "chainBroken",
+        "a checkpoint naming a key the signer does not own must not verify \
+         against the live key: {body}"
+    );
+    let detail = body["checkpoints"]["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("key-retired") && detail.contains("could not be resolved"),
+        "the finding must name the unresolvable key and say so, rather than \
+         reporting a forgery: {detail}"
+    );
+}

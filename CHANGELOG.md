@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### vtc-service 0.11.30 — audit checkpoints honour their own signing key
+
+`verify_checkpoint_state` resolved every `verificationMethod` to the VTC's
+*current* signing key (`|_vm| Some(current_key)`), which ignored the field
+entirely. Two consequences: a checkpoint naming some other key was silently
+checked against the live one, and the per-checkpoint `verificationMethod` that
+#708 persists specifically to survive rotation was decorative.
+
+The verifier now honours it. **The live signer is tried first, for its own
+method only**; anything else goes to the DID resolver. That ordering matters —
+resolving unconditionally would make a local integrity check depend on DID
+resolution being configured and the community's DID being reachable, which
+breaks verification outright on a deployment with no resolver. The common case
+(a checkpoint signed by the still-current key) stays entirely local, and
+resolution is reached only for a key the signer does not own — exactly the
+rotated-away case the old code could not handle.
+
+An unresolvable key is reported as **its own condition**, not as a bad
+signature. "The signing key is no longer published" is expected after a
+rotation; "this checkpoint was forged" is an incident, and the response must
+let an operator tell them apart.
+
+**Still not fixed, and now written down precisely:** verifying a checkpoint
+signed under a key since rotated away needs the DID document *as it stood at*
+`checkpointAt`. Neither `DIDCacheClient::resolve` nor `didwebvh-rs` offers
+version- or time-addressed resolution — `didwebvh-rs`'s `version_time` creates
+log entries rather than resolving history — so that is a resolver capability
+rather than something the audit verifier should take on by replaying
+`did.jsonl`. A deployment whose DID document retains prior verification methods
+alongside the current one already verifies across rotation today.
+
+Refs #708.
+
+
 ### vta-sdk 0.20.1 / vtc-service 0.11.29 / cnm-cli 0.11.9 / vti-common 0.11.25 — VTC Trust Tasks move to `spec/vtc/*`
 
 The registry now publishes every VTC task (`dtgwg-trust-tasks-tf` #144,

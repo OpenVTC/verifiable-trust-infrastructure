@@ -20,8 +20,10 @@ use axum::extract::{Query, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use std::collections::{BTreeMap, BTreeSet};
 use vti_common::audit::{AuditEnvelope, ChainBreak, ChainVerifier};
 use vti_common::error::AppError;
+
 use vti_common::pagination::{Cursor, MAX_LIMIT};
 
 use crate::auth::SuperAdminAuth;
@@ -431,7 +433,71 @@ async fn verify_checkpoint_state(state: &AppState) -> CheckpointReport {
     };
     let public = signer.public_bytes().to_vec();
 
-    let newest = match verify_checkpoints(&checkpoints, |_vm| Some(public.clone())) {
+    // Honour each checkpoint's OWN `verificationMethod` instead of assuming the
+    // community's current signing key.
+    //
+    // The previous implementation passed `|_vm| Some(current_signer_key)`,
+    // ignoring the field entirely — so the per-checkpoint `verificationMethod`
+    // that #708 deliberately persists was decorative, and a checkpoint naming
+    // some other key was silently checked against the live one.
+    //
+    // **The live signer is tried first, for its own method only.** Resolving
+    // unconditionally would make checkpoint verification depend on DID
+    // resolution being configured and the community's DID being reachable —
+    // turning a local integrity check into a network operation, and breaking
+    // verification outright on a deployment with no resolver. The overwhelmingly
+    // common case is a checkpoint signed by the key that is still current, and
+    // that case stays entirely local.
+    //
+    // Resolution is only reached for a method the current signer does not own —
+    // i.e. a key the community has rotated away from, or a second published
+    // key. That is exactly the case the old code could not handle at all.
+    //
+    // `verify_checkpoints` takes a synchronous callback and resolution is
+    // async, so distinct methods are resolved up front and the callback is a
+    // map lookup.
+    let resolver = crate::credentials::vm_resolver::DidVmResolver::new(state.did_resolver.clone());
+    let signer_vm = signer.assertion_method_id().to_string();
+    let mut keys: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut unresolvable: Vec<String> = Vec::new();
+    for vm in checkpoints
+        .iter()
+        .map(|c| c.verification_method.clone())
+        .collect::<BTreeSet<_>>()
+    {
+        if vm == signer_vm {
+            keys.insert(vm, public.clone());
+            continue;
+        }
+        match resolver.resolve_ed25519(&vm).await {
+            Ok(bytes) => {
+                keys.insert(vm, bytes);
+            }
+            Err(e) => unresolvable.push(format!("{vm} ({e})")),
+        }
+    }
+
+    // A key that will not resolve is its own finding, not folded into "bad
+    // signature". After a rotation the retired key is absent from the
+    // community's *current* DID document, and "the signing key is no longer
+    // published" is a very different thing from "this checkpoint was forged":
+    // the first is expected maintenance, the second is an attack.
+    //
+    // Fully closing this needs the document *as it stood at `checkpointAt`*.
+    // Neither `DIDCacheClient` nor `didwebvh-rs` exposes version- or
+    // time-addressed resolution today, so that is a resolver capability rather
+    // than something to reimplement here by replaying `did.jsonl`.
+    if !unresolvable.is_empty() {
+        return broken(format!(
+            "these checkpoint signing keys could not be resolved: {}. A key retired by \
+             rotation is absent from the community's current DID document; verifying \
+             checkpoints signed under it needs resolution of the document as it stood at \
+             `checkpointAt`, which the DID resolver does not yet support.",
+            unresolvable.join("; ")
+        ));
+    }
+
+    let newest = match verify_checkpoints(&checkpoints, |vm| keys.get(vm).cloned()) {
         Ok(n) => n,
         Err(brk) => {
             let detail = match brk {

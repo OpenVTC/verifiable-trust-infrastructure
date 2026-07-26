@@ -42,14 +42,40 @@ Everything in the Proposal section below, plus:
   keyspace, matching what `/audit/verify` already did. The checkpoint keyspace
   now makes an O(1) head pointer easy; it is a follow-up.
 
-### Known limitation
+### Key rotation — partly addressed, and where it stops
 
-`verify_checkpoint_state` resolves every `verificationMethod` to the VTC's
-*current* signing key. Correct until the community key rotates, at which point
-checkpoints signed under the retired key stop verifying. The fix is to resolve
-the DID document's key history — the per-checkpoint `verification_method` is
-already persisted for exactly that, so this is a verifier change with no data
-migration.
+The first implementation resolved every `verificationMethod` to the VTC's
+*current* signing key (`|_vm| Some(current_key)`), which ignored the field
+entirely. Two consequences: a checkpoint naming any other key was silently
+checked against the live one, and the field this design persists specifically
+to survive rotation was decorative.
+
+The verifier now honours it. The live signer is tried **first, for its own
+method only**, and anything else goes to the DID resolver. That ordering is
+deliberate: resolving unconditionally would make a local integrity check depend
+on DID resolution being configured and the community's DID being reachable,
+breaking verification outright on a deployment with no resolver — and the
+overwhelmingly common case, a checkpoint signed by the still-current key, stays
+entirely local. Resolution is reached only for a key the signer does not own,
+which is exactly the rotated-away case the old code could not handle at all.
+
+A key that will not resolve is reported as **its own condition**, not as a bad
+signature. "The signing key is no longer published" is expected maintenance;
+"this checkpoint was forged" is an incident, and an operator must be able to
+tell them apart from the response alone.
+
+**What is still not fixed.** Verifying a checkpoint signed under a key that has
+since been rotated *away* needs the DID document **as it stood at
+`checkpointAt`**. Neither `DIDCacheClient::resolve` nor `didwebvh-rs` exposes
+version- or time-addressed resolution today — `didwebvh-rs`'s `version_time` is
+for *creating* log entries, not resolving history. Closing this properly is a
+resolver capability, not something the audit verifier should take on by
+replaying `did.jsonl` itself. Until then such checkpoints report
+`chainBroken` with a detail naming the unresolvable key and the reason.
+
+A deployment whose DID document retains prior verification methods alongside
+the current one already verifies across rotation today, since the retired
+method still resolves from the current document.
 
 ---
 

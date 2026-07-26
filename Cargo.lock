@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.29"
+version = "0.11.30"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
