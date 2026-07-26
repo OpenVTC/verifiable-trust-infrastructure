@@ -81,6 +81,43 @@ against an adversary who *also* holds the signing key — remains out of scope
 and is the next step.
 
 Closes #708.
+
+### vta-mobile-core 0.6.16 — give the phone the DID→name seam every other surface already has
+
+The mobile agent shows DIDs where it has no choice: who is asking for a step-up,
+who delivered a task-consent request, which VTA and mediator it is bound to. A
+`did:webvh` in a phone caption is unreadable, and on an approval sheet
+unreadable is not cosmetic — it is the operator approving something they cannot
+identify.
+
+New `vta_mobile_core::display_name`, a thin FFI skin over `vta_sdk::display_name`
+— the same seam the PNM/CNM CLIs, the VTC CLI and the admin console render
+through. Two exports:
+
+* `resolve_agent_name(did) -> Option<AgentName { name, verified }>` — the
+  round-tripped lookup, `display_name::agent_name::lookup` verbatim. Infallible
+  by design: an unreachable name server must degrade to showing the DID, never
+  fail the operator's approval.
+* `shorten_did(did) -> String` — the pure abbreviation, exported rather than
+  ported so the phone cannot drift from the CLIs and the console. An operator
+  moves between all three looking at the same community.
+
+**Why a skin and not an implementation.** A name is only safe to show because it
+round-tripped: the DID's document claimed it *and* resolving that name led back
+to the same DID. `alsoKnownAs` alone is self-asserted, so a hostile DID can claim
+`mybank.com/@treasury`, and a display layer printing that bare has told the
+operator they are looking at their bank — on the one screen where they are about
+to approve something. That defence is already written and tested in `vta-sdk`;
+re-deriving it in the engine, or across the FFI in Swift, would mean two
+implementations of a spoofing check that must agree forever. So the *verdict*
+crosses the boundary instead — `verified` is `vta-sdk`'s conclusion, and the
+app's job is to not discard it.
+
+Enables `vta-sdk/agent-names` for the mobile crate. Nothing in this workspace
+publishes an `alsoKnownAs` entry yet, so `resolve_agent_name` returns `None` for
+every DID today — the surfaces are wired so that minting names lights them up
+without another mobile release.
+
 ### vtc-service 0.11.27 — a REST-only client can now refresh without a mediator
 
 `POST /v1/auth/refresh` went straight to `atm.unpack` and — correctly, since

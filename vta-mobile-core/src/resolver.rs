@@ -19,7 +19,10 @@ use vta_sdk::protocol::matching::{DIDCOMM_SERVICE_TYPE, REST_SERVICE_TYPES};
 /// lookups stay cheap.
 static CLIENT: OnceCell<DIDCacheClient> = OnceCell::const_new();
 
-async fn client() -> Result<&'static DIDCacheClient, FfiError> {
+/// Shared with [`crate::display_name`], which needs the same cache: an agent-name
+/// lookup resolves the DID and then each claimed name, and those resolutions
+/// overlap heavily with the ones the app has already done.
+pub(crate) async fn client() -> Result<&'static DIDCacheClient, FfiError> {
     CLIENT
         .get_or_try_init(|| async {
             DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
