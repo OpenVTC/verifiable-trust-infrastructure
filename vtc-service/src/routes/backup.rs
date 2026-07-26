@@ -20,6 +20,7 @@ use vti_common::error::AppError;
 
 /// `POST /v1/backup/export` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
     /// Encryption password (Argon2id). Minimum 12 characters.
     pub password: String,
@@ -31,6 +32,7 @@ pub struct ExportRequest {
 
 /// `POST /v1/backup/import` body.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportRequest {
     /// The encrypted backup envelope produced by `export`.
     pub backup: BackupEnvelope,

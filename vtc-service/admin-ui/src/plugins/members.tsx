@@ -46,11 +46,11 @@ const TRUST_TASK_ADMIN_REMOVE =
 const TRUST_TASK_PROMOTE =
   "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
 const TRUST_TASK_REMOVED =
-  "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
+  "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
-  "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
+  "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const TRUST_TASK_REQUEST_VMC =
-  "https://trusttasks.org/openvtc/vtc/members/request-vmc/1.0";
+  "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1";
 
 interface MemberRow {
   did: string;

@@ -21,8 +21,8 @@ use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/members/list/0.1";
-const REMOVED_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/removed/1.0";
-const PURGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/purge/1.0";
+const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1";
+const PURGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
 const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
 const PROMOTE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";

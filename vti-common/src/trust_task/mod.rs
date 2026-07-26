@@ -99,10 +99,10 @@ mod tests {
 
     #[test]
     fn accepts_well_formed_https_url() {
-        let t = TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/1.0").unwrap();
+        let t = TrustTask::new("https://trusttasks.org/spec/vtc/install/claim/0.1").unwrap();
         assert_eq!(
             t.as_str(),
-            "https://trusttasks.org/openvtc/vtc/install/claim/1.0"
+            "https://trusttasks.org/spec/vtc/install/claim/0.1"
         );
     }
 
@@ -115,9 +115,9 @@ mod tests {
     #[test]
     fn rejects_non_https() {
         for s in [
-            "http://trusttasks.org/openvtc/vtc/install/claim/1.0",
+            "http://trusttasks.org/spec/vtc/install/claim/0.1",
             "urn:openvtc:vtc:install:claim:1.0",
-            "trusttasks.org/openvtc/vtc/install/claim/1.0",
+            "trusttasks.org/spec/vtc/install/claim/0.1",
         ] {
             let err = TrustTask::new(s).expect_err("non-https");
             assert!(

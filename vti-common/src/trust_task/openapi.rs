@@ -76,7 +76,7 @@ mod tests {
     }
 
     fn task() -> TrustTask {
-        TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/1.0").unwrap()
+        TrustTask::new("https://trusttasks.org/spec/vtc/install/claim/0.1").unwrap()
     }
 
     #[test]
@@ -194,7 +194,7 @@ mod tests {
                     .uri("/v1/install/claim")
                     .header(
                         HEADER_NAME,
-                        "https://trusttasks.org/openvtc/vtc/install/claim/1.0",
+                        "https://trusttasks.org/spec/vtc/install/claim/0.1",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -224,7 +224,7 @@ mod tests {
                     .uri("/v1/install/claim")
                     .header(
                         HEADER_NAME,
-                        "https://trusttasks.org/openvtc/vtc/auth/login/1.0",
+                        "https://trusttasks.org/spec/vtc/auth/login/0.1",
                     )
                     .body(Body::empty())
                     .unwrap(),

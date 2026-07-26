@@ -25,10 +25,12 @@ import { useToast } from "@/lib/toast";
 const TRUST_TASK_LIST = "https://trusttasks.org/spec/acl/list/0.1";
 const TRUST_TASK_GRANT = "https://trusttasks.org/spec/acl/grant/0.1";
 const TRUST_TASK_REVOKE = "https://trusttasks.org/spec/acl/revoke/0.1";
-const TRUST_TASK_INVITES_MANAGE =
-  "https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0";
+const TRUST_TASK_INVITES_LIST =
+  "https://trusttasks.org/spec/vtc/admin/invites/list/0.1";
+const TRUST_TASK_INVITES_CREATE =
+  "https://trusttasks.org/spec/vtc/admin/invites/create/0.1";
 const TRUST_TASK_INVITES_REVOKE =
-  "https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0";
+  "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1";
 
 // Canonical `acl/_shared` AclEntry. `did` -> `subject`,
 // `allowed_contexts` -> `scopes`, and every timestamp is now an
@@ -147,7 +149,7 @@ interface CreateInviteResponse {
 
 async function fetchInvites(): Promise<InvitesListResponse> {
   return getJson<InvitesListResponse>("/v1/admin/invites", {
-    trustTask: TRUST_TASK_INVITES_MANAGE,
+    trustTask: TRUST_TASK_INVITES_LIST,
   });
 }
 
@@ -155,7 +157,7 @@ async function createInvite(
   req: CreateInviteRequest,
 ): Promise<CreateInviteResponse> {
   return postJson<CreateInviteResponse>("/v1/admin/invites", req, {
-    trustTask: TRUST_TASK_INVITES_MANAGE,
+    trustTask: TRUST_TASK_INVITES_CREATE,
   });
 }
 

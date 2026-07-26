@@ -3,7 +3,7 @@
   "version": 1,
   "org": "openvtc",
   "domain": "vtc",
-  "description": "OpenVTC Verifiable Trust Community — Trust Task manifest. Source of truth for trusttasks.org publication; CI publishes Draft entries on every merge to main per spec §9.4.",
+  "description": "OpenVTC Verifiable Trust Community \u2014 Trust Task manifest. Source of truth for trusttasks.org publication; CI publishes Draft entries on every merge to main per spec \u00a79.4.",
   "tasks": [
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/challenge/1.0",
@@ -291,9 +291,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/test/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "policies/test/1.0",
-      "rest": "POST /v1/policies/{id}/test"
+      "rest": "POST /v1/policies/{id}/test",
+      "supersededBy": "https://trusttasks.org/spec/vtc/policies/test/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/policies/list/1.0",
@@ -441,28 +442,10 @@
       "supersededBy": "https://trusttasks.org/spec/vtc/website/files/list/0.1"
     },
     {
-      "id": "https://trusttasks.org/openvtc/vtc/website/files/show/1.0",
-      "status": "draft",
-      "path": "website/files/show/1.0",
-      "rest": "GET /v1/website/files/{*path}"
-    },
-    {
-      "id": "https://trusttasks.org/openvtc/vtc/website/files/write/1.0",
-      "status": "draft",
-      "path": "website/files/write/1.0",
-      "rest": "PUT /v1/website/files/{*path}"
-    },
-    {
       "id": "https://trusttasks.org/openvtc/vtc/website/files/delete/1.0",
       "status": "draft",
       "path": "website/files/delete/1.0",
       "rest": "DELETE /v1/website/files/{*path}"
-    },
-    {
-      "id": "https://trusttasks.org/openvtc/vtc/website/deploy/1.0",
-      "status": "draft",
-      "path": "website/deploy/1.0",
-      "rest": "POST /v1/website/deploy"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/website/generations/list/1.0",

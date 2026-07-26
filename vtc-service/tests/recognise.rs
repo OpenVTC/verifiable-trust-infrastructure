@@ -296,7 +296,7 @@ mod holder_binding {
 
     const VTC_DID: &str = "did:key:z6MkTestVTC";
     const RECOGNISE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/0.1";
-    const CHALLENGE_TASK: &str = "https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0";
+    const CHALLENGE_TASK: &str = "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.1";
 
     async fn test_vtc() -> TestVtc {
         // `with_did_resolver` so the route's VP holder/issuer `did:key`

@@ -33,17 +33,16 @@ use serde_json::Value;
 pub const VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE: &str = "MembershipCredential";
 
 /// VTC → member: request that the member issue and send their reciprocal VMC.
-pub const MEMBER_REQUEST_VMC_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/members/request-vmc/1.0";
+pub const MEMBER_REQUEST_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/request-vmc/0.1";
 
 /// Member → VTC: a member-issued [`VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE`] VMC,
 /// the member → community half of the membership pair.
-pub const MEMBER_VMC_TYPE: &str = "https://trusttasks.org/openvtc/vtc/spec/members/vmc/1.0";
+pub const MEMBER_VMC_TYPE: &str = "https://trusttasks.org/spec/vtc/members/vmc/0.1";
 
 /// VTC → member: receipt acknowledging a stored member VMC. The `#response`
 /// variant of [`MEMBER_VMC_TYPE`].
 pub const MEMBER_VMC_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/members/vmc/1.0#response";
+    "https://trusttasks.org/spec/vtc/members/vmc/0.1#response";
 
 /// Body of a [`MEMBER_REQUEST_VMC_TYPE`] request. The member should issue a VMC
 /// whose `credentialSubject.id` is `community_did` and send it back as a
