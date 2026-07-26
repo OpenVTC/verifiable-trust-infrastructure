@@ -3,58 +3,85 @@
 **Status:** **partly implemented — the residual is much smaller than this
 note assumes.** See "Where this actually stands" immediately below before
 reading anything else; the reduction analysis further down is still sound,
-but its headline numbers are stale.
+but its headline numbers are stale. That section was itself corrected on
+2026-07-26 (a router-only scan had undercounted the residual and wrongly
+reported #709 as partly unblocked).
 **Context:** issue #710. The manifest census (PR #711) pinned VTC's Trust
 Task surface in place; this note covers reducing and relocating it.
 
 ---
 
-## Where this actually stands (measured 2026-07-25)
+## Where this actually stands (measured 2026-07-25, corrected 2026-07-26)
 
 This note was written against a 64-task surface, all on the non-conformant
 `trusttasks.org/openvtc/vtc/…` authority, and framed the work as
 "**64 → 47**". That is no longer the shape of the problem: the Phase 2 + 4
 migrations (#724–#729, #733, #743, openvtc#171–#173) executed most of it.
 
-Counting distinct Trust-Task URIs bound by `vtc-service/src/routes/mod.rs`
-on `main` today:
+> **Correction (2026-07-26).** The counts first published here were measured
+> from `vtc-service/src/routes/mod.rs` alone, which is *not* the whole binding
+> surface — DIDComm wire constants live in `vta-sdk/src/protocols/`, and the
+> admin SPA and `cnm-cli` carry their own literals. That scan undercounted the
+> residual (26 → **30**) and, more seriously, mis-classified four tasks as
+> "already conformant" when they are bound on `openvtc/vtc/` from the SDK. The
+> practical consequence: **#709 is fully blocked on #710**, not partly. The
+> numbers below are the corrected ones.
+
+Counting distinct Trust-Task URIs across **every live binding site** — the
+router, the `vta-sdk` protocol constants, the admin SPA, and `cnm-cli`:
 
 | Form | Count | Meaning |
 |---|---:|---|
 | `trusttasks.org/spec/<slug>/<ver>` | 24 | Canonical. Group A/B promotions — **done**. |
 | `trusttasks.org/spec/vtc/<slug>/<ver>` | 33 | Already in this note's target shape — **done**. |
-| `trusttasks.org/openvtc/vtc/<slug>/<ver>` | **26** | **The residual. This is what #710 still means.** |
-| **Total bound** | **83** | |
+| `trusttasks.org/openvtc/vtc/<slug>/<ver>` | **30** | **The residual. This is what #710 still means.** |
+
+(The router alone accounts for 26 of the 30; the other 4 —
+`members/self-remove-receipt`, `spec/join-requests/submit-receipt`,
+`spec/members/request-vmc`, `spec/members/vmc` — are `vta-sdk` DIDComm
+constants with no REST mount, which is exactly why a router-only scan missed
+them.)
+
+A further 4 appear only in `vti-common/src/trust_task/` doc comments and test
+fixtures (`auth/login/1.0`, `install/claim/{1.0,1.1,start/1.0}`). Those are not
+bindings and nothing on the wire depends on them, but they should be updated
+with everything else so the examples do not teach the retired shape.
 
 So the target shape is not a proposal any more — 33 tasks already use it and
-work. The remaining question is narrow: **move 26 URIs**, not "reduce 64 to
+work. The remaining question is narrow: **move 30 URIs**, not "reduce 64 to
 47".
 
 The manifest agrees: `trust-tasks/index.json` now carries 54 `retired`
 entries (each with a `supersededBy`) and 15 `draft`.
 
-### The residual 26, reconciled against #709
+### The residual 30, reconciled against #709
 
 #709 ("20 bound tasks absent from the published manifest") is not a separate
-backlog — it overlaps this one almost exactly. Cross-referencing the 26
-residual URIs against the census test's `UNPUBLISHED_OK` table:
+backlog — it is a strict subset of this one. Cross-referencing the 30 residual
+URIs against the census test's `UNPUBLISHED_OK` table:
 
 | Bucket | Count | Work per task |
 |---|---:|---|
-| Non-conformant **and** unpublished | **15** | Author the spec **at** the new URI — one edit closes both issues |
+| Non-conformant **and** unpublished | **19** | Author the spec **at** the new URI — one edit closes both issues |
 | Non-conformant, already published as `draft` | **11** | URI change + re-file the existing `spec.md`/`schema.json` |
-| Non-conformant, unaccounted for | **0** | — |
-| In #709 but already on a conformant URI | **5** | Authoring only; no URI change |
+| In #709 but not a real wire task | **1** | `join-requests/submit/1.0`, the documented mount-collapse alias of `spec/join-requests/submit/1.0` — no spec to author |
 
-**Group 1 — non-conformant *and* unpublished (15).** Authoring these at the
-old URI would be pure waste, which is exactly why #710 blocks #709:
+**19 of #709's 20 entries are in group 1, and the twentieth is an alias.** So
+#709 has no independently-executable remainder: every task it asks for either
+moves URI here or is not a task at all. Author any of them at the old URI and
+the work is thrown away.
+
+**Group 1 — non-conformant *and* unpublished (19).**
 
 ```
-admin/invites/manage/1.0      backup/import/1.0        members/purge/1.0
-admin/invites/revoke/1.0      ceremonies/list/1.0      members/removed/1.0
-auth/admin-session/1.0        directory/query/1.0      members/request-vmc/1.0
-auth/recognise/challenge/1.0  invitations/issue/1.0    recognition/check/1.0
-backup/export/1.0             invitations/revoke/1.0   relationships/graph/1.0
+admin/invites/manage/1.0      invitations/issue/1.0    spec/join-requests/submit-receipt/1.0
+admin/invites/revoke/1.0      invitations/revoke/1.0   spec/members/request-vmc/1.0
+auth/admin-session/1.0        members/purge/1.0        spec/members/vmc/1.0
+auth/recognise/challenge/1.0  members/removed/1.0
+backup/export/1.0             members/request-vmc/1.0
+backup/import/1.0             members/self-remove-receipt/1.0
+ceremonies/list/1.0           recognition/check/1.0
+directory/query/1.0           relationships/graph/1.0
 ```
 
 **Group 2 — published as `draft`, wrong URI (11).** Content exists; the URI
@@ -74,14 +101,14 @@ Six of these are dispositions this note already argues for and which are
 `confirm/1.0` gate; `admin/config/{export,import}` are group-B promotions.
 Those four decisions stand unchanged; only the count around them moved.
 
-**Group 4 — already conformant, still unpublished (5).** Pure #709 work,
-unblocked *today*:
-
-```
-join-requests/submit/1.0 (mount-collapse alias)   spec/members/request-vmc/1.0
-members/self-remove-receipt/1.0                    spec/members/vmc/1.0
-spec/join-requests/submit-receipt/1.0
-```
+**There is no third group.** An earlier revision of this addendum claimed five
+tasks were already on conformant URIs and therefore executable as #709 work
+straight away. That was an artefact of scanning only the router: four of them
+(`members/self-remove-receipt`, `spec/join-requests/submit-receipt`,
+`spec/members/request-vmc`, `spec/members/vmc`) are bound on `openvtc/vtc/`
+as `vta-sdk` DIDComm constants with no REST mount, and the fifth
+(`join-requests/submit/1.0`) is the mount-collapse alias, not a task. All four
+belong in group 1.
 
 ### Call sites, counted
 
@@ -107,16 +134,22 @@ type system, so nothing will catch a missed one at compile time — the
 
 ### What this means for sequencing
 
-1. **#709 is no longer fully blocked.** Its Group 4 (5 tasks) is on
-   conformant URIs already and can be authored now. Only its other 15
-   overlap the URI change.
+1. **#709 stays fully blocked on #710** — 19 of its 20 entries move URI here
+   and the twentieth is an alias, so there is nothing in it to start early.
+   Close it as part of this work rather than sequencing it separately.
 2. **The canonical additions** (`auth/passkey/list`, the group-B generics,
    the `policy/*` extensions) are still the first dependency — unchanged.
 3. **Add an admin-UI step** to "What has to change" between steps 4 and 5.
 4. **The `trust_task_manifest.rs` retarget** (step 6) is now the highest-value
-   piece, not the cleanup: with 83 bound URIs across three authorities, it is
-   the only thing that will tell a reviewer whether the migration is finished.
-   Consider extending it to grep the admin-UI sources for stale literals.
+   piece, not the cleanup — and its scope must be **every binding site, not the
+   router**. A router-only census is what produced the wrong numbers this
+   addendum corrects: it cannot see `vta-sdk`'s DIDComm constants (4 tasks with
+   no REST mount), the admin SPA's 16 header literals, or `cnm-cli`. Whatever
+   replaces the manifest test should read all four, or it will report a
+   finished migration while a transport is still on the old authority.
+
+   Good news from the recount: every admin-SPA URI is currently a subset of the
+   router's, so there is no live drift to fix — only migration debt.
 
 Everything below this line — the two-planes model, the step-up decision, the
 group A/B/C dispositions, the settled decisions, the non-goals — is unchanged
@@ -256,8 +289,8 @@ one definition serves both services".
 
 > **Stale count — the dispositions below are not.** Most of this reduction
 > has since shipped (#724–#729, #733, #743). 57 of the 83 currently-bound
-> URIs are already canonical or already `spec/vtc/*`; **26 remain on
-> `openvtc/vtc/*`**. Read "Where this actually stands" at the top of this
+> URIs are already canonical or already `spec/vtc/*`; **30 remain on
+> `openvtc/vtc/*`** (corrected 2026-07-26 from a router-only count of 26). Read "Where this actually stands" at the top of this
 > note for the current tally. The per-task reasoning in A1–A4, B, and C is
 > unaffected — only the arithmetic around it is.
 
