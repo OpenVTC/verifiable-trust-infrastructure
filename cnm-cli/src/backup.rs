@@ -23,8 +23,8 @@ use crate::auth;
 /// Canonical HTTP header carrying the Trust-Task URL (mirrors
 /// `vti_common::trust_task::HEADER_NAME`).
 const TRUST_TASK_HEADER: &str = "Trust-Task";
-const EXPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/backup/export/1.0";
-const IMPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/backup/import/1.0";
+const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/export/0.1";
+const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/backup/import/0.1";
 
 /// Authenticated REST POST to a VTC `/v1/backup/*` route. `client.rest_url()`
 /// already carries the `/v1` mount, so the path here is relative to it.
@@ -82,11 +82,11 @@ pub(crate) async fn cmd_export(
         keyring_key,
         "/backup/export",
         EXPORT_TASK,
-        json!({ "password": password, "include_audit": include_audit }),
+        json!({ "password": password, "includeAudit": include_audit }),
     )
     .await?;
 
-    let source_did = envelope.get("source_did").and_then(Value::as_str);
+    let source_did = envelope.get("sourceDid").and_then(Value::as_str);
     let path = output.unwrap_or_else(|| {
         let slug = source_did
             .and_then(|d| d.rsplit(':').next())
@@ -106,7 +106,7 @@ pub(crate) async fn cmd_export(
     println!(
         "  Includes audit: {}",
         envelope
-            .get("includes_audit")
+            .get("includesAudit")
             .and_then(Value::as_bool)
             .unwrap_or(false)
     );
@@ -129,13 +129,13 @@ pub(crate) async fn cmd_import(
         .map_err(|e| format!("{} is not a valid backup file: {e}", file.display()))?;
 
     println!("Backup file: {}", file.display());
-    println!("  Source DID:  {}", str_field(&envelope, "source_did"));
-    println!("  Created:     {}", str_field(&envelope, "created_at"));
+    println!("  Source DID:  {}", str_field(&envelope, "sourceDid"));
+    println!("  Created:     {}", str_field(&envelope, "createdAt"));
     println!("  Format:      {}", str_field(&envelope, "format"));
     println!(
         "  Audit:       {}",
         envelope
-            .get("includes_audit")
+            .get("includesAudit")
             .and_then(Value::as_bool)
             .unwrap_or(false)
     );
@@ -214,7 +214,7 @@ fn print_counts(result: &Value) {
 /// digits of its ISO-8601 timestamp), avoiding a `chrono` dependency.
 fn file_stamp(envelope: &Value) -> String {
     let created = envelope
-        .get("created_at")
+        .get("createdAt")
         .and_then(Value::as_str)
         .unwrap_or("");
     let digits: String = created
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn file_stamp_uses_created_at_digits() {
-        let env = json!({ "created_at": "2026-06-15T14:30:05Z" });
+        let env = json!({ "createdAt": "2026-06-15T14:30:05Z" });
         assert_eq!(file_stamp(&env), "20260615143005");
     }
 

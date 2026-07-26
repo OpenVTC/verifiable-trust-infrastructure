@@ -238,7 +238,9 @@ export const signOut = (): Promise<void> =>
 // ---------------------------------------------------------------------------
 
 const ISSUE_INVITATION_TASK =
-  "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
+  "https://trusttasks.org/spec/vtc/invitations/issue/0.1";
+const LIST_INVITATIONS_TASK =
+  "https://trusttasks.org/spec/vtc/invitations/list/0.1";
 
 export interface IssueInvitationResponse {
   subjectDid: string;
@@ -263,7 +265,7 @@ export const issueInvitation = (
 };
 
 const REVOKE_INVITATION_TASK =
-  "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0";
+  "https://trusttasks.org/spec/vtc/invitations/revoke/0.1";
 
 export interface InvitationListItem {
   id: string;
@@ -275,11 +277,12 @@ export interface InvitationListItem {
   revokedAt?: string;
 }
 
-/** List issued invitations (newest first). Reuses the issue Trust Task (GET +
- * POST share the /invitations mount). */
+/** List issued invitations (newest first). Its own Trust Task: listing the
+ * registry and minting a bearer credential are different contracts, even
+ * though GET and POST share the /invitations path. */
 export const listInvitations = (): Promise<{ invitations: InvitationListItem[] }> =>
   getJson<{ invitations: InvitationListItem[] }>("/v1/invitations", {
-    trustTask: ISSUE_INVITATION_TASK,
+    trustTask: LIST_INVITATIONS_TASK,
   });
 
 /** Revoke an outstanding invitation by VIC id (flips its revocation bit). */
@@ -292,7 +295,7 @@ export const revokeInvitation = (
   );
 
 const RELATIONSHIPS_GRAPH_TASK =
-  "https://trusttasks.org/openvtc/vtc/relationships/graph/1.0";
+  "https://trusttasks.org/spec/vtc/relationships/graph/0.1";
 
 export interface GraphNode {
   did: string;
@@ -316,7 +319,7 @@ export const fetchRelationshipsGraph = (): Promise<RelationshipsGraph> =>
   });
 
 const RECOGNITION_CHECK_TASK =
-  "https://trusttasks.org/openvtc/vtc/recognition/check/1.0";
+  "https://trusttasks.org/spec/vtc/recognition/check/0.1";
 
 export interface RecognitionCheck {
   did: string;

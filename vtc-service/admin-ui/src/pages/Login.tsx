@@ -34,7 +34,7 @@ const TRUST_TASK_START =
 const TRUST_TASK_FINISH =
   "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
 const TRUST_TASK_ADMIN_SESSION =
-  "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0";
+  "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
 
 type Phase =
   | { kind: "idle" }

@@ -508,25 +508,37 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // POST share the same mount; DELETE on `/admin/invites/{jti}`
         // revokes outstanding (Issued) invites. Consumed rows are
         // immutable (audit history) — DELETE on those returns 409.
+        // Split per method (was one `admin/invites/manage` task over both
+        // verbs). "Enumerate the invites" and "mint a credential-bearing
+        // install URL" are different contracts with different exposure, so
+        // they get different Trust Tasks. Same path, different methods —
+        // `task_routes` layers the *method* router and axum merges same-path
+        // method routers per method, so each verb enforces its own task
+        // (pinned by `vti_common::trust_task::openapi::
+        // per_method_tasks_on_one_path_are_enforced_independently`).
         .routes(tt(
-            routes!(admin::invites::list_invites, admin::invites::create_invite),
-            "https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0",
+            routes!(admin::invites::list_invites),
+            "https://trusttasks.org/spec/vtc/admin/invites/list/0.1",
+        ))
+        .routes(tt(
+            routes!(admin::invites::create_invite),
+            "https://trusttasks.org/spec/vtc/admin/invites/create/0.1",
         ))
         .routes(tt(
             routes!(admin::invites::revoke_invite),
-            "https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0",
+            "https://trusttasks.org/spec/vtc/admin/invites/revoke/0.1",
         ))
         // Directory ceremony (read-only field projection via the
         // ceremony decision pipeline).
         .routes(tt(
             routes!(directory::query),
-            "https://trusttasks.org/openvtc/vtc/directory/query/1.0",
+            "https://trusttasks.org/spec/vtc/directory/query/0.1",
         ))
         // Ceremony registry — the admin-UI renders its flow + simulator
         // from these manifests (purpose / fields / facts template).
         .routes(tt(
             routes!(ceremonies::list),
-            "https://trusttasks.org/openvtc/vtc/ceremonies/list/1.0",
+            "https://trusttasks.org/spec/vtc/ceremonies/list/0.1",
         ))
         // Members (Phase 1 M1.4–M1.6).
         .routes(tt(
@@ -538,11 +550,11 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // path-trie doesn't route "removed" as a DID (same reason as `/me`).
         .routes(tt(
             routes!(members::read::list_removed),
-            "https://trusttasks.org/openvtc/vtc/members/removed/1.0",
+            "https://trusttasks.org/spec/vtc/members/removed/0.1",
         ))
         .routes(tt(
             routes!(members::remove::purge),
-            "https://trusttasks.org/openvtc/vtc/members/purge/1.0",
+            "https://trusttasks.org/spec/vtc/members/purge/0.1",
         ))
         // `/v1/members/me` for self-remove (M1.11.1). Must be
         // declared BEFORE the `/v1/members/{did}` mount otherwise
@@ -575,7 +587,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // asynchronously over the `members/vmc/1.0` DIDComm surface.
         .routes(tt(
             routes!(members::request_vmc::request_vmc),
-            "https://trusttasks.org/openvtc/vtc/members/request-vmc/1.0",
+            "https://trusttasks.org/spec/vtc/members/solicit-vmc/0.1",
         ))
         // Phase 4 M4.3 + M4.4 — personhood lifecycle. Three
         // mounts on the same path prefix; declared BEFORE
@@ -606,7 +618,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // Admin connections-graph view — the member-relationship (VRC) graph.
         .routes(tt(
             routes!(relationships::graph),
-            "https://trusttasks.org/openvtc/vtc/relationships/graph/1.0",
+            "https://trusttasks.org/spec/vtc/relationships/graph/0.1",
         ))
         .routes(tt(
             routes!(relationships::publish),
@@ -656,19 +668,26 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         // the VIC auto-join ceremony. Admin / Moderator / Issuer. POST + GET on
         // /invitations share the `issue/1.0` mount; the standalone `list/1.0`
         // task is declared on disk for the soft-gate surface.
+        // Split per method, as with admin/invites above: issuance returns a
+        // bearer credential, listing must never re-disclose one. The old
+        // shared `issue/1.0` mount could not state both contracts.
         .routes(tt(
-            routes!(invitations::issue, invitations::list),
-            "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0",
+            routes!(invitations::issue),
+            "https://trusttasks.org/spec/vtc/invitations/issue/0.1",
+        ))
+        .routes(tt(
+            routes!(invitations::list),
+            "https://trusttasks.org/spec/vtc/invitations/list/0.1",
         ))
         // Revoke an outstanding invitation (flips its revocation bit).
         .routes(tt(
             routes!(invitations::revoke),
-            "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0",
+            "https://trusttasks.org/spec/vtc/invitations/revoke/0.1",
         ))
         // Recognition (trust-graph) lookup — admin window into TRQP recognise.
         .routes(tt(
             routes!(recognition_admin::check),
-            "https://trusttasks.org/openvtc/vtc/recognition/check/1.0",
+            "https://trusttasks.org/spec/vtc/recognition/check/0.1",
         ))
         .routes(tt(
             routes!(endorsements::show),
@@ -766,7 +785,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         ))
         .routes(tt(
             routes!(policies::admin::test),
-            "https://trusttasks.org/openvtc/vtc/policies/test/1.0",
+            "https://trusttasks.org/spec/vtc/policies/test/0.1",
         ));
 
     // Phase 5 M5.5 — public-website management routes. The
@@ -844,14 +863,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             "/backup/export",
             ttl(
                 post(backup::export),
-                "https://trusttasks.org/openvtc/vtc/backup/export/1.0",
+                "https://trusttasks.org/spec/vtc/backup/export/0.1",
             ),
         )
         .route(
             "/backup/import",
             ttl(
                 post(backup::import).layer(DefaultBodyLimit::max(BACKUP_IMPORT_CAP)),
-                "https://trusttasks.org/openvtc/vtc/backup/import/1.0",
+                "https://trusttasks.org/spec/vtc/backup/import/0.1",
             ),
         );
 
@@ -968,7 +987,7 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         .routes(tt(
             routes!(auth::admin_session),
-            "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0",
+            "https://trusttasks.org/spec/vtc/auth/admin-session/0.1",
         ))
         .routes(tt(
             routes!(auth::passkey_login_start),
@@ -988,7 +1007,7 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         .routes(tt(
             routes!(recognise::recognise_challenge),
-            "https://trusttasks.org/openvtc/vtc/auth/recognise/challenge/1.0",
+            "https://trusttasks.org/spec/vtc/auth/recognise/challenge/0.1",
         ))
         .routes(tt(
             routes!(recognise::recognise),

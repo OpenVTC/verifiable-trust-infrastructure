@@ -25,7 +25,7 @@ use vtc_service::test_support::TestVtc;
 
 const UPLOAD_TASK: &str = "https://trusttasks.org/spec/policy/upsert/0.2";
 const ACTIVATE_TASK: &str = "https://trusttasks.org/spec/policy/activate/0.1";
-const TEST_TASK: &str = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
+const TEST_TASK: &str = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 /// `/v1/policies` (list) + `/v1/policies/{id}` (show) share their
 /// HTTP mounts with the upload + activate POSTs respectively —
 /// TrustTaskRouter doesn't yet support per-method selectors, so

@@ -15,7 +15,7 @@
 //! use vti_common::trust_task::{TrustTask, TrustTaskRouter};
 //! use axum::routing::{get, post};
 //!
-//! let install_claim = TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/start/1.0")?;
+//! let install_claim = TrustTask::new("https://trusttasks.org/spec/vtc/install/claim/start/0.1")?;
 //!
 //! let router = TrustTaskRouter::new()
 //!     .route_with_task("/v1/install/claim/start", post(claim_start), install_claim)
@@ -123,7 +123,7 @@ mod tests {
     }
 
     fn make_router() -> Router {
-        let claim = TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/1.0").unwrap();
+        let claim = TrustTask::new("https://trusttasks.org/spec/vtc/install/claim/0.1").unwrap();
         TrustTaskRouter::new()
             .route_with_task("/v1/install/claim", post(ok), claim)
             .route_exempt("/health", get(ok))
@@ -140,7 +140,7 @@ mod tests {
                     .uri("/v1/install/claim")
                     .header(
                         HEADER_NAME,
-                        "https://trusttasks.org/openvtc/vtc/install/claim/1.0",
+                        "https://trusttasks.org/spec/vtc/install/claim/0.1",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -180,7 +180,7 @@ mod tests {
                     .uri("/v1/install/claim")
                     .header(
                         HEADER_NAME,
-                        "https://trusttasks.org/openvtc/vtc/auth/login/1.0",
+                        "https://trusttasks.org/spec/vtc/auth/login/0.1",
                     )
                     .body(Body::empty())
                     .unwrap(),
@@ -194,11 +194,11 @@ mod tests {
         assert_eq!(body["error"], "TrustTaskMismatch");
         assert_eq!(
             body["expected"],
-            "https://trusttasks.org/openvtc/vtc/install/claim/1.0"
+            "https://trusttasks.org/spec/vtc/install/claim/0.1"
         );
         assert_eq!(
             body["received"],
-            "https://trusttasks.org/openvtc/vtc/auth/login/1.0"
+            "https://trusttasks.org/spec/vtc/auth/login/0.1"
         );
     }
 
@@ -213,7 +213,7 @@ mod tests {
                     .uri("/v1/install/claim")
                     .header(
                         HEADER_NAME,
-                        "https://trusttasks.org/openvtc/vtc/install/claim/1.1",
+                        "https://trusttasks.org/spec/vtc/install/claim/0.2",
                     )
                     .body(Body::empty())
                     .unwrap(),

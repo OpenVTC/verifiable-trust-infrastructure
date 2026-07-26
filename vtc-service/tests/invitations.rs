@@ -22,9 +22,9 @@ use vtc_service::status_list;
 use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
-const ISSUE_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
-const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/issue/1.0";
-const REVOKE_TASK: &str = "https://trusttasks.org/openvtc/vtc/invitations/revoke/1.0";
+const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/invitations/issue/0.1";
+const LIST_TASK: &str = "https://trusttasks.org/spec/vtc/invitations/list/0.1";
+const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/invitations/revoke/0.1";
 const ADMIN_DID: &str = "did:key:zInvAdmin";
 const MEMBER_DID: &str = "did:key:zInvMember";
 const INVITEE_DID: &str = "did:key:zInvitee";

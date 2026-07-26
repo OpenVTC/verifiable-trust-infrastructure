@@ -97,6 +97,16 @@ const UNPUBLISHED_OK: &[(&str, &str)] = &[
         "join-requests/submit/1.0",
         "mount-collapse alias of spec/join-requests/submit/1.0",
     ),
+    // Raw-byte operations, de-listed rather than retired: a JSON Trust-Task
+    // payload cannot carry file bytes, so there is no spec to supersede them
+    // with — and `supersededBy` is mandatory on a retired entry. The registry
+    // deliberately publishes only the four website tasks that genuinely are
+    // Trust Tasks (files/list, files/delete, generations/list, rollback).
+    ("website/deploy/1.0", "raw-byte upload — not a Trust Task"),
+    (
+        "website/files/show/1.0",
+        "raw-byte download — not a Trust Task",
+    ),
 ];
 
 fn workspace_root() -> PathBuf {
@@ -137,18 +147,37 @@ fn manifest() -> BTreeMap<String, Task> {
 fn bound_task_uris() -> BTreeSet<String> {
     let root = workspace_root();
     let mut found = BTreeSet::new();
-    for crate_src in ["vtc-service/src", "vta-sdk/src"] {
+    for crate_src in BINDING_SITES {
         collect_from_dir(&root.join(crate_src), &mut found);
     }
     found
 }
+
+/// Every place a Trust-Task URI is bound, dispatched, or sent as a header.
+///
+/// **All four, not just the router.** A router-only scan is what produced the
+/// wrong residual count in #799: four tasks are `vta-sdk` DIDComm constants
+/// with no REST mount, so nothing in `routes/mod.rs` mentions them. The admin
+/// SPA is worse — it sends `Trust-Task` headers as TypeScript string literals
+/// with no type-system backstop, so a missed one fails at runtime in the UI
+/// and nothing in the Rust build notices. It is compiled into the binary by
+/// `build.rs`, so it cannot lag the daemon by even one release.
+const BINDING_SITES: &[&str] = &[
+    "vtc-service/src",
+    "vta-sdk/src",
+    "cnm-cli/src",
+    "vtc-service/admin-ui/src",
+];
 
 fn collect_from_dir(dir: &Path, out: &mut BTreeSet<String>) {
     for entry in std::fs::read_dir(dir).expect("read source dir") {
         let path = entry.expect("dir entry").path();
         if path.is_dir() {
             collect_from_dir(&path, out);
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else if path
+            .extension()
+            .is_some_and(|e| e == "rs" || e == "ts" || e == "tsx")
+        {
             let text = std::fs::read_to_string(&path).expect("read source file");
             for (idx, _) in text.match_indices(PREFIX) {
                 // Only string literals count. Doc comments carry `{verb}`-style
@@ -282,4 +311,144 @@ fn every_manifest_entry_has_files_on_disk() {
         "manifest entries missing files:\n  {}",
         missing.join("\n  ")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Migration guards (#710)
+// ---------------------------------------------------------------------------
+
+/// The `openvtc/vtc/*` URIs still awaiting a canonical disposition.
+///
+/// This list only ever shrinks. Each entry is a task the #710 design note
+/// folds onto a canonical spec rather than republishing under `spec/vtc/*`,
+/// so it cannot simply be repointed — three of them additionally need an
+/// upstream registry spec that does not exist yet.
+///
+/// A new `openvtc/vtc/` URI appearing anywhere fails the test below, which is
+/// the point: the authority is retired, and nothing should be added to it.
+const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
+    (
+        "admin/config/export/1.0",
+        "canonical config/export — blocked on communityProfile moving to ext",
+    ),
+    (
+        "admin/config/import/1.0",
+        "canonical config/import — blocked; communityProfileDiff is structural",
+    ),
+    (
+        "admin/passkeys/list/1.0",
+        "canonical auth/passkey/list — blocked, spec not yet proposed upstream",
+    ),
+    (
+        "admin/passkeys/register/1.0",
+        "canonical auth/passkey/enroll/{start,finish} + confirm/1.0 gate",
+    ),
+    (
+        "admin/passkeys/revoke/1.0",
+        "canonical passkey-revoke + confirm/1.0 gate; needs the list spec first",
+    ),
+    (
+        "auth/admin-login/1.0",
+        "canonical auth/authenticate; the cookie side-effect moves to a binding/ext",
+    ),
+    (
+        "config/legacy/manage/1.0",
+        "delete — strict duplicate of admin/config/manage, which shipped",
+    ),
+    (
+        "members/promote-to-admin/1.0",
+        "canonical acl/change-role + confirm/1.0 gate",
+    ),
+    // Not Trust Tasks at all: a JSON payload cannot carry file bytes. These
+    // are de-listed rather than folded, and the registry deliberately has no
+    // spec for them (see specs/vtc/website/, which holds only the four that
+    // are genuinely tasks).
+    (
+        "website/deploy/1.0",
+        "raw-byte upload — de-listed, not a Trust Task",
+    ),
+    (
+        "website/files/show/1.0",
+        "raw-byte download — de-listed, not a Trust Task",
+    ),
+];
+
+/// No `openvtc/vtc/` URI may appear outside the shrinking fold list.
+///
+/// The authority is retired. This is what stops the migration regressing one
+/// literal at a time — a new binding on the old authority fails here rather
+/// than being discovered by a downstream consumer.
+#[test]
+fn no_new_bindings_on_the_retired_authority() {
+    let bound = bound_task_uris();
+    let allowed = exceptions(AWAITING_CANONICAL_FOLD);
+    let unexpected: BTreeSet<_> = bound.difference(&allowed).cloned().collect();
+    assert!(
+        unexpected.is_empty(),
+        "these bind the retired `openvtc/vtc/` authority and are not in \
+         AWAITING_CANONICAL_FOLD:\n  {}\n\nRepoint them to \
+         https://trusttasks.org/spec/vtc/<slug>/<ver>, or — if the task is \
+         genuinely awaiting a canonical fold — add it to the list with a reason.",
+        unexpected.iter().cloned().collect::<Vec<_>>().join("\n  ")
+    );
+}
+
+/// Every `spec/vtc/` URI the code binds must be one the registry actually
+/// publishes.
+///
+/// Cross-checked against the generated `trust_tasks_rs` schema index rather
+/// than a hand-maintained list, so it tracks the published registry: a typo, a
+/// stale slug, or a task repointed to a spec that was never authored all fail
+/// here instead of at runtime. `schema_for` returning `None` means this build
+/// of the registry crate knows no such task.
+#[test]
+fn every_bound_vtc_task_exists_in_the_registry() {
+    const SPEC_PREFIX: &str = "https://trusttasks.org/spec/vtc/";
+    let root = workspace_root();
+    let mut bound = BTreeSet::new();
+    for crate_src in BINDING_SITES {
+        collect_prefixed(&root.join(crate_src), SPEC_PREFIX, &mut bound);
+    }
+    assert!(
+        !bound.is_empty(),
+        "found no spec/vtc/ bindings at all — the scan is broken, not the code"
+    );
+
+    let unknown: Vec<_> = bound
+        .iter()
+        .filter(|uri| trust_tasks_rs::schema_index::schema_for(uri).is_none())
+        .cloned()
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "these spec/vtc/ URIs are bound but the registry (trust-tasks-rs \
+         {}) publishes no such task:\n  {}\n\nEither the slug is wrong or the \
+         spec was never authored upstream.",
+        env!("CARGO_PKG_VERSION"),
+        unknown.join("\n  ")
+    );
+}
+
+/// As [`collect_from_dir`], for an arbitrary URI prefix.
+fn collect_prefixed(dir: &Path, prefix: &str, out: &mut BTreeSet<String>) {
+    for entry in std::fs::read_dir(dir).expect("read source dir") {
+        let path = entry.expect("dir entry").path();
+        if path.is_dir() {
+            collect_prefixed(&path, prefix, out);
+        } else if path
+            .extension()
+            .is_some_and(|e| e == "rs" || e == "ts" || e == "tsx")
+        {
+            let text = std::fs::read_to_string(&path).expect("read source file");
+            for (idx, _) in text.match_indices(prefix) {
+                if idx == 0 || !text[..idx].ends_with('"') {
+                    continue;
+                }
+                let rest = &text[idx..];
+                let Some(end) = rest.find('"') else { continue };
+                let uri = rest[..end].split('#').next().expect("head").to_owned();
+                out.insert(uri);
+            }
+        }
+    }
 }

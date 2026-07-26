@@ -51,7 +51,7 @@ import {
   natureColor,
 } from "@/lib/ceremony-manifest";
 
-const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
+const TRUST_TASK_TEST = "https://trusttasks.org/spec/vtc/policies/test/0.1";
 const TRUST_TASK_JOIN_REQUESTS =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 

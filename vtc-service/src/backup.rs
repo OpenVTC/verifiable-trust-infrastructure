@@ -60,6 +60,7 @@ const IMPORT_IN_PROGRESS_KEY: &[u8] = b"backup:import_in_progress";
 /// Outer envelope: unencrypted metadata + the encrypted payload. Crypto
 /// fields mirror the VTA's `vta-backup-v1`.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupEnvelope {
     pub version: u32,
     pub format: String,
@@ -75,6 +76,7 @@ pub struct BackupEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct KdfParams {
     pub algorithm: String, // "argon2id"
     pub salt: String,      // base64url, 32 bytes
@@ -84,6 +86,7 @@ pub struct KdfParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct EncryptionParams {
     pub algorithm: String, // "aes-256-gcm"
     pub nonce: String,     // base64url, 12 bytes
@@ -130,6 +133,7 @@ pub struct BackupConfig {
 
 /// Result of an import (or, with `confirm = false`, a preview).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub status: String, // "imported" | "preview"
     #[serde(skip_serializing_if = "Option::is_none")]

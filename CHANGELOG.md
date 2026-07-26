@@ -2,6 +2,80 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.1 / vtc-service 0.11.29 / cnm-cli 0.11.9 / vti-common 0.11.25 — VTC Trust Tasks move to `spec/vtc/*`
+
+The registry now publishes every VTC task (`dtgwg-trust-tasks-tf` #144,
+`trust-tasks-rs` 0.2.38), so the bindings move off the non-conformant
+`trusttasks.org/openvtc/vtc/...` authority they were never entitled to use.
+This repoints **20 old URIs onto the 22 authored `spec/vtc/<slug>/0.1`
+slugs** — 22 because two collapsed mounts split.
+
+**All four binding sites**, in one change, because they cannot lag each
+other: `routes/mod.rs`, the `vta-sdk` DIDComm constants, the admin SPA's
+TypeScript `Trust-Task` headers, and `cnm-cli`. The SPA is compiled into the
+binary by `build.rs`, so a partial migration would ship a UI calling URIs the
+router no longer binds.
+
+**Two mounts split per method.** `admin/invites/manage` served list *and*
+create; `invitations/issue` served issue *and* list. One URI cannot state two
+contracts, and the exposure differs sharply — issuing returns a bearer
+credential, listing must never re-disclose one. `task_routes` layers the
+method router and axum merges same-path method routers per method, so each
+verb enforces its own task (pinned by
+`per_method_tasks_on_one_path_are_enforced_independently`). The SPA's
+`listInvitations` even carried the comment "Reuses the issue Trust Task";
+it now has its own.
+
+**The reciprocal-VMC exchange became three tasks.** `members/request-vmc`
+(admin → VTC) and `spec/members/request-vmc` (VTC → member) would have
+collided on one slug once the parsing-artifact `spec/` segment was dropped.
+They are now `vtc/members/solicit-vmc`, `vtc/members/request-vmc`, and
+`vtc/members/vmc`.
+
+**BREAKING (wire): the VTC backup payloads are now camelCase.**
+`ExportRequest`, `ImportRequest`, `BackupEnvelope`, `KdfParams`,
+`EncryptionParams` and `ImportResult` carried no `serde(rename_all)` and were
+snake_case on the wire, against R3.1 and against every other VTC payload.
+`cnm-cli` is updated on both sides — it was sending `include_audit` and
+reading `source_did` / `includes_audit` / `created_at`, all of which would
+have silently returned `None` against the new server. **The VTA's backup wire
+is untouched**: `vta-sdk::client::backup` targets a different service and
+stays snake_case.
+
+**De-listed, not migrated:** `website/deploy` and `website/files/show` are
+raw-byte operations — a JSON Trust-Task payload cannot carry file bytes — so
+the registry deliberately has no spec for them. They are removed from the
+manifest rather than retired, because `supersededBy` is mandatory on a
+retired entry and nothing supersedes them.
+
+**The census test now reads every binding site**, not just the router. A
+router-only scan is what produced the wrong residual count corrected in #802:
+four tasks are `vta-sdk` DIDComm constants with no REST mount. Two new
+guards:
+- `no_new_bindings_on_the_retired_authority` — nothing may bind
+  `openvtc/vtc/` outside a shrinking, reasoned allowlist of the 10 tasks
+  still awaiting a canonical fold.
+- `every_bound_vtc_task_exists_in_the_registry` — every bound `spec/vtc/`
+  URI must resolve through `trust_tasks_rs::schema_index::schema_for`, so a
+  typo or a slug that was never authored fails here rather than at runtime.
+
+**Downstream:** `openvtc` consumes the changed `vta-sdk` constants and has a
+DIDComm regex allowlist that will *reject* the new URIs until it upgrades. It
+must land in the same release.
+
+Deferred to a follow-up (tracked in `AWAITING_CANONICAL_FOLD`): the 8 tasks
+that fold onto canonical specs rather than `spec/vtc/*`. Three of those are
+blocked on upstream registry work, and three need the delegated `confirm/1.0`
+gate.
+
+Also updates `vti-common`'s Trust-Task doc examples and test fixtures off the
+retired authority. They are not bindings — the census deliberately excludes
+them — but a doc comment demonstrating `openvtc/vtc/...` teaches the shape we
+just spent this change removing.
+
+Refs #710, refs #709.
+
+
 ### vti-common 0.11.24 / vtc-service 0.11.28 / cnm-cli 0.11.8 — signed audit checkpoints
 
 The `prev_hash` chain (#555) and `GET /v1/audit/verify` (#703) detect

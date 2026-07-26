@@ -61,7 +61,7 @@ export const natureColor: Record<Nature, string> = {
 };
 
 const TRUST_TASK_CEREMONIES =
-  "https://trusttasks.org/openvtc/vtc/ceremonies/list/1.0";
+  "https://trusttasks.org/spec/vtc/ceremonies/list/0.1";
 
 export async function fetchCeremonies(): Promise<CeremonyManifest[]> {
   return getJson<CeremonyManifest[]>("/v1/ceremonies", {

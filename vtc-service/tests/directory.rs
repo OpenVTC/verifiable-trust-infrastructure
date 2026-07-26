@@ -30,7 +30,7 @@ use vtc_service::policy::default::install_defaults;
 use vtc_service::test_support::TestVtc;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const DIRECTORY_TASK: &str = "https://trusttasks.org/openvtc/vtc/directory/query/1.0";
+const DIRECTORY_TASK: &str = "https://trusttasks.org/spec/vtc/directory/query/0.1";
 const ADMIN_DID: &str = "did:key:zAdmin1";
 
 struct Fixture {

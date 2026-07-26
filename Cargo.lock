@@ -2488,7 +2488,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cnm-cli"
-version = "0.11.8"
+version = "0.11.9"
 dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "clap",
@@ -9585,9 +9585,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.18"
+version = "0.2.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b54d12f633f9ed89d4531879b01d90b8138f4e59e67a77f0489e9466507f4fb1"
+checksum = "15438a66c6f3e061554d8cd5a0e2c07c0828618f3e3ff3331be266347caccf25"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10269,7 +10269,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.28"
+version = "0.11.29"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10646,7 +10646,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.24"
+version = "0.11.25"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

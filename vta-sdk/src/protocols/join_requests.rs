@@ -61,7 +61,7 @@ pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
 /// Inventing `spec/vtc/join-requests/submit-receipt` here would mean
 /// emitting a URI that resolves to nothing in the registry.
 pub const JOIN_REQUEST_SUBMIT_RECEIPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit-receipt/1.0";
+    "https://trusttasks.org/spec/vtc/join-requests/submit-receipt/0.1";
 
 /// Body of the credential-exchange join receipt (see
 /// [`JOIN_REQUEST_SUBMIT_RECEIPT_TYPE`]).
@@ -349,7 +349,7 @@ pub const MEMBER_SELF_REMOVE_TYPE: &str = "https://trusttasks.org/spec/vtc/membe
 /// for the same reason as [`JOIN_REQUEST_SUBMIT_RECEIPT_TYPE`] — no
 /// canonical receipt task exists.
 pub const MEMBER_SELF_REMOVE_RECEIPT_TYPE: &str =
-    "https://trusttasks.org/openvtc/vtc/members/self-remove-receipt/1.0";
+    "https://trusttasks.org/spec/vtc/members/self-remove-receipt/0.1";
 
 /// Body of the self-remove message. `did` comes from the DIDComm
 /// `from` field — the caller's authcrypt sender authenticates

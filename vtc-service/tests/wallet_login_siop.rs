@@ -275,7 +275,7 @@ async fn wallet_login_rejects_nonce_not_matching_challenge() {
 
 // ─── Phase 3: bearer → cookie bridge (`/v1/auth/admin-session`) ───
 
-const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/openvtc/vtc/auth/admin-session/1.0";
+const ADMIN_SESSION_TASK: &str = "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
 const WHOAMI_TASK: &str = "https://trusttasks.org/spec/auth/whoami/0.1";
 
 /// Run a full wallet login and return the minted bearer access token.
