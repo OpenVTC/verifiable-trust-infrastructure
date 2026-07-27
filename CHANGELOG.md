@@ -2,7 +2,35 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.8 / vta-service 0.12.47 / vtc-service 0.11.37 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
+### vtc-service 0.11.37 — self-remove and member-VMC are Trust Tasks
+
+0.11.36 gave the VTC a TSP inbound path, but that path reaches a verb only
+through `dispatch_trust_task_core`, whose table was the four `join-requests/*`
+URIs. The two member-initiated verbs — `members/self-remove` and `members/vmc` —
+existed **only** as DIDComm protocol-message handlers taking a bare body, so a
+member could join over TSP and then not leave over it: the frame came back
+`UnsupportedType`. Both URIs were already canonical Trust Task types
+(`https://trusttasks.org/spec/vtc/members/…`), so this is a routing gap, not a
+spec change.
+
+- `handle_self_remove` and `handle_member_vmc` route the document form on the
+  shared spine — `remove_inner` and `receive_member_vmc_inner`, the same
+  functions the DIDComm handlers call — so the two forms cannot drift on policy.
+  The no-last-admin invariant and the VMC issuer/subject + DI-proof checks are
+  enforced where they always were, in the effect stage.
+- The proven member comes from `resolve_holder`, so the authenticated identity
+  is the transport's (DIDComm authcrypt sender / TSP sender VID) or the document
+  proof signer — never a self-asserted `issuer`.
+- The bare-body DIDComm handlers stay. Existing senders keep working, and both
+  forms return the same receipt payload, so a client migrating to the document
+  form sees no behaviour change. Accept before send: a member-side change can
+  only follow this, never precede it.
+- `DISPATCHED_URIS` now documents what it has quietly become — the set reachable
+  over TSP — and its coverage test extends to the member verbs.
+
+Unblocks the member-side half of OpenVTC/openvtc#185.
+
+### vta-sdk 0.20.8 / vta-service 0.12.47 / vtc-service 0.11.38 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
 
 The eight `credential-exchange` Trust Tasks now bind URIs the registry actually
 publishes (`trust-tasks-rs` 0.2.41, authored in trust-tasks-tf#148). Five of
