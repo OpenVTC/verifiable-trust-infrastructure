@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use affinidi_did_resolver_cache_sdk::DIDCacheClient;
-use affinidi_messaging_core::{Inbound, MessageTransport};
+use affinidi_messaging_core::{Inbound, MessageTransport, Protocol};
 use affinidi_messaging_delivery::{Delivery, MessagingService, OutboxStore};
 use affinidi_messaging_didcomm::Message;
 use affinidi_tdk::common::TDKSharedState;
@@ -66,6 +66,13 @@ pub struct VtcMessaging {
     pub service: Arc<MessagingService>,
     pub atm: Arc<ATM>,
     pub vtc_did: String,
+    /// The ATM profile the mediator socket is bound to.
+    ///
+    /// Kept because a TSP reply is sealed and routed through the profile
+    /// (`atm.tsp().send_routed(&profile, …)`), where a DIDComm reply goes through
+    /// the delivery layer's `send`. Same socket either way — the mediator permits
+    /// one per DID.
+    pub profile: Arc<ATMProfile>,
 }
 
 /// The VTC's signing + key-agreement verification-method ids, read from its
@@ -149,7 +156,7 @@ async fn build_messaging(
     vtc_did: &str,
     mediator_did: &str,
     outbox_ks: KeyspaceHandle,
-) -> Result<(Arc<MessagingService>, Arc<ATM>), String> {
+) -> Result<(Arc<MessagingService>, Arc<ATM>, Arc<ATMProfile>), String> {
     let tdk = TDKSharedState::new(
         TDKConfig::builder()
             .build()
@@ -224,7 +231,7 @@ async fn build_messaging(
         outbox.clone(),
         std::time::Duration::from_secs(30),
     ));
-    Ok((service, atm))
+    Ok((service, atm, profile))
 }
 
 /// Start the VTC messaging listener and block until shutdown.
@@ -276,7 +283,7 @@ pub async fn run_didcomm_service(
         "starting VTC messaging listener"
     );
 
-    let (service, atm) =
+    let (service, atm, profile) =
         match build_messaging(secrets, vtc_did, &mediator_did, state.outbox_ks.clone()).await {
             Ok(v) => v,
             Err(e) => {
@@ -293,7 +300,10 @@ pub async fn run_didcomm_service(
         service: service.clone(),
         atm: atm.clone(),
         vtc_did: vtc_did.to_string(),
+        profile: profile.clone(),
     });
+    #[cfg(feature = "tsp")]
+    let tsp_messaging = messaging.clone();
     if state.didcomm.set(messaging).is_err() {
         warn!("VTC messaging handle was already published — outbound sends use the existing one");
     }
@@ -315,6 +325,28 @@ pub async fn run_didcomm_service(
                 // read may arrive anoncrypt). Captured before `inbound` moves
                 // into `dispatch`. NOTE: we do NOT ack — `MessagingService`'s
                 // own dispatcher acks after handing the message to `subscribe`.
+                // TSP frames arrive off the SAME mediator socket (the transport
+                // tags which via `message.protocol`) and carry Trust-Task bytes
+                // rather than a DIDComm plaintext, so they take their own path:
+                // the DIDComm branch below would fail to parse the payload and
+                // drop the frame silently, which is what happened before this.
+                match inbound.message.protocol {
+                    Protocol::DIDComm => {}
+                    #[cfg(feature = "tsp")]
+                    Protocol::TSP => {
+                        handle_tsp(inbound, &tsp_messaging, &state, &mediator_did).await;
+                        continue;
+                    }
+                    #[cfg(not(feature = "tsp"))]
+                    Protocol::TSP => {
+                        warn!(
+                            "received an inbound TSP frame but the `tsp` feature is disabled — \
+                             dropping"
+                        );
+                        continue;
+                    }
+                }
+
                 let reply_to = inbound.message.sender.clone().or_else(|| {
                     serde_json::from_slice::<Message>(&inbound.message.payload)
                         .ok()
@@ -360,6 +392,89 @@ pub async fn run_didcomm_service(
     }
 
     info!("VTC messaging stopped");
+}
+
+/// Answer one inbound TSP frame: dispatch its Trust Task on the shared spine and
+/// seal the response back to the proven sender over the same socket.
+///
+/// Mirrors `vta-service`'s `messaging::tsp_inbound::dispatch_one` +
+/// `service::handle_tsp`, deliberately: TSP, DIDComm and REST all feed
+/// [`dispatch_trust_task_core`], so a caller gets byte-identical round-trip
+/// semantics whichever transport it reached us on.
+///
+/// **One socket.** There is no TSP listener here. The delivery layer's
+/// `DidCommTransport` owns the single mediator websocket and surfaces both
+/// protocols off it — the mediator permits one per DID and evicts a second as
+/// `duplicate-channel`, so opening one would flap the VTC.
+///
+/// **The sender is proven.** `inbound.message.sender` on a TSP frame is the VID
+/// TSP's `unpack` cryptographically authenticated, exactly as DIDComm's authcrypt
+/// sender is — so it is the caller identity `dispatch_trust_task_core` authorises
+/// against, with no plaintext `from` to be spoofed. A frame without one is
+/// dropped rather than treated as anonymous.
+///
+/// Receive-side only: answering over TSP is required (the caller is waiting on the
+/// TSP correlation), but VTC-*initiated* sends to members stay DIDComm until the
+/// Phase B flip (`docs/05-design-notes/tsp-enablement.md` §12, §14 Q4).
+/// The proven caller for a TSP frame, or `None` if there is not one.
+///
+/// Factored out of [`handle_tsp`] so the authorization-relevant decision is
+/// unit-testable without a live mediator socket — the same reason `vta-service`
+/// factors out its `inbound_gate`.
+///
+/// A TSP frame's `sender` is the VID TSP's `unpack` authenticated, and `verified`
+/// says whether that authentication actually happened. Requiring **both** is what
+/// stops an unverified frame being dispatched as though its sender were proven;
+/// `dispatch_trust_task_core` authorises on this value, so a wrong answer here is
+/// an authorization bug, not a logging one.
+///
+/// Note there is no plaintext-`from` fallback, deliberately. The DIDComm path has
+/// one for its two public-read handlers, which never authorize on it. TSP has no
+/// such reader, so accepting an unproven identity here would only create a way in.
+#[cfg(feature = "tsp")]
+fn tsp_sender(message: &affinidi_messaging_core::ReceivedMessage) -> Option<String> {
+    message.sender.clone().filter(|_| message.verified)
+}
+
+#[cfg(feature = "tsp")]
+async fn handle_tsp(
+    inbound: Inbound,
+    messaging: &Arc<VtcMessaging>,
+    state: &AppState,
+    mediator_did: &str,
+) {
+    let Some(sender_vid) = tsp_sender(&inbound.message) else {
+        warn!("inbound TSP frame has no cryptographically-verified sender VID — dropping");
+        return;
+    };
+
+    let ctx = JoinAuthCtx {
+        transport: JoinTransport::Tsp,
+        sender_did: Some(sender_vid.clone()),
+    };
+    let outcome = dispatch_trust_task_core(state, &ctx, &inbound.message.payload).await;
+
+    // The spine returns the self-describing framework document (its own `type` +
+    // status code), so an unauthorised caller gets a Trust-Task error envelope
+    // rather than silence — the VID is proven, so there is no enumeration
+    // exposure, and a conformant client only understands envelopes.
+    // No re-wrapping: TSP carries the Trust-Task document bytes directly, which is
+    // exactly what the spine returns. The DIDComm path re-parses `body` only
+    // because it must lift `type` into a DIDComm envelope.
+    if outcome.body.is_empty() {
+        return;
+    }
+    let reply = outcome.body;
+
+    let route = vec![mediator_did.to_string(), sender_vid.clone()];
+    if let Err(e) = messaging
+        .atm
+        .tsp()
+        .send_routed(&messaging.profile, &route, &reply)
+        .await
+    {
+        warn!(recipient = %sender_vid, error = %e, "failed to send TSP reply");
+    }
 }
 
 /// A reply the dispatcher packs + sends back to the request's sender, threaded
@@ -1164,5 +1279,54 @@ mod tests {
         let (code, comment) = vta_sdk::protocols::extract_problem_report(&body);
         assert_eq!(code, codes::BAD_REQUEST);
         assert_eq!(comment, "malformed body");
+    }
+}
+
+/// The TSP receive-side authorization gate.
+///
+/// `dispatch_trust_task_core` authorises on whatever [`tsp_sender`] returns, so a
+/// wrong answer here is an authorization bug. These pin both directions without a
+/// mediator socket.
+#[cfg(all(test, feature = "tsp"))]
+mod tsp_sender_tests {
+    use super::tsp_sender;
+    use affinidi_messaging_core::{Protocol, ReceivedMessage};
+
+    const SENDER: &str = "did:key:z6MkTspSenderUnderTest";
+
+    fn frame(sender: Option<&str>, verified: bool) -> ReceivedMessage {
+        ReceivedMessage {
+            id: "urn:uuid:test".to_string(),
+            sender: sender.map(str::to_string),
+            recipient: "did:key:z6MkVtcUnderTest".to_string(),
+            payload: b"{}".to_vec(),
+            protocol: Protocol::TSP,
+            verified,
+            encrypted: true,
+        }
+    }
+
+    #[test]
+    fn a_verified_sender_is_the_proven_caller() {
+        assert_eq!(
+            tsp_sender(&frame(Some(SENDER), true)).as_deref(),
+            Some(SENDER)
+        );
+    }
+
+    /// The one that matters: a sender the TSP stack did **not** authenticate must
+    /// not reach the spine as a proven caller. Accepting it would authorize a
+    /// forged identity.
+    #[test]
+    fn an_unverified_sender_is_refused() {
+        assert_eq!(tsp_sender(&frame(Some(SENDER), false)), None);
+    }
+
+    /// No sender at all — an anonymous frame. TSP has no public-read handler, so
+    /// there is nothing this could legitimately be.
+    #[test]
+    fn an_anonymous_frame_is_refused() {
+        assert_eq!(tsp_sender(&frame(None, true)), None);
+        assert_eq!(tsp_sender(&frame(None, false)), None);
     }
 }
