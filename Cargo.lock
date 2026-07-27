@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.33"
+version = "0.11.34"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10646,7 +10646,7 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.11.27"
+version = "0.11.28"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",

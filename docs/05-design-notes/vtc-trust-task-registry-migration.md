@@ -101,6 +101,15 @@ Six of these are dispositions this note already argues for and which are
 `confirm/1.0` gate; `admin/config/{export,import}` are group-B promotions.
 Those four decisions stand unchanged; only the count around them moved.
 
+> **Status (2026-07-27).** Group 2 is down to two entries, and three of the
+> four "decisions that stand unchanged" did not survive contact:
+> `admin/passkeys/{register,revoke}` and `members/promote-to-admin` did not
+> take a `confirm/1.0` gate (#809 / #811 — see the note below §A4);
+> `auth/admin-login` was deleted rather than collapsed (#710); and
+> `admin/config/{export,import}` are not group-B promotions after all (§B
+> rank 5). Only those last two still bind the retired authority, and they are
+> blocked on upstream authoring of `spec/vtc/config/{export,import}/0.1`.
+
 **There is no third group.** An earlier revision of this addendum claimed five
 tasks were already on conformant URIs and therefore executable as #709 work
 straight away. That was an artefact of scanning only the router: four of them
@@ -304,7 +313,7 @@ Tasks.
 |---|---|
 | `acl/legacy/entry` | → canonical `acl/{show,change-role,revoke}` |
 | `acl/legacy/manage` | → canonical `acl/{list,grant}` |
-| `config/legacy/manage` | strict duplicate of `admin/config/manage`; its own text names the successor, which already shipped |
+| `config/legacy/manage` | ~~strict duplicate of `admin/config/manage`~~ — **wrong, corrected on execution.** That task was itself retired, and the two surfaces never shared a field: `/v1/config` carried community identity, `/v1/admin/config` carries `server.host` / `server.port` / `log.level`. Deleted anyway, but on a field-by-field ownership audit: `vtc_did` / `vtc_name` / `vtc_description` → `vtc/community/profile/{show,update}`, `public_url` → `config/{show,patch}` over the same db-overlay. See the retirement note in `trust-tasks/config/legacy/manage/1.0/spec.md`. |
 | `admin-ui/build-info` | plain `.route()`, no Trust-Task layer, already `trust_task_header_exempt` |
 | `status-lists/show` | header-exempt by design — external verifiers fetching a W3C BitstringStatusList do not carry our extension header |
 
@@ -387,6 +396,19 @@ in a transport binding or `ext`. Worth confirming the SIEM requirement can
 be met another way (the audit event type already distinguishes them)
 before collapsing, but this is duplication for observability convenience.
 
+**Executed differently (#710): deleted, not collapsed.** The premise above —
+that the endpoint survives and its cookie side-effect needs somewhere to
+live — did not hold. `POST /v1/auth/admin-session`
+(`spec/vtc/auth/admin-session/0.1`) already takes an access token the caller
+holds and mints exactly that cookie pair, so login is
+`spec/auth/authenticate/0.1` followed by `admin-session` — two canonical
+tasks, and the SIEM distinguishability the separate ID was for is preserved
+by `admin-session`'s own `Trust-Task` value. No binding or `ext` extension
+was needed. The route was removed rather than repointed because nothing
+called it: the admin SPA already logged in this way
+(`admin-ui/src/lib/wallet.ts` → `pages/Login.tsx`), and no test, CLI or SDK
+path referenced it.
+
 ### B. Promote to canonical generics — 7 tasks
 
 Not community-specific; the VTA already ships parallel, independently
@@ -399,7 +421,7 @@ effort this work exists to eliminate. Ranked by readiness:
 | 2 | `config/reload`, `config/restart` | Near as-is. Rename the `VTC_SUPERVISED` env var; supervisor detection is deployment-generic. |
 | 3 | `audit/list` | Must reconcile paging: VTC uses opaque HMAC-signed cursor + limit, VTA's existing `ListAuditLogsBody` uses offset (`page`/`page_size`). That reconciliation *is* the value. Consider folding in VTA's `retention` get/update, which VTC lacks. |
 | 4 | `config/manage` | **Done (Phase 2c).** Split into canonical `config/show` + `config/patch`. The "pending per-method selectors" caveat was **mistaken**: `task_routes` layers the *method* router and axum merges same-path method routers per method, so each verb already enforces its own Trust Task — proven by `vti_common::trust_task::openapi::per_method_tasks_on_one_path_are_enforced_independently`. The same applies to any other merged-method mount (e.g. `acl/legacy/entry`). Open the `source` enum — `env > db > toml > default` is a VTC implementation choice. |
-| 5 | `config/export`, `config/import` | Blocked until `communityProfile` moves to `ext`. Import is worse: `communityProfileDiff` / `communityProfileApplied` are structural, and the community-DID mismatch `409` routes through `CommunityProfileUpdate::apply`. |
+| 5 | `config/export`, `config/import` | ~~Blocked until `communityProfile` moves to `ext`~~ — **not promoted after all.** The blocker was read as a sequencing problem; it is a signal that these are not generics. `communityProfileDiff` / `communityProfileApplied` are structural (roughly half the import response) and the community-DID mismatch `409` routes through `CommunityProfileUpdate::apply`, so a "generic" task with all of that in `ext` would be a hollow shell in its only real use. `vtc/backup/{export,import}/0.1` is the precedent for the alternative: VTC-slugged, `confirm` in the payload not the query string, fields first-class. Target `spec/vtc/config/{export,import}/0.1`, authored upstream. **These two are the last bindings on the retired `openvtc/vtc/` authority.** |
 
 **`health/diagnostics` is explicitly *not* promoted.** It is not a health
 task — it is trust-registry reconciler telemetry (`rtbf_batched_count`,
@@ -588,10 +610,11 @@ Recorded so they are not relitigated:
   binds canonical for the whole family. It is the self-management plane's
   decision layer (see "Two planes"); the `purpose` governance enum is
   community-specific even though the CRUD verbs are generic.
-- **`auth/admin-login` → collapse into `auth/authenticate`.** The only
-  delta was a cookie side-effect for SIEM distinguishability, which the
-  audit event type already carries; the cookie behaviour moves to a
-  transport binding / `ext`.
+- **`auth/admin-login` → deleted (#710).** Recorded here as "collapse into
+  `auth/authenticate`, cookie behaviour to a binding / `ext`"; what shipped
+  is a removal. `spec/vtc/auth/admin-session/0.1` already mints the cookie
+  pair from a held access token, so no binding extension was needed and
+  nothing called the fused endpoint. See §A4.
 - **Management-plane approval → delegated `confirm/1.0`** (see "Two
   planes"). Not inline step-up, not self step-up. No `_shared` envelope.
 - **`credential-exchange/*` → keep; not dead.** The five directories are

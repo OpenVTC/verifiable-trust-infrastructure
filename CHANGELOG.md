@@ -2,6 +2,75 @@
 
 ## Unreleased
 
+### vtc-service 0.11.34 / vti-common 0.11.28 — two of the last four bindings leave the retired authority (#710)
+
+`POST /v1/auth/admin-login` and `GET, PATCH /v1/config` are **removed**. Both
+were the last VTC surfaces enforcing a `https://trusttasks.org/openvtc/vtc/…`
+Trust Task, and both turned out to be deletions rather than the folds the
+design note had recorded. Two bindings remain on that authority
+(`admin/config/{export,import}`), and they are blocked upstream, not here.
+
+**`auth/admin-login` — the recorded blocker assumed the endpoint had to
+survive.** It was to "collapse into `auth/authenticate` with the cookie
+side-effect moved to a binding/`ext`". But the endpoint ran the same
+`authenticate_and_mint` as `POST /v1/auth/` and differed only by appending
+`Set-Cookie`, and that cookie half is already a canonical task of its own:
+`POST /v1/auth/admin-session` (`spec/vtc/auth/admin-session/0.1`) validates an
+access token the caller holds and mints the same `vtc_admin_session` + `csrf`
+pair. So admin login is `spec/auth/authenticate/0.1` then that — no binding
+extension needed, and the `Trust-Task` value still distinguishes a cookie mint
+from a bearer one for SIEM filtering, which was the separate ID's whole
+justification. It was removed rather than repointed because **nothing called
+it**: the admin SPA already logs in this way (`admin-ui/src/lib/wallet.ts` →
+`pages/Login.tsx`), and no test, CLI or SDK path referenced it. Passkey login
+(`/v1/auth/passkey-login/finish`) mints the cookies directly and is unchanged.
+
+**`config/legacy/manage` — the recorded reason was wrong twice over.** It read
+"strict duplicate of `admin/config/manage`, which shipped": that task was
+itself retired, and the two surfaces never shared a single field. `/v1/config`
+carried community identity; `/v1/admin/config` carries `server.host` /
+`server.port` / `log.level`. The deletion stands on a field-by-field ownership
+audit instead:
+
+| Legacy field | Canonical owner |
+|---|---|
+| `vtc_did` | `communityDid` on `spec/vtc/community/profile/show/0.1` — any authenticated session, the same reach the legacy `GET` had |
+| `vtc_name`, `vtc_description` | `spec/vtc/community/profile/{show,update}/0.1`, already the sole write path the legacy `PATCH` delegated to |
+| `public_url` | the `config_store` db-overlay, read by `spec/config/show/0.1` and written by `spec/config/patch/0.1` — the same overlay the legacy `PATCH` wrote |
+
+The legacy handler's `409` on `vtc_did` / `vta_did` went away with it, so the
+guarantee it enforced is now pinned on the successors, where it holds
+structurally rather than by a runtime branch: `CommunityProfileUpdate` has no
+`community_did` field, and neither identity key is in the config-store
+`REGISTRY`, so a patch naming them is rejected as an unknown key. New suite
+`vtc-service/tests/config_identity.rs` asserts exactly that, plus the
+`public_url` overlay round-trip the retired `tests/config_legacy.rs` used to
+cover. `admin_config.rs` exercises pending-restart with `server.port`; this
+does it with the key the legacy PATCH actually wrote.
+
+**The census tables are both empty now.** `UNBOUND_OK` held seven shared-mount
+exceptions; five had been retired as their families moved to `spec/vtc/*`, and
+the remaining two were `draft` rows on the retired authority describing routes
+that had *already* migrated — `GET /v1/endorsement-types` enforces
+`spec/vtc/endorsement-types/register/0.1`, `DELETE /v1/members/{did}/personhood`
+enforces `spec/vtc/members/personhood/assert/0.1`. Both are retired now against
+the canonical `list/0.1` / `revoke/0.1` the registry publishes. Those two mounts
+still collapse a second verb onto a sibling's canonical task; the fan-out is
+unblocked (Phase 2c) but is a canonical-side split, not an authority migration,
+so it is left for its own change.
+
+**What is left, and why it is not backlog.** `admin/config/{export,import}` are
+blocked on an upstream spec that does not exist — `specs/config/` publishes
+`show`, `patch`, `reload`, `restart` and no export/import counterpart. The
+earlier plan to promote them as a generic `config/{export,import}` with
+`communityProfile` pushed into `ext` is dropped: `communityProfileDiff` /
+`communityProfileApplied` are roughly half the import response, so the generic
+task would be a hollow shell in its only real use. `vtc/backup/{export,import}/0.1`
+is the precedent for the alternative — VTC-slugged, `confirm` carried in the
+payload rather than a query string, fields first-class. Target is
+`spec/vtc/config/{export,import}/0.1`, to be authored in
+`dtgwg-trust-tasks-tf`; the repoint here follows that release.
+
 ### vta-sdk 0.20.6 — re-export `resolve_vta_with_resolver` alongside `resolve_vta`
 
 `provision_client` re-exports a curated list, and #813 added
@@ -99,6 +168,7 @@ entries on every merge to main per spec §9.4". No CI job has ever read
 `trust-tasks/index.json` — that pipeline was never built. The description now
 records what the file actually is: a historical record of the retired
 `openvtc/vtc` authority, 60 entries retired and 6 awaiting a canonical fold.
+(Now 64 and 2 — see the entry above.)
 
 ### vta-sdk 0.20.4 / vta-service 0.12.41 — the signing oracle's authorization model is a documented guarantee (#805)
 
