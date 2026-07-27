@@ -284,25 +284,45 @@ fn every_manifest_entry_has_files_on_disk() {
 
 /// The `openvtc/vtc/*` URIs still awaiting a canonical disposition.
 ///
-/// This list only ever shrinks. Each entry is a task the #710 design note
-/// folds onto a canonical spec rather than republishing under `spec/vtc/*`,
-/// so it cannot simply be repointed. Both survivors need an upstream registry
-/// spec that does not exist yet: `specs/config/` publishes `show`, `patch`,
-/// `reload` and `restart`, and no `export` / `import` counterpart. They are
-/// blocked on `vtc/config/{export,import}/0.1` being authored upstream, not on
-/// anything in this repo.
+/// **Empty — the migration is done (#710).** Nothing in this workspace binds
+/// the `https://trusttasks.org/openvtc/vtc/` authority any more. The list only
+/// ever shrank: every entry was either folded onto a canonical spec, deleted
+/// outright, or — for the last two — repointed once the canonical spec it
+/// needed was authored upstream.
 ///
-/// A new `openvtc/vtc/` URI appearing anywhere fails the test below, which is
-/// the point: the authority is retired, and nothing should be added to it.
+/// Worth keeping the shape of what was learned emptying it: of the ten
+/// dispositions recorded here over the migration, **most of the recorded
+/// blockers were wrong**, and each was wrong in a way that had kept real work
+/// parked. Three assumed a `confirm/1.0` gate that could not apply, one named
+/// a target task that would have reintroduced a policy bypass, one assumed an
+/// endpoint had to survive when nothing called it, and one cited a duplicate
+/// relationship that did not exist. Only `admin/config/{export,import}` had a
+/// blocker that held up — and even there, the *fix* it proposed was wrong.
+/// Verify a blocker before planning work on it.
+///
+/// The table stays because the assertion below is still load-bearing: a new
+/// `openvtc/vtc/` URI appearing anywhere fails, which is the point — the
+/// authority is retired, and nothing should be added to it.
 const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
-    (
-        "admin/config/export/1.0",
-        "canonical config/export — blocked on communityProfile moving to ext",
-    ),
-    (
-        "admin/config/import/1.0",
-        "canonical config/import — blocked; communityProfileDiff is structural",
-    ),
+    // `admin/config/{export,import}/1.0` are GONE — repointed to the canonical
+    // `spec/vtc/config/{export,import}/0.1` authored in trust-tasks-tf#147.
+    //
+    // These were the last two, and the only ones whose recorded blocker was
+    // *real*: no canonical counterpart existed. `specs/config/` published
+    // `show`, `patch`, `reload` and `restart` and nothing to migrate to.
+    //
+    // The blocker's proposed fix — promote them into the generic `config/*`
+    // family with `communityProfile` pushed into `ext` — was dropped. The
+    // profile and its diff are roughly half the import's payload, so the
+    // "generic" task would have been a hollow shell in its only real use.
+    // They are `vtc/`-slugged instead, following `vtc/backup/{export,import}`.
+    //
+    // The repoint was not a rename: `confirm` moved from a query string into
+    // the payload (a Trust Task is one interface over REST, DIDComm and TSP,
+    // and only REST has a query string), the `*Applied` lists folded into the
+    // change arrays behind a `status` discriminant, and `pendingRestart` is
+    // now reported on the preview as well as the apply.
+    //
     // The three `admin/passkeys/*` entries are GONE, folded onto the
     // canonical `auth/passkey/{list,enroll/*,revoke/*}` tasks authored in
     // trust-tasks-tf#145.

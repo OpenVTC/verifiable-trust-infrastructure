@@ -457,16 +457,19 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(admin::config::restart_config),
             "https://trusttasks.org/spec/config/restart/0.1",
         ))
-        // Export / import (M0.8.4). Export returns the portable
-        // (db-layer overrides + community profile) JSON; import runs
-        // diff-and-confirm via `?confirm=true|false`.
+        // Export / import (M0.8.4), on the canonical `vtc/config/*` tasks
+        // (trust-tasks-tf#147). Export returns the portable document
+        // (db-layer overrides + community profile); import runs
+        // diff-and-confirm via `confirm` **in the payload** — a Trust Task
+        // is one interface over REST, DIDComm and TSP, and only REST has a
+        // query string to carry a flag in.
         .routes(tt(
             routes!(admin::config::export_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",
+            "https://trusttasks.org/spec/vtc/config/export/0.1",
         ))
         .routes(tt(
             routes!(admin::config::import_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0",
+            "https://trusttasks.org/spec/vtc/config/import/0.1",
         ))
         // Install claim endpoints (`/install/claim/start` and
         // `/install/claim/finish`) are unauthenticated and live in

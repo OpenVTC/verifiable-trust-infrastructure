@@ -672,8 +672,8 @@ async fn restart_wrong_trust_task_returns_415() {
 
 // ──────────────────────── Export / Import ────────────────────────
 
-const EXPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0";
-const IMPORT_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0";
+const EXPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/export/0.1";
+const IMPORT_TASK: &str = "https://trusttasks.org/spec/vtc/config/import/0.1";
 
 async fn export_post(fix: &Fixture, token: &str) -> (StatusCode, Value) {
     let req = Request::builder()
@@ -684,23 +684,29 @@ async fn export_post(fix: &Fixture, token: &str) -> (StatusCode, Value) {
         .body(Body::empty())
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
-    body_value(resp).await
+    let (status, body) = body_value(resp).await;
+    // Canonical `vtc/config/export/0.1#response` wraps the portable document
+    // under `document`; these tests assert on the document itself.
+    let doc = if body.get("document").is_some() {
+        body["document"].clone()
+    } else {
+        body
+    };
+    (status, doc)
 }
 
+/// `confirm` rides in the payload, not the query string — one interface over
+/// every transport, and only REST has a query string to carry a flag in.
 async fn import_post(
     fix: &Fixture,
     token: &str,
     confirm: bool,
-    body: Value,
+    document: Value,
 ) -> (StatusCode, Value) {
-    let uri = if confirm {
-        "/v1/admin/config/import?confirm=true"
-    } else {
-        "/v1/admin/config/import"
-    };
+    let body = json!({ "document": document, "confirm": confirm });
     let req = Request::builder()
         .method("POST")
-        .uri(uri)
+        .uri("/v1/admin/config/import")
         .header("Trust-Task", IMPORT_TASK)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -789,17 +795,17 @@ async fn import_dry_run_returns_diff_without_persisting() {
     });
     let (status, body) = import_post(&fix, &token, false, payload).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["confirmed"], false);
+    assert_eq!(body["status"], "preview");
 
     // Diff lists the changed name + the new db-layer override.
-    let profile_keys: Vec<_> = body["communityProfileDiff"]
+    let profile_keys: Vec<_> = body["profileChanges"]
         .as_array()
         .unwrap()
         .iter()
         .map(|d| d["key"].as_str().unwrap().to_string())
         .collect();
     assert!(profile_keys.contains(&"name".to_string()));
-    let overrides_keys: Vec<_> = body["configOverridesDiff"]
+    let overrides_keys: Vec<_> = body["overrideChanges"]
         .as_array()
         .unwrap()
         .iter()
@@ -807,9 +813,8 @@ async fn import_dry_run_returns_diff_without_persisting() {
         .collect();
     assert_eq!(overrides_keys, vec!["log.level"]);
 
-    // Nothing applied.
-    assert_eq!(body["communityProfileApplied"], json!([]));
-    assert_eq!(body["configOverridesApplied"], json!([]));
+    // `log.level` is hot-reloadable, so a preview of it implies no downtime.
+    assert_eq!(body["pendingRestart"], json!([]));
 
     // Live profile unchanged.
     let live = vtc_service::community::load_profile(&fix.state.community_ks)
@@ -843,17 +848,25 @@ async fn import_confirm_applies_profile_and_overrides() {
     });
     let (status, body) = import_post(&fix, &token, true, payload).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["confirmed"], true);
+    assert_eq!(body["status"], "imported");
 
-    let applied: Vec<_> = body["communityProfileApplied"]
+    // On `imported` the change arrays carry what was actually written, so the
+    // applied fields are read off them rather than a separate list.
+    let applied: Vec<_> = body["profileChanges"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|v| v.as_str().unwrap().to_string())
+        .map(|d| d["key"].as_str().unwrap().to_string())
         .collect();
     assert!(applied.contains(&"name".to_string()));
     assert!(applied.contains(&"language".to_string()));
-    assert_eq!(body["configOverridesApplied"], json!(["log.level"]));
+    let overrides_applied: Vec<_> = body["overrideChanges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["key"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(overrides_applied, vec!["log.level"]);
 
     // Live profile reflects the import.
     let live = vtc_service::community::load_profile(&fix.state.community_ks)
@@ -1048,5 +1061,101 @@ async fn import_dry_run_works_without_audit_writer() {
     });
     let (status, body) = import_post(&fix, &token, false, payload).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["confirmed"], false);
+    assert_eq!(body["status"], "preview");
+}
+
+/// A restart-gated key is reported as `pendingRestart` on the **preview**, not
+/// only after applying. An operator should learn that confirming implies
+/// downtime while they are still deciding whether to confirm.
+#[tokio::test]
+async fn import_preview_reports_pending_restart_before_confirming() {
+    let fix = build_with(true, None).await;
+    let token = token_for(&fix, "admin").await;
+    let payload = json!({
+        "schemaVersion": 1,
+        "exportedAt": "2026-05-12T03:42:00Z",
+        "configOverrides": { "server.port": 9100 }
+    });
+
+    let (status, body) = import_post(&fix, &token, false, payload.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "preview");
+    assert_eq!(body["pendingRestart"], json!(["server.port"]), "{body}");
+
+    // Nothing was written — the preview said so, and the store agrees.
+    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
+    assert_eq!(store.get("server.port").await.unwrap(), None);
+
+    // …and confirming reports the same key, now actually applied.
+    let (status, body) = import_post(&fix, &token, true, payload).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "imported");
+    assert_eq!(body["pendingRestart"], json!(["server.port"]), "{body}");
+    assert_eq!(store.get("server.port").await.unwrap(), Some(json!(9100)));
+}
+
+/// `confirm` moved from the query string into the payload. A stale client
+/// still sending `?confirm=true` must not apply — and does not, because
+/// nothing reads the query string any more. The failure direction matters:
+/// the stale call previews instead of writing, which is the recoverable one.
+#[tokio::test]
+async fn import_ignores_the_pre_migration_confirm_query_param() {
+    let fix = build_with(true, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/config/import?confirm=true")
+        .header("Trust-Task", IMPORT_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            json!({
+                "document": {
+                    "schemaVersion": 1,
+                    "exportedAt": "2026-05-12T03:42:00Z",
+                    "configOverrides": { "log.level": "debug" }
+                }
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    let (status, body) = body_value(resp).await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["status"], "preview",
+        "a query-string confirm must not apply: {body}"
+    );
+    let store = vtc_service::config_store::ConfigStore::new(fix.state.config_ks.clone());
+    assert_eq!(store.get("log.level").await.unwrap(), None);
+}
+
+/// The document is the request's own member, so an unknown top-level member is
+/// rejected rather than silently dropped — the canonical payload is
+/// `additionalProperties: false`.
+#[tokio::test]
+async fn import_rejects_an_unknown_top_level_member() {
+    let fix = build_with(true, None).await;
+    let token = token_for(&fix, "admin").await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/config/import")
+        .header("Trust-Task", IMPORT_TASK)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            json!({
+                "document": {
+                    "schemaVersion": 1,
+                    "exportedAt": "2026-05-12T03:42:00Z",
+                    "configOverrides": {}
+                },
+                "__notARealMember__": true
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let resp = fix.router.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
