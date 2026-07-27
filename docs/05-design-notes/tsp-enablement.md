@@ -211,6 +211,51 @@ chosen  = first protocol in [Tsp, Didcomm, Rest] present in BOTH ours and theirs
   (`Auto` now = TSP→DIDComm→REST) and `decide_transport` / `TransportPlan` to a
   3-way plan with the new no-match terminal state.
 
+### 3.3a TSP is selected **per surface**, and rides one socket per DID (#803)
+
+Two constraints, discovered in implementation, that §3.2's "pick the highest
+protocol both parties advertise" does not by itself capture. Both are load-bearing
+for any consumer adopting TSP.
+
+**(a) TSP carries the Trust-Task surface only.** The VTA's TSP inbound dispatcher
+hands each unpacked payload to `dispatch_trust_task_core`; there is no TSP
+dispatcher behind the older DIDComm *protocol-message* surface
+(`key-management/1.0/*`, `create_did_webvh`, `list_contexts`, …), which reports
+`UnsupportedTransport` by design. So "chosen protocol" is **not** a single
+client-wide value: a client can legitimately be on TSP for trust tasks and DIDComm
+for protocol messages at the same moment, and that is the *correct* outcome against
+a VTA advertising both.
+
+Selecting TSP client-wide is a live defect, not a theoretical one — it broke every
+`rpc` operation on the `pnm`/`cnm` `TransportChoice::Auto` path the moment a VTA
+started advertising `#tsp`. `VtaClient::{trust_task_transport,
+protocol_message_transport}` exist so operator-facing displays cannot render the
+single value that is wrong by construction.
+
+**(b) The mediator permits one websocket per DID.** A node speaking both protocols
+**multiplexes them on that one socket** — it does not open a second. This is
+enforced upstream (`duplicate-channel`), and where the two protocols name the same
+mediator — which the reference deployment does — a second socket means eviction
+plus duelling reconnect loops.
+
+The mechanics that make one socket sufficient:
+
+| | Mechanism | Socket? |
+|---|---|---|
+| TSP send | `TspOps::send_raw` → HTTP `POST /inbound` on the mediator | none |
+| TSP receive | `live_stream_next_frame` on the DIDComm pickup socket, tagged `Inbound.message.protocol` | the DIDComm one |
+
+`vta-service` already works this way (its standalone TSP websocket was removed for
+exactly this reason). Client-side the same shape is `DIDCommSession`'s **TSP leg**
+(`send_tsp_document` / `request_tsp` / `receive_next_tsp`), turned on with
+`VtaClient::enable_tsp_trust_tasks` — free, no I/O, no new connection. A VTA
+advertising a *separate* TSP mediator is the one case that needs its own session
+(`attach_tsp_leg`); there the two mediators mean there is no conflict to have.
+
+**Rule for new code:** never open a second websocket for a DID that already has
+one. If you are reaching for `TspSession::connect` on a DID that holds a
+`DIDCommSession`, the answer is the leg.
+
 ### 3.4 The "No matching protocol" error (typed, both transports)
 
 Per CLAUDE.md's "operator errors should suggest the fix" + typed-`VtaError` discipline:

@@ -147,6 +147,10 @@ pub mod session;
 /// Canonical Trust-Task URLs for VTA operations. Mirrors
 /// `did-hosting-common::did_hosting_tasks` for the webvh-service side.
 pub mod trust_tasks;
+// Reply correlation for TSP, shared by `TspSession` and the `DIDCommSession`
+// TSP leg. Internal: consumers see the sessions, not the bookkeeping.
+#[cfg(all(feature = "session", feature = "tsp"))]
+mod tsp_demux;
 // DCQL credential selection + holder-bound OID4VP `vp_token` assembly. The
 // client-side counterpart to the `join-requests` / `credential-exchange`
 // protocol types: turns a verifier's `presentation_definition` + held

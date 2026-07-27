@@ -63,6 +63,16 @@ pub struct DIDCommSession {
     /// [`receive_next`]: Self::receive_next
     /// [`connect_with_secrets`]: Self::connect_with_secrets
     subscriber: Arc<tokio::sync::Mutex<BoxStream<'static, Inbound>>>,
+    /// The TSP leg riding this same session — see [`TspLeg`]. Always built (it
+    /// costs one extra `subscribe()` receiver) so a `VtaClient` can turn TSP on
+    /// for the Trust-Task surface without reconnecting.
+    #[cfg(feature = "tsp")]
+    tsp: Arc<TspLeg>,
+    /// The mediator this session is connected to. The TSP leg's route is
+    /// `[mediator_did, recipient]`, and a `VtaClient` compares it against the
+    /// VTA's advertised `#tsp` endpoint to decide whether TSP can ride this
+    /// socket or needs its own.
+    pub(crate) mediator_did: String,
     pub(crate) client_did: String,
     pub(crate) vta_did: String,
     /// Set by [`shutdown`](Self::shutdown). Shared across clones so calling
@@ -116,6 +126,68 @@ impl Drop for LeakGuard {
     }
 }
 
+/// The **TSP leg** of a [`DIDCommSession`] — Trust-Task traffic over TSP on the
+/// session's *existing* mediator connection.
+///
+/// # Why this lives on the DIDComm session
+///
+/// The mediator permits **one websocket per DID**. A consumer holding a DIDComm
+/// session cannot also open a [`TspSession`](crate::session::TspSession) on the
+/// same DID against the same mediator — the second socket is rejected with
+/// `duplicate-channel` and the two reconnect loops duel. On the reference
+/// deployment `#tsp` and `#vta-didcomm` resolve to the *same* mediator, so that
+/// is the normal case, not an edge case (#803).
+///
+/// It does not need a second socket, because neither half of TSP needs one here:
+///
+/// - **Send** is an HTTP `POST /inbound` to the mediator
+///   (`TspOps::send_raw`) — no socket at all.
+/// - **Receive** already arrives on the DIDComm socket. The delivery layer's
+///   `DidCommTransport` polls `live_stream_next_frame`, which yields **both**
+///   protocols off the one pickup socket and tags each `Inbound` with
+///   `message.protocol`. A TSP frame carries no DIDComm `thid`, so
+///   `MessagingService` routes it to `subscribe()`.
+///
+/// This mirrors what the VTA itself already does on the server side: it deleted
+/// its standalone TSP websocket for exactly this reason and now demuxes TSP off
+/// its single delivery-layer socket (`vta-service/src/messaging/service.rs`).
+///
+/// The leg takes its **own** `subscribe()` receiver. Subscribers are a
+/// broadcast, so each one sees every unsolicited frame and ignores what isn't
+/// its protocol — the TSP pump cannot eat a DIDComm push, and
+/// [`receive_next`](DIDCommSession::receive_next) cannot eat a TSP reply.
+#[cfg(feature = "tsp")]
+struct TspLeg {
+    /// Kept to reach `atm.tsp()` for the outbound seal + route.
+    atm: Arc<ATM>,
+    /// The profile the TSP keys and mediator endpoint are read from — the same
+    /// one the DIDComm transport is bound to.
+    profile: Arc<ATMProfile>,
+    /// In-flight `request_tsp` waiters + the parking lot for pushes. Shared
+    /// implementation with [`TspSession`](crate::session::TspSession).
+    demux: crate::tsp_demux::TspDemux,
+    /// This leg's own inbound stream. Behind a mutex so whichever task holds it
+    /// pumps on behalf of every waiter (leader/followers).
+    stream: tokio::sync::Mutex<BoxStream<'static, Inbound>>,
+}
+
+/// What one turn at the TSP leg's inbound stream produced.
+#[cfg(feature = "tsp")]
+enum TspPump {
+    /// A frame arrived and went to the request that was waiting for it.
+    Delivered,
+    /// A frame arrived that no in-flight request wanted.
+    Uncorrelated(String),
+    /// The slice elapsed with no TSP frame.
+    Idle,
+}
+
+/// How long one turn at the TSP leg's stream lasts before the holder must
+/// release it, bounding lock hand-off latency between concurrent requests.
+/// Mirrors `session::PUMP_SLICE`.
+#[cfg(feature = "tsp")]
+const TSP_PUMP_SLICE: Duration = Duration::from_millis(250);
+
 impl DIDCommSession {
     /// The session's local DID — the one used as the authcrypt
     /// sender on outbound messages. Surfaced so SDK helpers can
@@ -124,6 +196,17 @@ impl DIDCommSession {
     /// holder, for instance).
     pub fn client_did(&self) -> &str {
         &self.client_did
+    }
+
+    /// The mediator this session's websocket is connected to.
+    ///
+    /// Load-bearing for transport selection, not just diagnostics: because the
+    /// mediator permits **one websocket per DID**, whether TSP can ride this
+    /// session or needs its own connection is decided by comparing this against
+    /// the VTA's advertised `#tsp` endpoint. See
+    /// [`VtaClient::enable_tsp_trust_tasks`](crate::client::VtaClient::enable_tsp_trust_tasks).
+    pub fn mediator_did(&self) -> &str {
+        &self.mediator_did
     }
 
     /// Connect to a VTA via DIDComm through a mediator.
@@ -340,6 +423,18 @@ impl DIDCommSession {
         // would miss anything delivered before it started.
         let subscriber = Arc::new(tokio::sync::Mutex::new(service.subscribe()));
 
+        // The TSP leg rides this same socket — see `TspLeg`. Built here rather
+        // than on demand so enabling TSP for the Trust-Task surface later never
+        // has to reconnect (and so it can never be tempted to open a second
+        // socket for this DID). Its cost is one more broadcast receiver.
+        #[cfg(feature = "tsp")]
+        let tsp = Arc::new(TspLeg {
+            atm: Arc::clone(atm),
+            profile: Arc::clone(&profile),
+            demux: crate::tsp_demux::TspDemux::new(),
+            stream: tokio::sync::Mutex::new(service.subscribe()),
+        });
+
         debug!("DIDComm session connected via mediator {mediator_did} (delivery-layer mode)");
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -352,6 +447,9 @@ impl DIDCommSession {
             service,
             atm: Arc::clone(atm),
             subscriber,
+            #[cfg(feature = "tsp")]
+            tsp,
+            mediator_did: mediator_did.to_string(),
             client_did: client_did.to_string(),
             vta_did: vta_did.to_string(),
             shutdown,
@@ -570,42 +668,63 @@ impl DIDCommSession {
         // reply to its `request` waiter, so this stream carries only unsolicited
         // inbound. The lock serialises concurrent `receive_next` calls on the
         // same session (each message goes to exactly one caller).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
         let mut stream = self.subscriber.lock().await;
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), stream.next()).await {
-            Ok(Some(inbound)) => {
-                // `payload` is the full plaintext DIDComm `Message` JSON;
-                // re-serialise it to preserve the `{ id, type, body, from, … }`
-                // shape callers (`InboundMessage::parse`) expect.
-                let msg: Message =
-                    serde_json::from_slice(&inbound.message.payload).map_err(VtaError::from)?;
-                debug!(msg_type = %msg.typ, "received inbound DIDComm message");
-                let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
-                Ok(Some(json))
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
             }
-            // Stream ended — nothing more will EVER arrive on this session.
-            //
-            // Distinguish the two ways that happens, because they need opposite
-            // reactions from the caller:
-            //   * we called `shutdown()` — expected teardown, report idle;
-            //   * anything else (mediator dropped us, delivery layer died) — the
-            //     session is dead and must be rebuilt.
-            //
-            // Reporting the second as `Ok(None)` made a dead session look like a
-            // quiet one: a polling loop would treat "stream ended" as "nothing
-            // yet", call again, get the same answer instantly, and spin at full
-            // tilt forever without reconnecting. `Err` is what makes the
-            // supervisor reconnect instead.
-            Ok(None) => {
-                if self.shutdown.load(Ordering::Acquire) {
-                    Ok(None)
-                } else {
-                    Err(VtaError::DidcommTransport(
-                        "mediator inbound stream ended — session is no longer live".into(),
-                    ))
+            match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(inbound)) => {
+                    // The mediator multiplexes DIDComm and TSP onto one socket, so
+                    // this stream carries both. A TSP frame's payload is a bare
+                    // Trust-Task document, NOT a DIDComm `Message` — parsing it as
+                    // one is a hard error, which would turn an inbound TSP frame
+                    // into a failure of the DIDComm inbox that received it. Skip it
+                    // here; the TSP leg has its own subscriber and its own copy of
+                    // this frame (see `TspLeg`), so nothing is lost.
+                    #[cfg(feature = "tsp")]
+                    if inbound.message.protocol == affinidi_messaging_core::Protocol::TSP {
+                        debug!(
+                            "skipping an inbound TSP frame on the DIDComm inbox (the TSP leg has it)"
+                        );
+                        continue;
+                    }
+                    // `payload` is the full plaintext DIDComm `Message` JSON;
+                    // re-serialise it to preserve the `{ id, type, body, from, … }`
+                    // shape callers (`InboundMessage::parse`) expect.
+                    let msg: Message =
+                        serde_json::from_slice(&inbound.message.payload).map_err(VtaError::from)?;
+                    debug!(msg_type = %msg.typ, "received inbound DIDComm message");
+                    let json = serde_json::to_string(&msg).map_err(VtaError::from)?;
+                    return Ok(Some(json));
                 }
+                // Stream ended — nothing more will EVER arrive on this session.
+                //
+                // Distinguish the two ways that happens, because they need opposite
+                // reactions from the caller:
+                //   * we called `shutdown()` — expected teardown, report idle;
+                //   * anything else (mediator dropped us, delivery layer died) — the
+                //     session is dead and must be rebuilt.
+                //
+                // Reporting the second as `Ok(None)` made a dead session look like a
+                // quiet one: a polling loop would treat "stream ended" as "nothing
+                // yet", call again, get the same answer instantly, and spin at full
+                // tilt forever without reconnecting. `Err` is what makes the
+                // supervisor reconnect instead.
+                Ok(None) => {
+                    return if self.shutdown.load(Ordering::Acquire) {
+                        Ok(None)
+                    } else {
+                        Err(VtaError::DidcommTransport(
+                            "mediator inbound stream ended — session is no longer live".into(),
+                        ))
+                    };
+                }
+                // Poll window elapsed with nothing — the ordinary idle case.
+                Err(_) => return Ok(None),
             }
-            // Poll window elapsed with nothing — the ordinary idle case.
-            Err(_) => Ok(None),
         }
     }
 
@@ -615,7 +734,252 @@ impl DIDCommSession {
     /// connection. Idempotent and safe to call on any clone.
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        // Drop every TSP waiter first so an in-flight `request_tsp` fails fast
+        // with "session shut down" rather than blocking until its own deadline
+        // on a connection that is about to disappear.
+        #[cfg(feature = "tsp")]
+        self.tsp.demux.clear().await;
         self.atm.graceful_shutdown().await;
+    }
+}
+
+// ── TSP leg ─────────────────────────────────────────────────────────
+//
+// Trust-Task traffic over TSP on this session's existing mediator connection.
+// See `TspLeg` for why it is here and not in a session of its own.
+
+#[cfg(feature = "tsp")]
+impl DIDCommSession {
+    /// Send an already-built Trust-Task document to `recipient_did` over TSP,
+    /// routed through this session's mediator. Fire-and-forget: any reply
+    /// arrives on [`receive_next_tsp`](Self::receive_next_tsp) (or is
+    /// correlated by [`request_tsp`](Self::request_tsp) if one is waiting).
+    ///
+    /// `body` is the serialized document itself — TSP carries the Trust-Task
+    /// bytes directly, with no DIDComm envelope around them (the VTA's
+    /// `tsp_inbound::dispatch_one` hands the payload straight to
+    /// `dispatch_trust_task_core`).
+    ///
+    /// **Opens no socket.** The send is an HTTP `POST /inbound` to the mediator,
+    /// so it never touches the websocket and is safe to call while a
+    /// `receive_next` / `receive_next_tsp` is blocked.
+    ///
+    /// The sender is proven by TSP itself, so the VTA derives authorization from
+    /// the sealed `sender_vid` (intrinsic-sender auth) — no bearer token and no
+    /// holder proof in the document.
+    pub async fn send_tsp_document(
+        &self,
+        recipient_did: &str,
+        body: &[u8],
+    ) -> Result<(), VtaError> {
+        self.tsp
+            .atm
+            .tsp()
+            .send_routed(
+                &self.tsp.profile,
+                &[self.mediator_did.clone(), recipient_did.to_string()],
+                body,
+            )
+            .await
+            .map_err(|e| VtaError::TspTransport(format!("TSP send failed: {e}")))
+    }
+
+    /// Send `document` to `recipient_did` over TSP and wait for **its** reply.
+    ///
+    /// The TSP counterpart of [`send_and_wait`](Self::send_and_wait), with the
+    /// same properties as [`TspSession::request`](crate::session::TspSession::request):
+    ///
+    /// - **Correlated, never "first frame that parses".** Replies are matched by
+    ///   `crate::tsp_demux::correlates` — `threadId`, falling back to an echoed
+    ///   `nonce`. The mediator inbox is durable and flushes on connect, so an
+    ///   uncorrelated read can hand back a reply from a *previous process run*.
+    /// - **Concurrent.** Several requests may be in flight; whichever holds the
+    ///   stream pumps for all of them.
+    /// - **Pushes survive.** A frame matching no in-flight request is parked for
+    ///   [`receive_next_tsp`](Self::receive_next_tsp), not discarded.
+    /// - **Finite.** Every wait is bounded by `timeout` (R1.2).
+    ///
+    /// Errors are `String`-flattened internally on purpose: a `Box<dyn Error>`
+    /// is not `Send`, and one held across an await would make this future — and
+    /// every caller of it, up to `VtaClient::dispatch_trust_task` — `!Send`.
+    pub async fn request_tsp(
+        &self,
+        recipient_did: &str,
+        document: &[u8],
+        timeout: Duration,
+    ) -> Result<String, VtaError> {
+        let (request_id, nonce) =
+            crate::tsp_demux::TspDemux::request_keys(document).map_err(VtaError::TspTransport)?;
+        let mut rx = self.tsp.demux.register(request_id.clone(), nonce).await;
+
+        // Registered *before* sending: a reply can land while the send is still
+        // returning, and a waiter registered afterwards would miss it.
+        let sent = self.send_tsp_document(recipient_did, document).await;
+        if sent.is_err() {
+            self.tsp.demux.deregister(&request_id).await;
+        }
+        sent?;
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let outcome = self.await_tsp_reply(&request_id, &mut rx, deadline).await;
+        // Always deregister — a timed-out or failed request must not leave a
+        // waiter behind for the pump to deliver into.
+        self.tsp.demux.deregister(&request_id).await;
+        outcome.map_err(VtaError::TspTransport)
+    }
+
+    /// Wait up to `timeout_secs` for the next **unsolicited** inbound TSP
+    /// document — a VTA-pushed `task-consent/request` and the like — returning
+    /// the unpacked Trust-Task document as a JSON string.
+    ///
+    /// The TSP counterpart of [`receive_next`](Self::receive_next). Same three
+    /// outcomes, and the same reason they are distinct: `Ok(Some(doc))` is an
+    /// application message, `Ok(None)` is idle (poll again), and `Err(_)` means
+    /// the connection is gone (reconnect — polling again cannot help).
+    pub async fn receive_next_tsp(&self, timeout_secs: u64) -> Result<Option<String>, VtaError> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+        loop {
+            // A frame an in-flight `request_tsp` read but did not want is ours.
+            // Drain that before touching the stream, or a push that already
+            // arrived would sit unseen behind a fresh read.
+            if let Some(doc) = self.tsp.demux.take_parked().await {
+                return Ok(Some(doc));
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+
+            let mut guard = self.tsp.stream.lock().await;
+            // Bounded so the lock is released periodically even while idle —
+            // otherwise a long-polling receive would hold it for its whole
+            // budget and stall every concurrent `request_tsp`.
+            let slice = TSP_PUMP_SLICE.min(remaining);
+            let outcome = self
+                .tsp_pump_once(&mut guard, slice)
+                .await
+                .map_err(VtaError::TspTransport)?;
+            match outcome {
+                // Not addressed to any in-flight request → it is a push, and
+                // pushes are what this method is for.
+                TspPump::Uncorrelated(doc) => return Ok(Some(doc)),
+                TspPump::Delivered | TspPump::Idle => {
+                    drop(guard);
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Wait for `request_id`'s reply, taking a turn at pumping the stream
+    /// whenever it is free.
+    ///
+    /// Leader/followers, exactly as in
+    /// [`TspSession::await_reply`](crate::session::TspSession): whoever holds
+    /// the stream reads and demultiplexes for everyone; the rest park on their
+    /// oneshot. Contending for the lock in the same `select!` as the oneshot is
+    /// what lets a follower take over the moment the leader finishes.
+    async fn await_tsp_reply(
+        &self,
+        request_id: &str,
+        rx: &mut tokio::sync::oneshot::Receiver<String>,
+        deadline: tokio::time::Instant,
+    ) -> Result<String, String> {
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "timed out waiting for the TSP reply to request '{request_id}'"
+                ));
+            }
+
+            tokio::select! {
+                biased;
+
+                // Someone else's pump already delivered our reply.
+                delivered = &mut *rx => {
+                    return delivered.map_err(|_| {
+                        "TSP session shut down while waiting for a reply".to_string()
+                    });
+                }
+
+                // We are the leader for as long as we hold this.
+                mut guard = self.tsp.stream.lock() => {
+                    let slice = TSP_PUMP_SLICE.min(remaining);
+                    // Bound before the `match`: a scrutinee temporary lives for
+                    // the whole match body, which contains an `.await`.
+                    let outcome = self.tsp_pump_once(&mut guard, slice).await?;
+                    match outcome {
+                        TspPump::Uncorrelated(doc) => {
+                            // Not ours and not any other waiter's — park it for
+                            // the push consumer instead of dropping it.
+                            self.tsp.demux.park(doc).await;
+                        }
+                        TspPump::Delivered | TspPump::Idle => {}
+                    }
+                    // Release before looping so a follower can take a turn.
+                    drop(guard);
+                }
+
+                () = tokio::time::sleep(remaining) => {
+                    return Err(format!(
+                        "timed out waiting for the TSP reply to request '{request_id}'"
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Read at most one TSP frame off the leg's stream within `slice` and route
+    /// it: to the waiter it correlates with, or back to the caller as
+    /// [`TspPump::Uncorrelated`].
+    ///
+    /// DIDComm frames on this stream are **skipped, not consumed from anyone** —
+    /// this is the leg's own broadcast receiver, so
+    /// [`receive_next`](Self::receive_next) still has its own copy of every one
+    /// of them.
+    ///
+    /// `String` errors for the same `Send` reason as
+    /// [`request_tsp`](Self::request_tsp).
+    async fn tsp_pump_once(
+        &self,
+        stream: &mut BoxStream<'static, Inbound>,
+        slice: Duration,
+    ) -> Result<TspPump, String> {
+        let until = tokio::time::Instant::now() + slice;
+        loop {
+            let remaining = until.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(TspPump::Idle);
+            }
+            let inbound = match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(inbound)) => inbound,
+                // Stream ended is an ERROR, not "nothing arrived" — asking again
+                // can never produce anything. Same reasoning as `receive_next`:
+                // conflating them makes a dead session look like a quiet one and
+                // a polling loop spins forever instead of reconnecting.
+                Ok(None) => {
+                    return Err(if self.shutdown.load(Ordering::Acquire) {
+                        "TSP leg closed: the session was shut down".to_string()
+                    } else {
+                        "mediator inbound stream ended — session is no longer live".to_string()
+                    });
+                }
+                Err(_) => return Ok(TspPump::Idle),
+            };
+
+            if inbound.message.protocol != affinidi_messaging_core::Protocol::TSP {
+                continue; // a DIDComm frame — `receive_next`'s business, not ours
+            }
+            let json = String::from_utf8(inbound.message.payload)
+                .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
+
+            // One correlation rule for every TSP session — see `tsp_demux`.
+            return Ok(match self.tsp.demux.route(json).await {
+                crate::tsp_demux::Routed::Delivered => TspPump::Delivered,
+                crate::tsp_demux::Routed::Uncorrelated(doc) => TspPump::Uncorrelated(doc),
+            });
+        }
     }
 }
 
@@ -658,5 +1022,30 @@ mod tests {
             // Release builds compile out debug_assert; satisfy #[should_panic].
             panic!("dropped without shutdown() (release no-op shim)");
         }
+    }
+}
+
+/// Every TSP-leg future must be `Send`, for the same reason
+/// `session::tsp_send_assertions` exists: `VtaClient::dispatch_trust_task`
+/// awaits `request_tsp`, and `vta-mcp` puts that future behind `#[tool]`, which
+/// demands `Send`. One `Box<dyn Error>` (not `Send`) held across an `.await`
+/// inside the leg is enough to break the whole chain — and only once feature
+/// unification turns `tsp` on for a workspace build, a long way from the edit
+/// that caused it.
+///
+/// A compile-time check: if these stop being `Send`, this module fails to build.
+#[cfg(all(test, feature = "tsp"))]
+mod tsp_leg_send_assertions {
+    use std::time::Duration;
+
+    fn assert_send<T: Send>(_: T) {}
+
+    #[allow(dead_code)]
+    fn tsp_leg_futures_are_send(s: &super::DIDCommSession) {
+        assert_send(s.request_tsp("did:vta", b"{}", Duration::from_secs(1)));
+        assert_send(s.receive_next_tsp(1));
+        assert_send(s.send_tsp_document("did:vta", b"{}"));
+        assert_send(s.receive_next(1));
+        assert_send(s.shutdown());
     }
 }

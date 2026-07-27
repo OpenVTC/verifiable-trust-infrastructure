@@ -145,6 +145,27 @@ When designing any new inter-component flow *or its authentication*, reach for
 TSP first, then DIDComm. Do **not** default to "a REST endpoint plus a bespoke
 signature/DID-resolution scheme" — that is a recurring mistake.
 
+**TSP is selected per *surface*, not per client, and rides one socket per DID.**
+Two rules that bite anything adopting TSP (see
+`docs/05-design-notes/tsp-enablement.md` §3.3a):
+
+- TSP carries the **Trust-Task** surface. The older DIDComm protocol-message
+  surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) has no
+  TSP dispatcher behind it, so a client on a dual-transport VTA is on TSP for
+  trust tasks *and* DIDComm for protocol messages, simultaneously. Choosing one
+  transport client-wide breaks the other surface — that is how
+  `TransportChoice::Auto` silently broke every `rpc` call the moment a VTA
+  advertised `#tsp` (#803). Read `VtaClient::{trust_task_transport,
+  protocol_message_transport}`; never render a single "transport" for a client.
+- **The mediator permits one websocket per DID.** A node speaking both protocols
+  multiplexes them on that socket; a second is evicted as `duplicate-channel`
+  and the two reconnect loops duel. TSP send is an HTTP post and TSP receive
+  arrives on the existing pickup socket already tagged by protocol, so no second
+  socket is ever needed. `vta-service` works this way; client-side it is
+  `DIDCommSession`'s TSP leg via `VtaClient::enable_tsp_trust_tasks`. If you are
+  reaching for `TspSession::connect` on a DID that already holds a
+  `DIDCommSession`, use the leg instead.
+
 Why TSP over DIDComm: metadata-private routing (intermediaries don't learn the
 final recipient) at **bounded** message size (CESR + HPKE add roughly additive
 per-hop overhead, versus DIDComm-nested's multiplicative base64 blow-up), while

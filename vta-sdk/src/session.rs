@@ -651,9 +651,15 @@ impl SessionStore {
     /// `Auto` preferring TSP would convert today's working DIDComm story into
     /// an indefinite hang with no output.
     ///
-    /// [`TransportChoice::Tsp`] forces TSP: errors if the VTA advertises no
-    /// `#tsp` service (naming what it *does* advertise), and errors rather than
-    /// falling back if the connect times out.
+    /// Against a VTA advertising **both** TSP and DIDComm, `Auto` returns a
+    /// **dual** client: trust tasks over TSP, protocol messages over DIDComm,
+    /// on one mediator socket. TSP carries the Trust-Task surface only, so
+    /// there is no single client-wide transport choice that is correct.
+    ///
+    /// [`TransportChoice::Tsp`] forces a TSP-*only* client: errors if the VTA
+    /// advertises no `#tsp` service (naming what it *does* advertise), and
+    /// errors rather than falling back if the connect times out. Protocol-
+    /// message operations are unavailable on it by construction.
     ///
     /// [`TransportChoice::Didcomm`] forces DIDComm, ignoring an advertised
     /// `#tsp` — the recovery path when TSP is broken but the DIDComm mediator
@@ -748,6 +754,75 @@ impl SessionStore {
                     )
                     .await?;
                     return Ok(client);
+                }
+
+                // Both transports advertised, and the operator did not force
+                // one: build a **dual** client — DIDComm for the protocol-
+                // message surface, TSP for the Trust-Task surface.
+                //
+                // Not "TSP instead of DIDComm". TSP carries Trust Tasks only;
+                // the VTA has no TSP dispatcher behind `key-management/1.0/*`,
+                // `create_did_webvh`, `list_contexts` and friends. Returning a
+                // TSP-only client here — which is what this arm used to do —
+                // therefore broke every one of those operations with
+                // `UnsupportedTransport` the moment a VTA started advertising
+                // `#tsp`. TSP is selected per surface, not per client.
+                if let Some(didcomm) = didcomm_mediator_did.clone()
+                    && transport != TransportChoice::Tsp
+                {
+                    match connect_didcomm_bounded(
+                        &session.client_did,
+                        &session.private_key,
+                        &vta_did,
+                        &didcomm,
+                        rest_url.clone(),
+                    )
+                    .await
+                    {
+                        Ok(mut client) => {
+                            match attach_tsp_leg_bounded(
+                                &mut client,
+                                &session.client_did,
+                                &session.private_key,
+                                &didcomm,
+                                &mediator_did,
+                            )
+                            .await
+                            {
+                                Ok(()) => debug!(
+                                    tsp_mediator_did = %mediator_did,
+                                    "connected via DIDComm with trust tasks over TSP"
+                                ),
+                                // `Auto` falls back, but never quietly: a TSP
+                                // deployment that never works must not look like
+                                // one that was never enabled. See
+                                // `TransportChoice`.
+                                Err(e) => warn!(
+                                    vta_did = %vta_did,
+                                    tsp_mediator_did = %mediator_did,
+                                    error = %e,
+                                    "TSP is advertised but its leg could not be established; \
+                                     trust tasks stay on DIDComm (use --transport tsp to make \
+                                     this fatal, or --transport didcomm to stop trying TSP)"
+                                ),
+                            }
+                            return Ok(client);
+                        }
+                        Err(e) => {
+                            // DIDComm is down but TSP may not be. Drop to the
+                            // TSP-only client below rather than failing outright
+                            // — loudly, because that client cannot serve the
+                            // protocol-message surface at all.
+                            warn!(
+                                vta_did = %vta_did,
+                                didcomm_mediator_did = %didcomm,
+                                error = %e,
+                                "the DIDComm mediator did not answer; falling back to a \
+                                 TSP-only client — key management, context and DID-minting \
+                                 operations will report UnsupportedTransport"
+                            );
+                        }
+                    }
                 }
 
                 match connect_tsp_bounded(
@@ -1308,11 +1383,29 @@ pub enum VtaEndpoint {
 #[non_exhaustive]
 pub enum TransportChoice {
     /// TSP when advertised, else DIDComm, else REST. The default.
+    ///
+    /// **TSP is selected per surface, not per client.** Against a VTA
+    /// advertising both `#tsp` and `#vta-didcomm`, `Auto` returns a client whose
+    /// Trust-Task surface is on TSP and whose protocol-message surface
+    /// (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`) is on
+    /// DIDComm — both legs live, one websocket. TSP carries Trust Tasks only, so
+    /// a TSP-*only* client would break every one of those operations; that is
+    /// what this used to return, and why it no longer does. See
+    /// [`VtaClient::trust_task_transport`](crate::client::VtaClient::trust_task_transport).
+    ///
+    /// A VTA advertising `#tsp` alone still yields a TSP-only client — there is
+    /// no DIDComm leg to have.
     #[default]
     Auto,
-    /// Force TSP. Errors — naming the transports the VTA *does* advertise — if
-    /// it advertises no `#tsp` service, and errors rather than falling back if
-    /// the TSP connect times out.
+    /// Force TSP — a **TSP-only** client, for exercising TSP on its own. Errors
+    /// — naming the transports the VTA *does* advertise — if it advertises no
+    /// `#tsp` service, and errors rather than falling back if the TSP connect
+    /// times out.
+    ///
+    /// Because it is TSP-only, protocol-message operations report
+    /// [`VtaError::UnsupportedTransport`](crate::error::VtaError::UnsupportedTransport)
+    /// naming `--transport didcomm`. Use [`Auto`](Self::Auto) for a client that
+    /// serves both surfaces.
     Tsp,
     /// Force DIDComm, ignoring an advertised `#tsp`. The recovery path when a
     /// VTA's TSP endpoint is broken but its DIDComm mediator is healthy;
@@ -1477,6 +1570,54 @@ async fn connect_tsp_bounded(
             Ok(result) => Ok(result?),
             Err(_) => Err(tsp_unreachable_error(mediator_did, timeout).into()),
         }
+    }
+}
+
+/// Put `client`'s Trust-Task surface on TSP, bounding any connect it needs.
+///
+/// The common case does no I/O at all: when the VTA advertises the **same**
+/// mediator for `#tsp` and `#vta-didcomm` — the reference topology — TSP rides
+/// the DIDComm session's existing socket, because the mediator permits one
+/// websocket per DID (#803). Only a VTA advertising a *separate* TSP mediator
+/// needs a connection, and there two mediators mean two sockets are legitimate.
+///
+/// A failure here is not fatal to the caller: `Auto` keeps the DIDComm client
+/// and reports the loss loudly. See [`TransportChoice`].
+#[cfg_attr(not(feature = "tsp"), allow(unused_variables))]
+async fn attach_tsp_leg_bounded(
+    client: &mut crate::client::VtaClient,
+    client_did: &str,
+    private_key: &str,
+    didcomm_mediator_did: &str,
+    tsp_mediator_did: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(feature = "tsp"))]
+    {
+        Err(format!(
+            "the VTA advertises TSP (`{tsp_mediator_did}`), but this build was compiled \
+             without the `tsp` feature. Rebuild with `--features tsp` to route trust tasks \
+             over it."
+        )
+        .into())
+    }
+    #[cfg(feature = "tsp")]
+    {
+        if didcomm_mediator_did == tsp_mediator_did {
+            client.enable_tsp_trust_tasks(tsp_mediator_did)?;
+            return Ok(());
+        }
+        let timeout = tsp_connect_timeout();
+        let tsp_session = match tokio::time::timeout(
+            timeout,
+            TspSession::connect(client_did, private_key, tsp_mediator_did),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => return Err(tsp_unreachable_error(tsp_mediator_did, timeout).into()),
+        };
+        client.attach_tsp_leg(std::sync::Arc::new(tsp_session), tsp_mediator_did)?;
+        Ok(())
     }
 }
 
@@ -2094,7 +2235,7 @@ impl TspPingSession {
                 continue; // not a Trust-Task document
             };
 
-            if correlates(&doc, &id, Some(&nonce)) {
+            if crate::tsp_demux::correlates(&doc, &id, Some(&nonce)) {
                 return Ok(start.elapsed().as_millis());
             }
             tracing::debug!(
@@ -2171,58 +2312,14 @@ pub struct TspSession {
     ws: tokio::sync::Mutex<Option<affinidi_tdk::messaging::TspWebSocket>>,
     /// This client's DID — the `issuer` on an [`announce`](Self::announce) frame.
     client_did: String,
-    /// In-flight [`request`](Self::request) waiters, keyed by request document
-    /// `id`. Whichever task currently holds `ws` reads frames on behalf of
-    /// *all* of them and hands each reply to its own waiter.
-    pending: tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>,
-    /// Inbound documents that matched no in-flight request — VTA-pushed
-    /// `task-consent/request`s and the like. Parked here rather than dropped,
-    /// so a request waiting on an unrelated reply cannot eat a push.
-    parked: tokio::sync::Mutex<std::collections::VecDeque<String>>,
-}
-
-/// One in-flight [`TspSession::request`]: how to recognise its reply, and where
-/// to deliver it.
-#[cfg(feature = "tsp")]
-struct PendingRequest {
-    /// Echoed-`nonce` fallback for a responder that replies with a fresh
-    /// document instead of a threaded `#response`.
-    nonce: Option<String>,
-    tx: tokio::sync::oneshot::Sender<String>,
-}
-
-/// Does `doc` correlate to the request identified by `request_id` (and
-/// optionally `nonce`)?
-///
-/// The single implementation of "is this frame the reply to that request",
-/// shared by [`TspPingSession::ping`] and [`TspSession::request`]. It was
-/// written for the ping path and welded there; every other caller would
-/// otherwise have re-derived `threadId` matching from the raw inner document.
-///
-/// Correlation is the Trust-Task `threadId`, which a responder sets to the
-/// request's `id` (`doc.respond_with`). The echoed `payload.nonce` is accepted
-/// as a fallback for a responder that replies with a fresh document rather than
-/// a threaded `#response`.
-///
-/// **Why this cannot be "the first frame that parses".** The client's mediator
-/// inbox is durable and flushes on connect, so every reply a previous process
-/// run never collected is queued and lands the moment we reconnect. Accepting
-/// the first frame therefore returns a *stale* reply — which is the exact fault
-/// that made the #749 delivery bug look intermittent.
-#[cfg(feature = "tsp")]
-fn correlates(doc: &serde_json::Value, request_id: &str, nonce: Option<&str>) -> bool {
-    if doc.get("threadId").and_then(|v| v.as_str()) == Some(request_id) {
-        return true;
-    }
-    match nonce {
-        Some(n) => {
-            doc.get("payload")
-                .and_then(|p| p.get("nonce"))
-                .and_then(|v| v.as_str())
-                == Some(n)
-        }
-        None => false,
-    }
+    /// In-flight [`request`](Self::request) waiters plus the parking lot for
+    /// frames none of them wanted. Whichever task currently holds `ws` reads
+    /// frames on behalf of *all* of them and hands each reply to its own
+    /// waiter. Shared with the [`DIDCommSession`] TSP leg so there is one
+    /// implementation of the correlation rule.
+    ///
+    /// [`DIDCommSession`]: crate::didcomm_session::DIDCommSession
+    demux: crate::tsp_demux::TspDemux,
 }
 
 #[cfg(feature = "tsp")]
@@ -2268,8 +2365,7 @@ impl TspSession {
             profile,
             ws: tokio::sync::Mutex::new(Some(ws)),
             client_did: client_did.to_string(),
-            pending: tokio::sync::Mutex::new(std::collections::HashMap::new()),
-            parked: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
+            demux: crate::tsp_demux::TspDemux::new(),
         })
     }
 
@@ -2383,7 +2479,7 @@ impl TspSession {
             // A frame an in-flight `request` read off the socket but did not
             // want is ours. Drain that before touching the socket, or a push
             // that already arrived would sit unseen behind a fresh read.
-            if let Some(doc) = self.parked.lock().await.pop_front() {
+            if let Some(doc) = self.demux.take_parked().await {
                 return Ok(Some(doc));
             }
             if Instant::now() >= deadline {
@@ -2456,27 +2552,8 @@ impl TspSession {
     ) -> Result<String, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
-        let parsed: serde_json::Value = serde_json::from_slice(document)
-            .map_err(|e| format!("TSP request document is not JSON: {e}"))?;
-        let request_id = parsed
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or("TSP request document has no `id` to correlate its reply on")?
-            .to_string();
-        let nonce = parsed
-            .get("payload")
-            .and_then(|p| p.get("nonce"))
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-        self.pending.lock().await.insert(
-            request_id.clone(),
-            PendingRequest {
-                nonce: nonce.clone(),
-                tx,
-            },
-        );
+        let (request_id, nonce) = crate::tsp_demux::TspDemux::request_keys(document)?;
+        let mut rx = self.demux.register(request_id.clone(), nonce).await;
 
         // Registered *before* sending: a reply can land while `send_routed` is
         // still returning, and a waiter registered afterwards would miss it.
@@ -2494,7 +2571,7 @@ impl TspSession {
             .await
             .map_err(|e| e.to_string());
         if sent.is_err() {
-            self.pending.lock().await.remove(&request_id);
+            self.demux.deregister(&request_id).await;
         }
         sent?;
 
@@ -2505,7 +2582,7 @@ impl TspSession {
             .map_err(|e| e.to_string());
         // Always deregister — a timed-out or failed request must not leave a
         // waiter behind for the pump to deliver into.
-        self.pending.lock().await.remove(&request_id);
+        self.demux.deregister(&request_id).await;
         Ok(outcome?)
     }
 
@@ -2561,7 +2638,7 @@ impl TspSession {
                         PumpOutcome::Uncorrelated(doc) => {
                             // Not ours and not any other waiter's — park it for
                             // the push consumer instead of dropping it.
-                            self.parked.lock().await.push_back(doc);
+                            self.demux.park(doc).await;
                         }
                         PumpOutcome::Delivered | PumpOutcome::Idle => {}
                     }
@@ -2624,39 +2701,11 @@ impl TspSession {
             let json = String::from_utf8(payload)
                 .map_err(|e| format!("TSP payload was not UTF-8: {e}"))?;
 
-            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&json) else {
-                // Not a Trust-Task document, so it can correlate with nothing.
-                // Hand it up rather than drop it — the push consumer decides.
-                return Ok(PumpOutcome::Uncorrelated(json));
-            };
-
-            let mut pending = self.pending.lock().await;
-            let hit = pending
-                .iter()
-                .find(|(id, p)| correlates(&doc, id, p.nonce.as_deref()))
-                .map(|(id, _)| id.clone());
-            match hit {
-                Some(id) => {
-                    if let Some(p) = pending.remove(&id) {
-                        // A dropped receiver (the requester timed out and left)
-                        // is not an error — the frame is simply no longer
-                        // wanted by anyone.
-                        let _ = p.tx.send(json);
-                    }
-                    return Ok(PumpOutcome::Delivered);
-                }
-                None => {
-                    drop(pending);
-                    debug!(
-                        thread_id = doc
-                            .get("threadId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("<none>"),
-                        "TSP frame matched no in-flight request (push, or a stale inbox entry)"
-                    );
-                    return Ok(PumpOutcome::Uncorrelated(json));
-                }
-            }
+            // One correlation rule for every TSP session — see `tsp_demux`.
+            return Ok(match self.demux.route(json).await {
+                crate::tsp_demux::Routed::Delivered => PumpOutcome::Delivered,
+                crate::tsp_demux::Routed::Uncorrelated(doc) => PumpOutcome::Uncorrelated(doc),
+            });
         }
     }
 
@@ -2666,7 +2715,7 @@ impl TspSession {
         // Drop every waiter first so an in-flight `request` fails fast with
         // "session shut down" instead of blocking until its own deadline on a
         // socket that is about to disappear.
-        self.pending.lock().await.clear();
+        self.demux.clear().await;
         if let Some(ws) = self.ws.lock().await.take() {
             let _ = ws.close().await;
         }
@@ -3049,75 +3098,8 @@ mod tests {
         assert!(neither.contains("no other transport"));
     }
 
-    // ── TSP reply correlation ─────────────────────────────────────
-
-    /// The property that makes TSP request/response safe: a frame that is not
-    /// *this* request's reply must not be accepted as one.
-    ///
-    /// The mediator inbox is durable and flushes on connect, so every reply a
-    /// previous process run never collected lands the moment we reconnect.
-    /// "First frame that parses" would therefore return a stale reply — the
-    /// exact fault that made the #749 delivery bug look intermittent.
-    #[cfg(feature = "tsp")]
-    #[test]
-    fn a_stale_frame_is_not_mistaken_for_our_reply() {
-        let stale = serde_json::json!({
-            "id": "urn:uuid:reply-to-something-else",
-            "threadId": "urn:uuid:a-previous-run",
-            "payload": { "nonce": "some-other-nonce" },
-        });
-        assert!(!correlates(
-            &stale,
-            "urn:uuid:our-request",
-            Some("our-nonce")
-        ));
-    }
-
-    #[cfg(feature = "tsp")]
-    #[test]
-    fn thread_id_correlates() {
-        let reply = serde_json::json!({
-            "id": "urn:uuid:the-reply",
-            "threadId": "urn:uuid:our-request",
-            "payload": {},
-        });
-        assert!(correlates(&reply, "urn:uuid:our-request", None));
-    }
-
-    /// Fallback for a responder that answers with a fresh document rather than
-    /// a threaded `#response`.
-    #[cfg(feature = "tsp")]
-    #[test]
-    fn echoed_nonce_correlates_when_thread_id_is_absent() {
-        let reply = serde_json::json!({
-            "id": "urn:uuid:fresh-doc",
-            "payload": { "nonce": "our-nonce" },
-        });
-        assert!(correlates(
-            &reply,
-            "urn:uuid:our-request",
-            Some("our-nonce")
-        ));
-        // ...but only when we actually sent a nonce to echo.
-        assert!(!correlates(&reply, "urn:uuid:our-request", None));
-    }
-
-    /// A document with neither field correlates with nothing — it is a push,
-    /// and must be parked for the receive consumer rather than eaten.
-    #[cfg(feature = "tsp")]
-    #[test]
-    fn a_push_correlates_with_no_request() {
-        let push = serde_json::json!({
-            "id": "urn:uuid:pushed",
-            "type": "https://trusttasks.org/spec/task-consent/request/0.1",
-            "payload": { "taskId": "t1" },
-        });
-        assert!(!correlates(
-            &push,
-            "urn:uuid:our-request",
-            Some("our-nonce")
-        ));
-    }
+    // TSP reply correlation moved to `crate::tsp_demux` when the rule became
+    // shared with the `DIDCommSession` TSP leg; its tests moved with it.
 
     #[test]
     fn forced_didcomm_error_names_the_alternatives() {
