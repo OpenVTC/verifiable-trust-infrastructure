@@ -479,30 +479,43 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(admin::bootstrap::bootstrap),
             "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1",
         ))
-        // Admin passkey management (M0.6.3). Step-up UV is enforced
-        // via the two-phase ceremony: `register/start` and
-        // `revoke/start` issue a UV challenge bound to an existing
-        // passkey; `register/finish` and `revoke/finish` reject if
-        // the UV assertion doesn't verify.
+        // Admin passkey management (M0.6.3), on the canonical
+        // `auth/passkey/*` tasks (trust-tasks-tf#145).
+        //
+        // Each leg now carries its OWN task, where the retired
+        // `admin/passkeys/{register,revoke}/1.0` pair had start and
+        // finish sharing one URI. A shared URI could not describe
+        // either leg honestly: start takes no assertion and returns a
+        // challenge, finish takes the assertion and returns nothing
+        // like a challenge, so one schema covering both had to permit
+        // every member of each — which is how a finish missing its UV
+        // assertion validated cleanly.
+        //
+        // Step-up UV is unchanged in behaviour and is now *specified*:
+        // `enroll/start/0.2` returns `uvOptions` alongside the
+        // registration challenge and `enroll/finish/0.2` requires the
+        // matching `uvCredential`; revoke's two legs do the same. The
+        // canonical specs were written from this implementation, so
+        // the wire shape is what it always was.
         .routes(tt(
             routes!(admin::passkeys::list),
-            "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0",
+            "https://trusttasks.org/spec/auth/passkey/list/0.1",
         ))
         .routes(tt(
             routes!(admin::passkeys::register_start),
-            "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0",
+            "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2",
         ))
         .routes(tt(
             routes!(admin::passkeys::register_finish),
-            "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0",
+            "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2",
         ))
         .routes(tt(
             routes!(admin::passkeys::revoke_start),
-            "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0",
+            "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1",
         ))
         .routes(tt(
             routes!(admin::passkeys::revoke_finish),
-            "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0",
+            "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1",
         ))
         // Admin invites — REST mirror of `vtc admin invite`. GET +
         // POST share the same mount; DELETE on `/admin/invites/{jti}`

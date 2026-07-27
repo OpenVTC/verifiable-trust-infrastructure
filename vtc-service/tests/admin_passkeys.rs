@@ -34,9 +34,15 @@ use vtc_service::test_support::TestVtc;
 use common::webauthn_harness::SoftEd25519Authenticator;
 
 const RP_ORIGIN: &str = "https://vtc.example.com";
-const LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
-const REGISTER_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0";
-const REVOKE_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0";
+// Canonical `auth/passkey/*` tasks (trust-tasks-tf#145). Each ceremony leg
+// carries its own task; the retired `admin/passkeys/{register,revoke}/1.0`
+// pair had start and finish sharing one URI, so a header naming the family
+// was accepted on either leg and could not distinguish them.
+const LIST_TASK: &str = "https://trusttasks.org/spec/auth/passkey/list/0.1";
+const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
+const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
+const REVOKE_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1";
+const REVOKE_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
 
 struct Fixture {
     state: AppState,
@@ -306,7 +312,7 @@ async fn register_succeeds_with_step_up_uv() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        Some(REGISTER_TASK),
+        Some(ENROLL_START_TASK),
         Some(&token),
         Some(json!({})),
     )
@@ -327,7 +333,7 @@ async fn register_succeeds_with_step_up_uv() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        Some(REGISTER_TASK),
+        Some(ENROLL_FINISH_TASK),
         Some(&token),
         Some(json!({
             "registration_id": registration_id,
@@ -374,7 +380,7 @@ async fn register_finish_without_start_returns_401() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        Some(REGISTER_TASK),
+        Some(ENROLL_FINISH_TASK),
         Some(&token),
         Some(json!({
             "registration_id": Uuid::new_v4().to_string(),
@@ -397,7 +403,7 @@ async fn register_rejects_when_uv_signed_by_wrong_authenticator() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        Some(REGISTER_TASK),
+        Some(ENROLL_START_TASK),
         Some(&token),
         Some(json!({})),
     )
@@ -465,7 +471,7 @@ async fn register_rejects_when_uv_signed_by_wrong_authenticator() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        Some(REGISTER_TASK),
+        Some(ENROLL_FINISH_TASK),
         Some(&token),
         Some(json!({
             "registration_id": registration_id,
@@ -500,7 +506,7 @@ async fn revoke_last_passkey_returns_409_last_passkey_protected() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/start",
-        Some(REVOKE_TASK),
+        Some(REVOKE_START_TASK),
         Some(&token),
         Some(json!({ "credential_id": cred_id })),
     )
@@ -516,7 +522,7 @@ async fn revoke_last_passkey_returns_409_last_passkey_protected() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/finish",
-        Some(REVOKE_TASK),
+        Some(REVOKE_FINISH_TASK),
         Some(&token),
         Some(json!({
             "revocation_id": revocation_id,
@@ -539,7 +545,7 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        Some(REGISTER_TASK),
+        Some(ENROLL_START_TASK),
         Some(&token),
         Some(json!({})),
     )
@@ -555,7 +561,7 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        Some(REGISTER_TASK),
+        Some(ENROLL_FINISH_TASK),
         Some(&token),
         Some(json!({
             "registration_id": reg_id,
@@ -587,7 +593,7 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/start",
-        Some(REVOKE_TASK),
+        Some(REVOKE_START_TASK),
         Some(&token),
         Some(json!({ "credential_id": bootstrap_id })),
     )
@@ -601,7 +607,7 @@ async fn revoke_after_register_succeeds_and_emits_audit_event() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/finish",
-        Some(REVOKE_TASK),
+        Some(REVOKE_FINISH_TASK),
         Some(&token),
         Some(json!({
             "revocation_id": revocation_id,
@@ -651,7 +657,7 @@ async fn revoke_rejects_unknown_credential_id() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/start",
-        Some(REVOKE_TASK),
+        Some(REVOKE_START_TASK),
         Some(&token),
         Some(json!({ "credential_id": "deadbeef" })),
     )
@@ -677,7 +683,7 @@ async fn revoke_finish_without_start_returns_401() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/revoke/finish",
-        Some(REVOKE_TASK),
+        Some(REVOKE_FINISH_TASK),
         Some(&token),
         Some(json!({
             "revocation_id": Uuid::new_v4().to_string(),
@@ -700,7 +706,7 @@ async fn register_start_returns_415_with_wrong_trust_task() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        Some(REVOKE_TASK), // wrong task on register endpoint
+        Some(REVOKE_START_TASK), // wrong task on register endpoint
         Some(&token),
         Some(json!({})),
     )
@@ -716,7 +722,7 @@ async fn register_returns_503_when_audit_writer_missing() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        Some(REGISTER_TASK),
+        Some(ENROLL_START_TASK),
         Some(&token),
         Some(json!({})),
     )
@@ -732,7 +738,7 @@ async fn register_returns_503_when_audit_writer_missing() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        Some(REGISTER_TASK),
+        Some(ENROLL_FINISH_TASK),
         Some(&token),
         Some(json!({
             "registration_id": registration_id,

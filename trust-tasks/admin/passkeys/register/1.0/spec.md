@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0
 title: VTC Admin — Register Passkey
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/passkey/enroll/start/0.2
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -11,6 +12,16 @@ applies_to:
 ---
 
 # VTC Admin — Register Passkey
+
+> **Retired.** Folded onto the canonical `auth/passkey/*` tasks
+> (trust-tasks-tf#145); each ceremony leg now carries its own task,
+> where this one covered a whole family:
+>
+>   - `POST /v1/admin/passkeys/register/start` -> `https://trusttasks.org/spec/auth/passkey/enroll/start/0.2`
+>   - `POST /v1/admin/passkeys/register/finish` -> `https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2`
+>
+> No wire change — the canonical specs were written from this
+> implementation. Only the task URIs moved.
 
 Two-phase ceremony that enrols an additional WebAuthn passkey on
 the caller's admin DID. The spec (§4.3) requires a **fresh
