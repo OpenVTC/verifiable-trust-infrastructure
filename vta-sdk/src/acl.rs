@@ -66,6 +66,51 @@ impl ActScope {
         }
     }
 
+    /// Whether this scope names a context **at or beneath** `context_id` — the
+    /// mirror of [`covers`](ActScope::covers), with the ancestry test's
+    /// arguments swapped.
+    ///
+    /// [`covers`](ActScope::covers) answers "may this entry act *in* the
+    /// context?"; this answers "does this entry hold a grant *inside* the
+    /// context's subtree?". They are different questions and a caller sweeping
+    /// a subtree — to revoke it, or to audit it — wants this one: a grant at
+    /// `acme/eng/team-a` is invisible to `covers("acme/eng")` because it holds
+    /// no authority over `acme/eng`, yet it is precisely what the sweep exists
+    /// to find.
+    ///
+    /// Two deliberate edges:
+    ///
+    /// - [`All`](ActScope::All) is **not** a match. An unrestricted entry names
+    ///   no context, so it is not a grant *of* this subtree — it is authority
+    ///   everywhere, which [`covers`](ActScope::covers) already reports. A
+    ///   subtree sweep that returned it would invite a caller revoking a
+    ///   compromised branch to delete its own super-admin. Ask
+    ///   [`ContextDirection::Any`] for "everyone whose authority touches this
+    ///   subtree", which includes it.
+    /// - A [`Contexts`](ActScope::Contexts) scope matches if **any** named
+    ///   context is inside the subtree, even when it also names contexts
+    ///   outside it. Such an entry does hold a grant in the subtree, so
+    ///   omitting it would under-report; whether to delete the entry or narrow
+    ///   its scope is then the caller's decision, made with the entry in hand.
+    pub fn acts_within(&self, context_id: &str) -> bool {
+        match self {
+            ActScope::None | ActScope::All => false,
+            ActScope::Contexts(cs) => cs
+                .iter()
+                .any(|c| crate::context_path::is_ancestor_or_self(context_id, c)),
+        }
+    }
+
+    /// Whether this scope matches `context_id` when read in `direction` — the
+    /// single predicate behind every context-filtered ACL listing.
+    pub fn matches_context(&self, context_id: &str, direction: ContextDirection) -> bool {
+        match direction {
+            ContextDirection::ActingIn => self.covers(context_id),
+            ContextDirection::Subtree => self.acts_within(context_id),
+            ContextDirection::Any => self.covers(context_id) || self.acts_within(context_id),
+        }
+    }
+
     /// Whether this scope authorizes every context (the super-admin condition
     /// when paired with the admin role).
     pub fn is_unrestricted(&self) -> bool {
@@ -85,6 +130,87 @@ impl ActScope {
             ActScope::Contexts(cs) => cs,
             _ => &[],
         }
+    }
+}
+
+/// Which way a context filter reads along the context hierarchy.
+///
+/// A context id names a subtree, so "entries relevant to context X" is two
+/// questions, not one, and an answer is only meaningful paired with the
+/// direction being asked:
+///
+/// | direction | question | predicate |
+/// |---|---|---|
+/// | [`ActingIn`](ContextDirection::ActingIn) | who may act **in** X? | scope is X or an ancestor of it |
+/// | [`Subtree`](ContextDirection::Subtree) | who holds a grant **beneath** X? | scope is X or a descendant of it |
+/// | [`Any`](ContextDirection::Any) | whose authority **touches** X's subtree? | either of the above |
+///
+/// Only [`ActingIn`](ContextDirection::ActingIn) existed until now, and a
+/// caller sweeping a subtree to revoke it got back exactly the entries it was
+/// *not* revoking (the ancestors keeping their authority) while every
+/// leaf-scoped grant it existed to cut was silently absent — an incomplete
+/// answer that looks like a complete one (#822).
+///
+/// [`ActingIn`](ContextDirection::ActingIn) is the default, so an omitted
+/// parameter is today's behaviour exactly. An unparseable value is refused
+/// rather than defaulted: guessing which question an operator meant is how the
+/// silent-wrong-answer failure returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum ContextDirection {
+    /// Entries that may act **in** the context: scoped to it or to an ancestor
+    /// of it. The historical (and default) behaviour of `?context=`.
+    #[default]
+    ActingIn,
+    /// Entries holding a grant **at or beneath** the context. The revocation-
+    /// sweep and delegation-audit direction.
+    Subtree,
+    /// The union — every entry whose act authority touches the context's
+    /// subtree in either direction. The auditor's question.
+    Any,
+}
+
+impl ContextDirection {
+    /// Every direction, in the order the operator-facing help lists them.
+    pub const ALL: [ContextDirection; 3] = [
+        ContextDirection::ActingIn,
+        ContextDirection::Subtree,
+        ContextDirection::Any,
+    ];
+
+    /// The wire spelling — identical to the serde representation, so the CLI,
+    /// the query string, and the Trust Task payload cannot drift apart.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContextDirection::ActingIn => "acting-in",
+            ContextDirection::Subtree => "subtree",
+            ContextDirection::Any => "any",
+        }
+    }
+}
+
+impl std::fmt::Display for ContextDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for ContextDirection {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|d| d.as_str() == s)
+            .ok_or_else(|| {
+                let valid = Self::ALL
+                    .iter()
+                    .map(|d| d.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("invalid context direction '{s}', expected one of: {valid}")
+            })
     }
 }
 
@@ -241,5 +367,144 @@ mod tests {
 
         assert!(ApproveScope::All.covers("anything"));
         assert!(!ApproveScope::None.covers("anything"));
+    }
+
+    // ── ContextDirection ────────────────────────────────────────────
+
+    /// The two directions are mirror images: `covers` walks up from the
+    /// queried context, `acts_within` walks down. The defect was having only
+    /// the first, so the descendant column here was unaskable.
+    #[test]
+    fn the_two_directions_are_mirrors() {
+        let ancestor = ActScope::Contexts(vec!["acme".into()]);
+        let exact = ActScope::Contexts(vec!["acme/eng".into()]);
+        let descendant = ActScope::Contexts(vec!["acme/eng/team-a".into()]);
+        let sibling = ActScope::Contexts(vec!["acme/ops".into()]);
+        let q = "acme/eng";
+
+        // covers: ancestor-or-self of the queried context.
+        assert!(ancestor.covers(q));
+        assert!(exact.covers(q));
+        assert!(!descendant.covers(q), "a leaf holds no authority over q");
+        assert!(!sibling.covers(q));
+
+        // acts_within: at-or-beneath the queried context.
+        assert!(!ancestor.acts_within(q), "a parent grant is not inside q");
+        assert!(exact.acts_within(q), "self is inside its own subtree");
+        assert!(descendant.acts_within(q), "the sweep's whole point");
+        assert!(!sibling.acts_within(q));
+    }
+
+    /// Segment-awareness must hold in the new direction too, or `acme/eng`
+    /// would "contain" `acme/engineering` and a sweep would revoke a
+    /// bystander.
+    #[test]
+    fn acts_within_is_segment_aware() {
+        let scope = ActScope::Contexts(vec!["acme/engineering".into()]);
+        assert!(!scope.acts_within("acme/eng"));
+        assert!(scope.acts_within("acme"));
+    }
+
+    /// An unrestricted entry is authority *everywhere*, not a grant *of* this
+    /// subtree. Surfacing it under `subtree` would put the caller's own
+    /// super-admin on a revocation list; `any` is where it belongs.
+    #[test]
+    fn unrestricted_is_reported_by_acting_in_and_any_but_not_subtree() {
+        let all = ActScope::All;
+        assert!(all.matches_context("acme/eng", ContextDirection::ActingIn));
+        assert!(!all.matches_context("acme/eng", ContextDirection::Subtree));
+        assert!(all.matches_context("acme/eng", ContextDirection::Any));
+    }
+
+    /// Acts-nowhere matches in no direction — the fail-closed edge.
+    #[test]
+    fn acts_nowhere_matches_no_direction() {
+        for d in ContextDirection::ALL {
+            assert!(
+                !ActScope::None.matches_context("acme", d),
+                "acts-nowhere matched {d}"
+            );
+        }
+    }
+
+    /// A scope naming several contexts matches the sweep if *any* of them is
+    /// inside it — under-reporting is the failure mode being fixed.
+    #[test]
+    fn a_partially_inside_scope_is_surfaced() {
+        let scope = ActScope::Contexts(vec!["acme/eng/team-a".into(), "other".into()]);
+        assert!(scope.acts_within("acme/eng"));
+    }
+
+    /// `Any` is exactly the union, and never narrower than either leg.
+    #[test]
+    fn any_is_the_union_of_both_legs() {
+        let scopes = [
+            ActScope::None,
+            ActScope::All,
+            ActScope::Contexts(vec!["acme".into()]),
+            ActScope::Contexts(vec!["acme/eng".into()]),
+            ActScope::Contexts(vec!["acme/eng/team-a".into()]),
+            ActScope::Contexts(vec!["other".into()]),
+        ];
+        for scope in scopes {
+            let acting_in = scope.matches_context("acme/eng", ContextDirection::ActingIn);
+            let subtree = scope.matches_context("acme/eng", ContextDirection::Subtree);
+            assert_eq!(
+                scope.matches_context("acme/eng", ContextDirection::Any),
+                acting_in || subtree,
+                "union broken for {scope:?}"
+            );
+        }
+    }
+
+    /// Omitting the parameter must be today's behaviour, byte for byte.
+    #[test]
+    fn default_direction_is_the_historical_one() {
+        assert_eq!(ContextDirection::default(), ContextDirection::ActingIn);
+        let scope = ActScope::Contexts(vec!["acme".into()]);
+        for ctx in ["acme", "acme/eng", "acme-corp", "other"] {
+            assert_eq!(
+                scope.matches_context(ctx, ContextDirection::default()),
+                scope.covers(ctx),
+                "default direction diverged from `covers` at {ctx}"
+            );
+        }
+    }
+
+    /// One spelling across the query string, the Trust Task payload, and the
+    /// CLI flag — parsed and rendered through the same table.
+    #[test]
+    fn wire_spelling_is_pinned_and_round_trips() {
+        let cases = [
+            (ContextDirection::ActingIn, "acting-in"),
+            (ContextDirection::Subtree, "subtree"),
+            (ContextDirection::Any, "any"),
+        ];
+        for (direction, wire) in cases {
+            assert_eq!(direction.as_str(), wire);
+            assert_eq!(direction.to_string(), wire);
+            assert_eq!(
+                serde_json::to_string(&direction).unwrap(),
+                format!("\"{wire}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<ContextDirection>(&format!("\"{wire}\"")).unwrap(),
+                direction
+            );
+            assert_eq!(wire.parse::<ContextDirection>().unwrap(), direction);
+        }
+    }
+
+    /// An unknown value is refused, and the error names the valid ones — the
+    /// operator-errors-suggest-the-fix rule. Silently defaulting would
+    /// reintroduce "wrong question, confident answer".
+    #[test]
+    fn an_unknown_direction_is_refused_with_the_valid_set() {
+        let err = "descendants".parse::<ContextDirection>().unwrap_err();
+        assert!(err.contains("descendants"), "{err}");
+        for d in ContextDirection::ALL {
+            assert!(err.contains(d.as_str()), "{err} omits {d}");
+        }
+        assert!(serde_json::from_str::<ContextDirection>("\"ActingIn\"").is_err());
     }
 }
