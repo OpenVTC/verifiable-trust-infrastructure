@@ -924,8 +924,11 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Bearer→cookie bridge for the VTA-wallet login: the SPA posts the
     // wallet-issued access token, the daemon mirrors it into the
     // `vtc_admin_session` + `csrf` cookies (same shape as admin-login).
-    // Browser-friendly passkey login — same canonical spec serves
-    // initial login and AAL step-up via the payload's `purpose` field.
+    // Browser-friendly passkey login — one canonical spec serves both
+    // initial login and AAL step-up, selected by the start payload's
+    // `purpose` field (0.2's camelCase `stepUp`). Login is genuinely
+    // unauthenticated; step-up authenticates the caller inside the
+    // handler, which is why both live on this chain.
     // Phase 3 M3.10 — cross-community session mint. Sits in the
     // unauth chain (not the main API chain) so the tower-governor
     // + 64 KB body cap apply: the handler runs DID resolution,
@@ -1004,11 +1007,11 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         .routes(tt(
             routes!(auth::passkey_login_start),
-            "https://trusttasks.org/spec/auth/passkey/login/start/0.1",
+            "https://trusttasks.org/spec/auth/passkey/login/start/0.2",
         ))
         .routes(tt(
             routes!(auth::passkey_login_finish),
-            "https://trusttasks.org/spec/auth/passkey/login/finish/0.1",
+            "https://trusttasks.org/spec/auth/passkey/login/finish/0.2",
         ))
         .routes(tt(
             routes!(install::claim_start),

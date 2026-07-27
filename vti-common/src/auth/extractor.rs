@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::acl::{ActScope, Role, act_scope_for};
 use crate::auth::jwt::JwtKeys;
-use crate::auth::session::{SessionState, get_session};
+use crate::auth::session::{Session, SessionState, get_session, now_epoch};
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 
@@ -63,33 +63,82 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        // Try `Authorization: Bearer <jwt>` first. Programmatic
-        // clients (cnm-cli, DIDComm bridges, the existing
-        // `/v1/auth/` flow) all use this path.
-        let bearer_token = TypedHeader::<Authorization<Bearer>>::from_request_parts(parts, state)
-            .await
-            .ok()
-            .map(|TypedHeader(auth)| auth.token().to_string());
+        Ok(authenticate(parts, state).await?.0)
+    }
+}
 
-        // Fall back to the admin session cookie (Phase 5 M5.2.3).
-        // Set by `POST /v1/auth/admin-login`; carries the same JWT
-        // as the bearer path.
-        let token: String = match bearer_token {
-            Some(t) => t,
-            None => match cookie_token(parts, ADMIN_SESSION_COOKIE) {
-                Some(t) => t,
-                None => {
-                    warn!(
-                        "auth rejected: no Authorization header and no {ADMIN_SESSION_COOKIE} cookie"
-                    );
-                    return Err(AppError::Unauthorized(
-                        "missing or invalid Authorization header".into(),
-                    ));
-                }
-            },
+/// Lets a handler accept `Option<AuthClaims>` — "authenticate the caller if
+/// they presented a credential, otherwise carry on anonymously".
+///
+/// Needed by the endpoints that serve two audiences on one route: passkey
+/// *login* is unauthenticated by nature (the ceremony is the authentication),
+/// while passkey *step-up* on the very same task elevates a session the caller
+/// must already hold. Splitting them into two routes would fork a canonical
+/// Trust Task in two.
+///
+/// This is **not** a way to make authentication optional on a protected route:
+/// a caller who presents a credential still has it fully verified, and a bad
+/// one is rejected rather than silently downgraded to anonymous.
+impl<S: AuthState> axum::extract::OptionalFromRequestParts<S> for AuthClaims {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &S,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        let Some(token) = presented_token(parts, state).await else {
+            return Ok(None);
         };
-        let token = token.as_str();
+        Ok(Some(authenticate_token(&token, state).await?.0))
+    }
+}
 
+/// The shared body of [`AuthClaims::from_request_parts`], additionally handing
+/// back the [`Session`] row it had to load anyway (for the `jti` pin).
+///
+/// [`StepUpAuth`] needs session state the JWT does not carry — how long ago the
+/// second factor was actually confirmed — and re-reading the row per request
+/// would double the store hit on every stepped-up call. Every extractor in this
+/// module funnels through here, so there is exactly one place that decides what
+/// "authenticated" means.
+async fn authenticate<S: AuthState>(
+    parts: &mut Parts,
+    state: &S,
+) -> Result<(AuthClaims, Session), AppError> {
+    let Some(token) = presented_token(parts, state).await else {
+        warn!("auth rejected: no Authorization header and no {ADMIN_SESSION_COOKIE} cookie");
+        return Err(AppError::Unauthorized(
+            "missing or invalid Authorization header".into(),
+        ));
+    };
+    authenticate_token(&token, state).await
+}
+
+/// Pull the caller's JWT off the request, whichever way they presented it.
+///
+/// `Authorization: Bearer <jwt>` first — programmatic clients (cnm-cli, DIDComm
+/// bridges, the `/v1/auth/` flow) all use this. Falls back to the admin session
+/// cookie (Phase 5 M5.2.3) set by `POST /v1/auth/admin-login`, which carries the
+/// same JWT.
+///
+/// `None` means the caller presented **no** credential at all — distinct from
+/// presenting a bad one, which is what lets
+/// [`OptionalFromRequestParts`](axum::extract::OptionalFromRequestParts) treat
+/// an anonymous request as "not authenticated" while still rejecting a forged
+/// or expired token outright.
+async fn presented_token<S: AuthState>(parts: &mut Parts, state: &S) -> Option<String> {
+    let bearer = TypedHeader::<Authorization<Bearer>>::from_request_parts(parts, state)
+        .await
+        .ok()
+        .map(|TypedHeader(auth)| auth.token().to_string());
+    bearer.or_else(|| cookie_token(parts, ADMIN_SESSION_COOKIE))
+}
+
+async fn authenticate_token<S: AuthState>(
+    token: &str,
+    state: &S,
+) -> Result<(AuthClaims, Session), AppError> {
+    {
         // Decode and validate JWT
         let jwt_keys = state
             .jwt_keys()
@@ -126,15 +175,18 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
 
         let role = Role::parse(&claims.role)?;
 
-        Ok(AuthClaims {
-            did: claims.sub,
-            role,
-            allowed_contexts: claims.contexts,
-            session_id: claims.session_id,
-            access_expires_at: claims.exp,
-            amr: claims.amr,
-            acr: claims.acr,
-        })
+        Ok((
+            AuthClaims {
+                did: claims.sub,
+                role,
+                allowed_contexts: claims.contexts,
+                session_id: claims.session_id,
+                access_expires_at: claims.exp,
+                amr: claims.amr,
+                acr: claims.acr,
+            },
+            session,
+        ))
     }
 }
 
@@ -400,31 +452,38 @@ impl<S: AuthState> FromRequestParts<S> for AdminAuth {
     }
 }
 
-/// Extractor that requires a **stepped-up** session (JWT `acr == "aal2"`).
+/// Extractor that requires a **freshly** stepped-up session: `acr == "aal2"`
+/// *and* a step-up elevation whose window is still open.
 ///
-/// Use on routes that demand a second factor beyond the base DID
-/// challenge-response (`aal1`) — typical examples: ACL edits,
-/// key rotation, backup export, anything that lets an attacker
-/// with a leaked `aal1` token pivot to a long-lived foothold.
+/// Use on routes that demand a second factor confirmed **for this operation** —
+/// ACL edits, role promotion, key rotation, backup export; anything that lets
+/// an attacker holding a live session pivot to a long-lived foothold.
 ///
 /// ```ignore
-/// async fn rotate_keys(auth: StepUpAuth, ...) { /* aal2 enforced */ }
+/// async fn rotate_keys(auth: StepUpAuth, ...) { /* fresh aal2 enforced */ }
 /// ```
 ///
-/// A request with a lower `acr` is rejected with
+/// A request that fails either half is rejected with
 /// [`AppError::StepUpRequired`] (403 + body
 /// `{ "error": "step_up_required", "requiredAcr": "aal2" }`). The
 /// wallet uses that signal to trigger a passkey-login or
 /// VTA-approval ceremony — distinct from a generic `forbidden`
 /// it would get from a role gate.
 ///
-/// **Trust model**: the gate reads `acr` from the JWT claims the
-/// `AuthClaims` extractor already verified (signature, expiry,
-/// session existence). Step-up tokens are stateless during their
-/// access-window; the canonical refresh handler preserves `acr`
-/// across rotation. If a step-up access-token leaks, the only
-/// brake is the short access-token TTL (or [`M2`] — shorter TTL
-/// when `acr=aal2`).
+/// **Why `acr` alone is not enough.** `acr` records the assurance level the
+/// session *reached*, and it stays there for the session's whole life: a
+/// passkey sign-in mints `aal2` up front and the canonical refresh handler
+/// preserves it across every rotation. Gating on `acr` alone would therefore
+/// accept a sign-in from an hour ago and lose the property these routes exist
+/// for — that a stolen session cannot, by itself, authorise the next
+/// promotion. Freshness lives in
+/// [`Session::acr_expires_at`](crate::auth::session::Session::acr_expires_at),
+/// which a step-up ceremony sets to a bounded deadline, so this gate reads the
+/// session row rather than the token.
+///
+/// **Fail closed.** An absent deadline is refused, not waved through: it means
+/// no step-up ceremony ever ran for this session (or the row pre-dates the
+/// field). An unknown elevation time must never read as a recent one.
 #[derive(Debug, Clone)]
 pub struct StepUpAuth(pub AuthClaims);
 
@@ -432,20 +491,31 @@ impl<S: AuthState> FromRequestParts<S> for StepUpAuth {
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let claims = AuthClaims::from_request_parts(parts, state).await?;
+        let (claims, session) = authenticate(parts, state).await?;
 
-        if claims.acr == "aal2" {
-            Ok(StepUpAuth(claims))
-        } else {
+        if claims.acr != "aal2" {
             warn!(
                 did = %claims.did,
                 acr = %claims.acr,
                 "auth rejected: step-up (aal2) required",
             );
-            Err(AppError::StepUpRequired(
+            return Err(AppError::StepUpRequired(
                 "operation requires a stepped-up (aal2) session".into(),
-            ))
+            ));
         }
+
+        if !session.elevation_active(now_epoch()) {
+            warn!(
+                did = %claims.did,
+                acr_expires_at = ?session.acr_expires_at,
+                "auth rejected: step-up elevation absent or lapsed",
+            );
+            return Err(AppError::StepUpRequired(
+                "operation requires a recent step-up; re-run the step-up ceremony".into(),
+            ));
+        }
+
+        Ok(StepUpAuth(claims))
     }
 }
 
@@ -525,6 +595,158 @@ fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::jwt::Claims;
+    use crate::auth::session::{now_epoch, store_session};
+    use crate::config::StoreConfig;
+    use crate::store::Store;
+
+    /// Minimal [`AuthState`] so the extractors can be driven end-to-end
+    /// (real JWT, real session row) instead of asserting on their parts.
+    #[derive(Clone)]
+    struct TestState {
+        keys: Arc<JwtKeys>,
+        sessions: KeyspaceHandle,
+    }
+
+    impl AuthState for TestState {
+        fn jwt_keys(&self) -> Option<&Arc<JwtKeys>> {
+            Some(&self.keys)
+        }
+        fn sessions_ks(&self) -> &KeyspaceHandle {
+            &self.sessions
+        }
+    }
+
+    fn test_state() -> (TestState, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let state = TestState {
+            keys: Arc::new(JwtKeys::from_ed25519_bytes(&[7u8; 32], "VTA").expect("build jwt keys")),
+            sessions: store.keyspace("sessions").expect("keyspace"),
+        };
+        (state, dir)
+    }
+
+    /// Authenticate `did` at `acr`, with the step-up window set to
+    /// `acr_expires_at`, and return request parts carrying the bearer token.
+    async fn authed_parts(
+        state: &TestState,
+        acr: &str,
+        acr_expires_at: Option<u64>,
+    ) -> axum::http::request::Parts {
+        let did = "did:key:zStepUp";
+        let claims: Claims = state
+            .keys
+            .new_claims(
+                did.to_string(),
+                did.to_string(),
+                "admin".to_string(),
+                Vec::new(),
+                900,
+                false,
+            )
+            .with_aal(vec!["passkey".to_string()], acr);
+        let token = state.keys.encode(&claims).expect("encode jwt");
+
+        let session = Session {
+            session_id: did.to_string(),
+            did: did.to_string(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now_epoch(),
+            last_seen: now_epoch(),
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["passkey".to_string()],
+            acr: acr.to_string(),
+            acr_expires_at,
+            token_id: None,
+            session_pubkey_b58btc: None,
+        };
+        store_session(&state.sessions, &session)
+            .await
+            .expect("store session");
+
+        let (parts, _) = axum::http::Request::builder()
+            .uri("/anything")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(())
+            .expect("build request")
+            .into_parts();
+        parts
+    }
+
+    #[tokio::test]
+    async fn step_up_accepts_a_live_elevation() {
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal2", Some(now_epoch() + 900)).await;
+        let auth = StepUpAuth::from_request_parts(&mut parts, &state)
+            .await
+            .expect("a live step-up window must satisfy the gate");
+        assert_eq!(auth.0.acr, "aal2");
+    }
+
+    #[tokio::test]
+    async fn step_up_refuses_an_aal2_session_that_was_never_stepped_up() {
+        // The load-bearing case: a passkey sign-in is `aal2` from its first
+        // request and carries no elevation window. Gating on `acr` alone would
+        // accept it hours later — exactly the "a stolen session cannot persist"
+        // property these routes exist to keep.
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal2", None).await;
+        let err = StepUpAuth::from_request_parts(&mut parts, &state)
+            .await
+            .expect_err("an absent elevation window must fail closed");
+        assert!(
+            matches!(err, AppError::StepUpRequired(_)),
+            "expected StepUpRequired, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_up_refuses_a_lapsed_elevation() {
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal2", Some(now_epoch().saturating_sub(1))).await;
+        let err = StepUpAuth::from_request_parts(&mut parts, &state)
+            .await
+            .expect_err("a lapsed step-up window must be refused");
+        assert!(
+            matches!(err, AppError::StepUpRequired(_)),
+            "expected StepUpRequired, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn step_up_refuses_aal1_even_with_a_live_window() {
+        // Both halves are required: a live window on a session that never
+        // reached aal2 is not a second factor.
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal1", Some(now_epoch() + 900)).await;
+        let err = StepUpAuth::from_request_parts(&mut parts, &state)
+            .await
+            .expect_err("aal1 must be refused regardless of the window");
+        assert!(
+            matches!(err, AppError::StepUpRequired(_)),
+            "expected StepUpRequired, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_auth_is_unaffected_by_the_freshness_rule() {
+        // `AuthClaims` (and every role gate built on it) must keep accepting a
+        // session with no elevation window — the gate is opt-in per route.
+        let (state, _dir) = test_state();
+        let mut parts = authed_parts(&state, "aal2", None).await;
+        let claims = AuthClaims::from_request_parts(&mut parts, &state)
+            .await
+            .expect("plain authentication must not require a step-up");
+        assert_eq!(claims.did, "did:key:zStepUp");
+        assert_eq!(claims.acr, "aal2");
+    }
 
     #[test]
     fn has_context_access_grants_the_subtree_to_a_parent_admin() {

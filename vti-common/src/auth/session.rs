@@ -63,13 +63,27 @@ pub struct Session {
     pub amr: Vec<String>,
     #[serde(default)]
     pub acr: String,
-    /// Epoch-seconds deadline after which a step-up-elevated `acr` lapses back
-    /// to `aal1`. Set when a step-up elevates the session; read by the
-    /// intrinsic-sender resolver ([`resolve_did_session`]), which downgrades on
-    /// read once the window closes. `None` for an un-elevated session — and, in
-    /// this phase, for REST sessions, whose short access-token TTL already
-    /// bounds elevation (a later phase wires REST into the same read-time
-    /// downgrade). `#[serde(default)]` for back-compat with pre-existing rows.
+    /// Epoch-seconds deadline after which a step-up elevation lapses. Set when
+    /// a step-up ceremony elevates the session; `None` for a session that was
+    /// never stepped up.
+    ///
+    /// This — not `acr` — is what "a second factor was confirmed **just now**"
+    /// means. `acr` records the level the session *reached* and stays there for
+    /// its whole life (a passkey sign-in is `aal2` from its first request, and
+    /// refresh preserves it), so it cannot express freshness on its own.
+    ///
+    /// Read by both transports, in the shape each needs:
+    /// - **Intrinsic-sender (DIDComm/TSP)** — [`resolve_did_session`] reads
+    ///   `acr` off this row on every message, so it rewrites the row via
+    ///   [`Session::downgrade_lapsed_elevation`] once the window closes.
+    /// - **REST** — [`StepUpAuth`](crate::auth::extractor::StepUpAuth) reads the
+    ///   deadline directly via [`Session::elevation_active`], so a stale `acr`
+    ///   on the row can never satisfy the gate and there is nothing to rewrite.
+    ///   `acr` is left alone, which keeps a passkey login honestly reported as
+    ///   `aal2` rather than being downgraded below the level it logged in at.
+    ///
+    /// `#[serde(default)]` for back-compat with pre-existing rows — which
+    /// deserialise as "never stepped up", the fail-closed reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acr_expires_at: Option<u64>,
     /// JWT `jti` rotation pin. Set per-token-issue so old JWTs are
@@ -95,6 +109,46 @@ pub struct Session {
     /// the trust-task framework's IS_PROOF_REQUIRED gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_pubkey_b58btc: Option<String>,
+}
+
+impl Session {
+    /// Whether a step-up elevation is **currently live** on this session.
+    ///
+    /// True only when [`acr_expires_at`](Self::acr_expires_at) names a deadline
+    /// that has not yet passed. An absent deadline is *not* a live elevation —
+    /// it means this session was never stepped up (a passkey *login*, for
+    /// instance, is `aal2` from its first request and carries no window). Gates
+    /// that need "a second factor was confirmed **for this operation, just
+    /// now**" must consult this rather than `acr`, which stays elevated for the
+    /// whole session and therefore cannot express freshness.
+    ///
+    /// Fails closed: an unknown elevation time never reads as a recent one.
+    pub fn elevation_active(&self, now: u64) -> bool {
+        self.acr_expires_at.is_some_and(|deadline| now < deadline)
+    }
+
+    /// Drop a **lapsed** step-up elevation back to the un-elevated baseline,
+    /// reporting whether anything changed.
+    ///
+    /// Used by the intrinsic-sender resolver ([`resolve_did_session`]), where
+    /// `acr` is read straight off this row on every message and so must be
+    /// rewritten once the window closes. REST callers do not need this: their
+    /// gate ([`StepUpAuth`](crate::auth::extractor::StepUpAuth)) reads the
+    /// deadline itself, so a stale `acr` on the row can never satisfy it.
+    ///
+    /// The baseline is the single `did` factor at `aal1` — the level every
+    /// intrinsic-sender session starts at in [`resolve_did_session`].
+    pub fn downgrade_lapsed_elevation(&mut self, now: u64) -> bool {
+        match self.acr_expires_at {
+            Some(deadline) if now >= deadline => {
+                self.acr = "aal1".to_string();
+                self.acr_expires_at = None;
+                self.amr = vec!["did".to_string()];
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Debug for Session {
@@ -203,13 +257,7 @@ pub async fn resolve_did_session(
 ) -> Result<Session, AppError> {
     if let Some(mut session) = get_session(sessions, did).await? {
         session.last_seen = now;
-        if let Some(deadline) = session.acr_expires_at
-            && now >= deadline
-        {
-            session.acr = "aal1".to_string();
-            session.acr_expires_at = None;
-            session.amr = vec!["did".to_string()];
-        }
+        session.downgrade_lapsed_elevation(now);
         update_session(sessions, &session).await?;
         Ok(session)
     } else {
@@ -505,6 +553,52 @@ mod tests {
             rendered.contains("<redacted>"),
             "expected redaction marker, got: {rendered}"
         );
+    }
+
+    // ── Elevation window ────────────────────────────────────────────
+
+    #[test]
+    fn elevation_is_active_only_inside_the_window() {
+        let now = now_epoch();
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+
+        // Never stepped up: fail closed. This is the case that matters — a
+        // passkey *login* reaches aal2 with no window, and must not read as a
+        // recent step-up.
+        s.acr = "aal2".into();
+        assert!(!s.elevation_active(now), "absent deadline is not elevation");
+
+        s.acr_expires_at = Some(now + 900);
+        assert!(s.elevation_active(now));
+        assert!(s.elevation_active(now + 899));
+
+        // The deadline itself is already lapsed (the check is `now < deadline`,
+        // matching the intrinsic resolver's `now >= deadline` downgrade).
+        assert!(!s.elevation_active(now + 900));
+        assert!(!s.elevation_active(now + 901));
+    }
+
+    #[test]
+    fn downgrade_lapsed_elevation_resets_only_once_lapsed() {
+        let now = now_epoch();
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+        s.acr = "aal2".into();
+        s.amr = vec!["did".into(), "passkey".into()];
+        s.acr_expires_at = Some(now + 900);
+
+        assert!(
+            !s.downgrade_lapsed_elevation(now),
+            "still inside the window"
+        );
+        assert_eq!(s.acr, "aal2");
+
+        assert!(s.downgrade_lapsed_elevation(now + 900), "window closed");
+        assert_eq!(s.acr, "aal1");
+        assert_eq!(s.acr_expires_at, None);
+        assert_eq!(s.amr, vec!["did".to_string()]);
+
+        // Idempotent: a second call has nothing left to downgrade.
+        assert!(!s.downgrade_lapsed_elevation(now + 1800));
     }
 
     // ── Session key helpers ─────────────────────────────────────────

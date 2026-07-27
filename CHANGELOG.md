@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### vti-common 0.11.26 / vtc-service 0.11.32 / vta-service 0.12.40 — step-up means *recent*, and passkey step-up exists
+
+`StepUpAuth` gated on `acr == "aal2"` and nothing else. That reads as "this
+session reached two factors at some point", not "a second factor was confirmed
+for this operation" — and the two diverge badly, because a passkey sign-in is
+`aal2` from its very first request and refresh preserves it for the session's
+whole life. A route behind that gate would have accepted a sign-in from an hour
+ago, losing the property such routes exist for: that a stolen session cannot,
+by itself, authorise the next privileged operation.
+
+Freshness already had a home — `Session.acr_expires_at`, which the VTA's
+step-up ceremony stamps and the intrinsic-sender (DIDComm/TSP) resolver honours
+by downgrading `acr` on read. Its own doc named the missing half: *"a later
+phase wires REST into the same read-time downgrade."* This is that phase, and
+it does not need a new JWT claim — the `AuthClaims` extractor already loads the
+session row for the `jti` pin.
+
+**`StepUpAuth` now requires a live elevation window** as well as `aal2`, read
+straight off the session. An absent deadline is **refused**, not waved through:
+an unknown elevation time must never read as a recent one. REST deliberately
+does *not* copy the intrinsic path's read-time `acr` rewrite — the gate reads
+the deadline directly, so a stale `acr` can never satisfy it, and a passkey
+login stays honestly reported as `aal2` instead of being downgraded below the
+level it logged in at. `Session::elevation_active` /
+`downgrade_lapsed_elevation` put both readings in one place.
+
+Nothing regresses: `StepUpAuth` had no call sites, and every other extractor is
+untouched.
+
+**`purpose: stepUp` is now implemented** on the VTC's passkey-login pair, which
+moves from `spec/auth/passkey/login/{start,finish}/0.1` to `/0.2` (the camelCase
+`stepUp` enum; the 0.1 constants in `vta-sdk` are already deprecated). A comment
+in `routes/mod.rs` claimed the payload's `purpose` field already selected between
+login and step-up — no handler read it.
+
+A step-up is not a login with a flag, and the differences are the security
+content:
+
+| | `purpose: login` | `purpose: stepUp` |
+|---|---|---|
+| Caller | unauthenticated — the ceremony *is* the auth | must already hold the session |
+| Credentials challenged | every registered passkey (discoverable) | **only the caller's own** |
+| User verification | as the authenticator offers | **required** — a silent assertion is one factor |
+| Result | a new session + tokens | the existing session elevated in place, **no** tokens |
+
+The ceremony is bound at `start` to the session that asked for it and re-checked
+at `finish` against both the session id and its subject, because neither of
+`start`'s arrangements is load-bearing on its own: `allowCredentials` is a
+client-side hint, and the token presented at `finish` need not be the one
+presented at `start`. Without the subject re-check, any enrolled admin's passkey
+would elevate anyone's session.
+
+`subject` is honoured rather than noted: it narrows a login challenge, and a
+step-up naming anyone but the authenticated subject is refused.
+
+Operator-visible: the elevation lasts 15 minutes (matching the VTA's
+`STEP_UP_ELEVATION_TTL_SECS`), reported to the client as
+`ext["org.openvtc.step-up"].expiresAt`.
+
 ### vta-sdk 0.20.2 — TSP is a per-surface leg, not a whole-client transport
 
 A consumer holding a DIDComm session could not use TSP at all. The only way to
@@ -63,6 +122,7 @@ forever.
 Verified live against the deployed VTA (a trust task dispatched over the DIDComm
 session's socket, reply correlated back) and hermetically over the embedded
 `TestMediator` in `tests/e2e/tests/tsp_dual_leg.rs`.
+
 
 ### vtc-service 0.11.31 — admin passkeys move to the canonical `auth/passkey/*` tasks
 

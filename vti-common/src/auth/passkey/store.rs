@@ -67,6 +67,25 @@ impl std::fmt::Debug for Enrollment {
     }
 }
 
+/// Binds an in-flight WebAuthn assertion ceremony to the session that started
+/// it, for `purpose: stepUp` ceremonies.
+///
+/// Written by the login/start handler when the caller asks to step up, read by
+/// the matching finish. Without it, an assertion challenge minted for one
+/// session could be spent to elevate another — the ceremony proves *a* passkey
+/// was used, not *whose session* asked for it. The finish handler refuses when
+/// the presented session doesn't match both fields.
+///
+/// Absent for a plain `purpose: login` ceremony, which has no session yet.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StepUpBinding {
+    /// The session the elevation applies to.
+    pub session_id: String,
+    /// The subject that session authenticated as. Checked alongside
+    /// `session_id` so a recycled id can't carry an elevation across subjects.
+    pub did: String,
+}
+
 /// Maps a credential id (hex-encoded) to the owning user UUID. Lets
 /// `login_finish` find the right `PasskeyUser` without scanning.
 #[derive(Debug, Serialize, Deserialize)]
@@ -98,6 +117,10 @@ fn registration_state_key(id: &str) -> String {
 
 fn auth_state_key(id: &str) -> String {
     format!("pk_auth:{id}")
+}
+
+fn auth_step_up_key(id: &str) -> String {
+    format!("pk_auth_stepup:{id}")
 }
 
 fn registration_user_key(reg_id: &str) -> String {
@@ -232,6 +255,26 @@ pub async fn take_auth_state(
     id: &str,
 ) -> Result<Option<PasskeyAuthentication>, AppError> {
     take(ks, auth_state_key(id)).await
+}
+
+/// Record that this assertion ceremony is a step-up for a specific session.
+/// Keyed by the same `auth_id` as the ceremony state, so the two are consumed
+/// together at finish.
+pub async fn store_auth_step_up(
+    ks: &KeyspaceHandle,
+    id: &str,
+    binding: &StepUpBinding,
+) -> Result<(), AppError> {
+    ks.insert(auth_step_up_key(id), binding).await
+}
+
+/// Consume the step-up binding for `id`. `None` means the ceremony was started
+/// as a plain login, so the finish handler must not elevate anything.
+pub async fn take_auth_step_up(
+    ks: &KeyspaceHandle,
+    id: &str,
+) -> Result<Option<StepUpBinding>, AppError> {
+    take(ks, auth_step_up_key(id)).await
 }
 
 // ---------------------------------------------------------------------------

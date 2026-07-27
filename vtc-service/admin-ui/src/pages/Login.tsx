@@ -29,10 +29,13 @@ import {
   type ProxyVaultEntry,
 } from "@/lib/wallet";
 
+// 0.2, not 0.1: the daemon binds the successor wire form, whose `purpose`
+// enum uses the camelCase `stepUp` value. The Trust-Task header is matched
+// exactly, so this must track the route binding in `routes/mod.rs`.
 const TRUST_TASK_START =
-  "https://trusttasks.org/spec/auth/passkey/login/start/0.1";
+  "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const TRUST_TASK_FINISH =
-  "https://trusttasks.org/spec/auth/passkey/login/finish/0.1";
+  "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 const TRUST_TASK_ADMIN_SESSION =
   "https://trusttasks.org/spec/vtc/auth/admin-session/0.1";
 
