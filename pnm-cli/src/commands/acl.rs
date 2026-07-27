@@ -10,7 +10,9 @@ pub(crate) async fn run(
     command: AclCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        AclCommands::List { context } => acl::cmd_acl_list(client, context.as_deref()).await,
+        AclCommands::List { context, direction } => {
+            acl::cmd_acl_list(client, context.as_deref(), direction.as_deref()).await
+        }
         AclCommands::Get { did } => acl::cmd_acl_get(client, &did).await,
         AclCommands::Create {
             did,

@@ -87,6 +87,6 @@ pub use error::ProvisionError;
 pub use event::{AttemptLog, AttemptResult, AttemptResultKind, VtaEvent};
 pub use intent::{AdminCredentialReply, VtaIntent, VtaReply};
 pub use messages::{MediatorMessages, OperatorMessages, WebvhServerMessages};
-pub use resolve::{ResolvedVta, resolve_vta};
+pub use resolve::{ResolvedVta, resolve_vta, resolve_vta_with_resolver};
 pub use result::{ProvisionResult, admin_rotation_response_to_reply, response_to_result};
 pub use setup_key::EphemeralSetupKey;

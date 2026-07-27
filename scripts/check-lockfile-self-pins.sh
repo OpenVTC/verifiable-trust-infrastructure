@@ -83,7 +83,11 @@
 # Portable to macOS bash 3.2 / BSD userland.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# `pwd -P` (physical path), not `pwd`: `cargo metadata` reports symlink-resolved
+# manifest paths, and ROOT is used to strip that prefix. On macOS a worktree
+# under /tmp (a symlink to /private/tmp) made the two disagree, so the prefix
+# never matched, every file failed attribution, and the guard passed vacuously.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
 if [ -t 1 ]; then

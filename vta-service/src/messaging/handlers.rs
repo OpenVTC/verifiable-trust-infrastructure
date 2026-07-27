@@ -724,8 +724,14 @@ didcomm_handler!(
     Gate::Manage,
     acl_management::LIST_ACL_RESULT,
     acl_management::list::ListAclBody,
-    |s, auth, body| operations::acl::list_acl(&s.acl_ks, &auth, body.context.as_deref(), "didcomm")
-        .await
+    |s, auth, body| operations::acl::list_acl(
+        &s.acl_ks,
+        &auth,
+        body.context.as_deref(),
+        body.direction.unwrap_or_default(),
+        "didcomm"
+    )
+    .await
 );
 
 didcomm_handler!(

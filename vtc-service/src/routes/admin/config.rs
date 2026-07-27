@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use axum::Json;
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -439,27 +439,49 @@ fn apply_to_live(cfg: &mut crate::config::AppConfig, key: &str, value: &Value) -
 /// exports cleanly. Phase 0 ships v1.
 pub const EXPORT_SCHEMA_VERSION: u32 = 1;
 
-/// Wire payload for `POST /v1/admin/config/{export,import}`.
+/// The portable configuration document — canonical
+/// `vtc/_shared/0.1/config-portability#ConfigExportDocument`.
 ///
 /// `community_profile` is `None` when the community hasn't been
-/// initialised yet (pre-bootstrap). `config_overrides` carries
-/// *only* the db-layer keys — env-layer and toml-layer values stay
-/// per-host and aren't portable.
+/// initialised yet (pre-bootstrap); the member is omitted rather
+/// than emitted as `null`, because an import cannot distinguish a
+/// synthesised empty profile from a real blank one.
+/// `config_overrides` carries *only* the db-layer keys — env-layer
+/// and toml-layer values stay per-host and aren't portable.
+///
+/// `schema_version` is not redundant with the `0.1` in the Trust
+/// Task URI. The URI versions the *envelope*; the moment an operator
+/// writes this document to a file the envelope is gone and it is
+/// bare JSON, so `schemaVersion` is the only thing a later reader has
+/// to check it against.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(utoipa::ToSchema)]
-pub struct ConfigExport {
+pub struct ConfigExportDocument {
     pub schema_version: u32,
     pub exported_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub community_profile: Option<CommunityProfile>,
     pub config_overrides: HashMap<String, Value>,
+}
+
+/// `POST /v1/admin/config/export` response — canonical
+/// `vtc/config/export/0.1#response`. The document is returned under a
+/// named member rather than as the bare body: the registry response
+/// convention requires `additionalProperties: false` plus an `ext`
+/// extension point, and neither attaches to a bare `$ref`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct ExportResponse {
+    pub document: ConfigExportDocument,
 }
 
 #[utoipa::path(
     post, path = "/admin/config/export", tag = "admin",
     security(("bearer_jwt" = [])),
     responses(
-        (status = 200, description = "Portable config + community-profile export", body = ConfigExport),
+        (status = 200, description = "Portable config + community-profile export", body = ExportResponse),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
     ),
@@ -467,16 +489,18 @@ pub struct ConfigExport {
 pub async fn export_config(
     _admin: AdminAuth,
     State(state): State<AppState>,
-) -> Result<Json<ConfigExport>, AppError> {
+) -> Result<Json<ExportResponse>, AppError> {
     let community_profile = load_profile(&state.community_ks).await?;
     let store = ConfigStore::new(state.config_ks.clone());
     let config_overrides = store.snapshot().await?;
 
-    Ok(Json(ConfigExport {
-        schema_version: EXPORT_SCHEMA_VERSION,
-        exported_at: Utc::now(),
-        community_profile,
-        config_overrides,
+    Ok(Json(ExportResponse {
+        document: ConfigExportDocument {
+            schema_version: EXPORT_SCHEMA_VERSION,
+            exported_at: Utc::now(),
+            community_profile,
+            config_overrides,
+        },
     }))
 }
 
@@ -484,75 +508,109 @@ pub async fn export_config(
 // Import (diff-and-confirm)
 // ---------------------------------------------------------------------------
 
-/// Query string for `POST /v1/admin/config/import`. Default is
-/// `confirm=false` (dry-run / diff). The operator UX shows the diff,
-/// then re-submits with `?confirm=true` to apply.
+/// `POST /v1/admin/config/import` request — canonical
+/// `vtc/config/import/0.1`.
+///
+/// `confirm` rides in the **payload**, not a query string: a Trust
+/// Task is the same interface over REST, DIDComm and TSP, and only
+/// one of those three has a query string to put it in.
+///
+/// It defaults to `false` because the safe direction of a default is
+/// the one whose mistake is recoverable — a caller who meant to apply
+/// and previewed loses a round-trip, where the reverse has already
+/// overwritten a live community's configuration.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct ImportQuery {
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImportRequest {
+    pub document: ConfigExportDocument,
     #[serde(default)]
     pub confirm: bool,
 }
 
-/// A single field's worth of import diff. `oldValue` is `None`
-/// when the key isn't currently set (either no profile yet, or no
-/// db-layer override). `newValue` is `None` when the import omits
-/// the field — which `import` interprets as "leave the live value
-/// alone", not "clear it".
+/// A single field an import would change, or did — canonical
+/// `vtc/_shared/0.1/config-portability#ConfigFieldChange`.
+///
+/// `oldValue` is omitted when the key isn't currently set (no profile
+/// yet, or no db-layer override). `newValue` is omitted when the
+/// document leaves the field out, which means "leave the live value
+/// alone" — distinct from an explicit `null`, which means "clear it".
+/// Both are serialised as *absent* rather than `null` so that
+/// distinction survives on the wire.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct FieldDiff {
     pub key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub old_value: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub new_value: Option<Value>,
 }
 
-/// `POST /v1/admin/config/import` response. The shape is the same
-/// regardless of `confirm`: `applied` is empty on dry-run; on
-/// confirm it lists the keys that actually persisted.
+/// `POST /v1/admin/config/import` response — canonical
+/// `vtc/config/import/0.1#response`.
+///
+/// One shape for both paths. On a preview the change arrays are what
+/// *would* be written; on an apply they are what *was*. That is why
+/// there are no separate `*Applied` lists: a caller reads `status` to
+/// know which it is holding.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
 pub struct ImportResponse {
-    /// Was the request a dry-run? Mirrors the inbound `?confirm`
-    /// flag so an admin UX caching the response can render the
-    /// banner correctly.
-    pub confirmed: bool,
-    /// Profile-field-level diffs against the current profile.
-    /// Empty when import omits `communityProfile` or when no
-    /// fields differ.
-    pub community_profile_diff: Vec<FieldDiff>,
-    /// Config-override-level diffs. One entry per registry key
-    /// that the import would change.
-    pub config_overrides_diff: Vec<FieldDiff>,
-    /// On apply: the profile fields that were written. Empty on
-    /// dry-run or when no change.
-    pub community_profile_applied: Vec<String>,
-    /// On apply: the override keys that were written. Empty on
-    /// dry-run.
-    pub config_overrides_applied: Vec<String>,
+    /// `preview` when `confirm` was not set; `imported` after the
+    /// document was applied.
+    pub status: ImportStatus,
+    /// Community-profile members that differ from what is in force.
+    /// Empty when the document omits `communityProfile`, or when
+    /// nothing differs.
+    pub profile_changes: Vec<FieldDiff>,
+    /// Configuration-override keys that differ from what is in force.
+    /// Rejected keys are not listed here — they appear under
+    /// `rejected`.
+    pub override_changes: Vec<FieldDiff>,
+    /// Applied keys whose new value takes effect only after a
+    /// restart. Reported on a preview too, so an operator learns that
+    /// the import implies downtime *before* confirming it.
+    pub pending_restart: Vec<String>,
     /// Keys rejected by validation (unknown registry key, type
     /// mismatch, value-out-of-range, oversized extensions blob).
+    /// Populated identically on preview and apply, so a preview
+    /// surfaces every rejection before anything is written.
     pub rejected: Vec<RejectedKey>,
+}
+
+/// Whether an import response describes a dry run or a completed apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub enum ImportStatus {
+    Preview,
+    Imported,
 }
 
 #[utoipa::path(
     post, path = "/admin/config/import", tag = "admin",
     security(("bearer_jwt" = [])),
-    params(("confirm" = Option<bool>, Query, description = "Apply the import (true) or dry-run diff (false, default)")),
-    request_body = ConfigExport,
+    request_body = ImportRequest,
     responses(
-        (status = 200, description = "Import diff (dry-run) or applied keys", body = ImportResponse),
+        (status = 200, description = "Import diff (preview) or applied changes", body = ImportResponse),
+        (status = 400, description = "Document carries an unsupported schemaVersion"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
+        (status = 409, description = "Document was taken from a different community"),
     ),
 )]
 pub async fn import_config(
     admin: AdminAuth,
     State(state): State<AppState>,
-    Query(query): Query<ImportQuery>,
-    Json(req): Json<ConfigExport>,
+    Json(body): Json<ImportRequest>,
 ) -> Result<(StatusCode, Json<ImportResponse>), AppError> {
+    let ImportRequest { document, confirm } = body;
+    let req = document;
+
+    // Version first: a document whose shape we cannot vouch for must not be
+    // diffed, because the diff would be against members we may be misreading.
     if req.schema_version != EXPORT_SCHEMA_VERSION {
         return Err(AppError::Validation(format!(
             "unsupported export schemaVersion: got {}, expected {EXPORT_SCHEMA_VERSION}",
@@ -621,16 +679,22 @@ pub async fn import_config(
         }
     }
 
-    // --- dry-run? -----------------------------------------------------
-    if !query.confirm {
+    // --- preview? -----------------------------------------------------
+    // `pendingRestart` is reported here too: an operator should learn that
+    // confirming implies downtime while they are still deciding, not after.
+    if !confirm {
+        let pending_restart = overrides_diff
+            .iter()
+            .filter(|d| matches!(lookup(&d.key), Some(def) if def.requires_restart))
+            .map(|d| d.key.clone())
+            .collect();
         return Ok((
             StatusCode::OK,
             Json(ImportResponse {
-                confirmed: false,
-                community_profile_diff: profile_diff,
-                config_overrides_diff: overrides_diff,
-                community_profile_applied: Vec::new(),
-                config_overrides_applied: Vec::new(),
+                status: ImportStatus::Preview,
+                profile_changes: profile_diff,
+                override_changes: overrides_diff,
+                pending_restart,
                 rejected,
             }),
         ));
@@ -650,6 +714,7 @@ pub async fn import_config(
     };
 
     let mut config_overrides_applied: Vec<String> = Vec::new();
+    let mut pending_restart: Vec<String> = Vec::new();
     let mut audit_changes: Vec<ConfigChange> = Vec::new();
     let mut requires_restart = false;
     for FieldDiff {
@@ -685,6 +750,7 @@ pub async fn import_config(
         audit_changes.push(change);
         if def.requires_restart {
             requires_restart = true;
+            pending_restart.push(key.clone());
         }
     }
 
@@ -729,14 +795,27 @@ pub async fn import_config(
         "config imported"
     );
 
+    // On `imported` the change arrays carry what was actually written, not
+    // what was proposed. A key that made it into `overrides_diff` but then
+    // failed to persist has already been pushed to `rejected` above; leaving
+    // it in `overrideChanges` would report it as applied.
+    let profile_changes: Vec<FieldDiff> = profile_diff
+        .iter()
+        .filter(|d| community_profile_applied.contains(&d.key))
+        .cloned()
+        .collect();
+    let override_changes: Vec<FieldDiff> = overrides_diff
+        .into_iter()
+        .filter(|d| config_overrides_applied.contains(&d.key))
+        .collect();
+
     Ok((
         StatusCode::OK,
         Json(ImportResponse {
-            confirmed: true,
-            community_profile_diff: profile_diff,
-            config_overrides_diff: overrides_diff,
-            community_profile_applied,
-            config_overrides_applied,
+            status: ImportStatus::Imported,
+            profile_changes,
+            override_changes,
+            pending_restart,
             rejected,
         }),
     ))

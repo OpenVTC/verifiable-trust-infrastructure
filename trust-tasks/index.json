@@ -3,7 +3,7 @@
   "version": 1,
   "org": "openvtc",
   "domain": "vtc",
-  "description": "OpenVTC Verifiable Trust Community — Trust Task manifest. Source of truth for trusttasks.org publication; CI publishes Draft entries on every merge to main per spec §9.4.",
+  "description": "OpenVTC Verifiable Trust Community — Trust Task manifest for the retired openvtc/vtc authority. Historical record, not a publication pipeline: no CI job has ever read this file (an earlier description claimed one did, per spec §9.4 — it did not exist). The live VTC surface binds canonical https://trusttasks.org/spec/vtc/<slug> tasks published by the upstream registry; All 66 entries are retired and nothing in this workspace binds this authority any more — the migration is complete. Each entry carries a supersededBy naming the canonical task that replaced it, so this file is now a redirect table for anyone holding an old URI. See docs/05-design-notes/vtc-trust-task-registry-migration.md.",
   "tasks": [
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/challenge/1.0",
@@ -28,9 +28,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "auth/admin-login/1.0",
-      "rest": "POST /v1/auth/admin-login"
+      "rest": "POST /v1/auth/admin-login",
+      "supersededBy": "https://trusttasks.org/spec/vtc/auth/admin-session/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/manage/1.0",
@@ -76,9 +77,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "config/legacy/manage/1.0",
-      "rest": "GET, PATCH /v1/config"
+      "rest": "GET, PATCH /v1/config",
+      "supersededBy": "https://trusttasks.org/spec/vtc/community/profile/show/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0",
@@ -166,15 +168,17 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "admin/config/export/1.0",
-      "rest": "POST /v1/admin/config/export"
+      "rest": "POST /v1/admin/config/export",
+      "supersededBy": "https://trusttasks.org/spec/vtc/config/export/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "admin/config/import/1.0",
-      "rest": "POST /v1/admin/config/import"
+      "rest": "POST /v1/admin/config/import",
+      "supersededBy": "https://trusttasks.org/spec/vtc/config/import/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/list/1.0",
@@ -365,9 +369,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/personhood/revoke/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "members/personhood/revoke/1.0",
-      "rest": "DELETE /v1/members/{did}/personhood"
+      "rest": "DELETE /v1/members/{did}/personhood",
+      "supersededBy": "https://trusttasks.org/spec/vtc/members/personhood/revoke/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/relationships/publish/1.0",
@@ -399,9 +404,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/list/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "endorsement-types/list/1.0",
-      "rest": "GET /v1/endorsement-types"
+      "rest": "GET /v1/endorsement-types",
+      "supersededBy": "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/endorsement-types/delete/1.0",
