@@ -191,7 +191,7 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     if let (Some(vta_did), Some(mediator)) = (&config.vta_did, mediator_did) {
         match tokio::time::timeout(
             Duration::from_secs(10),
-            send_trust_ping(&config, &*cs, vta_did, mediator),
+            send_trust_ping(&config, &cs, vta_did, mediator),
         )
         .await
         {

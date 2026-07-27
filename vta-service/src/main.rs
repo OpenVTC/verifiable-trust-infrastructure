@@ -2733,7 +2733,7 @@ async fn auth_sign_challenge(
     let key_id = format!("{did}#{multibase}");
 
     let store = store::Store::open(&config.store)?;
-    let keys_ks = match cli_store::load_storage_key_for_cli(&config).await {
+    let keys_ks = match cli_store::load_storage_key_for_cli(config).await {
         Ok(Some(key)) => store.keyspace(crate::keyspaces::KEYS)?.with_encryption(key),
         Ok(None) => store.keyspace(crate::keyspaces::KEYS)?,
         Err(e) => return Err(format!("hardened: {e}").into()),

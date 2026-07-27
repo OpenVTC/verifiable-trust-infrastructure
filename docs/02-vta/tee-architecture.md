@@ -428,6 +428,12 @@ seed from the external secret store, HKDF-derives the storage-encryption key,
 and loads (or generates) the JWT signing key from the `bootstrap` keyspace.
 See [hardened configuration](non-interactive-setup.md#hardened-configuration) for details.
 
+> **Hardened configuration and TEE are mutually exclusive.** Setting
+> `[hardened] enabled = true` in an enclave `config.toml` has no effect —
+> `vta-enclave` derives all secrets from the TEE KMS bootstrap and never
+> enters the hardened code path. The enclave logs a warning and ignores the
+> field. Use `[hardened]` only with the local `vta` binary on non-TEE hosts.
+
 ### Self-issued did:webvh identity and resolution
 
 When `[tee.kms].vta_did_template` is set, a TEE VTA is *serverless* with respect to
@@ -454,6 +460,7 @@ and both are load-bearing for a fresh enclave to accept traffic:
   first-enable handshake that trust-pings a newly configured mediator — re-seed the
   self-DID into the resolver cache immediately before running, rather than assuming
   it is still cached from preload.
+
 
 ## Secret Lifecycle Summary
 

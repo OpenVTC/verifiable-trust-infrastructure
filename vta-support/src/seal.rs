@@ -392,7 +392,9 @@ mod tests {
         };
 
         // Phase 1: must return without holding the lock.
-        let challenge = read_unseal_state(&config).await.expect("read_unseal_state");
+        let challenge = read_unseal_state(&config, None)
+            .await
+            .expect("read_unseal_state");
 
         assert_eq!(challenge.seal.sealed_by, "did:key:zTestAdmin");
         assert_eq!(challenge.super_admins.len(), 1);
@@ -420,10 +422,12 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         };
 
-        let first = remove_seal_marker(&config).await.expect("first call");
+        let first = remove_seal_marker(&config, None).await.expect("first call");
         assert!(first, "first call should report seal removed");
 
-        let second = remove_seal_marker(&config).await.expect("second call");
+        let second = remove_seal_marker(&config, None)
+            .await
+            .expect("second call");
         assert!(
             !second,
             "second call should report no-op (seal already gone)"
@@ -446,7 +450,7 @@ mod tests {
             store.persist().await.expect("persist");
         }
 
-        let err = read_unseal_state(&config)
+        let err = read_unseal_state(&config, None)
             .await
             .expect_err("must reject unsealed VTA");
         assert!(matches!(err, AppError::Config(_)), "got {err:?}");
@@ -469,7 +473,7 @@ mod tests {
             store.persist().await.expect("persist");
         }
 
-        let err = read_unseal_state(&config)
+        let err = read_unseal_state(&config, None)
             .await
             .expect_err("must reject missing super-admin");
         assert!(matches!(err, AppError::Config(_)), "got {err:?}");

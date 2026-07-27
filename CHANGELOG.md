@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### vta-config 0.2.0 — `HardenedConfig` added to `AppConfig`
+
+New public struct `HardenedConfig` and a corresponding `hardened:
+HardenedConfig` field on `AppConfig`. Controls `[hardened] enabled` and
+`storage_key_salt` for the hardened non-TEE configuration feature. Additive
+— existing configs that omit `[hardened]` get `enabled = false` via `Default`.
+
+### vta-sdk 0.20.8 — `BackupPayload` and `ImportedSecretBackup` zeroize key material on drop
+
+Added `Drop` impls for `BackupPayload` and `ImportedSecretBackup` (both gated
+on the `sealed-transfer` feature, which is what pulls `zeroize` into `vta-sdk`).
+`BackupPayload::drop` zeroizes `active_seed_hex` and `jwt_signing_key`;
+`ImportedSecretBackup::drop` zeroizes `private_key_hex`. These fields hold the
+master seed and imported private keys in heap-allocated `String` form during a
+backup export window; without explicit zeroing they linger until the allocator
+reuses the memory. Additive — no public API removed or reshaped.
+
+### vta-support 0.2.0 — unseal flow is hardened-configuration aware
+
+`require_unsealed`, `run_unseal_challenge`, `read_unseal_state`, and
+`remove_seal_marker` in `vta-support::seal` now accept the encryption key for
+the ACL keyspace so they work correctly when hardened configuration (`[hardened]
+enabled = true`) is active. 
+
+- `require_unsealed` signature changed from `require_unsealed(&Store)` to
+  `require_unsealed(&KeyspaceHandle)` — callers now pass an already-opened
+  (and optionally encrypted) keyspace handle.
+- `run_unseal_challenge(store_config, enc_key: Option<[u8;32]>)` — new
+  parameter; callers derive the key via `cli_store::load_storage_key_for_cli`
+  and pass it through.
+
+### vta-service 0.13.0 — Hardened configuration (non-TEE at-rest encryption)
+
 Adds `[hardened] enabled = true` in `config.toml` to bring storage
 encryption and sealed JWT key management to self-hosted (non-TEE)
 deployments — the equivalent of TEE layer 3 without requiring a
@@ -22,9 +55,9 @@ Nitro Enclave.
   new `CliStore` wrapper — no operator action needed.
 * **Setup wizard support**: `vta setup --from <file>` with a `[hardened]`
   section generates an encrypted store from first write.
-* **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`)
-  are held in `Zeroizing<T>` / `HardenedBootSecrets` (mirrors
-  `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
+* **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`,
+  `CliStore.enc_key`) are held in `Zeroizing<T>` / `HardenedBootSecrets`
+  (mirrors `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
 
 New source files: `vta-service/src/hardened_bootstrap.rs` (crypto + boot
 secrets) and `vta-service/src/cli_store.rs` (`CliStore` wrapper for

@@ -447,6 +447,9 @@ vta --config /path/to/config.toml hardened rotate-jwt
 # Restart the daemon — a new key is generated on first boot.
 ```
 
-See [Secret-storage backends](secret-backends.md) for backend selection
-guidance, and [Security model](../01-concepts/security-model.md#layer-3-encrypted-storage)
-for where this fits in the defense-in-depth layers.
+See [Secret-storage backends](secret-backends.md) for backend selection guidance, 
+and [Security model](../01-concepts/security-model.md#layer-3-encrypted-storage) for where this fits in the defense-in-depth layers.
+
+> The `vta-enclave` binary derives its storage-encryption key and JWT signing key
+> from the TEE KMS bootstrap — the hardened configuration code path is never
+> reached. The enclave logs a warning and ignores the field if it is set.

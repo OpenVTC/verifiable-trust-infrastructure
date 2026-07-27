@@ -145,6 +145,19 @@ async fn main() {
     eprintln!("Tracing initialized.");
     print_banner();
 
+    // `[hardened] enabled = true` is silently ignored by this binary — the enclave
+    // derives its storage-encryption key and JWT signing key from the TEE KMS
+    // bootstrap above, not from the HKDF seed path that `hardened_bootstrap` uses.
+    // Warn loudly so a misconfigured enclave config doesn't leave an operator
+    // wondering why the hardened key derivation log messages never appear.
+    if config.hardened.enabled {
+        tracing::warn!(
+            "hardened.enabled = true is set but has no effect in the TEE enclave binary \
+             — storage encryption and JWT key management are handled by TEE KMS bootstrap. \
+             Remove [hardened] from the enclave config.toml to suppress this warning."
+        );
+    }
+
     // ── Open store (vsock-proxied or local) ──
     #[cfg(feature = "vsock-store")]
     let store = if config.tee.kms.is_some() {

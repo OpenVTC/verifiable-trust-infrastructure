@@ -518,7 +518,7 @@ pub async fn run_provision_integration(
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &*cs,
+        &cs,
         seed_store.into(),
         enc_key,
         None,
@@ -728,7 +728,7 @@ pub async fn run_keys_bundle(
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &*cs,
+        &cs,
         seed_store.into(),
         enc_key,
         None,
@@ -1067,7 +1067,7 @@ pub async fn run_context_reprovision(
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &*cs,
+        &cs,
         seed_store.into(),
         enc_key,
         None,

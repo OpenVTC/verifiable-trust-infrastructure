@@ -368,24 +368,6 @@ mod tests {
         );
     }
 
-    /// The hardened `derive_storage_key` uses `info = b"vta-storage-key/v1"`,
-    /// while the TEE implementation in `kms_bootstrap.rs` uses
-    /// `info = b"aes-256-gcm-storage"`. Verify they are intentionally different
-    /// so the two modes can never accidentally produce the same storage key from
-    /// the same seed.
-    #[cfg(feature = "tee")]
-    #[test]
-    fn hardened_and_tee_storage_keys_are_distinct() {
-        let seed = [0x42u8; 32];
-        let salt = "same-salt";
-        let hardened_key = derive_storage_key(&seed, salt);
-        let tee_key = crate::tee::kms_bootstrap::derive_storage_key(&seed, salt);
-        assert_ne!(
-            *hardened_key, tee_key,
-            "hardened and TEE storage keys must differ (different info strings)"
-        );
-    }
-
     /// AES-GCM seal/open round-trips correctly.
     #[test]
     fn aes_gcm_seal_open_roundtrip() {

@@ -1236,6 +1236,7 @@ mod tests {
             // Label, not index: the backend menu grows with features (config-seed etc.).
             Answer::Label("OS keyring"),
             text("golden-keyring"),                    // keyring service
+            Answer::Bool(false),                       // hardened configuration? no
             Answer::Index(1),                          // messaging = create mediator
             text("mediator"),                          // mediator context
             text("https://mediator.example.com"),      // mediator DIDComm url
@@ -1332,6 +1333,7 @@ mod tests {
             Answer::Bool(false),                                    // advanced server opts? no
             Answer::Label("OS keyring"), // label, not index: menu grows with features
             text("vta"),                 // keyring service
+            Answer::Bool(false),         // hardened configuration? no
             Answer::Index(1),            // VTA DID = did:key
         ];
         let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
@@ -1419,6 +1421,7 @@ mod tests {
                 Answer::Index(choice),    // reuse / delete
                 Answer::Label("OS keyring"), // label, not index: menu grows with features
                 text("vta"),              // keyring service
+                Answer::Bool(false),      // hardened configuration? no
                 Answer::Index(2),         // messaging = skip
                 Answer::Index(1),         // VTA DID = did:key
             ];
@@ -1452,7 +1455,8 @@ mod tests {
             Answer::Bool(false),           // advanced server opts? no
             // Label, not index: the backend menu grows with features (config-seed etc.).
             Answer::Label("OS keyring"),
-            text("vta"), // keyring service
+            text("vta"),         // keyring service
+            Answer::Bool(false), // hardened configuration? no
             // messaging skipped (REST only)
             Answer::Index(0),                       // VTA DID = create_webvh
             text("https://t.example.com/dids/vta"), // webvh url

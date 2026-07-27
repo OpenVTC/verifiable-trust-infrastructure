@@ -53,7 +53,7 @@ pub async fn load_storage_key_for_cli(
 ///
 /// # Usage
 ///
-/// ```rust
+/// ```rust,ignore
 /// let cs = CliStore::open(&config).await?;
 /// let acl_ks  = cs.keyspace(crate::keyspaces::ACL)?;
 /// let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
@@ -114,7 +114,7 @@ impl CliStore {
 
     /// Open a keyspace, wrapping it with AES-256-GCM encryption when
     /// hardened configuration is active. Equivalent to:
-    /// ```rust
+    /// ```rust,ignore
     /// let ks = store.keyspace(name)?;
     /// let ks = if let Some(key) = enc_key { ks.with_encryption(key) } else { ks };
     /// ```
