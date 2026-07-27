@@ -280,11 +280,25 @@ when both are present.
 
 ### Admin login
 
-`POST /v1/auth/admin-login` accepts the same DIDComm-packed
-challenge response as `POST /v1/auth/` and **additionally** returns
-`Set-Cookie` headers carrying the session JWT + CSRF token. The
-bearer endpoint and admin-login endpoint share their internal
-mint logic; only the response shape differs.
+Admin login is two calls, both on canonical Trust Tasks:
+
+1. `POST /v1/auth/` (`spec/auth/authenticate/0.1`) — the DIDComm-packed or
+   SIOP challenge response, returning `{ session, tokens }` with a bearer
+   access token.
+2. `POST /v1/auth/admin-session` (`spec/vtc/auth/admin-session/0.1`) — post
+   that access token back; the daemon validates it (signature, VTC audience,
+   expiry) and returns `Set-Cookie` headers carrying the session JWT + CSRF
+   token. No privilege escalation: the caller already held a token it could
+   have used as a bearer, so this only mirrors it into the cookie the browser
+   SPA expects.
+
+Passkey login is a single call — `POST /v1/auth/passkey-login/finish` mints
+the same cookie pair directly.
+
+There was a one-shot `POST /v1/auth/admin-login` that fused step 1 and step 2;
+it was removed in #710. It ran exactly the same mint as `POST /v1/auth/` and
+differed only by appending the cookies, so it was a second way to
+authenticate for no wire-visible gain.
 
 ## Routing modes
 
