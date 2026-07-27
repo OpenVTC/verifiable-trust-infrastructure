@@ -1305,8 +1305,11 @@ to point TLS at `/etc/shadow` or to relocate storage transparently).
 
 **Config import audit.** `POST /v1/admin/config/import` runs a
 diff-and-confirm flow: the response surfaces every changed field
-with a pre-apply preview; a second call with `confirm=true` applies.
-Per-field audit events emitted on apply.
+with a pre-apply preview; a second call with `confirm: true` **in the
+request body** applies. (`confirm` was a `?confirm=` query parameter
+until the move to canonical `spec/vtc/config/import/0.1` — a Trust
+Task is one interface over REST, DIDComm and TSP, and only REST has
+a query string.) Per-field audit events emitted on apply.
 
 **Config-mutation audit (P1.2).** Every config-mutation door audits
 to the calling admin's real DID — there is no longer a
