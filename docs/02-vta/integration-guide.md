@@ -240,6 +240,42 @@ GET /keys/<key_id>/secret
 Authorization: Bearer <token>
 ```
 
+### What authorizes a sign request
+
+The VTA **does not inspect what it signs** — `POST /keys/{key_id}/sign` signs
+the bytes you hand it. What stops a caller signing as something it isn't is
+therefore entirely *which keys it may name*, and that is enforced. A sign
+request passes three gates, in order:
+
+1. **The caller's context scope.** If the key carries a `context_id`, the
+   caller must be authorized in that context (or an ancestor of it). A caller
+   scoped to `domain-b` naming a key in `domain-a` is refused `403`.
+2. **The key's context policy.** `signable_keys` on the context restricts which
+   key ids may be used for signing at all. This is *resource-bound*: it
+   constrains the key's context **regardless of the actor, including a
+   super-admin**. An operator relaxes it through policy CRUD, never by holding
+   a bigger role. `quota_for("sign")` applies a daily cap the same way.
+3. **Unscoped keys are super-admin only.** A key with no `context_id` has no
+   context and therefore no policy to constrain it, so the role floor is the
+   only guardrail — non-super-admin callers are refused.
+
+The same three gates apply on **every** transport: REST, the DIDComm
+`key-management/1.0/sign-request` protocol, and the `keys/sign` Trust Task all
+funnel through one enforcement point (`operations::keys::sign_payload`).
+
+> **Granularity: per context, not per key id.** Gate 1 authorizes a caller for
+> *every* key in a context they hold. If one credential signs for several
+> domains, give **each domain its own context** — putting several domains' keys
+> in one context and scoping the caller to it authorizes all of them. Gate 2
+> (`signable_keys`) gives per-key narrowing, but it is opt-in policy an operator
+> must write; it is not the default.
+
+This is the property that makes a multi-tenant signer safe without the VTA
+understanding the payload. Pinned by
+`sign_payload_refuses_a_key_outside_the_callers_contexts`,
+`sign_payload_restricts_unscoped_keys_to_super_admin`, and
+`sign_payload_honours_context_policy_signable_keys`.
+
 ### Context Operations
 
 ```
@@ -270,7 +306,9 @@ complete API reference.
    - **Reader** — for services that only need to read keys and config
    - **Application** — for services that need to sign or write to cache
    - **Admin** — only for services that manage keys and DIDs
-   Avoid sharing admin credentials across services.
+   Avoid sharing admin credentials across services. For a signer that acts for
+   several identities, the context boundary *is* the security boundary — see
+   [What authorizes a sign request](#what-authorizes-a-sign-request).
 
 4. **Prefer server-side signing** — Use `POST /keys/{id}/sign` instead of
    exporting private keys when possible. This keeps keys inside the VTA's

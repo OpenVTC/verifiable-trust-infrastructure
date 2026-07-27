@@ -1827,6 +1827,212 @@ mod tests {
         .expect("policy permits allowed-key");
     }
 
+    /// A caller authorized in one context cannot sign with another context's
+    /// key (#805).
+    ///
+    /// This is the property a declined proposal rests on. The VTA does not
+    /// inspect what it signs, so "a multi-domain signer cannot sign as a domain
+    /// it does not hold" is true *only* because the caller's context scope is
+    /// checked against the key's. If this regressed, a compromised gateway
+    /// holding one domain's session could sign as any domain whose key id it
+    /// could name — and nothing about the request would look wrong.
+    ///
+    /// Note the granularity being pinned: **per context, not per key id**. A
+    /// caller scoped to a context may sign with *every* key in it. Per-key
+    /// narrowing exists (`signable_keys`, covered above) but is opt-in policy;
+    /// separation between domains comes from giving each its own context.
+    #[tokio::test]
+    async fn sign_payload_refuses_a_key_outside_the_callers_contexts() {
+        use crate::contexts::{ContextRecord, store_context};
+        use vta_sdk::context_policy::ContextPolicy;
+
+        let h = TestHarness::new().await;
+        let admin = h.super_admin_auth();
+
+        // Two tenant contexts, both with an unrestricted policy — so the only
+        // thing that can refuse below is the caller's context scope, not the
+        // `signable_keys` guardrail (which has its own test above).
+        let now = chrono::Utc::now();
+        for (idx, id) in [(21u32, "domain-a"), (22, "domain-b")] {
+            store_context(
+                &h.contexts_ks,
+                &ContextRecord {
+                    id: id.into(),
+                    name: id.into(),
+                    did: None,
+                    description: None,
+                    parent: None,
+                    base_path: format!("m/26'/2'/{idx}'"),
+                    index: idx,
+                    created_at: now,
+                    updated_at: now,
+                    context_policy: Some(ContextPolicy::unrestricted()),
+                },
+            )
+            .await
+            .unwrap_or_else(|e| panic!("store {id}: {e:?}"));
+        }
+
+        let key = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &admin,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("domain-a-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("domain-a".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create domain-a-key");
+
+        // Authorized in `domain-b` only — a different tenant of the same VTA.
+        let other_tenant = AuthClaims {
+            did: "did:key:z6MkDomainB".to_string(),
+            role: Role::Admin,
+            allowed_contexts: vec!["domain-b".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &other_tenant,
+            &key.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "signing another context's key must be Forbidden, got {denied:?}"
+        );
+
+        // ...and the same caller signs fine once the key is in *their* context,
+        // so the refusal above is the scope check and not an unrelated failure.
+        let own = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &admin,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("domain-b-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("domain-b".into()),
+            },
+            "test",
+        )
+        .await
+        .expect("create domain-b-key");
+        sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &other_tenant,
+            &own.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect("a caller signs with a key in their own context");
+    }
+
+    /// An **unscoped** key (no `context_id`) is super-admin-only (#805).
+    ///
+    /// Such a key has no context, so it has no context policy to constrain it —
+    /// the resource-bound guardrail that binds even a super-admin simply does
+    /// not apply. That makes the role floor the only thing standing between a
+    /// scoped caller and an unconstrained signer, which is why it is asserted
+    /// rather than assumed.
+    #[tokio::test]
+    async fn sign_payload_restricts_unscoped_keys_to_super_admin() {
+        let h = TestHarness::new().await;
+        let admin = h.super_admin_auth();
+
+        let key = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &admin,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/2'/99'/0'".into()),
+                key_id: Some("unscoped-key".into()),
+                mnemonic: None,
+                label: None,
+                // No context — hence the explicit path (a context would
+                // otherwise supply its own base path).
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .expect("create unscoped-key");
+
+        // A context-scoped admin is *not* a super-admin (its list is non-empty),
+        // so it is refused — the `ActScope` distinction, not a role comparison.
+        let scoped = AuthClaims {
+            did: "did:key:z6MkScopedStaff".to_string(),
+            role: Role::Admin,
+            allowed_contexts: vec!["some-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        assert!(!scoped.is_super_admin());
+
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &scoped,
+            &key.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "a scoped caller must not sign with an unscoped key, got {denied:?}"
+        );
+
+        sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &admin,
+            &key.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await
+        .expect("super-admin may use an unscoped key");
+    }
+
     /// Regression test for the missing role floor on `get_key` /
     /// `list_keys`. A Monitor-role caller (intended for metrics +
     /// health endpoints only) must not be able to read key records,
