@@ -24,7 +24,27 @@ use vti_common::error::AppError;
 use vti_common::store::{KeyspaceHandle, Store};
 
 /// Well-known store key for the auto-generated VTA DID.
-const VTA_DID_STORE_KEY: &str = "tee:vta_did";
+///
+/// Public because the DID this module mints is read back outside `vta-tee` —
+/// see [`DID_LOG_STORE_KEY`] for why these names are exported rather than
+/// re-typed at each call site.
+pub const VTA_DID_STORE_KEY: &str = "tee:vta_did";
+
+/// Well-known store key for the auto-generated `did.jsonl` log.
+///
+/// Written here under **both** the `KEYS` keyspace (encrypted, read by the
+/// service) and the `BOOTSTRAP` keyspace (unencrypted, read by the parent-side
+/// proxy so it can write `did.jsonl` to disk for the operator).
+///
+/// Exported because the readers live in other crates —
+/// `vta_service::routes::attestation::did_log` serves it over
+/// `GET /attestation/did-log`. Renaming this key silently breaks those readers
+/// if each one spells the string itself, so they take the constant instead.
+///
+/// One reader deliberately cannot: `deploy/nitro/enclave-proxy` is a separate
+/// cargo project on the *parent* side and does not link enclave code, so it
+/// repeats the literal with a comment pointing back here.
+pub const DID_LOG_STORE_KEY: &str = "tee:did_log";
 
 /// Check for an existing DID in the store, or auto-generate one from the template.
 ///
@@ -221,14 +241,14 @@ pub async fn maybe_generate_vta_did(
 
     // Store did.jsonl in encrypted keyspace for REST API access
     keys_ks
-        .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
+        .insert_raw(DID_LOG_STORE_KEY, log_content.as_bytes().to_vec())
         .await?;
 
     // Also store in bootstrap keyspace (no encryption) so the parent proxy
     // can read it and write did.jsonl to disk for the operator.
     let bootstrap_ks = store.keyspace(vta_keyspaces::BOOTSTRAP)?;
     bootstrap_ks
-        .insert_raw("tee:did_log", log_content.as_bytes().to_vec())
+        .insert_raw(DID_LOG_STORE_KEY, log_content.as_bytes().to_vec())
         .await?;
 
     // Flush the store to ensure durability
@@ -237,8 +257,9 @@ pub async fn maybe_generate_vta_did(
     info!(
         did = %final_did,
         scid = %scid,
+        store_key = DID_LOG_STORE_KEY,
         "VTA did:webvh identity auto-generated — retrieve did.jsonl via: \
-         GET /attestation/did-log or from the bootstrap keyspace key 'tee:did_log'"
+         GET /attestation/did-log or from the bootstrap keyspace key in `store_key`"
     );
 
     config.vta_did = Some(final_did);

@@ -89,13 +89,17 @@ pub async fn cached_report(
     ),
 )]
 pub async fn did_log(State(state): State<AppState>) -> Result<Response, AppError> {
-    let log_bytes = state.keys_ks.get_raw("tee:did_log").await?.ok_or_else(|| {
-        AppError::NotFound(
-            "no auto-generated DID log found — the VTA may not have \
+    let log_bytes = state
+        .keys_ks
+        .get_raw(crate::tee::did_autogen::DID_LOG_STORE_KEY)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(
+                "no auto-generated DID log found — the VTA may not have \
                  been configured with a vta_did_template"
-                .into(),
-        )
-    })?;
+                    .into(),
+            )
+        })?;
 
     let log = String::from_utf8(log_bytes)
         .map_err(|e| AppError::Internal(format!("DID log is not valid UTF-8: {e}")))?;

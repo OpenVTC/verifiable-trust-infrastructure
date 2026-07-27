@@ -4,12 +4,20 @@
 # =============================================================================
 #
 # This script runs on the PARENT EC2 instance (not inside the enclave).
-# It manages all networking for the enclave:
 #
-#   1. INBOUND:   External clients → TCP:8443 → vsock → Enclave VTA
-#   2. MEDIATOR:  Enclave DIDComm → vsock → TLS → mediator
-#   3. RESOLVER:  Enclave DID resolution → vsock → local DID resolver
-#   4. HTTPS:     Enclave general HTTPS → vsock → allowlisted endpoints
+# PARTIAL — socat only, four of the seven vsock channels. The canonical parent
+# implementation is the Rust `deploy/nitro/enclave-proxy`, which additionally
+# serves the IMDS credential proxy (5400), the storage proxy (5500) and log
+# forwarding (5700). A VTA deployed with only this script has no persistent
+# store and no enclave logs on the parent. Use it for bring-up and debugging;
+# use enclave-proxy for anything real.
+#
+# It manages the following channels for the enclave:
+#
+#   1. INBOUND:   External clients → TCP:8443 → vsock:5100 → Enclave VTA
+#   2. MEDIATOR:  Enclave DIDComm → vsock:5200 → TLS → mediator
+#   3. RESOLVER:  Enclave DID resolution → vsock:5600 → local DID resolver
+#   4. HTTPS:     Enclave general HTTPS → vsock:5300 → allowlisted endpoints
 #
 # Configuration is auto-read from deploy/nitro/config.toml (the same config
 # baked into the EIF). Override any value with environment variables.
@@ -82,10 +90,14 @@ EXTRA_HOSTS=("$@")
 # ---------------------------------------------------------------------------
 # Port assignments (must match enclave-entrypoint.sh)
 # ---------------------------------------------------------------------------
+# Enclave-side vsock ports. These MUST match the enclave: see
+# `enclave-entrypoint.sh` and `enclave-proxy/src/main.rs`, which are the
+# authority. 5400 is the IMDS credential proxy and 5500 / 5700 are the storage
+# and log channels — this script serves none of those, so it must not bind them.
 VSOCK_INBOUND_PORT="${VSOCK_INBOUND_PORT:-5100}"      # Inbound REST
 VSOCK_MEDIATOR_PORT="${VSOCK_MEDIATOR_PORT:-5200}"     # Outbound mediator
 VSOCK_HTTPS_PORT="${VSOCK_HTTPS_PORT:-5300}"            # Outbound HTTPS
-VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5400}"      # Outbound DID resolver
+VSOCK_RESOLVER_PORT="${VSOCK_RESOLVER_PORT:-5600}"      # Outbound DID resolver
 
 LISTEN_PORT="${LISTEN_PORT:-8443}"                      # External REST API port
 MEDIATOR_PORT="${MEDIATOR_PORT:-443}"                   # Mediator WSS port
