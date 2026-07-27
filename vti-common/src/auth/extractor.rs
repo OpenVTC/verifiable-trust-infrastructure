@@ -50,7 +50,7 @@ pub struct AuthClaims {
 }
 
 /// Name of the admin UX session cookie set by the VTC's
-/// `POST /v1/auth/admin-login` + `POST /v1/auth/passkey-login/finish`
+/// `POST /v1/auth/admin-session` + `POST /v1/auth/passkey-login/finish`
 /// flows. When the `Authorization: Bearer` header is absent,
 /// [`AuthClaims`] falls back to reading a JWT out of this cookie.
 /// The cookie is set with `Path=/; SameSite=Strict; Secure; HttpOnly`
@@ -118,8 +118,8 @@ async fn authenticate<S: AuthState>(
 ///
 /// `Authorization: Bearer <jwt>` first — programmatic clients (cnm-cli, DIDComm
 /// bridges, the `/v1/auth/` flow) all use this. Falls back to the admin session
-/// cookie (Phase 5 M5.2.3) set by `POST /v1/auth/admin-login`, which carries the
-/// same JWT.
+/// cookie (Phase 5 M5.2.3) set by `POST /v1/auth/admin-session`, which carries
+/// the same JWT.
 ///
 /// `None` means the caller presented **no** credential at all — distinct from
 /// presenting a bad one, which is what lets
@@ -601,7 +601,7 @@ impl<S: AuthState> FromRequestParts<S> for WriteAuth {
 
 /// Pull a named cookie value off the request `Cookie` headers.
 /// Returns `None` when the cookie isn't present. Does **not**
-/// percent-decode — cookie values minted by the VTC's admin-login
+/// percent-decode — cookie values minted by the VTC's admin-session
 /// flow are JWTs (base64url + dots), which are ASCII-safe.
 fn cookie_token(parts: &Parts, name: &str) -> Option<String> {
     parts

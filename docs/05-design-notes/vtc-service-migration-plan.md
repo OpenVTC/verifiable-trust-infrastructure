@@ -121,9 +121,14 @@ schema, update the census exception tables.
   reconciliation: `did`→`subject`, `allowed_contexts`→`scopes`, `u64`
   epoch → RFC3339 `date-time`, and adding the canonical-required
   `truncated` to list responses.
-- **2e `auth/*`** — collapse `auth/admin-login` → `auth/authenticate`
-  (cookie behaviour to a binding/`ext`); passkey enrolment →
-  `auth/passkey/enroll/*` (its inline UV is removed in Phase 3).
+- **2e `auth/*`** ✅ — `auth/admin-login` did not collapse into
+  `auth/authenticate`; it was **deleted** (#710). The cookie behaviour did
+  not need a binding/`ext` after all: `spec/vtc/auth/admin-session/0.1`
+  (`POST /v1/auth/admin-session`) already mints the same cookie pair from an
+  access token the caller holds, so admin login is
+  `spec/auth/authenticate/0.1` then that — which is the path the admin SPA
+  already took. Nothing called `/v1/auth/admin-login`. Passkey enrolment
+  moved to `auth/passkey/{enroll,revoke}/*` in #809.
 
 ### Phase 3 — the confirm/1.0 management gate (highest risk; novel flow)
 - Build the transport-agnostic gate in `vti-common` (see above).
@@ -186,6 +191,16 @@ parallel at any time since it lives in the other repo and is additive.
   credentials and `vta/credentials/*` into one canonical `credentials/*`
   touches a published VTA surface; confirm scope before Phase 4a authors
   them as `vtc/*`.
-- **`config/export`/`import`** — still deferred (they embed
-  `communityProfile`, which must move to `ext` before they can be a
-  generic canonical task). Not in this plan's critical path.
+- **`config/export`/`import`** — **resolved, pending upstream authoring.**
+  They do *not* become a generic `config/{export,import}` with
+  `communityProfile` pushed into `ext`. `vtc/backup/{export,import}/0.1` set
+  the precedent: VTC-shaped state operations get a `vtc/` slug, carry their
+  `confirm` flag in the payload rather than a query string, and keep their
+  fields first-class. `communityProfile` and `communityProfileDiff` /
+  `communityProfileApplied` are roughly half the import response — pushing
+  them into an opaque vendor namespace would leave a generic task that is a
+  hollow shell in its only real use. Target is
+  `https://trusttasks.org/spec/vtc/config/{export,import}/0.1`, authored
+  upstream in `dtgwg-trust-tasks-tf`; the VTI-side repoint follows the
+  registry release. These two are the last bindings on the retired
+  `openvtc/vtc/` authority.

@@ -31,7 +31,8 @@
 //!    `cross-site`, not `same-origin`.
 //! 2. **CSRF double-submit cookie** — the request must carry a
 //!    `csrf` cookie value that matches the `X-CSRF-Token` request
-//!    header. The cookie is set by the admin-login flow (M5.2.3); an
+//!    header. The cookie is set by the cookie-session mints
+//!    (`/v1/auth/admin-session`, `/v1/auth/passkey-login/finish`); an
 //!    attacker can't read it across origins to echo it in the header.
 //!
 //! Either check passing → request continues. Both failing → 403
@@ -88,7 +89,6 @@ const CSRF_EXEMPT_PATHS: &[&str] = &[
     "/v1/wallet/auth/challenge",
     "/v1/wallet/auth/",
     "/v1/auth/refresh",
-    "/v1/auth/admin-login",
     "/v1/install/claim/start",
     "/v1/install/claim/finish",
     // First-admin finalisation — unauthenticated (the setup-session JWT in

@@ -1286,9 +1286,10 @@ initialised in `main` before this runs, so its subscriber reload is a
 separate follow-up; the in-memory value is still updated.)
 
 `public_url` is itself a `requires_restart` registry key (P1.1 part 2b):
-both `PATCH /v1/admin/config` and the legacy `PATCH /v1/config` write it
-to the db-overlay — there is no `config.toml` round-trip — and boot
-applies it like any other overlay key.
+`PATCH /v1/admin/config` writes it to the db-overlay — there is no
+`config.toml` round-trip — and boot applies it like any other overlay key.
+(The legacy `PATCH /v1/config` wrote the same overlay; that surface was
+retired in #710 and `/v1/admin/config` is now the only writer.)
 
 **Restart-endpoint supervisor handshake.** The restart endpoint
 refuses to exit unless a supervisor is detected — either
@@ -1304,8 +1305,11 @@ to point TLS at `/etc/shadow` or to relocate storage transparently).
 
 **Config import audit.** `POST /v1/admin/config/import` runs a
 diff-and-confirm flow: the response surfaces every changed field
-with a pre-apply preview; a second call with `confirm=true` applies.
-Per-field audit events emitted on apply.
+with a pre-apply preview; a second call with `confirm: true` **in the
+request body** applies. (`confirm` was a `?confirm=` query parameter
+until the move to canonical `spec/vtc/config/import/0.1` — a Trust
+Task is one interface over REST, DIDComm and TSP, and only REST has
+a query string.) Per-field audit events emitted on apply.
 
 **Config-mutation audit (P1.2).** Every config-mutation door audits
 to the calling admin's real DID — there is no longer a
@@ -1396,10 +1400,10 @@ middleware. The PR-1a commit message records the prior-phase gap.
 
 The unauth governor applies to 5 dedicated POST routes:
 `/v1/auth/{challenge,authenticate,refresh}` +
-`/v1/install/claim/{start,finish}`. `/v1/auth/admin-login`
-(Phase 5 M5.2.3) joins this set since it's the bootstrapping
-cookie-mint endpoint. Authenticated routes inherit the JWT auth
-as their rate-limit gate.
+`/v1/install/claim/{start,finish}`. `/v1/auth/admin-session`
+joins this set since it's the bootstrapping cookie-mint endpoint.
+(It replaced `/v1/auth/admin-login`, retired in #710.) Authenticated
+routes inherit the JWT auth as their rate-limit gate.
 
 `SmartIpKeyExtractor` reads `X-Forwarded-For` / `X-Real-IP` /
 `Forwarded` headers first and falls back to peer IP via
