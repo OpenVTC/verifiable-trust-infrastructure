@@ -40,6 +40,10 @@ pub async fn run_storage(vsock_port: u32, data_dir: PathBuf) {
 
     // On startup, check if a DID log was previously stored and write it to disk.
     // This ensures the file is always available even after proxy restarts.
+    //
+    // The key is spelled out rather than imported: this proxy runs on the
+    // *parent* and deliberately does not link enclave code. Canonical
+    // definition is `vta_tee::did_autogen::DID_LOG_STORE_KEY` — keep in sync.
     if let Ok(ks) = db.keyspace("bootstrap", KeyspaceCreateOptions::default) {
         if let Ok(Some(value)) = ks.get("tee:did_log") {
             write_did_log_file(&data_dir, &value);
@@ -212,7 +216,9 @@ async fn handle_insert(state: &StorageState, data: &[u8]) -> Vec<u8> {
         Ok(()) => {
             // When the VTA writes its auto-generated DID log to the bootstrap
             // keyspace, also write it to disk so the operator can retrieve it
-            // without needing REST enabled.
+            // without needing REST enabled. Key mirrors
+            // `vta_tee::did_autogen::DID_LOG_STORE_KEY` (see the startup read
+            // above for why it is not imported).
             if ks_name == "bootstrap" && key == b"tee:did_log" {
                 write_did_log_file(&state.data_dir, &value);
             }
