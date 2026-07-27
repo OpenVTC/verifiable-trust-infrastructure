@@ -19,6 +19,13 @@
 
 use std::time::Duration;
 
+/// How long to wait for one admission credential to arrive over DIDComm.
+///
+/// Two credentials are pushed independently (VMC + role VEC), each awaited with
+/// this bound. Sized for a loaded CI runner rather than a developer machine —
+/// see the comment at the assertion for why the previous 20s was marginal.
+const CREDENTIAL_PUSH_TIMEOUT: Duration = Duration::from_secs(60);
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
@@ -265,11 +272,18 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     //    separately. Arrival order is therefore not guaranteed, so collect both
     //    pushes and look for the VMC among them rather than asserting it is the
     //    first to land (which flaked in CI when the VEC overtook it).
+    //    The per-push bound is generous because CI is markedly slower than a
+    //    developer machine at exactly this step: the whole test runs in ~6s
+    //    locally and ~23s on a runner, and a delivery that takes a couple of
+    //    seconds here can exceed 20s there. That marginality has failed this
+    //    assertion on unrelated PRs — including one whose entire diff was a
+    //    `pub use` line — so the bound, not the code, was what broke. Still
+    //    bounded (never a hang), just past where runner slowness lives.
     let mut delivered = Vec::new();
     for _ in 0..2 {
         let (typ, issue_body) = mock
             .client
-            .next_pushed(Duration::from_secs(20))
+            .next_pushed(CREDENTIAL_PUSH_TIMEOUT)
             .await
             .expect("admission credential delivered over DIDComm");
         assert_eq!(typ, CREDENTIAL_ISSUE_TYPE);

@@ -10468,7 +10468,7 @@ dependencies = [
 
 [[package]]
 name = "vta-tee"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes 0.9.1",
  "aes-gcm",
@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.35"
+version = "0.11.36"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
