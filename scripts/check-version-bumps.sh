@@ -32,7 +32,11 @@ set -euo pipefail
 
 BASE="${1:-origin/main}"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# `pwd -P` (physical path), not `pwd`: `cargo metadata` reports symlink-resolved
+# manifest paths, and ROOT is used to strip that prefix. On macOS a worktree
+# under /tmp (a symlink to /private/tmp) made the two disagree, so the prefix
+# never matched, every file failed attribution, and the guard passed vacuously.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
 if [ -t 1 ]; then
@@ -70,6 +74,18 @@ crates=$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
   | awk -F'\t' '{ print length($3)"\t"$0 }' \
   | sort -rn \
   | cut -f2-)
+
+# Guard the guard. Every dir above must now be workspace-relative; an absolute one
+# means the ROOT prefix did not strip, so every changed file fails attribution and
+# this script reports "nothing to check" and exits 0 — passing vacuously on a PR it
+# should have failed. That is the worst outcome available to a release guard, so it
+# fails loudly instead of silently.
+if printf '%s\n' "$crates" | cut -f3 | grep -q '^/'; then
+  echo "${RED}error:${NC} crate paths did not resolve relative to $ROOT." >&2
+  echo "Cannot attribute changed files; refusing to pass without checking." >&2
+  printf '%s\n' "$crates" | cut -f3 | grep '^/' | head -3 | sed 's/^/  /' >&2
+  exit 2
+fi
 
 # classify a path (relative to a crate dir) as source-or-not
 is_source() {
