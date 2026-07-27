@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### VTC Trust Tasks — the unpublished-manifest backlog is closed (#709)
+
+`vtc-service/tests/trust_task_manifest.rs` carried twenty `UNPUBLISHED_OK`
+exceptions: task URIs the router enforced that `trust-tasks/index.json` never
+published. The table is now empty — but **not** because twenty specs were
+authored into that manifest. Every one of those tasks was resolved by the #710
+migration (#806 / #809 / #811 / #812 and predecessors): they now bind canonical
+`https://trusttasks.org/spec/vtc/<slug>` URIs published by the upstream
+registry, verified against `trust_tasks_rs` by
+`every_bound_vtc_task_exists_in_the_registry`. Nothing in the workspace binds
+any of the twenty on the old authority any more.
+
+The table stays in place, empty, because the assertion behind it still is: a
+new `openvtc/vtc/` binding with no manifest row fails rather than silently
+reopening the backlog.
+
+**The manifest's own description was false and now says so.** It claimed to be
+the "source of truth for trusttasks.org publication" with "CI publishes Draft
+entries on every merge to main per spec §9.4". No CI job has ever read
+`trust-tasks/index.json` — that pipeline was never built. The description now
+records what the file actually is: a historical record of the retired
+`openvtc/vtc` authority, 60 entries retired and 6 awaiting a canonical fold.
+
 ### vta-sdk 0.20.4 / vta-service 0.12.41 — the signing oracle's authorization model is a documented guarantee (#805)
 
 The VTA signs the bytes it is handed without inspecting them, so *which keys a
