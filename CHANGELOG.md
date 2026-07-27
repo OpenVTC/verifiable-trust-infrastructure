@@ -249,7 +249,7 @@ bound to the canonical `acl/list/0.1` Trust Task, whose payload is
 is paginated, so `direction` must also join the cursor binding or a resumed
 sweep changes question mid-listing.
 
-### vta-service 0.12.43 — resolve the self-DID through the network-mode resolver during the first-enable handshake
+### vta-service 0.12.45 — resolve the self-DID through the network-mode resolver during the first-enable handshake
 
 The transient handshake that trust-pings a newly configured mediator built a
 default TDK config, which resolves DIDs locally. In a TEE the enclave has no
@@ -263,6 +263,23 @@ re-seeded into the resolver cache immediately before the handshake: webvh cache
 entries expire after the cache TTL, and a serverless `did:webvh` can only be
 resolved from cache. This mirrors the resolver wiring already used by the
 messaging service and the auth ATM.
+
+### vta-service 0.12.44 — persist the auto-generated serverless did:webvh record and log
+
+In TEE mode the VTA mints its own `did:webvh` on first boot from the
+KMS-bootstrapped seed and stored the DID and `did.jsonl` log only under the
+`KEYS`/`BOOTSTRAP` keyspaces. That path never went through the `create_did_webvh`
+flow, so the `webvh` keyspace — which `list_services`, `preload_self_did_document`,
+and `/.well-known/did.jsonl` all read the VTA's own DID from — was left empty. The
+result was `GET /services` returning 500 (`VtaDidRecordMissing`) and the VTA's own
+DID being unresolvable from cache, so no client could authcrypt to it.
+
+A new `tee_webvh` bridge in `vta-service` idempotently backfills the `webvh`
+keyspace with the record and log after auto-generation (called from enclave
+startup). It is a no-op for non-`did:webvh` identities and once the entries exist,
+so it also repairs an already-generated DID on rebuild + restore without wiping
+state. Record fields mirror the production serverless builder; any drift
+self-heals on the next did update/rotate, which re-scans the log.
 
 ### VTC Trust Tasks — the unpublished-manifest backlog is closed (#709)
 

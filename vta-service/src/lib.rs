@@ -77,6 +77,11 @@ pub mod store;
 /// `vta-enclave` and every existing call site.
 #[cfg(feature = "tee")]
 pub use vta_tee as tee;
+/// Bridges the TEE first-boot DID auto-generation (`tee::did_autogen`) into the
+/// `webvh` keyspace so `list_services`, the self-DID resolver preload, and
+/// `/.well-known/did.jsonl` can find the serverless VTA's own DID record + log.
+#[cfg(feature = "tee")]
+pub mod tee_webvh;
 /// Transport-neutral Trust-Task dispatch subsystem. Both the REST route
 /// (`routes::trust_tasks`-mounted `dispatch_trust_task`) and the DIDComm
 /// `handle_trust_task` handler dispatch through `dispatch_trust_task_core`
