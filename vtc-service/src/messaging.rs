@@ -1204,7 +1204,7 @@ async fn credential_present_handler(msg: &Message, state: &AppState) -> Option<R
     })
 }
 
-fn parse_disposition(s: &str) -> Result<Disposition, String> {
+pub(crate) fn parse_disposition(s: &str) -> Result<Disposition, String> {
     match s.to_ascii_lowercase().as_str() {
         "purge" => Ok(Disposition::Purge),
         "tombstone" => Ok(Disposition::Tombstone),
