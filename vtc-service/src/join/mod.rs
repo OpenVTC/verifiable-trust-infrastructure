@@ -140,6 +140,12 @@ impl JoinRequest {
 pub enum JoinTransport {
     Rest,
     DIDComm,
+    /// Trust Spanning Protocol, received off the same mediator socket DIDComm
+    /// uses (the transport tags which). Receive-side only: a TSP-delivered
+    /// request is answered over TSP, but the VTC's *outbound-initiated* sends to
+    /// members stay DIDComm until the Phase B flip
+    /// (`docs/05-design-notes/tsp-enablement.md` §12, §14 Q4).
+    Tsp,
 }
 
 impl JoinTransport {
@@ -147,6 +153,7 @@ impl JoinTransport {
         match self {
             JoinTransport::Rest => "rest",
             JoinTransport::DIDComm => "didcomm",
+            JoinTransport::Tsp => "tsp",
         }
     }
 }

@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### vtc-service 0.11.36 — the VTC accepts Trust Tasks over TSP
+
+TSP frames already reached the VTC: the delivery-layer `DidCommTransport` owns the
+one mediator websocket and surfaces both protocols off it, tagging each
+`Inbound.message.protocol`. The dispatcher then dropped every TSP frame **silently**
+at its first line, because a TSP payload is Trust-Task bytes rather than a DIDComm
+plaintext and `serde_json::from_slice::<Message>(…).ok()?` simply returned `None`.
+
+This is §6.1/§6.2 of `docs/05-design-notes/tsp-enablement.md` for the VTC, mirroring
+`vta-service`'s `messaging::tsp_inbound` + `service::handle_tsp` deliberately — TSP,
+DIDComm and REST all feed `dispatch_trust_task_core`, so a caller gets identical
+round-trip semantics whichever transport it arrived on.
+
+- `Protocol::TSP` frames route to a new `handle_tsp`, which dispatches on the shared
+  spine and seals the response back to the proven sender over the same socket
+  (`atm.tsp().send_routed([mediator_did, sender_vid])`). **No second websocket** —
+  the mediator permits one per DID and evicts a second as `duplicate-channel`.
+- The caller identity is the VID TSP's `unpack` authenticated, and **only** when
+  `verified` is set. `tsp_sender` is factored out so that decision is unit-testable
+  without a mediator; there is deliberately no plaintext-`from` fallback, since TSP
+  has no public-read handler that could justify one.
+- An unauthorised caller gets a Trust-Task error envelope rather than silence. The
+  VID is cryptographically proven, so there is no enumeration exposure, and a
+  conformant client only understands envelopes.
+- `JoinTransport::Tsp` records the arrival transport.
+
+Receive-side only. Answering over TSP is required (the caller waits on the TSP
+correlation), but VTC-**initiated** sends to members stay DIDComm until the Phase B
+flip (§12, §14 Q4).
+
+Behind the `tsp` feature, still off by default, and the feature now also enables
+`affinidi-tdk/tsp` for `atm.tsp()`. Both configurations build, and 695 lib tests pass
+in each.
+
+**Not yet advertised.** The VTC's DID document does not carry a `#tsp` service, and
+must not until this ships — TSP is the highest-preference transport, so advertising
+before accepting would have clients select it and get silence. Advertising needs no
+code: it is an `update_did_webvh` service patch on the VTA-managed VTC DID.
+
 ### vtc-service 0.11.35 — the retired Trust Task authority has no bindings left (#710)
 
 `admin/config/{export,import}` move to canonical
