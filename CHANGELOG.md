@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.7 — `receive_next`'s poll loop no longer trips `never_loop` without the `tsp` feature
+
+`DIDCommSession::receive_next` polls in a `loop`, but its only `continue` — the
+skip for an inbound TSP frame that belongs to the TSP leg's own subscriber — is
+`#[cfg(feature = "tsp")]`. Compile that out and every arm returns, so clippy
+sees a loop that runs exactly once and denies `never_loop`.
+
+Accurate, but not actionable: the iteration exists to re-poll after skipping a
+frame that only exists in the `tsp` build. Annotated
+`#[cfg_attr(not(feature = "tsp"), allow(clippy::never_loop))]` so the lint stays
+live in the configuration where it can still catch a real regression.
+
+**This was a latent CI break, not just a local one.** `tsp` is off by default in
+`vta-service`, so `cargo clippy --workspace` builds `vta-sdk` without it too —
+CI has been passing only because its `stable` toolchain predates the lint
+firing here. `cargo clippy -p vtc-service` already failed hard today.
+
 ### vtc-service 0.11.34 / vti-common 0.11.28 — two of the last four bindings leave the retired authority (#710)
 
 `POST /v1/auth/admin-login` and `GET, PATCH /v1/config` are **removed**. Both
