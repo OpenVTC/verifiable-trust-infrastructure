@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.4 / vta-service 0.12.41 — the signing oracle's authorization model is a documented guarantee (#805)
+
+The VTA signs the bytes it is handed without inspecting them, so *which keys a
+caller may name* is the whole of the authorization story. A companion proposal
+was declined partly on the reasoning that per-key scoping already delivers the
+identity property — but that reasoning was read off an SDK field comment
+("must be an active key the caller has access to") rather than observed in the
+service, and a multi-domain signer now depends on it.
+
+**Confirmed: the service enforces it**, in three layers, in
+`operations::keys::sign_payload` — and more strictly than the field comment
+implies:
+
+1. **Caller's context scope** — `require_context` on the key's `context_id`,
+   via `ActScope`.
+2. **The key's context policy** — `signable_keys` is *resource-bound*: it
+   constrains the key's context **regardless of the actor, including a
+   super-admin**. That is what lets a fleet- or VTC-pushed policy bind every
+   signer; the owner relaxes it via policy CRUD, not by holding a bigger role.
+3. **Unscoped keys are super-admin only** — no context means no policy, so the
+   role floor is the only guardrail left.
+
+All three transports (REST, DIDComm `key-management/1.0/sign-request`, and the
+`keys/sign` Trust Task) funnel through that one function, so there is a single
+enforcement point rather than three.
+
+**Documented, with the caveat that matters.** Enforcement is **per context, not
+per key id**: holding a context authorizes every key in it. A signer acting for
+several identities therefore needs a context *each* — putting several
+identities' keys in one context and scoping the caller to it authorizes all of
+them. `signable_keys` gives per-key narrowing but is opt-in policy an operator
+must write. New §"What authorizes a sign request" in
+`docs/02-vta/integration-guide.md`; the SDK field comment now states the
+guarantee and points there instead of implying it.
+
+**Two of the three layers had no regression test** — the two the declined
+proposal actually rests on. Added
+`sign_payload_refuses_a_key_outside_the_callers_contexts` and
+`sign_payload_restricts_unscoped_keys_to_super_admin`; both verified to fail
+when their check is removed.
+
 ### vta-sdk 0.20.3 — transport discovery is testable without a live VTA
 
 `resolve_vta_endpoint` built its `DIDCacheClient` from the environment, so a
@@ -28,6 +69,7 @@ deployment's shape) reports both in preference order; a DIDComm-only VTA reports
 no TSP; a TSP-only VTA does not fall back to a REST URL synthesized from its own
 domain; and a `#tsp` entry carrying a URL instead of a mediator DID is ignored
 rather than routed through.
+
 
 ### vtc-service 0.11.33 — the raw-byte website endpoints stop pretending to be Trust Tasks
 
