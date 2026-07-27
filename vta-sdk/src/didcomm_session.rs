@@ -670,6 +670,14 @@ impl DIDCommSession {
         // same session (each message goes to exactly one caller).
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
         let mut stream = self.subscriber.lock().await;
+        // The only `continue` in this loop is the TSP-frame skip below, which is
+        // `#[cfg(feature = "tsp")]`. Without that feature every arm returns, so
+        // clippy sees a loop that runs exactly once and fires `never_loop`. That
+        // is accurate but not actionable: the iteration exists to re-poll after
+        // skipping a frame that only exists in the `tsp` build. Allowed only in
+        // the configuration where the `continue` is compiled out, so a genuine
+        // never-looping regression still fails the `tsp` build.
+        #[cfg_attr(not(feature = "tsp"), allow(clippy::never_loop))]
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {

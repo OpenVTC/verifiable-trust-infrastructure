@@ -26,35 +26,33 @@ const PREFIX: &str = "https://trusttasks.org/openvtc/vtc/";
 
 /// Manifest entries that legitimately bind no route.
 ///
-/// Overwhelmingly the Phase-0 shared-mount workaround: `TrustTaskRouter`
-/// has no per-method task selector, so two verbs sharing one mount
-/// collapse onto a single task. The unselected task still ships on disk
-/// and in the manifest so the soft-gate surface stays complete.
-const UNBOUND_OK: &[(&str, &str)] = &[
-    // -- shared mount, awaiting per-method Trust-Task selectors --
-    (
-        "credentials/endorsements/list/1.0",
-        "shares the endorsements show mount",
-    ),
-    (
-        "credentials/endorsements/revoke/1.0",
-        "shares the endorsements show mount",
-    ),
-    (
-        "endorsement-types/list/1.0",
-        "GET shares the register/1.0 mount",
-    ),
-    (
-        "join-requests/list/1.0",
-        "admin GET collapses onto submit/1.0",
-    ),
-    ("members/admin-remove/1.0", "shares the members/{did} mount"),
-    (
-        "members/personhood/revoke/1.0",
-        "DELETE shares the personhood mount",
-    ),
-    ("members/update/1.0", "PATCH shares the members/{did} mount"),
-];
+/// **Empty, and that is the finished state (#710).** It once held seven
+/// entries, all the same Phase-0 shared-mount workaround: two verbs sharing a
+/// mount collapse onto one task, so the unselected sibling shipped on disk and
+/// in the manifest while binding nothing.
+///
+/// None of them needed an exception in the end. Five were retired as their
+/// families moved to `spec/vtc/*`, and the assertion below skips retired
+/// entries. The last two — `endorsement-types/list/1.0` and
+/// `members/personhood/revoke/1.0` — were still `draft` while the routes they
+/// described had *already* moved: `GET /v1/endorsement-types` enforces
+/// `spec/vtc/endorsement-types/register/0.1` and
+/// `DELETE /v1/members/{did}/personhood` enforces
+/// `spec/vtc/members/personhood/assert/0.1`. Two live drafts on a retired
+/// authority describing nothing. Both are retired now, pointing at the
+/// canonical `list/0.1` and `revoke/0.1` the upstream registry publishes.
+///
+/// Note what this does *not* fix: those two mounts still collapse a second
+/// verb onto a sibling's canonical task. The fan-out is unblocked — Phase 2c
+/// established that `task_routes` layers the method router and axum merges
+/// same-path method routers per method, pinned by
+/// `vti_common::trust_task::openapi::per_method_tasks_on_one_path_are_enforced_independently`
+/// — but it is a canonical-side split, not an authority migration, so it is
+/// left for its own change.
+///
+/// The table stays (empty) because the assertion is still load-bearing: a
+/// manifest row that goes back to `draft` with no route behind it fails here.
+const UNBOUND_OK: &[(&str, &str)] = &[];
 
 /// Task URIs the code binds that the manifest does not publish.
 ///
@@ -68,8 +66,8 @@ const UNBOUND_OK: &[(&str, &str)] = &[
 /// against `trust_tasks_rs` rather than against anything local.
 ///
 /// So the backlog did not get published here; the surface it described moved
-/// off this authority entirely. What is left on `openvtc/vtc/` is the four
-/// entries in [`AWAITING_CANONICAL_FOLD`], and all four *are* in the manifest.
+/// off this authority entirely. What is left on `openvtc/vtc/` is the two
+/// entries in [`AWAITING_CANONICAL_FOLD`], and both *are* in the manifest.
 ///
 /// The table stays (empty) because the assertion below is still load-bearing:
 /// a new `openvtc/vtc/` binding with no manifest row fails rather than
@@ -288,8 +286,11 @@ fn every_manifest_entry_has_files_on_disk() {
 ///
 /// This list only ever shrinks. Each entry is a task the #710 design note
 /// folds onto a canonical spec rather than republishing under `spec/vtc/*`,
-/// so it cannot simply be repointed — three of them additionally need an
-/// upstream registry spec that does not exist yet.
+/// so it cannot simply be repointed. Both survivors need an upstream registry
+/// spec that does not exist yet: `specs/config/` publishes `show`, `patch`,
+/// `reload` and `restart`, and no `export` / `import` counterpart. They are
+/// blocked on `vtc/config/{export,import}/0.1` being authored upstream, not on
+/// anything in this repo.
 ///
 /// A new `openvtc/vtc/` URI appearing anywhere fails the test below, which is
 /// the point: the authority is retired, and nothing should be added to it.
@@ -313,14 +314,26 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
     // the user in-band, in the same request, via WebAuthn. The canonical specs
     // were written from this implementation rather than the other way round,
     // so the fold changed URIs and nothing else.
-    (
-        "auth/admin-login/1.0",
-        "canonical auth/authenticate; the cookie side-effect moves to a binding/ext",
-    ),
-    (
-        "config/legacy/manage/1.0",
-        "delete — strict duplicate of admin/config/manage, which shipped",
-    ),
+    // `auth/admin-login/1.0` is GONE — the route was deleted, not repointed.
+    //
+    // Its recorded blocker ("the cookie side-effect moves to a binding/ext")
+    // assumed the endpoint had to survive. It did not: it ran the same
+    // `authenticate_and_mint` as `POST /v1/auth/` and only appended the
+    // `Set-Cookie` pair, which `spec/vtc/auth/admin-session/0.1` already mints
+    // from an access token the caller holds. Login is
+    // `spec/auth/authenticate/0.1` then `spec/vtc/auth/admin-session/0.1` —
+    // the path the admin SPA already used. Nothing called `admin-login`.
+    //
+    // `config/legacy/manage/1.0` is GONE — `GET, PATCH /v1/config` deleted.
+    //
+    // Its recorded blocker ("strict duplicate of admin/config/manage") was
+    // wrong twice: that task was itself retired, and the two surfaces shared
+    // no field. The real disposition came from a field-by-field audit —
+    // `vtc_did` / `vtc_name` / `vtc_description` are owned by
+    // `spec/vtc/community/profile/{show,update}/0.1` (show is any-session,
+    // matching the legacy GET), `public_url` by `spec/config/{show,patch}/0.1`
+    // over the same db-overlay the legacy PATCH wrote. Identity immutability
+    // survives structurally, pinned by `tests/config_identity.rs`.
     // `members/promote-to-admin/1.0` is GONE — folded onto the canonical
     // `spec/vtc/members/update/0.1` (`PATCH /v1/members/{did}` with
     // `role: admin`), gated on a live step-up elevation.
