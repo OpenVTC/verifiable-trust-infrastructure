@@ -1343,15 +1343,18 @@ async fn build_live_prover(
 /// signing/ka vm ids, vta_did). Returns `Ok(())` if the handshake
 /// succeeded OR if the prerequisites aren't available (the caller
 /// then falls back to the operation's AlwaysOkProver path).
-/// Returns `Err(HandshakeError::Failed)` only when the handshake
-/// actually ran and failed.
+/// Returns `Err(HandshakeError::Failed)` when the handshake actually
+/// ran and failed, or when its resolver-backed TDK config could not be
+/// built — that one is a `Connect`-stage failure rather than a fall
+/// through, because the only available fallback resolves DIDs locally
+/// and would defeat the point of running the handshake at all.
 async fn try_run_first_enable_handshake(
     state: &AppState,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
     mediator_did: &str,
     timeout: std::time::Duration,
 ) -> Result<(), crate::messaging::handshake::HandshakeError> {
-    use crate::messaging::handshake::HandshakeOptions;
+    use crate::messaging::handshake::{HandshakeError, HandshakeOptions, HandshakeStage};
     use crate::messaging::transient_handshake::{
         TransientHandshakeContext, run_transient_handshake,
     };
@@ -1405,11 +1408,33 @@ async fn try_run_first_enable_handshake(
     // whereas a default TDK resolver resolves locally and has no enclave
     // egress — so resolving the mediator DID would fail with a network error.
     // Mirrors the resolver wiring in `messaging::service` and the auth ATM.
-    let tdk_config = TDKConfig::builder()
+    //
+    // Fail-closed, deliberately: `run_transient_handshake` falls back to a
+    // default (locally-resolving) TDK when handed `None`, which is exactly the
+    // enclave-egress failure this wiring exists to prevent. Degrading to it
+    // silently would reproduce the original symptom from a patched build, so a
+    // config that won't build is a Connect-stage handshake failure — the same
+    // stage `transient_prove` assigns to this identical call — and the operator
+    // gets the cause rather than an unexplained resolution error later.
+    let tdk_config = match TDKConfig::builder()
         .with_did_resolver(resolver.clone())
         .with_load_environment(false)
         .build()
-        .ok();
+    {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            let cause = format!("build TDK config: {e}");
+            tracing::warn!(
+                mediator = %mediator_did,
+                error = %e,
+                "first-enable handshake aborted: could not build a resolver-backed TDK config"
+            );
+            return Err(HandshakeError::Failed {
+                stage: HandshakeStage::Connect,
+                cause,
+            });
+        }
+    };
 
     run_transient_handshake(
         TransientHandshakeContext {

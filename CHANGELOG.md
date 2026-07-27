@@ -264,6 +264,14 @@ entries expire after the cache TTL, and a serverless `did:webvh` can only be
 resolved from cache. This mirrors the resolver wiring already used by the
 messaging service and the auth ATM.
 
+Building that config is fail-closed. `run_transient_handshake` falls back to a
+default, locally-resolving TDK when handed no config, so a config that fails to
+build would have degraded straight back to the bug above — from a patched
+build, with nothing in the log to say so. It is now a `Connect`-stage handshake
+failure, the same stage `transient_prove` assigns to the identical call, so
+`services didcomm enable` refuses with the cause instead of proceeding on a
+resolver that cannot reach the network.
+
 ### vta-service 0.12.44 — persist the auto-generated serverless did:webvh record and log
 
 In TEE mode the VTA mints its own `did:webvh` on first boot from the
