@@ -354,10 +354,15 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
         "config/legacy/manage/1.0",
         "delete — strict duplicate of admin/config/manage, which shipped",
     ),
-    (
-        "members/promote-to-admin/1.0",
-        "canonical acl/change-role + confirm/1.0 gate",
-    ),
+    // `members/promote-to-admin/1.0` is GONE — folded onto the canonical
+    // `spec/vtc/members/update/0.1` (`PATCH /v1/members/{did}` with
+    // `role: admin`), gated on a live step-up elevation.
+    //
+    // Its recorded blocker named `acl/change-role` as the target, which does
+    // not hold: that task is bound to `PATCH /v1/acl/{did}`, a bare ACL write
+    // that never runs `role_change.rego` and serves non-member ACL rows.
+    // Routing admin promotion through it would have reintroduced the P0.14
+    // policy bypass. `members/update` already ran the role-change ceremony.
     // Not Trust Tasks at all: a JSON payload cannot carry file bytes. These
     // are de-listed rather than folded, and the registry deliberately has no
     // spec for them (see specs/vtc/website/, which holds only the four that

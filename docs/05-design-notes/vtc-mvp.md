@@ -928,6 +928,25 @@ See §6.3. Unconditional on ACL membership.
 
 ### 10.4 Role change
 
+> **Status: superseded.** The separate `POST
+> /v1/members/{did}/promote-to-admin/{start,finish}` pair described below was
+> retired. Admin promotion is now `PATCH /v1/members/{did}` with `{"role":
+> "admin"}` on a session carrying a **live step-up elevation**, obtained via
+> `auth/passkey/login/{start,finish}/0.2` with `purpose: stepUp`.
+>
+> The fused endpoint put a second implementation of passkey UV inline with the
+> role change, and made the proof of user presence authorise exactly one
+> operation. Splitting the ceremony from the operation makes the elevation a
+> reusable property of the session, and lets both halves be one canonical
+> Trust Task each. Every security property carried over — UV required, the
+> caller's *own* passkey, self-promotion refused, serialised against concurrent
+> role writes, `role_change.rego` governed, `AdminPromoted` audit. Two things
+> changed: the authorising credential id moved to its own `AuthSteppedUp`
+> audit row (joined to `AdminPromoted` by `authorisingSessionId`), and
+> promoting an existing admin is now an idempotent `200` rather than a `409`.
+>
+> Historical description follows.
+
 `PATCH /v1/members/{did}` accepts role changes **except** to
 `Admin`. Admin promotion is a separate endpoint:
 

@@ -22,7 +22,7 @@ import {
   Users as UsersIcon,
 } from "lucide-react";
 
-import { deleteJson, getJson, postJson } from "@/lib/api";
+import { deleteJson, getJson, patchJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso as formatDate, shortenDid } from "@/lib/format";
 import {
@@ -43,8 +43,15 @@ const TRUST_TASK_SHOW =
 // the shared mount carries its own descriptor.
 const TRUST_TASK_ADMIN_REMOVE =
   "https://trusttasks.org/spec/vtc/members/admin-remove/0.1";
-const TRUST_TASK_PROMOTE =
-  "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
+// Promotion to admin is a PATCH like any other role change — what makes it
+// special is the step-up elevation it demands, not a task of its own. The
+// fused `openvtc/vtc/members/promote-to-admin/1.0` pair is retired.
+const TRUST_TASK_UPDATE =
+  "https://trusttasks.org/spec/vtc/members/update/0.1";
+const TRUST_TASK_PASSKEY_STEP_UP_START =
+  "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
+const TRUST_TASK_PASSKEY_STEP_UP_FINISH =
+  "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
 const TRUST_TASK_REMOVED =
   "https://trusttasks.org/spec/vtc/members/removed/0.1";
 const TRUST_TASK_PURGE =
@@ -115,20 +122,21 @@ async function requestMemberVmc(did: string): Promise<RequestVmcResponse> {
   );
 }
 
-interface PromoteStartResponse {
-  registrationId: string;
+interface StepUpStartResponse {
+  authId: string;
   options: { publicKey: JsonPublicKeyOptions };
 }
 
-async function promoteToAdmin(targetDid: string): Promise<void> {
-  // Step-up UV: call /start to get a WebAuthn assertion challenge
-  // against the caller's own passkeys, run navigator.credentials.get
-  // for the operator's user-verification gesture, post the assertion
-  // back to /finish.
-  const start = await postJson<PromoteStartResponse>(
-    `/v1/members/${encodeURIComponent(targetDid)}/promote-to-admin/start`,
-    undefined,
-    { trustTask: TRUST_TASK_PROMOTE },
+/** Elevate this session with a passkey user-verification gesture.
+ *
+ * Independent of what it authorises: the daemon stamps a bounded window on the
+ * session, and any operation gated on a fresh step-up can spend it while it is
+ * open. Promotion is simply the first caller. */
+async function stepUpSession(): Promise<void> {
+  const start = await postJson<StepUpStartResponse>(
+    "/v1/auth/passkey-login/start",
+    { purpose: "stepUp" },
+    { trustTask: TRUST_TASK_PASSKEY_STEP_UP_START },
   );
 
   const publicKey = decodePublicKeyOptions(
@@ -140,12 +148,25 @@ async function promoteToAdmin(targetDid: string): Promise<void> {
   if (!credential) throw new Error("Passkey ceremony returned no credential");
 
   await postJson<unknown>(
-    `/v1/members/${encodeURIComponent(targetDid)}/promote-to-admin/finish`,
+    "/v1/auth/passkey-login/finish",
     {
-      registration_id: start.registrationId,
-      uv_response: serializeAssertion(credential),
+      auth_id: start.authId,
+      credential: serializeAssertion(credential),
     },
-    { trustTask: TRUST_TASK_PROMOTE },
+    { trustTask: TRUST_TASK_PASSKEY_STEP_UP_FINISH },
+  );
+}
+
+async function promoteToAdmin(targetDid: string): Promise<void> {
+  // Step up first, then promote. Doing it unconditionally (rather than
+  // promoting, catching `step_up_required`, and retrying) keeps the operator's
+  // passkey gesture tied to the click that asked for it — which is the whole
+  // point of requiring a *recent* second factor.
+  await stepUpSession();
+  await patchJson<unknown>(
+    `/v1/members/${encodeURIComponent(targetDid)}`,
+    { role: "admin" },
+    { trustTask: TRUST_TASK_UPDATE },
   );
 }
 

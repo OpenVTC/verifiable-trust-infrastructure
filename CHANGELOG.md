@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### vti-common 0.11.26 / vtc-service 0.11.32 / vta-service 0.12.40 — step-up means *recent*, and passkey step-up exists
+### vti-common 0.11.26 / vtc-service 0.11.32 / vta-service 0.12.40 — step-up means *recent*, and admin promotion uses it
 
 `StepUpAuth` gated on `acr == "aal2"` and nothing else. That reads as "this
 session reached two factors at some point", not "a second factor was confirmed
@@ -60,6 +60,47 @@ step-up naming anyone but the authenticated subject is refused.
 Operator-visible: the elevation lasts 15 minutes (matching the VTA's
 `STEP_UP_ELEVATION_TTL_SECS`), reported to the client as
 `ext["org.openvtc.step-up"].expiresAt`.
+
+#### Breaking — `promote-to-admin` folds onto `members/update`
+
+`POST /v1/members/{did}/promote-to-admin/{start,finish}` is **removed**. Admin
+promotion is `PATCH /v1/members/{did}` with `{"role": "admin"}`
+(`spec/vtc/members/update/0.1`), on a session carrying a live step-up
+elevation. `openvtc/vtc/members/promote-to-admin/1.0` is `retired`,
+`supersededBy` the canonical task, and leaves `AWAITING_CANONICAL_FOLD`.
+
+The fused endpoint bundled a WebAuthn UV *ceremony* with a role-change
+*operation*: one URI carrying two tasks' worth of semantics, a second
+implementation of passkey UV alongside `auth/passkey/login`, and a proof of
+user presence that could authorise exactly one operation and nothing else.
+
+Every security property carried over — UV required, the caller's own passkey,
+self-promotion refused, serialised under `PROMOTE_LOCK`, the already-admin
+re-check inside the critical section, and still routed through
+`role_change_via_pipeline(step_up = true)` so `role_change.rego` governs it
+(P0.14). What changed is *when* the UV happens: recently, in its own request,
+which is what makes the window mean anything.
+
+Two deliberate differences:
+
+- **The authorising credential id** moved off `AdminPromoted` onto a new
+  `AuthSteppedUp` audit event emitted by the ceremony itself. `AdminPromoted`
+  gains `authorisingSessionId`, which joins the two rows. Both new fields are
+  `#[serde(default)]`, so archived envelopes from either side of the fold
+  deserialise.
+- **Promoting an existing admin is a `200` no-op**, not a `409`. `POST
+  …/promote-to-admin` was imperative and promoting an existing admin is
+  meaningless; `PATCH` is declarative — the role *should be* admin, and it
+  already is — so a retried request is safe. The `409` that mattered still
+  guards the concurrent-promotion race.
+
+The recorded plan for this fold named `acl/change-role` as the target. It does
+not hold: that task is bound to `PATCH /v1/acl/{did}`, a bare ACL write that
+never runs `role_change.rego` and serves non-member ACL rows (integrations,
+install DIDs). Routing admin promotion through it would have reintroduced the
+P0.14 policy bypass. `members/update` already ran the ceremony.
+
+The admin SPA is updated in lockstep — it steps up, then PATCHes.
 
 ### vta-sdk 0.20.2 — TSP is a per-surface leg, not a whole-client transport
 

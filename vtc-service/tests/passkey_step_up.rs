@@ -43,6 +43,7 @@ use common::webauthn_harness::SoftEd25519Authenticator;
 const RP_ORIGIN: &str = "https://vtc.example.com";
 const START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/start/0.2";
 const FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/login/finish/0.2";
+const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
 
 struct Fixture {
     state: AppState,
@@ -172,15 +173,16 @@ async fn session_for(fix: &Fixture, did: &str) -> (String, String) {
     (session_id, fix.jwt_keys.encode(&claims).unwrap())
 }
 
-async fn request(
+async fn request_method(
     router: &axum::Router,
+    method: &str,
     path: &str,
     trust_task: &str,
     token: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
     let mut builder = Request::builder()
-        .method("POST")
+        .method(method)
         .uri(path)
         .header("Trust-Task", trust_task);
     if let Some(tok) = token {
@@ -206,6 +208,17 @@ async fn request(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null)
     };
     (status, json)
+}
+
+/// POST helper — every ceremony leg is a POST.
+async fn request(
+    router: &axum::Router,
+    path: &str,
+    trust_task: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    request_method(router, "POST", path, trust_task, token, body).await
 }
 
 /// Run `start` with `purpose: stepUp` and return `(auth_id, options)`.
@@ -432,6 +445,74 @@ async fn plain_login_is_unchanged_by_the_purpose_field() {
         "a sign-in is not a step-up; it must stamp no elevation window"
     );
     assert!(!session.elevation_active(now_epoch()));
+}
+
+#[tokio::test]
+async fn a_step_up_authorises_the_promotion_it_was_run_for() {
+    // The whole point of the API split, end to end: the ceremony that proves
+    // the operator is present is a *different request* from the operation it
+    // authorises, and the elevation window is what ties them together.
+    let (mut fix, other_did) = build_fixture().await;
+    let admin = fix.admin_did.clone();
+    let (_session_id, token) = session_for(&fix, &admin).await;
+
+    // The second enrolled admin is already `Admin` in the fixture, so promote
+    // a plain member instead.
+    let target = "did:key:zMemberToPromote";
+    store_acl_entry(
+        &fix.state.acl_ks,
+        &AclEntry::new(target.to_string(), Role::Reader, &admin),
+    )
+    .await
+    .unwrap();
+    let _ = other_did;
+
+    // Without an elevation the promotion is refused, and says why.
+    let (status, body) = request_method(
+        &fix.router,
+        "PATCH",
+        &format!("/v1/members/{target}"),
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert_eq!(body["error"], "step_up_required", "got {body}");
+
+    // Step up, then retry. (The promotion itself needs a member row + policy
+    // fixture this suite doesn't build, so we assert the *gate* opened: the
+    // request gets past `step_up_required` to the member lookup.)
+    let (status, body) = step_up_start(&fix, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "start: {body}");
+    let auth_id = body["authId"].as_str().unwrap().to_string();
+    let options: RequestChallengeResponse =
+        serde_json::from_value(body["options"].clone()).unwrap();
+    let assertion = fix.authenticator.authenticate(&options, RP_ORIGIN);
+    let (status, _) = request(
+        &fix.router,
+        "/v1/auth/passkey-login/finish",
+        FINISH_TASK,
+        Some(&token),
+        Some(json!({ "auth_id": auth_id, "credential": assertion })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = request_method(
+        &fix.router,
+        "PATCH",
+        &format!("/v1/members/{target}"),
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the elevation must open the gate, got {body}"
+    );
 }
 
 #[tokio::test]

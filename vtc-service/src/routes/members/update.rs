@@ -7,24 +7,54 @@
 //! the `Remint` executor arm (which updates the ACL role in place,
 //! re-mints the role VEC, and enforces no-last-admin on demotion).
 //!
-//! `role=admin` is still refused on this surface: admin promotion fires
-//! the step-up UV ceremony on its own endpoint
-//! (`POST /v1/members/{did}/promote-to-admin`, spec §10.4), so the
-//! policy's admin branch is reached there, not here.
+//! `role=admin` is assignable here, and is the one transition that
+//! additionally demands a **live step-up elevation** on the caller's session
+//! (`vti_common::auth::extractor::StepUpAuth`'s rule, applied in-handler
+//! because it governs one field value, not the whole route).
+//!
+//! It used to live on its own fused endpoint,
+//! `POST /v1/members/{did}/promote-to-admin/{start,finish}`, which ran a
+//! WebAuthn UV ceremony and the role change in one pair of requests. That
+//! fused the *authentication* ceremony into the *authorisation* operation:
+//! two Trust Tasks' worth of semantics under one URI, and a second
+//! implementation of passkey UV alongside `auth/passkey/login`. The API split
+//! separates them — step the session up via
+//! `auth/passkey/login/{start,finish}/0.2` with `purpose: stepUp`, then change
+//! the role here — so each canonical task does one thing and the elevation is
+//! reusable by any other privileged operation.
+//!
+//! The security properties the fused endpoint had are all preserved: user
+//! verification is required (by the step-up ceremony), the promotion is
+//! serialised against concurrent role writes, an already-admin target is
+//! refused inside the critical section, and the change still flows through
+//! `role_change_via_pipeline` with `step_up = true` so `role_change.rego`
+//! governs it (P0.14). What changes is *when* the UV happens — recently, in a
+//! separate request — which is exactly what makes the elevation window
+//! meaningful.
 
 use axum::Json;
 use axum::extract::{Path, State};
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
+use tokio::sync::Mutex;
 
-use vti_common::audit::{AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData};
+use vti_common::audit::{
+    AdminPromotedData, AuditEvent, FieldChange, MemberUpdatedData, RoleChangedData,
+};
 
+use crate::acl::admin::{AdminEntry, get_admin_entry, store_admin_entry};
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry};
 use crate::auth::{AdminAuth, session::now_epoch};
 use crate::error::AppError;
 use crate::members::{Disposition, Member, get_member, store_member};
 use crate::routes::members::read::MemberResponse;
 use crate::server::AppState;
+
+/// Serialises admin promotions per-process. Inherited from the retired
+/// `promote-to-admin` endpoint, where it closed the window between the
+/// already-admin check and the ACL write; the same window exists here.
+static PROMOTE_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Body of the PATCH request. Every field is optional; a request
 /// with no fields is a no-op (200 with the current row).
@@ -54,8 +84,9 @@ pub struct UpdateMemberRequest {
     responses(
         (status = 200, description = "Updated member record", body = MemberResponse),
         (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin / role change denied by policy"),
+        (status = 403, description = "Caller is not an admin / role change denied by policy / step-up required for role=admin"),
         (status = 404, description = "Member not found"),
+        (status = 409, description = "Target is already an admin"),
     ),
 )]
 pub async fn update_member(
@@ -65,16 +96,22 @@ pub async fn update_member(
     Json(req): Json<UpdateMemberRequest>,
 ) -> Result<Json<MemberResponse>, AppError> {
     vti_common::identifier::validate_did("did", &did)?;
-    // Role=Admin is forbidden on this surface — it routes to the
-    // separate promote-to-admin endpoint (spec §10.4), where the
-    // role-change policy's step-up branch is reached. Catch it early so
-    // the response carries an operator-friendly hint.
-    if matches!(req.role, Some(VtcRole::Admin)) {
-        return Err(AppError::Validation(format!(
-            "role=admin is not assignable via PATCH /v1/members/{{did}}; \
-             use POST /v1/members/{did}/promote-to-admin (spec §10.4) \
-             so the step-up UV ceremony fires."
-        )));
+
+    let promoting = matches!(req.role, Some(VtcRole::Admin));
+    if promoting {
+        // Self-promotion was refused by the fused endpoint and stays refused:
+        // admin elevation needs a second person, not just a second factor.
+        if auth.0.did == did {
+            return Err(AppError::Validation(
+                "you cannot promote yourself; admin elevation requires a separate admin caller"
+                    .into(),
+            ));
+        }
+        // The gate that makes this safe. Checked before any work so a caller
+        // without a live elevation gets the `step_up_required` signal — which
+        // the admin UI turns into a passkey prompt — rather than a partial
+        // update.
+        auth.0.require_fresh_step_up(&state.sessions_ks).await?;
     }
 
     let audit_writer = state
@@ -163,27 +200,87 @@ pub async fn update_member(
         _ => None,
     };
     if let Some(new_role) = role_change {
+        // Serialise promotions per-process so a concurrent PATCH racing this
+        // one can't smuggle a role mutation in between the already-admin
+        // re-check and the ACL write. Held across the ceremony because that is
+        // what performs the write. fjall isn't multi-process safe, so a
+        // process-wide lock is the right granularity.
+        let _guard = if promoting {
+            Some(PROMOTE_LOCK.lock().await)
+        } else {
+            None
+        };
+
+        // Re-read under the lock: the pre-flight `acl` above was fetched
+        // before it was taken, so an interleaved promotion could have landed
+        // since. Refusing here keeps admin promotion idempotent-or-conflict
+        // rather than silently re-promoting.
+        if promoting {
+            let current = get_acl_entry(&state.acl_ks, &did)
+                .await?
+                .ok_or_else(|| AppError::NotFound(format!("member not found: {did}")))?;
+            if current.role == VtcRole::Admin {
+                return Err(AppError::Conflict(format!("{did} is already an admin")));
+            }
+        }
+
         let granted = crate::ceremony::role_change_via_pipeline(
             &state,
             &auth.0.did,
             &did,
             &acl.role.to_string(),
             &new_role.to_string(),
-            // PATCH carries no reauth — the step-up path is the
-            // promote-to-admin endpoint, which passes `true`.
-            false,
+            // A verified reauth accompanies this change only when we gated on
+            // one above. The policy's "admin with a verified step-up" branch
+            // reads this; a tightened policy (quorum, tenure) can still deny.
+            promoting,
         )
         .await?;
-        audit_writer
-            .write(
-                &auth.0.did,
-                Some(&did),
-                AuditEvent::RoleChanged(RoleChangedData {
-                    previous_role: granted.previous_role,
-                    new_role: granted.new_role,
-                }),
-            )
-            .await?;
+
+        if promoting {
+            // The admin sister record lets the new admin enrol a device
+            // through the existing passkey flow. Empty credential list until
+            // `admin/passkeys/register` runs.
+            if get_admin_entry(&state.passkey_ks, &did).await?.is_none() {
+                store_admin_entry(
+                    &state.passkey_ks,
+                    &AdminEntry {
+                        did: did.clone(),
+                        passkeys: Vec::new(),
+                        extensions: JsonValue::Null,
+                        created_at: Utc::now(),
+                    },
+                )
+                .await?;
+            }
+            // Its own variant, not `RoleChanged`: admin elevation is the
+            // highest-privilege grant the community emits and SIEM rules
+            // target it directly. `authorising_session_id` is the join key to
+            // the `AuthSteppedUp` row that records which credential asserted
+            // user verification.
+            audit_writer
+                .write(
+                    &auth.0.did,
+                    Some(&did),
+                    AuditEvent::AdminPromoted(AdminPromotedData {
+                        previous_role: granted.previous_role,
+                        authorising_credential_id: String::new(),
+                        authorising_session_id: auth.0.session_id.clone(),
+                    }),
+                )
+                .await?;
+        } else {
+            audit_writer
+                .write(
+                    &auth.0.did,
+                    Some(&did),
+                    AuditEvent::RoleChanged(RoleChangedData {
+                        previous_role: granted.previous_role,
+                        new_role: granted.new_role,
+                    }),
+                )
+                .await?;
+        }
     }
 
     if !fields_changed.is_empty() {

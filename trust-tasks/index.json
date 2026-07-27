@@ -199,9 +199,10 @@
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
-      "status": "draft",
+      "status": "retired",
       "path": "members/promote-to-admin/1.0",
-      "rest": "POST /v1/members/{did}/promote-to-admin/{start,finish}"
+      "rest": "POST /v1/members/{did}/promote-to-admin/{start,finish}",
+      "supersededBy": "https://trusttasks.org/spec/vtc/members/update/0.1"
     },
     {
       "id": "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0",

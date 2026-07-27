@@ -1,9 +1,9 @@
 //! Integration coverage for `/v1/members/*` (Phase 1 M1.4–M1.6).
 //!
-//! Tests the wire shapes + auth gates of the list/show/update +
-//! promote-to-admin endpoints. The full UV ceremony for
-//! promote-to-admin needs the WebAuthn soft authenticator and
-//! lives separately (mirrors the admin/passkeys test split).
+//! Tests the wire shapes + auth gates of the list/show/update
+//! endpoints, including the step-up gate on promotion to admin. The
+//! passkey ceremony that produces the elevation needs the WebAuthn soft
+//! authenticator and lives in `tests/passkey_step_up.rs`.
 
 mod common;
 
@@ -25,17 +25,20 @@ const REMOVED_TASK: &str = "https://trusttasks.org/spec/vtc/members/removed/0.1"
 const PURGE_TASK: &str = "https://trusttasks.org/spec/vtc/members/purge/0.1";
 const SHOW_TASK: &str = "https://trusttasks.org/spec/vtc/members/show/0.1";
 const UPDATE_TASK: &str = "https://trusttasks.org/spec/vtc/members/update/0.1";
-const PROMOTE_TASK: &str = "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0";
 
 const ADMIN_DID: &str = "did:key:zAdmin1";
 
 struct Fixture {
     router: axum::Router,
+    /// An ordinary admin session: `aal1`, no step-up elevation. Enough for
+    /// every members operation *except* promotion to admin.
     admin_token: String,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
     #[allow(dead_code)]
     join_requests_ks: KeyspaceHandle,
+    jwt_keys: std::sync::Arc<vti_common::auth::jwt::JwtKeys>,
+    sessions_ks: KeyspaceHandle,
     // Owns the temp data dir + serves `router`'s state; must outlive them.
     _vtc: TestVtc,
 }
@@ -117,14 +120,61 @@ async fn build_fixture() -> Fixture {
     let join_requests_ks = vtc.state.join_requests_ks.clone();
     let router = vtc.router.clone();
 
+    let jwt_keys = vtc.jwt_keys.clone();
+    let sessions_ks = vtc.state.sessions_ks.clone();
+
     Fixture {
         router,
         admin_token,
         acl_ks,
         members_ks,
         join_requests_ks,
+        jwt_keys,
+        sessions_ks,
         _vtc: vtc,
     }
+}
+
+/// A second admin session carrying a **live step-up elevation** — what the
+/// passkey step-up ceremony leaves behind, and the only thing that can promote
+/// someone to admin. `elevation` is the window's remaining lifetime; pass a
+/// past instant to build a lapsed one.
+async fn stepped_up_admin_token(fix: &Fixture, remaining_secs: i64) -> String {
+    let now = vtc_service::auth::session::now_epoch();
+    let session_id = format!("stepped-up-{remaining_secs}");
+    store_session(
+        &fix.sessions_ks,
+        &Session {
+            session_id: session_id.clone(),
+            did: ADMIN_DID.into(),
+            challenge: String::new(),
+            state: SessionState::Authenticated,
+            created_at: now,
+            last_seen: now,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+            amr: vec!["passkey".into()],
+            acr: "aal2".into(),
+            acr_expires_at: Some(now.saturating_add_signed(remaining_secs)),
+            token_id: None,
+            session_pubkey_b58btc: None,
+        },
+    )
+    .await
+    .unwrap();
+    let claims = fix
+        .jwt_keys
+        .new_claims(
+            ADMIN_DID.into(),
+            session_id,
+            "admin".into(),
+            vec![],
+            3600,
+            true,
+        )
+        .with_aal(vec!["passkey".into()], "aal2");
+    fix.jwt_keys.encode(&claims).unwrap()
 }
 
 async fn seed_member(fix: &Fixture, did: &str, role: VtcRole) {
@@ -420,7 +470,11 @@ async fn patch_member_role_member_to_moderator_succeeds_and_emits_audit() {
 }
 
 #[tokio::test]
-async fn patch_member_role_admin_is_refused_with_promote_hint() {
+async fn patch_member_role_admin_requires_a_fresh_step_up() {
+    // The load-bearing gate. An ordinary admin session — even one that reached
+    // `aal2` at sign-in — cannot promote; only a session carrying a live
+    // step-up elevation can. Refused with `step_up_required`, not a generic
+    // forbidden, so the admin UI knows to run the passkey ceremony.
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
 
@@ -433,12 +487,60 @@ async fn patch_member_role_admin_is_refused_with_promote_hint() {
         Some(json!({ "role": "admin" })),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
-    let msg = body.to_string();
-    assert!(
-        msg.contains("promote-to-admin"),
-        "expected operator hint, got {msg}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert_eq!(body["error"], "step_up_required", "got {body}");
+
+    // Unchanged — a refused promotion must not half-apply.
+    let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.role, VtcRole::Member);
+}
+
+#[tokio::test]
+async fn patch_member_role_admin_refuses_a_lapsed_step_up() {
+    // The window is the point: a step-up from an hour ago is no step-up.
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let token = stepped_up_admin_token(&fix, -1).await;
+
+    let (status, body) = send(
+        &fix.router,
+        "PATCH",
+        "/v1/members/did:key:zM1",
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "got {body}");
+    assert_eq!(body["error"], "step_up_required", "got {body}");
+}
+
+#[tokio::test]
+async fn patch_member_role_admin_promotes_with_a_live_step_up() {
+    let fix = build_fixture().await;
+    seed_member(&fix, "did:key:zM1", VtcRole::Member).await;
+    let token = stepped_up_admin_token(&fix, 900).await;
+
+    let (status, body) = send(
+        &fix.router,
+        "PATCH",
+        "/v1/members/did:key:zM1",
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["role"], "admin");
+
+    let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zM1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.role, VtcRole::Admin);
 }
 
 #[tokio::test]
@@ -481,20 +583,24 @@ async fn patch_member_404_for_unknown_did() {
 }
 
 // ---------------------------------------------------------------------------
-// M1.6 — promote-to-admin pre-flight (full UV ceremony is in
-// `tests/admin_passkeys.rs`-style harness coverage, separate)
+// Admin promotion — the checks the retired fused `promote-to-admin` endpoint
+// carried, now on `PATCH /v1/members/{did}`. The UV half moved to the
+// `auth/passkey/login` step-up ceremony (`tests/passkey_step_up.rs`).
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn promote_rejects_caller_promoting_themselves() {
+    // A second factor proves who you are, not that a second person agreed.
+    // Self-promotion stays refused even with a live elevation.
     let fix = build_fixture().await;
+    let token = stepped_up_admin_token(&fix, 900).await;
     let (status, body) = send(
         &fix.router,
-        "POST",
-        &format!("/v1/members/{ADMIN_DID}/promote-to-admin/start"),
-        PROMOTE_TASK,
-        Some(&fix.admin_token),
-        None,
+        "PATCH",
+        &format!("/v1/members/{ADMIN_DID}"),
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
@@ -505,30 +611,48 @@ async fn promote_rejects_caller_promoting_themselves() {
 #[tokio::test]
 async fn promote_404_for_non_member_target() {
     let fix = build_fixture().await;
+    let token = stepped_up_admin_token(&fix, 900).await;
     let (status, _) = send(
         &fix.router,
-        "POST",
-        "/v1/members/did:key:zNobody/promote-to-admin/start",
-        PROMOTE_TASK,
-        Some(&fix.admin_token),
-        None,
+        "PATCH",
+        "/v1/members/did:key:zNobody",
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn promote_409_when_target_is_already_admin() {
+async fn promoting_an_existing_admin_is_an_idempotent_no_op() {
+    // A deliberate change from the retired endpoint, which 409'd here.
+    // `POST …/promote-to-admin` was imperative — "perform a promotion" — and
+    // promoting an existing admin is meaningless. `PATCH` is declarative:
+    // "the role should be admin", which it already is. Succeeding is the
+    // honest answer, and it makes a retried request safe.
+    //
+    // The 409 that mattered is still there: it guards the *race*, raised by
+    // the re-check under `PROMOTE_LOCK` when a concurrent promotion lands
+    // between this handler's read and its write.
     let fix = build_fixture().await;
     seed_member(&fix, "did:key:zSecondAdmin", VtcRole::Admin).await;
-    let (status, _) = send(
+    let token = stepped_up_admin_token(&fix, 900).await;
+    let (status, body) = send(
         &fix.router,
-        "POST",
-        "/v1/members/did:key:zSecondAdmin/promote-to-admin/start",
-        PROMOTE_TASK,
-        Some(&fix.admin_token),
-        None,
+        "PATCH",
+        "/v1/members/did:key:zSecondAdmin",
+        UPDATE_TASK,
+        Some(&token),
+        Some(json!({ "role": "admin" })),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["role"], "admin");
+
+    let entry = vtc_service::acl::get_acl_entry(&fix.acl_ks, "did:key:zSecondAdmin")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.role, VtcRole::Admin);
 }

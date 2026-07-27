@@ -391,6 +391,27 @@ impl AuthClaims {
         ))
     }
 
+    /// Require this caller's session to carry a **live** step-up elevation —
+    /// the same rule [`StepUpAuth`] enforces, for routes where only *some*
+    /// requests need it.
+    ///
+    /// A whole-route extractor can't express "this PATCH needs a fresh second
+    /// factor only when it promotes someone to admin". Both paths run
+    /// `check_fresh_step_up`, so the in-handler gate can't drift from the
+    /// extractor's; the only difference is that this one re-reads the session
+    /// (the extractor already had it in hand).
+    ///
+    /// A missing session is a refusal, not a pass.
+    pub async fn require_fresh_step_up(&self, sessions: &KeyspaceHandle) -> Result<(), AppError> {
+        let session = get_session(sessions, &self.session_id)
+            .await?
+            .ok_or_else(|| {
+                warn!(session_id = %self.session_id, "step-up rejected: session not found");
+                AppError::StepUpRequired("operation requires a recent step-up".into())
+            })?;
+        check_fresh_step_up(self, &session)
+    }
+
     /// Require the caller to be a super admin (Admin + unrestricted).
     pub fn require_super_admin(&self) -> Result<(), AppError> {
         if self.is_super_admin() {
@@ -492,31 +513,35 @@ impl<S: AuthState> FromRequestParts<S> for StepUpAuth {
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let (claims, session) = authenticate(parts, state).await?;
-
-        if claims.acr != "aal2" {
-            warn!(
-                did = %claims.did,
-                acr = %claims.acr,
-                "auth rejected: step-up (aal2) required",
-            );
-            return Err(AppError::StepUpRequired(
-                "operation requires a stepped-up (aal2) session".into(),
-            ));
-        }
-
-        if !session.elevation_active(now_epoch()) {
-            warn!(
-                did = %claims.did,
-                acr_expires_at = ?session.acr_expires_at,
-                "auth rejected: step-up elevation absent or lapsed",
-            );
-            return Err(AppError::StepUpRequired(
-                "operation requires a recent step-up; re-run the step-up ceremony".into(),
-            ));
-        }
-
+        check_fresh_step_up(&claims, &session)?;
         Ok(StepUpAuth(claims))
     }
+}
+
+/// The step-up rule itself, so the extractor and the in-handler check below
+/// can never drift apart.
+fn check_fresh_step_up(claims: &AuthClaims, session: &Session) -> Result<(), AppError> {
+    if claims.acr != "aal2" {
+        warn!(
+            did = %claims.did,
+            acr = %claims.acr,
+            "auth rejected: step-up (aal2) required",
+        );
+        return Err(AppError::StepUpRequired(
+            "operation requires a stepped-up (aal2) session".into(),
+        ));
+    }
+    if !session.elevation_active(now_epoch()) {
+        warn!(
+            did = %claims.did,
+            acr_expires_at = ?session.acr_expires_at,
+            "auth rejected: step-up elevation absent or lapsed",
+        );
+        return Err(AppError::StepUpRequired(
+            "operation requires a recent step-up; re-run the step-up ceremony".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Extractor that requires the caller to be a super admin (Admin role with

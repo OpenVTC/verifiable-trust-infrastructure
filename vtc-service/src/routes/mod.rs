@@ -728,14 +728,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(members::remove::admin_remove),
             "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
         ))
-        .routes(tt(
-            routes!(members::promote::promote_start),
-            "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
-        ))
-        .routes(tt(
-            routes!(members::promote::promote_finish),
-            "https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0",
-        ))
         // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
         // accept / status live on the governed branch (`build_unauth_routes`,
         // P0.5). The admin GET list shares the `/join-requests` path with

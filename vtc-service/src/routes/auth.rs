@@ -23,7 +23,7 @@ use crate::error::AppError;
 use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, SessionRevokedData, SignedOutData};
+use vti_common::audit::{AuditEvent, AuthSteppedUpData, SessionRevokedData, SignedOutData};
 use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
@@ -881,6 +881,26 @@ async fn step_up_finish(
     session.acr_expires_at = Some(expires_at);
     session.last_seen = now;
     crate::auth::session::update_session(&state.sessions_ks, &session).await?;
+
+    // The user-verification gesture is the authority for whatever privileged
+    // operation follows inside the window — and since the promote-to-admin
+    // fold, that operation is a *different request*. Record the credential
+    // here; the operation records the session id, and the two rows join.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &binding.did,
+                Some(&binding.session_id),
+                AuditEvent::AuthSteppedUp(AuthSteppedUpData {
+                    session_id: binding.session_id.clone(),
+                    credential_id: hex::encode(<_ as AsRef<[u8]>>::as_ref(auth_result.cred_id())),
+                    acr: session.acr.clone(),
+                    expires_at: chrono::DateTime::from_timestamp(expires_at as i64, 0)
+                        .unwrap_or_default(),
+                }),
+            )
+            .await?;
+    }
 
     info!(
         did = %binding.did,
