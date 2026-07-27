@@ -1,10 +1,11 @@
 #![allow(clippy::result_large_err)]
 
-//! The VTC join-request **Trust Task document** dispatcher.
+//! The VTC member-facing **Trust Task document** dispatcher.
 //!
 //! This is the wire adapter the join ceremony grew up into: each holder- or
 //! public-facing verb (`submit`/`request`, `accept`, `manifest`, `status`)
-//! is a [`trust_tasks_rs::TrustTask`] document. The success reply is a
+//! is a [`trust_tasks_rs::TrustTask`] document, as are the member-initiated
+//! `members/self-remove` and `members/vmc`. The success reply is a
 //! framework `#response` document (a [`VerdictResponse`] for `submit`, a
 //! read body for `accept`/`manifest`/`status`); every failure — invalid
 //! VIC, expired, malformed, duplicate — is a framework `trust-task-error`
@@ -40,6 +41,7 @@ use vti_common::error::AppError;
 use vta_sdk::protocols::join_requests::{
     self as jr, JoinRequestStatusBody, JoinRequestSubmitBody, VerdictResponse,
 };
+use vta_sdk::protocols::members::{self as mem, MemberVmcBody, MemberVmcReceiptBody};
 
 use crate::join::{JoinSubmitOutcome, JoinTransport};
 use crate::server::AppState;
@@ -113,6 +115,8 @@ pub(crate) async fn dispatch_trust_task_core(
         jr::JOIN_REQUEST_ACCEPT_TYPE => handle_accept(state, ctx, doc).await,
         jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc).await,
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
+        jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
+        mem::MEMBER_VMC_TYPE => handle_member_vmc(state, ctx, doc).await,
         other => reject_with(
             &doc,
             RejectReason::UnsupportedType {
@@ -122,14 +126,21 @@ pub(crate) async fn dispatch_trust_task_core(
     }
 }
 
-/// The join-request Trust Task URIs this dispatcher routes. Kept in lockstep
-/// with the `match` above by the `dispatcher_routes_every_join_uri` test.
+/// The Trust Task URIs this dispatcher routes. Kept in lockstep with the
+/// `match` above by the `dispatcher_routes_every_dispatched_uri` test.
+///
+/// This set is also exactly what is reachable **over TSP**, since the TSP
+/// inbound path (#833) hands every frame to this dispatcher and has no
+/// protocol-message surface behind it. A verb that is not here is a verb a
+/// member cannot perform over TSP.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
     jr::JOIN_REQUEST_ACCEPT_TYPE,
     jr::JOIN_REQUEST_MANIFEST_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
+    jr::MEMBER_SELF_REMOVE_TYPE,
+    mem::MEMBER_VMC_TYPE,
 ];
 
 /// Resolve the proven holder DID for a holder-bound verb. DIDComm → the
@@ -355,23 +366,118 @@ async fn handle_status(
     }
 }
 
+// ─── members ─────────────────────────────────────────────────────────────
+
+/// `members/self-remove/0.1` as a Trust Task document — the member-initiated
+/// leave (R-L-1).
+///
+/// Same spine as the DIDComm protocol-message handler
+/// (`messaging::member_self_remove_handler`): actor == subject, and the leave
+/// policy allows self-leave unconditionally (spec §10.2) with the
+/// no-last-admin invariant still enforced in the effect stage. What the
+/// document form adds is reach — a member can now perform it over **any**
+/// transport this dispatcher serves, TSP included, rather than DIDComm only.
+///
+/// The bare-body handler stays for existing senders; both produce the same
+/// receipt payload, so a migrating client sees no behaviour change.
+async fn handle_self_remove(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: jr::SelfRemoveBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+    let disposition = match body
+        .disposition
+        .as_deref()
+        .map(crate::messaging::parse_disposition)
+        .transpose()
+    {
+        Ok(d) => d,
+        Err(reason) => return reject_with(&doc, RejectReason::MalformedRequest { reason }),
+    };
+
+    match crate::ceremony::orchestrate::remove_inner(
+        state,
+        &member_did,
+        &member_did,
+        disposition,
+        String::new(),
+    )
+    .await
+    {
+        Ok(outcome) => success_response(
+            &doc,
+            jr::SelfRemoveReceiptBody {
+                did: outcome.did,
+                disposition: outcome.disposition,
+                removed: outcome.removed,
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
+/// `members/vmc/0.1` as a Trust Task document — a member submits their
+/// reciprocal VMC (the member → community half of the membership pair).
+///
+/// Same spine as the DIDComm handler: `receive_member_vmc_inner` verifies the
+/// issuer / subject binding and the DI proof before storing it on the member
+/// row. The proven member comes from [`resolve_holder`], so the authenticated
+/// identity is the transport's (DIDComm authcrypt sender / TSP sender VID) or
+/// the document proof signer — never a self-asserted `issuer`.
+async fn handle_member_vmc(
+    state: &AppState,
+    ctx: &JoinAuthCtx,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    let member_did = match resolve_holder(ctx, &doc).await {
+        Ok(did) => did,
+        Err(reject) => return reject,
+    };
+    let body: MemberVmcBody = match parse_payload(&doc) {
+        Ok(b) => b,
+        Err(reject) => return reject,
+    };
+
+    match crate::members::inbound_vmc::receive_member_vmc_inner(state, member_did, body.vc).await {
+        Ok(outcome) => success_response(
+            &doc,
+            MemberVmcReceiptBody {
+                member_did: outcome.member_did,
+                vmc_id: outcome.vmc_id,
+                status: "stored".to_string(),
+            },
+        ),
+        Err(e) => app_error_to_reject(&doc, &e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Every URI the dispatcher declares as routed must be one of the SDK's
-    /// join-request request URIs, and vice-versa — so a new verb can't be
+    /// member-facing request URIs, and vice-versa — so a new verb can't be
     /// added to one side without the other.
     #[test]
-    fn dispatcher_routes_every_join_uri() {
+    fn dispatcher_routes_every_dispatched_uri() {
         let sdk = [
             jr::JOIN_REQUEST_SUBMIT_TYPE,
             jr::JOIN_REQUEST_ACCEPT_TYPE,
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
+            jr::MEMBER_SELF_REMOVE_TYPE,
+            mem::MEMBER_VMC_TYPE,
         ];
         for u in DISPATCHED_URIS {
-            assert!(sdk.contains(u), "dispatched URI not a known join URI: {u}");
+            assert!(sdk.contains(u), "dispatched URI not a known SDK URI: {u}");
         }
         assert_eq!(DISPATCHED_URIS.len(), sdk.len());
     }
@@ -379,10 +485,26 @@ mod tests {
     /// The request URIs must parse as framework `TypeUri`s (the `/spec/`
     /// path shape), otherwise an inbound document would never deserialise.
     #[test]
-    fn join_uris_are_canonical_type_uris() {
+    fn dispatched_uris_are_canonical_type_uris() {
         for u in DISPATCHED_URIS {
             let parsed: Result<trust_tasks_rs::TypeUri, _> = u.parse();
-            assert!(parsed.is_ok(), "join URI is not a canonical TypeUri: {u}");
+            assert!(
+                parsed.is_ok(),
+                "dispatched URI is not a canonical TypeUri: {u}"
+            );
+        }
+    }
+
+    /// The two member verbs are what #185 needs over TSP, and the TSP inbound
+    /// path reaches a verb only through this dispatcher — so their absence
+    /// would be an `UnsupportedType` on the wire, not a compile error.
+    #[test]
+    fn member_verbs_are_dispatched() {
+        for u in [jr::MEMBER_SELF_REMOVE_TYPE, mem::MEMBER_VMC_TYPE] {
+            assert!(
+                DISPATCHED_URIS.contains(&u),
+                "member verb not reachable over TSP: {u}"
+            );
         }
     }
 }
