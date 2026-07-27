@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+### vtc-service 0.11.31 — admin passkeys move to the canonical `auth/passkey/*` tasks
+
+The `/v1/admin/passkeys/*` surface leaves the retired `openvtc/vtc/` authority
+for the canonical tasks published in trust-tasks-tf#145 (`trust-tasks-rs`
+0.2.38 → 0.2.39). Three of the eight entries in `AWAITING_CANONICAL_FOLD` are
+gone; #710 and #709 shrink accordingly.
+
+**No wire change.** The canonical specs were written *from* this
+implementation, not the other way round, so request and response bodies are
+byte-identical. Only the `type` URIs moved.
+
+**One task per ceremony leg, where there used to be one per family.**
+`admin/passkeys/register/1.0` covered both `register/start` and
+`register/finish`; `revoke/1.0` likewise. A single schema spanning both legs
+had to permit the union of their members, so a `finish` arriving without its
+user-verification assertion still validated against the family task. Each leg
+now names its own task:
+
+| Endpoint | Task |
+|---|---|
+| `GET /v1/admin/passkeys` | `auth/passkey/list/0.1` |
+| `POST …/register/start` | `auth/passkey/enroll/start/0.2` |
+| `POST …/register/finish` | `auth/passkey/enroll/finish/0.2` |
+| `POST …/revoke/start` | `auth/passkey/revoke/start/0.1` |
+| `POST …/revoke/finish` | `auth/passkey/revoke/finish/0.1` |
+
+Because a mount split means every caller must be audited *per leg* rather than
+renamed in bulk, all four binding sites were walked individually — the router,
+`tests/admin_passkeys.rs` (19 call sites), `tests/install_flow.rs` (3), and the
+`myPasskeys` admin-UI plugin (4). The negative test that deliberately sends the
+wrong task to `register/start` still sends a wrong one.
+
+**The recorded blocker was wrong.** These three sat in
+`AWAITING_CANONICAL_FOLD` needing "a `confirm/1.0` gate". `confirm/request` is
+an *asynchronous* delegation whose response returns out of band on the
+approver's own transport — appropriate when the approver is a separate party,
+wrong here. This surface verifies the user *in-band, in the same request*, via
+WebAuthn, and always did. `enroll/*` moves to 0.2 because that is the version
+carrying the optional `uvOptions` / `uvCredential` members which describe the
+re-authentication half this code already performs.
+
+The superseded `admin/passkeys/{list,register,revoke}/1.0` are marked `retired`
+with `supersededBy` in `trust-tasks/` and `index.json`, per SPEC §5.3.
+
 ### vtc-service 0.11.30 — audit checkpoints honour their own signing key
 
 `verify_checkpoint_state` resolved every `verificationMethod` to the VTC's

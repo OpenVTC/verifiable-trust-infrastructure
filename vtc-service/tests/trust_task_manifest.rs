@@ -335,18 +335,17 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
         "admin/config/import/1.0",
         "canonical config/import — blocked; communityProfileDiff is structural",
     ),
-    (
-        "admin/passkeys/list/1.0",
-        "canonical auth/passkey/list — blocked, spec not yet proposed upstream",
-    ),
-    (
-        "admin/passkeys/register/1.0",
-        "canonical auth/passkey/enroll/{start,finish} + confirm/1.0 gate",
-    ),
-    (
-        "admin/passkeys/revoke/1.0",
-        "canonical passkey-revoke + confirm/1.0 gate; needs the list spec first",
-    ),
+    // The three `admin/passkeys/*` entries are GONE, folded onto the
+    // canonical `auth/passkey/{list,enroll/*,revoke/*}` tasks authored in
+    // trust-tasks-tf#145.
+    //
+    // Their recorded blocker was wrong, which is why they sat here so long.
+    // The note said each needed a `confirm/1.0` gate; `confirm/request` is an
+    // ASYNCHRONOUS delegation whose response returns out of band on the
+    // approver's own transport. This surface never needed that — it verifies
+    // the user in-band, in the same request, via WebAuthn. The canonical specs
+    // were written from this implementation rather than the other way round,
+    // so the fold changed URIs and nothing else.
     (
         "auth/admin-login/1.0",
         "canonical auth/authenticate; the cookie side-effect moves to a binding/ext",

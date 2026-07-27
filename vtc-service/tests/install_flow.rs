@@ -45,9 +45,9 @@ const RP_ORIGIN: &str = "https://vtc.example.com";
 const CLAIM_START_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/start/0.1";
 const CLAIM_FINISH_TASK: &str = "https://trusttasks.org/spec/vtc/install/claim/finish/0.1";
 const BOOTSTRAP_TASK: &str = "https://trusttasks.org/spec/vtc/admin/bootstrap/0.1";
-const PASSKEY_REGISTER_TASK: &str =
-    "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0";
-const PASSKEY_LIST_TASK: &str = "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
+const ENROLL_START_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
+const ENROLL_FINISH_TASK: &str = "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
+const LIST_TASK: &str = "https://trusttasks.org/spec/auth/passkey/list/0.1";
 const COMMUNITY_PROFILE_TASK: &str = "https://trusttasks.org/spec/vtc/community/profile/show/0.1";
 const ADMIN_CONFIG_PATCH_TASK: &str = "https://trusttasks.org/spec/config/patch/0.1";
 const RESTART_TASK: &str = "https://trusttasks.org/spec/config/restart/0.1";
@@ -287,7 +287,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/start",
-        PASSKEY_REGISTER_TASK,
+        ENROLL_START_TASK,
         Some(&admin_token),
         Some(json!({})),
     )
@@ -306,7 +306,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         &fix.router,
         "POST",
         "/v1/admin/passkeys/register/finish",
-        PASSKEY_REGISTER_TASK,
+        ENROLL_FINISH_TASK,
         Some(&admin_token),
         Some(json!({
             "registration_id": reg_id,
@@ -326,7 +326,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
         &fix.router,
         "GET",
         "/v1/admin/passkeys",
-        PASSKEY_LIST_TASK,
+        LIST_TASK,
         Some(&admin_token),
         None,
     )

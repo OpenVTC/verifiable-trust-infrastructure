@@ -1,7 +1,8 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0
 title: VTC Admin — Revoke Passkey
-status: draft
+status: retired
+supersededBy: https://trusttasks.org/spec/auth/passkey/revoke/start/0.1
 version: "1.0"
 authors:
   - did:webvh:openvtc.org
@@ -11,6 +12,16 @@ applies_to:
 ---
 
 # VTC Admin — Revoke Passkey
+
+> **Retired.** Folded onto the canonical `auth/passkey/*` tasks
+> (trust-tasks-tf#145); each ceremony leg now carries its own task,
+> where this one covered a whole family:
+>
+>   - `POST /v1/admin/passkeys/revoke/start` -> `https://trusttasks.org/spec/auth/passkey/revoke/start/0.1`
+>   - `POST /v1/admin/passkeys/revoke/finish` -> `https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1`
+>
+> No wire change — the canonical specs were written from this
+> implementation. Only the task URIs moved.
 
 Two-phase ceremony that removes a registered WebAuthn passkey from
 the caller's admin DID. Spec §4.3:

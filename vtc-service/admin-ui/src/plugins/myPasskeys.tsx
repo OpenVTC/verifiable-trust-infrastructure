@@ -23,12 +23,18 @@ import {
   type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
-const TRUST_TASK_LIST =
-  "https://trusttasks.org/openvtc/vtc/admin/passkeys/list/1.0";
-const TRUST_TASK_REGISTER =
-  "https://trusttasks.org/openvtc/vtc/admin/passkeys/register/1.0";
-const TRUST_TASK_REVOKE =
-  "https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0";
+// Canonical `auth/passkey/*` tasks (trust-tasks-tf#145). One task per
+// ceremony leg — the retired `admin/passkeys/{register,revoke}/1.0` pair
+// had start and finish sharing a URI.
+const TRUST_TASK_LIST = "https://trusttasks.org/spec/auth/passkey/list/0.1";
+const TRUST_TASK_ENROLL_START =
+  "https://trusttasks.org/spec/auth/passkey/enroll/start/0.2";
+const TRUST_TASK_ENROLL_FINISH =
+  "https://trusttasks.org/spec/auth/passkey/enroll/finish/0.2";
+const TRUST_TASK_REVOKE_START =
+  "https://trusttasks.org/spec/auth/passkey/revoke/start/0.1";
+const TRUST_TASK_REVOKE_FINISH =
+  "https://trusttasks.org/spec/auth/passkey/revoke/finish/0.1";
 
 
 interface RegisteredPasskey {
@@ -70,7 +76,7 @@ async function registerPasskey(args: {
   const start = await postJson<RegisterStartResponse>(
     "/v1/admin/passkeys/register/start",
     undefined,
-    { trustTask: TRUST_TASK_REGISTER },
+    { trustTask: TRUST_TASK_ENROLL_START },
   );
 
   const createPublicKey = decodePublicKeyOptions(
@@ -102,7 +108,7 @@ async function registerPasskey(args: {
       label: args.label,
       transports: [],
     },
-    { trustTask: TRUST_TASK_REGISTER },
+    { trustTask: TRUST_TASK_ENROLL_FINISH },
   );
 }
 
@@ -112,7 +118,7 @@ async function revokePasskey(args: {
   const start = await postJson<RevokeStartResponse>(
     "/v1/admin/passkeys/revoke/start",
     { credential_id: args.credentialId },
-    { trustTask: TRUST_TASK_REVOKE },
+    { trustTask: TRUST_TASK_REVOKE_START },
   );
 
   const uvPublicKey = decodePublicKeyOptions(
@@ -131,7 +137,7 @@ async function revokePasskey(args: {
       revocation_id: start.revocationId,
       uv_response: serializeAssertion(uvCred),
     },
-    { trustTask: TRUST_TASK_REVOKE },
+    { trustTask: TRUST_TASK_REVOKE_FINISH },
   );
 }
 
