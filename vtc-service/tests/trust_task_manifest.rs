@@ -5,7 +5,7 @@
 //! previously checked it against the code, so it drifted in both directions:
 //! entries for tasks no route binds, and live routes the manifest never
 //! published. Publication now happens upstream, against canonical
-//! `spec/vtc/*` slugs — see [`every_bound_vtc_task_exists_in_the_registry`],
+//! `spec/vtc/*` slugs — see [`every_bound_canonical_task_exists_in_the_registry`],
 //! which is the assertion that matters for anything shipping today.
 //!
 //! Task bindings are attached as tower layers (`tt` / `ttl` in
@@ -62,7 +62,7 @@ const UNBOUND_OK: &[(&str, &str)] = &[];
 /// authoring twenty specs into this manifest. They were resolved by the #710
 /// migration: every one of those tasks now binds a canonical
 /// `https://trusttasks.org/spec/vtc/<slug>` URI published by the upstream
-/// registry, which [`every_bound_vtc_task_exists_in_the_registry`] verifies
+/// registry, which [`every_bound_canonical_task_exists_in_the_registry`] verifies
 /// against `trust_tasks_rs` rather than against anything local.
 ///
 /// So the backlog did not get published here; the surface it described moved
@@ -391,37 +391,146 @@ fn no_new_bindings_on_the_retired_authority() {
     );
 }
 
-/// Every `spec/vtc/` URI the code binds must be one the registry actually
-/// publishes.
+/// Families binding the canonical authority that the registry does not publish,
+/// with the **exact** number of unpublished URIs each currently has.
+///
+/// Binding `https://trusttasks.org/spec/<slug>` asserts the registry serves
+/// that slug. An entry here is an admission that it does not — kept visible and
+/// counted rather than silently tolerated.
+///
+/// **The count is asserted, which is what makes a family-level exception safe.**
+/// Listing 68 URIs individually would be unreadable; excluding a whole family
+/// without a count would let the next unpublished task in it pass unnoticed,
+/// which is the failure mode this assertion exists to prevent. Pinning the
+/// number means the debt can only shrink: publish some upstream and the count
+/// drops (update it here); add a new unpublished one and the count rises and
+/// this test fails.
+///
+/// Widening the assertion below from `spec/vtc/` to the whole `spec/` authority
+/// (#821) is what produced this list. **None of it was previously checked by
+/// anything.**
+const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
+    // Not a dispatchable task: the framework's error envelope is a *response*
+    // type, deliberately absent from the task index, so `schema_for` will never
+    // resolve it. This entry is permanent — the others are debt.
+    (
+        "https://trusttasks.org/spec/trust-task-error/",
+        1,
+        "framework error envelope — a response type, not a task; absent from the task index by design",
+    ),
+    // The vault + credential-store archival lifecycle (PR #540): archive,
+    // unarchive, restore, purge over both stores. Authored as local
+    // "openvtc 0.1 extensions" and never taken upstream, so each claims a
+    // `trusttasks.org/spec/vault/` ID the registry does not serve. The registry
+    // publishes vault {delete,get,list,proxy-login,release,sign-trust-task,
+    // sync,upsert,usage} — and none of these.
+    (
+        "https://trusttasks.org/spec/vault/",
+        12,
+        "vault + credential-store archival lifecycle (#540) — never authored upstream",
+    ),
+    // The bulk of the VTA's own Trust Task surface at 1.0 — keys, contexts,
+    // backup, seeds, acl, audit, attestation, config, discovery, management,
+    // provision-integration, and the webvh dids / servers / agent-name
+    // families. The registry publishes 22 `vta/*` tasks (did-templates,
+    // credentials, memory, passkey-vms, webvh/dids/update); the workspace binds
+    // 77.
+    (
+        "https://trusttasks.org/spec/vta/",
+        55,
+        "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it",
+    ),
+];
+
+/// Every `trusttasks.org/spec/` URI the code binds must be one the registry
+/// actually publishes.
 ///
 /// Cross-checked against the generated `trust_tasks_rs` schema index rather
 /// than a hand-maintained list, so it tracks the published registry: a typo, a
 /// stale slug, or a task repointed to a spec that was never authored all fail
 /// here instead of at runtime. `schema_for` returning `None` means this build
 /// of the registry crate knows no such task.
+///
+/// **Scoped to the whole `spec/` authority, not one family (#821).** This
+/// checked only the `spec/vtc/` prefix until the `credential-exchange` family
+/// showed what that costs: five of its specs existed solely as files in this
+/// repo while claiming a `trusttasks.org` ID no consumer could resolve, and
+/// three more bound URIs had no spec anywhere at all. Every one of them passed
+/// this test, because none of them started with `spec/vtc/`.
+///
+/// A per-family prefix is the wrong shape for the assertion — it defends the
+/// family someone remembered to name, and silently exempts the next one. The
+/// claim being tested is about the *authority*: if we bind a
+/// `trusttasks.org/spec/` URI, we are asserting the registry serves it.
 #[test]
-fn every_bound_vtc_task_exists_in_the_registry() {
-    const SPEC_PREFIX: &str = "https://trusttasks.org/spec/vtc/";
+fn every_bound_canonical_task_exists_in_the_registry() {
+    const SPEC_PREFIX: &str = "https://trusttasks.org/spec/";
     let root = workspace_root();
     let mut bound = BTreeSet::new();
     for crate_src in BINDING_SITES {
         collect_prefixed(&root.join(crate_src), SPEC_PREFIX, &mut bound);
     }
+    // Narrowing to the whole `spec/` authority catches strings that are not
+    // task URIs at all, so filter on the shape the registry actually defines:
+    // a Type URI ends in a `MAJOR.MINOR` segment (SPEC §6.1). One rule, two
+    // classes excluded — family *prefixes* used to build or assert URIs
+    // (`https://trusttasks.org/spec/vault/`, from `vta-sdk`'s
+    // `ALLOWED_PREFIXES`), and shared schema `$id`s, which are components
+    // rather than tasks and are deliberately absent from the task index
+    // (`vault/_shared/0.1/vault-secret`).
+    bound.retain(|uri| {
+        uri.rsplit('/')
+            .next()
+            .is_some_and(|last| match last.split_once('.') {
+                Some((major, minor)) => {
+                    !major.is_empty()
+                        && !minor.is_empty()
+                        && major.bytes().all(|b| b.is_ascii_digit())
+                        && minor.bytes().all(|b| b.is_ascii_digit())
+                }
+                None => false,
+            })
+    });
     assert!(
         !bound.is_empty(),
-        "found no spec/vtc/ bindings at all — the scan is broken, not the code"
+        "found no spec/ task bindings at all — the scan is broken, not the code"
     );
 
-    let unknown: Vec<_> = bound
+    let missing: Vec<_> = bound
         .iter()
         .filter(|uri| trust_tasks_rs::schema_index::schema_for(uri).is_none())
         .cloned()
         .collect();
+
+    // Excepted families: the count must match exactly, so the debt can shrink
+    // but never grow unnoticed.
+    for (family, expected, reason) in UNPUBLISHED_CANONICAL_OK {
+        let actual = missing.iter().filter(|u| u.starts_with(family)).count();
+        assert_eq!(
+            actual, *expected,
+            "{family} has {actual} unpublished URIs, expected {expected} ({reason}).\n\n\
+             If it went DOWN, some were published upstream — lower the count here.\n\
+             If it went UP, a new URI was bound on an authority the registry does \
+             not serve. Author the spec upstream, or bind an authority we control; \
+             raising this number is the wrong fix."
+        );
+    }
+
+    let unknown: Vec<_> = missing
+        .into_iter()
+        .filter(|uri| {
+            !UNPUBLISHED_CANONICAL_OK
+                .iter()
+                .any(|(family, _, _)| uri.starts_with(family))
+        })
+        .collect();
     assert!(
         unknown.is_empty(),
-        "these spec/vtc/ URIs are bound but the registry (trust-tasks-rs \
-         {}) publishes no such task:\n  {}\n\nEither the slug is wrong or the \
-         spec was never authored upstream.",
+        "these trusttasks.org/spec/ URIs are bound but the registry \
+         (trust-tasks-rs {}) publishes no such task:\n  {}\n\nEither the slug \
+         is wrong or the spec was never authored upstream. Binding a \
+         `trusttasks.org/spec/` URI asserts the registry serves it — author \
+         the spec upstream, or bind an authority we control.",
         env!("CARGO_PKG_VERSION"),
         unknown.join("\n  ")
     );

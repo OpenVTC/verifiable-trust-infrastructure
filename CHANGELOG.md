@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.8 / vta-service 0.12.43 / vtc-service 0.11.37 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
+
+The eight `credential-exchange` Trust Tasks now bind URIs the registry actually
+publishes (`trust-tasks-rs` 0.2.41, authored in trust-tasks-tf#148). Five of
+them previously existed **only** as files in this repo while claiming a
+`trusttasks.org` ID no consumer could resolve; the other three —
+`pending-list`, `pending-approve`, `pending-deny` — had no spec anywhere at all.
+
+**Breaking wire changes** on all eight:
+
+- Renumbered `1.0` → `0.1`, matching how the rest of the registry versions.
+- `pending-list` / `pending-approve` / `pending-deny` are nested as
+  `pending/{list,approve,deny}`. The family now reads as what it is: a
+  party-to-party wire protocol, plus an operator surface over the consent
+  backlog it generates.
+- **`PendingPresentationSummary` and `RequestedCredentialSummary` serialize
+  camelCase.** Every member of those two is ours, so the registry's casing
+  convention applies — `verifier_did` → `verifierDid`, `created_at` →
+  `createdAt`, `credential_query_id` → `credentialQueryId`. The OID4VCI /
+  OID4VP bodies keep snake_case: `credential_offer`, `dcql_query`, `vp_token`
+  are those specifications' own field names, not casing drift. The *stored*
+  deferral record is unchanged — it is fjall-persisted internal state, not a
+  wire type, and renaming it would need a migration for no benefit.
+
+There are no external consumers of these constants, so the rename is free.
+`trust-tasks/credential-exchange/` is deleted: the specs live upstream now, and
+keeping a second copy is how the two drift.
+
+### The guard that should have caught this
+
+`every_bound_vtc_task_exists_in_the_registry` only ever checked the
+`spec/vtc/` prefix, which is why eight URIs on the same authority went
+unverified. It is now
+`every_bound_canonical_task_exists_in_the_registry` and checks **every**
+`https://trusttasks.org/spec/` URI the workspace binds. A per-family prefix is
+the wrong shape for the assertion: it defends the family someone remembered to
+name and silently exempts the next one. The claim being tested is about the
+*authority* — binding a `trusttasks.org/spec/` URI asserts the registry serves
+it.
+
+Widening it required distinguishing a task URI from other strings sharing the
+prefix, which is done by shape: a Type URI ends in a `MAJOR.MINOR` segment
+(SPEC §6.1). That one rule excludes family prefixes used to build or assert
+URIs (`vta-sdk`'s `ALLOWED_PREFIXES`) and shared-schema `$id`s, which are
+components rather than tasks.
+
+**It immediately found 67 more.** All pre-existing, none introduced here:
+
+| Family | Unpublished | What |
+|---|---:|---|
+| `spec/vta/` | 55 | The bulk of the VTA's own Trust Task surface at 1.0 — keys, contexts, backup, seeds, acl, audit, attestation, config, discovery, management, provision-integration, webvh dids/servers/agent-name. The registry publishes 22 `vta/*` tasks; the workspace binds 77. |
+| `spec/vault/` | 12 | The vault + credential-store archival lifecycle (#540), authored as local "openvtc 0.1 extensions" and never taken upstream. |
+
+Plus `spec/trust-task-error/0.1`, which is a permanent and legitimate
+exception — the framework's error *envelope* is a response type, deliberately
+absent from the task index.
+
+These are recorded in `UNPUBLISHED_CANONICAL_OK` as family-level exceptions
+**with asserted counts**. Listing 68 URIs individually would be unreadable;
+excluding a family without a count would let the next unpublished task in it
+pass unnoticed, which is the failure this assertion exists to prevent. Pinning
+the number means the debt can only shrink — publish some upstream and the count
+drops, add a new unpublished one and the test fails.
+
+Nothing here is a runtime defect: the bindings work. They reference specs no
+consumer can fetch, which is a published-authority claim we are not yet
+entitled to make.
+
 ### vtc-service 0.11.36 — the VTC accepts Trust Tasks over TSP
 
 TSP frames already reached the VTC: the delivery-layer `DidCommTransport` owns the
