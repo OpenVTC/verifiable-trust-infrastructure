@@ -2,6 +2,106 @@
 
 ## Unreleased
 
+### vti-common 0.11.26 / vtc-service 0.11.32 / vta-service 0.12.40 — step-up means *recent*, and admin promotion uses it
+
+`StepUpAuth` gated on `acr == "aal2"` and nothing else. That reads as "this
+session reached two factors at some point", not "a second factor was confirmed
+for this operation" — and the two diverge badly, because a passkey sign-in is
+`aal2` from its very first request and refresh preserves it for the session's
+whole life. A route behind that gate would have accepted a sign-in from an hour
+ago, losing the property such routes exist for: that a stolen session cannot,
+by itself, authorise the next privileged operation.
+
+Freshness already had a home — `Session.acr_expires_at`, which the VTA's
+step-up ceremony stamps and the intrinsic-sender (DIDComm/TSP) resolver honours
+by downgrading `acr` on read. Its own doc named the missing half: *"a later
+phase wires REST into the same read-time downgrade."* This is that phase, and
+it does not need a new JWT claim — the `AuthClaims` extractor already loads the
+session row for the `jti` pin.
+
+**`StepUpAuth` now requires a live elevation window** as well as `aal2`, read
+straight off the session. An absent deadline is **refused**, not waved through:
+an unknown elevation time must never read as a recent one. REST deliberately
+does *not* copy the intrinsic path's read-time `acr` rewrite — the gate reads
+the deadline directly, so a stale `acr` can never satisfy it, and a passkey
+login stays honestly reported as `aal2` instead of being downgraded below the
+level it logged in at. `Session::elevation_active` /
+`downgrade_lapsed_elevation` put both readings in one place.
+
+Nothing regresses: `StepUpAuth` had no call sites, and every other extractor is
+untouched.
+
+**`purpose: stepUp` is now implemented** on the VTC's passkey-login pair, which
+moves from `spec/auth/passkey/login/{start,finish}/0.1` to `/0.2` (the camelCase
+`stepUp` enum; the 0.1 constants in `vta-sdk` are already deprecated). A comment
+in `routes/mod.rs` claimed the payload's `purpose` field already selected between
+login and step-up — no handler read it.
+
+A step-up is not a login with a flag, and the differences are the security
+content:
+
+| | `purpose: login` | `purpose: stepUp` |
+|---|---|---|
+| Caller | unauthenticated — the ceremony *is* the auth | must already hold the session |
+| Credentials challenged | every registered passkey (discoverable) | **only the caller's own** |
+| User verification | as the authenticator offers | **required** — a silent assertion is one factor |
+| Result | a new session + tokens | the existing session elevated in place, **no** tokens |
+
+The ceremony is bound at `start` to the session that asked for it and re-checked
+at `finish` against both the session id and its subject, because neither of
+`start`'s arrangements is load-bearing on its own: `allowCredentials` is a
+client-side hint, and the token presented at `finish` need not be the one
+presented at `start`. Without the subject re-check, any enrolled admin's passkey
+would elevate anyone's session.
+
+`subject` is honoured rather than noted: it narrows a login challenge, and a
+step-up naming anyone but the authenticated subject is refused.
+
+Operator-visible: the elevation lasts 15 minutes (matching the VTA's
+`STEP_UP_ELEVATION_TTL_SECS`), reported to the client as
+`ext["org.openvtc.step-up"].expiresAt`.
+
+#### Breaking — `promote-to-admin` folds onto `members/update`
+
+`POST /v1/members/{did}/promote-to-admin/{start,finish}` is **removed**. Admin
+promotion is `PATCH /v1/members/{did}` with `{"role": "admin"}`
+(`spec/vtc/members/update/0.1`), on a session carrying a live step-up
+elevation. `openvtc/vtc/members/promote-to-admin/1.0` is `retired`,
+`supersededBy` the canonical task, and leaves `AWAITING_CANONICAL_FOLD`.
+
+The fused endpoint bundled a WebAuthn UV *ceremony* with a role-change
+*operation*: one URI carrying two tasks' worth of semantics, a second
+implementation of passkey UV alongside `auth/passkey/login`, and a proof of
+user presence that could authorise exactly one operation and nothing else.
+
+Every security property carried over — UV required, the caller's own passkey,
+self-promotion refused, serialised under `PROMOTE_LOCK`, the already-admin
+re-check inside the critical section, and still routed through
+`role_change_via_pipeline(step_up = true)` so `role_change.rego` governs it
+(P0.14). What changed is *when* the UV happens: recently, in its own request,
+which is what makes the window mean anything.
+
+Two deliberate differences:
+
+- **The authorising credential id** moved off `AdminPromoted` onto a new
+  `AuthSteppedUp` audit event emitted by the ceremony itself. `AdminPromoted`
+  gains `authorisingSessionId`, which joins the two rows. Both new fields are
+  `#[serde(default)]`, so archived envelopes from either side of the fold
+  deserialise.
+- **Promoting an existing admin is a `200` no-op**, not a `409`. `POST
+  …/promote-to-admin` was imperative and promoting an existing admin is
+  meaningless; `PATCH` is declarative — the role *should be* admin, and it
+  already is — so a retried request is safe. The `409` that mattered still
+  guards the concurrent-promotion race.
+
+The recorded plan for this fold named `acl/change-role` as the target. It does
+not hold: that task is bound to `PATCH /v1/acl/{did}`, a bare ACL write that
+never runs `role_change.rego` and serves non-member ACL rows (integrations,
+install DIDs). Routing admin promotion through it would have reintroduced the
+P0.14 policy bypass. `members/update` already ran the ceremony.
+
+The admin SPA is updated in lockstep — it steps up, then PATCHes.
+
 ### vta-sdk 0.20.2 — TSP is a per-surface leg, not a whole-client transport
 
 A consumer holding a DIDComm session could not use TSP at all. The only way to
@@ -63,6 +163,7 @@ forever.
 Verified live against the deployed VTA (a trust task dispatched over the DIDComm
 session's socket, reply correlated back) and hermetically over the embedded
 `TestMediator` in `tests/e2e/tests/tsp_dual_leg.rs`.
+
 
 ### vtc-service 0.11.31 — admin passkeys move to the canonical `auth/passkey/*` tasks
 

@@ -111,12 +111,26 @@ pub enum AuditEvent {
     /// paths separate).
     RoleChanged(RoleChangedData),
 
-    /// `POST /v1/members/{did}/promote-to-admin` finished with
-    /// a successful step-up UV ceremony. Spec §10.4 makes this
-    /// its own variant (distinct from `RoleChanged`) so SIEM
-    /// rules can target it; admin elevation is the highest-
-    /// privilege grant the community emits.
+    /// A role change reached `admin`. Spec §10.4 makes this its own
+    /// variant (distinct from `RoleChanged`) so SIEM rules can target
+    /// it; admin elevation is the highest-privilege grant the
+    /// community emits.
+    ///
+    /// The authorising user-verification is recorded on its own
+    /// [`AuthSteppedUp`](Self::AuthSteppedUp) row, joined by
+    /// `authorising_session_id`. See [`AdminPromotedData`].
     AdminPromoted(AdminPromotedData),
+
+    /// A passkey step-up ceremony elevated a session — the
+    /// user-verification event that authorises whatever privileged
+    /// operation follows inside the elevation window.
+    ///
+    /// Emitted where the gesture actually happens, which since the
+    /// promote-to-admin fold is not the same request as the operation
+    /// it authorises. Recording it separately is what keeps the chain
+    /// of authority auditable across an API split: this row names the
+    /// credential, the operation's row names the session.
+    AuthSteppedUp(AuthSteppedUpData),
 
     /// `POST /v1/join-requests` (REST or DIDComm) accepted a
     /// well-formed submission and persisted it as `Pending`. The
@@ -402,6 +416,7 @@ impl AuditEvent {
             Self::MemberUpdated(..) => "MemberUpdated",
             Self::RoleChanged(..) => "RoleChanged",
             Self::AdminPromoted(..) => "AdminPromoted",
+            Self::AuthSteppedUp(..) => "AuthSteppedUp",
             Self::JoinRequestSubmitted(..) => "JoinRequestSubmitted",
             Self::JoinRequestApproved(..) => "JoinRequestApproved",
             Self::JoinRequestRejected(..) => "JoinRequestRejected",
@@ -740,11 +755,40 @@ pub struct RoleChangedData {
 pub struct AdminPromotedData {
     /// Role the member held immediately before promotion.
     pub previous_role: String,
-    /// Credential id of the passkey used in the step-up UV
-    /// ceremony that authorised the promotion. Spec §10.4 calls
-    /// out the UV requirement; recording the credential id makes
-    /// the chain of authority auditable.
+    /// Credential id of the passkey whose UV authorised the promotion.
+    ///
+    /// Populated when the ceremony and the promotion were the same request
+    /// (the retired fused `promote-to-admin` endpoint). Since the fold, the UV
+    /// happens in a separate step-up ceremony, so this is empty and
+    /// `authorising_session_id` is the link to the
+    /// [`AuthSteppedUp`](AuditEvent::AuthSteppedUp) row carrying the
+    /// credential. Retained rather than removed so archived envelopes still
+    /// deserialise — `#[serde(default)]` on both fields means rows written on
+    /// either side of the fold read back cleanly.
+    #[serde(default)]
     pub authorising_credential_id: String,
+    /// Session whose live step-up elevation authorised this promotion. Join
+    /// key to the `AuthSteppedUp` row for the credential and the moment of
+    /// user verification.
+    #[serde(default)]
+    pub authorising_session_id: String,
+}
+
+/// Payload for [`AuditEvent::AuthSteppedUp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthSteppedUpData {
+    /// The elevated session. Privileged operations performed inside the
+    /// window record this id, so a reviewer can walk from an operation back to
+    /// the gesture that authorised it.
+    pub session_id: String,
+    /// Credential id (hex) of the passkey that asserted user verification.
+    pub credential_id: String,
+    /// Assurance level the session now holds.
+    pub acr: String,
+    /// When the elevation lapses. After this, the same session must re-run the
+    /// ceremony before it can authorise anything else.
+    pub expires_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

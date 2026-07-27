@@ -1,61 +1,60 @@
 ---
 id: https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0
-title: VTC Members — Promote to Admin
-status: draft
+title: VTC Members — Promote to Admin (retired)
+status: retired
 version: "1.0"
+supersededBy: https://trusttasks.org/spec/vtc/members/update/0.1
 authors:
   - did:webvh:openvtc.org
-applies_to:
-  - rest: POST /v1/members/{did}/promote-to-admin/start
-  - rest: POST /v1/members/{did}/promote-to-admin/finish
+applies_to: []
 ---
 
-# VTC Members — Promote to Admin
+# VTC Members — Promote to Admin (retired)
 
-Two-phase ceremony that promotes an existing member to
-`VtcRole::Admin`. Spec §10.4 keeps this path distinct from the
-generic `PATCH /v1/members/{did}` so admin elevation is the
-highest-privilege grant the community emits — SIEM rules target
-the `AdminPromoted` audit variant specifically.
+**Retired.** `POST /v1/members/{did}/promote-to-admin/{start,finish}` no
+longer exists. Admin promotion is
+[`spec/vtc/members/update/0.1`](https://trusttasks.org/spec/vtc/members/update/0.1)
+— `PATCH /v1/members/{did}` with `{"role": "admin"}` — on a session carrying a
+live step-up elevation.
 
-## Authentication
+## Why it was retired
 
-`AdminAuth` on both endpoints. The `finish` step adds a step-up
-WebAuthn user-verification (UV) ceremony against the caller's
-already-registered passkeys.
+This task fused two things that are separately meaningful: a WebAuthn
+user-verification *ceremony* and a role-change *operation*. That gave one URI
+two tasks' worth of semantics, and put a second implementation of passkey UV
+alongside `auth/passkey/login`. It also meant the proof of user presence could
+authorise exactly one operation and nothing else.
 
-## /start
+Splitting them makes the elevation a first-class, reusable property of the
+session:
 
-Mints a UV challenge against the caller's passkeys. Returns:
+1. **Step up** — `auth/passkey/login/{start,finish}/0.2` with
+   `purpose: stepUp`. Verifies the caller's own passkey with UV and stamps a
+   bounded elevation window on their session.
+2. **Promote** — `spec/vtc/members/update/0.1` with `{"role": "admin"}`, which
+   requires that window to still be open.
 
-```
-{ "registrationId": "<uuid>", "options": <PublicKeyCredentialRequestOptions> }
-```
+## What carried over
 
-Pre-flight refusals (no UV ceremony issued):
+Every security property of the fused ceremony:
 
-- `400 Bad Request` — caller is the target DID.
-- `404 Not Found` — target is not a current member.
-- `409 Conflict` — target is already an admin.
+| Property | Where it lives now |
+|---|---|
+| User verification required | the step-up ceremony (`purpose: stepUp`) |
+| UV is the caller's *own* passkey | step-up binds the ceremony to the session and re-checks the subject |
+| Self-promotion refused | `PATCH /v1/members/{did}` |
+| Serialised against concurrent role writes | `PROMOTE_LOCK` in the PATCH handler |
+| Already-admin re-check under the lock | same — raised as `409` on the race |
+| Governed by `role_change.rego` | `role_change_via_pipeline(step_up = true)` (P0.14) |
+| Admin sister record created | the PATCH handler |
+| `AdminPromoted` audit variant | the PATCH handler |
 
-## /finish
+## What changed
 
-Verifies the UV response, then atomically:
-
-1. Sets `acl:<target>.role = Admin`.
-2. Creates `admin:<target>` sister record (empty passkey list —
-   the new admin enrols devices via the existing passkey routes).
-3. Emits `AdminPromoted` audit envelope with the authorising
-   credential id.
-
-Re-checks the "already-admin" invariant under
-`PROMOTE_LOCK` so a concurrent PATCH cannot smuggle in an
-out-of-band role mutation between start + finish.
-
-## Errors
-
-- `400 Bad Request` — self-promotion.
-- `401 Unauthorized` — UV state expired / failed.
-- `403 Forbidden` — caller has no enrolled passkey to perform UV.
-- `404 Not Found` — target removed between start + finish.
-- `409 Conflict` — target became admin between start + finish.
+- **The authorising credential id** moved off `AdminPromoted` and onto its own
+  `AuthSteppedUp` audit row, emitted by the step-up ceremony. `AdminPromoted`
+  now carries `authorisingSessionId`, which joins the two. Archived envelopes
+  from before the fold still deserialise.
+- **Promoting an existing admin is a `200` no-op**, not a `409`. `PATCH` is
+  declarative — the role *should be* admin, and it already is — so a retried
+  request is safe. The `409` still guards the concurrent-promotion race.

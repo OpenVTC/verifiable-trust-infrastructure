@@ -426,12 +426,13 @@ pub(super) async fn handle_approve_response(
         session.amr.push(factor.to_string());
     }
     session.acr = target.to_string(); // ≤ granted, enforced above
-    // Bound the elevation. For an intrinsic-sender (DIDComm/TSP) session — whose
-    // acr is read straight off this row on every subsequent message — the window
-    // is what stops a single approval from granting permanent aal2:
-    // `resolve_did_session` downgrades back to aal1 once it lapses. A REST
-    // session ignores this field for now (its short access-token TTL bounds
-    // elevation); a later phase wires REST into the same read-time downgrade.
+    // Bound the elevation. The window is what stops a single approval from
+    // granting permanent aal2, on both transports:
+    // - intrinsic-sender (DIDComm/TSP) reads `acr` straight off this row on
+    //   every subsequent message, so `resolve_did_session` downgrades it back
+    //   to aal1 once the deadline passes;
+    // - REST's `StepUpAuth` reads this deadline directly, so a lapsed window
+    //   fails the gate without the row needing to be rewritten.
     session.acr_expires_at = Some(now_epoch().saturating_add(STEP_UP_ELEVATION_TTL_SECS));
     if let Err(e) = update_session(&state.sessions_ks, &session).await {
         return reject_with(

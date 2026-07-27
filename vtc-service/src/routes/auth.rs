@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use trust_tasks_rs::TrustTask;
+use trust_tasks_rs::specs::auth::passkey::login::start::v0_2 as start_spec;
 use trust_tasks_rs::specs::auth::refresh::v0_1 as refresh;
 use uuid::Uuid;
 
@@ -22,7 +23,7 @@ use crate::error::AppError;
 use crate::routes::acl::as_vti_acl_entry;
 use crate::server::AppState;
 use tracing::{info, warn};
-use vti_common::audit::{AuditEvent, SessionRevokedData, SignedOutData};
+use vti_common::audit::{AuditEvent, AuthSteppedUpData, SessionRevokedData, SignedOutData};
 use vti_common::store::KeyspaceHandle;
 
 // ---------- POST /auth/challenge ----------
@@ -441,6 +442,9 @@ pub async fn admin_session(
 ///
 /// Unauthenticated by design: the eventual `finish` ceremony
 /// proves possession of an enrolled credential, which is the auth.
+///
+/// The same canonical task also serves **AAL step-up**, selected by
+/// [`purpose`](PasskeyLoginStartRequest::purpose) — see that field.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[derive(utoipa::ToSchema)]
@@ -450,26 +454,104 @@ pub struct PasskeyLoginStartResponse {
     pub options: webauthn_rs::prelude::RequestChallengeResponse,
 }
 
+/// Request body for `passkey-login/start`, per
+/// `spec/auth/passkey/login/start/0.2`.
+///
+/// Entirely optional — the admin SPA's login posts no body at all, which reads
+/// as `purpose: login`, the pre-existing behaviour.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PasskeyLoginStartRequest {
+    /// `login` (default) issues a new session; `stepUp` elevates the caller's
+    /// existing one. The two differ in more than bookkeeping: a step-up must be
+    /// authenticated, and challenges **only the caller's own** credentials, so
+    /// another admin's passkey cannot satisfy it.
+    #[serde(default)]
+    #[schema(value_type = String)]
+    pub purpose: Option<start_spec::PayloadPurpose>,
+    /// The VID the producer intends to authenticate as. Optional — omit for
+    /// the usernameless / discoverable-credential flow the admin SPA uses.
+    ///
+    /// When given it is **honoured, not noted**: a login challenge is narrowed
+    /// to that subject's credentials, and a step-up that names anyone other
+    /// than the authenticated session's subject is refused rather than quietly
+    /// answered for the session holder.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Vendor-namespaced extensions per SPEC.md §4.5.1. Accepted and ignored,
+    /// which is what the framework asks of a consumer that defines no
+    /// extensions — the field exists so `deny_unknown_fields` doesn't reject a
+    /// spec-conformant producer that sends one.
+    #[serde(default)]
+    #[schema(value_type = Object)]
+    #[allow(dead_code)]
+    pub ext: Option<serde_json::Value>,
+}
+
 /// `POST /v1/auth/passkey-login/start` — issue a WebAuthn assertion
-/// challenge across every registered passkey. Unauthenticated.
+/// challenge. Unauthenticated for `purpose: login`; requires a session for
+/// `purpose: stepUp`.
 #[utoipa::path(
     post, path = "/auth/passkey-login/start", tag = "auth",
+    request_body = Option<PasskeyLoginStartRequest>,
     responses(
         (status = 200, description = "WebAuthn assertion challenge", body = PasskeyLoginStartResponse),
-        (status = 401, description = "WebAuthn not configured or no passkeys registered"),
+        (status = 401, description = "WebAuthn not configured, no passkeys registered, or step-up requested without a session"),
     ),
 )]
 pub async fn passkey_login_start(
+    auth: Option<AuthClaims>,
     State(state): State<AppState>,
+    body: Option<Json<PasskeyLoginStartRequest>>,
 ) -> Result<Json<PasskeyLoginStartResponse>, AppError> {
-    use vti_common::auth::passkey::store::{get_all_passkeys, store_auth_state};
+    use vti_common::auth::passkey::store::{
+        StepUpBinding, get_all_passkeys, store_auth_state, store_auth_step_up,
+    };
+
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let stepping_up = matches!(req.purpose, Some(start_spec::PayloadPurpose::StepUp));
 
     let webauthn = state
         .webauthn
         .as_ref()
         .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
 
-    let passkeys = get_all_passkeys(&state.passkey_ks).await?;
+    // Which credentials may answer the challenge is the whole difference
+    // between the two purposes. A login is discoverable across every
+    // registered passkey — the user picks their device. A step-up asserts that
+    // *this* session's holder is present, so only their own credentials count;
+    // widening it to every admin's passkey would let any operator standing at
+    // the machine elevate someone else's session.
+    let (passkeys, binding) = if stepping_up {
+        let claims = auth.ok_or_else(|| {
+            AppError::Unauthorized(
+                "step-up requires an authenticated session; sign in first".into(),
+            )
+        })?;
+        // A step-up authenticates whoever holds the session. Naming a different
+        // subject is a contradiction, not a hint to ignore — refuse it rather
+        // than run a ceremony that would elevate someone the caller didn't ask
+        // for.
+        if let Some(subject) = &req.subject
+            && subject != &claims.did
+        {
+            return Err(AppError::Validation(format!(
+                "step-up subject {subject} does not match the authenticated session ({})",
+                claims.did
+            )));
+        }
+        let user = credentials_for(&state, &claims.did).await?;
+        let binding = StepUpBinding {
+            session_id: claims.session_id.clone(),
+            did: claims.did.clone(),
+        };
+        (user, Some(binding))
+    } else if let Some(subject) = &req.subject {
+        (credentials_for(&state, subject).await?, None)
+    } else {
+        (get_all_passkeys(&state.passkey_ks).await?, None)
+    };
+
     if passkeys.is_empty() {
         warn!("passkey login refused: no passkeys registered");
         return Err(AppError::Authentication(
@@ -482,11 +564,20 @@ pub async fn passkey_login_start(
         .map_err(|e| AppError::Internal(format!("webauthn auth start failed: {e}")))?;
 
     let auth_id = Uuid::new_v4().to_string();
+    // Write the binding *before* the ceremony state: finish reads the state
+    // first and bails when it is absent, so a crash between the two writes
+    // leaves an orphan binding that no ceremony can ever reach — rather than a
+    // live ceremony whose step-up intent was lost, which would finish as a
+    // plain login and mint a fresh session for a step-up request.
+    if let Some(binding) = &binding {
+        store_auth_step_up(&state.passkey_ks, &auth_id, binding).await?;
+    }
     store_auth_state(&state.passkey_ks, &auth_id, &auth_state).await?;
 
     info!(
         auth_id = %auth_id,
         passkey_count = passkeys.len(),
+        purpose = if stepping_up { "stepUp" } else { "login" },
         "passkey login challenge issued"
     );
 
@@ -513,24 +604,27 @@ pub struct PasskeyLoginFinishRequest {
     pub credential: webauthn_rs::prelude::PublicKeyCredential,
 }
 
-/// `POST /v1/auth/passkey-login/finish` — verify the WebAuthn assertion
-/// and mint a cookie session + bearer token. Unauthenticated.
+/// `POST /v1/auth/passkey-login/finish` — verify the WebAuthn assertion and
+/// either mint a cookie session + bearer token (`purpose: login`) or elevate
+/// the caller's existing session (`purpose: stepUp`). Which one it is was
+/// decided at `start`; the client does not get to re-declare it here.
 #[utoipa::path(
     post, path = "/auth/passkey-login/finish", tag = "auth",
     request_body = PasskeyLoginFinishRequest,
     responses(
-        (status = 200, description = "Access + refresh tokens (sets admin session + CSRF cookies)"),
+        (status = 200, description = "Access + refresh tokens (sets admin session + CSRF cookies), or the elevated session for a step-up"),
         (status = 401, description = "Passkey assertion verification failed or credential not registered"),
     ),
 )]
 pub async fn passkey_login_finish(
+    auth: Option<AuthClaims>,
     State(state): State<AppState>,
     Json(req): Json<PasskeyLoginFinishRequest>,
 ) -> Result<axum::response::Response, AppError> {
     use axum::http::HeaderValue;
     use axum::http::header::SET_COOKIE;
     use vti_common::auth::passkey::store::{
-        get_passkey_user_by_cred, store_passkey_user, take_auth_state,
+        get_passkey_user_by_cred, store_passkey_user, take_auth_state, take_auth_step_up,
     };
 
     let webauthn = state
@@ -543,6 +637,9 @@ pub async fn passkey_login_finish(
     let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
         .await?
         .ok_or_else(|| AppError::Authentication("auth state not found or expired".into()))?;
+    // Consumed together with the ceremony state: a replayed `auth_id` finds
+    // neither, so a step-up assertion cannot be spent twice.
+    let step_up = take_auth_step_up(&state.passkey_ks, &req.auth_id).await?;
 
     let auth_result = webauthn
         .finish_passkey_authentication(&req.credential, &auth_state)
@@ -561,6 +658,14 @@ pub async fn passkey_login_finish(
         cred.update_credential(&auth_result);
     }
     store_passkey_user(&state.passkey_ks, &user).await?;
+
+    // Step-up: elevate the session the ceremony was started for. No new
+    // session, no new tokens — the caller's existing ones stay valid and gain
+    // the freshness the elevation window records (spec 0.2: `tokens` is absent
+    // for `purpose: stepUp`).
+    if let Some(binding) = step_up {
+        return step_up_finish(&state, &binding, auth.as_ref(), &user.did, &auth_result).await;
+    }
 
     // Check ACL — the DID must still be authorised; revocation
     // since enrolment is a real path (operator demoted, etc.).
@@ -659,6 +764,168 @@ pub async fn passkey_login_finish(
     );
 
     Ok(response)
+}
+
+/// One subject's registered credentials, for a challenge scoped to them.
+///
+/// Deliberately a `Forbidden`, not a `NotFound`: "this DID has no passkeys" and
+/// "this DID isn't known here" are the same answer to an unauthenticated
+/// caller, so a login `subject` probe learns nothing about who is enrolled.
+async fn credentials_for(
+    state: &AppState,
+    did: &str,
+) -> Result<Vec<webauthn_rs::prelude::Passkey>, AppError> {
+    vti_common::identifier::validate_did("subject", did)?;
+    vti_common::auth::passkey::store::get_passkey_user_by_did(&state.passkey_ks, did)
+        .await?
+        .map(|user| user.credentials)
+        .ok_or_else(|| AppError::Forbidden("no passkeys registered for that subject".into()))
+}
+
+// ---------- passkey step-up ----------
+
+/// How long a step-up elevation stays fresh. Matches the VTA's
+/// `STEP_UP_ELEVATION_TTL_SECS` so an operator sees one re-prompt cadence
+/// across both services.
+///
+/// This window is the point of the whole ceremony: it is what
+/// [`StepUpAuth`](vti_common::auth::extractor::StepUpAuth) reads, and what stops
+/// one passkey gesture from authorising every future privileged operation on
+/// the session.
+const STEP_UP_ELEVATION_TTL_SECS: u64 = 900; // 15m
+
+/// `purpose: stepUp` response — the elevated session, no tokens. Per
+/// `spec/auth/passkey/login/finish/0.2`: the caller's existing tokens remain
+/// valid and pick up the elevation at the next introspection.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyStepUpResponse {
+    /// Always `"stepUp"`. Echoed so a client driving both purposes through one
+    /// task can tell which branch answered without inspecting the shape.
+    pub purpose: String,
+    pub session: WireSession,
+    /// Carries the elevation deadline the client needs to know when to
+    /// re-prompt. Vendor-namespaced per SPEC.md §4.5.1 — the canonical
+    /// `Session` has no field for it.
+    #[schema(value_type = Object)]
+    pub ext: serde_json::Value,
+}
+
+/// Complete a `purpose: stepUp` ceremony: verify the assertion belongs to the
+/// session that asked for it, then stamp a bounded elevation onto that session.
+///
+/// Every check here is a re-check of something `start` already arranged, because
+/// none of `start`'s arrangements are load-bearing on their own: `allowCredentials`
+/// is a client-side hint the browser may ignore, and the bearer token presented
+/// at finish need not be the one presented at start.
+async fn step_up_finish(
+    state: &AppState,
+    binding: &vti_common::auth::passkey::store::StepUpBinding,
+    auth: Option<&AuthClaims>,
+    asserted_did: &str,
+    auth_result: &webauthn_rs::prelude::AuthenticationResult,
+) -> Result<axum::response::Response, AppError> {
+    // 1. The caller must still hold the session this ceremony was minted for.
+    //    Checking the DID as well as the id means a recycled session id cannot
+    //    carry an elevation across subjects.
+    let claims = auth.ok_or_else(|| {
+        AppError::Unauthorized("step-up requires an authenticated session".into())
+    })?;
+    if claims.session_id != binding.session_id || claims.did != binding.did {
+        warn!(
+            presented_session = %claims.session_id,
+            bound_session = %binding.session_id,
+            "step-up rejected: ceremony belongs to a different session",
+        );
+        return Err(AppError::Unauthorized(
+            "step-up challenge was issued for a different session".into(),
+        ));
+    }
+
+    // 2. The passkey that answered must be the session holder's own. `start`
+    //    only offered their credentials, but `allowCredentials` is advisory —
+    //    without this, any admin's passkey would elevate anyone's session.
+    if asserted_did != binding.did {
+        warn!(
+            asserted = %asserted_did,
+            bound = %binding.did,
+            "step-up rejected: assertion came from another subject's passkey",
+        );
+        return Err(AppError::Unauthorized(
+            "the presented passkey does not belong to this session".into(),
+        ));
+    }
+
+    // 3. Possession alone is not a step-up. The elevation to aal2 claims a
+    //    user-verification gesture (PIN / biometric) actually happened; a
+    //    silent assertion is a single factor.
+    if !auth_result.user_verified() {
+        return Err(AppError::Unauthorized(
+            "passkey did not assert user verification (UV); cannot step up".into(),
+        ));
+    }
+
+    // 4. Elevate. Read-modify-write on the live row so we inherit whatever the
+    //    session already carries (tokens, pubkey, tee flag) rather than
+    //    rebuilding it and dropping a field.
+    let mut session = get_session(&state.sessions_ks, &binding.session_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("session not found".into()))?;
+    let now = now_epoch();
+    let expires_at = now.saturating_add(STEP_UP_ELEVATION_TTL_SECS);
+
+    if !session.amr.iter().any(|m| m == "passkey") {
+        session.amr.push("passkey".to_string());
+    }
+    session.acr = "aal2".to_string();
+    session.acr_expires_at = Some(expires_at);
+    session.last_seen = now;
+    crate::auth::session::update_session(&state.sessions_ks, &session).await?;
+
+    // The user-verification gesture is the authority for whatever privileged
+    // operation follows inside the window — and since the promote-to-admin
+    // fold, that operation is a *different request*. Record the credential
+    // here; the operation records the session id, and the two rows join.
+    if let Some(writer) = state.audit_writer.as_ref() {
+        writer
+            .write(
+                &binding.did,
+                Some(&binding.session_id),
+                AuditEvent::AuthSteppedUp(AuthSteppedUpData {
+                    session_id: binding.session_id.clone(),
+                    credential_id: hex::encode(<_ as AsRef<[u8]>>::as_ref(auth_result.cred_id())),
+                    acr: session.acr.clone(),
+                    expires_at: chrono::DateTime::from_timestamp(expires_at as i64, 0)
+                        .unwrap_or_default(),
+                }),
+            )
+            .await?;
+    }
+
+    info!(
+        did = %binding.did,
+        session_id = %binding.session_id,
+        "passkey step-up: session elevated"
+    );
+
+    Ok(Json(PasskeyStepUpResponse {
+        purpose: "stepUp".to_string(),
+        session: WireSession {
+            id: session.session_id.clone(),
+            subject: session.did.clone(),
+            issued_at: epoch_to_rfc3339(session.created_at),
+            // The caller's current access token, not the elevation — the
+            // elevation deadline rides in `ext` because it bounds one
+            // privilege window, not the session.
+            expires_at: epoch_to_rfc3339(claims.access_expires_at),
+            amr: session.amr.clone(),
+            acr: session.acr.clone(),
+        },
+        ext: serde_json::json!({
+            "org.openvtc.step-up": { "expiresAt": epoch_to_rfc3339(expires_at) }
+        }),
+    })
+    .into_response())
 }
 
 /// Build the `vtc_admin_session` cookie value.

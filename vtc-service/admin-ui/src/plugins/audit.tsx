@@ -38,6 +38,7 @@ const EVENT_DESCRIPTIONS: Record<string, string> = {
   MemberUpdated: "Member record updated",
   RoleChanged: "Member role changed",
   AdminPromoted: "Member promoted to admin",
+  AuthSteppedUp: "Session stepped up with a passkey",
   JoinRequestSubmitted: "Applicant submitted a join request",
   JoinRequestApproved: "Join request approved",
   JoinRequestRejected: "Join request rejected",
