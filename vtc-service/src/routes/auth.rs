@@ -213,11 +213,13 @@ async fn authenticate_siop(
     Ok(Some(resp))
 }
 
-/// Core authenticate + mint logic shared by `POST /v1/auth/` and
-/// `POST /v1/auth/admin-login`. Both endpoints accept the same
-/// DIDComm-packed authentication message; `admin-login`
-/// additionally returns `Set-Cookie` headers so the admin SPA can
-/// carry a cookie session beside the bearer token.
+/// Core authenticate + mint logic behind `POST /v1/auth/`.
+///
+/// Accepts either a VTA-wallet SIOP envelope or a DIDComm-packed
+/// authentication message, and returns the bearer `{ session, tokens }`.
+/// A browser SPA that wants the cookie session posts the resulting
+/// access token to `POST /v1/auth/admin-session`; there is no
+/// cookie-minting variant of this endpoint (#710 retired it).
 async fn authenticate_and_mint(
     state: &AppState,
     body: &str,
@@ -277,79 +279,6 @@ async fn authenticate_and_mint(
     .await
 }
 
-// ---------- POST /auth/admin-login ----------
-
-/// `POST /v1/auth/admin-login` (Phase 5 M5.2.3).
-///
-/// Same DIDComm-packed authentication flow as `POST /v1/auth/`,
-/// but the response additionally carries `Set-Cookie` headers so
-/// the admin SPA can drive subsequent requests via the cookie
-/// session:
-///
-/// - `vtc_admin_session=<jwt>; Path=/; SameSite=Strict; Secure;
-///   HttpOnly` — the access token JWT, scoped to the daemon's
-///   whole origin so the browser sends it on `/v1/*` API calls.
-///   `HttpOnly` keeps JS from reading it; `SameSite=Strict`
-///   prevents cross-site CSRF.
-/// - `csrf=<random>; Path=/; SameSite=Strict; Secure` (HttpOnly:
-///   **false** so SPA JS can mirror the value to the
-///   `X-CSRF-Token` header for the double-submit check in
-///   `routing::csrf`).
-///
-/// Programmatic clients (cnm-cli, DIDComm bridges) keep using
-/// `POST /v1/auth/` — same JWT shape, no cookie side effects.
-#[utoipa::path(
-    post, path = "/auth/admin-login", tag = "auth",
-    request_body(content = String, description = "DIDComm/SIOP/Trust-Task authentication document"),
-    responses(
-        (status = 200, description = "Access + refresh tokens (sets admin session + CSRF cookies)"),
-        (status = 401, description = "Authentication failed"),
-    ),
-)]
-pub async fn admin_login(
-    State(state): State<AppState>,
-    body: String,
-) -> Result<axum::response::Response, AppError> {
-    use axum::http::HeaderValue;
-    use axum::http::header::SET_COOKIE;
-    use axum::response::IntoResponse;
-
-    let resp = authenticate_and_mint(&state, &body).await?;
-
-    // Absolute expiry from canonical { session, tokens }: prefer the
-    // helper, fall back to tokens.expires_in (sec-from-issuance) for
-    // older clients of authenticate_and_mint that emit unparseable
-    // issuedAt (shouldn't happen — every minter goes through
-    // epoch_to_rfc3339).
-    let access_expires_at_epoch = resp
-        .access_expires_at_epoch()
-        .unwrap_or_else(|| now_epoch().saturating_add(resp.tokens.expires_in));
-    let max_age = access_expires_at_epoch.saturating_sub(now_epoch()).max(1);
-
-    // Generate a 32-byte CSRF token, hex-encoded. The cookie is
-    // JS-readable (HttpOnly off) so the SPA can echo it back via
-    // the `X-CSRF-Token` header on mutating requests.
-    use rand::RngExt;
-    let mut csrf_bytes = [0u8; 32];
-    rand::rng().fill(&mut csrf_bytes);
-    let csrf = hex::encode(csrf_bytes);
-
-    let session_cookie = build_session_cookie(&resp.tokens.access_token, max_age);
-    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
-
-    let session_cookie_hv = HeaderValue::try_from(session_cookie)
-        .map_err(|e| AppError::Internal(format!("invalid session cookie value: {e}")))?;
-    let csrf_cookie_hv = HeaderValue::try_from(csrf_cookie)
-        .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?;
-
-    let mut response = Json(resp).into_response();
-    let headers = response.headers_mut();
-    headers.append(SET_COOKIE, session_cookie_hv);
-    headers.append(SET_COOKIE, csrf_cookie_hv);
-
-    Ok(response)
-}
-
 // ---------- POST /auth/admin-session ----------
 
 /// Request body for [`admin_session`].
@@ -371,7 +300,15 @@ pub struct AdminSessionRequest {
 /// `vtc_admin_session` cookie + `csrf` double-submit, not an
 /// `Authorization` header. This endpoint bridges the two: it validates the
 /// presented token (signature + VTC audience + expiry) and, on success,
-/// sets the same `Set-Cookie` pair as [`admin_login`].
+/// sets the `vtc_admin_session` + `csrf` cookie pair:
+///
+/// - `vtc_admin_session=<jwt>; Path=/; SameSite=Strict; Secure; HttpOnly` —
+///   the access-token JWT, scoped to the daemon's whole origin so the browser
+///   sends it on `/v1/*` API calls. `HttpOnly` keeps JS from reading it;
+///   `SameSite=Strict` prevents cross-site CSRF.
+/// - `csrf=<random>; Path=/; SameSite=Strict; Secure` (HttpOnly **false**, so
+///   SPA JS can mirror the value into the `X-CSRF-Token` header for the
+///   double-submit check in `routing::csrf`).
 ///
 /// No privilege escalation — the caller must already possess a valid VTC
 /// access token, which it could use directly as a bearer; this only mirrors
@@ -594,8 +531,8 @@ pub async fn passkey_login_start(
 /// Verifies the WebAuthn assertion, looks up the registered
 /// admin DID by credential ID, and mints the cookie session.
 /// Sets the same `vtc_admin_session` + `csrf` cookies as
-/// `admin_login` does for the DIDComm CLI path. Returns the bearer
-/// token in the body for clients that want to also use it
+/// `admin_session` does for the bearer-token bridge. Returns the
+/// bearer token in the body for clients that want to also use it
 /// programmatically.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PasskeyLoginFinishRequest {
@@ -721,7 +658,7 @@ pub async fn passkey_login_finish(
 
     info!(did = %user.did, %session_id, "passkey login successful");
 
-    // Set cookies — same shape as `admin_login`.
+    // Set cookies — same shape as `admin_session`.
     let max_age = minted.access_expires_at.saturating_sub(now_epoch()).max(1);
     let session_cookie = build_session_cookie(&minted.access_token, max_age);
 

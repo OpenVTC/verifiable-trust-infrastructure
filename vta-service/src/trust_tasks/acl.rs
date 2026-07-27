@@ -41,6 +41,7 @@ pub(super) async fn handle_list(
         &state.acl_ks,
         auth,
         req.context.as_deref(),
+        req.direction.unwrap_or_default(),
         TRANSPORT_TRUST_TASK,
     )
     .await

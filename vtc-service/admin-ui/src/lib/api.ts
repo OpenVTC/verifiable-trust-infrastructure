@@ -51,7 +51,7 @@ export interface ApiError {
 
 function csrfTokenFromCookie(): string | null {
   // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
-  // or `/v1/auth/admin-login`). HttpOnly is **not** set on this
+  // or `/v1/auth/admin-session`). HttpOnly is **not** set on this
   // cookie precisely so JS can read it.
   const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
   return match?.[1] ?? null;

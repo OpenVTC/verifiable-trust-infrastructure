@@ -7,7 +7,6 @@ mod auth;
 mod backup;
 mod ceremonies;
 mod community;
-mod config;
 pub(crate) mod did_log;
 mod directory;
 mod endorsement_types;
@@ -384,11 +383,12 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(audit::verify_audit_chain),
             "https://trusttasks.org/spec/audit/verify/0.1",
         ))
-        // Config
-        .routes(tt(
-            routes!(config::get_config, config::update_config),
-            "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
-        ))
+        // Config lives at `/v1/admin/config` on canonical `config/{show,patch}`.
+        // The pre-MVP `GET, PATCH /v1/config` surface is gone (#710): every field
+        // it carried has a canonical owner — `vtc_did` / `vtc_name` /
+        // `vtc_description` on `vtc/community/profile/{show,update}`,
+        // `public_url` in the config-store overlay reached through
+        // `config/{show,patch}`.
         // ACL
         // Each verb carries its own canonical task — the two former
         // combined mounts fan out to the five `acl/*` tasks. Safe
@@ -457,16 +457,19 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(admin::config::restart_config),
             "https://trusttasks.org/spec/config/restart/0.1",
         ))
-        // Export / import (M0.8.4). Export returns the portable
-        // (db-layer overrides + community profile) JSON; import runs
-        // diff-and-confirm via `?confirm=true|false`.
+        // Export / import (M0.8.4), on the canonical `vtc/config/*` tasks
+        // (trust-tasks-tf#147). Export returns the portable document
+        // (db-layer overrides + community profile); import runs
+        // diff-and-confirm via `confirm` **in the payload** — a Trust Task
+        // is one interface over REST, DIDComm and TSP, and only REST has a
+        // query string to carry a flag in.
         .routes(tt(
             routes!(admin::config::export_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/export/1.0",
+            "https://trusttasks.org/spec/vtc/config/export/0.1",
         ))
         .routes(tt(
             routes!(admin::config::import_config),
-            "https://trusttasks.org/openvtc/vtc/admin/config/import/1.0",
+            "https://trusttasks.org/spec/vtc/config/import/0.1",
         ))
         // Install claim endpoints (`/install/claim/start` and
         // `/install/claim/finish`) are unauthenticated and live in
@@ -913,14 +916,14 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
 ///   [`SmartIpKeyExtractor`].
 fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Canonical cross-cutting auth tasks from trusttasks-tf.
-    // Phase 5 M5.2.3 — admin SPA cookie-session mint endpoint. VTC-
-    // specific because the response includes Set-Cookie semantics
-    // (vtc_admin_session + csrf) that the canonical authenticate
-    // doesn't define. Stays under openvtc/vtc/ until the cookie
-    // semantics are absorbed into a binding spec.
-    // Bearer→cookie bridge for the VTA-wallet login: the SPA posts the
-    // wallet-issued access token, the daemon mirrors it into the
-    // `vtc_admin_session` + `csrf` cookies (same shape as admin-login).
+    //
+    // Bearer→cookie bridge: the SPA posts an access token it already
+    // holds (from the VTA-wallet login or `POST /v1/auth/`), the daemon
+    // validates it and mirrors it into the `vtc_admin_session` + `csrf`
+    // cookies. This is the *only* cookie-session mint besides passkey
+    // login — the fused `/v1/auth/admin-login` that authenticated and set
+    // cookies in one call was removed in #710, since it re-implemented
+    // `POST /v1/auth/` to add a side-effect this task already provides.
     // Browser-friendly passkey login — one canonical spec serves both
     // initial login and AAL step-up, selected by the start payload's
     // `purpose` field (0.2's camelCase `stepUp`). Login is genuinely
@@ -993,10 +996,6 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         .routes(tt(
             routes!(auth::refresh),
             "https://trusttasks.org/spec/auth/refresh/0.1",
-        ))
-        .routes(tt(
-            routes!(auth::admin_login),
-            "https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0",
         ))
         .routes(tt(
             routes!(auth::admin_session),
@@ -1308,7 +1307,6 @@ mod openapi_tests {
             "/v1/acl",
             "/v1/acl/{did}",
             "/v1/audit",
-            "/v1/config",
             "/v1/auth/challenge",
             "/v1/auth/sessions",
             "/v1/admin/config",
@@ -1359,7 +1357,6 @@ mod openapi_tests {
         ("POST", "/v1/auth/challenge"),
         ("POST", "/v1/auth/"),
         ("POST", "/v1/auth/refresh"),
-        ("POST", "/v1/auth/admin-login"),
         ("POST", "/v1/auth/admin-session"),
         ("POST", "/v1/auth/passkey-login/start"),
         ("POST", "/v1/auth/passkey-login/finish"),

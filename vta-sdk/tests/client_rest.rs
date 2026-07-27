@@ -578,6 +578,44 @@ async fn list_acl_with_context_query() {
     assert!(resp.entries.is_empty());
 }
 
+/// A non-default direction rides the query string; `list_acl` and an explicit
+/// `acting-in` must stay byte-identical to the historical request, so an older
+/// VTA keeps answering them.
+#[tokio::test]
+async fn list_acl_sends_the_direction_only_when_it_is_not_the_default() {
+    use vta_sdk::acl::ContextDirection;
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/acl"))
+        .and(auth_match())
+        .and(wiremock::matchers::query_param("context", "acme/eng"))
+        .and(wiremock::matchers::query_param("direction", "subtree"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    c.list_acl_in_direction(Some("acme/eng"), ContextDirection::Subtree)
+        .await
+        .unwrap();
+    server.reset().await;
+
+    Mock::given(method("GET"))
+        .and(path("/acl"))
+        .and(auth_match())
+        .and(wiremock::matchers::query_param("context", "acme/eng"))
+        .and(wiremock::matchers::query_param_is_missing("direction"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": []})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    c.list_acl(Some("acme/eng")).await.unwrap();
+    c.list_acl_in_direction(Some("acme/eng"), ContextDirection::ActingIn)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn get_acl_path_encodes_did() {
     let server = MockServer::start().await;

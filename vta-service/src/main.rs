@@ -1240,6 +1240,13 @@ enum AclCommands {
         /// Filter by role (admin, initiator, application, reader)
         #[arg(long)]
         role: Option<String>,
+        /// Which way --context reads along the hierarchy:
+        /// `acting-in` (default — who may act IN the context: entries scoped
+        /// to it or to an ancestor), `subtree` (what is granted BENEATH it:
+        /// entries scoped to it or to a descendant — the revocation-sweep
+        /// direction), or `any` (both).
+        #[arg(long, requires = "context")]
+        direction: Option<String>,
     },
     /// Show details of a single ACL entry
     Get {
@@ -1779,9 +1786,11 @@ async fn main() {
                 }
             }
             let result = match command {
-                AclCommands::List { context, role } => {
-                    acl_cli::run_acl_list(cli.config, context, role).await
-                }
+                AclCommands::List {
+                    context,
+                    role,
+                    direction,
+                } => acl_cli::run_acl_list(cli.config, context, role, direction).await,
                 AclCommands::Get { did } => acl_cli::run_acl_get(cli.config, did).await,
                 AclCommands::Create {
                     did,

@@ -1,6 +1,6 @@
 use crate::acl::{
-    AclEntry, ApproveScope, Role, acl_entry_can_act_in, delete_acl_entry, get_acl_entry,
-    list_acl_entries, store_acl_entry,
+    AclEntry, ApproveScope, ContextDirection, Role, acl_entry_matches_context, delete_acl_entry,
+    get_acl_entry, list_acl_entries, store_acl_entry,
 };
 use crate::config::AppConfig;
 use crate::store::Store;
@@ -120,8 +120,21 @@ pub async fn run_acl_list(
     config_path: Option<PathBuf>,
     context: Option<String>,
     role: Option<String>,
+    direction: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let role_filter = role.map(|r| Role::parse(&r)).transpose()?;
+    let direction: ContextDirection = match direction {
+        Some(d) => d.parse()?,
+        None => ContextDirection::default(),
+    };
+    // Inert without a context, and saying so beats listing the whole ACL to an
+    // operator who believes they asked for a subtree.
+    if context.is_none() && direction != ContextDirection::default() {
+        return Err(format!(
+            "--direction {direction} filters a context and --context was not given"
+        )
+        .into());
+    }
 
     let config = AppConfig::load(config_path)?;
     let store = Store::open(&config.store)?;
@@ -135,9 +148,10 @@ pub async fn run_acl_list(
     }
     if let Some(ref ctx) = context {
         // Shared with the online `list_acl` so the two surfaces cannot answer
-        // the same question differently. The previous `is_empty() ||
-        // contains()` matched an *acts-nowhere* entry under every context.
-        entries.retain(|e| acl_entry_can_act_in(e, ctx));
+        // the same question differently — including which *direction* the
+        // context filter reads. The previous `is_empty() || contains()`
+        // matched an *acts-nowhere* entry under every context.
+        entries.retain(|e| acl_entry_matches_context(e, ctx, direction));
     }
 
     if entries.is_empty() {

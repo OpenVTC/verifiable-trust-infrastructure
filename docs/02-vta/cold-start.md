@@ -286,7 +286,7 @@ vta status
 vta import-did --did <did> --role admin [--label <text>] [--context <id>]...
 
 # List / update / delete ACL entries
-vta acl list [--context <id>] [--role <role>]
+vta acl list [--context <id>] [--direction acting-in|subtree|any] [--role <role>]
 vta acl get <did>
 vta acl update <did> [--role <role>] [--label <text>] [--contexts <id,...>]
 vta acl delete <did>

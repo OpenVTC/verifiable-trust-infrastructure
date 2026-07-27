@@ -4,6 +4,7 @@ use super::{
     AclEntryResponse, AclListResponse, CreateAclRequest, SwapAclRequest, UpdateAclRequest,
     VtaClient, encode_path_segment,
 };
+use crate::acl::ContextDirection;
 use crate::error::VtaError;
 
 #[cfg(feature = "client")]
@@ -11,16 +12,58 @@ use crate::protocols::acl_management;
 
 #[cfg(feature = "client")]
 impl VtaClient {
+    /// List ACL entries, optionally filtered to the entries that may act **in**
+    /// `context`.
+    ///
+    /// For the other direction — what is granted *beneath* a context, which is
+    /// what a revocation sweep or a delegation audit needs — call
+    /// [`list_acl_in_direction`](Self::list_acl_in_direction). This method is
+    /// exactly `ContextDirection::ActingIn` and stays that way.
     pub async fn list_acl(&self, context: Option<&str>) -> Result<AclListResponse, VtaError> {
+        self.list_acl_in_direction(context, ContextDirection::ActingIn)
+            .await
+    }
+
+    /// List ACL entries, filtering `context` in an explicit
+    /// [`ContextDirection`].
+    ///
+    /// A context id names a subtree, so `?context=X` is two questions:
+    /// [`ActingIn`](ContextDirection::ActingIn) (who holds authority over X)
+    /// and [`Subtree`](ContextDirection::Subtree) (what is granted inside X).
+    /// Sweeping a subtree with the first returns precisely the entries the
+    /// sweep is *not* revoking, so a caller cutting a branch must ask for the
+    /// second (#822). [`Any`](ContextDirection::Any) is the auditor's union.
+    ///
+    /// The direction is inert without a context and the VTA refuses that
+    /// combination rather than silently listing everything.
+    pub async fn list_acl_in_direction(
+        &self,
+        context: Option<&str>,
+        direction: ContextDirection,
+    ) -> Result<AclListResponse, VtaError> {
+        // Omitted when it is the default, so an old VTA — which would reject
+        // the unknown field — keeps serving the calls that mean what it
+        // already does.
+        let direction_field = (direction != ContextDirection::default())
+            .then(|| serde_json::Value::String(direction.to_string()));
         self.rpc(
             acl_management::LIST_ACL,
-            serde_json::json!({ "context": context }),
+            serde_json::json!({ "context": context, "direction": direction_field }),
             acl_management::LIST_ACL_RESULT,
             30,
             |c, url| {
+                // Both parameters are appended independently — a direction
+                // without a context is a caller error, and the VTA says so;
+                // dropping it here would make REST answer a question DIDComm
+                // refuses.
                 let mut u = format!("{url}/acl");
+                let mut sep = '?';
                 if let Some(ctx) = context {
-                    u.push_str(&format!("?context={ctx}"));
+                    u.push_str(&format!("{sep}context={ctx}"));
+                    sep = '&';
+                }
+                if direction != ContextDirection::default() {
+                    u.push_str(&format!("{sep}direction={direction}"));
                 }
                 c.get(u)
             },

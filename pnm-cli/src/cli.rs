@@ -1742,10 +1742,18 @@ pub(crate) enum ContextCommands {
 pub(crate) enum AclCommands {
     /// List ACL entries
     List {
-        /// FILTER: only show ACL entries whose `allowed_contexts` include
-        /// this context. Omit to see every entry visible to you.
+        /// FILTER: narrow the listing to one context. Omit to see every entry
+        /// visible to you. See --direction for which way this reads.
         #[arg(long)]
         context: Option<String>,
+        /// Which way --context reads along the context hierarchy:
+        /// `acting-in` (default) — who may act IN the context: entries scoped
+        /// to it or to an ancestor of it;
+        /// `subtree` — what is granted BENEATH it: entries scoped to it or to
+        /// a descendant, i.e. the grants a revocation sweep must cut;
+        /// `any` — both.
+        #[arg(long, requires = "context")]
+        direction: Option<String>,
     },
     /// Get an ACL entry by DID
     Get {

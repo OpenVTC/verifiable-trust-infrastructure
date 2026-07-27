@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use vta_sdk::protocols::acl_management::{create::CreateAclResultBody, list::ListAclResultBody};
 
-use crate::acl::{ApproveScope, Role};
+use crate::acl::{ApproveScope, ContextDirection, Role};
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
 use crate::error::AppError;
 use crate::operations;
@@ -16,6 +16,15 @@ use crate::trust_tasks::{AclChangeRoleOp, AclGrantOp, AclRevokeOp, AclSwapKeyOp,
 #[into_params(parameter_in = Query)]
 pub struct ListAclQuery {
     pub context: Option<String>,
+    /// Which way `context` reads along the hierarchy: `acting-in` (default —
+    /// entries that may act *in* the context, i.e. scoped to it or an
+    /// ancestor), `subtree` (entries granted at or *beneath* it — the
+    /// revocation-sweep direction), or `any` (the union).
+    ///
+    /// Taken as a string and parsed here rather than deserialized straight
+    /// into the enum so a typo answers with the valid set instead of serde's
+    /// "unknown variant" — the operator-errors-suggest-the-fix rule.
+    pub direction: Option<String>,
 }
 
 /// GET /acl — list all ACL entries, optionally filtered by context. Auth: Admin or Initiator.
@@ -25,6 +34,7 @@ pub struct ListAclQuery {
     params(ListAclQuery),
     responses(
         (status = 200, description = "ACL entries", body = ListAclResultBody),
+        (status = 400, description = "Unparseable `direction`, or a direction without a context"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller cannot manage ACL entries"),
     ),
@@ -34,9 +44,27 @@ pub async fn list_acl(
     State(state): State<AppState>,
     Query(query): Query<ListAclQuery>,
 ) -> Result<Json<ListAclResultBody>, AppError> {
-    let result =
-        operations::acl::list_acl(&state.acl_ks, &auth.0, query.context.as_deref(), "rest").await?;
+    let direction = parse_direction(query.direction.as_deref())?;
+    let result = operations::acl::list_acl(
+        &state.acl_ks,
+        &auth.0,
+        query.context.as_deref(),
+        direction,
+        "rest",
+    )
+    .await?;
     Ok(Json(result))
+}
+
+/// Parse the `direction` query parameter, defaulting to the historical
+/// ancestor-or-self reading when it is absent and **refusing** anything it
+/// cannot parse. Guessing which of the two opposite questions an operator
+/// meant is how a confidently-wrong answer gets served.
+fn parse_direction(raw: Option<&str>) -> Result<ContextDirection, AppError> {
+    match raw {
+        None => Ok(ContextDirection::default()),
+        Some(s) => s.parse().map_err(AppError::Validation),
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

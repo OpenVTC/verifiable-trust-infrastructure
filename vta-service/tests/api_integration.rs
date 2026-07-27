@@ -526,6 +526,112 @@ async fn acl_create_and_list() {
     );
 }
 
+/// The `?direction=` filter over the wire (#822): the same `?context=` reads
+/// two opposite ways, and a caller sweeping a subtree to revoke it must be
+/// able to ask for the second.
+#[tokio::test]
+async fn acl_list_filters_a_context_in_both_directions() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token_aal2("did:key:z6MkAdmin", "admin", vec![])
+        .await;
+
+    // The layout the issue describes: a tenant, two units, a purpose leaf
+    // under each. Sub-contexts are created leaf-segment + `parent`.
+    for (id, parent) in [
+        ("acme", None),
+        ("eng", Some("acme")),
+        ("attestation", Some("acme/eng")),
+        ("ops", Some("acme")),
+        ("keys", Some("acme/ops")),
+    ] {
+        let mut req = json!({"id": id, "name": id});
+        if let Some(p) = parent {
+            req["parent"] = json!(p);
+        }
+        let (status, body) = app.request(post_auth("/contexts", &token, req)).await;
+        assert!(status.is_success(), "create context {id}: {body}");
+    }
+
+    for (did, context) in [
+        ("did:key:z6MkUnitAdmin", "acme/eng"),
+        ("did:key:z6MkGateway", "acme/eng/attestation"),
+        ("did:key:z6MkOps", "acme/ops/keys"),
+    ] {
+        let (status, body) = app
+            .request(post_auth(
+                "/acl",
+                &token,
+                json!({
+                    "did": did,
+                    "role": "application",
+                    "allowed_contexts": [context],
+                }),
+            ))
+            .await;
+        assert!(status.is_success(), "create {did}: {body}");
+    }
+
+    let dids = |body: &serde_json::Value| -> Vec<String> {
+        let mut v: Vec<String> = body["entries"]
+            .as_array()
+            .expect("entries array")
+            .iter()
+            .map(|e| e["did"].as_str().unwrap().to_string())
+            .collect();
+        v.sort();
+        v
+    };
+
+    // Default (absent) == acting-in: the unit's own admin, not the leaf under it.
+    let (status, body) = app.request(get_auth("/acl?context=acme/eng", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let default_dids = dids(&body);
+    assert!(default_dids.contains(&"did:key:z6MkUnitAdmin".to_string()));
+    assert!(!default_dids.contains(&"did:key:z6MkGateway".to_string()));
+
+    let (status, body) = app
+        .request(get_auth(
+            "/acl?context=acme/eng&direction=acting-in",
+            &token,
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(dids(&body), default_dids, "explicit acting-in == absent");
+
+    // subtree: the leaf grant a revocation sweep must cut, and nothing from
+    // the sibling unit.
+    let (status, body) = app
+        .request(get_auth("/acl?context=acme/eng&direction=subtree", &token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let subtree = dids(&body);
+    assert!(subtree.contains(&"did:key:z6MkGateway".to_string()));
+    assert!(subtree.contains(&"did:key:z6MkUnitAdmin".to_string()));
+    assert!(!subtree.contains(&"did:key:z6MkOps".to_string()));
+
+    // A typo is refused with the valid set, not answered with the other
+    // question.
+    let (status, body) = app
+        .request(get_auth(
+            "/acl?context=acme/eng&direction=descendants",
+            &token,
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let rendered = body.to_string();
+    for valid in ["acting-in", "subtree", "any"] {
+        assert!(rendered.contains(valid), "error omits {valid}: {rendered}");
+    }
+
+    // A direction with nothing to point at is refused rather than silently
+    // returning the whole ACL.
+    let (status, body) = app
+        .request(get_auth("/acl?direction=subtree", &token))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
 /// An AAL1 admin hitting an AAL2-gated mutation is rejected with the step-up
 /// `403` that *carries the approve-request* — not a bare 403. The caller has
 /// the right role (so this isn't a permission failure); it just hasn't stepped
