@@ -9585,9 +9585,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.39"
+version = "0.2.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7f80508c771f601bcd02b85d0a6d0890bdcee07b305d6afa9dff9d5c1f57f2c"
+checksum = "0df173f3b418d2740c8c0609ee0ba55ea5dc4c09308fcc42892b37e8337a865e"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.34"
+version = "0.11.35"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

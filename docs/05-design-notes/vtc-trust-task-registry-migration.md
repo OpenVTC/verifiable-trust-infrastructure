@@ -1,11 +1,31 @@
 # Consolidating VTC's Trust Task surface onto the registry
 
-**Status:** **partly implemented — the residual is much smaller than this
-note assumes.** See "Where this actually stands" immediately below before
-reading anything else; the reduction analysis further down is still sound,
-but its headline numbers are stale. That section was itself corrected on
-2026-07-26 (a router-only scan had undercounted the residual and wrongly
-reported #709 as partly unblocked).
+**Status: COMPLETE (2026-07-27).** Nothing in this workspace binds
+`https://trusttasks.org/openvtc/vtc/…` any more. All 66 entries in
+`trust-tasks/index.json` are `retired`, each carrying a `supersededBy`, so
+that file is now a redirect table rather than a live manifest.
+`AWAITING_CANONICAL_FOLD` and `UNBOUND_OK` in
+`vtc-service/tests/trust_task_manifest.rs` are both empty, and
+`no_new_bindings_on_the_retired_authority` is what keeps it that way.
+
+The last two — `admin/config/{export,import}` — were repointed to
+`spec/vtc/config/{export,import}/0.1` once those were authored upstream
+(trust-tasks-tf#147, `trust-tasks-rs` 0.2.40).
+
+**Read the rest of this note as history, not as a plan.** The analysis below
+was written against a 64-task surface and its headline numbers are stale; more
+importantly, several dispositions it records were *wrong* and are annotated
+inline where they were corrected on execution. The one durable lesson:
+
+> Most of the recorded blockers did not survive contact. Three assumed a
+> `confirm/1.0` gate that could not apply (it is asynchronous; those flows
+> verify in-band), one named a target task that would have reintroduced a
+> policy bypass, one assumed an endpoint had to survive when nothing called
+> it, and one cited a duplicate relationship that did not exist. Only
+> `admin/config/{export,import}` had a blocker that held — and even there the
+> *fix* it proposed (push `communityProfile` into `ext`) was wrong. **Verify a
+> blocker before planning work on it.**
+
 **Context:** issue #710. The manifest census (PR #711) pinned VTC's Trust
 Task surface in place; this note covers reducing and relocating it.
 
@@ -421,7 +441,7 @@ effort this work exists to eliminate. Ranked by readiness:
 | 2 | `config/reload`, `config/restart` | Near as-is. Rename the `VTC_SUPERVISED` env var; supervisor detection is deployment-generic. |
 | 3 | `audit/list` | Must reconcile paging: VTC uses opaque HMAC-signed cursor + limit, VTA's existing `ListAuditLogsBody` uses offset (`page`/`page_size`). That reconciliation *is* the value. Consider folding in VTA's `retention` get/update, which VTC lacks. |
 | 4 | `config/manage` | **Done (Phase 2c).** Split into canonical `config/show` + `config/patch`. The "pending per-method selectors" caveat was **mistaken**: `task_routes` layers the *method* router and axum merges same-path method routers per method, so each verb already enforces its own Trust Task — proven by `vti_common::trust_task::openapi::per_method_tasks_on_one_path_are_enforced_independently`. The same applies to any other merged-method mount (e.g. `acl/legacy/entry`). Open the `source` enum — `env > db > toml > default` is a VTC implementation choice. |
-| 5 | `config/export`, `config/import` | ~~Blocked until `communityProfile` moves to `ext`~~ — **not promoted after all.** The blocker was read as a sequencing problem; it is a signal that these are not generics. `communityProfileDiff` / `communityProfileApplied` are structural (roughly half the import response) and the community-DID mismatch `409` routes through `CommunityProfileUpdate::apply`, so a "generic" task with all of that in `ext` would be a hollow shell in its only real use. `vtc/backup/{export,import}/0.1` is the precedent for the alternative: VTC-slugged, `confirm` in the payload not the query string, fields first-class. Target `spec/vtc/config/{export,import}/0.1`, authored upstream. **These two are the last bindings on the retired `openvtc/vtc/` authority.** |
+| 5 | `config/export`, `config/import` | ~~Blocked until `communityProfile` moves to `ext`~~ — **not promoted; VTC-slugged instead. DONE.** The blocker was read as a sequencing problem; it was a signal that these are not generics. `communityProfileDiff` / `communityProfileApplied` are structural (roughly half the import response) and the community-DID mismatch `409` routes through `CommunityProfileUpdate::apply`, so a "generic" task with all of that in `ext` would be a hollow shell in its only real use. `vtc/backup/{export,import}/0.1` was the precedent for the alternative. Authored upstream as `spec/vtc/config/{export,import}/0.1` (trust-tasks-tf#147, `trust-tasks-rs` 0.2.40) and repointed here — **these were the last bindings on the retired `openvtc/vtc/` authority, and it now has none.** |
 
 **`health/diagnostics` is explicitly *not* promoted.** It is not a health
 task — it is trust-registry reconciler telemetry (`rtbf_batched_count`,

@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### vtc-service 0.11.35 — the retired Trust Task authority has no bindings left (#710)
+
+`admin/config/{export,import}` move to canonical
+`spec/vtc/config/{export,import}/0.1`. They were the last two bindings on
+`https://trusttasks.org/openvtc/vtc/`, and **that authority is now unbound
+across the whole workspace** — router, `vta-sdk` constants, admin SPA and
+`cnm-cli` alike. All 66 entries in `trust-tasks/index.json` are `retired` with
+a `supersededBy`, which turns that file from a manifest into a redirect table.
+Both census tables in `vtc-service/tests/trust_task_manifest.rs` are empty;
+`no_new_bindings_on_the_retired_authority` is what stops it regressing one
+literal at a time.
+
+These two were the only entries whose recorded blocker was *real*: no canonical
+counterpart existed — `specs/config/` published `show`, `patch`, `reload`,
+`restart` and nothing to migrate to. They are now authored upstream
+(trust-tasks-tf#147, `trust-tasks-rs` 0.2.40, pinned here).
+
+**Not promoted into the generic `config/*` family.** The recorded plan was to
+push `communityProfile` into `ext` and make these generic. Dropped: the profile
+and its diff are roughly half the import's payload, so the "generic" task would
+have been a hollow shell in its only real use. They are `vtc/`-slugged, on the
+`vtc/backup/{export,import}` precedent.
+
+**Breaking wire changes** — the repoint is not a rename:
+
+- **`confirm` moves from the query string into the payload.** A Trust Task is
+  one interface over REST, DIDComm and TSP, and only REST has a query string to
+  carry a flag in. A stale client still sending `?confirm=true` now **previews**
+  instead of applying — the recoverable direction, and pinned by a test.
+- **Export wraps its result**: `{ "document": { … } }` rather than the bare
+  document. The registry response convention needs `additionalProperties: false`
+  plus an `ext` extension point, and neither attaches to a bare `$ref`.
+- **Import's response is one shape with a discriminant.** `confirmed: bool` →
+  `status: "preview" | "imported"`; `communityProfileDiff` → `profileChanges`;
+  `configOverridesDiff` → `overrideChanges`. The `communityProfileApplied` /
+  `configOverridesApplied` lists are **gone**: on `imported` the change arrays
+  carry what was actually written, so a key that failed to persist is in
+  `rejected` and not reported as applied.
+- **`pendingRestart` is new, and is reported on the preview too** — an operator
+  learns that confirming implies downtime while they are still deciding.
+- Absent-vs-null is now preserved on the wire. `oldValue` / `newValue` are
+  omitted when unset rather than emitted as `null`, so "leave this field alone"
+  stays distinguishable from an explicit "clear it".
+
+No SPA or CLI consumer existed for either endpoint, so the blast radius is
+external callers only.
+
 ### vta-sdk 0.20.7 — `receive_next`'s poll loop no longer trips `never_loop` without the `tsp` feature
 
 `DIDCommSession::receive_next` polls in a `loop`, but its only `continue` — the
