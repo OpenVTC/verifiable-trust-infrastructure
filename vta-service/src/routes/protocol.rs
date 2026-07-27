@@ -1343,18 +1343,22 @@ async fn build_live_prover(
 /// signing/ka vm ids, vta_did). Returns `Ok(())` if the handshake
 /// succeeded OR if the prerequisites aren't available (the caller
 /// then falls back to the operation's AlwaysOkProver path).
-/// Returns `Err(HandshakeError::Failed)` only when the handshake
-/// actually ran and failed.
+/// Returns `Err(HandshakeError::Failed)` when the handshake actually
+/// ran and failed, or when its resolver-backed TDK config could not be
+/// built — that one is a `Connect`-stage failure rather than a fall
+/// through, because the only available fallback resolves DIDs locally
+/// and would defeat the point of running the handshake at all.
 async fn try_run_first_enable_handshake(
     state: &AppState,
     resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
     mediator_did: &str,
     timeout: std::time::Duration,
 ) -> Result<(), crate::messaging::handshake::HandshakeError> {
-    use crate::messaging::handshake::HandshakeOptions;
+    use crate::messaging::handshake::{HandshakeError, HandshakeOptions, HandshakeStage};
     use crate::messaging::transient_handshake::{
         TransientHandshakeContext, run_transient_handshake,
     };
+    use affinidi_tdk::common::config::TDKConfig;
     use affinidi_tdk::secrets_resolver::SecretsResolver;
 
     let Some(secrets_resolver) = state.secrets_resolver.as_ref() else {
@@ -1385,11 +1389,58 @@ async fn try_run_first_enable_handshake(
         return Ok(());
     }
 
+    // The mediator handshake proves control of the VTA's OWN did:webvh by
+    // resolving it. For a serverless did:webvh the sidecar cannot fetch the
+    // document (it is not hosted anywhere), so resolution succeeds only from
+    // the resolver's local cache. That cache is seeded at boot but webvh is a
+    // mutable method and the entry expires after the cache TTL. Re-seed it now
+    // so enable works regardless of how long the VTA has been running.
+    #[cfg(feature = "webvh")]
+    {
+        let mut reseed = resolver.clone();
+        crate::server::preload_self_did_document(&mut reseed, &vta_did, Some(&state.webvh_ks))
+            .await;
+    }
+
+    // The transient handshake spins up its own TDK/ATM to trust-ping the new
+    // mediator. It MUST resolve DIDs through the VTA's own (network-mode)
+    // resolver: in a TEE that resolver is bridged to a parent-side sidecar,
+    // whereas a default TDK resolver resolves locally and has no enclave
+    // egress — so resolving the mediator DID would fail with a network error.
+    // Mirrors the resolver wiring in `messaging::service` and the auth ATM.
+    //
+    // Fail-closed, deliberately: `run_transient_handshake` falls back to a
+    // default (locally-resolving) TDK when handed `None`, which is exactly the
+    // enclave-egress failure this wiring exists to prevent. Degrading to it
+    // silently would reproduce the original symptom from a patched build, so a
+    // config that won't build is a Connect-stage handshake failure — the same
+    // stage `transient_prove` assigns to this identical call — and the operator
+    // gets the cause rather than an unexplained resolution error later.
+    let tdk_config = match TDKConfig::builder()
+        .with_did_resolver(resolver.clone())
+        .with_load_environment(false)
+        .build()
+    {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            let cause = format!("build TDK config: {e}");
+            tracing::warn!(
+                mediator = %mediator_did,
+                error = %e,
+                "first-enable handshake aborted: could not build a resolver-backed TDK config"
+            );
+            return Err(HandshakeError::Failed {
+                stage: HandshakeStage::Connect,
+                cause,
+            });
+        }
+    };
+
     run_transient_handshake(
         TransientHandshakeContext {
             vta_did,
             secrets,
-            tdk_config: None,
+            tdk_config,
         },
         resolver,
         &state.telemetry,
