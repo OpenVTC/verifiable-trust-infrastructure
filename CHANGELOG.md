@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+### vtc-service 0.11.33 — the raw-byte website endpoints stop pretending to be Trust Tasks
+
+Three endpoints on the website management surface move **file bytes**:
+`GET`/`PUT /v1/website/files/{path}` and `POST /v1/website/deploy`. A Trust
+Task's payload is a JSON document, so none of them can be one — there is no
+document shape for "here are 4 MiB of PNG", and no canonical spec will ever
+supersede them.
+
+All three were nevertheless gated on a `Trust-Task` header, sharing
+`openvtc/vtc/website/files/show/1.0` (or `…/deploy/1.0`) — tasks that existed
+only to give the mount *a* header to check. Because the whole mount shared one
+gate, the `PUT` and the `DELETE` both announced themselves as a **read**.
+
+- The three byte-moving endpoints are **de-listed**: no header required, specs
+  removed from `trust-tasks/`. They keep every authorization gate they had —
+  de-listing removes a *header* check, never `AdminAuth`.
+- `DELETE /v1/website/files/{path}` carries a path, not a payload, so it is a
+  genuine Trust Task. It now binds the canonical
+  `spec/vtc/website/files/delete/0.1` it should have had all along. This is the
+  last of the four canonical website tasks to be wired.
+- `openvtc/vtc/website/files/delete/1.0` moves `draft` → `retired` with a
+  `supersededBy`; the on-disk spec tree now matches the manifest exactly.
+
+Three census exceptions go away, and the retired `openvtc/vtc/` authority is
+down from **6 bound URIs to 4** — all four now genuinely blocked on other work
+(`admin/config/{export,import}` on `communityProfile` moving to `ext`,
+`auth/admin-login` on the cookie side-effect, `config/legacy/manage` on a
+field-ownership audit).
+
+**For API clients:** stop sending a `Trust-Task` header on the three exempt
+endpoints (a stale one is now ignored there rather than checked). On `DELETE`,
+send `spec/vtc/website/files/delete/0.1` — the old `…/files/show/1.0` now fails
+with `TrustTaskMismatch` (415). The admin SPA, `cnm-cli` and `vta-sdk` call none
+of these, so nothing in-tree needed updating.
+
+New `vtc-service/tests/website_task_gating.rs` pins all of it — including that
+the de-listed routes still refuse an unauthenticated caller, which is the
+distinction the change turns on.
+
 ### vti-common 0.11.26 / vtc-service 0.11.32 / vta-service 0.12.40 — step-up means *recent*, and admin promotion uses it
 
 `StepUpAuth` gated on `acr == "aal2"` and nothing else. That reads as "this

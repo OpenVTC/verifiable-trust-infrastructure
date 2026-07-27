@@ -52,14 +52,6 @@ const UNBOUND_OK: &[(&str, &str)] = &[
         "DELETE shares the personhood mount",
     ),
     ("members/update/1.0", "PATCH shares the members/{did} mount"),
-    (
-        "website/files/delete/1.0",
-        "shares the website files show mount",
-    ),
-    (
-        "website/files/write/1.0",
-        "shares the website files show mount",
-    ),
 ];
 
 /// Task URIs the code binds that the manifest does not publish.
@@ -96,16 +88,6 @@ const UNPUBLISHED_OK: &[(&str, &str)] = &[
     (
         "join-requests/submit/1.0",
         "mount-collapse alias of spec/join-requests/submit/1.0",
-    ),
-    // Raw-byte operations, de-listed rather than retired: a JSON Trust-Task
-    // payload cannot carry file bytes, so there is no spec to supersede them
-    // with — and `supersededBy` is mandatory on a retired entry. The registry
-    // deliberately publishes only the four website tasks that genuinely are
-    // Trust Tasks (files/list, files/delete, generations/list, rollback).
-    ("website/deploy/1.0", "raw-byte upload — not a Trust Task"),
-    (
-        "website/files/show/1.0",
-        "raw-byte download — not a Trust Task",
     ),
 ];
 
@@ -363,18 +345,12 @@ const AWAITING_CANONICAL_FOLD: &[(&str, &str)] = &[
     // that never runs `role_change.rego` and serves non-member ACL rows.
     // Routing admin promotion through it would have reintroduced the P0.14
     // policy bypass. `members/update` already ran the role-change ceremony.
-    // Not Trust Tasks at all: a JSON payload cannot carry file bytes. These
-    // are de-listed rather than folded, and the registry deliberately has no
-    // spec for them (see specs/vtc/website/, which holds only the four that
-    // are genuinely tasks).
-    (
-        "website/deploy/1.0",
-        "raw-byte upload — de-listed, not a Trust Task",
-    ),
-    (
-        "website/files/show/1.0",
-        "raw-byte download — de-listed, not a Trust Task",
-    ),
+    // The three raw-byte website entries are GONE — de-listed, not folded.
+    // `deploy`, `files/show` and `files/write` moved file bytes, and a Trust
+    // Task payload is a JSON document, so no canonical spec could ever
+    // supersede them. Their routes lost the header gate (never the auth gate)
+    // and their specs left the tree. `files/delete` carries a path rather than
+    // a payload, so it took the canonical task it should always have had.
 ];
 
 /// No `openvtc/vtc/` URI may appear outside the shrinking fold list.

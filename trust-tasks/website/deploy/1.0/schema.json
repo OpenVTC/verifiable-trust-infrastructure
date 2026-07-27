@@ -1,7 +1,0 @@
-{
-  "$id": "https://trusttasks.org/openvtc/vtc/website/deploy/1.0/schema.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "VTC — Website bundle deploy",
-  "description": "Raw tar.gz bundle bytes; verified pre-extract.",
-  "type": "object"
-}
