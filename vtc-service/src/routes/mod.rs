@@ -33,7 +33,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::{any, get, post};
+use axum::routing::{any, delete, get, post};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
@@ -802,10 +802,6 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     let api = {
         use axum::extract::DefaultBodyLimit;
 
-        // write + delete tasks share the show mount; standalone
-        // tasks ship on disk + in index.json for the soft-gate
-        // surface (same workaround the rest of the router uses).
-
         // 64 MiB upper bound on the per-route body cap covers
         // both `max_bundle_size_mb` (default 50) and
         // `max_file_size_mb` (default 10). Handler then enforces
@@ -819,26 +815,35 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
                 "https://trusttasks.org/spec/vtc/website/files/list/0.1",
             ),
         )
+        // GET + PUT on this mount move **raw file bytes**, so neither is a
+        // Trust Task: a Trust Task's payload is a JSON document, and there is
+        // no shape for "here are 4 MiB of PNG". They were gated on
+        // `website/files/show/1.0` — a task that only ever existed to give the
+        // mount *a* header to check — which additionally mislabelled the PUT
+        // as a read. De-listed rather than repointed: there is no canonical
+        // spec to supersede them with, and inventing one would name a document
+        // shape that cannot exist.
+        //
+        // DELETE is a different thing entirely — it carries a path, not a
+        // payload — so it takes its own canonical task, which is what it
+        // should have had all along.
+        .route(
+            "/website/files/{*path}",
+            get(website::files::show)
+                .put(website::files::write)
+                .layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
+        )
         .route(
             "/website/files/{*path}",
             ttl(
-                get(website::files::show)
-                    .put(website::files::write)
-                    .delete(website::files::delete)
-                    .layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)), // Three methods on the same mount share the show
-                // task per the TrustTaskRouter limitation already
-                // documented elsewhere. The `write` and `delete`
-                // tasks are still registered on disk + in index.json
-                // for the soft-gate surface.
-                "https://trusttasks.org/openvtc/vtc/website/files/show/1.0",
+                delete(website::files::delete),
+                "https://trusttasks.org/spec/vtc/website/files/delete/0.1",
             ),
         )
+        // Raw bundle upload — de-listed for the same reason as the PUT above.
         .route(
             "/website/deploy",
-            ttl(
-                post(website::deploy::deploy).layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
-                "https://trusttasks.org/openvtc/vtc/website/deploy/1.0",
-            ),
+            post(website::deploy::deploy).layer(DefaultBodyLimit::max(WEBSITE_ROUTE_CAP)),
         )
         .route(
             "/website/generations",

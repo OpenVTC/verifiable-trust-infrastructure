@@ -1,7 +1,0 @@
-{
-  "$id": "https://trusttasks.org/openvtc/vtc/website/files/write/1.0/schema.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "VTC — Website file write",
-  "description": "Raw file bytes; Content-Type indicates the MIME the operator expects to serve back.",
-  "type": "object"
-}

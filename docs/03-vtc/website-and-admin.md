@@ -95,6 +95,35 @@ In managed mode the `current` symlink swap is atomic via the
 `symlink + rename` idiom — concurrent readers never see a broken
 link. `managed_generations_keep` (default 5) prunes oldest gens.
 
+### Which of these are Trust Tasks
+
+Most of the `/v1/*` API requires a `Trust-Task` header naming the operation.
+The website management surface is the exception, and deliberately so: a Trust
+Task's payload is a JSON document, and three of these endpoints move **raw
+file bytes**.
+
+| Endpoint | `Trust-Task` header |
+|---|---|
+| `GET /v1/website/files` | `spec/vtc/website/files/list/0.1` |
+| `GET /v1/website/files/{path}` | **none** — file bytes out |
+| `PUT /v1/website/files/{path}` | **none** — file bytes in |
+| `DELETE /v1/website/files/{path}` | `spec/vtc/website/files/delete/0.1` |
+| `POST /v1/website/deploy` | **none** — bundle bytes in |
+| `GET /v1/website/generations` | `spec/vtc/website/generations/list/0.1` |
+| `POST /v1/website/rollback/{gen}` | `spec/vtc/website/rollback/0.1` |
+
+`DELETE` carries a path rather than a payload, so it is a Trust Task like any
+other. The three byte-moving endpoints are not, and no canonical spec will ever
+supersede them — there is no document shape to write.
+
+Sending no header on the three exempt endpoints is correct. Sending a stale one
+is harmless there (nothing checks it) but **fails on `DELETE`** with
+`TrustTaskMismatch` (415): it previously accepted
+`openvtc/vtc/website/files/show/1.0`, which labelled a delete as a read.
+
+Losing the header requirement is **not** losing an authorization gate — every
+endpoint above still requires an admin bearer token or admin session cookie.
+
 ### Path safety
 
 Every request walks through the same safety chain before hitting
