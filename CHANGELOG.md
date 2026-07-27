@@ -2,6 +2,68 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.2 — TSP is a per-surface leg, not a whole-client transport
+
+A consumer holding a DIDComm session could not use TSP at all. The only way to
+a Trust-Task-over-TSP client was `connect_tsp`, which opens its **own**
+websocket — and the mediator permits one websocket per DID, so the second was
+rejected with `duplicate-channel` and the two reconnect loops duelled. On the
+reference deployment `#tsp` and `#vta-didcomm` resolve to the *same* mediator,
+so that was the normal case; a split-mediator topology would have worked, which
+is the worst shape available (correct on an unusual deployment, broken on the
+one everyone runs). This blocked OpenVTC/openvtc#185 item 2b.
+
+**The fix is the client-side mirror of one the VTA already shipped.**
+`vta-service` deleted its standalone TSP websocket for exactly this reason and
+now demuxes TSP off its single delivery-layer socket. The client can do the
+same, because neither half of TSP needs a socket of its own: send is an HTTP
+`POST /inbound` to the mediator, and receive already arrives on the DIDComm
+pickup socket, which `live_stream_next_frame` tags by protocol.
+
+- `DIDCommSession` gains a **TSP leg** — `send_tsp_document`, `request_tsp`,
+  `receive_next_tsp` — over its existing connection. **No second socket.** The
+  leg takes its own `subscribe()` receiver, so the TSP pump cannot eat a DIDComm
+  push and `receive_next` cannot eat a TSP reply.
+- `VtaClient::enable_tsp_trust_tasks` moves the Trust-Task surface
+  (`dispatch_trust_task`, `rpc_tt`, the `device/*` and `vault/*` methods) onto
+  it. **No I/O, cannot fail.** `attach_tsp_leg` covers the split-mediator
+  topology, and refuses a second session for a DID on the mediator it is already
+  connected to — the defect is now unrepresentable through the API.
+  `connect_didcomm_with_tsp` does both in one call.
+- `rpc` / `rpc_void` stay on DIDComm unconditionally. TSP carries Trust Tasks;
+  the VTA has no TSP dispatcher behind `key-management/1.0/*`,
+  `create_did_webvh` or `list_contexts`.
+
+**Fixes a live regression on the `pnm`/`cnm` connect path.** Since TSP became
+selectable, `TransportChoice::Auto` returned a **TSP-only** client whenever a
+VTA advertised `#tsp` — so on a TSP-enabled VTA every protocol-message command
+(`keys create`, `contexts list`, DID minting) failed with
+`UnsupportedTransport`. `Auto` now returns a **dual** client against a VTA
+advertising both: trust tasks over TSP, protocol messages over DIDComm, one
+socket. A VTA advertising `#tsp` alone still yields a TSP-only client, and
+`--transport tsp` is unchanged (TSP-only by request). If the DIDComm mediator is
+down, `Auto` still falls back to TSP-only — loudly, naming what that client
+cannot serve.
+
+New: `SurfaceTransport` + `VtaClient::{trust_task_transport,
+protocol_message_transport}`, because a client no longer has *one* transport and
+an operator display that renders a single value is wrong by construction.
+
+Also fixed: `DIDCommSession::receive_next` parsed every inbound frame as a
+DIDComm `Message`, so a TSP frame on the multiplexed socket became a hard error
+on the DIDComm inbox that received it. It now skips them. Latent until now,
+because nothing sent TSP to an SDK DIDComm session.
+
+Internals: reply correlation moved to a shared `tsp_demux` so `TspSession` and
+the new leg cannot drift on the rule that stops a *stale* inbox frame being
+returned as a reply (#749). Its parking queue is now bounded — previously
+unbounded, which a long-running process that only calls `request` would grow
+forever.
+
+Verified live against the deployed VTA (a trust task dispatched over the DIDComm
+session's socket, reply correlated back) and hermetically over the embedded
+`TestMediator` in `tests/e2e/tests/tsp_dual_leg.rs`.
+
 ### vtc-service 0.11.31 — admin passkeys move to the canonical `auth/passkey/*` tasks
 
 The `/v1/admin/passkeys/*` surface leaves the retired `openvtc/vtc/` authority

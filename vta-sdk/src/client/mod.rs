@@ -47,6 +47,17 @@ pub(super) enum Transport {
         session: crate::didcomm_session::DIDCommSession,
         rest_client: Option<Client>,
         rest_url: Option<String>,
+        /// The **Trust-Task surface**'s transport, when it has been moved to
+        /// TSP by [`VtaClient::enable_tsp_trust_tasks`]. `None` means every
+        /// surface uses DIDComm.
+        ///
+        /// TSP is selected *per surface*, not per client: it carries Trust
+        /// Tasks, and the older DIDComm protocol-message surface
+        /// ([`VtaClient::rpc`]) has no TSP dispatcher behind it. So a client
+        /// that wants both keeps its DIDComm leg and adds this one, rather than
+        /// choosing between them.
+        #[cfg(feature = "tsp")]
+        tsp: Option<TspLeg>,
     },
     /// TSP — the workspace's highest-preference transport.
     ///
@@ -64,6 +75,83 @@ pub(super) enum Transport {
         rest_client: Option<Client>,
         rest_url: Option<String>,
     },
+}
+
+/// How a DIDComm client reaches TSP for the Trust-Task surface.
+///
+/// The distinction exists because **the mediator permits one websocket per
+/// DID**. Which arm applies is decided by comparing the VTA's advertised `#tsp`
+/// endpoint against the mediator the DIDComm session is already on — see
+/// [`tsp_leg_for`].
+#[cfg(all(feature = "session", feature = "tsp"))]
+#[derive(Clone)]
+pub(super) enum TspLeg {
+    /// The VTA advertises the **same** mediator for `#tsp` and
+    /// `#vta-didcomm` — the reference topology. TSP rides the DIDComm session's
+    /// existing socket (`DIDCommSession::request_tsp`). No second connection, so
+    /// nothing to fail and nothing to shut down.
+    Multiplexed,
+    /// The VTA advertises a **different** TSP mediator. There is no
+    /// one-socket-per-DID conflict across two mediators, so this leg owns its
+    /// own [`TspSession`](crate::session::TspSession) — and, being ours, must be
+    /// shut down with the client.
+    Separate {
+        session: std::sync::Arc<crate::session::TspSession>,
+        mediator_did: String,
+    },
+}
+
+/// Which TSP leg a DIDComm session on `didcomm_mediator_did` should use to reach
+/// a VTA advertising `tsp_mediator_did`.
+///
+/// Pure so the rule is testable without a mediator: `None` here would mean
+/// silently keeping trust tasks on DIDComm, and `Separate` on the reference
+/// deployment would mean a second socket for one DID — `duplicate-channel` plus
+/// duelling reconnect loops (#803). Both failure modes are decided entirely by
+/// this comparison, so it is worth pinning on its own.
+#[cfg(all(feature = "session", feature = "tsp"))]
+pub(super) fn tsp_leg_kind(didcomm_mediator_did: &str, tsp_mediator_did: &str) -> TspLegKind {
+    if didcomm_mediator_did == tsp_mediator_did {
+        TspLegKind::Multiplexed
+    } else {
+        TspLegKind::Separate
+    }
+}
+
+/// The decision [`tsp_leg_kind`] makes, before any connecting happens.
+#[cfg(all(feature = "session", feature = "tsp"))]
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum TspLegKind {
+    Multiplexed,
+    Separate,
+}
+
+/// Which transport carries a given surface on this client.
+///
+/// A `VtaClient` no longer has *one* transport. TSP carries the Trust-Task
+/// surface only, so a client can legitimately be on DIDComm for protocol
+/// messages and TSP for trust tasks at the same time — an operator-facing
+/// display that renders a single value is therefore wrong by construction. Read
+/// both [`VtaClient::trust_task_transport`] and
+/// [`VtaClient::protocol_message_transport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceTransport {
+    /// REST/HTTPS with a bearer token.
+    Rest,
+    /// DIDComm authcrypt via a mediator.
+    Didcomm,
+    /// TSP via a mediator.
+    Tsp,
+}
+
+impl std::fmt::Display for SurfaceTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rest => write!(f, "REST"),
+            Self::Didcomm => write!(f, "DIDComm"),
+            Self::Tsp => write!(f, "TSP"),
+        }
+    }
 }
 
 /// HTTP/DIDComm client for the VTA service API.
@@ -348,6 +436,8 @@ impl VtaClient {
                 session,
                 rest_client,
                 rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
+                #[cfg(feature = "tsp")]
+                tsp: None,
             },
         })
     }
@@ -398,6 +488,8 @@ impl VtaClient {
                 session,
                 rest_client,
                 rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
+                #[cfg(feature = "tsp")]
+                tsp: None,
             },
         })
     }
@@ -464,6 +556,215 @@ impl VtaClient {
                 rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
             },
         })
+    }
+
+    /// Move the **Trust-Task surface** of this DIDComm client onto TSP, keeping
+    /// the DIDComm leg for everything TSP does not carry.
+    ///
+    /// This is the seam for a consumer that already holds a DIDComm session and
+    /// wants TSP too (#803). Before it existed, the only way to a TSP-capable
+    /// client was [`connect_tsp`](Self::connect_tsp), which opens its **own**
+    /// websocket — and since the mediator permits one websocket per DID, and the
+    /// reference deployment advertises the *same* mediator for `#tsp` and
+    /// `#vta-didcomm`, that second socket is rejected with `duplicate-channel`
+    /// and the two reconnect loops duel.
+    ///
+    /// # What moves, and what does not
+    ///
+    /// - [`dispatch_trust_task`](Self::dispatch_trust_task) and everything built
+    ///   on it (`rpc_tt`, the `device/*` and `vault/*` methods, the generic
+    ///   trust-task escape hatch) routes over TSP.
+    /// - [`rpc`](Self::rpc) / `rpc_void` — the older DIDComm protocol-message
+    ///   surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`)
+    ///   — stays on DIDComm **unconditionally**. It has no TSP dispatcher behind
+    ///   it, so moving it would break it; that is why TSP is a per-surface
+    ///   choice and not a client-wide one.
+    ///
+    /// # Cost
+    ///
+    /// **No I/O, and it cannot fail on the transport.** TSP send is an HTTP post
+    /// to the mediator and TSP receive already arrives on the existing socket,
+    /// so there is nothing to connect.
+    ///
+    /// Get `tsp_mediator_did` from
+    /// [`resolve_vta_endpoint`](crate::session::resolve_vta_endpoint) — it reads
+    /// the `#tsp` (`TSPTransport`) service entry, which is **not** assumed to
+    /// match the DIDComm mediator. When it doesn't match, this refuses and names
+    /// [`attach_tsp_leg`](Self::attach_tsp_leg): a different mediator genuinely
+    /// needs its own session, and that one needs key material a `DIDCommSession`
+    /// deliberately does not keep.
+    ///
+    /// Errors with [`VtaError::Validation`] on a non-DIDComm client: a REST
+    /// client has no session to ride, and a [`connect_tsp`](Self::connect_tsp)
+    /// client is already entirely on TSP.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub fn enable_tsp_trust_tasks(&mut self, tsp_mediator_did: &str) -> Result<(), VtaError> {
+        let Transport::DIDComm { session, tsp, .. } = &mut self.transport else {
+            return Err(VtaError::Validation(
+                "enable_tsp_trust_tasks needs a DIDComm client — TSP rides its mediator \
+                 session. Connect with `connect_didcomm` first, or use `connect_tsp` for a \
+                 TSP-only client."
+                    .into(),
+            ));
+        };
+
+        match tsp_leg_kind(session.mediator_did(), tsp_mediator_did) {
+            TspLegKind::Multiplexed => {
+                *tsp = Some(TspLeg::Multiplexed);
+                Ok(())
+            }
+            TspLegKind::Separate => Err(VtaError::Validation(format!(
+                "this VTA advertises its TSP mediator ({tsp_mediator_did}) separately from \
+                 its DIDComm mediator ({}), so TSP cannot ride the DIDComm session — build \
+                 a TspSession against the TSP mediator and pass it to `attach_tsp_leg`, or \
+                 use `connect_didcomm_with_tsp`, which does both.",
+                session.mediator_did()
+            ))),
+        }
+    }
+
+    /// Attach a **separately-connected** TSP session as this DIDComm client's
+    /// Trust-Task leg, for the split-mediator topology where the VTA's `#tsp`
+    /// endpoint names a different mediator from its `#vta-didcomm` one.
+    ///
+    /// The client takes ownership: [`shutdown`](Self::shutdown) closes this
+    /// session along with the DIDComm one.
+    ///
+    /// **Refuses when the two mediators are the same.** A second socket for one
+    /// DID on one mediator is `duplicate-channel` and duelling reconnect loops
+    /// (#803) — the very defect this whole surface exists to prevent — so that
+    /// case is not merely discouraged here, it is unrepresentable. Use
+    /// [`enable_tsp_trust_tasks`](Self::enable_tsp_trust_tasks), which is free.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub fn attach_tsp_leg(
+        &mut self,
+        tsp_session: std::sync::Arc<crate::session::TspSession>,
+        tsp_mediator_did: &str,
+    ) -> Result<(), VtaError> {
+        let Transport::DIDComm { session, tsp, .. } = &mut self.transport else {
+            return Err(VtaError::Validation(
+                "attach_tsp_leg needs a DIDComm client — the TSP leg is the Trust-Task half \
+                 of a two-transport client. Use `connect_tsp` for a TSP-only client."
+                    .into(),
+            ));
+        };
+        if tsp_leg_kind(session.mediator_did(), tsp_mediator_did) == TspLegKind::Multiplexed {
+            return Err(VtaError::Validation(format!(
+                "refusing to attach a second session for {} on mediator {tsp_mediator_did}: \
+                 the mediator permits one websocket per DID, so this would be evicted as \
+                 `duplicate-channel`. This VTA advertises the same mediator for TSP and \
+                 DIDComm — call `enable_tsp_trust_tasks` instead (no second socket needed).",
+                session.client_did()
+            )));
+        }
+        *tsp = Some(TspLeg::Separate {
+            session: tsp_session,
+            mediator_did: tsp_mediator_did.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Connect via DIDComm and put the Trust-Task surface on TSP in one call,
+    /// picking the right leg for the VTA's topology: the DIDComm session's own
+    /// socket when both services name the same mediator, otherwise a TSP session
+    /// against the separate one.
+    ///
+    /// The same [`shutdown`](Self::shutdown) contract applies — and it closes
+    /// both legs.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub async fn connect_didcomm_with_tsp(
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+        tsp_mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let mut client = Self::connect_didcomm(
+            client_did,
+            private_key_multibase,
+            vta_did,
+            mediator_did,
+            rest_url,
+        )
+        .await?;
+
+        let attached = match tsp_leg_kind(mediator_did, tsp_mediator_did) {
+            TspLegKind::Multiplexed => client.enable_tsp_trust_tasks(tsp_mediator_did),
+            TspLegKind::Separate => {
+                tracing::debug!(
+                    didcomm_mediator = %mediator_did,
+                    tsp_mediator = %tsp_mediator_did,
+                    "VTA advertises a separate TSP mediator; connecting a TSP session for it"
+                );
+                match crate::session::TspSession::connect(
+                    client_did,
+                    private_key_multibase,
+                    tsp_mediator_did,
+                )
+                .await
+                {
+                    Ok(s) => client.attach_tsp_leg(std::sync::Arc::new(s), tsp_mediator_did),
+                    Err(e) => Err(VtaError::TspTransport(e.to_string())),
+                }
+            }
+        };
+
+        // Shut the DIDComm session down rather than leaking it if the TSP leg
+        // can't be established — this constructor either returns a whole client
+        // or nothing.
+        if let Err(e) = attached {
+            client.shutdown().await;
+            return Err(e);
+        }
+        Ok(client)
+    }
+
+    /// Which transport carries the **Trust-Task** surface
+    /// ([`dispatch_trust_task`](Self::dispatch_trust_task), `rpc_tt`, the
+    /// `device/*` and `vault/*` methods).
+    ///
+    /// Pairs with [`protocol_message_transport`](Self::protocol_message_transport):
+    /// a client can be on TSP for one and DIDComm for the other, so rendering a
+    /// single "transport" for a `VtaClient` is wrong.
+    pub fn trust_task_transport(&self) -> SurfaceTransport {
+        match &self.transport {
+            Transport::Rest { .. } => SurfaceTransport::Rest,
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => SurfaceTransport::Tsp,
+            #[cfg(feature = "session")]
+            Transport::DIDComm {
+                #[cfg(feature = "tsp")]
+                tsp,
+                ..
+            } => {
+                #[cfg(feature = "tsp")]
+                if tsp.is_some() {
+                    return SurfaceTransport::Tsp;
+                }
+                SurfaceTransport::Didcomm
+            }
+        }
+    }
+
+    /// Which transport carries the older DIDComm **protocol-message** surface
+    /// ([`rpc`](Self::rpc) / `rpc_void` — `key-management/1.0/*`,
+    /// `create_did_webvh`, `list_contexts`, …).
+    ///
+    /// Never TSP: the VTA has no TSP dispatcher for these, so they report
+    /// [`VtaError::UnsupportedTransport`] on a TSP-only client rather than being
+    /// silently routed somewhere that cannot serve them.
+    pub fn protocol_message_transport(&self) -> SurfaceTransport {
+        match &self.transport {
+            Transport::Rest { .. } => SurfaceTransport::Rest,
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => SurfaceTransport::Didcomm,
+            // A TSP-only client cannot serve this surface at all; naming DIDComm
+            // here would claim a leg it does not have, so report TSP and let the
+            // call itself fail with the message that names the fix.
+            #[cfg(feature = "tsp")]
+            Transport::Tsp { .. } => SurfaceTransport::Tsp,
+        }
     }
 
     /// Set the Bearer token for authenticated requests (REST only, no-op for DIDComm).
@@ -566,6 +867,17 @@ impl VtaClient {
     pub async fn shutdown(&self) {
         #[cfg(feature = "session")]
         if let Transport::DIDComm { session, .. } = &self.transport {
+            session.shutdown().await;
+        }
+        // A `Separate` TSP leg owns its own socket, so it leaks exactly like a
+        // DIDComm session would if nothing closed it. `Multiplexed` has nothing
+        // of its own — the DIDComm shutdown above already took its socket down.
+        #[cfg(all(feature = "session", feature = "tsp"))]
+        if let Transport::DIDComm {
+            tsp: Some(TspLeg::Separate { session, .. }),
+            ..
+        } = &self.transport
+        {
             session.shutdown().await;
         }
         // Same one-websocket-per-DID contract as DIDComm: a leaked TSP session
@@ -999,15 +1311,7 @@ impl VtaClient {
                 mediator_did,
                 ..
             } => {
-                // `issuer`/`recipient` are set here and not in the shared `doc`
-                // above because only a mediator transport knows both DIDs; the
-                // REST leg posts to an already-addressed endpoint.
-                let mut doc = doc;
-                doc["issuer"] = serde_json::Value::String(session.client_did().to_string());
-                doc["recipient"] = serde_json::Value::String(vta_did.clone());
-                let body = serde_json::to_vec(&doc)
-                    .map_err(|e| VtaError::Protocol(format!("trust-task encode: {e}")))?;
-
+                let body = Self::address_trust_task(doc, session.client_did(), vta_did)?;
                 let reply = session
                     .request(
                         vta_did,
@@ -1017,13 +1321,46 @@ impl VtaClient {
                     )
                     .await
                     .map_err(|e| VtaError::TspTransport(e.to_string()))?;
-
-                let response_doc: serde_json::Value = serde_json::from_str(&reply)
-                    .map_err(|e| VtaError::Protocol(format!("trust-task reply decode: {e}")))?;
-                Self::extract_trust_task_payload(response_doc)
+                Self::extract_trust_task_payload(Self::decode_trust_task_reply(&reply)?)
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
+            Transport::DIDComm {
+                session,
+                #[cfg(feature = "tsp")]
+                tsp,
+                ..
+            } => {
+                // Per-surface routing: with a TSP leg attached, trust tasks go
+                // over TSP while `rpc` keeps using this same session's DIDComm
+                // leg. The document is byte-identical either way — the VTA's TSP
+                // inbound dispatcher and its DIDComm envelope handler both feed
+                // `dispatch_trust_task_core`.
+                #[cfg(feature = "tsp")]
+                if let Some(leg) = tsp {
+                    let body =
+                        Self::address_trust_task(doc, session.client_did(), &session.vta_did)?;
+                    let timeout = std::time::Duration::from_secs(timeout);
+                    let reply = match leg {
+                        // Rides the DIDComm session's own socket — no second
+                        // websocket for this DID (#803).
+                        TspLeg::Multiplexed => {
+                            session
+                                .request_tsp(&session.vta_did, &body, timeout)
+                                .await?
+                        }
+                        TspLeg::Separate {
+                            session: tsp_session,
+                            mediator_did,
+                        } => tsp_session
+                            .request(&session.vta_did, mediator_did, &body, timeout)
+                            .await
+                            .map_err(|e| VtaError::TspTransport(e.to_string()))?,
+                    };
+                    return Self::extract_trust_task_payload(Self::decode_trust_task_reply(
+                        &reply,
+                    )?);
+                }
+
                 const TRUST_TASK_ENVELOPE_TYPE: &str =
                     "https://trusttasks.org/binding/didcomm/0.1/envelope";
                 let response_doc: serde_json::Value = session
@@ -1037,6 +1374,31 @@ impl VtaClient {
                 Self::extract_trust_task_payload(response_doc)
             }
         }
+    }
+
+    /// Address a trust-task document for a **mediator** transport and serialize
+    /// it.
+    ///
+    /// `issuer`/`recipient` are set here rather than at document construction
+    /// because only a mediator transport knows both DIDs — the REST leg posts to
+    /// an already-addressed endpoint. Shared by every TSP path so the wire shape
+    /// cannot drift between them.
+    #[cfg(feature = "tsp")]
+    fn address_trust_task(
+        mut doc: serde_json::Value,
+        issuer: &str,
+        recipient: &str,
+    ) -> Result<Vec<u8>, VtaError> {
+        doc["issuer"] = serde_json::Value::String(issuer.to_string());
+        doc["recipient"] = serde_json::Value::String(recipient.to_string());
+        serde_json::to_vec(&doc).map_err(|e| VtaError::Protocol(format!("trust-task encode: {e}")))
+    }
+
+    /// Parse a TSP reply frame back into a trust-task response document.
+    #[cfg(feature = "tsp")]
+    fn decode_trust_task_reply(reply: &str) -> Result<serde_json::Value, VtaError> {
+        serde_json::from_str(reply)
+            .map_err(|e| VtaError::Protocol(format!("trust-task reply decode: {e}")))
     }
 
     /// Pull `payload` out of a framework trust-task response document. A success
@@ -1681,5 +2043,50 @@ mod tests {
             VtaError::Protocol(msg) => assert!(msg.contains("not_found"), "got: {msg}"),
             other => panic!("expected Protocol error, got {other:?}"),
         }
+    }
+
+    // ── TSP leg selection (#803) ────────────────────────────────────
+
+    /// The reference topology: a VTA advertising the **same** mediator for
+    /// `#tsp` and `#vta-didcomm`. TSP must ride the DIDComm session's existing
+    /// socket — the mediator permits one websocket per DID, so a second one for
+    /// this DID is `duplicate-channel` and duelling reconnect loops.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    #[test]
+    fn same_mediator_multiplexes_rather_than_opening_a_second_socket() {
+        let mediator = "did:webvh:QmTS3a:webvh.storm.ws:mediator";
+        assert_eq!(tsp_leg_kind(mediator, mediator), TspLegKind::Multiplexed);
+    }
+
+    /// Split-mediator deployments are legitimate — `Transport::Tsp` explicitly
+    /// does not assume the two are equal — and there a second socket is fine,
+    /// because the one-websocket-per-DID rule is per mediator.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    #[test]
+    fn a_separate_tsp_mediator_gets_its_own_session() {
+        assert_eq!(
+            tsp_leg_kind(
+                "did:webvh:QmTS3a:webvh.storm.ws:mediator",
+                "did:web:tsp-mediator.example.com",
+            ),
+            TspLegKind::Separate
+        );
+    }
+
+    // ── Per-surface transport reporting ─────────────────────────────
+
+    /// A REST client is on REST for everything — no per-surface split to make.
+    #[test]
+    fn a_rest_client_reports_rest_for_both_surfaces() {
+        let client = VtaClient::new("https://vta.example.com");
+        assert_eq!(client.trust_task_transport(), SurfaceTransport::Rest);
+        assert_eq!(client.protocol_message_transport(), SurfaceTransport::Rest);
+    }
+
+    #[test]
+    fn surface_transport_renders_the_operator_facing_name() {
+        assert_eq!(SurfaceTransport::Tsp.to_string(), "TSP");
+        assert_eq!(SurfaceTransport::Didcomm.to_string(), "DIDComm");
+        assert_eq!(SurfaceTransport::Rest.to_string(), "REST");
     }
 }
