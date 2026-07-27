@@ -124,7 +124,22 @@ fn flatten(vta_did: &str, endpoint: VtaEndpoint) -> Result<ResolvedVta, Provisio
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::protocol::matching::Protocol;
+    /// Both discovery entry points must be exported from `provision_client`
+    /// itself, not just from this module.
+    ///
+    /// #813 added `resolve_vta_with_resolver` to this file but not to
+    /// `provision_client`'s curated `pub use` list, so it was reachable only via
+    /// `provision_client::resolve::`. This import fails to compile if that
+    /// happens again — which is exactly how it was introduced.
+    ///
+    /// Deliberately a unit test rather than a `tests/` file: an integration test
+    /// is a separate binary, and in a workspace this size each one links hundreds
+    /// of rlibs. The first version of this guard was a `tests/reexport_check.rs`
+    /// and the CI Test job ran the runner out of disk.
+    #[allow(unused_imports)]
+    use crate::provision_client::{resolve_vta, resolve_vta_with_resolver};
 
     fn resolved(tsp: Option<&str>, didcomm: Option<&str>, rest: Option<&str>) -> ResolvedVta {
         ResolvedVta {
