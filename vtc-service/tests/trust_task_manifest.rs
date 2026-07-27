@@ -1,10 +1,12 @@
 //! Census: `trust-tasks/index.json` must agree with what the router
 //! actually enforces (#537 follow-up).
 //!
-//! The manifest is the publication source of truth for trusttasks.org.
-//! Nothing previously checked it against the code, so it drifted in both
-//! directions: entries for tasks no route binds, and live routes the
-//! manifest never published.
+//! The manifest describes the **retired** `openvtc/vtc` authority. Nothing
+//! previously checked it against the code, so it drifted in both directions:
+//! entries for tasks no route binds, and live routes the manifest never
+//! published. Publication now happens upstream, against canonical
+//! `spec/vtc/*` slugs — see [`every_bound_vtc_task_exists_in_the_registry`],
+//! which is the assertion that matters for anything shipping today.
 //!
 //! Task bindings are attached as tower layers (`tt` / `ttl` in
 //! `routes/mod.rs`), so a built `Router` cannot be enumerated for them.
@@ -56,40 +58,23 @@ const UNBOUND_OK: &[(&str, &str)] = &[
 
 /// Task URIs the code binds that the manifest does not publish.
 ///
-/// These are a real backlog, not a design choice: whole feature families
-/// shipped after the manifest was last reconciled. Publishing them needs
-/// a `spec.md` + `schema.json` per task, so it is tracked separately
-/// rather than fixed here. This table exists to stop the backlog growing.
-const UNPUBLISHED_OK: &[(&str, &str)] = &[
-    ("admin/invites/manage/1.0", "unpublished backlog"),
-    ("admin/invites/revoke/1.0", "unpublished backlog"),
-    ("auth/admin-session/1.0", "unpublished backlog"),
-    ("auth/recognise/challenge/1.0", "unpublished backlog"),
-    ("backup/export/1.0", "unpublished backlog"),
-    ("backup/import/1.0", "unpublished backlog"),
-    ("ceremonies/list/1.0", "unpublished backlog"),
-    ("directory/query/1.0", "unpublished backlog"),
-    ("invitations/issue/1.0", "unpublished backlog"),
-    ("invitations/revoke/1.0", "unpublished backlog"),
-    ("members/purge/1.0", "unpublished backlog"),
-    ("members/removed/1.0", "unpublished backlog"),
-    ("members/request-vmc/1.0", "unpublished backlog"),
-    ("members/self-remove-receipt/1.0", "unpublished backlog"),
-    ("recognition/check/1.0", "unpublished backlog"),
-    ("relationships/graph/1.0", "unpublished backlog"),
-    (
-        "spec/join-requests/submit-receipt/1.0",
-        "unpublished backlog",
-    ),
-    ("spec/members/request-vmc/1.0", "unpublished backlog"),
-    ("spec/members/vmc/1.0", "unpublished backlog"),
-    // Phase-0 mount collapse: the admin GET list reuses this slug, while
-    // the real wire task is `spec/join-requests/submit/1.0`.
-    (
-        "join-requests/submit/1.0",
-        "mount-collapse alias of spec/join-requests/submit/1.0",
-    ),
-];
+/// **Empty, and that is the finished state (#709).** This table once carried
+/// twenty entries — whole feature families that shipped after the manifest was
+/// last reconciled and were never published. None of them were resolved by
+/// authoring twenty specs into this manifest. They were resolved by the #710
+/// migration: every one of those tasks now binds a canonical
+/// `https://trusttasks.org/spec/vtc/<slug>` URI published by the upstream
+/// registry, which [`every_bound_vtc_task_exists_in_the_registry`] verifies
+/// against `trust_tasks_rs` rather than against anything local.
+///
+/// So the backlog did not get published here; the surface it described moved
+/// off this authority entirely. What is left on `openvtc/vtc/` is the four
+/// entries in [`AWAITING_CANONICAL_FOLD`], and all four *are* in the manifest.
+///
+/// The table stays (empty) because the assertion below is still load-bearing:
+/// a new `openvtc/vtc/` binding with no manifest row fails rather than
+/// silently reopening the backlog. Adding a row again is a deliberate act.
+const UNPUBLISHED_OK: &[(&str, &str)] = &[];
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

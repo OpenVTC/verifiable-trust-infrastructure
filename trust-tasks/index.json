@@ -3,7 +3,7 @@
   "version": 1,
   "org": "openvtc",
   "domain": "vtc",
-  "description": "OpenVTC Verifiable Trust Community — Trust Task manifest. Source of truth for trusttasks.org publication; CI publishes Draft entries on every merge to main per spec §9.4.",
+  "description": "OpenVTC Verifiable Trust Community — Trust Task manifest for the retired openvtc/vtc authority. Historical record, not a publication pipeline: no CI job has ever read this file (an earlier description claimed one did, per spec §9.4 — it did not exist). The live VTC surface binds canonical https://trusttasks.org/spec/vtc/<slug> tasks published by the upstream registry; the entries here are retired, or awaiting a canonical fold. See docs/05-design-notes/vtc-trust-task-registry-migration.md.",
   "tasks": [
     {
       "id": "https://trusttasks.org/openvtc/vtc/auth/legacy/challenge/1.0",
