@@ -121,9 +121,14 @@ pub(crate) struct UnsealChallenge {
 /// pasting their signature.
 pub(crate) async fn read_unseal_state(
     store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
 ) -> Result<UnsealChallenge, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks_raw = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks = match enc_key {
+        Some(key) => acl_ks_raw.with_encryption(key),
+        None => acl_ks_raw,
+    };
 
     let seal = get_seal(&acl_ks)
         .await?
@@ -155,9 +160,16 @@ pub(crate) async fn read_unseal_state(
 /// seal was removed in this call, `Ok(false)` if it had already been
 /// removed (e.g. by a concurrent process while the operator was
 /// blocked on stdin).
-pub(crate) async fn remove_seal_marker(store_config: &StoreConfig) -> Result<bool, AppError> {
+pub(crate) async fn remove_seal_marker(
+    store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
+) -> Result<bool, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks_raw = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks = match enc_key {
+        Some(key) => acl_ks_raw.with_encryption(key),
+        None => acl_ks_raw,
+    };
     if get_seal(&acl_ks).await?.is_none() {
         return Ok(false);
     }
@@ -176,12 +188,15 @@ pub(crate) async fn remove_seal_marker(store_config: &StoreConfig) -> Result<boo
 ///    can open the same data dir to produce the signature.
 /// 3. Verify the Ed25519 signature; [`remove_seal_marker`] then
 ///    reopens the store, removes the seal, and persists.
-pub async fn run_unseal_challenge(store_config: &StoreConfig) -> Result<(), AppError> {
+pub async fn run_unseal_challenge(
+    store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
+) -> Result<(), AppError> {
     let UnsealChallenge {
         seal,
         super_admins,
         challenge_bytes,
-    } = read_unseal_state(store_config).await?;
+    } = read_unseal_state(store_config, enc_key).await?;
 
     let challenge_hex = hex::encode(challenge_bytes);
 
@@ -249,7 +264,7 @@ pub async fn run_unseal_challenge(store_config: &StoreConfig) -> Result<(), AppE
     // Verify the signature before we reacquire the lock.
     verify_challenge_signature(admin_did, &challenge_bytes, sig_hex)?;
 
-    let removed = remove_seal_marker(store_config).await?;
+    let removed = remove_seal_marker(store_config, enc_key).await?;
     if !removed {
         eprintln!();
         eprintln!("  VTA was unsealed concurrently — nothing to do.");

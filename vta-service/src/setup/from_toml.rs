@@ -682,7 +682,7 @@ pub async fn apply_inputs(
     let store = Store::open(&StoreConfig {
         data_dir: inputs.data_dir.clone(),
     })?;
-    
+
     let maybe_encrypt = |ks: KeyspaceHandle| -> KeyspaceHandle {
         match setup_storage_key {
             Some(key) => ks.with_encryption(key),
@@ -690,7 +690,7 @@ pub async fn apply_inputs(
         }
     };
 
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
+    let keys_ks = maybe_encrypt(store.keyspace(crate::keyspaces::KEYS)?);
 
     // 4a. Fail closed if the store already holds an initialized VTA. Setup
     //     mints a fresh master seed and writes it as generation 0 (step 8),
@@ -708,11 +708,11 @@ pub async fn apply_inputs(
         )
         .into());
     }
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    let imported_ks = maybe_encrypt(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
+    let contexts_ks = maybe_encrypt(store.keyspace(crate::keyspaces::CONTEXTS)?);
+    let webvh_ks = maybe_encrypt(store.keyspace(crate::keyspaces::WEBVH)?);
+    let audit_ks = maybe_encrypt(store.keyspace(crate::keyspaces::AUDIT)?);
+    let did_templates_ks = maybe_encrypt(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
     eprintln!("  Created application context: vta");
@@ -1985,6 +1985,7 @@ mod tests {
             resolver_url: None,
             audit: AuditConfig::default(),
             staff: Vec::new(),
+            hardened: Default::default(),
         }
     }
 

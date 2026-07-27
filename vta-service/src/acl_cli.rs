@@ -67,8 +67,8 @@ pub async fn run_acl_create(
     }
 
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     if get_acl_entry(&acl_ks, &did).await?.is_some() {
         return Err(format!(
@@ -86,7 +86,7 @@ pub async fn run_acl_create(
         .with_approve_scope(approve_scope);
 
     store_acl_entry(&acl_ks, &entry).await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("ACL entry created:\n");
     print_entry_details(&entry);

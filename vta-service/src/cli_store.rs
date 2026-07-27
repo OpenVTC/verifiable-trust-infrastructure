@@ -74,6 +74,16 @@ impl std::ops::Deref for CliStore {
     }
 }
 
+impl Drop for CliStore {
+    fn drop(&mut self) {
+        // Zeroize the storage-encryption key when the CLI command finishes so
+        // it does not linger in heap memory. Mirrors `HardenedBootSecrets::drop`.
+        if let Some(ref mut key) = self.enc_key {
+            zeroize::Zeroize::zeroize(key);
+        }
+    }
+}
+
 impl CliStore {
     /// Open the store and, if `hardened.enabled`, load the master seed from
     /// the configured backend and derive the storage-encryption key.

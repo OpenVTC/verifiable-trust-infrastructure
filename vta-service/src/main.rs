@@ -1482,8 +1482,12 @@ async fn main() {
             // run_unseal_challenge opens and drops the store twice on
             // purpose so the fjall lock is not held while the operator
             // is pasting a signature — see the doc comment on that
-            // function. Pass the config, not an already-opened Store.
-            if let Err(e) = seal::run_unseal_challenge(&config.store).await {
+            // function. Derive the storage key for hardened configuration
+            // so the ACL keyspace can be decrypted.
+            let enc_key = cli_store::load_storage_key_for_cli(&config)
+                .await
+                .unwrap_or(None);
+            if let Err(e) = seal::run_unseal_challenge(&config.store, enc_key).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -2331,8 +2335,18 @@ async fn run_hardened_rotate_jwt(
     }
 
     let store = store::Store::open(&config.store)?;
-    // The bootstrap keyspace is intentionally unencrypted at the keyspace level;
-    // the JWT ciphertext inside it is application-layer encrypted.
+    // The BOOTSTRAP keyspace is intentionally NOT encrypted at the keyspace level
+    // (no `with_encryption` / no storage key needed here) — this matches the daemon
+    // boot block and `hardened_bootstrap::load_boot_secrets`. Rationale:
+    //   • The JWT key bytes are protected by application-layer AES-256-GCM inside the
+    //     row (`hardened:jwt_ciphertext`), not by VAE1. Deleting the row does not
+    //     require decrypting it first.
+    //   • The fingerprint row is a SHA-256 hash — not a secret, safe to remove bare.
+    //   • Unlike the ACL/KEYS/CONTEXTS keyspaces (which hold sensitive rows and must be
+    //     opened via `CliStore` to pick up VAE1 encryption), BOOTSTRAP carries only
+    //     these two application-layer-encrypted entries.
+    // See `hardened_bootstrap.rs` and the "Why is bootstrap unencrypted" section in
+    // `docs/02-vta/non-interactive-setup.md#hardened-configuration` for full rationale.
     let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
 
     let ct_present = bootstrap_ks
