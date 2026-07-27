@@ -10,13 +10,15 @@
 #   nitro-cli build-enclave --docker-uri vta-nitro --output-file vta.eif
 #
 # Networking: Nitro Enclaves have NO direct network access. The entrypoint
-# starts socat-based vsock proxies inside the enclave to bridge TCP↔vsock.
-# The parent EC2 instance runs parent-proxy.sh to bridge vsock↔internet.
+# starts socat-based vsock proxies inside the enclave to bridge TCP<->vsock.
+# The parent EC2 instance runs parent-proxy.sh to bridge vsock<->internet.
 #
-# Architecture:
-#   Client → parent TCP:8443 → vsock:5100 → enclave socat → VTA :8100
-#   VTA DIDComm → localhost:4443 → enclave socat → vsock:5200 → parent → mediator
-#   VTA HTTPS   → localhost:4444 → enclave socat → vsock:5300 → parent → internet
+# CACHING NOTE: config.toml is copied ONLY in Stage 2 (runtime), so editing
+# deploy/nitro/config.toml re-layers just the tiny Alpine stage and does NOT
+# invalidate the Rust build. Stage 1 copies the workspace crates explicitly
+# (never `COPY . .`) so deploy/ never enters the compile layer, and the
+# manifest list below covers ALL workspace members so the dependency-cache
+# warm-up build actually succeeds.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -31,30 +33,89 @@ RUN apt-get update && \
 
 WORKDIR /build
 
-# Cache dependency builds: copy manifests first, create dummy sources, build deps
+# Cache dependency builds: copy manifests first, create dummy sources, build deps.
+# This must list EVERY workspace member from the root Cargo.toml [workspace].members
+# or `cargo build` fails workspace resolution (and the `|| true` below silently
+# swallows it, giving you a full-from-scratch dep rebuild every time).
 COPY Cargo.toml Cargo.lock ./
+COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
+COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
+COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
+COPY tests/e2e/Cargo.toml tests/e2e/Cargo.toml
+COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
+COPY vta-config/Cargo.toml vta-config/Cargo.toml
+COPY vta-keyspaces/Cargo.toml vta-keyspaces/Cargo.toml
+COPY vta-audit/Cargo.toml vta-audit/Cargo.toml
+COPY vta-backup/Cargo.toml vta-backup/Cargo.toml
+COPY vta-keys/Cargo.toml vta-keys/Cargo.toml
+COPY vta-policy/Cargo.toml vta-policy/Cargo.toml
+COPY vta-mcp/Cargo.toml vta-mcp/Cargo.toml
+COPY vta-mobile-core/Cargo.toml vta-mobile-core/Cargo.toml
 COPY vta-sdk/Cargo.toml vta-sdk/Cargo.toml
+COPY vta-support/Cargo.toml vta-support/Cargo.toml
+COPY vta-tee/Cargo.toml vta-tee/Cargo.toml
+COPY vta-sweepers/Cargo.toml vta-sweepers/Cargo.toml
+COPY vta-vault/Cargo.toml vta-vault/Cargo.toml
+COPY vta-webvh/Cargo.toml vta-webvh/Cargo.toml
 COPY vta-service/Cargo.toml vta-service/Cargo.toml
 COPY vta-enclave/Cargo.toml vta-enclave/Cargo.toml
-COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
+COPY vtc-client/Cargo.toml vtc-client/Cargo.toml
 COPY vtc-service/Cargo.toml vtc-service/Cargo.toml
 COPY vti-common/Cargo.toml vti-common/Cargo.toml
-COPY cnm-cli/Cargo.toml cnm-cli/Cargo.toml
-COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
-COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
+COPY vti-secrets/Cargo.toml vti-secrets/Cargo.toml
+COPY vti-webauthn/Cargo.toml vti-webauthn/Cargo.toml
 
-# Create dummy source files so cargo can resolve the workspace
-RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-service/src vti-common/src cnm-cli/src pnm-cli/src didcomm-test/src && \
-    echo "pub fn dummy() {}" > vta-sdk/src/lib.rs && \
-    echo "pub fn dummy() {}" > vta-service/src/lib.rs && \
-    echo "fn main() {}" > vta-service/src/main.rs && \
-    echo "fn main() {}" > vta-enclave/src/main.rs && \
-    echo "pub fn dummy() {}" > vta-cli-common/src/lib.rs && \
-    echo "fn main() {}" > vtc-service/src/main.rs && \
-    echo "pub fn dummy() {}" > vti-common/src/lib.rs && \
-    echo "fn main() {}" > cnm-cli/src/main.rs && \
-    echo "fn main() {}" > pnm-cli/src/main.rs && \
-    echo "fn main() {}" > didcomm-test/src/main.rs
+# Create dummy source files so cargo can resolve + dep-build the workspace.
+# Target kind (bin vs lib) must match each crate's manifest:
+#   bins  (src/main.rs):  cnm-cli, didcomm-test, pnm-cli, vta-mcp, vta-enclave
+#   libs  (src/lib.rs):   vta-cli-common, vta-config, vta-keyspaces, vta-audit,
+#                         vta-backup, vta-keys, vta-policy, vta-sdk, vta-support,
+#                         vta-tee, vta-sweepers, vta-vault, vta-webvh, vtc-client,
+#                         vti-common, vti-secrets, vti-webauthn
+#   both:                 vta-service, vtc-service
+#   lib + custom bin:     vta-mobile-core (uniffi-bindgen)
+#   stub lib:             tests/e2e (autobins=false + no src until the real
+#                         COPY below, so a stub lib.rs is needed here purely to
+#                         satisfy workspace resolution during the warm-up build)
+RUN mkdir -p \
+      cnm-cli/src didcomm-test/src pnm-cli/src tests/e2e/src \
+      vta-cli-common/src vta-config/src vta-keyspaces/src vta-audit/src \
+      vta-backup/src vta-keys/src vta-policy/src vta-mcp/src \
+      vta-mobile-core/src vta-mobile-core/src/bin \
+      vta-sdk/src vta-support/src vta-tee/src vta-sweepers/src \
+      vta-vault/src vta-webvh/src \
+      vta-service/src vta-enclave/src \
+      vtc-client/src vtc-service/src \
+      vti-common/src vti-secrets/src vti-webauthn/src && \
+    echo "fn main() {}"       > cnm-cli/src/main.rs && \
+    echo "fn main() {}"       > didcomm-test/src/main.rs && \
+    echo "fn main() {}"       > pnm-cli/src/main.rs && \
+    echo "pub fn dummy() {}"  > tests/e2e/src/lib.rs && \
+    echo "fn main() {}"       > vta-mcp/src/main.rs && \
+    echo "fn main() {}"       > vta-enclave/src/main.rs && \
+    echo "pub fn dummy() {}"  > vta-cli-common/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-config/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-keyspaces/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-audit/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-backup/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-keys/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-policy/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-sdk/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-support/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-tee/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-sweepers/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-vault/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-webvh/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vtc-client/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vti-common/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vti-secrets/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vti-webauthn/src/lib.rs && \
+    echo "pub fn dummy() {}"  > vta-service/src/lib.rs && \
+    echo "fn main() {}"       > vta-service/src/main.rs && \
+    echo "pub fn dummy() {}"  > vtc-service/src/lib.rs && \
+    echo "fn main() {}"       > vtc-service/src/main.rs && \
+    echo "pub fn dummy() {}"  > vta-mobile-core/src/lib.rs && \
+    echo "fn main() {}"       > vta-mobile-core/src/bin/uniffi-bindgen.rs
 
 # Feature flags for the VTA enclave build.
 # Override with: docker build --build-arg FEATURES="didcomm,vsock-store" ...
@@ -69,24 +130,50 @@ RUN mkdir -p vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vtc-
 # or aws-secrets features.
 ARG FEATURES="rest,didcomm,vsock-store,vsock-log"
 
-# Build dependencies only (cached unless Cargo.toml or features change)
+# Build dependencies only (cached unless Cargo.toml, Cargo.lock or features change)
 RUN cargo build --release --package vta-enclave \
     --no-default-features --features ${FEATURES} \
     2>/dev/null || true
 
-# Copy actual source code
+# Copy actual source code — every workspace member EXCEPT deploy/ (whose
+# config.toml is baked later in Stage 2). Never use `COPY . .` here: that would
+# pull deploy/nitro/config.toml into this layer and make every config edit
+# trigger a full Rust recompile.
+COPY cnm-cli/ cnm-cli/
+COPY didcomm-test/ didcomm-test/
+COPY pnm-cli/ pnm-cli/
+COPY tests/ tests/
+COPY vta-cli-common/ vta-cli-common/
+COPY vta-config/ vta-config/
+COPY vta-keyspaces/ vta-keyspaces/
+COPY vta-audit/ vta-audit/
+COPY vta-backup/ vta-backup/
+COPY vta-keys/ vta-keys/
+COPY vta-policy/ vta-policy/
+COPY vta-mcp/ vta-mcp/
+COPY vta-mobile-core/ vta-mobile-core/
 COPY vta-sdk/ vta-sdk/
+COPY vta-support/ vta-support/
+COPY vta-tee/ vta-tee/
+COPY vta-sweepers/ vta-sweepers/
+COPY vta-vault/ vta-vault/
+COPY vta-webvh/ vta-webvh/
 COPY vta-service/ vta-service/
 COPY vta-enclave/ vta-enclave/
-COPY vta-cli-common/ vta-cli-common/
+COPY vtc-client/ vtc-client/
 COPY vtc-service/ vtc-service/
 COPY vti-common/ vti-common/
-COPY cnm-cli/ cnm-cli/
-COPY pnm-cli/ pnm-cli/
-COPY didcomm-test/ didcomm-test/
+COPY vti-secrets/ vti-secrets/
+COPY vti-webauthn/ vti-webauthn/
 
-# Touch source files to invalidate the dummy build cache
-RUN find vta-sdk/src vta-service/src vta-enclave/src vta-cli-common/src vti-common/src -name '*.rs' -exec touch {} +
+# Touch source files to invalidate the dummy build cache so the real crates
+# (not the dummy stubs) get compiled.
+RUN find cnm-cli didcomm-test pnm-cli tests vta-cli-common vta-config \
+        vta-keyspaces vta-audit vta-backup vta-keys vta-policy vta-mcp \
+        vta-mobile-core vta-sdk vta-support vta-tee vta-sweepers vta-vault \
+        vta-webvh vta-service vta-enclave vtc-client vtc-service \
+        vti-common vti-secrets vti-webauthn \
+        -name '*.rs' -exec touch {} +
 
 # Build the VTA enclave binary with selected feature flags
 RUN cargo build --release --package vta-enclave \
@@ -119,7 +206,9 @@ COPY --from=builder /build/target/release/vta-enclave /usr/local/bin/vta-enclave
 COPY --from=builder /tmp/libresolv_compat.so /usr/lib/libresolv_compat.so
 ENV LD_PRELOAD=/usr/lib/libresolv_compat.so
 
-# Copy the entrypoint script and config
+# Copy the entrypoint script and config.
+# config.toml is baked HERE (Stage 2) on purpose: editing it re-layers only
+# this tiny Alpine stage, never the Rust build in Stage 1.
 COPY deploy/nitro/enclave-entrypoint.sh /usr/local/bin/enclave-entrypoint.sh
 RUN chmod +x /usr/local/bin/enclave-entrypoint.sh
 COPY deploy/nitro/config.toml /etc/vta/config.toml

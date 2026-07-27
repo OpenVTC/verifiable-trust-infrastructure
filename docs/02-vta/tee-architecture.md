@@ -407,11 +407,45 @@ init_auth()
   ├─ Use bootstrapped JWT key (not config file)
   └─ Derive VTA identity keys → secrets_resolver
   ↓
+maybe_generate_vta_did()        [only if vta_did_template is set]
+  ├─ First boot: derive a did:webvh from the enclave seed and build did.jsonl
+  ├─ Persist the DID + log under the KEYS keyspace (key-material side)
+  └─ Backfill the DID *record* + *log* into the WEBVH keyspace
+        └─ idempotent; makes the self-DID resolvable by GET /services,
+           the resolver preload, and GET /.well-known/did.jsonl
+  ↓
 Start REST/DIDComm/Storage threads (normal flow)
 ```
 
 In non-TEE mode, the startup sequence is unchanged — `bootstrap_secrets_from_kms()`
 is skipped, and the existing SeedStore/config-based key loading is used.
+
+### Self-issued did:webvh identity and resolution
+
+When `[tee.kms].vta_did_template` is set, a TEE VTA is *serverless* with respect to
+its own DID: it mints a `did:webvh` from the enclave seed on first boot and never
+publishes a `did.jsonl` to an external hosting endpoint. Two consequences follow,
+and both are load-bearing for a fresh enclave to accept traffic:
+
+- **The DID must be persisted to the `webvh` keyspace, not only the key-material
+  store.** Auto-generation writes the DID and its `did.jsonl` under the `KEYS`
+  keyspace so signing works, but three read paths resolve the VTA's *own* DID from
+  the `webvh` keyspace: `GET /services` (needs the DID **record** and **log**), the
+  self-DID resolver preload at startup (needs the log), and `GET
+  /.well-known/did.jsonl` (needs the log). Startup therefore backfills the record +
+  log into the `webvh` keyspace after generation. The backfill is idempotent — a
+  no-op once the entries exist — so it also repairs an already-generated identity
+  after an enclave image rebuild + state restore, without rotating the DID.
+
+- **A serverless `did:webvh` is resolvable only from the local resolver cache.**
+  There is no hosting endpoint to fetch the log from, and the enclave has no direct
+  network egress in any case: all DID resolution (the VTA's own DID and remote DIDs
+  such as a mediator's) is routed through the parent-side network-mode resolver
+  sidecar over vsock. Because cached `did:webvh` entries expire after the resolver
+  cache TTL, transient operations that must resolve the self-DID — notably the
+  first-enable handshake that trust-pings a newly configured mediator — re-seed the
+  self-DID into the resolver cache immediately before running, rather than assuming
+  it is still cached from preload.
 
 ## Secret Lifecycle Summary
 

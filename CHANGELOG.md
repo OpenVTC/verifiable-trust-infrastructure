@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.8 / vta-service 0.12.43 / vtc-service 0.11.37 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
+### vta-sdk 0.20.8 / vta-service 0.12.47 / vtc-service 0.11.37 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
 
 The eight `credential-exchange` Trust Tasks now bind URIs the registry actually
 publishes (`trust-tasks-rs` 0.2.41, authored in trust-tasks-tf#148). Five of
@@ -316,6 +316,46 @@ bound to the canonical `acl/list/0.1` Trust Task, whose payload is
 `docs/05-design-notes/acl-scope-semantics.md` — with the note that the VTC list
 is paginated, so `direction` must also join the cursor binding or a resumed
 sweep changes question mid-listing.
+
+### vta-service 0.12.45 — resolve the self-DID through the network-mode resolver during the first-enable handshake
+
+The transient handshake that trust-pings a newly configured mediator built a
+default TDK config, which resolves DIDs locally. In a TEE the enclave has no
+direct network egress, so resolving the mediator DID — and the VTA's own
+serverless `did:webvh` during mediator authentication — failed with a network
+error.
+
+The handshake is now routed through the VTA's shared network-mode resolver
+(bridged to the parent-side resolver sidecar in a TEE), and the self-DID is
+re-seeded into the resolver cache immediately before the handshake: webvh cache
+entries expire after the cache TTL, and a serverless `did:webvh` can only be
+resolved from cache. This mirrors the resolver wiring already used by the
+messaging service and the auth ATM.
+
+Building that config is fail-closed. `run_transient_handshake` falls back to a
+default, locally-resolving TDK when handed no config, so a config that fails to
+build would have degraded straight back to the bug above — from a patched
+build, with nothing in the log to say so. It is now a `Connect`-stage handshake
+failure, the same stage `transient_prove` assigns to the identical call, so
+`services didcomm enable` refuses with the cause instead of proceeding on a
+resolver that cannot reach the network.
+
+### vta-service 0.12.44 — persist the auto-generated serverless did:webvh record and log
+
+In TEE mode the VTA mints its own `did:webvh` on first boot from the
+KMS-bootstrapped seed and stored the DID and `did.jsonl` log only under the
+`KEYS`/`BOOTSTRAP` keyspaces. That path never went through the `create_did_webvh`
+flow, so the `webvh` keyspace — which `list_services`, `preload_self_did_document`,
+and `/.well-known/did.jsonl` all read the VTA's own DID from — was left empty. The
+result was `GET /services` returning 500 (`VtaDidRecordMissing`) and the VTA's own
+DID being unresolvable from cache, so no client could authcrypt to it.
+
+A new `tee_webvh` bridge in `vta-service` idempotently backfills the `webvh`
+keyspace with the record and log after auto-generation (called from enclave
+startup). It is a no-op for non-`did:webvh` identities and once the entries exist,
+so it also repairs an already-generated DID on rebuild + restore without wiping
+state. Record fields mirror the production serverless builder; any drift
+self-heals on the next did update/rotate, which re-scans the log.
 
 ### VTC Trust Tasks — the unpublished-manifest backlog is closed (#709)
 
