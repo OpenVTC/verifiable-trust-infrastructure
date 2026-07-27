@@ -75,6 +75,13 @@ derivation (unchanged contract; just deeper).
    caller is admin of it, allocates the nested BIP-32 base, enforces depth.
 3. **Subtree operations** — delete (cascade / refuse-non-empty), list-subtree,
    and admin-of-parent authority over descendant ACL / keys.
+
+   The **ACL** half of "list-subtree" landed with #822: `GET /acl` (and every
+   other ACL listing surface) takes an explicit `direction`, because
+   `?context=X` reads *up* the tree by design and a subtree sweep needs it to
+   read *down*. See the direction axis in `acl-scope-semantics.md` — including
+   why an unrestricted entry is not in the subtree answer, and why the VTC's
+   canonical `acl/list/0.1` filter cannot follow without a spec change.
 4. **VTC** — mirror the relevant parts to the community/context surface.
 
    **Finding (on investigation):** the VTC is **not** the key authority — it

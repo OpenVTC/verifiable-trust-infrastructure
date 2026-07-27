@@ -8,8 +8,8 @@ use vta_sdk::protocols::acl_management::{
 };
 
 use crate::acl::{
-    AclEntry, ApproveScope, Role, acl_entry_can_act_in, delete_acl_entry, get_acl_entry,
-    is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
+    AclEntry, ApproveScope, ContextDirection, Role, acl_entry_matches_context, delete_acl_entry,
+    get_acl_entry, is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
     validate_acl_modification, validate_approve_scope_grant, validate_role_assignment,
 };
 use crate::auth::AuthClaims;
@@ -278,13 +278,28 @@ pub async fn get_acl(
     Ok(to_result_body(&entry))
 }
 
+/// List the ACL entries the caller may audit, optionally filtered to one
+/// context.
+///
+/// `direction` says which way `context_filter` reads along the hierarchy;
+/// it is inert without a context, and supplying one there is an error rather
+/// than a silent no-op — a caller that asked for a subtree sweep and got the
+/// unfiltered ACL back would believe it had swept.
 pub async fn list_acl(
     acl_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     context_filter: Option<&str>,
+    direction: ContextDirection,
     channel: &str,
 ) -> Result<ListAclResultBody, AppError> {
     auth.require_manage()?;
+
+    if context_filter.is_none() && direction != ContextDirection::default() {
+        return Err(AppError::Validation(format!(
+            "`direction={direction}` filters a context and there is no context to filter — \
+             pass a context as well, or drop the direction to list every visible entry"
+        )));
+    }
 
     let all_entries = list_acl_entries(acl_ks).await?;
     let entries: Vec<CreateAclResultBody> = all_entries
@@ -295,13 +310,25 @@ pub async fn list_acl(
         // omitted super-admin entries, which do hold every context — an
         // operator auditing "who can reach context X" never saw them — and
         // missed entries scoped to an ancestor of X.
+        //
+        // The direction is what makes the question answerable at all: the
+        // ancestor-or-self reading cannot express "what is granted beneath
+        // this context", and a sweep asking that with this filter got back the
+        // entries it was *not* revoking (#822).
         .filter(|e| match context_filter {
-            Some(ctx) => acl_entry_can_act_in(e, ctx),
+            Some(ctx) => acl_entry_matches_context(e, ctx, direction),
             None => true,
         })
         .map(to_result_body)
         .collect();
-    info!(channel, caller = %auth.did, count = entries.len(), "ACL listed");
+    info!(
+        channel,
+        caller = %auth.did,
+        context = context_filter.unwrap_or("-"),
+        direction = %direction,
+        count = entries.len(),
+        "ACL listed"
+    );
     Ok(ListAclResultBody { entries })
 }
 
@@ -736,13 +763,121 @@ mod tests {
         .unwrap();
 
         let caller = ctx_admin("did:key:zCtxAdminA", &["ctx-a"]);
-        let body = list_acl(&acl_ks, &caller, None, "test").await.unwrap();
+        let body = list_acl(&acl_ks, &caller, None, ContextDirection::default(), "test")
+            .await
+            .unwrap();
         assert!(
             body.entries
                 .iter()
                 .any(|e| e.did == "did:key:zApproverList"),
             "an approve-all holder must be auditable by every context admin"
         );
+    }
+
+    // ── context-filter direction (#822) ─────────────────────────────
+
+    /// Seed the layout the issue describes: a tenant unit with a
+    /// per-purpose leaf per principal, plus a unit-wide admin above them.
+    async fn seed_tenant_subtree(acl_ks: &KeyspaceHandle) {
+        seed_target(acl_ks, "did:key:zUnitAdmin", &["acme/eng"]).await;
+        seed_target(acl_ks, "did:key:zTenantAdmin", &["acme"]).await;
+        seed_target(acl_ks, "did:key:zGateway", &["acme/eng/attestation"]).await;
+        seed_target(acl_ks, "did:key:zSigner", &["acme/eng/signing"]).await;
+        seed_target(acl_ks, "did:key:zOps", &["acme/ops/keys"]).await;
+    }
+
+    async fn dids_for(
+        acl_ks: &KeyspaceHandle,
+        caller: &AuthClaims,
+        ctx: &str,
+        direction: ContextDirection,
+    ) -> Vec<String> {
+        let body = list_acl(acl_ks, caller, Some(ctx), direction, "test")
+            .await
+            .unwrap();
+        let mut dids: Vec<String> = body.entries.into_iter().map(|e| e.did).collect();
+        dids.sort();
+        dids
+    }
+
+    /// The bug: sweeping `acme/eng` to revoke it returned the ancestors that
+    /// keep their authority and none of the leaf grants the sweep exists to
+    /// cut. Both directions are now askable, and they answer differently.
+    #[tokio::test]
+    async fn a_subtree_listing_returns_the_leaves_an_act_in_listing_omits() {
+        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        seed_tenant_subtree(&acl_ks).await;
+        let caller = super_admin("did:key:zRoot");
+
+        assert_eq!(
+            dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::ActingIn).await,
+            ["did:key:zTenantAdmin", "did:key:zUnitAdmin"],
+            "act-in: authority over the unit, which is not what a sweep revokes"
+        );
+        assert_eq!(
+            dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::Subtree).await,
+            ["did:key:zGateway", "did:key:zSigner", "did:key:zUnitAdmin"],
+            "subtree: every grant inside the unit, and nothing from acme/ops"
+        );
+        assert_eq!(
+            dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::Any).await,
+            [
+                "did:key:zGateway",
+                "did:key:zSigner",
+                "did:key:zTenantAdmin",
+                "did:key:zUnitAdmin"
+            ],
+            "any: the union — the auditor's question"
+        );
+    }
+
+    /// Absent parameter ⇒ pre-#822 behaviour, entry for entry.
+    #[tokio::test]
+    async fn the_default_direction_is_the_historical_filter() {
+        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        seed_tenant_subtree(&acl_ks).await;
+        let caller = super_admin("did:key:zRoot");
+        assert_eq!(
+            dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::default()).await,
+            dids_for(&acl_ks, &caller, "acme/eng", ContextDirection::ActingIn).await,
+        );
+    }
+
+    /// Visibility is applied before the filter in every direction — the new
+    /// direction must not become a way to enumerate entries a context admin
+    /// could not otherwise see.
+    #[tokio::test]
+    async fn a_subtree_listing_does_not_widen_what_a_context_admin_can_see() {
+        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        seed_tenant_subtree(&acl_ks).await;
+        // Admin of a sibling unit only.
+        let caller = ctx_admin("did:key:zOpsAdmin", &["acme/ops"]);
+        for direction in ContextDirection::ALL {
+            let dids = dids_for(&acl_ks, &caller, "acme/eng", direction).await;
+            assert!(
+                dids.is_empty(),
+                "{direction} leaked acme/eng entries to an acme/ops admin: {dids:?}"
+            );
+        }
+    }
+
+    /// A direction with nothing to point at is refused rather than ignored:
+    /// silently listing the whole ACL to a caller that asked to sweep a
+    /// branch is the failure this issue is about, one level up.
+    #[tokio::test]
+    async fn a_direction_without_a_context_is_refused() {
+        let (_store, acl_ks, _audit_ks, _contexts_ks, _dir) = fresh_store().await;
+        seed_tenant_subtree(&acl_ks).await;
+        let caller = super_admin("did:key:zRoot");
+
+        let err = list_acl(&acl_ks, &caller, None, ContextDirection::Subtree, "test")
+            .await
+            .expect_err("a direction needs a context");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+
+        list_acl(&acl_ks, &caller, None, ContextDirection::default(), "test")
+            .await
+            .expect("the default direction with no context is just an unfiltered list");
     }
 
     /// The escalation the split exists to prevent: reading an entry that

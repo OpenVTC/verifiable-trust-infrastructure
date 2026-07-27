@@ -527,10 +527,18 @@ enum ContextCommands {
 enum AclCommands {
     /// List ACL entries
     List {
-        /// FILTER: only show entries whose `allowed_contexts` include this
-        /// context. Omit to see every entry visible to you.
+        /// FILTER: narrow the listing to one context. Omit to see every entry
+        /// visible to you. See --direction for which way this reads.
         #[arg(long)]
         context: Option<String>,
+        /// Which way --context reads along the context hierarchy:
+        /// `acting-in` (default) — who may act IN the context: entries scoped
+        /// to it or to an ancestor of it;
+        /// `subtree` — what is granted BENEATH it: entries scoped to it or to
+        /// a descendant, i.e. the grants a revocation sweep must cut;
+        /// `any` — both.
+        #[arg(long, requires = "context")]
+        direction: Option<String>,
     },
     /// Get an ACL entry by DID
     Get {
@@ -1149,7 +1157,9 @@ async fn main() {
             },
         },
         Commands::Acl { command } => match command {
-            AclCommands::List { context } => acl::cmd_acl_list(&client, context.as_deref()).await,
+            AclCommands::List { context, direction } => {
+                acl::cmd_acl_list(&client, context.as_deref(), direction.as_deref()).await
+            }
             AclCommands::Get { did } => acl::cmd_acl_get(&client, &did).await,
             AclCommands::Create {
                 did,
@@ -1801,7 +1811,10 @@ mod tests {
     #[test]
     fn test_requires_auth_acl_true() {
         let cmd = Commands::Acl {
-            command: AclCommands::List { context: None },
+            command: AclCommands::List {
+                context: None,
+                direction: None,
+            },
         };
         assert!(requires_auth(&cmd));
     }

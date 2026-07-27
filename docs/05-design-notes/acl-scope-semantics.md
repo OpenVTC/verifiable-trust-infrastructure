@@ -72,6 +72,82 @@ been a bug:
 Go through `act_scope()` — or `has_context_access` / `can_act_in` /
 `is_super_admin`, which are built on it — and match on the result.
 
+## The third axis: which *direction* a context filter reads
+
+A context id names a subtree, so "the ACL entries relevant to context X" is two
+questions, not one — and until #822 only the first was askable:
+
+| direction | question | predicate |
+|---|---|---|
+| `acting-in` (default) | who may act **in** X? | entry scope `is_ancestor_or_self` of X |
+| `subtree` | what is granted **beneath** X? | X `is_ancestor_or_self` of the entry scope |
+| `any` | whose authority **touches** X's subtree? | either |
+
+Both are pure segment comparisons over data already in the entry; `subtree` is
+`acting-in`'s predicate with its arguments swapped
+(`ActScope::acts_within` beside `ActScope::covers`).
+
+**Why the gap mattered.** `?context=X` answered only the first, correctly — but
+a caller sweeping a subtree to *revoke* it needs the second, and asking it with
+the first's filter returns precisely the entries that are **not** being revoked
+(the ancestors keeping their authority) while omitting every leaf-scoped grant
+the sweep exists to cut. The wrong answer is short, not empty, so it looks
+complete. Once sub-contexts exist the natural least-privilege layout is a leaf
+per purpose (`<tenant>/<unit>/<purpose>` — partly because, without a per-key
+actor grant (#818), a context of its own is the only way to scope a caller to
+one key), which is exactly the layout that makes the omission total: every
+principal's grant is a leaf. Cierge's kill switch hit this
+(affinidi/cierge#49) — a gateway grant at `<domain>/attestation` survived a
+sweep of `<domain>` and could keep signing while the kill report read
+"succeeded".
+
+This is the same lesson as `allowed_contexts.is_empty()` one level up: an
+answer that is only meaningful paired with the question, and a call site that
+could not say which question it meant.
+
+### Two edges, both deliberate
+
+- **An unrestricted (super-admin) entry is not in the `subtree` answer.** It
+  names no context, so it is not a grant *of* the branch; it is authority
+  everywhere, which `acting-in` already reports. Including it would hand a
+  caller revoking a compromised branch its own super-admin to delete. `any` is
+  where an auditor asks for it.
+- **An entry naming contexts inside *and* outside the branch is in the
+  `subtree` answer.** It does hold a grant inside, so omitting it would
+  under-report — the failure mode being fixed. Whether to delete the entry or
+  narrow its scope is then a decision made with the entry in hand.
+
+### Fail-closed shape
+
+Absent parameter = `acting-in`, byte for byte the pre-#822 behaviour (pinned by
+tests at the scope, entry, and operation layers). An unparseable direction is
+**refused with the valid set**, never defaulted — guessing which of two
+opposite questions an operator meant is how a confidently-wrong answer gets
+served. A direction with no context is refused too: it is inert, and silently
+listing the whole ACL to a caller that asked to sweep a branch is the same
+defect one level up.
+
+Surfaces: `GET /acl?context=…&direction=…`, the `direction` member on the
+`spec/vta/acl/list/1.0` payload (also the DIDComm `list-acl` body),
+`pnm|cnm acl list --context … --direction …`, the offline `vta acl list`, and
+`VtaClient::list_acl_in_direction` (`list_acl` stays `acting-in` exactly). The
+CLI prints the question it asked next to the count, because two directions over
+one `--context` produce two legitimate, differently-shaped lists.
+
+### Why the VTC did not follow
+
+The VTC has the same one-directional filter (`GET /acl?scope=…`, ancestry-aware
+since the hierarchical-contexts work), but its listing is bound to the
+**canonical** `acl/list/0.1` Trust Task, whose payload is
+`additionalProperties: false` over `{cursor, ext, pageSize, role, scope,
+subjectPrefix}`. A `direction` member there is an openvtc spec change (or an
+`ext` member), not a local one, so adding it unilaterally would be exactly the
+canonical-conformance drift the VTC migration exists to remove. Left as a
+follow-up with the shape already decided here. Note for whoever picks it up:
+the VTC list is **paginated**, and `direction` must join
+`ListAclQuery::cursor_binding` — a cursor minted under one direction must not
+resume under another, or a resumed sweep silently changes question mid-listing.
+
 ## Reading is not managing
 
 Two predicates, deliberately separate:

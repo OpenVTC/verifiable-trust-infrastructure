@@ -3,7 +3,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Block, Cell, Row, Table},
 };
-use vta_sdk::acl::ApproveScope;
+use vta_sdk::acl::{ApproveScope, ContextDirection};
 use vta_sdk::prelude::*;
 use vti_common::acl::{Role, act_scope_for};
 
@@ -67,11 +67,46 @@ pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Parse the operator's `--direction` value, defaulting to the historical
+/// "who may act in this context" reading and refusing anything else with the
+/// valid set — the same table the wire uses, so flag and payload cannot drift.
+pub fn parse_direction(
+    direction: Option<&str>,
+) -> Result<ContextDirection, Box<dyn std::error::Error>> {
+    match direction {
+        None => Ok(ContextDirection::default()),
+        Some(d) => Ok(d.parse::<ContextDirection>()?),
+    }
+}
+
+/// The question a `--context` + `--direction` pair actually asked, in words.
+///
+/// On screen because the two directions are equally plausible readings of the
+/// same flag and produce different lists: a subtree sweep that quietly ran as
+/// an act-in query returns the ancestors it is not revoking and looks like a
+/// complete answer (#822).
+pub fn describe_filter(context: &str, direction: ContextDirection) -> String {
+    match direction {
+        ContextDirection::ActingIn => format!("able to act in {context}"),
+        ContextDirection::Subtree => format!("granted at or beneath {context}"),
+        ContextDirection::Any => format!("with authority touching {context}"),
+    }
+}
+
 pub async fn cmd_acl_list(
     client: &VtaClient,
     context: Option<&str>,
+    direction: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client.list_acl(context).await?;
+    let direction = parse_direction(direction)?;
+    if context.is_none() && direction != ContextDirection::default() {
+        return Err(format!(
+            "--direction {direction} says how to read --context, and no --context was given.\n\
+             Try: pnm acl list --context <id> --direction {direction}"
+        )
+        .into());
+    }
+    let resp = client.list_acl_in_direction(context, direction).await?;
 
     // `--json` short-circuits all rendering and emits a single JSON
     // document. Empty result returns an empty array, NOT a printed
@@ -83,7 +118,13 @@ pub async fn cmd_acl_list(
     }
 
     if resp.entries.is_empty() {
-        println!("No ACL entries found.");
+        // An empty subtree sweep is the answer that most needs qualifying:
+        // it can equally mean "nothing is granted beneath this context" and
+        // "you asked the other direction". Name the question that was asked.
+        match context {
+            Some(ctx) => println!("No ACL entries found {}.", describe_filter(ctx, direction)),
+            None => println!("No ACL entries found."),
+        }
         return Ok(());
     }
 
@@ -102,8 +143,17 @@ pub async fn cmd_acl_list(
     )
     .await;
 
+    // Name the question on screen whenever a context filter narrowed the
+    // answer. Two opposite readings of the same `--context` produce two
+    // legitimate, differently-shaped lists, and an operator who cannot see
+    // which one they got cannot tell a short list from a wrong one.
+    let heading = match context {
+        Some(ctx) => format!("ACL Entries — {}", describe_filter(ctx, direction)),
+        None => "ACL Entries".to_string(),
+    };
+
     if is_full_display() {
-        print_full_list_title("ACL Entries", resp.entries.len());
+        print_full_list_title(&heading, resp.entries.len());
         for entry in &resp.entries {
             let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
             let role = format_role(&entry.role, &entry.allowed_contexts);
@@ -162,7 +212,7 @@ pub async fn cmd_acl_list(
         })
         .collect();
 
-    let title = format!(" ACL Entries ({}) ", resp.entries.len());
+    let title = format!(" {heading} ({}) ", resp.entries.len());
 
     // DIDs are abbreviated by `shorten_did` (SCID squeezed, domain tail kept),
     // which frees the width the name column needs. `--full-display` and

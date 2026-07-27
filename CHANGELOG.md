@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.5 / vti-common 0.11.27 / vta-service 0.12.42 / vta-cli-common 0.10.16 / pnm-cli 0.11.11 / cnm-cli 0.11.10 — ACL listings can be asked which direction a context filter reads (#822)
+
+`GET /acl?context=X` answers "who may act **in** X" — entries scoped to X or to
+an ancestor of it. That is correct, and it is one of two questions a context id
+raises, because a context id names a subtree. The other — "what is granted
+**beneath** X" — had no way to be asked, and asking it with the act-in filter
+returns precisely the entries that are *not* the answer: the ancestors keeping
+their authority, with every leaf-scoped grant omitted. Short, not empty, so it
+reads as complete.
+
+That bites on revocation. Once sub-contexts exist the least-privilege layout is
+a leaf per purpose (`<tenant>/<unit>/<purpose>` — partly because, absent a
+per-key actor grant (#818), a context of its own is the only way to scope a
+caller to one key), and a sweep of `<tenant>/<unit>` then misses *every*
+principal under it. Cierge's kill switch hit exactly this
+(affinidi/cierge#49): a gateway grant at `<domain>/attestation` survived the
+cut and could keep signing as the killed domain while the report said success.
+
+**An explicit direction on the filter**, defaulting to today's behaviour:
+
+| direction | question | predicate |
+|---|---|---|
+| `acting-in` (default) | who may act **in** X? | entry scope `is_ancestor_or_self` of X |
+| `subtree` | what is granted **beneath** X? | X `is_ancestor_or_self` of the entry scope |
+| `any` | whose authority **touches** X's subtree? | either |
+
+One enum rather than a `subtree=true` flag, because "either direction" is the
+third question an auditor actually asks and a boolean cannot spell it.
+
+Surfaces: `GET /acl?context=…&direction=…`, a `direction` member on the
+`spec/vta/acl/list/1.0` payload (and the DIDComm `list-acl` body),
+`pnm|cnm acl list --direction`, the offline `vta acl list --direction`, and
+`VtaClient::list_acl_in_direction`. `VtaClient::list_acl` is unchanged and
+stays `acting-in`; the client omits the parameter entirely at the default, so
+requests that mean what an older VTA already does still reach it.
+
+Two edges, both deliberate and tested: an **unrestricted (super-admin) entry is
+not in the `subtree` answer** — it names no context, so it is not a grant *of*
+the branch, and returning it would hand a caller revoking a compromised branch
+its own super-admin to delete (`acting-in` and `any` report it); an entry naming
+contexts inside *and* outside the branch **is** in it, because it does hold a
+grant inside and omitting it would under-report.
+
+Fail-closed: absent parameter is byte-for-byte the previous behaviour, pinned at
+the scope, entry, and operation layers. An unparseable direction is refused with
+the valid set rather than defaulted, and a direction with no context is refused
+rather than silently answered with the whole ACL — guessing which of two
+opposite questions the caller meant is the defect, one level up. The CLI prints
+the question it asked beside the count, including on an empty result.
+
+The VTC's equivalent filter deliberately did **not** follow: its listing is
+bound to the canonical `acl/list/0.1` Trust Task, whose payload is
+`additionalProperties: false`, so a `direction` member is an openvtc spec change
+(or an `ext` member), not a local one. Recorded as a follow-up in
+`docs/05-design-notes/acl-scope-semantics.md` — with the note that the VTC list
+is paginated, so `direction` must also join the cursor binding or a resumed
+sweep changes question mid-listing.
+
 ### VTC Trust Tasks — the unpublished-manifest backlog is closed (#709)
 
 `vtc-service/tests/trust_task_manifest.rs` carried twenty `UNPUBLISHED_OK`

@@ -630,7 +630,10 @@ mod tests {
     #[test]
     fn test_requires_auth_acl_true() {
         let cmd = Commands::Acl {
-            command: AclCommands::List { context: None },
+            command: AclCommands::List {
+                context: None,
+                direction: None,
+            },
         };
         assert!(requires_auth(&cmd));
     }

@@ -268,7 +268,7 @@ impl DeviceBinding {
 /// server crates. Only the *shape* is shared — every authorization rule over
 /// it ([`validate_approve_scope_grant`] below) stays here. Same arrangement as
 /// [`crate::context_path`].
-pub use vta_sdk::acl::{ActScope, ApproveScope};
+pub use vta_sdk::acl::{ActScope, ApproveScope, ContextDirection};
 
 /// Decode the stored `(role, allowed_contexts)` pair into an explicit
 /// [`ActScope`].
@@ -853,6 +853,33 @@ pub fn delegated_any_approver_covers(approver: &AclEntry, subject: &AclEntry) ->
 /// with `contains`, so neither surfaced it.
 pub fn acl_entry_can_act_in(entry: &AclEntry, context_id: &str) -> bool {
     entry.act_scope().covers(context_id)
+}
+
+/// Whether `entry` holds a grant **at or beneath** `context_id` — the
+/// complement of [`acl_entry_can_act_in`], and the predicate a subtree sweep
+/// (revoke everything under this branch) needs.
+///
+/// See [`ActScope::acts_within`] for the two edges: an unrestricted entry is
+/// deliberately *not* a match, and a multi-context entry matches if any one of
+/// its contexts is inside the subtree.
+pub fn acl_entry_acts_within(entry: &AclEntry, context_id: &str) -> bool {
+    entry.act_scope().acts_within(context_id)
+}
+
+/// Whether `entry` matches `context_id` read in `direction` — the one filter
+/// every context-scoped ACL listing goes through, online and offline.
+///
+/// The direction is explicit at the call site because the answer is only
+/// meaningful paired with the question: `?context=X` alone cannot express
+/// whether the caller means "who may act in X" or "what is granted beneath X",
+/// and the second, asked with the first's filter, returns exactly the entries
+/// that are *not* the ones the caller is looking for (#822).
+pub fn acl_entry_matches_context(
+    entry: &AclEntry,
+    context_id: &str,
+    direction: ContextDirection,
+) -> bool {
+    entry.act_scope().matches_context(context_id, direction)
 }
 
 /// Whether an ACL entry is within the caller's authority to **manage**.
@@ -1624,6 +1651,99 @@ mod tests {
             &sample_entry("did:key:zB", Role::Reader),
             ctx
         ));
+    }
+
+    // ── acl_entry_acts_within / acl_entry_matches_context ───────────
+
+    /// The revocation sweep the old filter could not express: under a
+    /// per-purpose leaf layout, `?context=<tenant>/<unit>` returned the
+    /// ancestors keeping their authority and omitted every leaf grant the
+    /// sweep existed to cut (#822).
+    #[test]
+    fn a_subtree_sweep_finds_the_leaves_the_act_filter_omits() {
+        let leaf = scoped_entry(
+            "did:key:zGateway",
+            Role::Application,
+            &["acme/eng/attestation"],
+        );
+        let unit = "acme/eng";
+
+        assert!(
+            !acl_entry_can_act_in(&leaf, unit),
+            "correct for the act question, and the reason the sweep missed it"
+        );
+        assert!(acl_entry_acts_within(&leaf, unit), "the sweep must see it");
+        assert!(acl_entry_matches_context(
+            &leaf,
+            unit,
+            ContextDirection::Any
+        ));
+    }
+
+    /// The sweep must not reach outside its branch — a sibling unit and a
+    /// string-prefix lookalike both stay out.
+    #[test]
+    fn a_subtree_sweep_stops_at_the_branch() {
+        let sibling = scoped_entry("did:key:zOps", Role::Reader, &["acme/ops/keys"]);
+        let lookalike = scoped_entry("did:key:zLook", Role::Reader, &["acme/engineering"]);
+        assert!(!acl_entry_acts_within(&sibling, "acme/eng"));
+        assert!(!acl_entry_acts_within(&lookalike, "acme/eng"));
+        assert!(
+            acl_entry_acts_within(&lookalike, "acme"),
+            "still under acme"
+        );
+    }
+
+    /// A super-admin can act beneath any context, but it is not a grant *of*
+    /// the branch. Returning it from a sweep would hand a caller revoking a
+    /// compromised branch its own super-admin to delete; `any` is where an
+    /// auditor asks for it.
+    #[test]
+    fn a_subtree_sweep_does_not_offer_up_the_super_admin() {
+        let super_admin = sample_entry("did:key:zSuper", Role::Admin);
+        assert!(!acl_entry_acts_within(&super_admin, "acme/eng"));
+        assert!(acl_entry_matches_context(
+            &super_admin,
+            "acme/eng",
+            ContextDirection::ActingIn
+        ));
+        assert!(acl_entry_matches_context(
+            &super_admin,
+            "acme/eng",
+            ContextDirection::Any
+        ));
+    }
+
+    /// An acts-nowhere entry is in no direction's answer.
+    #[test]
+    fn acts_nowhere_is_in_no_direction() {
+        let nowhere = sample_entry("did:key:zNowhere", Role::Reader);
+        for d in ContextDirection::ALL {
+            assert!(
+                !acl_entry_matches_context(&nowhere, "acme", d),
+                "acts-nowhere surfaced under {d}"
+            );
+        }
+    }
+
+    /// The default direction is the pre-#822 filter, entry for entry.
+    #[test]
+    fn the_default_direction_reproduces_the_old_filter() {
+        let entries = [
+            sample_entry("did:key:zSuper", Role::Admin),
+            sample_entry("did:key:zNowhere", Role::Reader),
+            scoped_entry("did:key:zParent", Role::Reader, &["acme"]),
+            scoped_entry("did:key:zSelf", Role::Reader, &["acme/eng"]),
+            scoped_entry("did:key:zLeaf", Role::Reader, &["acme/eng/team-a"]),
+        ];
+        for entry in &entries {
+            assert_eq!(
+                acl_entry_matches_context(entry, "acme/eng", ContextDirection::default()),
+                acl_entry_can_act_in(entry, "acme/eng"),
+                "default direction diverged for {}",
+                entry.did
+            );
+        }
     }
 
     // ── is_acl_entry_auditable ──────────────────────────────────────
