@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.6 — re-export `resolve_vta_with_resolver` alongside `resolve_vta`
+
+`provision_client` re-exports a curated list, and #813 added
+`resolve_vta_with_resolver` to `resolve.rs` without adding it there. So the
+function existed and was `pub`, but not at the path its sibling lives at:
+`provision_client::resolve_vta` worked while
+`provision_client::resolve_vta_with_resolver` did not, and a consumer had to
+reach through `provision_client::resolve::` to find it.
+
+OpenVTC hit exactly that wiring its TSP discovery tests
+(OpenVTC/openvtc#198) and worked around it with the deeper path. An
+asymmetric export on a pair of functions that differ only by "and here is
+the resolver" is the kind of thing every future caller stubs a toe on.
+
+Additive — the deeper path keeps working, so nothing that already compiles
+breaks.
+
 ### vta-sdk 0.20.5 / vti-common 0.11.27 / vta-service 0.12.42 / vta-cli-common 0.10.16 / pnm-cli 0.11.11 / cnm-cli 0.11.10 — ACL listings can be asked which direction a context filter reads (#822)
 
 `GET /acl?context=X` answers "who may act **in** X" — entries scoped to X or to
