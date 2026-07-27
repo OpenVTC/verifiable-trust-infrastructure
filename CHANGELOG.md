@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.3 — transport discovery is testable without a live VTA
+
+`resolve_vta_endpoint` built its `DIDCacheClient` from the environment, so a
+consumer had no way to point discovery at a fixture: seeding a document into its
+own cache did nothing, because the function never saw that cache. The practical
+effect was that "does this VTA advertise `#tsp`" — the question #765 and #810
+made answerable — could still only be *asserted* against a live deployment.
+OpenVTC hit this trying to cover its TSP-enablement path (OpenVTC/openvtc#185)
+and had to leave the assertion unmade.
+
+- `resolve_vta_endpoint_with_resolver(vta_did, &DIDCacheClient)` and
+  `provision_client::resolve_vta_with_resolver(...)` run the same discovery over
+  a caller-supplied resolver. The env-configured entry points delegate to them,
+  so behaviour is unchanged and no caller has to move.
+- Follows the pattern `resolve_mediator_did_with_resolver` already set in the
+  same module, for the same two reasons: reuse (no second cache per resolve) and
+  testability.
+- `provision_client`'s two entry points now share one `flatten`, so they cannot
+  disagree about what an endpoint shape means.
+
+Additive. Four new tests seed a document and assert what discovery makes of it,
+in-process with no network: a dual `#tsp` + `#vta-didcomm` VTA (the reference
+deployment's shape) reports both in preference order; a DIDComm-only VTA reports
+no TSP; a TSP-only VTA does not fall back to a REST URL synthesized from its own
+domain; and a `#tsp` entry carrying a URL instead of a mediator DID is ignored
+rather than routed through.
+
 ### vtc-service 0.11.33 — the raw-byte website endpoints stop pretending to be Trust Tasks
 
 Three endpoints on the website management surface move **file bytes**:

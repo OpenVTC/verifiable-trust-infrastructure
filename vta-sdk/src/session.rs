@@ -1716,13 +1716,34 @@ fn advertised_hint(has_didcomm: bool, has_rest: bool) -> &'static str {
 pub async fn resolve_vta_endpoint(
     vta_did: &str,
 ) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
-    use crate::protocol::matching::ServiceCapabilities;
-
-    debug!(vta_did, "resolving VTA DID for transport selection");
-
     let did_resolver = DIDCacheClient::new(crate::resolver::build_did_cache_config_from_env())
         .await
         .map_err(|e| format!("DID resolver init failed: {e}"))?;
+    resolve_vta_endpoint_with_resolver(vta_did, &did_resolver).await
+}
+
+/// [`resolve_vta_endpoint`] over an **existing** resolver.
+///
+/// Two reasons to reach for this rather than the env-configured entry point:
+///
+/// - **Reuse.** A caller that already holds a `DIDCacheClient` avoids building a
+///   second one (and a second cache) per resolve — the same reason
+///   [`resolve_mediator_did_with_resolver`] exists.
+/// - **Testability, which is why this was added.** `resolve_vta_endpoint` builds
+///   its resolver from the environment, so a consumer had no way to point
+///   discovery at a fixture: seeding a document into *its own* cache did nothing,
+///   because the function never saw that cache. Transport discovery — including
+///   whether a VTA advertises `#tsp` — was therefore only provable against a live
+///   deployment. With a resolver parameter a test seeds a document via
+///   `DIDCacheClient::add_did_document` and asserts what discovery makes of it,
+///   in-process and with no network.
+pub async fn resolve_vta_endpoint_with_resolver(
+    vta_did: &str,
+    did_resolver: &DIDCacheClient,
+) -> Result<VtaEndpoint, Box<dyn std::error::Error>> {
+    use crate::protocol::matching::ServiceCapabilities;
+
+    debug!(vta_did, "resolving VTA DID for transport selection");
 
     let resolved = match did_resolver.resolve(vta_did).await {
         Ok(r) => r,
