@@ -263,6 +263,23 @@ async fn main() {
         tracing::warn!("VTA DID auto-generation failed: {e}");
     }
 
+    // ── Backfill the serverless did:webvh identity into the webvh keyspace ──
+    // Auto-gen persists the DID + did.jsonl only under the KEYS/BOOTSTRAP
+    // keyspaces; `list_services`, the self-DID resolver preload, and
+    // `/.well-known/did.jsonl` read the record + log from the webvh keyspace via
+    // `webvh_store`. Idempotent: no-op once populated, so it also repairs an
+    // already-generated DID on a rebuild + restore.
+    if let Some(vta_did) = config.vta_did.clone()
+        && let Err(e) = vta_service::tee_webvh::backfill_serverless_webvh_identity(
+            &store,
+            storage_encryption_key,
+            &vta_did,
+        )
+        .await
+    {
+        tracing::warn!("webvh identity backfill failed: {e}");
+    }
+
     // ── Auto-bootstrap super-admin credential on first boot ──
     if let Err(e) =
         tee::admin_bootstrap::maybe_bootstrap_admin(&config, &store, storage_encryption_key).await
