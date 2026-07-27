@@ -21,10 +21,18 @@ spec change.
 - The proven member comes from `resolve_holder`, so the authenticated identity
   is the transport's (DIDComm authcrypt sender / TSP sender VID) or the document
   proof signer — never a self-asserted `issuer`.
-- The bare-body DIDComm handlers stay. Existing senders keep working, and both
-  forms return the same receipt payload, so a client migrating to the document
-  form sees no behaviour change. Accept before send: a member-side change can
-  only follow this, never precede it.
+- The bare-body DIDComm handlers stay, and **DIDComm keeps routing these two
+  types to them** — `route()` matches on `msg.typ`, so `members/self-remove` and
+  `members/vmc` still reach `member_self_remove_handler` / `member_vmc_handler`,
+  which parse a bare body. The document form is therefore reachable over **TSP
+  and REST**, not over DIDComm. Existing senders keep working unchanged; a
+  sender that switches to the document form must switch transport with it, or
+  the bare-body handler will reject the document as malformed. (Contrast
+  `join-requests/*`, whose DIDComm handlers forward to the dispatcher via
+  `inbound_doc_bytes` and so accept the document on every transport.)
+- Both forms return the same receipt payload, so the response contract does not
+  depend on which one a caller used. Accept before send: a member-side change
+  can only follow this, never precede it.
 - `DISPATCHED_URIS` now documents what it has quietly become — the set reachable
   over TSP — and its coverage test extends to the member verbs.
 
