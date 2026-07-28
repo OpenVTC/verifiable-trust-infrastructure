@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.10 / vta-service 0.13.1 / vta-cli-common 0.10.17 / pnm-cli 0.11.12 / cnm-cli 0.11.11 / vtc-service 0.11.39 — config and provisioning fold onto canonical, and the VTA can no longer rewrite its own identity (#840 phase A)
+
+Three of the 67 unpublished canonical URIs are gone, folded onto tasks the
+registry already publishes — **no new specs authored**:
+
+| Was | Now |
+|---|---|
+| `vta/config/get/1.0` | `config/show/0.1` |
+| `vta/config/update/1.0` | `config/patch/0.1` |
+| `vta/provision-integration/request/1.0` | `provision/integration/0.2` |
+
+The `spec/vta/` counted exception in `trust_task_manifest.rs` drops 55 → 52.
+
+`provision-integration` was nearly free: its payload already cited the
+canonical spec and already dual-accepted the 0.2 camelCase wire form (#517), so
+the fold was a constant change.
+
+### The VTA could rewrite its own DID at runtime. It can't now.
+
+`config/update` wrote `vta_did` straight into `config.toml` with **no guard at
+all**, and the write survived a restart. One mistaken call re-pointed the
+agent's own identity — orphaning every credential it had issued, every ACL
+grant naming it, and its DID-document linkage.
+
+It was super-admin gated, so this was a bricking footgun rather than a
+privilege escalation. Same class as the defect VTC fixed in its P1.1 hardening,
+and the rationale ports verbatim: a mistaken patch must not strand the daemon
+auth-dead or re-point the recovery authority.
+
+Folding onto canonical `config/patch` **required** deciding which keys are
+patchable, so the fix rides the fold rather than being bolted on. `vta_did` is
+now a registry key marked immutable: `config/show` returns it, and a patch
+naming it comes back under `rejected` with a reason.
+
+Modelling it as *immutable* rather than *absent from the registry* — VTC's
+choice — keeps the read path (nothing else exposes the VTA's DID) and gives a
+better answer: "identity is set at setup" instead of "unknown key".
+
+Enforcement lives in the registry table, not an `if` in a handler. There is one
+place saying what may change and every write path consults it, so a new
+mutation surface cannot forget the check. `--community-vta-did` is gone from
+both CLIs: there is no longer a flag to attempt it with.
+
+### Config is a key registry now, not three named fields
+
+That reshape is what made the fold possible — canonical `config/*` speaks
+`{key, value, source, requiresRestart}`, and the VTA's three typed fields
+could not fold without it. Two things fall out:
+
+- `public_url` is honestly marked `requiresRestart: true`. It is read at boot
+  to build the advertised origin, so before this a patch silently diverged the
+  running services from the stored value until someone called
+  `management/reload-services`.
+- `config/patch` reports `applied` / `pendingRestart` / `rejected` per key
+  instead of echoing the whole config, so a caller learns which of its changes
+  actually took effect.
+
+`ConfigResponse` keeps `vta_did()`, `vta_name()` and `public_url()` accessors
+so call sites read the same as before.
+
 ### vta-config 0.2.0 — `HardenedConfig` added to `AppConfig`
 
 New public struct `HardenedConfig` and a corresponding `hardened:

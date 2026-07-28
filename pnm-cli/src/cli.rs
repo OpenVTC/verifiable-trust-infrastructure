@@ -1325,9 +1325,9 @@ pub(crate) enum ConfigCommands {
     Get,
     /// Update configuration
     Update {
-        /// VTA DID
-        #[arg(long)]
-        community_vta_did: Option<String>,
+        // `--community-vta-did` is deliberately absent: the VTA's own identity
+        // is set at setup and immutable at runtime (canonical config/patch
+        // reports it under `rejected`). There is no flag to attempt it with.
         /// VTA name
         #[arg(long)]
         community_vta_name: Option<String>,

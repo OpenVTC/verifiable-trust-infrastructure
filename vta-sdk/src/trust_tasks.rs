@@ -759,12 +759,12 @@ pub const TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1: &str =
 /// (VTA DID, name, public URL).
 /// Payload: [`crate::protocols::vta_management::get_config::GetConfigBody`]
 /// (empty). Auth: any authenticated user.
-pub const TASK_CONFIG_GET_1_0: &str = "https://trusttasks.org/spec/vta/config/get/1.0";
+pub const TASK_CONFIG_GET_1_0: &str = "https://trusttasks.org/spec/config/show/0.1";
 
 /// `spec/vta/config/update/1.0` — patch VTA DID, name, or public URL.
 /// Payload: [`crate::protocols::vta_management::update_config::UpdateConfigBody`].
 /// Auth: Super Admin only.
-pub const TASK_CONFIG_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/config/update/1.0";
+pub const TASK_CONFIG_UPDATE_1_0: &str = "https://trusttasks.org/spec/config/patch/0.1";
 
 // ─── Management slice (spec/vta/management/*) ────────────────────────────
 
@@ -829,14 +829,14 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 // carries the same request/response shapes the SDK already exports
 // under `vta_sdk::provision_integration::http`.
 
-/// `spec/vta/provision-integration/request/1.0` — submit a VP-framed
+/// `provision/integration/0.2` — submit a VP-framed
 /// `BootstrapRequest` plus provisioning options to the VTA; receive a
 /// sealed `TemplateBootstrap` bundle back. Payload:
 /// [`crate::provision_integration::http::ProvisionIntegrationRequest`].
 /// Auth: Admin role on the target context (super-admin to use
 /// `create_context: true`).
 pub const TASK_PROVISION_INTEGRATION_REQUEST_1_0: &str =
-    "https://trusttasks.org/spec/vta/provision-integration/request/1.0";
+    "https://trusttasks.org/spec/provision/integration/0.2";
 
 // ─── WebVH-DID-lifecycle slice (spec/vta/webvh/*) ────────────────────────
 //
@@ -1556,6 +1556,16 @@ mod tests {
             // proof's signer against a policy-named approver set, not a bridge
             // enrolment), different lifetime (single-use grant, not standing).
             "https://trusttasks.org/spec/task-consent/",
+            // Canonical runtime configuration — `config/{show,patch}`. The VTA
+            // folded its `vta/config/*` pair onto these in #840 phase A; its
+            // configuration is a key registry, which is the shape the
+            // canonical family already speaks.
+            "https://trusttasks.org/spec/config/",
+            // Canonical integration provisioning — `provision/integration`.
+            // The VTA's `vta/provision-integration/request` carried the same
+            // payload and already dual-accepted the 0.2 wire form, so the fold
+            // was a constant change.
+            "https://trusttasks.org/spec/provision/",
             // Framework ACL protocol — the `acl/swap-key` self-service key
             // rotation task (`TASK_ACL_SWAP_KEY_1_0`), now dispatcher-routed.
             "https://trusttasks.org/spec/acl/",

@@ -35,7 +35,7 @@ use crate::server::AppState;
 
 use super::helpers::{app_error_to_reject, parse_payload, reject_with, success_response};
 
-/// Handler for `spec/vta/provision-integration/request/1.0`. Admin
+/// Handler for canonical `provision/integration/0.2`. Admin
 /// role on the target context required; super-admin required if the
 /// request asks to create the context inline.
 pub(super) async fn handle_request(

@@ -173,9 +173,14 @@ async fn get_config_via_didcomm() {
             ResponderReply::ok(
                 vta_management::GET_CONFIG_RESULT,
                 json!({
-                    "vta_did": "did:web:vta.example.com",
-                    "vta_name": "primary",
-                    "public_url": "https://vta.example.com"
+                    "fields": [
+                        { "key": "vta_did", "value": "did:web:vta.example.com",
+                          "source": "setup", "requiresRestart": false },
+                        { "key": "vta_name", "value": "primary",
+                          "source": "toml", "requiresRestart": false },
+                        { "key": "public_url", "value": "https://vta.example.com",
+                          "source": "toml", "requiresRestart": true }
+                    ]
                 }),
             )
         } else {
@@ -185,7 +190,8 @@ async fn get_config_via_didcomm() {
     .await;
 
     let cfg = client.get_config().await.unwrap();
-    assert_eq!(cfg.community_vta_name.as_deref(), Some("primary"));
+    assert_eq!(cfg.vta_name(), Some("primary"));
+    assert_eq!(cfg.vta_did(), Some("did:web:vta.example.com"));
 
     shutdown_all(client, responder, mediator).await;
 }

@@ -48,10 +48,10 @@ pub async fn cmd_context_bootstrap(
     // Fetch VTA config so the minted CredentialBundle carries VTA DID/URL.
     let config = client.get_config().await?;
     let vta_did = config
-        .community_vta_did
-        .clone()
+        .vta_did()
+        .map(str::to_string)
         .ok_or("VTA DID not configured — cannot mint admin credential")?;
-    let vta_url = config.public_url.clone();
+    let vta_url = config.public_url().map(str::to_string);
 
     // Mint admin did:key locally + register ACL. The VTA never sees the
     // private half; the full bundle reaches the recipient via sealed transfer.
@@ -514,10 +514,10 @@ pub async fn cmd_context_provision(
     // 2. Fetch VTA config for URL/DID (needed to build the admin credential).
     let config = client.get_config().await?;
     let vta_did = config
-        .community_vta_did
-        .clone()
+        .vta_did()
+        .map(str::to_string)
         .ok_or("VTA DID not configured — cannot mint admin credential")?;
-    let vta_url = config.public_url.clone();
+    let vta_url = config.public_url().map(str::to_string);
 
     // 3. Generate admin did:key locally (private key never crosses the wire)
     //    and register it with the VTA via POST /acl. This replaces the
@@ -598,8 +598,8 @@ pub async fn cmd_context_provision(
     let bundle = ContextProvisionBundle {
         context_id: id.to_string(),
         context_name: name.to_string(),
-        vta_url: config.public_url,
-        vta_did: config.community_vta_did,
+        vta_url: config.public_url().map(str::to_string),
+        vta_did: config.vta_did().map(str::to_string),
         credential: admin_credential,
         admin_did,
         did: provisioned_did,
@@ -639,16 +639,13 @@ pub async fn cmd_context_reprovision(
 
     // 2. Fetch VTA config for URL/DID
     let config = client.get_config().await?;
-    let vta_did = config
-        .community_vta_did
-        .as_deref()
-        .ok_or("VTA DID not configured")?;
+    let vta_did = config.vta_did().ok_or("VTA DID not configured")?;
 
     // 3. Resolve admin credential
     let (admin_credential, admin_did) = if let Some(ref kid) = key_id {
         // Direct key ID specified
         eprintln!("Using key '{kid}'...");
-        credential_from_key(client, kid, vta_did, config.public_url.as_deref()).await?
+        credential_from_key(client, kid, vta_did, config.public_url()).await?
     } else {
         // Interactive: list existing Ed25519 keys and let user choose
         let keys_resp = client.list_keys(0, 10000, Some("active"), Some(id)).await?;
@@ -701,23 +698,11 @@ pub async fn cmd_context_reprovision(
                     context_id: Some(id.to_string()),
                 })
                 .await?;
-            credential_from_key(
-                client,
-                &key_resp.key_id,
-                vta_did,
-                config.public_url.as_deref(),
-            )
-            .await?
+            credential_from_key(client, &key_resp.key_id, vta_did, config.public_url()).await?
         } else if choice >= 1 && choice <= ed25519_keys.len() {
             let selected = &ed25519_keys[choice - 1];
             eprintln!("Using key '{}'...", selected.key_id);
-            credential_from_key(
-                client,
-                &selected.key_id,
-                vta_did,
-                config.public_url.as_deref(),
-            )
-            .await?
+            credential_from_key(client, &selected.key_id, vta_did, config.public_url()).await?
         } else {
             return Err(format!("Invalid choice: {choice}").into());
         }
@@ -766,8 +751,8 @@ pub async fn cmd_context_reprovision(
     let bundle = ContextProvisionBundle {
         context_id: id.to_string(),
         context_name: ctx.name.clone(),
-        vta_url: config.public_url,
-        vta_did: config.community_vta_did,
+        vta_url: config.public_url().map(str::to_string),
+        vta_did: config.vta_did().map(str::to_string),
         credential: admin_credential,
         admin_did,
         did: provisioned_did,

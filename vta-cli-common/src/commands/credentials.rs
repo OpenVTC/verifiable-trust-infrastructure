@@ -17,10 +17,10 @@ pub async fn cmd_auth_credential_create(
     // Fetch VTA metadata for the credential bundle.
     let config = client.get_config().await?;
     let vta_did = config
-        .community_vta_did
-        .clone()
+        .vta_did()
+        .map(str::to_string)
         .ok_or("VTA DID not configured — cannot mint credential")?;
-    let vta_url = config.public_url.clone();
+    let vta_url = config.public_url().map(str::to_string);
 
     // Mint locally, then register the did:key via POST /acl. The private key
     // never crosses the wire — it reaches the recipient only via the sealed

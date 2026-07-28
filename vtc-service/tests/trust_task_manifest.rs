@@ -437,8 +437,10 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        55,
-        "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it",
+        52,
+        "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
+         Down from 55: #840 phase A folded config/{get,update} onto canonical config/{show,patch} \
+         and provision-integration/request onto provision/integration/0.2",
     ),
 ];
 

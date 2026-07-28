@@ -1,20 +1,18 @@
 use axum::Json;
 use axum::extract::State;
-use serde::Deserialize;
 
 use vta_sdk::protocols::vta_management::get_config::GetConfigResultBody;
+use vta_sdk::protocols::vta_management::update_config::{UpdateConfigBody, UpdateConfigResultBody};
 
 use crate::auth::{AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
 use crate::operations;
 use crate::server::AppState;
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct UpdateConfigRequest {
-    pub vta_did: Option<String>,
-    pub vta_name: Option<String>,
-    pub public_url: Option<String>,
-}
+/// REST body for `PATCH /config`, identical to the canonical
+/// `config/patch/0.1` payload — the same interface the DIDComm and TSP
+/// transports carry, rather than a REST-shaped variant of it.
+pub type UpdateConfigRequest = UpdateConfigBody;
 
 /// GET /config — retrieve the current VTA configuration. Auth: any authenticated user.
 #[utoipa::path(
@@ -29,17 +27,21 @@ pub async fn get_config(
     auth: AuthClaims,
     State(state): State<AppState>,
 ) -> Result<Json<GetConfigResultBody>, AppError> {
-    let result = operations::config::get_config(&state.config, &auth, "rest").await?;
+    let result = operations::config::get_config(&state.config, &auth, None, "rest").await?;
     Ok(Json(result))
 }
 
-/// PATCH /config — update VTA name, DID, or public URL. Auth: Super Admin only.
+/// PATCH /config — patch registered configuration keys. Auth: Super Admin only.
+///
+/// `vta_did` is readable but **not** patchable: it is a registry key marked
+/// immutable, so naming it comes back under `rejected` rather than being
+/// written. See `operations::config` for why.
 #[utoipa::path(
     patch, path = "/config", tag = "config",
     security(("bearer_jwt" = [])),
     request_body = UpdateConfigRequest,
     responses(
-        (status = 200, description = "Updated VTA configuration", body = GetConfigResultBody),
+        (status = 200, description = "Applied / pending-restart / rejected keys", body = UpdateConfigResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
     ),
@@ -48,17 +50,8 @@ pub async fn update_config(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<UpdateConfigRequest>,
-) -> Result<Json<GetConfigResultBody>, AppError> {
-    let result = operations::config::update_config(
-        &state.config,
-        &auth.0,
-        operations::config::UpdateConfigParams {
-            vta_did: req.vta_did,
-            vta_name: req.vta_name,
-            public_url: req.public_url,
-        },
-        "rest",
-    )
-    .await?;
+) -> Result<Json<UpdateConfigResultBody>, AppError> {
+    let result =
+        operations::config::update_config(&state.config, &auth.0, req.overrides, "rest").await?;
     Ok(Json(result))
 }
