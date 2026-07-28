@@ -287,28 +287,37 @@ async fn send_trust_ping(
     ka_secret.id = format!("{vtc_did}#key-1");
     tdk.secrets_resolver().insert(ka_secret).await;
 
-    let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+    let atm = Arc::new(ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?);
 
-    let profile = ATMProfile::new(
-        &atm,
-        None,
-        vtc_did.to_string(),
-        Some(mediator_did.to_string()),
-    )
-    .await?;
-    let profile = Arc::new(profile);
-
-    // The mediator may only expose a wss:// endpoint (no REST/https).
-    atm.profile_enable_websocket(&profile).await?;
-
-    let start = Instant::now();
-    TrustPing::default()
-        .send_ping(&atm, &profile, mediator_did, true, true, true)
+    // Mirrors `vta-service::status`: everything past the ATM runs inside the
+    // block so ONE path tears it down (both `?`s below used to return past the
+    // shutdown), and the profile is registered so that shutdown can reach the
+    // websocket at all — it stops sockets by iterating the ATM's profile map
+    // (vta-sdk #830). Stringified first: a boxed error is not `Send`.
+    let outcome = async {
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            vtc_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
         .await?;
-    let elapsed = start.elapsed().as_millis();
+        let profile = atm.profile_add(&profile, false).await?;
+
+        // The mediator may only expose a wss:// endpoint (no REST/https).
+        atm.profile_enable_websocket(&profile).await?;
+
+        let start = Instant::now();
+        TrustPing::default()
+            .send_ping(&atm, &profile, mediator_did, true, true, true)
+            .await?;
+        Ok::<u128, Box<dyn std::error::Error>>(start.elapsed().as_millis())
+    }
+    .await
+    .map_err(|e| e.to_string());
 
     atm.graceful_shutdown().await;
-    Ok(elapsed)
+    outcome.map_err(Into::into)
 }
 
 /// Report the agent names a resolved DID Document claims via `alsoKnownAs`.

@@ -381,26 +381,38 @@ async fn send_trust_ping(
         tdk.secrets_resolver().insert(ka_secret).await;
     }
 
-    let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+    let atm = Arc::new(ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?);
 
-    let profile = ATMProfile::new(
-        &atm,
-        None,
-        vta_did.to_string(),
-        Some(mediator_did.to_string()),
-    )
-    .await?;
-    let profile = Arc::new(profile);
-
-    // The mediator may only expose a wss:// endpoint (no REST/https).
-    atm.profile_enable_websocket(&profile).await?;
-
-    let start = Instant::now();
-    TrustPing::default()
-        .send_ping(&atm, &profile, mediator_did, true, true, true)
+    // Everything past the ATM runs inside the block so ONE path tears it down.
+    // Both `?`s below used to return past `graceful_shutdown` entirely, and that
+    // shutdown could not have stopped the socket anyway — it stops websockets by
+    // iterating the ATM's profile map, and this profile was never registered
+    // (vta-sdk #830). `vta status` exits straight after, so nothing was harmed;
+    // the shape is the trap. Stringified before the teardown await: a boxed
+    // error is not `Send`.
+    let outcome = async {
+        let profile = ATMProfile::new(
+            &atm,
+            None,
+            vta_did.to_string(),
+            Some(mediator_did.to_string()),
+        )
         .await?;
-    let elapsed = start.elapsed().as_millis();
+        // Registered, so the teardown below can actually reach the socket.
+        let profile = atm.profile_add(&profile, false).await?;
+
+        // The mediator may only expose a wss:// endpoint (no REST/https).
+        atm.profile_enable_websocket(&profile).await?;
+
+        let start = Instant::now();
+        TrustPing::default()
+            .send_ping(&atm, &profile, mediator_did, true, true, true)
+            .await?;
+        Ok::<u128, Box<dyn std::error::Error>>(start.elapsed().as_millis())
+    }
+    .await
+    .map_err(|e| e.to_string());
 
     atm.graceful_shutdown().await;
-    Ok(elapsed)
+    outcome.map_err(Into::into)
 }

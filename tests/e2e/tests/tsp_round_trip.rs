@@ -275,6 +275,12 @@ async fn tsp_frame_arrives_on_the_pickup_socket() {
         .await
         .expect("profile"),
     );
+    // Registered so `graceful_shutdown` below can stop it; an unregistered
+    // profile's socket survives every teardown (vta-sdk #830).
+    let profile = atm
+        .profile_add(&profile, false)
+        .await
+        .expect("register pickup profile");
     atm.profile_enable_websocket(&profile)
         .await
         .expect("enable pickup websocket");

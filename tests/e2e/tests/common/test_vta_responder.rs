@@ -154,7 +154,14 @@ impl TestVtaResponder {
         let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.to_string()))
             .await
             .map_err(|e| ResponderError::Profile(e.to_string()))?;
-        let profile = Arc::new(profile);
+        // Registered so the dispatch loop's `graceful_shutdown` can actually
+        // stop this socket — it stops websockets by iterating the ATM's profile
+        // map, so an unregistered one outlives every teardown and keeps
+        // reconnecting for the rest of the test binary (vta-sdk #830).
+        let profile = atm
+            .profile_add(&profile, false)
+            .await
+            .map_err(|e| ResponderError::Profile(e.to_string()))?;
 
         // 3. Open inbound WebSocket so live_stream_next has a channel.
         atm.profile_enable_websocket(&profile)
@@ -258,7 +265,14 @@ impl TestVtaResponder {
         let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.to_string()))
             .await
             .map_err(|e| ResponderError::Profile(e.to_string()))?;
-        let profile = Arc::new(profile);
+        // Registered so the dispatch loop's `graceful_shutdown` can actually
+        // stop this socket — it stops websockets by iterating the ATM's profile
+        // map, so an unregistered one outlives every teardown and keeps
+        // reconnecting for the rest of the test binary (vta-sdk #830).
+        let profile = atm
+            .profile_add(&profile, false)
+            .await
+            .map_err(|e| ResponderError::Profile(e.to_string()))?;
 
         atm.profile_enable_websocket(&profile)
             .await
