@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### vta-service 0.13.4 / vtc-service 0.11.42 — the last of the unregistered mediator sockets
+
+#846 fixed the two sites where the unregistered-profile defect actually leaked
+per operation. This clears the rest of the class, so `profile_enable_websocket`
+has no remaining caller in the workspace whose socket outlives its teardown.
+
+Nothing here leaks in production today — every site is either a one-shot CLI
+that exits immediately or test-only. They are fixed because the *shape* is the
+trap: a profile that opens a websocket without being registered with the ATM is
+invisible to `ATM::graceful_shutdown`, which stops sockets by iterating the
+profile map, and the transport task cannot be stopped any other way (it
+transitively owns the only `Sender` for its own command channel).
+
+- **`vta status` / `vtc status` trust-ping probes.** Two defects, not one: the
+  profile was unregistered *and* the `?` on `profile_enable_websocket` /
+  `send_ping` returned past `graceful_shutdown` entirely. Both probes now
+  register the profile and run the fallible body so a single path tears the ATM
+  down on success and failure alike.
+- **`didcomm-test`.** Its `graceful_shutdown` was a no-op for the same reason.
+  This tool exists to debug DIDComm connectivity, so a ghost socket outliving
+  the run is more misleading here than anywhere.
+- **e2e helpers** (`test_vta_responder`'s two constructors, `tsp_round_trip`'s
+  pickup socket) — each test left a socket reconnect-looping against a
+  shut-down mediator for the rest of the binary.
+
+Also: `vta-service/src/operations/acl.rs` moves the canonical `acl/*` adapter
+block above `mod tests`, clearing the `items_after_test_module` warning left by
+#842. A pure move — 147 lines out, 147 lines in — no behaviour change. The
+workspace now builds clippy-clean with no warnings.
+
+Assessed and deliberately unchanged: `vta_sdk::session::challenge_response`
+builds a TDK + ATM per login purely to pack one message. It has no profile and
+no socket, and #844 already made it shut that ATM down on every path, so there
+is nothing left to leak. Moving it onto `didcomm_light`'s packer would drop the
+ATM entirely but swaps authcrypt for anoncrypt — a wire and sender-authentication
+change, not a cleanup. REST-only consumers should keep using
+`auth_light::challenge_response_light`, which needs no ATM at all.
+
 ### vta-service 0.13.3 / vtc-service 0.11.41 — the mediator handshakes stop leaking websockets
 
 The defect #830 fixed in `vta-sdk` was also present, unfixed, in the services'

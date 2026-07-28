@@ -189,7 +189,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let profile = ATMProfile::new(&atm, None, did.clone(), Some(args.mediator_did.clone()))
         .await
         .map_err(|e| format!("ATM profile: {e}"))?;
-    let profile = Arc::new(profile);
+    // Registered so the `graceful_shutdown` at the end of the run actually
+    // stops this socket. This tool exists to debug DIDComm connectivity, so a
+    // ghost socket outliving the run is worse here than anywhere (vta-sdk #830).
+    let profile = atm
+        .profile_add(&profile, false)
+        .await
+        .map_err(|e| format!("register profile: {e}"))?;
 
     // Enable WebSocket (triggers auth + live streaming)
     atm.profile_enable_websocket(&profile)
