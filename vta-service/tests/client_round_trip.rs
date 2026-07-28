@@ -272,3 +272,134 @@ async fn config_registry_round_trips_and_identity_stays_read_only() {
          just the refusal"
     );
 }
+
+// ── Audit ───────────────────────────────────────────────────────────
+
+/// Audit list through the real client: the canonical envelope survives
+/// the trip, and cursor pagination actually advances.
+///
+/// The failure this catches is quiet in both directions. The stored row
+/// keeps its snake_case storage shape (`id`, `timestamp`) while the wire
+/// carries the canonical camelCase envelope (`eventId`, `recordedAt`),
+/// so a mapping that drops a field yields `None`, not an error — the
+/// client parses a row full of nulls and the CLI prints em-dashes. And
+/// a cursor the client fails to send back is not an error either; the
+/// server simply returns page one again, so a caller walking the log
+/// loops forever on the newest entries and never sees the tail.
+#[tokio::test]
+async fn audit_list_round_trips_through_the_real_client() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+
+    // Generate audit rows by doing auditable work through the client.
+    for i in 0..5 {
+        client
+            .create_acl(
+                CreateAclRequest::new(format!("did:key:z6MkAuditSubject{i}"), "application")
+                    .contexts(vec!["ctx1".into()]),
+            )
+            .await
+            .expect("grant round-trips");
+    }
+
+    let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+        page_size: Some(2),
+        ..Default::default()
+    };
+    let first = client
+        .list_audit_logs(&params)
+        .await
+        .expect("audit/list round-trips");
+
+    assert_eq!(first.entries.len(), 2, "pageSize must be honoured");
+    assert!(
+        first.truncated && first.cursor.is_some(),
+        "more entries exist, so the page must be marked truncated with a cursor"
+    );
+
+    // The envelope arrives populated — not a shape-compatible row of
+    // nulls.
+    let entry = &first.entries[0];
+    assert!(
+        !entry.event_id.is_empty(),
+        "eventId must survive: {entry:?}"
+    );
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(&entry.recorded_at).is_ok(),
+        "recordedAt must be RFC 3339, got {:?}",
+        entry.recorded_at
+    );
+    assert!(!entry.action.is_empty(), "action must survive: {entry:?}");
+    assert!(
+        entry.actor.is_some(),
+        "actor must survive — 'who did this' is the question a log answers: {entry:?}"
+    );
+
+    // Page two is *different* entries, not the same page again.
+    let next = client
+        .list_audit_logs(
+            &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+                cursor: first.cursor.clone(),
+                ..params.clone()
+            },
+        )
+        .await
+        .expect("continuation round-trips");
+
+    let first_ids: Vec<&str> = first.entries.iter().map(|e| e.event_id.as_str()).collect();
+    for entry in &next.entries {
+        assert!(
+            !first_ids.contains(&entry.event_id.as_str()),
+            "the cursor must advance past page one, but {} repeated",
+            entry.event_id
+        );
+    }
+    assert!(!next.entries.is_empty(), "page two should hold entries");
+}
+
+/// The filters are bound into the cursor, so resuming a page under a
+/// different filter set is refused rather than silently answered from a
+/// position that belonged to another query.
+#[tokio::test]
+async fn audit_cursor_is_bound_to_its_filters() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+
+    for i in 0..5 {
+        client
+            .create_acl(
+                CreateAclRequest::new(format!("did:key:z6MkBoundSubject{i}"), "application")
+                    .contexts(vec!["ctx1".into()]),
+            )
+            .await
+            .expect("grant round-trips");
+    }
+
+    let first = client
+        .list_audit_logs(
+            &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+                page_size: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("audit/list round-trips");
+    let cursor = first.cursor.expect("more entries remain");
+
+    let err = client
+        .list_audit_logs(
+            &vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+                page_size: Some(1),
+                cursor: Some(cursor),
+                // A filter that was not in force when the cursor was minted.
+                action: Some("acl.create".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert!(
+        err.is_err(),
+        "changing the filters while resuming must be refused, got {err:?}"
+    );
+}

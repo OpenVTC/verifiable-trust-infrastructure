@@ -145,7 +145,7 @@ URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 
 | URI | Today's surface |
 |---|---|
-| `spec/vta/audit/list-logs/1.0` | `GET /audit/logs` + DIDComm `list-logs` |
+| `audit/list/0.1` (canonical) | `GET /audit/logs` + DIDComm `list-logs` |
 | `spec/vta/audit/get-retention/1.0` | DIDComm `get-retention` + REST |
 | `spec/vta/audit/update-retention/1.0` | DIDComm `update-retention` + REST |
 
@@ -430,11 +430,11 @@ REST:
   GET    /contexts/{id}                             → vta/contexts/get/1.0
   PATCH  /contexts/{id}                             → vta/contexts/update/1.0
   DELETE /contexts/{id}                             → vta/contexts/delete/1.0
-  GET    /acl                                       → vta/acl/list/1.0
-  POST   /acl                                       → vta/acl/create/1.0
-  PATCH  /acl/{did}                                 → vta/acl/update/1.0
-  DELETE /acl/{did}                                 → vta/acl/delete/1.0
-  GET    /audit/logs                                → vta/audit/list-logs/1.0
+  GET    /acl                                       → acl/list/0.1
+  POST   /acl                                       → acl/grant/0.1
+  PATCH  /acl/{did}                                 → acl/update/0.1
+  DELETE /acl/{did}                                 → acl/revoke/0.1
+  GET    /audit/logs                                → audit/list/0.1
   GET    /attestation/status                        → vta/attestation/status/1.0
   GET    /attestation/did-log                       → vta/attestation/did-log/1.0
   GET    /services                                  → vta/services/list/1.0

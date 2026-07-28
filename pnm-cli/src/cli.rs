@@ -2170,30 +2170,31 @@ pub(crate) enum AuthCredentialCommands {
 pub(crate) enum AuditCommands {
     /// List audit log entries with optional filtering
     List {
-        /// Start time (unix epoch seconds)
+        /// Start time, RFC 3339 (e.g. 2026-07-01T00:00:00Z). Inclusive.
         #[arg(long)]
-        from: Option<u64>,
-        /// End time (unix epoch seconds)
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        /// End time, RFC 3339. Exclusive.
         #[arg(long)]
-        to: Option<u64>,
-        /// Filter by action (e.g. "auth.challenge", "key.create")
+        to: Option<chrono::DateTime<chrono::Utc>>,
+        /// Filter by action — exact match (e.g. "auth.challenge", "key.create")
         #[arg(long)]
         action: Option<String>,
         /// Filter by actor DID
         #[arg(long)]
         actor: Option<String>,
-        /// Filter by outcome (e.g. "success", "denied")
+        /// Filter by outcome — exact match (e.g. "success", "denied")
         #[arg(long)]
         outcome: Option<String>,
-        /// Filter by context ID
+        /// Filter by context ID. Required unless you are an unrestricted admin.
         #[arg(long)]
         context_id: Option<String>,
-        /// Page number (default 1)
-        #[arg(long, default_value_t = 1)]
-        page: u64,
-        /// Page size (default 50, max 500)
-        #[arg(long, default_value_t = 50)]
-        page_size: u64,
+        /// Continuation cursor printed by the previous page. Pass it back
+        /// verbatim; do not change the filters when resuming.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Page size (default 50, max 200)
+        #[arg(long)]
+        page_size: Option<u64>,
     },
     /// Manage audit log retention
     Retention {

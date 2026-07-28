@@ -344,13 +344,15 @@ pub const TASK_SEEDS_ROTATE_1_0: &str = "https://trusttasks.org/spec/vta/seeds/r
 pub const TASK_SEEDS_EXPORT_MNEMONIC_1_0: &str =
     "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
 
-// ─── Audit slice (spec/vta/audit/*) ──────────────────────────────────────
+// ─── Audit slice (canonical spec/audit/*, plus spec/vta/audit/*) ─────────
 
-/// `spec/vta/audit/list-logs/1.0` — list audit log entries (paginated,
-/// filterable). Payload:
+/// `audit/list/0.1` — page through the audit log, newest first, with
+/// optional filters and an opaque continuation cursor. Payload:
 /// [`crate::protocols::audit_management::list::ListAuditLogsBody`].
-/// Auth: Admin.
-pub const TASK_AUDIT_LIST_LOGS_1_0: &str = "https://trusttasks.org/spec/vta/audit/list-logs/1.0";
+///
+/// Auth: unrestricted admin for the whole-log tail; a context-scoped
+/// admin must supply `contextId` within their own scope.
+pub const TASK_AUDIT_LIST_LOGS_1_0: &str = "https://trusttasks.org/spec/audit/list/0.1";
 
 /// `spec/vta/audit/get-retention/1.0` — read the current retention
 /// period. Payload:
@@ -1577,6 +1579,10 @@ mod tests {
             // AI agent and whose subject is a platform/conversation pair — it
             // cannot express "approve this task payload".
             "https://trusttasks.org/spec/task-consent/",
+            // Canonical audit read — `audit/list`. The VTA's
+            // `vta/audit/list-logs` folded onto it in #840 phase A, trading
+            // offset pages for the canonical opaque cursor.
+            "https://trusttasks.org/spec/audit/",
         ];
         for uri in ALL_URIS {
             assert!(

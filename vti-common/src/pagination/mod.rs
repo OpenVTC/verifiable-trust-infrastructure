@@ -20,10 +20,17 @@
 //! - **Opaque to consumers.** The cursor is a base64url-encoded
 //!   binary blob; clients pass it back verbatim. No public structure.
 //! - **Tamper-evident.** The cursor's payload is HMAC-SHA256-signed
-//!   under the per-community `audit_key`. A cursor minted for
-//!   community A can't be replayed against community B; a guessed
-//!   cursor can't iterate past the protocol boundary. See
-//!   [`Cursor::decode`] for the verification flow.
+//!   under a per-maintainer 32-byte key. A cursor minted by one
+//!   maintainer can't be replayed against another; a guessed cursor
+//!   can't iterate past the protocol boundary. See [`Cursor::decode`]
+//!   for the verification flow.
+//!
+//!   Where that key comes from depends on what the maintainer already
+//!   has. The VTC signs under the active `audit_key` from its
+//!   [`crate::audit::AuditKeyStore`]. A maintainer with no such store
+//!   — the VTA keeps a flat audit log with no hash chain — uses
+//!   [`CursorKey`], which persists a random key in a keyspace of the
+//!   caller's choosing and is used for nothing but cursor MACs.
 //! - **No structural feedback on failure.** A tampered, forged, or
 //!   malformed cursor returns [`AppError::InvalidCursor`] (400) with
 //!   no detail. The HMAC verification + payload deserialisation share
@@ -259,6 +266,81 @@ impl Cursor {
 }
 
 // ---------------------------------------------------------------------------
+// CursorKey — signing key for maintainers with no audit-key store
+// ---------------------------------------------------------------------------
+
+/// Storage key the [`CursorKey`] material lives under. Deliberately
+/// namespaced away from any `log:` / `audit_key:` prefix so a cursor
+/// key can share a keyspace with the rows it paginates.
+const CURSOR_KEY_STORAGE_KEY: &[u8] = b"pagination:cursor_key/v1";
+
+/// A keyspace-persisted 32-byte HMAC key for signing pagination
+/// cursors.
+///
+/// The VTC signs its cursors under the active `audit_key` from its
+/// [`crate::audit::AuditKeyStore`]. The VTA has no such store — it
+/// keeps a flat append-only log with no hash chain — but canonical
+/// `audit/list` still requires cursors that cannot be forged into a
+/// position the filters did not authorize. This is the minimum that
+/// buys: a random key, generated once and persisted, used for nothing
+/// but cursor MACs.
+///
+/// **Not** derived from the master seed. A cursor is ephemeral and
+/// carries no long-term secret, so seed derivation would only widen
+/// the seed's blast radius for no benefit; and a key that is *not*
+/// reproduced by a backup+restore is the safer default, since a
+/// cursor minted against one database should not silently resolve to
+/// a position in another.
+#[derive(Clone)]
+pub struct CursorKey {
+    ks: crate::store::KeyspaceHandle,
+}
+
+impl CursorKey {
+    /// Wrap a keyspace. The key is created lazily on first [`Self::get`].
+    pub fn new(ks: crate::store::KeyspaceHandle) -> Self {
+        Self { ks }
+    }
+
+    /// Read the signing key, generating and persisting one if this is
+    /// the first call against a fresh store.
+    ///
+    /// Creation is atomic via
+    /// [`crate::store::KeyspaceHandle::insert_raw_if_absent`]: a
+    /// concurrent creator loses the race and re-reads the winner's
+    /// key, so two requests arriving together never mint cursors under
+    /// different keys.
+    pub async fn get(&self) -> Result<[u8; 32], AppError> {
+        if let Some(existing) = self.read().await? {
+            return Ok(existing);
+        }
+
+        let mut fresh = [0u8; 32];
+        rand::fill(&mut fresh);
+        self.ks
+            .insert_raw_if_absent(CURSOR_KEY_STORAGE_KEY.to_vec(), fresh.to_vec())
+            .await?;
+
+        // Re-read unconditionally rather than trusting the bool: on a
+        // lost race the winner's key is the one every other request is
+        // already signing under.
+        self.read().await?.ok_or_else(|| {
+            AppError::Internal("cursor key vanished immediately after creation".into())
+        })
+    }
+
+    async fn read(&self) -> Result<Option<[u8; 32]>, AppError> {
+        let Some(raw) = self.ks.get_raw(CURSOR_KEY_STORAGE_KEY.to_vec()).await? else {
+            return Ok(None);
+        };
+        let key: [u8; 32] = raw.try_into().map_err(|_| {
+            AppError::Internal("stored cursor key is not 32 bytes; refusing to sign".into())
+        })?;
+        Ok(Some(key))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // paginate helper
 // ---------------------------------------------------------------------------
 
@@ -342,6 +424,78 @@ mod tests {
 
     const KEY_A: [u8; 32] = [0xAA; 32];
     const KEY_B: [u8; 32] = [0xBB; 32];
+
+    fn temp_ks() -> (crate::store::KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cfg = crate::config::StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        };
+        let store = crate::store::Store::open(&cfg).expect("store");
+        let ks = store.keyspace("cursor-key-test").expect("keyspace");
+        (ks, dir)
+    }
+
+    /// The key must be stable across calls — a key regenerated per
+    /// request would invalidate every cursor the moment it was handed
+    /// out, so pagination would never advance past page one.
+    #[tokio::test]
+    async fn cursor_key_is_created_once_and_reused() {
+        let (ks, _dir) = temp_ks();
+
+        let first = CursorKey::new(ks.clone()).get().await.expect("mint");
+        let second = CursorKey::new(ks.clone()).get().await.expect("reuse");
+        assert_eq!(first, second);
+        assert_ne!(first, [0u8; 32], "the key must be random, not zeroed");
+
+        // A cursor minted under it survives a round trip through a
+        // freshly-constructed handle over the same keyspace.
+        let c = Cursor::new(b"log:00000000000000000001:abc".to_vec(), 1);
+        let wire = c.encode_bound(&first, b"binding");
+        assert_eq!(Cursor::decode_bound(&wire, &second, b"binding").unwrap(), c);
+    }
+
+    /// The key must survive an **encrypted** keyspace.
+    ///
+    /// This is the deployment case, not an edge case: the VTA's audit
+    /// keyspace — where this key lives — is encrypted at rest. The key
+    /// is stored via the raw byte API and read back with a 32-byte
+    /// `try_into`, so if encrypt-on-write and decrypt-on-read were not
+    /// symmetric the read would see ciphertext of the wrong length and
+    /// every audit list call would fail. A plaintext-only test would
+    /// never show it.
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn cursor_key_round_trips_through_an_encrypted_keyspace() {
+        let (ks, _dir) = temp_ks();
+        let ks = ks.with_encryption([0x5A; 32]);
+        assert!(
+            ks.is_encrypted(),
+            "the test must exercise the encrypted path"
+        );
+
+        let first = CursorKey::new(ks.clone()).get().await.expect("mint");
+        let second = CursorKey::new(ks).get().await.expect("read back");
+        assert_eq!(first, second, "the key must survive the encryption layer");
+        assert_ne!(first, [0u8; 32]);
+    }
+
+    /// Two keyspaces are two independent keys, so a cursor cannot be
+    /// replayed from one store against another.
+    #[tokio::test]
+    async fn cursor_keys_are_per_keyspace() {
+        let (ks_a, _a) = temp_ks();
+        let (ks_b, _b) = temp_ks();
+
+        let key_a = CursorKey::new(ks_a).get().await.expect("a");
+        let key_b = CursorKey::new(ks_b).get().await.expect("b");
+        assert_ne!(key_a, key_b);
+
+        let wire = Cursor::new(b"log:1:x".to_vec(), 1).encode(&key_a);
+        assert!(matches!(
+            Cursor::decode(&wire, &key_b),
+            Err(AppError::InvalidCursor)
+        ));
+    }
 
     /// A bound cursor only decodes under the same binding. This is what
     /// stops a filtered listing from being resumed under different

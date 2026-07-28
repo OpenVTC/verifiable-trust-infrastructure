@@ -1195,28 +1195,67 @@ async fn list_audit_logs_paginates() {
     Mock::given(method("GET"))
         .and(path("/audit/logs"))
         .and(auth_match())
-        .and(wiremock::matchers::query_param("page", "2"))
-        .and(wiremock::matchers::query_param("page_size", "25"))
+        // camelCase, per canonical `audit/list/0.1`. A snake_case key
+        // here would be dropped by the route's serde binding and the
+        // filter would silently not apply.
+        .and(wiremock::matchers::query_param("pageSize", "25"))
         .and(wiremock::matchers::query_param("action", "key.create"))
+        .and(wiremock::matchers::query_param("cursor", "opaque-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "entries": [],
-            "total": 0,
-            "page": 2,
-            "page_size": 25,
-            "total_pages": 0
+            "entries": [{
+                "eventId": "e1",
+                "recordedAt": "2026-07-01T00:00:00+00:00",
+                "action": "key.create",
+                "outcome": "success",
+                "actor": "did:key:zActor",
+            }],
+            "truncated": true,
+            "cursor": "next-token"
         })))
         .expect(1)
         .mount(&server)
         .await;
     let c = client(&server).await;
     let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
-        page: 2,
-        page_size: 25,
+        page_size: Some(25),
         action: Some("key.create".into()),
+        cursor: Some("opaque-token".into()),
         ..Default::default()
     };
     let r = c.list_audit_logs(&params).await.unwrap();
-    assert_eq!(r.page, 2);
+    assert!(r.truncated);
+    assert_eq!(r.cursor.as_deref(), Some("next-token"));
+    assert_eq!(r.entries[0].event_id, "e1");
+    assert_eq!(r.entries[0].action, "key.create");
+}
+
+/// An RFC 3339 `from` ends in a `+00:00` offset. Unencoded, the `+`
+/// decodes as a space and the server sees an unparseable datetime, so
+/// the bound silently goes missing — the failure mode is "more rows
+/// than you asked for", which on an audit query reads as a full log.
+#[tokio::test]
+async fn audit_list_percent_encodes_rfc3339_bounds() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/audit/logs"))
+        .and(auth_match())
+        .and(wiremock::matchers::query_param(
+            "from",
+            "2026-07-01T00:00:00+00:00",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "entries": [], "truncated": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let c = client(&server).await;
+    let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
+        from: Some("2026-07-01T00:00:00Z".parse().unwrap()),
+        ..Default::default()
+    };
+    let r = c.list_audit_logs(&params).await.unwrap();
+    assert!(!r.truncated);
 }
 
 #[tokio::test]

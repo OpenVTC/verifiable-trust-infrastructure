@@ -74,6 +74,11 @@ fn app_err_to_problem_report(e: &AppError) -> ProblemReport {
             escalate_to: None,
         },
         AppError::Validation(msg) => ProblemReport::bad_request(msg.clone()),
+        // A rejected pagination cursor is a caller fault — REST already
+        // answers 400. Collapsed into `internal-error` it reads as a
+        // server fault the caller should retry, when the correct
+        // response is to restart from the first page.
+        AppError::InvalidCursor => ProblemReport::bad_request(e.to_string()),
         _ => ProblemReport::internal_error(e.to_string()),
     }
 }
@@ -2022,6 +2027,17 @@ mod tests {
             assert_eq!(report.code, expected_code, "code for {err:?}");
             assert_eq!(report.comment, expected_comment, "comment for {err:?}");
         }
+    }
+
+    /// A rejected pagination cursor is a caller fault. REST answers 400;
+    /// this transport must not report it as an internal error, which
+    /// would tell the caller to retry the same cursor instead of
+    /// restarting from the first page.
+    #[test]
+    fn invalid_cursor_is_a_bad_request_not_an_internal_error() {
+        let report = app_err_to_problem_report(&AppError::InvalidCursor);
+        assert_eq!(report.code, codes::BAD_REQUEST);
+        assert_ne!(report.code, codes::INTERNAL);
     }
 
     /// Catch-all variants collapse to `internal-error` with the `Display`

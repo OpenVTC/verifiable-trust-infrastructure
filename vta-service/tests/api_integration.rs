@@ -1199,6 +1199,92 @@ async fn audit_list_requires_admin() {
     assert!(body["entries"].is_array());
 }
 
+/// The RFC 3339 time bounds must actually bind server-side.
+///
+/// This is the failure mode worth a test: a `from` the route cannot
+/// deserialize is not an error, it is an absent filter — so a query
+/// that should return nothing returns the entire log instead, and the
+/// caller reads that as "these are the entries in my window".
+#[tokio::test]
+async fn audit_time_bounds_are_parsed_and_applied() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    // Generate at least one auditable event.
+    app.request(post_auth(
+        "/keys",
+        &token,
+        json!({"key_type": "ed25519", "context_id": "ctx1"}),
+    ))
+    .await;
+
+    let (status, body) = app.request(get_auth("/audit/logs", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !body["entries"].as_array().expect("entries").is_empty(),
+        "expected some audit entries to filter"
+    );
+
+    // A window that starts in the far future must exclude everything.
+    let (status, body) = app
+        .request(get_auth("/audit/logs?from=2999-01-01T00:00:00Z", &token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["entries"].as_array().expect("entries").is_empty(),
+        "a far-future `from` must exclude every entry — got {}",
+        body["entries"]
+    );
+
+    // `to` is exclusive and also has to bind.
+    let (status, body) = app
+        .request(get_auth("/audit/logs?to=2000-01-01T00:00:00Z", &token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body["entries"].as_array().expect("entries").is_empty(),
+        "a far-past `to` must exclude every entry — got {}",
+        body["entries"]
+    );
+}
+
+/// The audit log is the whole agent's tail — every context's activity
+/// in one stream. An admin confined to one context must not be able to
+/// read the others' entries just by omitting the filter.
+#[tokio::test]
+async fn scoped_admin_cannot_read_the_whole_audit_log() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx
+        .auth_token("did:key:z6MkScoped", "admin", vec!["ctx1".into()])
+        .await;
+
+    // No contextId → refused: this would be the whole-log tail.
+    let (status, _) = app.request(get_auth("/audit/logs", &token)).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a context-scoped admin must not read the unfiltered log"
+    );
+
+    // A context they do not hold → refused.
+    let (status, _) = app
+        .request(get_auth("/audit/logs?contextId=ctx2", &token))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Their own context → allowed.
+    let (status, body) = app
+        .request(get_auth("/audit/logs?contextId=ctx1", &token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["entries"].is_array());
+
+    // An unrestricted admin still reads everything.
+    let super_token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+    let (status, _) = app.request(get_auth("/audit/logs", &super_token)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
 // ── Context scoping ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1369,10 +1455,18 @@ async fn operations_create_audit_entries() {
         entries.len()
     );
 
-    // Verify audit entries have expected fields
+    // Verify entries carry the canonical `AuditEnvelope` shape —
+    // camelCase names, and `recordedAt` as RFC 3339 rather than an
+    // epoch number.
     let entry = &entries[0];
-    assert!(entry["id"].is_string());
-    assert!(entry["timestamp"].is_number());
+    assert!(entry["eventId"].is_string());
+    let recorded_at = entry["recordedAt"]
+        .as_str()
+        .expect("recordedAt is a string");
+    assert!(
+        chrono::DateTime::parse_from_rfc3339(recorded_at).is_ok(),
+        "recordedAt should be RFC 3339, got {recorded_at}"
+    );
     assert!(entry["action"].is_string());
     assert!(entry["actor"].is_string());
 }
