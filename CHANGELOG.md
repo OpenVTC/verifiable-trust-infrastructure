@@ -57,7 +57,7 @@ REST, DIDComm and the trust-task dispatcher all reach the same operation, and
 three copies of "which member becomes which argument" would be three chances to
 disagree about, say, whether an absent `approve` confers nothing.
 
-### vta-sdk 0.20.11 — one ATM per process, and `shutdown()` that actually stops the socket (#830)
+### vta-sdk 0.20.12 — one ATM per process, and `shutdown()` that actually stops the socket (#830)
 
 Every session constructor in the SDK built its own `TDKSharedState` **and** its
 own `ATM`, then attached exactly one identity to it. A process authenticating as
