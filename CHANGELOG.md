@@ -38,6 +38,47 @@ spec change.
 
 Unblocks the member-side half of OpenVTC/openvtc#185.
 
+### vta-tee 0.1.2 / vta-service 0.12.46 — the TEE store keys get one home, and the changelog guard stops passing vacuously
+
+Three small cross-cutting fixes that kept surfacing while reviewing the TEE and
+Nitro PRs (#819, #824, #826, #827, #832). None of them belongs to any one of
+those changes.
+
+**`tee:did_log` and `tee:vta_did` are now exported constants.** The DID log key
+was spelled as a bare string literal in four places: written twice in
+`vta_tee::did_autogen` (to the `KEYS` and `BOOTSTRAP` keyspaces), read by
+`vta_service::routes::attestation::did_log` to serve `GET
+/attestation/did-log`, re-declared a fifth time by `vta_service::tee_webvh`
+(#827), and read twice more by the parent-side `deploy/nitro/enclave-proxy`.
+Renaming it would have broken the readers silently. `did_autogen` now exports
+`DID_LOG_STORE_KEY` and `VTA_DID_STORE_KEY` and every in-workspace reader takes
+the constant. (`tee_webvh`'s copy was justified as avoiding a `vta-tee`
+dependency, but that module is `cfg(tee)` and `crate::tee` is already
+`pub use vta_tee` under the same feature — there was no dependency to avoid.) `enclave-proxy` is a separate
+cargo project on the parent that deliberately does not link enclave code, so it
+keeps the literal — now with a comment naming the canonical definition.
+
+**`deploy/nitro/parent-proxy.sh` bound the DID resolver to the IMDS port.** It
+defaulted `VSOCK_RESOLVER_PORT` to 5400, but 5400 is the IMDS credential proxy
+on the enclave side and the resolver is 5600 (`enclave-entrypoint.sh`,
+`enclave-proxy/src/main.rs`). The script is also socat-only and serves four of
+the seven vsock channels — no storage (5500) and no log forwarding (5700) — so
+its header now says that outright and points at `enclave-proxy` as the
+canonical parent implementation.
+
+**`scripts/check-changelogs.sh` matched the version string anywhere in the
+file, not a `<crate> <version>` entry.** With a dozen subsystem crates sharing
+the 0.1.x range, patch numbers collide constantly: `vta-tee` 0.1.0 -> 0.1.1
+(#819) passed the guard with no `vta-tee` entry at all, because `0.1.1` already
+appeared for `vta-audit`, `vta-backup`, `vta-vault` and `vta-webvh`. The match
+now requires the crate name immediately before the version, accepting both
+heading shapes in use here (`### vta-service 0.12.43 — …`, `### vti-secrets
+0.1.7 / vta-config 0.1.1 — …`, and backticked list items), and keeps the
+right-hand token boundary so a `0.1.30` entry cannot satisfy a bump to `0.1.3`.
+Replayed over the last 25 commits of `main`: 16 commits carrying version bumps
+still pass, and the only thing the tightened guard newly catches is #819 — the
+bug that motivated it.
+
 ### vta-sdk 0.20.8 / vta-service 0.12.47 / vtc-service 0.11.38 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
 
 The eight `credential-exchange` Trust Tasks now bind URIs the registry actually
@@ -105,6 +146,16 @@ drops, add a new unpublished one and the test fails.
 Nothing here is a runtime defect: the bindings work. They reference specs no
 consumer can fetch, which is a published-authority claim we are not yet
 entitled to make.
+
+### vta-tee 0.1.1 — NSM ioctl `len` must be u64 (#819)
+
+Backfilled: this shipped without an entry, which is what the guard change above
+exists to prevent. The NSM ioctl request/response descriptors mirror the kernel's
+`struct nsm_iovec { __u64 addr; __u64 len; }`. `len` was declared `u32`, leaving
+four bytes of uninitialised `#[repr(C)]` padding that the kernel read as the high
+half of the 64-bit length — inflating it to a garbage value and failing
+attestation with `EMSGSIZE`. The same field is read back after the call to size
+the response, so the truncated read was a second latent defect.
 
 ### vtc-service 0.11.36 — the VTC accepts Trust Tasks over TSP
 

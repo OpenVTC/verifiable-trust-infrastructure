@@ -26,9 +26,12 @@ use crate::store::{KeyspaceHandle, Store};
 use crate::webvh_store;
 
 /// The `KEYS`-keyspace key that `vta_tee::did_autogen` writes the encrypted
-/// did.jsonl log under. Mirrored here (rather than imported) so this bridge
-/// doesn't pull `vta-tee` into `vta-service`'s dependency graph.
-const TEE_DID_LOG_STORE_KEY: &str = "tee:did_log";
+/// did.jsonl log under.
+///
+/// Taken from the writer rather than re-typed: this module is `cfg(tee)` and
+/// `crate::tee` is already `pub use vta_tee`, so there is no dependency to
+/// avoid — only a literal to keep in sync, which is the failure mode.
+use crate::tee::did_autogen::DID_LOG_STORE_KEY as TEE_DID_LOG_STORE_KEY;
 
 /// Idempotently persist the serverless VTA did:webvh record + log into the
 /// `webvh` keyspace.
