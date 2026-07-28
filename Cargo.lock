@@ -10432,7 +10432,7 @@ dependencies = [
 
 [[package]]
 name = "vta-support"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "ed25519-dalek",

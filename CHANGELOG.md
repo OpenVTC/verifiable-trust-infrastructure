@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### vta-support 0.2.1 — declare the `vti-common` feature it actually uses
+
+`seal.rs` calls `KeyspaceHandle::with_encryption`, which is
+`#[cfg(feature = "encryption")]` in `vti-common`. `vta-support` depended on
+`vti-common` with **no features at all**.
+
+It built anyway, which is exactly why this went unnoticed: another workspace
+member enables `vti-common/encryption`, and cargo's feature unification turns
+it on for the shared build. `cargo publish` verifies each crate **in
+isolation**, where nothing else is present to enable it — so the method
+genuinely is not compiled in and the tarball fails with `E0599`.
+
+**This is what broke the publish run for 0.2.0**, and it would have failed on
+every subsequent run: the published `vti-common` 0.11.28 *does* carry the
+method, it was simply never compiled into `vta-support`'s isolated build. A
+version bump would not have helped.
+
+0.2.0 is skipped rather than reused — it exists only as a failed publish
+attempt and never reached crates.io.
+
+The generalisable point: **a workspace build cannot detect a missing feature
+dependency**, because unification supplies it from a sibling. Only an isolated
+build can, and `cargo package` is the only thing in the pipeline that does one
+— which is why `Feature combos` passed throughout.
+
+
 ### vta-sdk 0.20.10 / vta-service 0.13.1 / vta-cli-common 0.10.17 / pnm-cli 0.11.12 / cnm-cli 0.11.11 / vtc-service 0.11.39 — config and provisioning fold onto canonical, and the VTA can no longer rewrite its own identity (#840 phase A)
 
 Three of the 67 unpublished canonical URIs are gone, folded onto tasks the
