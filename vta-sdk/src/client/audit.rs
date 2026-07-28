@@ -3,6 +3,15 @@
 use super::VtaClient;
 use crate::error::VtaError;
 
+/// Percent-encode a query-parameter value.
+///
+/// Not optional for these params: an RFC 3339 timestamp ends in a `+`
+/// offset (`…+00:00`), which a query-string decoder reads as a space —
+/// so an unencoded `from`/`to` arrives as an unparseable datetime.
+fn enc(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
 impl VtaClient {
     /// List audit logs with optional filtering and pagination.
     pub async fn list_audit_logs(
@@ -16,27 +25,33 @@ impl VtaClient {
             audit_management::LIST_LOGS_RESULT,
             30,
             |c, url| {
-                let mut qs = vec![
-                    format!("page={}", params.page),
-                    format!("page_size={}", params.page_size),
-                ];
+                // Query-param names are the canonical camelCase ones the
+                // route binds; a snake_case key here is silently dropped
+                // by serde and the filter never applies.
+                let mut qs: Vec<String> = Vec::new();
+                if let Some(page_size) = params.page_size {
+                    qs.push(format!("pageSize={page_size}"));
+                }
                 if let Some(from) = params.from {
-                    qs.push(format!("from={from}"));
+                    qs.push(format!("from={}", enc(&from.to_rfc3339())));
                 }
                 if let Some(to) = params.to {
-                    qs.push(format!("to={to}"));
+                    qs.push(format!("to={}", enc(&to.to_rfc3339())));
                 }
                 if let Some(ref action) = params.action {
-                    qs.push(format!("action={action}"));
+                    qs.push(format!("action={}", enc(action)));
                 }
                 if let Some(ref actor) = params.actor {
-                    qs.push(format!("actor={actor}"));
+                    qs.push(format!("actor={}", enc(actor)));
                 }
                 if let Some(ref outcome) = params.outcome {
-                    qs.push(format!("outcome={outcome}"));
+                    qs.push(format!("outcome={}", enc(outcome)));
                 }
                 if let Some(ref ctx) = params.context_id {
-                    qs.push(format!("context_id={ctx}"));
+                    qs.push(format!("contextId={}", enc(ctx)));
+                }
+                if let Some(ref cursor) = params.cursor {
+                    qs.push(format!("cursor={}", enc(cursor)));
                 }
                 c.get(format!("{url}/audit/logs?{}", qs.join("&")))
             },

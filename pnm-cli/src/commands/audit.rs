@@ -17,7 +17,7 @@ pub(crate) async fn run(
             actor,
             outcome,
             context_id,
-            page,
+            cursor,
             page_size,
         } => {
             let params = vta_sdk::protocols::audit_management::list::ListAuditLogsBody {
@@ -27,7 +27,7 @@ pub(crate) async fn run(
                 actor,
                 outcome,
                 context_id,
-                page,
+                cursor,
                 page_size,
             };
             audit::cmd_list_audit_logs(client, &params).await

@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### vti-common 0.11.29 / vta-sdk 0.20.13 / vta-service 0.13.5 / vta-cli-common 0.10.19 / pnm-cli 0.11.13 — `vta/audit/list-logs` folds onto canonical `audit/list/0.1`
+
+The last item of #840 phase A, and the only one that was never a rename. The
+VTA now serves canonical `audit/list/0.1`; `spec/vta/audit/list-logs/1.0` is
+retired, taking the unpublished-canonical count for `spec/vta/` from 47 to
+**46**. Phase A is complete.
+
+**Offset paging → opaque cursor.** The old surface took a 1-based `page` and
+returned `total` / `totalPages`. An offset is only stable if nothing is
+appended while a consumer walks the pages — and the audit log is, by
+definition, appended to constantly, including by the very reads being paged.
+Page 2 of a log that grew by ten rows silently re-shows rows from page 1 and
+skips others. Paging is now by opaque continuation cursor over the storage key
+(`log:{timestamp}:{uuid}`), which is a stable position under concurrent
+appends. Responses carry `truncated` plus a `cursor` present iff truncated.
+
+`truncated` means "more *matching* entries remain", not "more rows remain": with
+a filter applied the tail may hold nothing that matches, and returning a cursor
+for an empty next page would read as results being withheld.
+
+**Cursors are signed and bound.** Canonical requires a cursor that cannot be
+forged into a position the filters did not authorize. The cursor's HMAC covers
+the filters *and the caller's DID* — so resuming under a changed filter set is
+refused rather than silently answered from another query's position, and a
+leaked cursor is not a cross-principal read. Signing uses a new
+`vti_common::pagination::CursorKey`: a random 32-byte key created once and
+persisted in the audit keyspace. Deliberately **not** seed-derived — a cursor
+carries no long-term secret, and a key that a backup+restore does not reproduce
+is the safer default, since a cursor minted against one database should not
+resolve to a position in another.
+
+**A context-scoped admin could read every context's audit entries.** Found
+while diffing against canonical, which states the gate directly: this is the
+tightest-gated read a maintainer offers, and a context-scoped admin does not
+qualify for the whole-log tail. The VTA's gate was `require_admin()`, which
+tests only the role and ignores `allowed_contexts` entirely — so an admin
+deliberately confined to one context could read the whole agent's activity,
+every other context included. Now an unrestricted admin reads anything, and a
+scoped admin must name a `contextId` within their own scope. Same defect class
+as #746 / #769 / #770, and fixed the same way: through `is_super_admin` /
+`has_context_access`, never by testing `allowed_contexts` directly.
+
+**Behaviour changes an operator will notice:**
+
+- `action` and `outcome` now match on **equality**, not substring. Asking for
+  `action=vault.delete` no longer also returns `vault.delete_force` — the old
+  behaviour quietly widened a query, so an operator could not tell which rows
+  they had actually asked for.
+- `to` is now **exclusive** (canonical), previously inclusive.
+- `from` / `to` are RFC 3339, not epoch seconds — on the wire and on the CLI.
+- Query params are camelCase (`pageSize`, `contextId`), per R3.1. They were
+  snake_case, which the canonical route binding would have dropped silently.
+- Max page size is 200 (the workspace-wide pagination cap), was 500.
+- `pnm audit list --page N` is replaced by `--cursor <token>`; the command
+  prints the continuation token when more entries remain.
+
+Entries are returned as the canonical camelCase `AuditEnvelope` (`eventId`,
+`recordedAt` as RFC 3339, `target`, `contextId`). The **stored** row shape is
+untouched — `AuditLogEntry` is the on-disk format for the audit keyspace, so
+renaming its fields would orphan every existing row; the envelope is built from
+it at the response boundary. The VTA's `channel` and free-text `reason`, which
+have no canonical envelope field, ride in `detail`.
+
+**An invalid cursor is now a caller fault on every transport.** REST already
+answered 400, but `AppError::InvalidCursor` sat in the catch-all arm of both the
+Trust-Task reject mapping (`internal_error`) and the DIDComm problem-report
+mapping (`e.p.msg.internal-error`). A consumer told "internal error" retries the
+same cursor; the correct response — and the one canonical asks for — is to
+restart from the first page. Both now map to malformed-request / bad-request.
+
+Two round-trip cases were added to `vta-service/tests/client_round_trip.rs`
+(the real client against the real router): one asserting the envelope arrives
+populated and the cursor actually advances past page one, one asserting a
+changed filter is refused. Both were mutation-verified — with the binding
+removed and with the resume position ignored, each fails for its own reason.
+
 ### vta-service 0.13.4 / vtc-service 0.11.42 — the last of the unregistered mediator sockets
 
 #846 fixed the two sites where the unregistered-profile defect actually leaked

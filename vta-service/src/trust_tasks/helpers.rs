@@ -85,7 +85,7 @@ pub(super) fn parse_payload<T: serde::de::DeserializeOwned>(
 /// code:
 ///
 /// - `Authentication` / `Unauthorized` / `Forbidden` → `permission_denied`
-/// - `Validation` / `TrustTaskMalformed` → `malformed_request`
+/// - `Validation` / `TrustTaskMalformed` / `InvalidCursor` → `malformed_request`
 /// - `NotFound` / `Conflict` → `task_failed`
 /// - everything else → `internal_error`
 pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> TrustTaskOutcome {
@@ -94,7 +94,11 @@ pub(super) fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Trus
         AppError::Authentication(_) | AppError::Unauthorized(_) | AppError::Forbidden(_) => {
             RejectReason::PermissionDenied { reason: message }
         }
-        AppError::Validation(_) | AppError::TrustTaskMalformed(_) => {
+        // A rejected pagination cursor is a caller fault, not a server
+        // one — REST already answers 400. Left in the `internal_error`
+        // fallback it would tell a consumer to retry the same cursor,
+        // when the correct response is to restart from the first page.
+        AppError::Validation(_) | AppError::TrustTaskMalformed(_) | AppError::InvalidCursor => {
             RejectReason::MalformedRequest { reason: message }
         }
         AppError::NotFound(_) | AppError::Conflict(_) => RejectReason::TaskFailed {

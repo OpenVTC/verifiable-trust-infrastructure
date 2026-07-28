@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Cell, Row, Table};
 use vta_sdk::prelude::*;
+use vta_sdk::protocols::audit_management::list::{AuditEnvelope, ListAuditLogsResultBody};
 
 use crate::display::{NameBook, book_from_acl, named_did_cell};
 use crate::render::{is_full_display, print_full_entry_owned, print_full_list_title, print_widget};
@@ -29,42 +30,40 @@ pub async fn cmd_list_audit_logs(
     }
 
     if is_full_display() {
-        print_full_list_title(
-            &format!(
-                "Audit Log (page {}/{}, {} total)",
-                result.page, result.total_pages, result.total
-            ),
-            result.entries.len(),
-        );
+        print_full_list_title("Audit Log", result.entries.len());
         for entry in &result.entries {
-            let ts = crate::duration::format_local_time(entry.timestamp);
-            let resource = entry.resource.as_deref().unwrap_or("—");
-            let channel = entry.channel.as_deref().unwrap_or("—");
+            let ts = format_recorded_at(&entry.recorded_at);
+            let actor = entry.actor.as_deref().unwrap_or("—");
+            let target = entry.target.as_deref().unwrap_or("—");
+            let channel = detail_str(entry, "channel").unwrap_or_else(|| "—".to_string());
             let context = entry.context_id.as_deref().unwrap_or("—");
             let mut fields = vec![
-                ("ID", entry.id.clone()),
+                ("ID", entry.event_id.clone()),
                 ("Timestamp", ts),
                 ("Action", entry.action.clone()),
             ];
-            if let Some(name) = book.name_of(&entry.actor) {
+            if let Some(name) = book.name_of(actor) {
                 fields.push(("Actor", name));
             }
             // Actor DID stays in full — an audit trail is evidence.
-            fields.push(("Actor DID", entry.actor.clone()));
-            fields.push(("Resource", resource.to_string()));
-            fields.push(("Channel", channel.to_string()));
+            fields.push(("Actor DID", actor.to_string()));
+            fields.push(("Resource", target.to_string()));
+            fields.push(("Channel", channel));
             fields.push(("Context", context.to_string()));
-            fields.push(("Outcome", entry.outcome.clone()));
+            fields.push((
+                "Outcome",
+                entry.outcome.clone().unwrap_or_else(|| "—".to_string()),
+            ));
+            if let Some(reason) = detail_str(entry, "reason") {
+                fields.push(("Reason", reason));
+            }
             print_full_entry_owned(&fields);
         }
+        print_cursor_footer(&result);
         return Ok(());
     }
 
-    // Page info header
-    println!(
-        "\n  \x1b[1mAudit Log\x1b[0m  \x1b[2m(page {}/{}, {} total entries)\x1b[0m\n",
-        result.page, result.total_pages, result.total
-    );
+    println!("\n  \x1b[1mAudit Log\x1b[0m\n");
 
     // Build table rows
     let rows: Vec<Row> = result
@@ -72,12 +71,13 @@ pub async fn cmd_list_audit_logs(
         .iter()
         .map(|entry| {
             // Format timestamp in operator's local timezone.
-            let ts = crate::duration::format_local_time(entry.timestamp);
+            let ts = format_recorded_at(&entry.recorded_at);
+            let outcome = entry.outcome.as_deref().unwrap_or("—");
 
             // Color the outcome
-            let outcome_style = if entry.outcome == "success" {
+            let outcome_style = if outcome == "success" {
                 Style::default().fg(Color::Green)
-            } else if entry.outcome.starts_with("denied") {
+            } else if outcome.starts_with("denied") {
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Yellow)
@@ -99,14 +99,14 @@ pub async fn cmd_list_audit_logs(
             // Actor: the entry's name when we have one, else the shortened
             // DID. (The previous `&entry.actor[..29]` sliced on a byte
             // boundary and would panic on a multi-byte character.)
-            let resource_display = entry.resource.as_deref().unwrap_or("\u{2014}");
+            let resource_display = entry.target.as_deref().unwrap_or("\u{2014}");
 
             Row::new(vec![
                 Cell::from(Span::styled(ts, Style::default().fg(Color::DarkGray))),
                 Cell::from(Span::styled(entry.action.clone(), action_style)),
-                named_did_cell(&book, &entry.actor),
+                named_did_cell(&book, entry.actor.as_deref().unwrap_or("\u{2014}")),
                 Cell::from(resource_display.to_string()),
-                Cell::from(Span::styled(entry.outcome.clone(), outcome_style)),
+                Cell::from(Span::styled(outcome.to_string(), outcome_style)),
             ])
         })
         .collect();
@@ -166,15 +166,40 @@ pub async fn cmd_list_audit_logs(
     let height = row_count as u16 + 2; // rows + header + spacing
     print_widget(table, height);
 
-    // Footer with pagination info
-    if result.total_pages > 1 {
-        println!(
-            "\n  \x1b[2mPage {}/{} \u{2014} use --page N to navigate\x1b[0m",
-            result.page, result.total_pages
-        );
-    }
+    print_cursor_footer(&result);
 
     Ok(())
+}
+
+/// Render `recordedAt` (RFC 3339 on the wire) in the operator's local
+/// timezone, falling back to the raw string if it does not parse —
+/// an audit row must still be readable when its timestamp is odd.
+fn format_recorded_at(recorded_at: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(recorded_at) {
+        Ok(dt) => crate::duration::format_local_datetime(dt.with_timezone(&chrono::Utc)),
+        Err(_) => recorded_at.to_string(),
+    }
+}
+
+/// Pull a string member out of the canonical `detail` object.
+fn detail_str(entry: &AuditEnvelope, key: &str) -> Option<String> {
+    entry
+        .detail
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
+/// Print the continuation hint. Paging is by opaque cursor, so there
+/// is no page count to show — the only thing an operator can act on is
+/// whether another page exists and the token that fetches it.
+fn print_cursor_footer(result: &ListAuditLogsResultBody) {
+    if let Some(cursor) = &result.cursor {
+        println!(
+            "\n  \x1b[2mMore entries \u{2014} fetch the next page with --cursor {cursor}\x1b[0m"
+        );
+        println!("  \x1b[2m(keep the same filters; changing them invalidates the cursor)\x1b[0m");
+    }
 }
 
 /// Display the current audit retention period.
