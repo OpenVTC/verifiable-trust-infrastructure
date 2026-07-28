@@ -1268,11 +1268,22 @@ pub async fn challenge_response(
     .to(vta_did.to_string())
     .finalize();
 
-    // Pack the message (encrypted)
-    let (packed, _metadata) = atm
+    // Pack the message (encrypted), then shut the ATM down. It is used only to
+    // pack — there is no profile and no socket — but `ATM::new` still starts a
+    // deletion-handler task, and this function is called on every login and
+    // every re-authentication. Returning early through `?` used to leak one of
+    // those tasks per call. Stringify first: the boxed error is not `Send` and
+    // must not be held across the shutdown await.
+    //
+    // A REST-only consumer should prefer `auth_light::challenge_response_light`,
+    // which needs no ATM at all.
+    let packed = atm
         .pack_encrypted(&msg, vta_did, Some(client_did), None)
         .await
-        .map_err(|e| format!("DIDComm pack failed: {e}"))?;
+        .map(|(packed, _metadata)| packed)
+        .map_err(|e| format!("DIDComm pack failed: {e}"));
+    atm.graceful_shutdown().await;
+    let packed = packed?;
 
     debug!(packed_len = packed.len(), "message packed");
 
@@ -1911,50 +1922,44 @@ pub async fn send_trust_ping(
     mediator_did: &str,
     target_did: Option<&str>,
 ) -> Result<u128, Box<dyn std::error::Error>> {
-    use std::sync::Arc;
     use std::time::Instant;
 
-    use affinidi_tdk::common::TDKSharedState;
-    use affinidi_tdk::common::config::TDKConfig;
-    use affinidi_tdk::messaging::ATM;
-    use affinidi_tdk::messaging::config::ATMConfig;
-    use affinidi_tdk::messaging::profiles::ATMProfile;
     use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
 
     let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
     let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
 
-    let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-    tdk.secrets_resolver().insert(secrets.signing).await;
-    tdk.secrets_resolver().insert(secrets.key_agreement).await;
+    // A private hub for the duration of the probe. Registering the identity with
+    // the ATM is what makes the teardown below real: an unregistered profile's
+    // websocket survives `graceful_shutdown` and keeps reconnecting for the life
+    // of the process (#830).
+    let hub = crate::session_hub::SessionHub::new().await?;
 
-    let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
-
-    // Run the probe to completion, then shut down on EVERY path. An early `?`
+    // Run the probe to completion, then tear down on EVERY path. An early `?`
     // here used to return while the ATM's websocket transport kept running and
-    // auto-reconnecting for the life of the process — a failed probe must not
-    // leave a ghost socket contending for this DID's slot on the mediator.
+    // auto-reconnecting — a failed probe must not leave a ghost socket
+    // contending for this DID's slot on the mediator.
     //
     // The outcome is stringified before the shutdown await: the boxed error is
     // not `Send`, and holding it across an await would make this future non-Send.
     let outcome = async {
-        let profile = Arc::new(
-            ATMProfile::new(
-                &atm,
-                None,
-                client_did.to_string(),
-                Some(mediator_did.to_string()),
+        let identity = hub
+            .attach(
+                client_did,
+                vec![secrets.signing, secrets.key_agreement],
+                mediator_did,
             )
-            .await?,
-        );
+            .await?;
 
-        atm.profile_enable_websocket(&profile).await?;
+        hub.atm()
+            .profile_enable_websocket(&identity.profile)
+            .await?;
 
         let start = Instant::now();
         TrustPing::default()
             .send_ping(
-                &atm,
-                &profile,
+                hub.atm(),
+                &identity.profile,
                 target_did.unwrap_or(mediator_did),
                 true,
                 true,
@@ -1967,7 +1972,7 @@ pub async fn send_trust_ping(
     .await
     .map_err(|e| e.to_string());
 
-    atm.graceful_shutdown().await;
+    hub.shutdown().await;
     outcome.map_err(Into::into)
 }
 
@@ -2014,65 +2019,98 @@ pub async fn resolve_mediator_did_with_resolver(
 /// Eliminates per-ping overhead of TDK init, ATM creation, profile setup,
 /// and WebSocket handshake (~4 seconds saved per additional ping).
 pub struct TrustPingSession {
-    atm: affinidi_tdk::messaging::ATM,
-    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    identity: crate::session_hub::AttachedIdentity,
+    ownership: crate::session_hub::HubOwnership,
     mediator_did: String,
 }
 
 impl TrustPingSession {
-    /// Create a new session connected to the mediator via WebSocket.
+    /// Create a new session connected to the mediator via WebSocket, on a
+    /// private [`SessionHub`](crate::session_hub::SessionHub) of its own.
     pub async fn new(
         client_did: &str,
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use affinidi_tdk::common::TDKSharedState;
-        use affinidi_tdk::common::config::TDKConfig;
-        use affinidi_tdk::messaging::ATM;
-        use affinidi_tdk::messaging::config::ATMConfig;
-        use affinidi_tdk::messaging::profiles::ATMProfile;
-        use std::sync::Arc;
-
-        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
-        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
-
-        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-        tdk.secrets_resolver().insert(secrets.signing).await;
-        tdk.secrets_resolver().insert(secrets.key_agreement).await;
-
-        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
-
-        // Build the profile + socket behind a single fallible step so a failure
-        // can tear the ATM down. Without this, a session that fails to connect
-        // still leaves an auto-reconnecting websocket task running — see
-        // `ping_over_didcomm` above.
-        let prepared = async {
-            let profile = Arc::new(
-                ATMProfile::new(
-                    &atm,
-                    None,
-                    client_did.to_string(),
-                    Some(mediator_did.to_string()),
-                )
-                .await?,
-            );
-            atm.profile_enable_websocket(&profile).await?;
-            Ok::<_, Box<dyn std::error::Error>>(profile)
-        }
+        let hub = crate::session_hub::SessionHub::new().await?;
+        // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
+        // and one held across an await would make this future non-`Send`.
+        let outcome = Self::attach(
+            &hub,
+            crate::session_hub::HubOwnership::Exclusive,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
         .await
         .map_err(|e| e.to_string());
 
-        let profile = match prepared {
-            Ok(profile) => profile,
+        match outcome {
+            Ok(session) => Ok(session),
             Err(msg) => {
-                atm.graceful_shutdown().await;
-                return Err(msg.into());
+                hub.shutdown().await;
+                Err(msg.into())
             }
-        };
+        }
+    }
+
+    /// Create a session as one identity **on a shared hub** — same probe, but
+    /// the TDK, ATM, and background tasks come from `hub` instead of being built
+    /// fresh. [`shutdown`](Self::shutdown) then detaches only this identity.
+    pub async fn new_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::attach(
+            hub,
+            crate::session_hub::HubOwnership::Shared,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
+        .await
+    }
+
+    /// Attach the identity and open its websocket.
+    ///
+    /// The socket comes up behind a single fallible step so a failure can detach
+    /// again. Without that, a session that fails to connect still leaves an
+    /// auto-reconnecting websocket task running — see `ping_over_didcomm` above.
+    async fn attach(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        ownership: crate::session_hub::HubOwnership,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let identity = hub
+            .attach(
+                client_did,
+                vec![secrets.signing, secrets.key_agreement],
+                mediator_did,
+            )
+            .await?;
+
+        // Stringified before the detach await: a boxed error is not `Send`.
+        let prepared = hub
+            .atm()
+            .profile_enable_websocket(&identity.profile)
+            .await
+            .map_err(|e| e.to_string());
+
+        if let Err(msg) = prepared {
+            identity.detach().await;
+            return Err(msg.into());
+        }
 
         Ok(Self {
-            atm,
-            profile,
+            identity,
+            ownership,
             mediator_did: mediator_did.to_string(),
         })
     }
@@ -2086,14 +2124,25 @@ impl TrustPingSession {
         let target = target_did.unwrap_or(&self.mediator_did);
         let start = Instant::now();
         TrustPing::default()
-            .send_ping(&self.atm, &self.profile, target, true, true, true)
+            .send_ping(
+                self.identity.hub.atm(),
+                &self.identity.profile,
+                target,
+                true,
+                true,
+                true,
+            )
             .await?;
         Ok(start.elapsed().as_millis())
     }
 
-    /// Gracefully shut down the ATM connection.
+    /// Detach this identity — which is what stops its websocket — and, if this
+    /// session owns its hub, shut the hub down too.
     pub async fn shutdown(self) {
-        self.atm.graceful_shutdown().await;
+        self.identity.detach().await;
+        if self.ownership == crate::session_hub::HubOwnership::Exclusive {
+            self.identity.hub.shutdown().await;
+        }
     }
 }
 
@@ -2114,8 +2163,8 @@ impl TrustPingSession {
 /// the same client DID must shut it down before opening this.
 #[cfg(feature = "tsp")]
 pub struct TspPingSession {
-    atm: affinidi_tdk::messaging::ATM,
-    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    identity: crate::session_hub::AttachedIdentity,
+    ownership: crate::session_hub::HubOwnership,
     ws: affinidi_tdk::messaging::TspWebSocket,
     client_did: String,
     mediator_did: String,
@@ -2124,57 +2173,93 @@ pub struct TspPingSession {
 #[cfg(feature = "tsp")]
 impl TspPingSession {
     /// Connect the client's TSP websocket to `mediator_did` (the VTA's `#tsp`
-    /// service endpoint — the same mediator the VTA is a local account on).
+    /// service endpoint — the same mediator the VTA is a local account on), on a
+    /// private [`SessionHub`](crate::session_hub::SessionHub) of its own.
     pub async fn new(
         client_did: &str,
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use affinidi_tdk::common::TDKSharedState;
-        use affinidi_tdk::common::config::TDKConfig;
-        use affinidi_tdk::messaging::ATM;
-        use affinidi_tdk::messaging::config::ATMConfig;
-        use affinidi_tdk::messaging::profiles::ATMProfile;
-        use std::sync::Arc;
-
-        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
-        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
-
-        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-        tdk.secrets_resolver().insert(secrets.signing).await;
-        tdk.secrets_resolver().insert(secrets.key_agreement).await;
-
-        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
-
-        // As in `TrustPingSession::connect`: any failure past `ATM::new` must
-        // shut the ATM down rather than abandon its background tasks.
-        let prepared = async {
-            let profile = Arc::new(
-                ATMProfile::new(
-                    &atm,
-                    None,
-                    client_did.to_string(),
-                    Some(mediator_did.to_string()),
-                )
-                .await?,
-            );
-            let ws = atm.tsp().connect_websocket(&profile).await?;
-            Ok::<_, Box<dyn std::error::Error>>((profile, ws))
-        }
+        let hub = crate::session_hub::SessionHub::new().await?;
+        // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
+        // and one held across an await would make this future non-`Send`.
+        let outcome = Self::attach(
+            &hub,
+            crate::session_hub::HubOwnership::Exclusive,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
         .await
         .map_err(|e| e.to_string());
 
-        let (profile, ws) = match prepared {
-            Ok(pair) => pair,
+        match outcome {
+            Ok(session) => Ok(session),
             Err(msg) => {
-                atm.graceful_shutdown().await;
+                hub.shutdown().await;
+                Err(msg.into())
+            }
+        }
+    }
+
+    /// Connect as one identity **on a shared hub** — the multi-identity
+    /// counterpart to [`new`](Self::new).
+    pub async fn new_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::attach(
+            hub,
+            crate::session_hub::HubOwnership::Shared,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
+        .await
+    }
+
+    /// Attach the identity and open its TSP websocket. As in
+    /// [`TrustPingSession::attach`]: any failure past the attach must detach
+    /// again rather than abandon a live socket.
+    async fn attach(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        ownership: crate::session_hub::HubOwnership,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        let identity = hub
+            .attach(
+                client_did,
+                vec![secrets.signing, secrets.key_agreement],
+                mediator_did,
+            )
+            .await?;
+
+        // Stringified before the detach await: a boxed error is not `Send`.
+        let prepared = hub
+            .atm()
+            .tsp()
+            .connect_websocket(&identity.profile)
+            .await
+            .map_err(|e| e.to_string());
+
+        let ws = match prepared {
+            Ok(ws) => ws,
+            Err(msg) => {
+                identity.detach().await;
                 return Err(msg.into());
             }
         };
 
         Ok(Self {
-            atm,
-            profile,
+            identity,
+            ownership,
             ws,
             client_did: client_did.to_string(),
             mediator_did: mediator_did.to_string(),
@@ -2213,10 +2298,12 @@ impl TspPingSession {
         let start = Instant::now();
         // Route through our mediator to the VTA (a local account on it):
         // inner sealed end-to-end to the VTA, outer sealed to the mediator.
-        self.atm
+        self.identity
+            .hub
+            .atm()
             .tsp()
             .send_routed(
-                &self.profile,
+                &self.identity.profile,
                 &[self.mediator_did.clone(), vta_did.to_string()],
                 &body,
             )
@@ -2248,7 +2335,13 @@ impl TspPingSession {
             // of "is this frame the reply to that request", shared with
             // `TspSession::request`. Anything else is someone else's traffic or
             // a leftover: skip it and keep waiting within the caller's budget.
-            let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
+            let Ok((payload, _sender)) = self
+                .identity
+                .hub
+                .atm()
+                .tsp()
+                .unpack_bytes(&self.identity.profile, &frame)
+                .await
             else {
                 continue; // not sealed to us / not TSP — not our business
             };
@@ -2293,10 +2386,12 @@ impl TspPingSession {
         doc.recipient = Some(vta_did.to_string());
         let body = serde_json::to_vec(&doc)?;
 
-        self.atm
+        self.identity
+            .hub
+            .atm()
             .tsp()
             .send_routed(
-                &self.profile,
+                &self.identity.profile,
                 &[self.mediator_did.clone(), vta_did.to_string()],
                 &body,
             )
@@ -2304,10 +2399,14 @@ impl TspPingSession {
         Ok(())
     }
 
-    /// Close the TSP websocket and shut down the ATM connection.
+    /// Close the TSP websocket, detach this identity from its hub, and — if the
+    /// session owns the hub — shut the hub down too.
     pub async fn shutdown(self) {
         let _ = self.ws.close().await;
-        self.atm.graceful_shutdown().await;
+        self.identity.detach().await;
+        if self.ownership == crate::session_hub::HubOwnership::Exclusive {
+            self.identity.hub.shutdown().await;
+        }
     }
 }
 
@@ -2325,8 +2424,12 @@ impl TspPingSession {
 /// boundary, mirroring `DIDCommSession::receive_next`.
 #[cfg(feature = "tsp")]
 pub struct TspSession {
-    atm: affinidi_tdk::messaging::ATM,
-    profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    /// This session's identity on its hub — the profile plus the teardown it
+    /// needs. One TDK + one ATM are shared with every sibling identity; the TSP
+    /// websocket below is this identity's own.
+    identity: crate::session_hub::AttachedIdentity,
+    /// Whether the hub was built for this session or handed to it.
+    ownership: crate::session_hub::HubOwnership,
     // `Option` so `shutdown` can `take()` the socket out to `close()` it —
     // `TspWebSocket::close` consumes `self`, which a `MutexGuard` can't yield.
     // `None` means already shut down; receive then no-ops.
@@ -2354,36 +2457,96 @@ impl TspSession {
         private_key_multibase: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        use affinidi_tdk::common::TDKSharedState;
-        use affinidi_tdk::common::config::TDKConfig;
-        use affinidi_tdk::messaging::ATM;
-        use affinidi_tdk::messaging::config::ATMConfig;
-        use affinidi_tdk::messaging::profiles::ATMProfile;
-        use std::sync::Arc;
+        let hub = crate::session_hub::SessionHub::new().await?;
+        // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
+        // and one held across an await would make this future non-`Send`.
+        let outcome = Self::attach(
+            &hub,
+            crate::session_hub::HubOwnership::Exclusive,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| e.to_string());
 
+        match outcome {
+            Ok(session) => Ok(session),
+            Err(msg) => {
+                hub.shutdown().await;
+                Err(msg.into())
+            }
+        }
+    }
+
+    /// Connect as one identity **on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub)** — the multi-identity
+    /// counterpart to [`connect`](Self::connect).
+    ///
+    /// This identity gets its own TSP websocket (the mediator's one-socket-per-
+    /// DID ceiling is per DID, and still honoured) and shares the hub's TDK,
+    /// ATM, and background tasks with its siblings.
+    ///
+    /// Note the standing rule from [`TspPingSession`]: a DID that already holds
+    /// a `DIDCommSession` must use that session's TSP leg
+    /// (`DIDCommSession::request_tsp`) rather than open a `TspSession` beside
+    /// it — same hub or not, the *mediator* is what permits only one socket per
+    /// DID. Attaching the same DID twice to one hub is refused outright.
+    pub async fn connect_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::attach(
+            hub,
+            crate::session_hub::HubOwnership::Shared,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
+        .await
+    }
+
+    /// Attach the identity and open its TSP websocket, detaching again on any
+    /// failure past the attach so no live socket is abandoned.
+    async fn attach(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        ownership: crate::session_hub::HubOwnership,
+        client_did: &str,
+        private_key_multibase: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
         let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
 
-        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-        tdk.secrets_resolver().insert(secrets.signing).await;
-        tdk.secrets_resolver().insert(secrets.key_agreement).await;
+        let identity = hub
+            .attach(
+                client_did,
+                vec![secrets.signing, secrets.key_agreement],
+                mediator_did,
+            )
+            .await?;
 
-        let atm = ATM::new(ATMConfig::builder().build()?, Arc::new(tdk)).await?;
+        // Stringified before the detach await: a boxed error is not `Send`.
+        let prepared = hub
+            .atm()
+            .tsp()
+            .connect_websocket(&identity.profile)
+            .await
+            .map_err(|e| e.to_string());
 
-        let profile = ATMProfile::new(
-            &atm,
-            None,
-            client_did.to_string(),
-            Some(mediator_did.to_string()),
-        )
-        .await?;
-        let profile = Arc::new(profile);
-
-        let ws = atm.tsp().connect_websocket(&profile).await?;
+        let ws = match prepared {
+            Ok(ws) => ws,
+            Err(msg) => {
+                identity.detach().await;
+                return Err(msg.into());
+            }
+        };
 
         Ok(Self {
-            atm,
-            profile,
+            identity,
+            ownership,
             ws: tokio::sync::Mutex::new(Some(ws)),
             client_did: client_did.to_string(),
             demux: crate::tsp_demux::TspDemux::new(),
@@ -2457,10 +2620,12 @@ impl TspSession {
         mediator_did: &str,
         body: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.atm
+        self.identity
+            .hub
+            .atm()
             .tsp()
             .send_routed(
-                &self.profile,
+                &self.identity.profile,
                 &[mediator_did.to_string(), vta_did.to_string()],
                 body,
             )
@@ -2715,7 +2880,13 @@ impl TspSession {
                 Err(_) => return Ok(PumpOutcome::Idle),
             };
 
-            let Ok((payload, _sender)) = self.atm.tsp().unpack_bytes(&self.profile, &frame).await
+            let Ok((payload, _sender)) = self
+                .identity
+                .hub
+                .atm()
+                .tsp()
+                .unpack_bytes(&self.identity.profile, &frame)
+                .await
             else {
                 continue; // not sealed to us / TSP control traffic
             };
@@ -2730,8 +2901,9 @@ impl TspSession {
         }
     }
 
-    /// Close the TSP websocket and shut down the ATM connection. Takes `&self`
-    /// (the session is shared across the FFI boundary).
+    /// Close the TSP websocket and detach this identity from its hub (shutting
+    /// the hub down as well when this session owns it). Takes `&self` (the
+    /// session is shared across the FFI boundary).
     pub async fn shutdown(&self) {
         // Drop every waiter first so an in-flight `request` fails fast with
         // "session shut down" instead of blocking until its own deadline on a
@@ -2740,7 +2912,10 @@ impl TspSession {
         if let Some(ws) = self.ws.lock().await.take() {
             let _ = ws.close().await;
         }
-        self.atm.graceful_shutdown().await;
+        self.identity.detach().await;
+        if self.ownership == crate::session_hub::HubOwnership::Exclusive {
+            self.identity.hub.shutdown().await;
+        }
     }
 }
 

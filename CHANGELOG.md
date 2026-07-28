@@ -57,6 +57,51 @@ REST, DIDComm and the trust-task dispatcher all reach the same operation, and
 three copies of "which member becomes which argument" would be three chances to
 disagree about, say, whether an absent `approve` confers nothing.
 
+### vta-sdk 0.20.11 — one ATM per process, and `shutdown()` that actually stops the socket (#830)
+
+Every session constructor in the SDK built its own `TDKSharedState` **and** its
+own `ATM`, then attached exactly one identity to it. A process authenticating as
+N DIDs held N ATMs, N secrets resolvers, N deletion handlers, and N sets of
+background tasks — none of which the transport requires. `ATM` already models
+many identities (`Profiles` keyed by alias, `profile_add` giving each one its
+own websocket), and the mediator's real ceiling is *one socket per DID*, which N
+profiles on one ATM satisfies exactly as well as N ATMs do.
+
+New `vta_sdk::session_hub::SessionHub` holds one TDK + one ATM; identities
+attach to it. Every existing constructor is unchanged and now builds a private
+hub for its one identity; `*_on` variants take a caller-owned one —
+`DIDCommSession::{connect_on, connect_with_secrets_on}`,
+`TspSession::connect_on`, `TrustPingSession::new_on`, `TspPingSession::new_on`,
+`VtaClient::{connect_didcomm_on, connect_didcomm_bundle_on, connect_tsp_on}`.
+
+**A live defect fell out of it.** No session in this SDK ever called
+`atm.profile_add`, and `ATM::graceful_shutdown` stops websockets by iterating
+the ATM's profile map — which was therefore empty. So `shutdown()` stopped the
+deletion handler and left the socket **running**, and nothing else could stop
+it: the websocket task transitively owns the only `Sender` for its own command
+channel, so that channel never closes on its own (`stop_websocket` had zero
+callers anywhere in this workspace). Every "cleanly shut down" session left an
+orphaned, auto-reconnecting socket holding the mediator's one-socket-per-DID
+slot for the life of the process.
+
+Teardown is now `SessionHub::detach` — `profile_remove` (which sends the
+transport its `Stop`) plus eviction of that identity's secrets from the shared
+resolver — and only an *exclusive* hub is torn down with its session, so a
+sibling identity's socket survives. `tests/e2e/tests/session_hub.rs` pins all
+three claims against a live mediator, and its shutdown test fails when the
+pre-#830 shape is restored.
+
+Also fixed alongside: `session::challenge_response` built an ATM purely to pack
+one message and never shut it down, leaking a deletion-handler task per login
+and per re-authentication (REST-only consumers should still prefer
+`auth_light::challenge_response_light`, which needs no ATM at all), and
+`session::send_trust_ping`'s teardown had the same unregistered-profile hole.
+
+New: `DIDCommSession::is_connected()` — a live, re-falsifiable view of the
+session's socket (R6.2), and how a caller confirms `shutdown()` really stopped
+it.
+
+Design note: `docs/05-design-notes/sdk-session-hub.md`.
 
 ### vta-support 0.2.1 — declare the `vti-common` feature it actually uses
 
