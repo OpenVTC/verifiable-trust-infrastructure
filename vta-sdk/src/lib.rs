@@ -144,6 +144,11 @@ pub mod provision_integration;
 pub mod sealed_transfer;
 #[cfg(feature = "session")]
 pub mod session;
+// One TDK + one ATM per process, with a session per identity on it. Every
+// session type in this SDK runs on a hub; the legacy constructors just build a
+// private one (#830).
+#[cfg(feature = "session")]
+pub mod session_hub;
 /// Canonical Trust-Task URLs for VTA operations. Mirrors
 /// `did-hosting-common::did_hosting_tasks` for the webvh-service side.
 pub mod trust_tasks;

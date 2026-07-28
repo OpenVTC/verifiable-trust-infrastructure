@@ -429,9 +429,19 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+        Ok(Self::didcomm_transport(session, rest_url))
+    }
 
-        Ok(Self {
+    /// Wrap a connected [`DIDCommSession`](crate::didcomm_session::DIDCommSession)
+    /// in a client. One place to build the transport, so a new `connect_*_on`
+    /// variant cannot forget the REST fallback or the TSP-leg default.
+    #[cfg(feature = "session")]
+    fn didcomm_transport(
+        session: crate::didcomm_session::DIDCommSession,
+        rest_url: Option<String>,
+    ) -> Self {
+        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+        Self {
             transport: Transport::DIDComm {
                 session,
                 rest_client,
@@ -439,7 +449,56 @@ impl VtaClient {
                 #[cfg(feature = "tsp")]
                 tsp: None,
             },
-        })
+        }
+    }
+
+    /// Connect via DIDComm as one identity **on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub)** — the multi-identity
+    /// counterpart to [`connect_didcomm`](Self::connect_didcomm).
+    ///
+    /// This is the constructor for a front door that terminates requests for N
+    /// tenants and has to *act as* each of them: build one hub, then one client
+    /// per tenant DID on it. Each client still gets its own profile and its own
+    /// mediator websocket (the mediator's ceiling is one socket per DID); what
+    /// they share is the TDK, the ATM, the secrets resolver, and the background
+    /// tasks — the N-of-everything this replaces (#830).
+    ///
+    /// # You MUST still call [`shutdown`](Self::shutdown)
+    ///
+    /// Same contract as [`connect_didcomm`](Self::connect_didcomm), with one
+    /// difference: `shutdown()` detaches **this** identity and leaves the hub —
+    /// and every sibling client on it — running. Shut the hub down yourself once
+    /// the last client on it is done.
+    ///
+    /// ```ignore
+    /// let hub = SessionHub::new().await?;
+    /// let finance = VtaClient::connect_didcomm_on(&hub, fin_did, key, vta, med, rest).await?;
+    /// let legal   = VtaClient::connect_didcomm_on(&hub, leg_did, key, vta, med, rest).await?;
+    /// // ...
+    /// finance.shutdown().await;
+    /// legal.shutdown().await;
+    /// hub.shutdown().await;
+    /// ```
+    #[cfg(feature = "session")]
+    pub async fn connect_didcomm_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let session = crate::didcomm_session::DIDCommSession::connect_on(
+            hub,
+            client_did,
+            private_key_multibase,
+            vta_did,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
+
+        Ok(Self::didcomm_transport(session, rest_url))
     }
 
     /// Connect via DIDComm through a mediator using a hosted-DID secrets
@@ -481,17 +540,37 @@ impl VtaClient {
         .await
         .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
 
-        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+        Ok(Self::didcomm_transport(session, rest_url))
+    }
 
-        Ok(Self {
-            transport: Transport::DIDComm {
-                session,
-                rest_client,
-                rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
-                #[cfg(feature = "tsp")]
-                tsp: None,
-            },
-        })
+    /// Connect from a hosted-DID secrets bundle as one identity **on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub)** — the bundle
+    /// counterpart to [`connect_didcomm_on`](Self::connect_didcomm_on).
+    ///
+    /// The same hub / per-identity split and the same `shutdown()` contract
+    /// apply; see [`connect_didcomm_on`](Self::connect_didcomm_on).
+    #[cfg(feature = "session")]
+    pub async fn connect_didcomm_bundle_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        bundle: &crate::did_secrets::DidSecretsBundle,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let secrets = crate::did_key::secrets_from_bundle(bundle)
+            .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
+
+        let session = crate::didcomm_session::DIDCommSession::connect_with_secrets_on(
+            hub,
+            &bundle.did,
+            secrets,
+            vta_did,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| VtaError::DidcommTransport(e.to_string()))?;
+
+        Ok(Self::didcomm_transport(session, rest_url))
     }
 
     /// Connect via **TSP** through a mediator — the transport-agnostic
@@ -545,9 +624,60 @@ impl VtaClient {
                 .await
                 .map_err(|e| VtaError::TspTransport(e.to_string()))?;
 
-        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+        Ok(Self::tsp_transport(
+            session,
+            vta_did,
+            mediator_did,
+            rest_url,
+        ))
+    }
 
-        Ok(Self {
+    /// Connect via **TSP** as one identity **on a shared
+    /// [`SessionHub`](crate::session_hub::SessionHub)** — the multi-identity
+    /// counterpart to [`connect_tsp`](Self::connect_tsp).
+    ///
+    /// Each identity still opens its own TSP websocket to the mediator; the hub
+    /// shares everything above the socket. The same `shutdown()` contract as
+    /// [`connect_didcomm_on`](Self::connect_didcomm_on) applies — the client
+    /// detaches its identity and the hub keeps running for its siblings.
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    pub async fn connect_tsp_on(
+        hub: &std::sync::Arc<crate::session_hub::SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Result<Self, VtaError> {
+        let session = crate::session::TspSession::connect_on(
+            hub,
+            client_did,
+            private_key_multibase,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| VtaError::TspTransport(e.to_string()))?;
+
+        Ok(Self::tsp_transport(
+            session,
+            vta_did,
+            mediator_did,
+            rest_url,
+        ))
+    }
+
+    /// Wrap a connected [`TspSession`](crate::session::TspSession) in a client —
+    /// the TSP counterpart of
+    /// [`didcomm_transport`](Self::didcomm_transport).
+    #[cfg(all(feature = "session", feature = "tsp"))]
+    fn tsp_transport(
+        session: crate::session::TspSession,
+        vta_did: &str,
+        mediator_did: &str,
+        rest_url: Option<String>,
+    ) -> Self {
+        let rest_client = rest_url.as_ref().map(|_| crate::http::rest_client());
+        Self {
             transport: Transport::Tsp {
                 session: std::sync::Arc::new(session),
                 vta_did: vta_did.to_string(),
@@ -555,7 +685,7 @@ impl VtaClient {
                 rest_client,
                 rest_url: rest_url.map(|u| u.trim_end_matches('/').to_string()),
             },
-        })
+        }
     }
 
     /// Move the **Trust-Task surface** of this DIDComm client onto TSP, keeping

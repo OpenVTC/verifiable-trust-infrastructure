@@ -4,19 +4,17 @@ use std::time::Duration;
 
 use affinidi_messaging_core::{Inbound, MessageTransport};
 use affinidi_messaging_delivery::{Delivery, InMemoryOutboxStore, MessagingService, OutboxStore};
-use affinidi_tdk::common::TDKSharedState;
-use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::didcomm::Message;
-use affinidi_tdk::messaging::config::ATMConfig;
+#[cfg(feature = "tsp")]
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::{ATM, DidCommTransport};
-use affinidi_tdk::secrets_resolver::SecretsResolver;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use tracing::{debug, info, warn};
 
 use crate::error::VtaError;
 use crate::protocols::PROBLEM_REPORT_TYPE;
+use crate::session_hub::{AttachedIdentity, HubOwnership, SessionHub};
 
 // Per-step ceiling for mediator round-trips during session setup. The
 // upstream calls below are otherwise unbounded — when the mediator is
@@ -52,8 +50,18 @@ pub struct DIDCommSession {
     /// [`subscribe`]: affinidi_messaging_delivery::MessagingService::subscribe
     service: Arc<MessagingService>,
     /// Kept solely to `pack_encrypted` outbound messages (the delivery layer
-    /// takes already-packed bytes) and to seal/open vault JWEs.
+    /// takes already-packed bytes) and to seal/open vault JWEs. Shared with
+    /// every other identity on the same [`SessionHub`] — this is the ATM the
+    /// hub owns, not one per session.
     atm: Arc<ATM>,
+    /// This session's identity on its hub: the profile, plus what
+    /// [`shutdown`](Self::shutdown) needs to detach it again (`profile_remove`
+    /// + secrets eviction). Shared across clones so the detach happens once.
+    identity: Arc<AttachedIdentity>,
+    /// Whether this session built its own hub (legacy single-identity
+    /// constructors) or was handed one. Decides whether `shutdown()` also tears
+    /// the shared ATM down.
+    ownership: HubOwnership,
     /// The one persistent [`subscribe`] stream feeding [`receive_next`]. Each
     /// subscriber is independent + buffered, so this must be created once (in
     /// [`connect_with_secrets`]) and shared across clones — a fresh `subscribe()`
@@ -241,6 +249,42 @@ impl DIDCommSession {
         .await
     }
 
+    /// Connect as one identity **on a shared [`SessionHub`]** — the
+    /// multi-identity counterpart to [`connect`](Self::connect).
+    ///
+    /// Same transport behaviour and the same
+    /// [`shutdown`](Self::shutdown) contract; the difference is what the session
+    /// owns. This one gets its own `ATMProfile` and its own mediator websocket
+    /// (the mediator's ceiling is one socket per DID, and that is still
+    /// honoured) while sharing the hub's TDK, ATM, secrets resolver, and
+    /// background tasks with every sibling identity. `shutdown()` detaches just
+    /// this identity and leaves the hub running.
+    ///
+    /// Fails with [`HubError::AlreadyAttached`] if `client_did` already has a
+    /// session on this hub — a second socket for one DID is a duelling socket,
+    /// not extra capacity.
+    ///
+    /// [`HubError::AlreadyAttached`]: crate::session_hub::HubError::AlreadyAttached
+    pub async fn connect_on(
+        hub: &Arc<SessionHub>,
+        client_did: &str,
+        private_key_multibase: &str,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let seed = crate::did_key::decode_private_key_multibase(private_key_multibase)?;
+        let secrets = crate::did_key::secrets_from_did_key(client_did, &seed)?;
+
+        Self::connect_with_secrets_on(
+            hub,
+            client_did,
+            vec![secrets.signing, secrets.key_agreement],
+            vta_did,
+            mediator_did,
+        )
+        .await
+    }
+
     /// Connect to a VTA via DIDComm using **pre-built** DIDComm secrets.
     ///
     /// Same transport behaviour as [`connect`](Self::connect) — a persistent,
@@ -265,70 +309,123 @@ impl DIDCommSession {
         vta_did: &str,
         mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Create TDK shared state and insert secrets
-        let tdk = TDKSharedState::new(TDKConfig::builder().build()?).await?;
-        for secret in secrets {
-            tdk.secrets_resolver().insert(secret).await;
+        // A private hub for this one identity — the shape this constructor has
+        // always had, now expressed in terms of the shared machinery. Its
+        // `shutdown()` tears the whole hub down, because nothing else uses it.
+        let hub = SessionHub::new().await?;
+        // Stringify before the shutdown await: a `Box<dyn Error>` is not `Send`,
+        // and one held across an await makes this whole future non-`Send` —
+        // which breaks every caller that `tokio::spawn`s a connect.
+        let outcome = Self::attach(
+            &hub,
+            HubOwnership::Exclusive,
+            client_did,
+            secrets,
+            vta_did,
+            mediator_did,
+        )
+        .await
+        .map_err(|e| e.to_string());
+
+        match outcome {
+            Ok(session) => Ok(session),
+            Err(msg) => {
+                // The hub owns live background tasks from the moment it exists;
+                // a failed connect must not leave them running.
+                hub.shutdown().await;
+                Err(msg.into())
+            }
         }
+    }
 
-        // Build ATM — inbound is driven by the delivery layer's DidCommTransport,
-        // not by direct ATM polling (see the `MessagingService` wiring below).
-        let atm_config = ATMConfig::builder().build()?;
-        let atm = Arc::new(ATM::new(atm_config, Arc::new(tdk)).await?);
+    /// Connect with pre-built secrets as one identity **on a shared
+    /// [`SessionHub`]** — the bundle-friendly counterpart to
+    /// [`connect_on`](Self::connect_on), and the multi-identity counterpart to
+    /// [`connect_with_secrets`](Self::connect_with_secrets).
+    ///
+    /// This is the constructor a multi-tenant front door wants: one hub, one
+    /// `connect_with_secrets_on` per tenant DID, one socket each.
+    pub async fn connect_with_secrets_on(
+        hub: &Arc<SessionHub>,
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::attach(
+            hub,
+            HubOwnership::Shared,
+            client_did,
+            secrets,
+            vta_did,
+            mediator_did,
+        )
+        .await
+    }
 
-        // Past this point we own live background tasks: the ATM's deletion
-        // handler, and shortly a websocket transport that reconnects on its own
-        // timer. Dropping the handles does NOT stop them. An abandoned transport
-        // keeps holding — and fighting other sessions for — the mediator's
-        // one-socket-per-DID slot for `client_did`, for the life of the process.
-        //
-        // So every fallible step runs inside `finish_connect`, and a failure
-        // tears the ATM down here. One place to get right, rather than one per
-        // `?` (a timeout arm that forgot this is exactly how a service that
-        // reconnects on a schedule accumulates duelling ghost sockets).
-        // `map_err` to a `String` before the match: the boxed error is not
-        // `Send`, so holding it across the `graceful_shutdown().await` below
-        // would make this whole future non-`Send` and break callers that
-        // `tokio::spawn` a connect.
-        let outcome = Self::finish_connect(&atm, client_did, vta_did, mediator_did)
+    /// Attach `client_did` to `hub` and build the session on it.
+    ///
+    /// Past the attach we own live background tasks: the hub's deletion handler
+    /// (shared) and this identity's websocket transport, which reconnects on its
+    /// own timer. Dropping the handles does NOT stop them. An abandoned
+    /// transport keeps holding — and fighting other sessions for — the
+    /// mediator's one-socket-per-DID slot for `client_did`, for the life of the
+    /// process.
+    ///
+    /// So every fallible step past the attach runs inside `finish_connect`, and
+    /// a failure detaches the identity here. One place to get right, rather than
+    /// one per `?` (a timeout arm that forgot this is exactly how a service that
+    /// reconnects on a schedule accumulates duelling ghost sockets). `map_err`
+    /// to a `String` before the match: the boxed error is not `Send`, so holding
+    /// it across the `detach().await` below would make this whole future
+    /// non-`Send` and break callers that `tokio::spawn` a connect.
+    async fn attach(
+        hub: &Arc<SessionHub>,
+        ownership: HubOwnership,
+        client_did: &str,
+        secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+        vta_did: &str,
+        mediator_did: &str,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let identity = Arc::new(hub.attach(client_did, secrets, mediator_did).await?);
+
+        let outcome = Self::finish_connect(hub, &identity, ownership, vta_did)
             .await
             .map_err(|e| e.to_string());
 
         match outcome {
             Ok(session) => Ok(session),
             Err(msg) => {
-                atm.graceful_shutdown().await;
+                identity.detach().await;
                 Err(msg.into())
             }
         }
     }
 
-    /// Fallible tail of [`connect_with_secrets`]: everything that needs a live
-    /// ATM. Split out so a single error path can shut that ATM down — see the
-    /// call site.
+    /// Fallible tail of the connect path: everything that needs an attached
+    /// identity. Split out so a single error path can detach it — see
+    /// [`attach`](Self::attach).
     async fn finish_connect(
-        atm: &Arc<ATM>,
-        client_did: &str,
+        hub: &Arc<SessionHub>,
+        identity: &Arc<AttachedIdentity>,
+        ownership: HubOwnership,
         vta_did: &str,
-        mediator_did: &str,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Create profile with mediator
-        let profile = Arc::new(
-            ATMProfile::new(
-                atm,
-                None,
-                client_did.to_string(),
-                Some(mediator_did.to_string()),
-            )
-            .await?,
-        );
+        let atm = hub.atm();
+        let profile = &identity.profile;
+        let client_did = identity.did.as_str();
+        let mediator_did = profile
+            .dids()
+            .map(|(_, mediator)| mediator.to_string())
+            .map_err(|e| format!("attached profile has no mediator: {e}"))?;
+        let mediator_did = mediator_did.as_str();
 
         // Flush stale messages from the inbox (accumulated between CLI runs)
         {
             use affinidi_tdk::messaging::messages::Folder;
             match tokio::time::timeout(
                 MEDIATOR_OP_TIMEOUT,
-                atm.list_messages(&profile, Folder::Inbox),
+                atm.list_messages(profile, Folder::Inbox),
             )
             .await
             {
@@ -343,7 +440,7 @@ impl DIDCommSession {
                     };
                     match tokio::time::timeout(
                         MEDIATOR_OP_TIMEOUT,
-                        atm.delete_messages_direct(&profile, &delete_req),
+                        atm.delete_messages_direct(profile, &delete_req),
                     )
                     .await
                     {
@@ -373,8 +470,7 @@ impl DIDCommSession {
         // Enable WebSocket for streaming message delivery from mediator.
         // Without this, the ATM can only poll via REST and may miss responses
         // that arrive after the initial send_message call returns.
-        match tokio::time::timeout(MEDIATOR_OP_TIMEOUT, atm.profile_enable_websocket(&profile))
-            .await
+        match tokio::time::timeout(MEDIATOR_OP_TIMEOUT, atm.profile_enable_websocket(profile)).await
         {
             Ok(res) => res?,
             Err(_) => {
@@ -430,7 +526,7 @@ impl DIDCommSession {
         #[cfg(feature = "tsp")]
         let tsp = Arc::new(TspLeg {
             atm: Arc::clone(atm),
-            profile: Arc::clone(&profile),
+            profile: Arc::clone(profile),
             demux: crate::tsp_demux::TspDemux::new(),
             stream: tokio::sync::Mutex::new(service.subscribe()),
         });
@@ -446,6 +542,8 @@ impl DIDCommSession {
         Ok(Self {
             service,
             atm: Arc::clone(atm),
+            identity: Arc::clone(identity),
+            ownership,
             subscriber,
             #[cfg(feature = "tsp")]
             tsp,
@@ -740,6 +838,20 @@ impl DIDCommSession {
     /// session (see the type-level docs). Marks the session closed (so the
     /// drop-time leak check stays quiet) and tears down the mediator
     /// connection. Idempotent and safe to call on any clone.
+    ///
+    /// # What actually stops the socket
+    ///
+    /// Detaching the identity from the hub is what ends the websocket transport
+    /// task: `profile_remove` sends it `Stop`. Nothing else can — the task
+    /// transitively owns the only `Sender` for its own command channel, so the
+    /// channel never closes on its own, and `ATM::graceful_shutdown` only
+    /// reaches profiles that were *registered* with the ATM. Before #830 no
+    /// session in this SDK registered one, so `shutdown()` stopped the deletion
+    /// handler and left a reconnecting socket behind for the life of the
+    /// process.
+    ///
+    /// On a shared hub the detach is the whole teardown: siblings keep running.
+    /// On a hub this session built for itself, the hub is torn down too.
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
         // Drop every TSP waiter first so an in-flight `request_tsp` fails fast
@@ -747,7 +859,47 @@ impl DIDCommSession {
         // on a connection that is about to disappear.
         #[cfg(feature = "tsp")]
         self.tsp.demux.clear().await;
-        self.atm.graceful_shutdown().await;
+
+        // Stop *this* identity's socket and evict its keys. Idempotent, so
+        // calling `shutdown()` on several clones is safe.
+        self.identity.detach().await;
+
+        if self.ownership == HubOwnership::Exclusive {
+            // Nobody else is on this hub — stop its background tasks too.
+            self.identity.hub.shutdown().await;
+        }
+    }
+
+    /// Whether this session's mediator websocket is up **right now**.
+    ///
+    /// A live signal, not a boot-time latch (R6.2): it reads the transport's
+    /// `ConnState` watch, which flips to `Disconnected` on every socket drop and
+    /// back on every reconnect, and reports `false` once the transport is gone
+    /// (after [`shutdown`](Self::shutdown), or if it was never started).
+    ///
+    /// Being `false` here does not mean the session is dead — the transport
+    /// reconnects on its own timer — so treat it as a health signal, not a
+    /// reason to rebuild the session. `false` *after* `shutdown()` is the
+    /// contract: it is how a caller can confirm the socket really stopped.
+    pub async fn is_connected(&self) -> bool {
+        match self.identity.profile.connection_state().await {
+            Some(state) => *state.borrow() == affinidi_messaging_core::ConnState::Connected,
+            // No transport at all — never started, or stopped by `shutdown()`.
+            None => false,
+        }
+    }
+
+    /// The hub this session runs on.
+    ///
+    /// Useful for a consumer that took a session from a helper and wants to add
+    /// a second identity beside it rather than build a second ATM. Note the
+    /// ownership contract: if this session created the hub
+    /// ([`connect`](Self::connect) and friends), its `shutdown()` takes the hub
+    /// down with it, so anything else attached there dies too. Sessions meant to
+    /// be siblings should all be built with the `*_on` constructors from a hub
+    /// the caller owns.
+    pub fn hub(&self) -> &Arc<SessionHub> {
+        &self.identity.hub
     }
 }
 
