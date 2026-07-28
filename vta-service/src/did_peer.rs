@@ -7,7 +7,9 @@ use vta_sdk::did_secrets::DidSecretsBundle;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
 use crate::config::AppConfig;
-use crate::operations::did_peer::{mint_did_peer_with_services, peer_secrets_to_entries};
+use crate::operations::did_peer::{
+    mediator_did_didcomm_service, mint_did_peer_with_services, peer_secrets_to_entries,
+};
 use crate::store::Store;
 
 pub struct CreateDidPeerArgs {
@@ -16,8 +18,17 @@ pub struct CreateDidPeerArgs {
     pub label: Option<String>,
     /// Mediator HTTP endpoint (e.g. `http://127.0.0.1:61881/mediator/v1`) used
     /// to build the did:peer's DIDComm + Authentication services so the agent
-    /// is reachable. The ws:// endpoint is derived from it.
-    pub mediator_url: String,
+    /// is reachable. The ws:// endpoint is derived from it. Produces a
+    /// **URL-style** DIDComm service. Mutually exclusive with `mediator_did`;
+    /// exactly one of the two must be provided.
+    pub mediator_url: Option<String>,
+    /// Mediator DID (e.g. `did:webvh:…:mediator`). Produces a **DID-style**
+    /// DIDComm service (`serviceEndpoint.uri = MEDIATOR_DID`), matching how the
+    /// built-in `ai-agent` did:webvh template and the online provision-integration
+    /// path advertise DIDComm. Required for mediators that route by DID (e.g.
+    /// messaging-mediator v0.17+, which mis-routes a URL endpoint as a remote hop
+    /// and self-forwards). Mutually exclusive with `mediator_url`.
+    pub mediator_did: Option<String>,
     /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on stdout).
     pub export_secrets: bool,
     /// Create an ACL admin entry for the new did:peer in the target context.
@@ -56,12 +67,27 @@ pub async fn run_create_did_peer(
 
     let label = args.label.as_deref().unwrap_or(&args.context);
 
-    // Build the did:peer's services from the mediator URL. This replicates
-    // `mediator-setup`'s `did_peer.rs::mediator_services`: a "dm"
-    // DIDCommMessaging service carrying the http + ws endpoints (accept
-    // ["didcomm/v2"]) plus an "Authentication" service at {url}/authenticate
-    // (id "#auth").
-    let services = mediator_services(&args.mediator_url)?;
+    // Build the did:peer's DIDComm services. Two mutually-exclusive shapes:
+    //   * `--mediator-did`  -> DID-style service (serviceEndpoint.uri = MEDIATOR_DID),
+    //     matching the online provision-integration path and the ai-agent did:webvh
+    //     template. Use this for mediators that route by DID (messaging-mediator
+    //     v0.17+ classifies a URL endpoint as a remote hop and self-forwards).
+    //   * `--mediator-url`  -> URL-style service (http + ws endpoints + #auth),
+    //     replicating `mediator-setup`'s `did_peer.rs::mediator_services`.
+    let services = match (args.mediator_did.as_deref(), args.mediator_url.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "--mediator-did and --mediator-url are mutually exclusive; pass exactly one".into(),
+            );
+        }
+        (Some(mediator_did), None) => {
+            mediator_did_didcomm_service(mediator_did, vec!["didcomm/v2".into()], vec![])
+        }
+        (None, Some(mediator_url)) => mediator_services(mediator_url)?,
+        (None, None) => {
+            return Err("one of --mediator-did or --mediator-url is required".into());
+        }
+    };
 
     // did:peer key shape (Ed25519 #key-1 + X25519 #key-2) and the actual
     // did:peer:2 encoding live in the shared library construction
@@ -241,7 +267,8 @@ mod tests {
             config_path: Some(config_path.clone()),
             context: "agents".to_string(),
             label: Some("agent-1".to_string()),
-            mediator_url: "http://127.0.0.1:61881/mediator/v1".to_string(),
+            mediator_url: Some("http://127.0.0.1:61881/mediator/v1".to_string()),
+            mediator_did: None,
             export_secrets: true,
             admin: true,
         };

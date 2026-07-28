@@ -185,10 +185,18 @@ enum Commands {
         #[arg(long)]
         context: String,
         /// Mediator HTTP endpoint (e.g. http://127.0.0.1:61881/mediator/v1)
-        /// used to build the did:peer's DIDComm + Authentication services so
-        /// the agent is reachable. The ws:// endpoint is derived from it.
+        /// used to build the did:peer's DIDComm + Authentication services
+        /// (URL-style). The ws:// endpoint is derived from it. Mutually
+        /// exclusive with --mediator-did; provide exactly one.
         #[arg(long)]
-        mediator_url: String,
+        mediator_url: Option<String>,
+        /// Mediator DID (e.g. did:webvh:…:mediator). Builds a DID-style DIDComm
+        /// service (serviceEndpoint.uri = MEDIATOR_DID), matching the online
+        /// provision path / ai-agent template. Required for DID-routing
+        /// mediators (messaging-mediator v0.17+). Mutually exclusive with
+        /// --mediator-url.
+        #[arg(long)]
+        mediator_did: Option<String>,
         /// Emit the `DidSecretsBundle` JSON to stdout (the only thing on
         /// stdout; human text goes to stderr).
         #[arg(long)]
@@ -1609,6 +1617,7 @@ async fn main() {
         Some(Commands::CreateDidPeer {
             context,
             mediator_url,
+            mediator_did,
             export_secrets,
             admin,
             label,
@@ -1622,6 +1631,7 @@ async fn main() {
                     context,
                     label,
                     mediator_url,
+                    mediator_did,
                     export_secrets,
                     admin,
                 };
@@ -1632,7 +1642,7 @@ async fn main() {
             }
             #[cfg(not(feature = "setup"))]
             {
-                let _ = (context, label, mediator_url, export_secrets, admin);
+                let _ = (context, label, mediator_url, mediator_did, export_secrets, admin);
                 eprintln!("create-did-peer is not available (compiled without 'setup' feature)");
                 std::process::exit(1);
             }

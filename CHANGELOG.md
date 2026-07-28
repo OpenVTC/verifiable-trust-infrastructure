@@ -259,6 +259,28 @@ it.
 
 Design note: `docs/05-design-notes/sdk-session-hub.md`.
 
+### vta-service — `create-did-peer` gains `--mediator-did` (DID-style DIDComm service)
+
+`vta create-did-peer` can now advertise a **DID-style** mediation service
+(`serviceEndpoint.uri = <MEDIATOR_DID>`) via a new `--mediator-did` flag, instead
+of only the URL-style service produced by `--mediator-url`. The two are mutually
+exclusive; exactly one must be provided.
+
+**Why:** newer mediators (e.g. `messaging-mediator` v0.17+) route by DID. A hop is
+treated as locally-mediated only when its DIDComm endpoint equals the mediator's
+own DID; a URL endpoint is classified as a *remote* hop and the mediator
+anonymously self-forwards the inbound reply to its own `/inbound`, which then
+rejects it with `e.p.authorization.did.session_mismatch`. An operator/admin
+`did:peer` minted URL-style therefore never receives DIDComm replies through such
+a mediator (observed as `timeout waiting for DIDComm response` on the H2H console
+wake). Minting DID-style makes the mediator deliver the reply locally.
+
+`--mediator-did` reuses the shared `operations::did_peer::mediator_did_didcomm_service`
+helper — the same builder the online `provision_integration` path and the
+`ai-agent` `did:webvh` template already use — so the offline CLI and the online
+path cannot drift. `--mediator-url` is unchanged and remains the correct choice
+for mediators that route by URL.
+
 ### vta-support 0.2.1 — declare the `vti-common` feature it actually uses
 
 `seal.rs` calls `KeyspaceHandle::with_encryption`, which is
