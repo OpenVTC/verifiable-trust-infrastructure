@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.14 / vta-service 0.13.6 — `webvh/dids/get-log` folds into `webvh/dids/get`
+
+First reduction of the `spec/vta/webvh/*` family (#840 phase B). Takes the
+unpublished-canonical count for `spec/vta/` from 46 to **45**.
+
+`dids/get-log/1.0` took the same `{did}` as `dids/get/1.0`, ran the same store
+lookup, applied the same `require_context` check, and differed only in which
+representation it returned. Two Trust Tasks for one read is a bigger interface
+than the operation needs, so the representation became a request flag:
+`dids/get` gains `includeLog`, and `dids/get-log` is retired. The two service
+operations collapse into one.
+
+The log is read **only when asked for** — it grows with every published
+version, so a caller that wants the record should not pay to load it.
+
+**No caller breaks.** The response flattens the record and adds an optional
+`log`, making it a strict superset of both shapes it replaces (the bare
+`WebvhDidRecord`, and the `{did, log}` of the retired task). `GET
+/webvh/dids/{did}/log` is kept as a convenience path serving that superset, and
+`GET /webvh/dids/{did}` accepts `?includeLog=true` so REST can fetch both in one
+call. The legacy DIDComm `get-did-webvh-log` protocol message — which is not a
+Trust Task URI — also stays, now backed by the merged operation.
+
+The unauthenticated public mirror `GET /did/{did}/log` is untouched and remains
+deliberately un-wrapped: it is load-bearing as the DID-resolver failover path.
+
+Covered by a round-trip case in `vta-service/tests/client_round_trip.rs` driving
+the real client against the real router. Mutation-verified twice — replacing the
+`#[serde(flatten)]` with a nested object breaks both legacy client methods
+(`missing field 'did'`), and ignoring `includeLog` makes the log leak onto every
+record read. Neither failure is visible to a mocked test.
+
+Note for a later pass: `WebvhDidRecord` still serializes snake_case
+(`context_id`, `log_entry_count`), which is R3.1 drift predating this change.
+Left alone deliberately — renaming it would break every existing consumer of the
+record and belongs in its own change.
+
 ### vti-common 0.11.29 / vta-sdk 0.20.13 / vta-service 0.13.5 / vta-cli-common 0.10.19 / pnm-cli 0.11.13 — `vta/audit/list-logs` folds onto canonical `audit/list/0.1`
 
 The last item of #840 phase A, and the only one that was never a rename. The

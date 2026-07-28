@@ -1,5 +1,6 @@
-//! Read operations for did:webvh records: fetch a single record, fetch
-//! the `did.jsonl` log, or list records filtered by context/server.
+//! Read operations for did:webvh records: fetch a single record
+//! (optionally with its `did.jsonl` log), or list records filtered by
+//! context/server.
 //!
 //! Delete lives in the parent module alongside the `WebvhTransport`
 //! abstraction because it has to reach out to the hosting server for
@@ -11,45 +12,33 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
-use vta_sdk::protocols::did_management::lifecycle::GetDidWebvhLogResultBody;
+use vta_sdk::protocols::did_management::get::GetDidWebvhResultBody;
 use vta_sdk::protocols::did_management::list::ListDidsWebvhResultBody;
 use vta_sdk::webvh::WebvhDidRecord;
-
-// Wire types canonically live in vta-sdk per
-// `memory::feedback-wire-types-in-sdk`. Re-export from there so
-// existing op-layer call sites keep working unchanged.
-pub use vta_sdk::protocols::did_management::lifecycle::GetDidWebvhLogResultBody as GetDidWebvhLogResult;
 
 pub async fn get_did_webvh(
     webvh_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     did: &str,
     channel: &str,
-) -> Result<WebvhDidRecord, AppError> {
+    include_log: bool,
+) -> Result<GetDidWebvhResultBody, AppError> {
     let record = webvh_store::get_did(webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
     auth.require_context(&record.context_id)?;
-    info!(channel, did = %did, "webvh DID retrieved");
-    Ok(record)
-}
 
-pub async fn get_did_webvh_log(
-    webvh_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    did: &str,
-    channel: &str,
-) -> Result<GetDidWebvhLogResult, AppError> {
-    let record = webvh_store::get_did(webvh_ks, did)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
-    auth.require_context(&record.context_id)?;
-    let log = webvh_store::get_did_log(webvh_ks, did).await?;
-    info!(channel, did = %did, "webvh DID log retrieved");
-    Ok(GetDidWebvhLogResultBody {
-        did: did.to_string(),
-        log,
-    })
+    // Read the log only when asked. It grows with every published
+    // version, so a caller that just wants the record shouldn't pay to
+    // load it.
+    let log = if include_log {
+        webvh_store::get_did_log(webvh_ks, did).await?
+    } else {
+        None
+    };
+
+    info!(channel, did = %did, include_log, "webvh DID retrieved");
+    Ok(GetDidWebvhResultBody { record, log })
 }
 
 pub async fn list_dids_webvh(

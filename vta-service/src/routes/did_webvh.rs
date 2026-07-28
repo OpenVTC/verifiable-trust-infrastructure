@@ -5,13 +5,13 @@ use serde::Deserialize;
 
 use vta_sdk::protocols::did_management::{
     create::{CreateDidWebvhBody, CreateDidWebvhResultBody},
+    get::GetDidWebvhResultBody,
     list::ListDidsWebvhResultBody,
     servers::{
         AddWebvhServerResultBody, ListWebvhServersResultBody, RegisterDidWithServerBody,
         RegisterDidWithServerResultBody, UpdateWebvhServerResultBody,
     },
 };
-use vta_sdk::webvh::WebvhDidRecord;
 
 use crate::auth::{AdminAuth, AuthClaims, SuperAdminAuth};
 use crate::error::AppError;
@@ -255,7 +255,7 @@ pub async fn list_dids_handler(
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "DID identifier")),
     responses(
-        (status = 200, description = "DID record", body = WebvhDidRecord),
+        (status = 200, description = "DID record", body = GetDidWebvhResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "DID not found"),
     ),
@@ -264,9 +264,27 @@ pub async fn get_did_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<WebvhDidRecord>, AppError> {
-    let result = operations::did_webvh::get_did_webvh(&state.webvh_ks, &auth, &did, "rest").await?;
+    Query(params): Query<GetDidQuery>,
+) -> Result<Json<GetDidWebvhResultBody>, AppError> {
+    let result = operations::did_webvh::get_did_webvh(
+        &state.webvh_ks,
+        &auth,
+        &did,
+        "rest",
+        params.include_log,
+    )
+    .await?;
     Ok(Json(result))
+}
+
+/// Query params for [`get_did_handler`]. Mirrors the folded
+/// `dids/get/1.0` payload so REST can fetch record + log in one call
+/// rather than needing the separate `/log` path.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetDidQuery {
+    #[serde(default)]
+    pub include_log: bool,
 }
 
 /// GET /webvh/dids/{did}/log — retrieve the did.jsonl log for a DID. Auth: any authenticated user.
@@ -275,7 +293,7 @@ pub async fn get_did_handler(
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "DID identifier")),
     responses(
-        (status = 200, description = "DID log", body = operations::did_webvh::GetDidWebvhLogResult),
+        (status = 200, description = "DID record with its log", body = GetDidWebvhResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 404, description = "DID not found"),
     ),
@@ -284,9 +302,12 @@ pub async fn get_did_log_handler(
     auth: AuthClaims,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<operations::did_webvh::GetDidWebvhLogResult>, AppError> {
+) -> Result<Json<GetDidWebvhResultBody>, AppError> {
+    // Kept as a convenience path even though its Trust Task folded into
+    // `dids/get`: the response is a strict superset of the old
+    // `{did, log}`, so existing REST callers are unaffected.
     let result =
-        operations::did_webvh::get_did_webvh_log(&state.webvh_ks, &auth, &did, "rest").await?;
+        operations::did_webvh::get_did_webvh(&state.webvh_ks, &auth, &did, "rest", true).await?;
     Ok(Json(result))
 }
 

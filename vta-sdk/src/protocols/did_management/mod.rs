@@ -2,7 +2,6 @@ pub mod agent_name;
 pub mod create;
 pub mod delete;
 pub mod get;
-pub mod lifecycle;
 pub mod list;
 pub mod passkey_vms;
 pub mod servers;

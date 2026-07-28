@@ -253,11 +253,12 @@ async fn fetch_did_material_offline(
     context_id: &str,
     channel: &str,
 ) -> Result<ProvisionedDid, AppError> {
-    // Fetch the raw did.jsonl log from local webvh store. `get_did_webvh_log`
-    // returns a `GetDidWebvhLogResult` whose `log` field holds the
+    // Fetch the raw did.jsonl log from the local webvh store. `get_did_webvh`
+    // with `include_log` returns a record whose `log` field holds the
     // serialized log string; parse it to extract the latest document
     // state.
-    let log_result = super::did_webvh::get_did_webvh_log(deps.webvh_ks, auth, did, channel).await?;
+    let log_result =
+        super::did_webvh::get_did_webvh(deps.webvh_ks, auth, did, channel, true).await?;
     let log_entry = log_result.log;
     let did_document = log_entry
         .as_deref()

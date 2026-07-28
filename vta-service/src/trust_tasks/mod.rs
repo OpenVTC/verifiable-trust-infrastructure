@@ -148,7 +148,6 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
@@ -919,9 +918,6 @@ dispatch_table! {
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0 => webvh::handle_dids_get
-        [ None Metadata false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0 => webvh::handle_dids_get_log
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0 => webvh::handle_dids_delete
