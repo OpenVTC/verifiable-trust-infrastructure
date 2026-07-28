@@ -155,9 +155,11 @@ async fn enabling_delegated_floor_with_an_approver_succeeds() {
     // Register an ACL entry that carries a delegated approver (allowed at AAL1
     // while the policy is still disabled). Now a delegated floor is satisfiable.
     let create = json!({
-        "did": "did:key:z6MkSomeUser",
-        "role": "application",
-        "step_up_approver": "did:key:z6MkApproverPhone"
+        "entry": {
+            "subject": "did:key:z6MkSomeUser",
+            "role": "application",
+            "stepUp": { "approver": "did:key:z6MkApproverPhone" }
+        }
     });
     let req = Request::builder()
         .method("POST")

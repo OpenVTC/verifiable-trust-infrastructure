@@ -24,7 +24,7 @@ use super::helpers::{
     TRANSPORT_TRUST_TASK, app_error_to_reject, parse_payload, reject_with, success_response,
 };
 
-/// Handler for `spec/vta/acl/list/1.0`.
+/// Handler for `acl/list/0.1`.
 pub(super) async fn handle_list(
     state: &AppState,
     auth: &AuthClaims,
@@ -40,7 +40,7 @@ pub(super) async fn handle_list(
     match operations::acl::list_acl(
         &state.acl_ks,
         auth,
-        req.context.as_deref(),
+        req.scope.as_deref(),
         req.direction.unwrap_or_default(),
         TRANSPORT_TRUST_TASK,
     )
@@ -51,7 +51,7 @@ pub(super) async fn handle_list(
     }
 }
 
-/// Handler for `spec/vta/acl/create/1.0`.
+/// Handler for `acl/grant/0.1`.
 pub(super) async fn handle_create(
     state: &AppState,
     auth: &AuthClaims,
@@ -65,30 +65,12 @@ pub(super) async fn handle_create(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let role = match Role::parse(&req.role) {
-        Ok(r) => r,
-        Err(_) => {
-            return reject_with(
-                &doc,
-                RejectReason::MalformedRequest {
-                    reason: format!("invalid role: {}", req.role),
-                },
-            );
-        }
-    };
-    match operations::acl::create_acl(
+    match operations::acl::grant_from_entry(
         &state.acl_ks,
         &state.audit_ks,
         &state.contexts_ks,
         auth,
-        &req.did,
-        role,
-        req.label,
-        req.allowed_contexts,
-        req.expires_at,
-        req.step_up_approver,
-        req.step_up_require,
-        operations::acl::approve_scope_from_wire(req.approve_all_contexts, req.approve_contexts),
+        req.entry,
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -98,7 +80,7 @@ pub(super) async fn handle_create(
     }
 }
 
-/// Handler for `spec/vta/acl/get/1.0`.
+/// Handler for `acl/show/0.1`.
 pub(super) async fn handle_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -111,13 +93,13 @@ pub(super) async fn handle_get(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::acl::get_acl(&state.acl_ks, auth, &req.did, TRANSPORT_TRUST_TASK).await {
+    match operations::acl::get_acl(&state.acl_ks, auth, &req.subject, TRANSPORT_TRUST_TASK).await {
         Ok(body) => success_response(&doc, body),
         Err(e) => app_error_to_reject(&doc, e),
     }
 }
 
-/// Handler for `spec/vta/acl/update/1.0`. Admin-only — matches the
+/// Handler for `acl/update/0.1`. Admin-only — matches the
 /// legacy REST `PATCH /acl/{did}` policy.
 pub(super) async fn handle_update(
     state: &AppState,
@@ -146,7 +128,7 @@ pub(super) async fn handle_update(
         },
         None => None,
     };
-    match operations::acl::update_acl(
+    match operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_ks,
         &state.contexts_ks,
@@ -169,7 +151,7 @@ pub(super) async fn handle_update(
     }
 }
 
-/// Handler for `spec/vta/acl/delete/1.0`.
+/// Handler for `acl/revoke/0.1`.
 pub(super) async fn handle_delete(
     state: &AppState,
     auth: &AuthClaims,
@@ -183,11 +165,12 @@ pub(super) async fn handle_delete(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    match operations::acl::delete_acl(
+    match operations::acl::revoke_by_subject(
         &state.acl_ks,
         &state.audit_ks,
         auth,
-        &req.did,
+        &req.subject,
+        req.scopes,
         TRANSPORT_TRUST_TASK,
     )
     .await

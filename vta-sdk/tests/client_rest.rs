@@ -584,16 +584,22 @@ async fn rotate_seed_with_mnemonic() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
+/// One entry in the canonical `acl/_shared/0.1/acl-entry` wire shape:
+/// `subject`/`scopes`, RFC 3339 timestamps, nested `stepUp`/`approve`.
 fn acl_entry_json(did: &str) -> Value {
     json!({
-        "did": did,
+        "subject": did,
         "role": "admin",
         "label": "ops",
-        "allowed_contexts": ["ctx-a"],
-        "created_at": 1_700_000_000_u64,
-        "created_by": "did:web:vta",
-        "expires_at": null
+        "scopes": ["ctx-a"],
+        "createdAt": "2023-11-14T22:13:20Z",
+        "createdBy": "did:web:vta",
     })
+}
+
+/// The `{ entry }` envelope canonical single-entry responses carry.
+fn acl_entry_envelope(did: &str) -> Value {
+    json!({ "entry": acl_entry_json(did) })
 }
 
 #[tokio::test]
@@ -604,7 +610,7 @@ async fn list_acl_no_filter() {
         "GET",
         "/acl",
         200,
-        json!({"entries": [acl_entry_json("did:key:zAdmin")]}),
+        json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
     )
     .await;
     let c = client(&server).await;
@@ -674,7 +680,7 @@ async fn get_acl_path_encodes_did() {
         "GET",
         "/acl/did:web:example.com",
         200,
-        acl_entry_json("did:web:example.com"),
+        acl_entry_envelope("did:web:example.com"),
     )
     .await;
     let c = client(&server).await;
@@ -690,7 +696,7 @@ async fn create_acl_posts() {
         "POST",
         "/acl",
         200,
-        acl_entry_json("did:key:zAdmin"),
+        acl_entry_envelope("did:key:zAdmin"),
     )
     .await;
     let c = client(&server).await;
@@ -720,7 +726,7 @@ async fn update_acl_patches() {
         "PATCH",
         "/acl/did:key:zAdmin",
         200,
-        acl_entry_json("did:key:zAdmin"),
+        acl_entry_envelope("did:key:zAdmin"),
     )
     .await;
     let c = client(&server).await;

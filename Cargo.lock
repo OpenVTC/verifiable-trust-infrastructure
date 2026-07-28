@@ -9585,9 +9585,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.42"
+version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e38e5179d94ec6ca22a396027beef33a3c27fde3b9edd03aab34ec4591551b1"
+checksum = "647c5ff5d054287bd42c34eaf8bc5ba8f3c3c063dcdc744acd45c9c6cf9bded3"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10118,7 +10118,7 @@ dependencies = [
 
 [[package]]
 name = "vta-cli-common"
-version = "0.10.17"
+version = "0.10.18"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -10269,7 +10269,7 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.10"
+version = "0.20.11"
 dependencies = [
  "affinidi-bbs",
  "affinidi-crypto",
@@ -10331,7 +10331,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.1"
+version = "0.13.2"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10564,7 +10564,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.39"
+version = "0.11.40"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

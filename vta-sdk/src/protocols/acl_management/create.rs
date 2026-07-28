@@ -1,71 +1,46 @@
+//! `acl/grant/0.1` — add a subject to the ACL.
+
 use serde::{Deserialize, Serialize};
 
-/// Payload for the `spec/vta/acl/create/1.0` Trust Task.
+use super::entry::AclEntry;
+
+/// `acl/grant/0.1` request.
 ///
-/// **Wire casing is camelCase** (the published Trust-Task spec convention,
-/// matching the sibling `acl/swap-key` body). Snake_case is still accepted on
-/// input via per-field aliases so existing/legacy senders keep working, and
-/// `deny_unknown_fields` makes a misspelled or unrecognized field a *loud*
-/// rejection rather than a silent drop.
+/// The entry is **nested** rather than flattened because canonical `acl/*`
+/// carries one `AclEntry` shape across every task — grant, show, list, revoke
+/// — so a consumer comparing entries between them cannot end up looking at two
+/// different spellings of the same thing.
 ///
-/// This matters for authorization safety: a silently-dropped `allowedContexts`
-/// defaults to an empty vec, and an empty `allowed_contexts` on an `Admin`
-/// entry is a **super-admin** (`AclEntry::is_super_admin`). Before camelCase
-/// was accepted, a spec-conventional caller intending a scoped, expiring grant
-/// could have both `allowedContexts` and `expiresAt` dropped and end up
-/// minting a permanent, unrestricted admin.
+/// Note what grant deliberately cannot do. **Changing an existing subject's
+/// role** belongs to `acl/change-role`, which takes the current role as a
+/// compare-and-swap; **narrowing scopes** belongs to `acl/revoke`. Both are
+/// refused here rather than silently applied, so that a reduction in authority
+/// always passes through the task that is named and audited as one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateAclBody {
-    pub did: String,
-    pub role: String,
+    /// The entry the caller wants the maintainer to hold.
+    pub entry: AclEntry,
+    /// Optional human-readable rationale, recorded with the grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(default, alias = "allowed_contexts")]
-    pub allowed_contexts: Vec<String>,
-    /// Unix-epoch seconds at which the entry auto-expires. `None` = permanent.
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "expires_at")]
-    pub expires_at: Option<u64>,
-    /// VID authorized to ratify a delegated AAL2 step-up for this subject —
-    /// the `recipient` an `auth/step-up/approve-request/0.1` is addressed to
-    /// (the holder's mobile/browser approver). Stored on the ACL entry as
-    /// `step_up_approver`. `None` = no delegated approver configured.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "step_up_approver"
-    )]
-    pub step_up_approver: Option<String>,
-    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
-    /// floor for this subject. Stored as `step_up_require`. `None` = no override.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "step_up_require"
-    )]
-    pub step_up_require: Option<String>,
-    /// Approve-authority: this DID may **confer** access via an approval
-    /// (task-consent delegation / step-up ratification) over any context,
-    /// **without** any authority to act. Granting this is super-admin-only.
-    /// Takes precedence over `approve_contexts`. Stored as `approve_scope`.
-    #[serde(
-        default,
-        skip_serializing_if = "std::ops::Not::not",
-        alias = "approve_all_contexts"
-    )]
-    pub approve_all_contexts: bool,
-    /// Approve-authority scoped to these contexts (and their subtrees): the DID
-    /// may confer them via approval but cannot act in them. Ignored when
-    /// `approve_all_contexts` is set. Empty = confers nothing (the default).
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        alias = "approve_contexts"
-    )]
-    pub approve_contexts: Vec<String>,
+    pub reason: Option<String>,
 }
 
+/// `acl/grant/0.1` response — the realized entry the maintainer now holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct CreateAclResponseBody {
+    pub entry: AclEntry,
+}
+
+/// The maintainer's internal view of a stored entry.
+///
+/// **Not a wire type any more.** It is what `operations::acl` returns, and the
+/// handlers convert it to an [`AclEntry`] on the way out
+/// ([`AclEntry::from_result`]). Kept in its stored form — epoch seconds, flat
+/// approve members — so the storage layer is unaffected by the canonical fold.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct CreateAclResultBody {
@@ -101,107 +76,50 @@ pub struct CreateAclResultBody {
 mod tests {
     use super::*;
 
-    /// The regression: a spec-conventional **camelCase** `acl/create` payload
-    /// must populate `allowed_contexts`/`expires_at`, not silently drop them.
-    /// A dropped `allowedContexts` on an Admin role is a permanent super-admin.
+    /// The regression the pre-fold body existed to prevent, restated against
+    /// the canonical shape: a scoped, expiring grant must not lose its scope.
+    ///
+    /// A dropped `scopes` on an admin entry is a **permanent super-admin**,
+    /// because an empty scope list means "unrestricted" for that role. Nesting
+    /// changes where the member lives, not how badly losing it fails.
     #[test]
-    fn camelcase_payload_populates_scope_and_expiry() {
+    fn scoped_expiring_grant_keeps_its_scope_and_expiry() {
         let json = serde_json::json!({
-            "did": "did:key:z6MkSubject",
-            "role": "admin",
-            "allowedContexts": ["ctx-a", "ctx-b"],
-            "expiresAt": 1_800_000_000u64,
-            "stepUpApprover": "did:key:z6MkApprover",
-            "stepUpRequire": "delegated",
+            "entry": {
+                "subject": "did:key:z6MkSubject",
+                "role": "admin",
+                "scopes": ["ctx-a", "ctx-b"],
+                "expiresAt": "2027-01-15T08:00:00Z",
+                "stepUp": { "approver": "did:key:z6MkApprover", "require": "delegated" }
+            }
         });
         let body: CreateAclBody = serde_json::from_value(json).unwrap();
-        assert_eq!(body.allowed_contexts, vec!["ctx-a", "ctx-b"]);
-        assert_eq!(body.expires_at, Some(1_800_000_000));
+        assert_eq!(body.entry.scopes, vec!["ctx-a", "ctx-b"]);
+        assert!(body.entry.expires_at.is_some());
         assert_eq!(
-            body.step_up_approver.as_deref(),
+            body.entry.step_up_approver().as_deref(),
             Some("did:key:z6MkApprover")
         );
-        assert_eq!(body.step_up_require.as_deref(), Some("delegated"));
+        assert_eq!(body.entry.step_up_require().as_deref(), Some("delegated"));
     }
 
-    /// Back-compat: legacy/REST snake_case senders still deserialize via aliases.
+    /// A misspelled member is a loud rejection, never a silent drop that would
+    /// default the entry to unrestricted scope.
     #[test]
-    fn snakecase_payload_still_accepted_via_alias() {
+    fn unknown_member_is_rejected() {
         let json = serde_json::json!({
-            "did": "did:key:z6MkSubject",
-            "role": "admin",
-            "allowed_contexts": ["ctx-a"],
-            "expires_at": 1_800_000_000u64,
-            "step_up_approver": "did:key:z6MkApprover",
-        });
-        let body: CreateAclBody = serde_json::from_value(json).unwrap();
-        assert_eq!(body.allowed_contexts, vec!["ctx-a"]);
-        assert_eq!(body.expires_at, Some(1_800_000_000));
-        assert_eq!(
-            body.step_up_approver.as_deref(),
-            Some("did:key:z6MkApprover")
-        );
-    }
-
-    /// A misspelled/unknown scope field is a loud rejection, never a silent
-    /// drop that would default the entry to unrestricted super-admin scope.
-    #[test]
-    fn unknown_field_is_rejected() {
-        let json = serde_json::json!({
-            "did": "did:key:z6MkSubject",
-            "role": "admin",
-            "allowedContext": ["ctx-a"], // note: singular typo
+            "entry": { "subject": "did:key:zA", "role": "admin", "scope": ["ctx-a"] }
         });
         assert!(serde_json::from_value::<CreateAclBody>(json).is_err());
     }
 
-    /// Serialization emits the canonical camelCase wire form.
+    /// The pre-fold flat body must not deserialize — it would arrive with no
+    /// scopes at all, which for an admin role is a super-admin.
     #[test]
-    fn serializes_as_camelcase() {
-        let body = CreateAclBody {
-            did: "did:key:z6MkSubject".into(),
-            role: "admin".into(),
-            label: None,
-            allowed_contexts: vec!["ctx-a".into()],
-            expires_at: Some(1_800_000_000),
-            step_up_approver: None,
-            step_up_require: None,
-            approve_all_contexts: false,
-            approve_contexts: vec![],
-        };
-        let v = serde_json::to_value(&body).unwrap();
-        assert!(v.get("allowedContexts").is_some());
-        assert!(v.get("expiresAt").is_some());
-        assert!(v.get("allowed_contexts").is_none());
-    }
-
-    /// Approve-authority fields round-trip via camelCase, and snake_case aliases
-    /// are still accepted; the boolean/list default to off so an omitted scope
-    /// confers nothing.
-    #[test]
-    fn approve_scope_fields_round_trip_and_default_off() {
+    fn pre_fold_flat_body_is_rejected() {
         let json = serde_json::json!({
-            "did": "did:key:z6MkApprover",
-            "role": "reader",
-            "approveAllContexts": true,
+            "did": "did:key:zA", "role": "admin", "allowedContexts": ["ctx-a"]
         });
-        let body: CreateAclBody = serde_json::from_value(json).unwrap();
-        assert!(body.approve_all_contexts);
-        assert!(body.approve_contexts.is_empty());
-
-        let json = serde_json::json!({
-            "did": "did:key:z6MkApprover",
-            "role": "reader",
-            "approve_contexts": ["openvtc"],
-        });
-        let body: CreateAclBody = serde_json::from_value(json).unwrap();
-        assert!(!body.approve_all_contexts);
-        assert_eq!(body.approve_contexts, vec!["openvtc"]);
-
-        // Absent ⇒ confers nothing.
-        let json = serde_json::json!({ "did": "did:key:zX", "role": "reader" });
-        let body: CreateAclBody = serde_json::from_value(json).unwrap();
-        assert!(!body.approve_all_contexts);
-        assert!(body.approve_contexts.is_empty());
+        assert!(serde_json::from_value::<CreateAclBody>(json).is_err());
     }
 }

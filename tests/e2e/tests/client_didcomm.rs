@@ -106,16 +106,22 @@ fn context_json(id: &str) -> Value {
     })
 }
 
+/// One entry in the canonical `acl/_shared/0.1/acl-entry` wire shape:
+/// `subject`/`scopes`, RFC 3339 timestamps.
 fn acl_entry_json(did: &str) -> Value {
     json!({
-        "did": did,
+        "subject": did,
         "role": "admin",
         "label": "ops",
-        "allowed_contexts": ["primary"],
-        "created_at": 1_700_000_000_u64,
-        "created_by": "did:web:vta",
-        "expires_at": null
+        "scopes": ["primary"],
+        "createdAt": "2023-11-14T22:13:20Z",
+        "createdBy": "did:web:vta",
     })
+}
+
+/// The `{ entry }` envelope canonical single-entry responses carry.
+fn acl_entry_envelope(did: &str) -> Value {
+    json!({ "entry": acl_entry_json(did) })
 }
 
 // ── Discovery / VTA management ──────────────────────────────────────
@@ -454,7 +460,7 @@ async fn list_acl_via_didcomm() {
         if msg_type == acl_management::LIST_ACL {
             ResponderReply::ok(
                 acl_management::LIST_ACL_RESULT,
-                json!({"entries": [acl_entry_json("did:key:zAdmin")]}),
+                json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
             )
         } else {
             ResponderReply::problem_report("e.p.msg.not-found", "no handler")
@@ -474,7 +480,7 @@ async fn create_acl_via_didcomm() {
         if msg_type == acl_management::CREATE_ACL {
             ResponderReply::ok(
                 acl_management::CREATE_ACL_RESULT,
-                acl_entry_json("did:key:zAdmin"),
+                acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
             ResponderReply::problem_report("e.p.msg.not-found", "no handler")
@@ -513,7 +519,7 @@ async fn update_acl_via_didcomm() {
         if msg_type == acl_management::UPDATE_ACL {
             ResponderReply::ok(
                 acl_management::UPDATE_ACL_RESULT,
-                acl_entry_json("did:key:zAdmin"),
+                acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
             ResponderReply::problem_report("e.p.msg.not-found", "no handler")

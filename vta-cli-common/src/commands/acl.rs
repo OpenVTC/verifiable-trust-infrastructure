@@ -157,7 +157,8 @@ pub async fn cmd_acl_list(
         for entry in &resp.entries {
             let contexts = format_contexts(&entry.role, &entry.allowed_contexts);
             let role = format_role(&entry.role, &entry.allowed_contexts);
-            let approve = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts);
+            let approve =
+                format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts());
 
             // Name + full DID. Full display exists so an operator can copy a
             // complete identifier, so the DID is never abbreviated here.
@@ -273,7 +274,9 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
         "Contexts:         {}",
         format_contexts(&entry.role, &entry.allowed_contexts)
     );
-    if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
+    if let Some(scope) =
+        format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
+    {
         println!("Approve:          {scope}");
     }
     println!("Created At:       {}", entry.created_at);
@@ -326,7 +329,9 @@ pub async fn cmd_acl_create(
         "  Contexts:   {}",
         format_contexts(&entry.role, &entry.allowed_contexts)
     );
-    if let Some(scope) = format_approve_scope(entry.approve_all_contexts, &entry.approve_contexts) {
+    if let Some(scope) =
+        format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
+    {
         println!("  Approve:    {scope}");
     }
     if let Some(approver) = &step_up_approver {

@@ -2,6 +2,62 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.11 / vta-service 0.13.2 / vta-cli-common 0.10.18 / vtc-service 0.11.40 — the ACL surface folds onto canonical `acl/*` (#840 phase A)
+
+All five `vta/acl/*` tasks now bind the canonical family, with **no new specs
+authored** on the VTA side:
+
+| Was | Now |
+|---|---|
+| `vta/acl/create/1.0` | `acl/grant/0.1` |
+| `vta/acl/get/1.0` | `acl/show/0.1` |
+| `vta/acl/list/1.0` | `acl/list/0.1` |
+| `vta/acl/update/1.0` | `acl/update/0.1` |
+| `vta/acl/delete/1.0` | `acl/revoke/0.1` |
+
+The `spec/vta/` counted exception drops **52 → 47**. Two of these needed the
+canonical family extended first — `AclEntry.approve` (trust-tasks-tf#149) and
+`acl/update` plus `acl/list`'s `direction` (trust-tasks-tf#150) — because the
+approve-vs-act axis, a general entry amendment, and the subtree-vs-acting-in
+reading were genuine gaps rather than VTA quirks.
+
+**Breaking wire changes.** One `AclEntry` shape now serves every task:
+
+- `did` → `subject`, `allowedContexts` → `scopes`.
+- `expiresAt` is RFC 3339, not Unix epoch seconds.
+- The five loose step-up and approve members group under `stepUp{approver,
+  require}` and `approve{all, scopes}`.
+- The grant body nests the entry: `{entry: {...}, reason?}`.
+- `acl/list` responses carry `truncated` (and `cursor` when paging exists).
+- `acl/revoke` returns the entry rather than `{did, deleted}` — a boolean
+  cannot tell an auditor *what authority was lost*.
+
+**REST moved too, and that was the point.** `POST /acl` and `GET /acl/{did}`
+initially kept their flat REST-shaped bodies while the trust-task and DIDComm
+surfaces went canonical. That is exactly the split a fold is meant to remove —
+one operation with two payload shapes depending on how you reach it — so REST
+now takes the same body as everything else.
+
+**Scope reduction is refused, not approximated.** Canonical `acl/revoke` can
+withdraw named scopes and leave the entry standing; this maintainer implements
+full removal only. A request carrying `scopes` is rejected with an explicit
+error rather than treated as a full removal: quietly deleting an entire entry
+when the caller asked to withdraw one scope takes away far more authority than
+was requested, which is not a direction to guess in.
+
+**`truncated: false` is stated rather than implied.** This maintainer returns
+every matching entry in one response. Saying so explicitly is the whole point
+of the member — a caller must never infer completeness from page length, which
+is how a truncated revocation sweep reads as a finished one.
+
+**The stored shape is untouched.** `CreateAclResultBody` keeps epoch seconds
+and flat approve members; only the wire moved, so there is no migration. The
+canonical adapters in `operations::acl` are the single conversion boundary —
+REST, DIDComm and the trust-task dispatcher all reach the same operation, and
+three copies of "which member becomes which argument" would be three chances to
+disagree about, say, whether an absent `approve` confers nothing.
+
+
 ### vta-support 0.2.1 — declare the `vti-common` feature it actually uses
 
 `seal.rs` calls `KeyspaceHandle::with_encryption`, which is
