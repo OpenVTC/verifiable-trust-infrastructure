@@ -25,21 +25,41 @@ pub struct HealthResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct ConfigResponse {
-    #[serde(rename = "vta_did")]
-    pub community_vta_did: Option<String>,
-    #[serde(rename = "vta_name")]
-    pub community_vta_name: Option<String>,
-    pub public_url: Option<String>,
+    /// The registry, as canonical `config/show/0.1` returns it. Read a single
+    /// key with [`GetConfigResultBody::get`], or the common one with
+    /// [`GetConfigResultBody::vta_did`].
+    ///
+    /// [`GetConfigResultBody::get`]: crate::protocols::vta_management::get_config::GetConfigResultBody::get
+    /// [`GetConfigResultBody::vta_did`]: crate::protocols::vta_management::get_config::GetConfigResultBody::vta_did
+    #[serde(flatten)]
+    pub config: crate::protocols::vta_management::get_config::GetConfigResultBody,
+}
+
+impl ConfigResponse {
+    /// The VTA's own DID, if set. Read-only — see
+    /// [`UpdateConfigBody`](crate::protocols::vta_management::update_config::UpdateConfigBody)
+    /// for why it cannot be patched.
+    pub fn vta_did(&self) -> Option<&str> {
+        self.config.vta_did()
+    }
+
+    /// The VTA's advertised public URL, if set.
+    pub fn public_url(&self) -> Option<&str> {
+        self.config.get("public_url").and_then(|v| v.as_str())
+    }
+
+    /// The VTA's operator-facing name, if set.
+    pub fn vta_name(&self) -> Option<&str> {
+        self.config.get("vta_name").and_then(|v| v.as_str())
+    }
 }
 
 #[derive(Debug, Serialize)]
 pub struct UpdateConfigRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vta_did: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vta_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub public_url: Option<String>,
+    /// `key → value`. Keys outside the registry, and keys immutable at
+    /// runtime (`vta_did`), come back under `rejected` rather than applying.
+    #[serde(flatten)]
+    pub patch: crate::protocols::vta_management::update_config::UpdateConfigBody,
 }
 
 #[derive(Debug, Serialize)]

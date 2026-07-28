@@ -13,19 +13,9 @@ pub(crate) async fn run(
     match command {
         ConfigCommands::Get => config_cmd::cmd_config_get(client, "").await,
         ConfigCommands::Update {
-            community_vta_did,
             community_vta_name,
             public_url,
-        } => {
-            config_cmd::cmd_config_update(
-                client,
-                "",
-                community_vta_did,
-                community_vta_name,
-                public_url,
-            )
-            .await
-        }
+        } => config_cmd::cmd_config_update(client, "", community_vta_name, public_url).await,
         ConfigCommands::ResolverUrl { .. } => {
             // Handled in the pre-auth dispatcher (see `main.rs`) — local
             // config mutation, no VTA round-trip. Reaching here means

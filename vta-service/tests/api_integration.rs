@@ -460,7 +460,14 @@ async fn admin_can_read_config() {
     let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
     let (status, body) = app.request(get_auth("/config", &token)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["vta_did"], "did:key:z6MkTestVTA");
+    let did = body["fields"]
+        .as_array()
+        .expect("registry")
+        .iter()
+        .find(|f| f["key"] == "vta_did")
+        .expect("vta_did is registered and readable");
+    assert_eq!(did["value"], "did:key:z6MkTestVTA");
+    assert_eq!(did["source"], "setup");
 }
 
 #[tokio::test]
@@ -471,11 +478,61 @@ async fn super_admin_can_update_config() {
         .request(patch_auth(
             "/config",
             &token,
-            json!({"vta_name": "Updated Name"}),
+            json!({"overrides": {"vta_name": "Updated Name"}}),
         ))
         .await;
     assert!(status.is_success(), "update config: {status} {body}");
-    assert_eq!(body["vta_name"], "Updated Name");
+    assert_eq!(body["applied"], json!(["vta_name"]));
+    assert_eq!(body["rejected"], json!([]));
+}
+
+/// Identity is readable but not writable, end to end through the real router.
+///
+/// Before the fold onto canonical `config/patch`, this call rewrote `vta_did`
+/// in `config.toml` and survived a restart — orphaning every credential the
+/// VTA had issued and every ACL grant naming it. Super-admin gated, so a
+/// bricking footgun rather than an escalation, but there was no guard at all.
+#[tokio::test]
+async fn super_admin_cannot_rewrite_the_vta_identity() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkAdmin", "admin", vec![]).await;
+
+    let (status, body) = app
+        .request(patch_auth(
+            "/config",
+            &token,
+            json!({"overrides": {"vta_did": "did:key:z6MkAttacker"}}),
+        ))
+        .await;
+
+    // Not an error — a reported rejection, so the operator learns the rule.
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(
+        body["applied"],
+        json!([]),
+        "identity must never apply: {body}"
+    );
+    let rejected = body["rejected"].as_array().expect("rejected array");
+    assert_eq!(rejected.len(), 1, "{body}");
+    assert_eq!(rejected[0]["key"], "vta_did");
+    assert!(
+        !rejected[0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "the rejection must say why: {body}"
+    );
+
+    // And the live identity is untouched.
+    let (status, body) = app.request(get_auth("/config", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let did = body["fields"]
+        .as_array()
+        .expect("registry")
+        .iter()
+        .find(|f| f["key"] == "vta_did")
+        .expect("vta_did registered");
+    assert_eq!(did["value"], "did:key:z6MkTestVTA", "{body}");
 }
 
 #[tokio::test]
@@ -486,7 +543,11 @@ async fn scoped_admin_cannot_update_config() {
         .auth_token("did:key:z6MkScoped", "admin", vec!["ctx1".into()])
         .await;
     let (status, _) = app
-        .request(patch_auth("/config", &token, json!({"vta_name": "nope"})))
+        .request(patch_auth(
+            "/config",
+            &token,
+            json!({"overrides": {"vta_name": "nope"}}),
+        ))
         .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }

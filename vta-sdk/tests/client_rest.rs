@@ -175,7 +175,7 @@ async fn restart_returns_status() {
 }
 
 #[tokio::test]
-async fn get_config_returns_fields() {
+async fn get_config_returns_the_registry() {
     let server = MockServer::start().await;
     let _g = mount_json(
         &server,
@@ -183,23 +183,67 @@ async fn get_config_returns_fields() {
         "/config",
         200,
         json!({
-            "vta_did": "did:web:vta.example.com",
-            "vta_name": "primary",
-            "public_url": "https://vta.example.com"
+            "fields": [
+                { "key": "vta_did", "value": "did:web:vta.example.com",
+                  "source": "setup", "requiresRestart": false },
+                { "key": "vta_name", "value": "primary",
+                  "source": "toml", "requiresRestart": false },
+                { "key": "public_url", "value": "https://vta.example.com",
+                  "source": "toml", "requiresRestart": true }
+            ]
         }),
     )
     .await;
     let c = client(&server).await;
     let cfg = c.get_config().await.unwrap();
+    assert_eq!(cfg.config.vta_did(), Some("did:web:vta.example.com"));
     assert_eq!(
-        cfg.community_vta_did.as_deref(),
-        Some("did:web:vta.example.com")
+        cfg.config.get("vta_name").and_then(|v| v.as_str()),
+        Some("primary")
     );
-    assert_eq!(cfg.community_vta_name.as_deref(), Some("primary"));
+    // `public_url` is boot-stable, and the registry says so rather than
+    // leaving a caller to discover it by restarting.
+    assert!(
+        cfg.config
+            .fields
+            .iter()
+            .find(|f| f.key == "public_url")
+            .expect("public_url registered")
+            .requires_restart
+    );
 }
 
 #[tokio::test]
-async fn update_config_sends_patch_body() {
+async fn update_config_sends_the_overrides_map() {
+    let server = MockServer::start().await;
+    let _g = mount_json(
+        &server,
+        "PATCH",
+        "/config",
+        200,
+        json!({ "applied": ["vta_name"], "pendingRestart": [], "rejected": [] }),
+    )
+    .await;
+    let c = client(&server).await;
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("vta_name".to_string(), json!("new"));
+    let res = c
+        .update_config(UpdateConfigRequest {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+                overrides,
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(res.applied, vec!["vta_name"]);
+    assert!(res.rejected.is_empty());
+}
+
+/// Identity is readable but not patchable: naming `vta_did` comes back under
+/// `rejected`, never applied. Before the fold onto canonical `config/patch`,
+/// the VTA wrote it straight to `config.toml` with no guard.
+#[tokio::test]
+async fn update_config_reports_identity_as_rejected() {
     let server = MockServer::start().await;
     let _g = mount_json(
         &server,
@@ -207,20 +251,26 @@ async fn update_config_sends_patch_body() {
         "/config",
         200,
         json!({
-            "vta_did": "did:web:new",
-            "vta_name": "new",
-            "public_url": null
+            "applied": [],
+            "pendingRestart": [],
+            "rejected": [{ "key": "vta_did", "reason": "the VTA's own identity is set at setup" }]
         }),
     )
     .await;
     let c = client(&server).await;
-    let req = UpdateConfigRequest {
-        vta_did: Some("did:web:new".into()),
-        vta_name: Some("new".into()),
-        public_url: None,
-    };
-    let cfg = c.update_config(req).await.unwrap();
-    assert_eq!(cfg.community_vta_name.as_deref(), Some("new"));
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("vta_did".to_string(), json!("did:web:attacker"));
+    let res = c
+        .update_config(UpdateConfigRequest {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+                overrides,
+            },
+        })
+        .await
+        .unwrap();
+    assert!(res.applied.is_empty(), "identity must never be applied");
+    assert_eq!(res.rejected.len(), 1);
+    assert_eq!(res.rejected[0].key, "vta_did");
 }
 
 // ── Backup ──────────────────────────────────────────────────────────

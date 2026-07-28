@@ -37,7 +37,8 @@ impl VtaClient {
     pub async fn update_config(
         &self,
         req: UpdateConfigRequest,
-    ) -> Result<ConfigResponse, VtaError> {
+    ) -> Result<crate::protocols::vta_management::update_config::UpdateConfigResultBody, VtaError>
+    {
         self.rpc(
             vta_management::UPDATE_CONFIG,
             serde_json::to_value(&req)?,

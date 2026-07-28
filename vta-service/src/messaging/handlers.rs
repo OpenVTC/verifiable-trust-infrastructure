@@ -821,7 +821,7 @@ didcomm_handler!(
     handle_get_config,
     Gate::None,
     vta_management::GET_CONFIG_RESULT,
-    |s, auth| operations::config::get_config(&s.config, &auth, "didcomm").await
+    |s, auth| operations::config::get_config(&s.config, &auth, None, "didcomm").await
 );
 
 didcomm_handler!(
@@ -829,17 +829,8 @@ didcomm_handler!(
     Gate::SuperAdmin,
     vta_management::UPDATE_CONFIG_RESULT,
     vta_management::update_config::UpdateConfigBody,
-    |s, auth, body| operations::config::update_config(
-        &s.config,
-        &auth,
-        operations::config::UpdateConfigParams {
-            vta_did: body.vta_did,
-            vta_name: body.vta_name,
-            public_url: body.public_url,
-        },
-        "didcomm",
-    )
-    .await
+    |s, auth, body| operations::config::update_config(&s.config, &auth, body.overrides, "didcomm",)
+        .await
 );
 
 // ---------------------------------------------------------------------------

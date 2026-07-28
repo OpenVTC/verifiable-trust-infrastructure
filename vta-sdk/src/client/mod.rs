@@ -1892,17 +1892,31 @@ mod tests {
 
     // ── Request/Response serialization ──────────────────────────────
 
+    /// The patch carries only the keys the caller named — it is a map, so an
+    /// unmentioned key is simply absent rather than an explicit null that a
+    /// consumer might read as "clear this".
     #[test]
-    fn test_update_config_skips_none_fields() {
+    fn test_update_config_sends_only_named_keys() {
+        use crate::protocols::vta_management::update_config::UpdateConfigBody;
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("vta_name".to_string(), serde_json::json!("Test"));
         let req = UpdateConfigRequest {
-            vta_did: None,
-            vta_name: Some("Test".into()),
-            public_url: None,
+            patch: UpdateConfigBody { overrides },
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert!(!json.as_object().unwrap().contains_key("vta_did"));
-        assert_eq!(json["vta_name"], "Test");
-        assert!(!json.as_object().unwrap().contains_key("public_url"));
+        assert_eq!(json["overrides"]["vta_name"], "Test");
+        assert!(
+            !json["overrides"]
+                .as_object()
+                .unwrap()
+                .contains_key("public_url")
+        );
+        assert!(
+            !json["overrides"]
+                .as_object()
+                .unwrap()
+                .contains_key("vta_did")
+        );
     }
 
     #[test]

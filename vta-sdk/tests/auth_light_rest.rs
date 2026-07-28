@@ -406,7 +406,7 @@ async fn ensure_token_valid_refreshes_expired_access_token() {
             "Bearer fresh-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "vta_did": null, "vta_name": null, "public_url": null
+            "fields": []
         })))
         .expect(1)
         .mount(&server)
@@ -499,7 +499,7 @@ async fn ensure_token_valid_full_reauth_when_refresh_expired() {
             "Bearer reauth-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "vta_did": null, "vta_name": null, "public_url": null
+            "fields": []
         })))
         .expect(1)
         .mount(&server)
@@ -591,7 +591,7 @@ async fn ensure_token_valid_falls_through_when_refresh_fails() {
             "Bearer fallback-access",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "vta_did": null, "vta_name": null, "public_url": null
+            "fields": []
         })))
         .expect(1)
         .mount(&server)

@@ -412,9 +412,9 @@ enum ConfigCommands {
     Get,
     /// Update configuration
     Update {
-        /// VTA DID
-        #[arg(long)]
-        community_vta_did: Option<String>,
+        // `--community-vta-did` is deliberately absent: the VTA's own identity
+        // is set at setup and immutable at runtime (canonical config/patch
+        // reports it under `rejected`). There is no flag to attempt it with.
         /// VTA name
         #[arg(long)]
         community_vta_name: Option<String>,
@@ -1073,18 +1073,11 @@ async fn main() {
         Commands::Config { command } => match command {
             ConfigCommands::Get => config_cmd::cmd_config_get(&client, "Community ").await,
             ConfigCommands::Update {
-                community_vta_did,
                 community_vta_name,
                 public_url,
             } => {
-                config_cmd::cmd_config_update(
-                    &client,
-                    "Community ",
-                    community_vta_did,
-                    community_vta_name,
-                    public_url,
-                )
-                .await
+                config_cmd::cmd_config_update(&client, "Community ", community_vta_name, public_url)
+                    .await
             }
         },
         Commands::Contexts { command } => match command {
