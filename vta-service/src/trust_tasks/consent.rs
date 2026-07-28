@@ -327,7 +327,9 @@ pub(super) async fn handle_request(
 
 /// DIDComm message type carrying a consent prompt to a `wake`-routed approver's
 /// device, which renders it and replies with a signed `consent/decision`.
-#[cfg(feature = "didcomm")]
+// `webvh` as well as `didcomm`: its only consumer is the mediator-registry
+// buffer below, which needs the `webvh`-gated `AppState::mediator_registry`.
+#[cfg(all(feature = "didcomm", feature = "webvh"))]
 const CONSENT_APPROVE_REQUEST_TYPE: &str =
     "https://trusttasks.org/spec/consent/approve-request/0.1";
 
@@ -356,30 +358,46 @@ async fn maybe_wake_consent_approver(
         );
         return;
     };
-    let approve_request = serde_json::json!({
-        "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": CONSENT_APPROVE_REQUEST_TYPE,
-        "payload": { "subject": subject, "scope": scope, "challenge": challenge },
-    });
-    let pending = crate::messaging::registry::PendingResponse {
-        recipient_did: approver.to_string(),
-        message_type: CONSENT_APPROVE_REQUEST_TYPE.to_string(),
-        body: approve_request.clone(),
-        thread_id: approve_request
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
-    };
-    if let Err(e) = state
-        .mediator_registry
-        .buffer_outbound(&mediator_did, pending)
-        .await
+    // Buffering into the mediator registry is `webvh`-gated, not `didcomm`-gated:
+    // `AppState::mediator_registry` only exists under `webvh` (server.rs), even
+    // though `PendingResponse`'s module only needs `didcomm`. Naming the type
+    // therefore compiles in a didcomm-without-webvh build while the field does
+    // not exist — which is exactly how this broke that feature combination.
+    //
+    // Skipping it there is the correct behaviour, not a degradation: without
+    // `webvh` there is no registry to buffer into, and the approver still gets
+    // the request by mediator pickup — the same fallback the error arm below
+    // already relies on.
+    #[cfg(feature = "webvh")]
     {
-        tracing::warn!(
-            error = %e, approver = %approver, mediator = %mediator_did,
-            "failed to buffer consent approve-request; mediator pickup applies"
-        );
+        let approve_request = serde_json::json!({
+            "id": format!("urn:uuid:{}", Uuid::new_v4()),
+            "type": CONSENT_APPROVE_REQUEST_TYPE,
+            "payload": { "subject": subject, "scope": scope, "challenge": challenge },
+        });
+        let pending = crate::messaging::registry::PendingResponse {
+            recipient_did: approver.to_string(),
+            message_type: CONSENT_APPROVE_REQUEST_TYPE.to_string(),
+            body: approve_request.clone(),
+            thread_id: approve_request
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        };
+        if let Err(e) = state
+            .mediator_registry
+            .buffer_outbound(&mediator_did, pending)
+            .await
+        {
+            tracing::warn!(
+                error = %e, approver = %approver, mediator = %mediator_did,
+                "failed to buffer consent approve-request; mediator pickup applies"
+            );
+        }
     }
+    #[cfg(not(feature = "webvh"))]
+    let _ = (&subject, &scope, challenge);
+
     super::step_up::trigger_gateway_wake(state, approver, &mediator_did).await;
 }
 

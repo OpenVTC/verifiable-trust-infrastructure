@@ -2180,15 +2180,14 @@ async fn main() {
                     );
                 }
 
-                let bootstrap_ks = store
-                    .keyspace(crate::keyspaces::BOOTSTRAP)
-                    .expect("failed to open bootstrap keyspace");
-
-                // Load seed, derive storage_key, load/generate jwt_key.
-                // HardenedBootSecrets zeroizes all fields on drop —
-                // mirrors TEE's BootstrappedSecrets pattern.
+                // Derives the storage key, migrates any pre-hardened plaintext
+                // rows, then loads or establishes the JWT signing key — in that
+                // order, because the key now lives in the encrypted KEYS
+                // keyspace and reading it against an unmigrated store would
+                // fail. HardenedBootSecrets zeroizes both keys on drop,
+                // mirroring TEE's BootstrappedSecrets.
                 let boot_secrets =
-                    hardened_bootstrap::load_boot_secrets(&config, &*seed_store, &bootstrap_ks)
+                    hardened_bootstrap::load_boot_secrets(&config, &*seed_store, &store)
                         .await
                         .unwrap_or_else(|e| {
                             tracing::error!("{e}");
@@ -2198,40 +2197,13 @@ async fn main() {
                 store
                     .persist()
                     .await
-                    .expect("failed to persist bootstrap keyspace");
+                    .expect("failed to persist hardened boot state");
 
                 // Encode jwt_key into in-memory config — never written to config.toml.
                 // The raw [u8;32] in boot_secrets is zeroized when it drops below.
                 config.auth.jwt_signing_key = Some(BASE64.encode(boot_secrets.jwt_key));
                 let storage_key_copy = boot_secrets.storage_key;
                 // boot_secrets drops here → jwt_key and storage_key are zeroized.
-
-                // Convert any pre-existing plaintext rows before `server::run`
-                // opens a single encrypted handle. Without this, turning the
-                // flag on for a VTA that already has data makes every existing
-                // row unreadable — including the ACL keyspace, which locks the
-                // operator out. The store's decrypt path is deliberately
-                // fail-closed with no plaintext fallback, so the conversion has
-                // to happen here or not at all.
-                //
-                // Idempotent and crash-safe: a no-op on fresh installs and on
-                // every boot after the converting one, and an interrupted run
-                // is completed by the next boot.
-                if let Err(e) =
-                    hardened_bootstrap::migrate_store_to_encrypted(&store, storage_key_copy).await
-                {
-                    tracing::error!(
-                        "hardened: migrating the existing store to encrypted at rest failed: {e}. \
-                         Refusing to start — booting now would leave the VTA unable to read its \
-                         own ACL and key material."
-                    );
-                    std::process::exit(1);
-                }
-
-                tracing::info!(
-                    "hardened: storage-encryption key derived from seed, \
-                         JWT signing key loaded from bootstrap keyspace (neither stored on disk)"
-                );
 
                 Some(storage_key_copy)
             } else {
@@ -2387,50 +2359,69 @@ async fn run_hardened_rotate_jwt(
     }
 
     let store = store::Store::open(&config.store)?;
-    // The BOOTSTRAP keyspace is intentionally NOT encrypted at the keyspace level
-    // (no `with_encryption` / no storage key needed here) — this matches the daemon
-    // boot block and `hardened_bootstrap::load_boot_secrets`. Rationale:
-    //   • The JWT key bytes are protected by application-layer AES-256-GCM inside the
-    //     row (`hardened:jwt_ciphertext`), not by VAE1. Deleting the row does not
-    //     require decrypting it first.
-    //   • The fingerprint row is a SHA-256 hash — not a secret, safe to remove bare.
-    //   • Unlike the ACL/KEYS/CONTEXTS keyspaces (which hold sensitive rows and must be
-    //     opened via `CliStore` to pick up VAE1 encryption), BOOTSTRAP carries only
-    //     these two application-layer-encrypted entries.
-    // See `hardened_bootstrap.rs` and the "Why is bootstrap unencrypted" section in
-    // `docs/02-vta/non-interactive-setup.md#hardened-configuration` for full rationale.
+
+    // The JWT signing key now lives in the *encrypted* KEYS keyspace, so
+    // clearing it needs the storage key — the row is a VAE1 envelope like every
+    // other secret, not a self-contained sealed blob that could be deleted
+    // blind. Deriving it here also means a wrong salt or an unreachable secret
+    // store fails now, with a clear cause, rather than at the next daemon boot.
+    let enc_key = cli_store::load_storage_key_for_cli(&config)
+        .await?
+        .ok_or("hardened: storage key unavailable")?;
+    let keys_ks = store
+        .keyspace(crate::keyspaces::KEYS)?
+        .with_encryption(enc_key);
+    // Legacy rows, if this VTA has not yet booted since the key moved.
     let bootstrap_ks = store.keyspace(crate::keyspaces::BOOTSTRAP)?;
 
-    let ct_present = bootstrap_ks
-        .get_raw(hardened_bootstrap::HARDENED_JWT_CT_KEY)
+    let current = keys_ks
+        .get_raw(hardened_bootstrap::HARDENED_JWT_KEY)
         .await?
         .is_some();
-    let fp_present = bootstrap_ks
-        .get_raw(hardened_bootstrap::HARDENED_JWT_FINGERPRINT_KEY)
+    let legacy_ct = bootstrap_ks
+        .get_raw(hardened_bootstrap::LEGACY_JWT_CT_KEY)
+        .await?
+        .is_some();
+    let legacy_fp = bootstrap_ks
+        .get_raw(hardened_bootstrap::LEGACY_JWT_FINGERPRINT_KEY)
         .await?
         .is_some();
 
-    if !ct_present && !fp_present {
-        eprintln!("Nothing to rotate — no sealed JWT key found in the bootstrap keyspace.");
+    if !current && !legacy_ct && !legacy_fp {
+        eprintln!("Nothing to rotate — no JWT signing key is stored yet.");
         return Ok(());
     }
 
-    bootstrap_ks
-        .remove(hardened_bootstrap::HARDENED_JWT_CT_KEY)
-        .await?;
-    bootstrap_ks
-        .remove(hardened_bootstrap::HARDENED_JWT_FINGERPRINT_KEY)
-        .await?;
+    let mut removed: Vec<&str> = Vec::new();
+    if current {
+        keys_ks.remove(hardened_bootstrap::HARDENED_JWT_KEY).await?;
+        removed.push("keys/hardened:jwt_key");
+    }
+    // Clear the legacy pair too, so rotating never leaves a stale row that the
+    // next boot would "carry over" as if it were the current key.
+    if legacy_ct {
+        bootstrap_ks
+            .remove(hardened_bootstrap::LEGACY_JWT_CT_KEY)
+            .await?;
+        removed.push("bootstrap/hardened:jwt_ciphertext (legacy)");
+    }
+    if legacy_fp {
+        bootstrap_ks
+            .remove(hardened_bootstrap::LEGACY_JWT_FINGERPRINT_KEY)
+            .await?;
+        removed.push("bootstrap/hardened:jwt_fingerprint (legacy)");
+    }
     store.persist().await?;
 
     eprintln!();
     eprintln!("\x1b[1;32mJWT signing key rotation prepared.\x1b[0m");
     eprintln!();
-    eprintln!("  Deleted: hardened:jwt_ciphertext");
-    eprintln!("  Deleted: hardened:jwt_fingerprint");
+    for row in &removed {
+        eprintln!("  Deleted: {row}");
+    }
     eprintln!();
-    eprintln!("  On next daemon start a new random JWT key will be generated,");
-    eprintln!("  sealed under the storage key, and stored in the bootstrap keyspace.");
+    eprintln!("  On next daemon start a new random JWT key will be generated");
+    eprintln!("  and stored in the encrypted KEYS keyspace.");
     eprintln!();
     eprintln!("  \x1b[1;33mAll existing sessions and access tokens are invalidated\x1b[0m");
     eprintln!("  once the daemon restarts with the new key.");

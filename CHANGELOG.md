@@ -55,10 +55,19 @@ Nitro Enclave.
   (VAE1 format, same as TEE) using a key HKDF-SHA256-derived from the
   master seed loaded from the external secret store (OS keyring, AWS SM,
   GCP SM, Vault, …).
-* **Sealed JWT signing key**: random 32-byte key generated at first boot,
-  AES-GCM sealed under the storage key, SHA-256 fingerprint-verified on
-  every subsequent boot — never written to `config.toml`. Boot aborts on
-  fingerprint mismatch (tamper detection).
+* **JWT signing key in the encrypted keyspace**: a random 32-byte key stored in
+  the `KEYS` keyspace at `hardened:jwt_key` — never written to `config.toml`.
+  It is an ordinary `VAE1` row, protected by the same layer as every other
+  secret rather than by a second, hand-rolled AES-GCM seal in the unencrypted
+  `bootstrap` keyspace. One layer instead of two, and slightly stronger: `VAE1`
+  binds each value to its `(keyspace, key)` location through AEAD associated
+  data, while the retired seal carried none — a ciphertext copied to another row
+  would still have opened. The separate SHA-256 fingerprint row that partly
+  covered that gap is gone; the AEAD tag now does that job. A wrong
+  `storage_key_salt` or seed surfaces as a decrypt failure on read.
+  A VTA on the old layout migrates on its next boot — the sealed row is opened,
+  rewritten into `KEYS`, and the legacy rows deleted, **carrying the key across
+  unchanged so live sessions survive**.
 * **Independent JWT key rotation**: `vta hardened rotate-jwt` deletes the
   sealed ciphertext; new key is generated on next daemon start.
 * **All offline CLI commands** (`vta acl`, `keys`, `vault`, `webvh`,
@@ -88,13 +97,6 @@ Nitro Enclave.
 * **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`,
   `CliStore.enc_key`) are held in `Zeroizing<T>` / `HardenedBootSecrets`
   (mirrors `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
-* **A missing JWT fingerprint row self-heals** instead of aborting the boot.
-  The AES-GCM tag has already authenticated the ciphertext under the storage
-  key by that point, so the fingerprint adds no further assurance; treating its
-  absence as fatal handed a denial of service to anyone who could delete a row
-  but not forge a ciphertext, since the documented remedy — clear both entries
-  and regenerate — invalidates every live session. A *mismatched* fingerprint
-  is still fatal.
 * **`[secrets] seed` now warns.** That field inlines the hex master seed in
   `config.toml` itself, which is the one backend that defeats the whole
   feature: both the storage key and the sealed JWT key are re-derivable by

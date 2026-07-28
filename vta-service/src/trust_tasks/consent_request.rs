@@ -187,24 +187,30 @@ async fn push_one(
 
     #[cfg(feature = "didcomm")]
     {
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: approver.to_string(),
-            message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
-            body: request.clone(),
-            thread_id: request
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
+        // `webvh`, not `didcomm` — see the note on the granted-notice buffer
+        // below. The Guaranteed send that follows is the delivery-critical
+        // path and stays on `didcomm`.
+        #[cfg(feature = "webvh")]
         {
-            tracing::warn!(
-                error = %e, approver = %approver, mediator = %mediator_did,
-                "failed to buffer task-consent request; relay fallback applies"
-            );
+            let pending = crate::messaging::registry::PendingResponse {
+                recipient_did: approver.to_string(),
+                message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
+                body: request.clone(),
+                thread_id: request
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            if let Err(e) = state
+                .mediator_registry
+                .buffer_outbound(&mediator_did, pending)
+                .await
+            {
+                tracing::warn!(
+                    error = %e, approver = %approver, mediator = %mediator_did,
+                    "failed to buffer task-consent request; relay fallback applies"
+                );
+            }
         }
 
         // Delivery-critical, so it goes Guaranteed: durably queued + retried
@@ -278,21 +284,33 @@ pub(super) async fn push_granted(
             "payloadDigest": wire_digest,
             "taskType": type_uri,
         });
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: requester.to_string(),
-            message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
-            body: body.clone(),
-            thread_id: Some(wire_digest.to_string()),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
+        // `webvh`, not `didcomm`: `AppState::mediator_registry` exists only under
+        // `webvh`, while `PendingResponse`'s module needs only `didcomm`. The
+        // enclosing block gates on the latter, so this line compiled in a
+        // didcomm-without-webvh build against a field that was not there.
+        //
+        // The `send_guaranteed` below is the durable path and stays on
+        // `didcomm`; the registry buffer is a fast-path optimisation for a
+        // requester whose listener is already attached, so dropping it without
+        // `webvh` costs latency, not delivery.
+        #[cfg(feature = "webvh")]
         {
-            tracing::warn!(
-                error = %e, requester = %requester, mediator = %mediator_did,
-                "failed to buffer granted notice; requester falls back to re-submit"
-            );
+            let pending = crate::messaging::registry::PendingResponse {
+                recipient_did: requester.to_string(),
+                message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
+                body: body.clone(),
+                thread_id: Some(wire_digest.to_string()),
+            };
+            if let Err(e) = state
+                .mediator_registry
+                .buffer_outbound(&mediator_did, pending)
+                .await
+            {
+                tracing::warn!(
+                    error = %e, requester = %requester, mediator = %mediator_did,
+                    "failed to buffer granted notice; requester falls back to re-submit"
+                );
+            }
         }
 
         if let Err(e) = state

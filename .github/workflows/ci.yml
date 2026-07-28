@@ -237,6 +237,14 @@ jobs:
 
       - name: vta-service tee + webvh
         run: cargo check -p vta-service --no-default-features --features tee,rest,didcomm
+      # DIDComm *without* webvh. Not covered by the step above, because `tee`
+      # pulls `webvh` in — which is how this combination sat broken: three
+      # trust-task call sites buffered into the `webvh`-gated
+      # `AppState::mediator_registry` from inside `#[cfg(feature = "didcomm")]`
+      # blocks. Naming `PendingResponse` only needs `didcomm`, so nothing failed
+      # until someone built the pair on its own, and no CI step ever did.
+      - name: vta-service didcomm without webvh
+        run: cargo check -p vta-service --no-default-features --features rest,didcomm
       - name: vta-service aws-secrets
         run: cargo check -p vta-service --no-default-features --features aws-secrets,keyring,rest
       - name: vta-service azure-secrets

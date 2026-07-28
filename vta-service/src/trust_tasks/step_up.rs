@@ -778,24 +778,32 @@ async fn maybe_push_step_up(
     }
     #[cfg(feature = "didcomm")]
     {
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: recipient.to_string(),
-            message_type: STEP_UP_APPROVE_REQUEST_TYPE.to_string(),
-            body: approve_request.clone(),
-            thread_id: approve_request
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
+        // `webvh`, not `didcomm`: `AppState::mediator_registry` only exists
+        // under `webvh`, while `PendingResponse`'s module needs only
+        // `didcomm`. The comment below is explicit that this buffer never
+        // reaches the device on its own — the send that follows is the
+        // delivery path, and it stays on `didcomm`.
+        #[cfg(feature = "webvh")]
         {
-            tracing::warn!(
-                error = %e, approver = %recipient, mediator = %mediator_did,
-                "failed to buffer delegated step-up push; relay fallback applies"
-            );
+            let pending = crate::messaging::registry::PendingResponse {
+                recipient_did: recipient.to_string(),
+                message_type: STEP_UP_APPROVE_REQUEST_TYPE.to_string(),
+                body: approve_request.clone(),
+                thread_id: approve_request
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            if let Err(e) = state
+                .mediator_registry
+                .buffer_outbound(&mediator_did, pending)
+                .await
+            {
+                tracing::warn!(
+                    error = %e, approver = %recipient, mediator = %mediator_did,
+                    "failed to buffer delegated step-up push; relay fallback applies"
+                );
+            }
         }
 
         // Actually deliver it: send the approve-request straight to the

@@ -170,7 +170,7 @@ summary.
 - **`[messaging]`** — optional; tagged enum on `kind`. Default `"skip"`.
 - **`[vta_did]`** — optional; tagged enum on `kind`. Default `"skip"`.
 - **`[hardened]`** — optional; disabled by default. Enables storage encryption
-  and sealed JWT key management for non-TEE deployments. See below.
+  and managed JWT key material for non-TEE deployments. See below.
 
 ### Seed-store backends
 
@@ -416,11 +416,21 @@ original from the ACL, same as the classic flow.
 ### Hardened configuration
 
 Enables **storage encryption** (all fjall keyspaces AES-256-GCM encrypted,
-identical VAE1 format to TEE) and **sealed JWT key management** (random key
-generated at first boot, AES-GCM sealed in the `bootstrap` keyspace,
-fingerprint-verified on every subsequent boot — never written to
-`config.toml`). Disabled by default; no changes to existing behaviour unless
-`enabled = true` is set.
+identical VAE1 format to TEE) and **managed JWT key material** (a random key
+generated at first boot and stored in the encrypted `KEYS` keyspace at
+`hardened:jwt_key` — never written to `config.toml`). Disabled by default; no
+changes to existing behaviour unless `enabled = true` is set.
+
+The JWT key gets no special-case crypto: it is a `VAE1` row like every other
+secret this VTA stores. That is one encryption layer instead of two, and it is
+also slightly stronger — `VAE1` binds each value to its `(keyspace, key)`
+location via AEAD associated data, whereas the bespoke seal it replaced carried
+no associated data, so a copied ciphertext would still have opened. The separate
+SHA-256 fingerprint row that partially covered that gap is gone.
+
+A VTA still on the old layout moves across automatically on its next boot: the
+sealed row is opened, rewritten into `KEYS`, and the two legacy rows removed.
+**The key itself is carried over unchanged, so live sessions survive.**
 
 This is the non-TEE equivalent of TEE layer 3 (encrypted storage). The trust anchor shifts from the Nitro Enclave / KMS to the configured `[secrets]` backend — pick a production-grade one.
 
@@ -471,6 +481,11 @@ To rotate the JWT signing key (invalidates all existing sessions):
 vta --config /path/to/config.toml hardened rotate-jwt
 # Restart the daemon — a new key is generated on first boot.
 ```
+
+`rotate-jwt` needs the storage key (the row is encrypted), so it reads the seed
+from the `[secrets]` backend. A wrong `storage_key_salt` or an unreachable
+backend therefore fails here with a clear cause, rather than at the next daemon
+start.
 
 See [Secret-storage backends](secret-backends.md) for backend selection guidance, 
 and [Security model](../01-concepts/security-model.md#layer-3-encrypted-storage) for where this fits in the defense-in-depth layers.
