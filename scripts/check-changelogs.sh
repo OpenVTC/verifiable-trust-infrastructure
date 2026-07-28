@@ -105,13 +105,27 @@ while IFS="$(printf '\t')" read -r name dir; do
   [ "$old_version" != "$new_version" ] || continue
 
   found=1
-  # Match the version as a whole token: a plain substring search would let
-  # `0.1.30`'s entry satisfy a bump to `0.1.3`.
+  # Match the crate NAME immediately followed by the version, as whole tokens.
+  #
+  # Version-alone was not enough. The workspace carries a dozen subsystem crates
+  # all sitting in the 0.1.x range, so a patch number is routinely shared: a
+  # `vta-tee` 0.1.0 -> 0.1.1 bump passed this guard with no `vta-tee` entry at
+  # all, because `0.1.1` already appeared for `vta-audit`, `vta-backup`,
+  # `vta-vault` and `vta-webvh` (PR #819). A guard that green-lights an
+  # undocumented release is worse than no guard, because it is trusted.
+  #
+  # Both heading shapes in CHANGELOG.md are accepted, backticks optional:
+  #   ### vta-service 0.12.43 — summary
+  #   ### vti-secrets 0.1.7 / vta-config 0.1.1 — summary
+  #   - `vta-audit` 0.1.1
+  # The version stays token-boundaried on the right so a `0.1.30` entry cannot
+  # satisfy a bump to `0.1.3`.
   escaped=$(printf '%s' "$new_version" | sed 's/\./\\./g')
-  if grep -qE "(^|[^0-9.])$escaped([^0-9.]|\$)" "$CHANGELOG"; then
+  escaped_name=$(printf '%s' "$name" | sed 's/[.[\*^$]/\\&/g')
+  if grep -qE "(^|[^A-Za-z0-9_-])\`?$escaped_name\`?[[:space:]]+$escaped([^0-9.]|\$)" "$CHANGELOG"; then
     echo "  ${GREEN}ok${NC}   $name: ${old_version:-<new>} -> $new_version (documented)"
   else
-    echo "  ${RED}MISSING${NC} $name: ${old_version:-<new>} -> $new_version, but $new_version does not appear in $CHANGELOG"
+    echo "  ${RED}MISSING${NC} $name: ${old_version:-<new>} -> $new_version, but no \"$name $new_version\" entry appears in $CHANGELOG"
     fail=1
   fi
 done <<EOF

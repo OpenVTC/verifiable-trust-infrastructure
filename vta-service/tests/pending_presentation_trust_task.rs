@@ -1,5 +1,5 @@
 //! Integration tests for the deferred-presentation approval surface over the
-//! trust-task dispatcher (`credential-exchange/pending-{list,approve,deny}/1.0`).
+//! trust-task dispatcher (`credential-exchange/pending/{list,approve,deny}/0.1`).
 //!
 //! These exercise the **wire plumbing**: dispatch, the super-admin gate, and
 //! the list/deny/approve handlers end to end through the real router. A
@@ -141,7 +141,7 @@ async fn list_then_deny_over_the_wire_deletes_the_record() {
         Some(&token),
         &tt(
             "urn:uuid:pend-list-1",
-            "https://trusttasks.org/spec/credential-exchange/pending-list/1.0",
+            "https://trusttasks.org/spec/credential-exchange/pending/list/0.1",
             did,
             json!({}),
         ),
@@ -151,7 +151,20 @@ async fn list_then_deny_over_the_wire_deletes_the_record() {
     let items = v["payload"]["pending"].as_array().expect("pending array");
     assert_eq!(items.len(), 1, "{v}");
     assert_eq!(items[0]["id"], "req-wire-1", "{v}");
-    assert_eq!(items[0]["verifier_did"], "did:web:stranger.example", "{v}");
+    // camelCase on the wire: every member of the summary is ours, so the
+    // registry's casing convention applies — unlike the OID4VCI / OID4VP
+    // bodies elsewhere in this family, whose snake_case is those specs' own.
+    // The *stored* record (`seed_record_json`) stays snake_case; it is
+    // fjall-persisted internal state, not a wire type.
+    assert_eq!(items[0]["verifierDid"], "did:web:stranger.example", "{v}");
+    assert!(
+        items[0].get("verifier_did").is_none(),
+        "the pre-migration snake_case key must be gone: {v}"
+    );
+    assert_eq!(
+        items[0]["requested"][0]["credentialQueryId"], "membership",
+        "{v}"
+    );
     assert_eq!(items[0]["requested"][0]["claims"][0], "givenName", "{v}");
     // The internal full query is NOT leaked in the summary.
     assert!(
@@ -165,7 +178,7 @@ async fn list_then_deny_over_the_wire_deletes_the_record() {
         Some(&token),
         &tt(
             "urn:uuid:pend-deny-1",
-            "https://trusttasks.org/spec/credential-exchange/pending-deny/1.0",
+            "https://trusttasks.org/spec/credential-exchange/pending/deny/0.1",
             did,
             json!({ "id": "req-wire-1" }),
         ),
@@ -187,7 +200,7 @@ async fn list_then_deny_over_the_wire_deletes_the_record() {
         Some(&token),
         &tt(
             "urn:uuid:pend-list-2",
-            "https://trusttasks.org/spec/credential-exchange/pending-list/1.0",
+            "https://trusttasks.org/spec/credential-exchange/pending/list/0.1",
             did,
             json!({}),
         ),
@@ -206,16 +219,16 @@ async fn pending_surface_requires_super_admin() {
     put_pending(&ctx, "req-wire-2").await;
 
     for (op, payload) in [
-        ("pending-list", json!({})),
-        ("pending-approve", json!({ "id": "req-wire-2" })),
-        ("pending-deny", json!({ "id": "req-wire-2" })),
+        ("list", json!({})),
+        ("approve", json!({ "id": "req-wire-2" })),
+        ("deny", json!({ "id": "req-wire-2" })),
     ] {
         let (status, v) = post_tt(
             &router,
             Some(&token),
             &tt(
                 &format!("urn:uuid:pend-gate-{op}"),
-                &format!("https://trusttasks.org/spec/credential-exchange/{op}/1.0"),
+                &format!("https://trusttasks.org/spec/credential-exchange/pending/{op}/0.1"),
                 did,
                 payload,
             ),
@@ -251,7 +264,7 @@ async fn approve_without_a_held_credential_fails_but_dispatches() {
         Some(&token),
         &tt(
             "urn:uuid:pend-approve-1",
-            "https://trusttasks.org/spec/credential-exchange/pending-approve/1.0",
+            "https://trusttasks.org/spec/credential-exchange/pending/approve/0.1",
             did,
             json!({ "id": "req-wire-3" }),
         ),
@@ -274,7 +287,7 @@ async fn pending_surface_requires_a_bearer_token() {
         None,
         &tt(
             "urn:uuid:pend-anon",
-            "https://trusttasks.org/spec/credential-exchange/pending-list/1.0",
+            "https://trusttasks.org/spec/credential-exchange/pending/list/0.1",
             "did:key:z6MkAnon",
             json!({}),
         ),

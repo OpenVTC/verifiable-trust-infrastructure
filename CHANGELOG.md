@@ -9,7 +9,7 @@ HardenedConfig` field on `AppConfig`. Controls `[hardened] enabled` and
 `storage_key_salt` for the hardened non-TEE configuration feature. Additive
 — existing configs that omit `[hardened]` get `enabled = false` via `Default`.
 
-### vta-sdk 0.20.8 — `BackupPayload` and `ImportedSecretBackup` zeroize key material on drop
+### vta-sdk 0.20.9 — `BackupPayload` and `ImportedSecretBackup` zeroize key material on drop
 
 Added `Drop` impls for `BackupPayload` and `ImportedSecretBackup` (both gated
 on the `sealed-transfer` feature, which is what pulls `zeroize` into `vta-sdk`).
@@ -101,6 +101,125 @@ spec change.
   over TSP — and its coverage test extends to the member verbs.
 
 Unblocks the member-side half of OpenVTC/openvtc#185.
+
+### vta-tee 0.1.2 / vta-service 0.12.46 — the TEE store keys get one home, and the changelog guard stops passing vacuously
+
+Three small cross-cutting fixes that kept surfacing while reviewing the TEE and
+Nitro PRs (#819, #824, #826, #827, #832). None of them belongs to any one of
+those changes.
+
+**`tee:did_log` and `tee:vta_did` are now exported constants.** The DID log key
+was spelled as a bare string literal in four places: written twice in
+`vta_tee::did_autogen` (to the `KEYS` and `BOOTSTRAP` keyspaces), read by
+`vta_service::routes::attestation::did_log` to serve `GET
+/attestation/did-log`, re-declared a fifth time by `vta_service::tee_webvh`
+(#827), and read twice more by the parent-side `deploy/nitro/enclave-proxy`.
+Renaming it would have broken the readers silently. `did_autogen` now exports
+`DID_LOG_STORE_KEY` and `VTA_DID_STORE_KEY` and every in-workspace reader takes
+the constant. (`tee_webvh`'s copy was justified as avoiding a `vta-tee`
+dependency, but that module is `cfg(tee)` and `crate::tee` is already
+`pub use vta_tee` under the same feature — there was no dependency to avoid.) `enclave-proxy` is a separate
+cargo project on the parent that deliberately does not link enclave code, so it
+keeps the literal — now with a comment naming the canonical definition.
+
+**`deploy/nitro/parent-proxy.sh` bound the DID resolver to the IMDS port.** It
+defaulted `VSOCK_RESOLVER_PORT` to 5400, but 5400 is the IMDS credential proxy
+on the enclave side and the resolver is 5600 (`enclave-entrypoint.sh`,
+`enclave-proxy/src/main.rs`). The script is also socat-only and serves four of
+the seven vsock channels — no storage (5500) and no log forwarding (5700) — so
+its header now says that outright and points at `enclave-proxy` as the
+canonical parent implementation.
+
+**`scripts/check-changelogs.sh` matched the version string anywhere in the
+file, not a `<crate> <version>` entry.** With a dozen subsystem crates sharing
+the 0.1.x range, patch numbers collide constantly: `vta-tee` 0.1.0 -> 0.1.1
+(#819) passed the guard with no `vta-tee` entry at all, because `0.1.1` already
+appeared for `vta-audit`, `vta-backup`, `vta-vault` and `vta-webvh`. The match
+now requires the crate name immediately before the version, accepting both
+heading shapes in use here (`### vta-service 0.12.43 — …`, `### vti-secrets
+0.1.7 / vta-config 0.1.1 — …`, and backticked list items), and keeps the
+right-hand token boundary so a `0.1.30` entry cannot satisfy a bump to `0.1.3`.
+Replayed over the last 25 commits of `main`: 16 commits carrying version bumps
+still pass, and the only thing the tightened guard newly catches is #819 — the
+bug that motivated it.
+
+### vta-sdk 0.20.8 / vta-service 0.12.47 / vtc-service 0.11.38 — credential-exchange resolves, and the registry guard covers the whole authority (#821)
+
+The eight `credential-exchange` Trust Tasks now bind URIs the registry actually
+publishes (`trust-tasks-rs` 0.2.41, authored in trust-tasks-tf#148). Five of
+them previously existed **only** as files in this repo while claiming a
+`trusttasks.org` ID no consumer could resolve; the other three —
+`pending-list`, `pending-approve`, `pending-deny` — had no spec anywhere at all.
+
+**Breaking wire changes** on all eight:
+
+- Renumbered `1.0` → `0.1`, matching how the rest of the registry versions.
+- `pending-list` / `pending-approve` / `pending-deny` are nested as
+  `pending/{list,approve,deny}`. The family now reads as what it is: a
+  party-to-party wire protocol, plus an operator surface over the consent
+  backlog it generates.
+- **`PendingPresentationSummary` and `RequestedCredentialSummary` serialize
+  camelCase.** Every member of those two is ours, so the registry's casing
+  convention applies — `verifier_did` → `verifierDid`, `created_at` →
+  `createdAt`, `credential_query_id` → `credentialQueryId`. The OID4VCI /
+  OID4VP bodies keep snake_case: `credential_offer`, `dcql_query`, `vp_token`
+  are those specifications' own field names, not casing drift. The *stored*
+  deferral record is unchanged — it is fjall-persisted internal state, not a
+  wire type, and renaming it would need a migration for no benefit.
+
+There are no external consumers of these constants, so the rename is free.
+`trust-tasks/credential-exchange/` is deleted: the specs live upstream now, and
+keeping a second copy is how the two drift.
+
+### The guard that should have caught this
+
+`every_bound_vtc_task_exists_in_the_registry` only ever checked the
+`spec/vtc/` prefix, which is why eight URIs on the same authority went
+unverified. It is now
+`every_bound_canonical_task_exists_in_the_registry` and checks **every**
+`https://trusttasks.org/spec/` URI the workspace binds. A per-family prefix is
+the wrong shape for the assertion: it defends the family someone remembered to
+name and silently exempts the next one. The claim being tested is about the
+*authority* — binding a `trusttasks.org/spec/` URI asserts the registry serves
+it.
+
+Widening it required distinguishing a task URI from other strings sharing the
+prefix, which is done by shape: a Type URI ends in a `MAJOR.MINOR` segment
+(SPEC §6.1). That one rule excludes family prefixes used to build or assert
+URIs (`vta-sdk`'s `ALLOWED_PREFIXES`) and shared-schema `$id`s, which are
+components rather than tasks.
+
+**It immediately found 67 more.** All pre-existing, none introduced here:
+
+| Family | Unpublished | What |
+|---|---:|---|
+| `spec/vta/` | 55 | The bulk of the VTA's own Trust Task surface at 1.0 — keys, contexts, backup, seeds, acl, audit, attestation, config, discovery, management, provision-integration, webvh dids/servers/agent-name. The registry publishes 22 `vta/*` tasks; the workspace binds 77. |
+| `spec/vault/` | 12 | The vault + credential-store archival lifecycle (#540), authored as local "openvtc 0.1 extensions" and never taken upstream. |
+
+Plus `spec/trust-task-error/0.1`, which is a permanent and legitimate
+exception — the framework's error *envelope* is a response type, deliberately
+absent from the task index.
+
+These are recorded in `UNPUBLISHED_CANONICAL_OK` as family-level exceptions
+**with asserted counts**. Listing 68 URIs individually would be unreadable;
+excluding a family without a count would let the next unpublished task in it
+pass unnoticed, which is the failure this assertion exists to prevent. Pinning
+the number means the debt can only shrink — publish some upstream and the count
+drops, add a new unpublished one and the test fails.
+
+Nothing here is a runtime defect: the bindings work. They reference specs no
+consumer can fetch, which is a published-authority claim we are not yet
+entitled to make.
+
+### vta-tee 0.1.1 — NSM ioctl `len` must be u64 (#819)
+
+Backfilled: this shipped without an entry, which is what the guard change above
+exists to prevent. The NSM ioctl request/response descriptors mirror the kernel's
+`struct nsm_iovec { __u64 addr; __u64 len; }`. `len` was declared `u32`, leaving
+four bytes of uninitialised `#[repr(C)]` padding that the kernel read as the high
+half of the 64-bit length — inflating it to a garbage value and failing
+attestation with `EMSGSIZE`. The same field is read back after the call to size
+the response, so the truncated read was a second latent defect.
 
 ### vtc-service 0.11.36 — the VTC accepts Trust Tasks over TSP
 
