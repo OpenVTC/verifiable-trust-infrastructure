@@ -21,7 +21,9 @@
 //! 4. On success the candidate transport is left installed for the caller
 //!    (`update_didcomm`) to `promote`; on any-stage failure it is
 //!    `remove_transport`-ed so the registry doesn't promote a mediator the VTA
-//!    can't reach.
+//!    can't reach, **and its websocket is stopped** via `profile_remove` —
+//!    unbinding the transport does not close the socket, so a failed handshake
+//!    used to leave one reconnecting to the rejected mediator forever.
 //!
 //! Behind the `didcomm` feature gate so non-DIDComm builds don't pull in the
 //! delivery-layer surface.
@@ -99,7 +101,7 @@ impl ListenerProver for DIDCommServiceProver {
         )
         .await
         {
-            Ok(p) => Arc::new(p),
+            Ok(p) => p,
             Err(e) => {
                 return Err(ProverFailure {
                     stage: HandshakeStage::Connect,
@@ -107,40 +109,93 @@ impl ListenerProver for DIDCommServiceProver {
                 });
             }
         };
-        match tokio::time::timeout(timeout, atm.profile_enable_websocket(&profile)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
+
+        // Register the candidate with the ATM before opening its socket
+        // (`live_stream: false` — the websocket is enabled explicitly, bounded,
+        // below). Registration is what lets the failure path actually stop that
+        // socket: `profile_remove` sends the transport its `Stop`, and nothing
+        // else can, because the transport task transitively owns the only
+        // `Sender` for its own command channel. Before this, a failed handshake
+        // left a live socket reconnecting to the *rejected* mediator for the
+        // VTA's own DID — and repeated attempts against the same candidate
+        // stacked up sockets that then duelled with each other over the
+        // mediator's one-per-DID slot. Same defect and same fix as vta-sdk #830.
+        let profile = match atm.profile_add(&profile, false).await {
+            Ok(p) => p,
+            Err(e) => {
                 return Err(ProverFailure {
                     stage: HandshakeStage::Connect,
-                    cause: format!("enable candidate websocket: {e}"),
+                    cause: format!("register candidate profile: {e}"),
                 });
             }
+        };
+
+        let outcome = self
+            .connect_and_ping(&atm, &service, &profile, &candidate_id, vta_did, timeout)
+            .await;
+
+        if let Err(failure) = outcome {
+            // Best-effort cleanup so the registry doesn't promote an
+            // unreachable mediator — and so its socket does not outlive the
+            // attempt.
+            service.remove_transport(&candidate_id);
+            drop_candidate_socket(&atm, &candidate_id).await;
+            return Err(failure);
+        }
+
+        // The candidate transport stays installed — the caller (`update_didcomm`)
+        // will `promote` it in the registry + delivery service on success. Its
+        // profile stays registered with the ATM for the same reason.
+        Ok(())
+    }
+}
+
+impl DIDCommServiceProver {
+    /// Steps 2–5 with the candidate profile already registered: open its
+    /// websocket, bind + install the transport, and trust-ping the VTA through
+    /// it. Split out so [`prove`](ListenerProver::prove) has one failure path to
+    /// clean up behind, rather than one per early return.
+    async fn connect_and_ping(
+        &self,
+        atm: &affinidi_tdk::messaging::ATM,
+        service: &Arc<affinidi_messaging_delivery::MessagingService>,
+        profile: &Arc<ATMProfile>,
+        candidate_id: &str,
+        vta_did: &str,
+        timeout: Duration,
+    ) -> Result<(), ProverFailure> {
+        let connect_fail = |cause: String| ProverFailure {
+            stage: HandshakeStage::Connect,
+            cause,
+        };
+
+        match tokio::time::timeout(timeout, atm.profile_enable_websocket(profile)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(connect_fail(format!("enable candidate websocket: {e}"))),
             Err(_) => {
-                return Err(ProverFailure {
-                    stage: HandshakeStage::Connect,
-                    cause: "timeout enabling candidate mediator websocket".to_string(),
-                });
+                return Err(connect_fail(
+                    "timeout enabling candidate mediator websocket".to_string(),
+                ));
             }
         }
+
         let transport: Arc<dyn MessageTransport> =
             match DidCommTransport::new(atm.clone(), profile.clone()).await {
                 Ok(t) => Arc::new(t),
                 Err(e) => {
-                    return Err(ProverFailure {
-                        stage: HandshakeStage::Connect,
-                        cause: format!("bind candidate DidComm transport: {e}"),
-                    });
+                    return Err(connect_fail(format!(
+                        "bind candidate DidComm transport: {e}"
+                    )));
                 }
             };
-        service.add_transport(candidate_id.clone(), transport);
+        service.add_transport(candidate_id.to_string(), transport);
 
         // Steps 4-5: trust-ping the VTA via the candidate transport; the main
         // inbound loop answers the self-ping and the pong routes back through the
         // merged dispatcher, demuxed to this waiter by thread id.
-        let result = self
-            .bridge
+        self.bridge
             .send_and_wait_via(
-                &candidate_id,
+                candidate_id,
                 vta_did, // recipient = self; the mediator forwards it back
                 TRUST_PING_TYPE,
                 json!({ "response_requested": true }),
@@ -148,21 +203,29 @@ impl ListenerProver for DIDCommServiceProver {
                 PROBLEM_REPORT_TYPE,
                 timeout.as_secs(),
             )
-            .await;
-
-        if let Err(e) = result {
-            // Best-effort cleanup so the registry doesn't promote an
-            // unreachable mediator.
-            service.remove_transport(&candidate_id);
-            return Err(ProverFailure {
+            .await
+            .map_err(|e| ProverFailure {
                 stage: HandshakeStage::TrustPing,
                 cause: format!("trust-ping round-trip failed: {e}"),
-            });
-        }
+            })?;
 
-        // The candidate transport stays installed — the caller (`update_didcomm`)
-        // will `promote` it in the registry + delivery service on success.
         Ok(())
+    }
+}
+
+/// Stop a rejected candidate's websocket.
+///
+/// **`profile_remove` only — never `graceful_shutdown` here.** This ATM is the
+/// VTA's live one, shared with the running listener; shutting it down would take
+/// the VTA's own mediator connection with it. Removing the candidate's profile
+/// stops exactly its transport and leaves everything else alone.
+async fn drop_candidate_socket(atm: &affinidi_tdk::messaging::ATM, candidate_id: &str) {
+    if let Err(e) = atm.profile_remove(candidate_id).await {
+        tracing::warn!(
+            candidate = %candidate_id,
+            error = %e,
+            "could not stop the rejected candidate's websocket"
+        );
     }
 }
 

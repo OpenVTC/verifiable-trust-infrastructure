@@ -780,11 +780,15 @@ mod didcomm_harness {
             holder_secret: Secret,
         ) -> Self {
             let atm = build_atm(transport_secrets).await;
-            let profile = Arc::new(
-                ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.clone()))
-                    .await
-                    .expect("applicant ATM profile"),
-            );
+            let profile = ATMProfile::new(&atm, None, did.clone(), Some(mediator_did.clone()))
+                .await
+                .expect("applicant ATM profile");
+            // Registered so `shutdown` can actually stop the socket — an
+            // unregistered profile's transport outlives every teardown there is.
+            let profile = atm
+                .profile_add(&profile, false)
+                .await
+                .expect("register applicant profile");
             atm.profile_enable_websocket(&profile)
                 .await
                 .expect("applicant websocket");
@@ -803,6 +807,16 @@ mod didcomm_harness {
         /// the VTC sees as the join applicant.
         pub fn did(&self) -> &str {
             &self.did
+        }
+
+        /// Stop this applicant's mediator websocket and the ATM behind it.
+        ///
+        /// Called by [`MockVtcDidcomm::shutdown`]; dropping the client instead
+        /// does nothing, because the websocket transport task owns the only
+        /// `Sender` for its own command channel. `graceful_shutdown` reaches it
+        /// only because `connect` registered the profile with the ATM.
+        pub async fn shutdown(&self) {
+            self.atm.graceful_shutdown().await;
         }
 
         /// A holder signing key (`did:key`) for assembling a `vp_token` from a
@@ -1097,8 +1111,17 @@ mod didcomm_harness {
             self.mediator.did()
         }
 
-        /// Stop the dispatch loop + mediator and wait for a clean wind-down.
+        /// Stop the applicant's socket, the dispatch loop, and the mediator, and
+        /// wait for a clean wind-down.
+        ///
+        /// The applicant goes first, and it is not optional: its websocket
+        /// transport runs on a task that nothing can stop by going out of scope
+        /// (it transitively owns the only `Sender` for its own command channel),
+        /// so a harness that skipped this left one reconnect-looping against a
+        /// dead mediator for the rest of the test binary — every test adding
+        /// another. See `TestJoinClient::shutdown` and vta-sdk #830.
         pub async fn shutdown(mut self) {
+            self.client.shutdown().await;
             if let Some(tx) = self.shutdown_tx.take() {
                 let _ = tx.send(true);
             }

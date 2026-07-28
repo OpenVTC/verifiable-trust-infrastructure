@@ -177,16 +177,25 @@ async fn build_messaging(
     .await
     .map_err(|e| format!("create ATM: {e}"))?;
 
-    let profile = Arc::new(
-        ATMProfile::new(
-            &atm,
-            None,
-            vtc_did.to_string(),
-            Some(mediator_did.to_string()),
-        )
+    let profile = ATMProfile::new(
+        &atm,
+        None,
+        vtc_did.to_string(),
+        Some(mediator_did.to_string()),
+    )
+    .await
+    .map_err(|e| format!("create ATM profile: {e}"))?;
+
+    // Register with the ATM (`live_stream: false` — the websocket is enabled
+    // explicitly, bounded, just below). Mirrors `vta-service`'s
+    // `build_messaging`: the listener lives for the whole process, so this is
+    // not about reclaiming anything today, but `ATM::graceful_shutdown` stops
+    // websockets by iterating the profile map — an unregistered profile's
+    // transport survives every shutdown path there is (vta-sdk #830).
+    let profile = atm
+        .profile_add(&profile, false)
         .await
-        .map_err(|e| format!("create ATM profile: {e}"))?,
-    );
+        .map_err(|e| format!("register ATM profile: {e}"))?;
 
     // Bounded — a `did:webvh` mediator websocket connect can hang.
     match tokio::time::timeout(
