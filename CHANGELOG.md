@@ -104,6 +104,23 @@ Nitro Enclave.
   "real" backend, so the deployment that most needed the warning was the only
   one that never saw it.
 
+Also in this release, two build-hygiene fixes uncovered while working on the
+above. Neither is hardened-configuration specific.
+
+* **`--features rest,didcomm` did not compile**, and had not for some time.
+  Three trust-task call sites buffer into `AppState::mediator_registry`, which
+  is `webvh`-gated, from inside `didcomm`-gated blocks — naming
+  `PendingResponse` needs only `didcomm`, so nothing failed until the pair was
+  built on its own. Every other reference in the crate is `webvh`-gated; these
+  were the outliers. The `send_guaranteed` calls beside them stay on `didcomm`,
+  being the delivery path rather than the latency optimisation.
+* **`--features rest` compiled with six dead imports and constants** whose only
+  consumers sit behind `didcomm`. Now gated to match.
+
+Both combinations are new steps in the CI feature-combos job — neither was
+covered, which is why they rotted: the existing `tee` step pulls `webvh` in, so
+`didcomm`-without-`webvh` was never built by anything.
+
 New source files: `vta-service/src/hardened_bootstrap.rs` (crypto + boot
 secrets) and `vta-service/src/cli_store.rs` (`CliStore` wrapper for
 offline CLI commands).

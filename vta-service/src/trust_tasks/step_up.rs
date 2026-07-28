@@ -15,6 +15,8 @@
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 
+// Only the DIDComm send below bounds its delivery window.
+#[cfg(feature = "didcomm")]
 use std::time::Duration;
 
 use axum::extract::FromRequestParts;
