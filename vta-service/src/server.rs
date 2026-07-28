@@ -39,6 +39,8 @@ use tracing::{debug, error, info, warn};
 use affinidi_messaging_delivery::MessagingService;
 #[cfg(feature = "didcomm")]
 use tokio_util::sync::CancellationToken;
+// Only the DIDComm listener wires the client ACL on connect.
+#[cfg(feature = "didcomm")]
 use vta_sdk::acl_setup;
 
 /// TEE context passed by the caller (main.rs or vta-enclave).
@@ -433,7 +435,9 @@ pub async fn run(
     // purge is the piece the config-driven `drain_inbox_on_start` can't do — a
     // message loop can fill the sender queue at the mediator (`limits.queue.
     // sender`) so no new sends get through until it's cleared.
-    flush_queues: bool,
+    // Consumed by the DIDComm outbox/inbox drain below; a REST-only build has
+    // no queues to flush but keeps the parameter so callers are unconditional.
+    #[cfg_attr(not(feature = "didcomm"), allow(unused_variables))] flush_queues: bool,
 ) -> Result<(), AppError> {
     // Fail fast on a broken config rather than booting a half-started
     // service that passes a port-liveness check but can't function (P0.9).

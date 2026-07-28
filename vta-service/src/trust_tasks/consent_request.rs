@@ -11,6 +11,8 @@
 //! *response*, and nothing in the request is load-bearing for the decision.
 //! Here the request *is* the decision's basis, so it has to be attributable.
 
+// Only the DIDComm delivery paths below bound their sends.
+#[cfg(feature = "didcomm")]
 use std::time::Duration;
 
 use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
@@ -23,6 +25,7 @@ use vti_common::error::AppError;
 /// not the request's own validity (the mediator holds a hop-accepted push for
 /// the device to collect whenever it next connects). Matches the step-up push
 /// window (`STEP_UP_TTL_SECS`).
+#[cfg(feature = "didcomm")]
 const CONSENT_PUSH_DELIVER_BY_SECS: u64 = 300;
 
 use crate::policy::consent::PendingTaskConsent;
@@ -36,6 +39,7 @@ pub(super) const TASK_CONSENT_REQUEST_0_1: &str =
 /// Fire-and-forget notice to the **requester** that its task is now approved and
 /// a grant is ready. Lets the requester re-submit the moment the approval lands
 /// instead of polling for it.
+#[cfg(feature = "didcomm")]
 pub(super) const TASK_CONSENT_GRANTED_0_1: &str =
     "https://trusttasks.org/spec/task-consent/granted/0.1";
 
@@ -187,24 +191,30 @@ async fn push_one(
 
     #[cfg(feature = "didcomm")]
     {
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: approver.to_string(),
-            message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
-            body: request.clone(),
-            thread_id: request
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
+        // `webvh`, not `didcomm` — see the note on the granted-notice buffer
+        // below. The Guaranteed send that follows is the delivery-critical
+        // path and stays on `didcomm`.
+        #[cfg(feature = "webvh")]
         {
-            tracing::warn!(
-                error = %e, approver = %approver, mediator = %mediator_did,
-                "failed to buffer task-consent request; relay fallback applies"
-            );
+            let pending = crate::messaging::registry::PendingResponse {
+                recipient_did: approver.to_string(),
+                message_type: TASK_CONSENT_REQUEST_0_1.to_string(),
+                body: request.clone(),
+                thread_id: request
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            };
+            if let Err(e) = state
+                .mediator_registry
+                .buffer_outbound(&mediator_did, pending)
+                .await
+            {
+                tracing::warn!(
+                    error = %e, approver = %approver, mediator = %mediator_did,
+                    "failed to buffer task-consent request; relay fallback applies"
+                );
+            }
         }
 
         // Delivery-critical, so it goes Guaranteed: durably queued + retried
@@ -278,21 +288,33 @@ pub(super) async fn push_granted(
             "payloadDigest": wire_digest,
             "taskType": type_uri,
         });
-        let pending = crate::messaging::registry::PendingResponse {
-            recipient_did: requester.to_string(),
-            message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
-            body: body.clone(),
-            thread_id: Some(wire_digest.to_string()),
-        };
-        if let Err(e) = state
-            .mediator_registry
-            .buffer_outbound(&mediator_did, pending)
-            .await
+        // `webvh`, not `didcomm`: `AppState::mediator_registry` exists only under
+        // `webvh`, while `PendingResponse`'s module needs only `didcomm`. The
+        // enclosing block gates on the latter, so this line compiled in a
+        // didcomm-without-webvh build against a field that was not there.
+        //
+        // The `send_guaranteed` below is the durable path and stays on
+        // `didcomm`; the registry buffer is a fast-path optimisation for a
+        // requester whose listener is already attached, so dropping it without
+        // `webvh` costs latency, not delivery.
+        #[cfg(feature = "webvh")]
         {
-            tracing::warn!(
-                error = %e, requester = %requester, mediator = %mediator_did,
-                "failed to buffer granted notice; requester falls back to re-submit"
-            );
+            let pending = crate::messaging::registry::PendingResponse {
+                recipient_did: requester.to_string(),
+                message_type: TASK_CONSENT_GRANTED_0_1.to_string(),
+                body: body.clone(),
+                thread_id: Some(wire_digest.to_string()),
+            };
+            if let Err(e) = state
+                .mediator_registry
+                .buffer_outbound(&mediator_did, pending)
+                .await
+            {
+                tracing::warn!(
+                    error = %e, requester = %requester, mediator = %mediator_did,
+                    "failed to buffer granted notice; requester falls back to re-submit"
+                );
+            }
         }
 
         if let Err(e) = state

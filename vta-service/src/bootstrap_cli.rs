@@ -17,9 +17,9 @@ use vta_sdk::sealed_transfer::{
     generate_ed25519_keypair, seal_payload,
 };
 
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::sealed_nonce_store::PersistentNonceStore;
-use crate::store::Store;
 
 /// Default per-user seed cache for `vta bootstrap request` / `open`.
 ///
@@ -77,11 +77,11 @@ pub async fn run_seal(
     // same BootstrapRequest (e.g. after a network glitch) is rejected and
     // forces the consumer to regenerate their request.
     let config_store = AppConfig::load(config_path)?;
-    let persistent_store = Store::open(&config_store.store)?;
-    let nonce_ks = persistent_store.keyspace(crate::keyspaces::SEALED_NONCES)?;
+    let cs_seal = CliStore::open(&config_store).await?;
+    let nonce_ks = cs_seal.keyspace(crate::keyspaces::SEALED_NONCES)?;
     let nonce_store = PersistentNonceStore::new(nonce_ks);
     let bundle = seal_payload(&recipient_pk, bundle_id, producer, &payload, &nonce_store).await?;
-    persistent_store.persist().await?;
+    cs_seal.persist().await?;
 
     let armored = armor::encode(&bundle);
     std::fs::write(&out_path, armored.as_bytes())
@@ -509,15 +509,18 @@ pub async fn run_provision_integration(
     //    offline CLI use, no enclave involvement — and the restart
     //    channel is a fresh local pair the CLI never signals on.
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
+    let cs = CliStore::open(&app_config)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let enc_key = cs.enc_key();
     let seed_store = crate::keys::seed_store::create_seed_store(&app_config)
         .map_err(|e| format!("create seed store: {e}"))?;
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &store,
+        &cs,
         seed_store.into(),
-        None,
+        enc_key,
         None,
         restart_tx,
         crate::server::AppStateParts::default(),
@@ -579,7 +582,7 @@ pub async fn run_provision_integration(
     //    shared fn already committed its rows via the keyspaces; this
     //    call just forces any buffered-writes to disk before the CLI
     //    exits.
-    store.persist().await?;
+    cs.persist().await?;
 
     // 7. Write the armored bundle.
     std::fs::write(&out_path, output.armored.as_bytes())
@@ -716,15 +719,18 @@ pub async fn run_keys_bundle(
     )?;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
+    let cs = CliStore::open(&app_config)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let enc_key = cs.enc_key();
     let seed_store = crate::keys::seed_store::create_seed_store(&app_config)
         .map_err(|e| format!("create seed store: {e}"))?;
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &store,
+        &cs,
         seed_store.into(),
-        None,
+        enc_key,
         None,
         restart_tx,
         crate::server::AppStateParts::default(),
@@ -797,9 +803,9 @@ pub async fn run_context_create(
     use vta_cli_common::commands::contexts::render_context_record;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&app_config).await?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-create");
     let display_name = name.unwrap_or_else(|| id.clone());
@@ -847,7 +853,7 @@ pub async fn run_context_create(
         );
     }
 
-    store.persist().await?;
+    cs.persist().await?;
 
     println!("Context created:");
     render_context_record(&to_context_response(&record));
@@ -863,8 +869,8 @@ pub async fn run_context_list(
     use vta_cli_common::commands::contexts::render_context_list;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let cs = CliStore::open(&app_config).await?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-list");
     let resp = crate::operations::contexts::list_contexts(&contexts_ks, &auth, "vta-contexts-list")
@@ -885,8 +891,8 @@ pub async fn run_context_get(
     use vta_cli_common::commands::contexts::render_context_record;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let cs = CliStore::open(&app_config).await?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-get");
     let record =
@@ -911,8 +917,8 @@ pub async fn run_context_update(
     use vta_cli_common::commands::contexts::render_context_record;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let cs = CliStore::open(&app_config).await?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-update");
     let params = UpdateContextParams {
@@ -930,7 +936,7 @@ pub async fn run_context_update(
     )
     .await?;
 
-    store.persist().await?;
+    cs.persist().await?;
     println!("Context updated:");
     render_context_record(&to_context_response(&record));
     Ok(())
@@ -949,15 +955,15 @@ pub async fn run_context_delete(
     use vta_cli_common::display::{NameBook, NameSource};
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
-    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let cs = CliStore::open(&app_config).await?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
+    let did_templates_ks = cs.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
     #[cfg(feature = "webvh")]
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = AuthClaims::unsafe_local_cli_super_admin("context-delete");
 
@@ -1004,7 +1010,7 @@ pub async fn run_context_delete(
     crate::operations::contexts::delete_context(&ks, &auth, &id, true, "vta-contexts-delete")
         .await?;
 
-    store.persist().await?;
+    cs.persist().await?;
     println!("Context deleted: {id}");
     Ok(())
 }
@@ -1047,7 +1053,10 @@ pub async fn run_context_reprovision(
     )?;
 
     let app_config = AppConfig::load(config_path)?;
-    let store = Store::open(&app_config.store)?;
+    let cs = CliStore::open(&app_config)
+        .await
+        .map_err(|e| format!("{e}"))?;
+    let enc_key = cs.enc_key();
     let vta_did = app_config
         .vta_did
         .clone()
@@ -1058,9 +1067,9 @@ pub async fn run_context_reprovision(
     let (restart_tx, _restart_rx) = watch::channel(false);
     let state = build_app_state(
         app_config,
-        &store,
+        &cs,
         seed_store.into(),
-        None,
+        enc_key,
         None,
         restart_tx,
         crate::server::AppStateParts::default(),
@@ -1142,7 +1151,7 @@ pub async fn run_context_reprovision(
             .with_contexts(vec![id.clone()])
             .with_created_at(Utc::now().timestamp() as u64);
         crate::acl::store_acl_entry(&state.acl_ks, &entry).await?;
-        store.persist().await?;
+        cs.persist().await?;
         eprintln!("Created ACL entry for {admin_did} in context '{id}'");
     }
 

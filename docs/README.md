@@ -45,6 +45,7 @@ VTA via the `vtc-host` DID template.
 | Decide between VTA and VTC | [Root README — Which service do you need?](../README.md#which-service-do-you-need) |
 | Stand up a VTA from scratch | [VTA cold-start](02-vta/cold-start.md) |
 | Stand up a VTC on an existing VTA | [VTC getting started](03-vtc/getting-started.md) |
+| Add at-rest encryption to a self-hosted (non-TEE) VTA | [Hardened configuration](02-vta/non-interactive-setup.md#hardened-configuration) |
 | Pick where to store the master seed | [VTA secret backends](02-vta/secret-backends.md) |
 | Deploy a VTA inside a Nitro Enclave | [TEE architecture](02-vta/tee-architecture.md) |
 | Build an app that uses a VTA | [VTA integration guide](02-vta/integration-guide.md) |
@@ -80,6 +81,9 @@ How to operate, deploy, and integrate against a VTA.
 - **[Non-interactive setup](02-vta/non-interactive-setup.md)** —
   scripted VTA provisioning via `vta setup --from <file>` for CI,
   sealed images, unattended bootstrap.
+- **[Hardened configuration](02-vta/non-interactive-setup.md#hardened-configuration)** —
+  enable storage encryption and sealed JWT key management for
+  self-hosted (non-TEE) deployments (`[hardened] enabled = true`).
 - **[Seal and unseal](02-vta/seal-and-unseal.md)** — what the
   seal is, when it's set, how `vta unseal` works.
 - **[Secret-storage backends](02-vta/secret-backends.md)** — AWS,

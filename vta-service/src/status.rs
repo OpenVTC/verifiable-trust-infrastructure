@@ -14,6 +14,7 @@ use ed25519_dalek_bip32::ExtendedSigningKey;
 
 use crate::acl::{self, Role};
 use crate::auth::session::{self, SessionState};
+use crate::cli_store::{CliStore, load_storage_key_for_cli};
 use crate::config::AppConfig;
 use crate::contexts;
 use crate::keys::derivation::Bip32Extension;
@@ -171,6 +172,23 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 6. Open store (may fail if VTA is already running)
+    //
+    // `status` is a diagnostic and degrades rather than exiting — it already
+    // tolerates the store being locked by a running daemon. But it must not
+    // silently treat "could not reach the secret store" as "encryption is off":
+    // that reads every encrypted keyspace through a bare handle and reports
+    // confident nonsense. Say what happened and carry on.
+    let enc_key = match load_storage_key_for_cli(&config).await {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!();
+            eprintln!(
+                "  {YELLOW}Note:{RESET} Could not derive the storage-encryption key ({e}). \
+                 Encrypted keyspaces below will read as unavailable."
+            );
+            None
+        }
+    };
     let store = match Store::open(&config.store) {
         Ok(s) => s,
         Err(_) => {
@@ -183,12 +201,13 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
             return Ok(());
         }
     };
+    let cs = CliStore::from_store(store, enc_key);
 
     // 7. Trust-ping to mediator (needs key records from store)
     if let (Some(vta_did), Some(mediator)) = (&config.vta_did, mediator_did) {
         match tokio::time::timeout(
             Duration::from_secs(10),
-            send_trust_ping(&config, &store, vta_did, mediator),
+            send_trust_ping(&config, &cs, vta_did, mediator),
         )
         .await
         {
@@ -205,10 +224,10 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 8. Gather stats from store
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
-    let sessions_ks = store.keyspace(crate::keyspaces::SESSIONS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
+    let sessions_ks = cs.keyspace(crate::keyspaces::SESSIONS)?;
 
     // --- Contexts ---
     let ctx_records = contexts::list_contexts(&contexts_ks).await?;

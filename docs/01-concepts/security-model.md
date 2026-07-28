@@ -3,13 +3,19 @@
 ## Overview
 
 The VTA implements a defense-in-depth security model with eight layers of
-protection when deployed in TEE mode. Non-TEE deployments use the
-identity/access, seal, and audit layers (5, 6, 8); TEE deployments add
-hardware isolation, KMS-backed secrets, encrypted storage, config locking,
-and the vsock network controls (layers 1-4, 7).
+protection when deployed in TEE mode. Standard (non-TEE) deployments use
+layers 4-8 by default. Enabling **hardened configuration** (`[hardened]
+enabled = true` in `config.toml`) brings layer 3 equivalent protection
+to non-TEE deployments — the master seed is loaded from an external secret
+store, the storage-encryption key is HKDF-derived from it, and the JWT
+signing key is randomly generated and AES-GCM sealed — without requiring a
+Nitro Enclave. TEE deployments add hardware isolation, KMS-backed secrets,
+encrypted storage, config locking, and the vsock network controls (layers 1-4, 7).
 
 For TEE implementation details (KMS bootstrap code, encrypted store layer,
 config changes), see [TEE Enclave Security Design](tee-architecture.md).
+For the non-TEE hardened configuration, see
+[Hardened configuration](../02-vta/non-interactive-setup.md#hardened-configuration).
 
 ## Security Layers
 
@@ -31,12 +37,24 @@ config changes), see [TEE Enclave Security Design](tee-architecture.md).
   key generated inside the enclave. The seed / data-key plaintext is therefore
   never exposed to the parent, even on the vsock + TLS path to KMS.
 
+> **Non-TEE equivalent (hardened configuration):** JWT signing key is
+> randomly generated at first boot, AES-GCM sealed under the
+> HKDF-derived storage key, and fingerprint-verified on every subsequent
+> boot — equivalent to KMS-backed sealing without a Nitro Enclave.
+> See [hardened configuration](../02-vta/non-interactive-setup.md#hardened-configuration).
+
 ### Layer 3: Encrypted Storage
 - All fjall keyspace values encrypted with AES-256-GCM
 - Storage key derived from master seed via HKDF-SHA256
 - Deterministic derivation -- same seed produces same key across restarts
 - Keys stored in plaintext for prefix scans; values always encrypted
 - Each value: `[4-byte magic "VAE1"][12-byte random nonce][ciphertext + 16-byte GCM tag]`, AEAD-bound (AAD) to its `(keyspace, key)` location
+
+> **Non-TEE equivalent (hardened configuration):** The same VAE1
+> AES-256-GCM per-value encryption activates for non-TEE deployments
+> when `[hardened] enabled = true`. The storage key is HKDF-derived from
+> the master seed loaded from the external secret store (OS keyring, AWS
+> SM, GCP SM, …). See [hardened configuration](../02-vta/non-interactive-setup.md#hardened-configuration).
 
 ### Layer 4: Configuration Locking
 - When KMS bootstrap is active, environment variable overrides are blocked

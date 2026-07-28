@@ -36,6 +36,7 @@ pub use vta_backup::{backup_bundle_store, backup_bundle_sweeper};
 /// feature gates the same `TeeConfig` / `TeeMode` items, wired to
 /// `vta-config/tee` in `Cargo.toml`.
 pub use vta_config as config;
+pub mod cli_store;
 /// Shared mid-layer services (trust-context store, sealed-transfer seal
 /// helper, anti-replay nonce store), extracted to the `vta-support` crate and
 /// re-exported so every `crate::{contexts,seal,sealed_nonce_store}::…` path is
@@ -54,6 +55,7 @@ pub mod error;
 /// (`aws-secrets` … `keyring`, `tee`) are wired to the matching `vta-keys/*`
 /// features in `Cargo.toml`.
 pub use vta_keys as keys;
+pub mod hardened_bootstrap;
 pub mod keyspaces;
 #[cfg(feature = "didcomm")]
 pub mod messaging;

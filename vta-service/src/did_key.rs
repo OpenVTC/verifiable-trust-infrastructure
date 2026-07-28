@@ -5,12 +5,12 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as BASE64;
 use dialoguer::Input;
 
 use crate::acl::{AclEntry, Role, store_acl_entry};
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::contexts::{self, get_context};
 use crate::keys;
 use crate::keys::seed_store::create_seed_store;
 use crate::keys::seeds::{get_active_seed_id, load_seed_bytes};
-use crate::store::Store;
 
 pub struct CreateDidKeyArgs {
     pub config_path: Option<PathBuf>,
@@ -21,9 +21,9 @@ pub struct CreateDidKeyArgs {
 
 pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
 
     // Load seed from configured backend using the active generation
     let seed_store = create_seed_store(&config)?;
@@ -60,7 +60,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
 
     // Optionally create ACL entry
     if args.admin {
-        let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+        let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
         let entry = AclEntry::new(did.clone(), Role::Admin, "cli:create-did-key")
             .with_label(args.label.clone())
             .with_contexts(vec![args.context.clone()]);
@@ -72,7 +72,7 @@ pub async fn run_create_did_key(args: CreateDidKeyArgs) -> Result<(), Box<dyn st
     }
 
     // Persist all writes
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("DID: {did}");
 

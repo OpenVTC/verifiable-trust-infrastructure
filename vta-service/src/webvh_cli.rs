@@ -5,11 +5,11 @@ use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuil
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::auth::AuthClaims;
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::create_seed_store;
 use crate::operations;
-use crate::store::Store;
 
 /// Format a UTC `DateTime` as a readable local-timezone string with ISO offset.
 ///
@@ -38,8 +38,8 @@ pub async fn run_add_server(
     label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
 
     let auth = cli_super_admin();
@@ -53,7 +53,7 @@ pub async fn run_add_server(
         "cli",
     )
     .await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("WebVH server added:");
     eprintln!("  ID:  {}", result.id);
@@ -68,8 +68,8 @@ pub async fn run_list_servers(
     config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::list_webvh_servers(&webvh_ks, &auth, "cli").await?;
@@ -98,13 +98,13 @@ pub async fn run_update_server(
     label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result =
         operations::did_webvh::update_webvh_server(&webvh_ks, &auth, &id, label, "cli").await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("WebVH server updated:");
     eprintln!("  ID:  {}", result.id);
@@ -120,12 +120,12 @@ pub async fn run_remove_server(
     id: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     operations::did_webvh::remove_webvh_server(&webvh_ks, &auth, &id, "cli").await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("WebVH server removed: {id}");
     Ok(())
@@ -145,13 +145,13 @@ pub async fn run_create_did(
     print_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path.clone())?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let did_templates_ks = cs.keyspace(crate::keyspaces::DID_TEMPLATES)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -209,7 +209,7 @@ pub async fn run_create_did(
         auth_locks: &auth_locks,
     };
     let result = operations::did_webvh::create_did_webvh(&deps, &auth, params, "cli").await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("\x1b[1;32mCreated DID:\x1b[0m {}", result.did);
     eprintln!("  Context:    {}", result.context_id);
@@ -241,8 +241,8 @@ pub async fn run_list_dids(
     server_id: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
     let result = operations::did_webvh::list_dids_webvh(
@@ -277,12 +277,12 @@ pub async fn run_delete_did(
     did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -303,7 +303,7 @@ pub async fn run_delete_did(
     };
     operations::did_webvh::delete_did_webvh(&deps, &auth, &did, config.vta_did.as_deref(), "cli")
         .await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("WebVH DID deleted: {did}");
     Ok(())
@@ -317,8 +317,8 @@ pub async fn run_did_log(
     out: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let log = crate::webvh_store::get_did_log(&webvh_ks, &did)
         .await?
@@ -373,12 +373,12 @@ pub async fn run_edit_did(
     use vta_sdk::protocols::did_management::update::UpdateDidWebvhBody;
 
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -527,7 +527,7 @@ pub async fn run_edit_did(
         "vta-cli-offline",
     )
     .await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("WebVH DID updated.");
     eprintln!("  DID:             {}", result.did);
@@ -549,12 +549,12 @@ pub async fn run_register_did(
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
-    let store = Store::open(&config.store)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
+    let cs = CliStore::open(&config).await?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
     let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
@@ -586,7 +586,7 @@ pub async fn run_register_did(
         "vta-cli-offline",
     )
     .await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     eprintln!("DID registered with WebVH server.");
     eprintln!("  DID:         {}", result.did);

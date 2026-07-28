@@ -234,7 +234,10 @@ A transparent encryption layer that wraps `KeyspaceHandle`:
 /// Wraps a KeyspaceHandle to encrypt all values with AES-256-GCM.
 ///
 /// In TEE mode, all data written to fjall passes through this layer.
-/// In non-TEE mode, this layer is bypassed (identity transform).
+/// In non-TEE mode, this layer is bypassed (identity transform)
+/// unless hardened configuration is enabled (`[hardened] enabled = true`),
+/// in which case the storage key is HKDF-derived from the master seed and
+/// the same VAE1 encryption activates. See `hardened_bootstrap.rs`.
 pub struct EncryptedKeyspaceHandle {
     inner: KeyspaceHandle,
     /// AES-256-GCM key derived from master seed via HKDF
@@ -419,6 +422,17 @@ Start REST/DIDComm/Storage threads (normal flow)
 
 In non-TEE mode, the startup sequence is unchanged — `bootstrap_secrets_from_kms()`
 is skipped, and the existing SeedStore/config-based key loading is used.
+When **hardened configuration** is enabled (`[hardened] enabled = true`),
+`hardened_bootstrap::load_boot_secrets()` runs instead: it loads the master
+seed from the external secret store, HKDF-derives the storage-encryption key,
+and loads (or generates) the JWT signing key from the `bootstrap` keyspace.
+See [hardened configuration](non-interactive-setup.md#hardened-configuration) for details.
+
+> **Hardened configuration and TEE are mutually exclusive.** Setting
+> `[hardened] enabled = true` in an enclave `config.toml` has no effect —
+> `vta-enclave` derives all secrets from the TEE KMS bootstrap and never
+> enters the hardened code path. The enclave logs a warning and ignores the
+> field. Use `[hardened]` only with the local `vta` binary on non-TEE hosts.
 
 ### Self-issued did:webvh identity and resolution
 
@@ -446,6 +460,7 @@ and both are load-bearing for a fresh enclave to accept traffic:
   first-enable handshake that trust-pings a newly configured mediator — re-seed the
   self-DID into the resolver cache immediately before running, rather than assuming
   it is still cached from preload.
+
 
 ## Secret Lifecycle Summary
 

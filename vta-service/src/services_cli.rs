@@ -38,10 +38,10 @@ use tokio::sync::RwLock;
 
 use vta_cli_common::commands::services::print_serverless_hint;
 use vta_cli_common::render::print_cli_error;
-use vti_common::config::StoreConfig as VtiStoreConfig;
 use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
 
 use crate::auth::AuthClaims;
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::{SeedStore, create_seed_store};
@@ -70,16 +70,16 @@ use crate::operations::protocol::update_didcomm::{
 };
 use crate::operations::protocol::update_rest::{UpdateRestParams, update_rest};
 use crate::operations::protocol::update_tsp::{UpdateTspParams, update_tsp};
-use crate::store::{KeyspaceHandle, Store};
+use crate::store::KeyspaceHandle;
 
 type CliResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Bundle of dependencies that every service-management op needs.
-/// Owns the `Store` so all derived keyspaces stay valid for the
+/// Owns the `CliStore` so all derived keyspaces stay valid for the
 /// command's lifetime.
 struct OfflineDeps {
     config: Arc<RwLock<AppConfig>>,
-    _store: Store,
+    _cs: CliStore,
     keys_ks: KeyspaceHandle,
     imported_ks: KeyspaceHandle,
     contexts_ks: KeyspaceHandle,
@@ -141,10 +141,7 @@ async fn build_offline_deps(
 ) -> Result<OfflineDeps, Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path)?;
     let data_dir = config.store.data_dir.clone();
-    let store = Store::open(&VtiStoreConfig {
-        data_dir: data_dir.clone(),
-    })
-    .map_err(|e| {
+    let cs = CliStore::open(&config).await.map_err(|e| {
         format!(
             "open store at {}: {e}\n\nIs the VTA daemon running? \
              Offline `vta services` commands require exclusive access. \
@@ -153,14 +150,14 @@ async fn build_offline_deps(
         )
     })?;
 
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let drains_ks = store.keyspace(crate::keyspaces::DRAINS)?;
-    let snapshot_ks = store.keyspace(snapshot::KEYSPACE_NAME)?;
-    let service_state_ks = store.keyspace(crate::keyspaces::SERVICE_STATE)?;
+    let keys_ks = cs.keyspace(crate::keyspaces::KEYS)?;
+    let imported_ks = cs.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
+    let contexts_ks = cs.keyspace(crate::keyspaces::CONTEXTS)?;
+    let audit_ks = cs.keyspace(crate::keyspaces::AUDIT)?;
+    let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
+    let drains_ks = cs.keyspace(crate::keyspaces::DRAINS)?;
+    let snapshot_ks = cs.keyspace(snapshot::KEYSPACE_NAME)?;
+    let service_state_ks = cs.keyspace(crate::keyspaces::SERVICE_STATE)?;
     // Sync the in-memory config from fjall (authoritative) so the readers
     // throughout the codebase see the current runtime state, not the legacy
     // (possibly stale) [services] block on disk.
@@ -200,7 +197,7 @@ async fn build_offline_deps(
 
     Ok(OfflineDeps {
         config: Arc::new(RwLock::new(config)),
-        _store: store,
+        _cs: cs,
         keys_ks,
         imported_ks,
         contexts_ks,

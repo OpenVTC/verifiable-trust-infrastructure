@@ -65,10 +65,11 @@ pub async fn get_seal(acl_ks: &KeyspaceHandle) -> Result<Option<SealRecord>, App
 
 /// Check if the VTA is sealed, and exit with an error if it is.
 ///
-/// Call this at the top of any CLI command that modifies state.
-pub async fn require_unsealed(store: &Store) -> Result<(), AppError> {
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
-    if let Some(seal) = get_seal(&acl_ks).await? {
+/// Accepts the ACL keyspace handle directly so the caller controls whether it
+/// is encrypted (hardened configuration) or bare. Call this at the top of any CLI
+/// command that modifies state.
+pub async fn require_unsealed(acl_ks: &KeyspaceHandle) -> Result<(), AppError> {
+    if let Some(seal) = get_seal(acl_ks).await? {
         return Err(AppError::Config(format!(
             "VTA is sealed (by {} on {}). \
              Offline CLI commands are disabled. \
@@ -120,9 +121,14 @@ pub(crate) struct UnsealChallenge {
 /// pasting their signature.
 pub(crate) async fn read_unseal_state(
     store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
 ) -> Result<UnsealChallenge, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks_raw = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks = match enc_key {
+        Some(key) => acl_ks_raw.with_encryption(key),
+        None => acl_ks_raw,
+    };
 
     let seal = get_seal(&acl_ks)
         .await?
@@ -154,9 +160,16 @@ pub(crate) async fn read_unseal_state(
 /// seal was removed in this call, `Ok(false)` if it had already been
 /// removed (e.g. by a concurrent process while the operator was
 /// blocked on stdin).
-pub(crate) async fn remove_seal_marker(store_config: &StoreConfig) -> Result<bool, AppError> {
+pub(crate) async fn remove_seal_marker(
+    store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
+) -> Result<bool, AppError> {
     let store = Store::open(store_config)?;
-    let acl_ks = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks_raw = store.keyspace(vta_keyspaces::ACL)?;
+    let acl_ks = match enc_key {
+        Some(key) => acl_ks_raw.with_encryption(key),
+        None => acl_ks_raw,
+    };
     if get_seal(&acl_ks).await?.is_none() {
         return Ok(false);
     }
@@ -175,12 +188,15 @@ pub(crate) async fn remove_seal_marker(store_config: &StoreConfig) -> Result<boo
 ///    can open the same data dir to produce the signature.
 /// 3. Verify the Ed25519 signature; [`remove_seal_marker`] then
 ///    reopens the store, removes the seal, and persists.
-pub async fn run_unseal_challenge(store_config: &StoreConfig) -> Result<(), AppError> {
+pub async fn run_unseal_challenge(
+    store_config: &StoreConfig,
+    enc_key: Option<[u8; 32]>,
+) -> Result<(), AppError> {
     let UnsealChallenge {
         seal,
         super_admins,
         challenge_bytes,
-    } = read_unseal_state(store_config).await?;
+    } = read_unseal_state(store_config, enc_key).await?;
 
     let challenge_hex = hex::encode(challenge_bytes);
 
@@ -248,7 +264,7 @@ pub async fn run_unseal_challenge(store_config: &StoreConfig) -> Result<(), AppE
     // Verify the signature before we reacquire the lock.
     verify_challenge_signature(admin_did, &challenge_bytes, sig_hex)?;
 
-    let removed = remove_seal_marker(store_config).await?;
+    let removed = remove_seal_marker(store_config, enc_key).await?;
     if !removed {
         eprintln!();
         eprintln!("  VTA was unsealed concurrently — nothing to do.");
@@ -376,7 +392,9 @@ mod tests {
         };
 
         // Phase 1: must return without holding the lock.
-        let challenge = read_unseal_state(&config).await.expect("read_unseal_state");
+        let challenge = read_unseal_state(&config, None)
+            .await
+            .expect("read_unseal_state");
 
         assert_eq!(challenge.seal.sealed_by, "did:key:zTestAdmin");
         assert_eq!(challenge.super_admins.len(), 1);
@@ -404,10 +422,12 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
         };
 
-        let first = remove_seal_marker(&config).await.expect("first call");
+        let first = remove_seal_marker(&config, None).await.expect("first call");
         assert!(first, "first call should report seal removed");
 
-        let second = remove_seal_marker(&config).await.expect("second call");
+        let second = remove_seal_marker(&config, None)
+            .await
+            .expect("second call");
         assert!(
             !second,
             "second call should report no-op (seal already gone)"
@@ -430,7 +450,7 @@ mod tests {
             store.persist().await.expect("persist");
         }
 
-        let err = read_unseal_state(&config)
+        let err = read_unseal_state(&config, None)
             .await
             .expect_err("must reject unsealed VTA");
         assert!(matches!(err, AppError::Config(_)), "got {err:?}");
@@ -453,7 +473,7 @@ mod tests {
             store.persist().await.expect("persist");
         }
 
-        let err = read_unseal_state(&config)
+        let err = read_unseal_state(&config, None)
             .await
             .expect_err("must reject missing super-admin");
         assert!(matches!(err, AppError::Config(_)), "got {err:?}");

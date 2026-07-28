@@ -57,6 +57,10 @@ fn default_true() -> bool {
 // `Guards` / `WebvhPathCounter` moved to `vti_common::guards` so `vta-policy`'s
 // consent model can name them without a cross-crate cycle; re-exported here so
 // every `planner::Guards` reference keeps resolving.
+// `WebvhPathCounter` is the type of `Guards::webvh_path_counter`, which is not
+// itself feature-gated, so it stays part of this crate's public surface in every
+// build even though only `webvh` code here names it.
+#[cfg_attr(not(feature = "webvh"), allow(unused_imports))]
 pub use vti_common::guards::{Guards, WebvhPathCounter};
 
 /// Dry-run `type_uri`'s handler against `payload`.

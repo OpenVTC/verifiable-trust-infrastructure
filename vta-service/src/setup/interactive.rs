@@ -22,7 +22,9 @@ use bip39::Mnemonic;
 use dialoguer::{Confirm, Input, MultiSelect, Select};
 use serde_json::json;
 
-use crate::config::{AuditConfig, LogConfig, LogFormat, ServerConfig, ServicesConfig};
+use crate::config::{
+    AuditConfig, HardenedConfig, LogConfig, LogFormat, ServerConfig, ServicesConfig,
+};
 
 use super::{
     SetupUi, apply_inputs, derive_ws_url,
@@ -181,6 +183,45 @@ impl SetupUi for InteractiveUi<'_> {
 // ---------------------------------------------------------------------------
 // Prompt helpers — each returns a piece of WizardInputs
 // ---------------------------------------------------------------------------
+
+/// Prompt whether to enable hardened configuration.
+///
+/// When enabled, a fresh random `storage_key_salt` is minted for this VTA and
+/// written to `config.toml`. The field is documented as a permanent per-VTA
+/// constant, so setup makes it one rather than leaving every install on the
+/// shared compatibility default. Operators who need a specific value still use
+/// `--from <toml>`.
+fn prompt_hardened(p: &dyn Prompter) -> Result<HardenedConfig, DynErr> {
+    let enabled = p.confirm(
+        "Enable hardened configuration? (encrypts the fjall store and seals the JWT signing key \
+          in the bootstrap keyspace — protects against direct disk access)",
+        false,
+    )?;
+
+    if !enabled {
+        return Ok(HardenedConfig::default());
+    }
+
+    eprintln!();
+    eprintln!("  \x1b[2mHardened configuration enabled.\x1b[0m");
+    eprintln!(
+        "  \x1b[2mA random storage_key_salt has been generated and written to config.toml.\x1b[0m"
+    );
+    eprintln!(
+        "  \x1b[2mBack up config.toml: changing or losing the salt makes the store \
+         unreadable.\x1b[0m"
+    );
+    eprintln!(
+        "  \x1b[2mTo supply your own storage_key_salt, run `vta setup --from <toml>` \
+         instead.\x1b[0m"
+    );
+    eprintln!();
+
+    Ok(HardenedConfig {
+        enabled: true,
+        storage_key_salt: crate::hardened_bootstrap::generate_storage_key_salt(),
+    })
+}
 
 /// Prompt which services to enable. Returns `(rest, didcomm)`; at least one.
 fn prompt_services(p: &dyn Prompter) -> Result<(bool, bool), DynErr> {
@@ -991,14 +1032,17 @@ async fn gather_inputs(
     // 10. Secrets backend.
     let secrets = configure_secrets(p).await?;
 
-    // 11. Messaging (DIDComm only).
+    // 11. Hardened configuration.
+    let hardened = prompt_hardened(p)?;
+
+    // 12. Messaging (DIDComm only).
     let messaging = if enable_didcomm {
         configure_messaging(p).await?
     } else {
         MessagingInput::Skip
     };
 
-    // 12. VTA DID.
+    // 13. VTA DID.
     let vta_did = create_vta_did(p)?;
 
     Ok(Some(WizardInputs {
@@ -1038,6 +1082,7 @@ async fn gather_inputs(
         // Staff provisioning is a non-interactive (enterprise) feature, exposed
         // only via `--from <toml>`.
         staff: Vec::new(),
+        hardened,
     }))
 }
 
@@ -1201,6 +1246,7 @@ mod tests {
             // Label, not index: the backend menu grows with features (config-seed etc.).
             Answer::Label("OS keyring"),
             text("golden-keyring"),                    // keyring service
+            Answer::Bool(false),                       // hardened configuration? no
             Answer::Index(1),                          // messaging = create mediator
             text("mediator"),                          // mediator context
             text("https://mediator.example.com"),      // mediator DIDComm url
@@ -1297,6 +1343,7 @@ mod tests {
             Answer::Bool(false),                                    // advanced server opts? no
             Answer::Label("OS keyring"), // label, not index: menu grows with features
             text("vta"),                 // keyring service
+            Answer::Bool(false),         // hardened configuration? no
             Answer::Index(1),            // VTA DID = did:key
         ];
         let gathered = gather_inputs(&ScriptedPrompter::new(answers), None)
@@ -1384,6 +1431,7 @@ mod tests {
                 Answer::Index(choice),    // reuse / delete
                 Answer::Label("OS keyring"), // label, not index: menu grows with features
                 text("vta"),              // keyring service
+                Answer::Bool(false),      // hardened configuration? no
                 Answer::Index(2),         // messaging = skip
                 Answer::Index(1),         // VTA DID = did:key
             ];
@@ -1417,7 +1465,8 @@ mod tests {
             Answer::Bool(false),           // advanced server opts? no
             // Label, not index: the backend menu grows with features (config-seed etc.).
             Answer::Label("OS keyring"),
-            text("vta"), // keyring service
+            text("vta"),         // keyring service
+            Answer::Bool(false), // hardened configuration? no
             // messaging skipped (REST only)
             Answer::Index(0),                       // VTA DID = create_webvh
             text("https://t.example.com/dids/vta"), // webvh url

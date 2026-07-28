@@ -2,6 +2,136 @@
 
 ## Unreleased
 
+### vta-config 0.2.0 — `HardenedConfig` added to `AppConfig`
+
+New public struct `HardenedConfig` and a corresponding `hardened:
+HardenedConfig` field on `AppConfig`. Controls `[hardened] enabled` and
+`storage_key_salt` for the hardened non-TEE configuration feature. Additive
+— existing configs that omit `[hardened]` get `enabled = false` via `Default`.
+
+### vta-sdk 0.20.9 — `BackupPayload` and `ImportedSecretBackup` zeroize key material on drop
+
+Added `Drop` impls for `BackupPayload` and `ImportedSecretBackup` (both gated
+on the `sealed-transfer` feature, which is what pulls `zeroize` into `vta-sdk`).
+`BackupPayload::drop` zeroizes `active_seed_hex` and `jwt_signing_key`;
+`ImportedSecretBackup::drop` zeroizes `private_key_hex`. These fields hold the
+master seed and imported private keys in heap-allocated `String` form during a
+backup export window; without explicit zeroing they linger until the allocator
+reuses the memory. Additive — no public API removed or reshaped.
+
+### vta-support 0.2.0 — unseal flow is hardened-configuration aware
+
+`require_unsealed`, `run_unseal_challenge`, `read_unseal_state`, and
+`remove_seal_marker` in `vta-support::seal` now accept the encryption key for
+the ACL keyspace so they work correctly when hardened configuration (`[hardened]
+enabled = true`) is active. 
+
+- `require_unsealed` signature changed from `require_unsealed(&Store)` to
+  `require_unsealed(&KeyspaceHandle)` — callers now pass an already-opened
+  (and optionally encrypted) keyspace handle.
+- `run_unseal_challenge(store_config, enc_key: Option<[u8;32]>)` — new
+  parameter; callers derive the key via `cli_store::load_storage_key_for_cli`
+  and pass it through.
+
+### vta-backup 0.1.2 / vta-keys 0.1.3 / vta-policy 0.1.1 / vta-tee 0.1.3 — re-pin to `vta-support` 0.2
+
+No behavioural change in these four crates. `vta-support` 0.2.0 is a breaking
+minor (`require_unsealed` now takes the ACL `KeyspaceHandle` instead of the
+`Store`, so the caller decides whether it is encrypted; `run_unseal_challenge`
+and friends gain an `enc_key` parameter), so every dependent re-pins.
+
+Recorded rather than left silent because sibling repos pin these loosely: a
+consumer resolving `vta-support` 0.2 through one of these crates needs to know
+why the floor moved.
+
+### vta-service 0.13.0 — Hardened configuration (non-TEE at-rest encryption)
+
+Adds `[hardened] enabled = true` in `config.toml` to bring storage
+encryption and sealed JWT key management to self-hosted (non-TEE)
+deployments — the equivalent of TEE layer 3 without requiring a
+Nitro Enclave.
+
+* **Storage encryption**: all fjall keyspaces encrypted with AES-256-GCM
+  (VAE1 format, same as TEE) using a key HKDF-SHA256-derived from the
+  master seed loaded from the external secret store (OS keyring, AWS SM,
+  GCP SM, Vault, …).
+* **JWT signing key in the encrypted keyspace**: a random 32-byte key stored in
+  the `KEYS` keyspace at `hardened:jwt_key` — never written to `config.toml`.
+  It is an ordinary `VAE1` row, protected by the same layer as every other
+  secret rather than by a second, hand-rolled AES-GCM seal in the unencrypted
+  `bootstrap` keyspace. One layer instead of two, and slightly stronger: `VAE1`
+  binds each value to its `(keyspace, key)` location through AEAD associated
+  data, while the retired seal carried none — a ciphertext copied to another row
+  would still have opened. The separate SHA-256 fingerprint row that partly
+  covered that gap is gone; the AEAD tag now does that job. A wrong
+  `storage_key_salt` or seed surfaces as a decrypt failure on read.
+  A VTA on the old layout migrates on its next boot — the sealed row is opened,
+  rewritten into `KEYS`, and the legacy rows deleted, **carrying the key across
+  unchanged so live sessions survive**.
+* **Independent JWT key rotation**: `vta hardened rotate-jwt` deletes the
+  sealed ciphertext; new key is generated on next daemon start.
+* **All offline CLI commands** (`vta acl`, `keys`, `vault`, `webvh`,
+  `bootstrap`, etc.) transparently derive and use the storage key via the
+  new `CliStore` wrapper — no operator action needed.
+* **Setup wizard support**: `vta setup --from <file>` with a `[hardened]`
+  section generates an encrypted store from first write. Setup also mints a
+  random per-VTA `storage_key_salt` rather than leaving every install on the
+  shared compatibility default. (To be precise about the value of that: an
+  HKDF salt need not be secret and the IKM is already a per-VTA high-entropy
+  seed, so a shared salt was never a break — but the field is documented as a
+  permanent per-VTA constant, so it should be one. Configs that omit the field
+  keep the legacy constant, so existing stores are unaffected.)
+* **Automatic migration on first hardened boot**: turning the flag on for a VTA
+  that already has data converts its existing plaintext rows to `VAE1` before
+  anything opens an encrypted handle. This is not a convenience — the store's
+  decrypt path is deliberately fail-closed with no plaintext fallback (that
+  fallback would reopen the cut-and-paste downgrade hole the AAD binding
+  closes), so without the conversion every pre-existing row becomes unreadable,
+  **including the ACL keyspace**, locking the operator out of their own VTA.
+  The pass is idempotent (a no-op on fresh installs and on every later boot) and
+  crash-safe (an interrupted run is completed by the next boot), mirroring what
+  `vtc-service` already does for its own at-rest encryption. The `bootstrap`
+  keyspace is deliberately excluded: its hardened JWT ciphertext is read back
+  through a *bare* handle, so wrapping it in `VAE1` would make the next boot
+  fail as though the ciphertext had been tampered with.
+* **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`,
+  `CliStore.enc_key`) are held in `Zeroizing<T>` / `HardenedBootSecrets`
+  (mirrors `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
+* **The two seed-on-disk configurations now raise a `SECURITY:` warning at every
+  boot.** `[secrets] seed` inlines the hex master seed in `config.toml`, and the
+  plaintext-file fallback puts it in the same data directory as the store. In
+  either case anyone who can read that file re-derives the storage-encryption
+  key *and* the JWT signing key — enough to decrypt the whole store and forge
+  any token, which is the exact capability this feature exists to remove. The
+  first cut treated `[secrets] seed` as evidence of a *real* backend, so the
+  deployment that most needed the warning was the only one that never saw it.
+  Warnings rather than a hard refusal, because `config.toml` can legitimately be
+  mounted from a Kubernetes Secret.
+
+Also in this release, two build-hygiene fixes uncovered while working on the
+above. Neither is hardened-configuration specific.
+
+* **`--features rest,didcomm` did not compile**, and had not for some time.
+  Three trust-task call sites buffer into `AppState::mediator_registry`, which
+  is `webvh`-gated, from inside `didcomm`-gated blocks — naming
+  `PendingResponse` needs only `didcomm`, so nothing failed until the pair was
+  built on its own. Every other reference in the crate is `webvh`-gated; these
+  were the outliers. The `send_guaranteed` calls beside them stay on `didcomm`,
+  being the delivery path rather than the latency optimisation.
+* **`--features rest` compiled with six dead imports and constants** whose only
+  consumers sit behind `didcomm`. Now gated to match.
+
+Both combinations are new steps in the CI feature-combos job — neither was
+covered, which is why they rotted: the existing `tee` step pulls `webvh` in, so
+`didcomm`-without-`webvh` was never built by anything.
+
+New source files: `vta-service/src/hardened_bootstrap.rs` (crypto + boot
+secrets) and `vta-service/src/cli_store.rs` (`CliStore` wrapper for
+offline CLI commands).
+
+See [`docs/02-vta/non-interactive-setup.md#hardened-configuration`](docs/02-vta/non-interactive-setup.md#hardened-configuration)
+for the operator guide.
+
 ### vtc-service 0.11.37 — self-remove and member-VMC are Trust Tasks
 
 0.11.36 gave the VTC a TSP inbound path, but that path reaches a verb only

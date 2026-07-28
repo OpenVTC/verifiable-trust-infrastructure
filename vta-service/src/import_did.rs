@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Select};
 
 use crate::acl::{AclEntry, Role, get_acl_entry, store_acl_entry};
+use crate::cli_store::CliStore;
 use crate::config::AppConfig;
-use crate::store::Store;
 
 pub struct ImportDidArgs {
     pub config_path: Option<PathBuf>,
@@ -16,8 +16,8 @@ pub struct ImportDidArgs {
 
 pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
-    let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let cs = CliStore::open(&config).await?;
+    let acl_ks = cs.keyspace(crate::keyspaces::ACL)?;
 
     // Validate DID format
     if !args.did.starts_with("did:") {
@@ -59,7 +59,7 @@ pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::erro
         .with_contexts(args.context.clone());
 
     store_acl_entry(&acl_ks, &entry).await?;
-    store.persist().await?;
+    cs.persist().await?;
 
     // Print summary
     eprintln!();
