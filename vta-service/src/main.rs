@@ -2151,11 +2151,14 @@ async fn main() {
                 // it.
                 if config.secrets.seed.is_some() {
                     tracing::warn!(
-                        "hardened configuration is enabled but [secrets] seed is set — the master \
-                         seed is stored in config.toml, so the storage-encryption and JWT signing \
-                         keys can both be re-derived by anyone who can read that file. This \
-                         reduces hardened configuration to obfuscation. Move the seed to a real \
-                         secret-store backend (OS keyring, aws-secrets, gcp-secrets, vault, k8s)"
+                        "SECURITY: hardened.enabled = true but the master seed is inlined in \
+                         config.toml via [secrets] seed. The storage-encryption key and the JWT \
+                         signing key are both derived from that seed, so anyone who can read \
+                         config.toml can re-derive both, decrypt the whole store and forge any \
+                         token — the exact capability hardened configuration exists to remove. \
+                         At-rest encryption is providing no protection in this configuration. \
+                         Move the seed to a real secret-store backend (OS keyring, aws-secrets, \
+                         gcp-secrets, azure-secrets, vault, k8s) before relying on it."
                     );
                 }
 
@@ -2172,11 +2175,14 @@ async fn main() {
                     && !cfg!(feature = "keyring");
                 if looks_like_plaintext_backend {
                     tracing::warn!(
-                        "hardened configuration is enabled but the [secrets] backend appears to be \
-                             the plaintext file fallback — the storage-encryption and JWT signing \
-                             keys can be re-derived by anyone who reads the seed file. Use a real \
-                             secret-store backend (OS keyring, aws-secrets, gcp-secrets, …) for \
-                             meaningful protection"
+                        "SECURITY: hardened.enabled = true but the [secrets] backend resolves to \
+                         the plaintext seed file, which sits in the same data directory as the \
+                         store it is meant to protect. Anyone who can read that file re-derives \
+                         the storage-encryption key and the JWT signing key, decrypts the whole \
+                         store and forges any token. At-rest encryption is providing no \
+                         protection in this configuration. Use a real secret-store backend (OS \
+                         keyring, aws-secrets, gcp-secrets, azure-secrets, vault, k8s) before \
+                         relying on it."
                     );
                 }
 

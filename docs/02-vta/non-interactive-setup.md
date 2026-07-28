@@ -446,9 +446,17 @@ backends defeat the feature entirely, and both now log a startup warning:
 - **`[secrets] seed`** (the config-seed backend), which inlines the hex master
   seed in `config.toml` itself.
 
-In either case anyone who can read that one file re-derives both the storage
-key and the sealed JWT key, which reduces hardened configuration to
-obfuscation against exactly the adversary it is meant to stop.
+In either case anyone who can read that one file re-derives the
+storage-encryption key **and** the JWT signing key — enough to decrypt the whole
+store and forge any token. That is the exact capability hardened configuration
+exists to remove, so at-rest encryption provides no protection in these two
+configurations.
+
+Both log a `SECURITY:` warning at every boot. They are warnings rather than a
+hard refusal because `config.toml` can legitimately be mounted from a
+Kubernetes Secret, where the seed is not sitting on a disk an attacker reaches.
+If that is not your situation, treat the warning as a misconfiguration to fix
+before the VTA carries anything real.
 
 #### Enabling on a VTA that already has data
 

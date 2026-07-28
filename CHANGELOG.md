@@ -97,12 +97,16 @@ Nitro Enclave.
 * **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`,
   `CliStore.enc_key`) are held in `Zeroizing<T>` / `HardenedBootSecrets`
   (mirrors `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
-* **`[secrets] seed` now warns.** That field inlines the hex master seed in
-  `config.toml` itself, which is the one backend that defeats the whole
-  feature: both the storage key and the sealed JWT key are re-derivable by
-  anyone who can read that file. The first cut treated it as evidence of a
-  "real" backend, so the deployment that most needed the warning was the only
-  one that never saw it.
+* **The two seed-on-disk configurations now raise a `SECURITY:` warning at every
+  boot.** `[secrets] seed` inlines the hex master seed in `config.toml`, and the
+  plaintext-file fallback puts it in the same data directory as the store. In
+  either case anyone who can read that file re-derives the storage-encryption
+  key *and* the JWT signing key — enough to decrypt the whole store and forge
+  any token, which is the exact capability this feature exists to remove. The
+  first cut treated `[secrets] seed` as evidence of a *real* backend, so the
+  deployment that most needed the warning was the only one that never saw it.
+  Warnings rather than a hard refusal, because `config.toml` can legitimately be
+  mounted from a Kubernetes Secret.
 
 Also in this release, two build-hygiene fixes uncovered while working on the
 above. Neither is hardened-configuration specific.
