@@ -33,6 +33,17 @@ enabled = true`) is active.
   parameter; callers derive the key via `cli_store::load_storage_key_for_cli`
   and pass it through.
 
+### vta-backup 0.1.2 / vta-keys 0.1.3 / vta-policy 0.1.1 / vta-tee 0.1.3 — re-pin to `vta-support` 0.2
+
+No behavioural change in these four crates. `vta-support` 0.2.0 is a breaking
+minor (`require_unsealed` now takes the ACL `KeyspaceHandle` instead of the
+`Store`, so the caller decides whether it is encrypted; `run_unseal_challenge`
+and friends gain an `enc_key` parameter), so every dependent re-pins.
+
+Recorded rather than left silent because sibling repos pin these loosely: a
+consumer resolving `vta-support` 0.2 through one of these crates needs to know
+why the floor moved.
+
 ### vta-service 0.13.0 — Hardened configuration (non-TEE at-rest encryption)
 
 Adds `[hardened] enabled = true` in `config.toml` to bring storage
@@ -54,10 +65,42 @@ Nitro Enclave.
   `bootstrap`, etc.) transparently derive and use the storage key via the
   new `CliStore` wrapper — no operator action needed.
 * **Setup wizard support**: `vta setup --from <file>` with a `[hardened]`
-  section generates an encrypted store from first write.
+  section generates an encrypted store from first write. Setup also mints a
+  random per-VTA `storage_key_salt` rather than leaving every install on the
+  shared compatibility default. (To be precise about the value of that: an
+  HKDF salt need not be secret and the IKM is already a per-VTA high-entropy
+  seed, so a shared salt was never a break — but the field is documented as a
+  permanent per-VTA constant, so it should be one. Configs that omit the field
+  keep the legacy constant, so existing stores are unaffected.)
+* **Automatic migration on first hardened boot**: turning the flag on for a VTA
+  that already has data converts its existing plaintext rows to `VAE1` before
+  anything opens an encrypted handle. This is not a convenience — the store's
+  decrypt path is deliberately fail-closed with no plaintext fallback (that
+  fallback would reopen the cut-and-paste downgrade hole the AAD binding
+  closes), so without the conversion every pre-existing row becomes unreadable,
+  **including the ACL keyspace**, locking the operator out of their own VTA.
+  The pass is idempotent (a no-op on fresh installs and on every later boot) and
+  crash-safe (an interrupted run is completed by the next boot), mirroring what
+  `vtc-service` already does for its own at-rest encryption. The `bootstrap`
+  keyspace is deliberately excluded: its hardened JWT ciphertext is read back
+  through a *bare* handle, so wrapping it in `VAE1` would make the next boot
+  fail as though the ciphertext had been tampered with.
 * **Memory safety**: transient secrets (`seed`, `storage_key`, `jwt_key`,
   `CliStore.enc_key`) are held in `Zeroizing<T>` / `HardenedBootSecrets`
   (mirrors `tee::kms_bootstrap::BootstrappedSecrets`) and zeroed on drop.
+* **A missing JWT fingerprint row self-heals** instead of aborting the boot.
+  The AES-GCM tag has already authenticated the ciphertext under the storage
+  key by that point, so the fingerprint adds no further assurance; treating its
+  absence as fatal handed a denial of service to anyone who could delete a row
+  but not forge a ciphertext, since the documented remedy — clear both entries
+  and regenerate — invalidates every live session. A *mismatched* fingerprint
+  is still fatal.
+* **`[secrets] seed` now warns.** That field inlines the hex master seed in
+  `config.toml` itself, which is the one backend that defeats the whole
+  feature: both the storage key and the sealed JWT key are re-derivable by
+  anyone who can read that file. The first cut treated it as evidence of a
+  "real" backend, so the deployment that most needed the warning was the only
+  one that never saw it.
 
 New source files: `vta-service/src/hardened_bootstrap.rs` (crypto + boot
 secrets) and `vta-service/src/cli_store.rs` (`CliStore` wrapper for

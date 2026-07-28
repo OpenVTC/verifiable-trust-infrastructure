@@ -55,7 +55,22 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 use zeroize::Zeroizing;
 
-use crate::store::KeyspaceHandle;
+use crate::store::{KeyspaceHandle, Store};
+
+/// Keyspaces deliberately left **unencrypted** by the storage layer, and so
+/// excluded from [`migrate_store_to_encrypted`].
+///
+/// `bootstrap` is the only one. `server::run` opens it bare (see the
+/// "unencrypted, KMS-protected" call site in `server.rs`) because its contents
+/// are already application-layer sealed and, in TEE deployments, must stay
+/// readable by the parent-side proxy that has no storage key.
+///
+/// Migrating it would be actively harmful, not merely redundant: the
+/// hardened JWT ciphertext at [`HARDENED_JWT_CT_KEY`] is written and read
+/// through a *bare* handle, so wrapping it in a `VAE1` envelope would make the
+/// next boot's [`aes_gcm_open`] fail on what looks like a tampered ciphertext —
+/// i.e. an unbootable VTA whose error message points at the wrong cause.
+pub const MIGRATION_EXCLUDED_KEYSPACES: &[&str] = &[vta_keyspaces::BOOTSTRAP];
 
 /// fjall key for the AES-GCM ciphertext of the JWT signing key.
 /// Stored in the `bootstrap` keyspace (unencrypted at rest — application-layer
@@ -85,6 +100,27 @@ pub fn derive_storage_key(seed: &[u8], salt: &str) -> Zeroizing<[u8; 32]> {
         .expand(STORAGE_KEY_INFO, &mut key)
         .expect("32-byte output is within HKDF-SHA256 limits");
     Zeroizing::new(key)
+}
+
+/// Mint a fresh random salt for a new hardened-mode VTA.
+///
+/// 32 hex characters (128 bits) from the OS CSPRNG. `vta setup` calls this once
+/// and writes the result into `config.toml`; from then on it must never change,
+/// because the storage key is derived from it.
+///
+/// To be precise about what this buys and what it does not: an HKDF salt is not
+/// required to be secret, and the IKM here is already a per-VTA high-entropy
+/// master seed, so a shared salt would *not* let one VTA derive another's
+/// storage key. This is defence in depth, plus honesty — `storage_key_salt` is
+/// documented as a per-VTA constant, so it should actually vary per VTA. It is
+/// not a fix for a break.
+///
+/// Existing configs that omit the field keep the legacy compatibility constant,
+/// so this changes nothing for a VTA that has already written data.
+pub fn generate_storage_key_salt() -> String {
+    let mut bytes = [0u8; 16];
+    rand::fill(&mut bytes);
+    hex::encode(bytes)
 }
 
 /// AES-256-GCM encrypt `plaintext` under `key`.
@@ -128,8 +164,6 @@ pub enum JwtKeyError {
     DecryptFailed,
     /// Decrypted bytes are not exactly 32 bytes long.
     BadKeyLength,
-    /// The stored fingerprint row is absent — possible tampering.
-    FingerprintMissing,
     /// The stored fingerprint does not match the computed one — possible tampering.
     FingerprintMismatch { stored: String, computed: String },
     /// A store I/O error occurred.
@@ -149,12 +183,6 @@ impl std::fmt::Display for JwtKeyError {
             JwtKeyError::BadKeyLength => write!(
                 f,
                 "hardened: decrypted JWT key is not 32 bytes — store may be corrupt."
-            ),
-            JwtKeyError::FingerprintMissing => write!(
-                f,
-                "hardened: JWT key fingerprint missing — possible tampering. \
-                 Clear 'hardened:jwt_ciphertext' and 'hardened:jwt_fingerprint' \
-                 from the bootstrap keyspace to regenerate."
             ),
             JwtKeyError::FingerprintMismatch { stored, computed } => write!(
                 f,
@@ -205,16 +233,41 @@ pub async fn load_or_generate_jwt_key(
                 .map_err(|_| JwtKeyError::BadKeyLength)?;
 
             // Fingerprint check — tamper detection, same as TEE.
-            let stored_fp = bootstrap_ks
+            //
+            // A *missing* row self-heals rather than aborting. The AES-GCM tag
+            // has already authenticated this ciphertext under the storage key,
+            // so by this point the key is proven genuine and the fingerprint
+            // adds no further assurance. Treating absence as fatal instead
+            // turned the deletion of one row into a forced JWT rotation — the
+            // documented remedy was "clear both entries and regenerate", which
+            // invalidates every live session. That is a denial of service
+            // handed to anyone who can delete a row but not forge a ciphertext.
+            //
+            // A *mismatched* row is still fatal: the two disagree, and only a
+            // human should decide which one is wrong.
+            let computed = jwt_key_fingerprint(&key);
+            match bootstrap_ks
                 .get_raw(HARDENED_JWT_FINGERPRINT_KEY)
                 .await
                 .map_err(JwtKeyError::Store)?
-                .ok_or(JwtKeyError::FingerprintMissing)?;
-
-            let stored = String::from_utf8_lossy(&stored_fp).trim().to_string();
-            let computed = jwt_key_fingerprint(&key);
-            if stored != computed {
-                return Err(JwtKeyError::FingerprintMismatch { stored, computed });
+            {
+                Some(stored_fp) => {
+                    let stored = String::from_utf8_lossy(&stored_fp).trim().to_string();
+                    if stored != computed {
+                        return Err(JwtKeyError::FingerprintMismatch { stored, computed });
+                    }
+                }
+                None => {
+                    tracing::warn!(
+                        "hardened: JWT key fingerprint row was missing and has been rewritten \
+                         from the authenticated ciphertext — the signing key is unchanged and \
+                         sessions are unaffected, but investigate how the row was lost"
+                    );
+                    bootstrap_ks
+                        .insert_raw(HARDENED_JWT_FINGERPRINT_KEY, computed.into_bytes())
+                        .await
+                        .map_err(JwtKeyError::Store)?;
+                }
             }
 
             Ok(key)
@@ -241,6 +294,77 @@ pub async fn load_or_generate_jwt_key(
             Ok(key_bytes)
         }
     }
+}
+
+/// Convert any still-plaintext rows in the encrypted keyspaces to the `VAE1`
+/// format, so a VTA that ran before `[hardened] enabled = true` stays readable.
+///
+/// # Why this has to exist
+///
+/// The store is deliberately **fail-closed**: `KeyspaceHandle`'s decrypt path
+/// has no lenient "maybe it's plaintext" fallback, because that would reopen
+/// the cut-and-paste downgrade hole the `VAE1` AAD binding closes. The
+/// consequence is that flipping `hardened.enabled` on a VTA that already has
+/// data makes *every* pre-existing row fail to read — including the ACL
+/// keyspace, which locks the operator out of their own VTA. The data is intact
+/// but unreachable through the only handle the daemon will open.
+///
+/// So the flag cannot be a pure config change; something has to convert the
+/// existing rows. This runs that conversion at boot, before `server::run` opens
+/// anything, mirroring what `vtc-service` already does for its own at-rest
+/// encryption.
+///
+/// # Properties
+///
+/// - **Idempotent.** `migrate_to_encrypted` skips rows already in `VAE1`
+///   format, so the steady-state cost on every subsequent boot is one prefix
+///   scan per keyspace and zero writes.
+/// - **Crash-safe.** An interrupted run leaves a mix of encrypted and plaintext
+///   rows, which the next boot completes. There is no half-converted state that
+///   needs manual repair.
+/// - **Bare handles only.** Each keyspace is opened without encryption, which
+///   is what `migrate_to_encrypted` requires — it reads raw bytes, decides per
+///   row, and writes back through an encrypted handle.
+/// - **Skips `bootstrap`**, for the reason on [`MIGRATION_EXCLUDED_KEYSPACES`].
+///
+/// Returns the total number of rows converted (0 on a fresh install, and on
+/// every boot after the first migrating one).
+pub async fn migrate_store_to_encrypted(
+    store: &Store,
+    key: [u8; 32],
+) -> Result<usize, vti_common::error::AppError> {
+    let mut total = 0usize;
+
+    for name in vta_keyspaces::ALL {
+        if MIGRATION_EXCLUDED_KEYSPACES.contains(name) {
+            continue;
+        }
+        // Bare handle: migrate_to_encrypted refuses an already-encrypted one,
+        // and needs raw reads to tell converted rows from legacy ones.
+        let bare = store.keyspace(name)?;
+        let migrated = bare.migrate_to_encrypted(key).await?;
+        if migrated > 0 {
+            tracing::info!(
+                keyspace = %name,
+                rows = migrated,
+                "hardened: converted plaintext rows to encrypted storage"
+            );
+            total += migrated;
+        }
+    }
+
+    if total > 0 {
+        // The conversion is the only thing standing between this boot and an
+        // unreadable store; make it durable before anything else runs.
+        store.persist().await?;
+        tracing::warn!(
+            rows = total,
+            "hardened: migrated a pre-existing plaintext store to encrypted at rest — \
+             this is a one-time conversion; take a backup if you have not already"
+        );
+    }
+
+    Ok(total)
 }
 
 /// Transient secrets derived from the master seed during hardened-mode daemon
@@ -503,27 +627,149 @@ mod tests {
         );
     }
 
-    /// Fingerprint missing → `JwtKeyError::FingerprintMissing`.
+    /// A missing fingerprint row self-heals: the ciphertext is already
+    /// authenticated by its AES-GCM tag, so the key is returned unchanged and
+    /// the row is rewritten. Deleting one row must not force a JWT rotation.
     #[tokio::test]
-    async fn missing_fingerprint_returns_fingerprint_missing() {
+    async fn missing_fingerprint_self_heals_without_rotating() {
         let (store, _dir) = temp_bootstrap_ks();
         let bs_ks = store
             .keyspace(crate::keyspaces::BOOTSTRAP)
             .expect("bootstrap keyspace");
         let storage_key = [0x33u8; 32];
-        load_or_generate_jwt_key(&bs_ks, &storage_key)
+        let original = load_or_generate_jwt_key(&bs_ks, &storage_key)
             .await
             .expect("first boot");
         bs_ks
             .remove(HARDENED_JWT_FINGERPRINT_KEY)
             .await
             .expect("remove fingerprint");
-        let err = load_or_generate_jwt_key(&bs_ks, &storage_key)
+
+        let recovered = load_or_generate_jwt_key(&bs_ks, &storage_key)
             .await
-            .expect_err("must fail without fingerprint");
+            .expect("missing fingerprint must not be fatal");
+        assert_eq!(
+            original, recovered,
+            "the signing key must survive a lost fingerprint row"
+        );
+
+        let rewritten = bs_ks
+            .get_raw(HARDENED_JWT_FINGERPRINT_KEY)
+            .await
+            .unwrap()
+            .expect("fingerprint row must be rewritten");
+        assert_eq!(
+            String::from_utf8_lossy(&rewritten),
+            jwt_key_fingerprint(&original)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // migrate_store_to_encrypted — the flip-the-flag-on-an-existing-VTA path.
+    // -----------------------------------------------------------------------
+
+    /// The core guarantee: rows written before hardened mode was enabled stay
+    /// readable through an encrypted handle afterwards. Without the migration
+    /// this read fails and the operator is locked out of their own ACL.
+    #[tokio::test]
+    async fn migration_makes_preexisting_plaintext_rows_readable() {
+        let (store, _dir) = temp_bootstrap_ks();
+        let key = [0x91u8; 32];
+
+        // Pre-hardened VTA: plaintext row via a bare handle.
+        let bare_acl = store.keyspace(crate::keyspaces::ACL).expect("acl");
+        bare_acl
+            .insert_raw("did:key:zLegacy", b"legacy-plaintext".to_vec())
+            .await
+            .expect("write legacy row");
+
+        // Flipping the flag without migrating: the encrypted handle cannot read it.
+        let enc_acl = store
+            .keyspace(crate::keyspaces::ACL)
+            .expect("acl")
+            .with_encryption(key);
         assert!(
-            matches!(err, JwtKeyError::FingerprintMissing),
-            "expected FingerprintMissing, got: {err}"
+            enc_acl.get_raw("did:key:zLegacy").await.is_err(),
+            "a legacy plaintext row must NOT be silently readable through an \
+             encrypted handle — that would be the downgrade hole"
+        );
+
+        let migrated = migrate_store_to_encrypted(&store, key)
+            .await
+            .expect("migration");
+        assert!(
+            migrated >= 1,
+            "expected at least the ACL row, got {migrated}"
+        );
+
+        let value = enc_acl
+            .get_raw("did:key:zLegacy")
+            .await
+            .expect("read after migration")
+            .expect("row present");
+        assert_eq!(value, b"legacy-plaintext");
+    }
+
+    /// Idempotent: a second pass converts nothing and leaves values intact, so
+    /// the steady-state cost on every later boot is zero writes.
+    #[tokio::test]
+    async fn migration_is_idempotent() {
+        let (store, _dir) = temp_bootstrap_ks();
+        let key = [0x92u8; 32];
+
+        store
+            .keyspace(crate::keyspaces::ACL)
+            .expect("acl")
+            .insert_raw("k", b"v".to_vec())
+            .await
+            .expect("seed row");
+
+        let first = migrate_store_to_encrypted(&store, key)
+            .await
+            .expect("first");
+        assert!(first >= 1);
+        let second = migrate_store_to_encrypted(&store, key)
+            .await
+            .expect("second");
+        assert_eq!(second, 0, "already-encrypted rows must be skipped");
+
+        let value = store
+            .keyspace(crate::keyspaces::ACL)
+            .expect("acl")
+            .with_encryption(key)
+            .get_raw("k")
+            .await
+            .expect("read")
+            .expect("present");
+        assert_eq!(value, b"v", "value must survive a repeated migration");
+    }
+
+    /// The bootstrap keyspace must be left alone. Its hardened JWT ciphertext is
+    /// read back through a *bare* handle, so double-wrapping it in VAE1 would
+    /// make the next boot fail as if the ciphertext had been tampered with.
+    #[tokio::test]
+    async fn migration_leaves_bootstrap_keyspace_bare() {
+        let (store, _dir) = temp_bootstrap_ks();
+        let storage_key = [0x93u8; 32];
+        let bs_ks = store
+            .keyspace(crate::keyspaces::BOOTSTRAP)
+            .expect("bootstrap");
+
+        let jwt_key = load_or_generate_jwt_key(&bs_ks, &storage_key)
+            .await
+            .expect("first boot");
+
+        migrate_store_to_encrypted(&store, storage_key)
+            .await
+            .expect("migration");
+
+        // The exact call the next boot makes, against a bare handle.
+        let after = load_or_generate_jwt_key(&bs_ks, &storage_key)
+            .await
+            .expect("boot after migration must still open the sealed JWT key");
+        assert_eq!(
+            jwt_key, after,
+            "migrating the bootstrap keyspace would brick the next boot"
         );
     }
 

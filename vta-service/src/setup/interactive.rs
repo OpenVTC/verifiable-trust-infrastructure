@@ -186,9 +186,11 @@ impl SetupUi for InteractiveUi<'_> {
 
 /// Prompt whether to enable hardened configuration.
 ///
-/// The `storage_key_salt` is taken from `HardenedConfig::default()` — the
-/// same approach as TEE mode, where the salt comes from `config.rs` without
-/// prompting. Operators who need a custom salt use `--from <toml>`.
+/// When enabled, a fresh random `storage_key_salt` is minted for this VTA and
+/// written to `config.toml`. The field is documented as a permanent per-VTA
+/// constant, so setup makes it one rather than leaving every install on the
+/// shared compatibility default. Operators who need a specific value still use
+/// `--from <toml>`.
 fn prompt_hardened(p: &dyn Prompter) -> Result<HardenedConfig, DynErr> {
     let enabled = p.confirm(
         "Enable hardened configuration? (encrypts the fjall store and seals the JWT signing key \
@@ -203,13 +205,21 @@ fn prompt_hardened(p: &dyn Prompter) -> Result<HardenedConfig, DynErr> {
     eprintln!();
     eprintln!("  \x1b[2mHardened configuration enabled.\x1b[0m");
     eprintln!(
-        "  \x1b[2mTo use a custom storage_key_salt, run `vta setup --from <toml>` instead.\x1b[0m"
+        "  \x1b[2mA random storage_key_salt has been generated and written to config.toml.\x1b[0m"
+    );
+    eprintln!(
+        "  \x1b[2mBack up config.toml: changing or losing the salt makes the store \
+         unreadable.\x1b[0m"
+    );
+    eprintln!(
+        "  \x1b[2mTo supply your own storage_key_salt, run `vta setup --from <toml>` \
+         instead.\x1b[0m"
     );
     eprintln!();
 
     Ok(HardenedConfig {
         enabled: true,
-        ..HardenedConfig::default()
+        storage_key_salt: crate::hardened_bootstrap::generate_storage_key_salt(),
     })
 }
 

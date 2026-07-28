@@ -1484,9 +1484,18 @@ async fn main() {
             // is pasting a signature — see the doc comment on that
             // function. Derive the storage key for hardened configuration
             // so the ACL keyspace can be decrypted.
-            let enc_key = cli_store::load_storage_key_for_cli(&config)
-                .await
-                .unwrap_or(None);
+            // Propagate rather than defaulting to `None`: `Ok(None)` means
+            // "hardened is off", but `Err` means "we could not reach the secret
+            // store". Collapsing both to `None` opens bare handles against an
+            // encrypted store, so a transient keyring/Vault outage surfaces as a
+            // confusing deserialization error instead of the real cause.
+            let enc_key = match cli_store::load_storage_key_for_cli(&config).await {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
             if let Err(e) = seal::run_unseal_challenge(&config.store, enc_key).await {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
@@ -2104,10 +2113,10 @@ async fn main() {
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
-            // Hardened configuration (PoC): derive the storage-encryption key and the JWT
+            // Hardened configuration: derive the storage-encryption key and the JWT
             // signing key from the master seed so neither secret lives in
             // config.toml or on disk.  Mirrors what `vta-enclave` does inside a
-            // Nitro enclave without requiring KMS.  See `hardened.rs`.
+            // Nitro enclave without requiring KMS.  See `hardened_bootstrap.rs`.
             let storage_encryption_key = if config.hardened.enabled {
                 // Gap 4: if VTA_AUTH_JWT_SIGNING_KEY is set in the environment, its
                 // value would sit in /proc/<pid>/environ visible to root even though
@@ -2129,10 +2138,31 @@ async fn main() {
                     };
                 }
 
-                // Warn only when the factory would actually fall back to the plaintext
-                // file backend: no cloud/vault/k8s/config-seed field is set AND the
-                // keyring feature is not compiled in (keyring is in the default features,
-                // so this warning fires only in non-default/stripped builds).
+                // `[secrets] seed` is the hex seed inlined in config.toml itself
+                // (the config-seed backend). That is the single worst pairing
+                // with this feature: the whole point is keeping secrets out of
+                // config.toml, and here the storage key and the sealed JWT key
+                // are both re-derivable by anyone who can read that one file —
+                // exactly the adversary this module's header names.
+                //
+                // It belongs on the warn side. Treating it as evidence of a
+                // "real" backend, as the first cut did, meant the deployment
+                // that most needs this warning was the only one that never saw
+                // it.
+                if config.secrets.seed.is_some() {
+                    tracing::warn!(
+                        "hardened configuration is enabled but [secrets] seed is set — the master \
+                         seed is stored in config.toml, so the storage-encryption and JWT signing \
+                         keys can both be re-derived by anyone who can read that file. This \
+                         reduces hardened configuration to obfuscation. Move the seed to a real \
+                         secret-store backend (OS keyring, aws-secrets, gcp-secrets, vault, k8s)"
+                    );
+                }
+
+                // Separately, warn when the factory would fall back to the
+                // plaintext seed *file*: no backend field is set AND the
+                // keyring feature is not compiled in (keyring is on by
+                // default, so this fires only in stripped builds).
                 let looks_like_plaintext_backend = config.secrets.seed.is_none()
                     && config.secrets.aws_secret_name.is_none()
                     && config.secrets.gcp_project.is_none()
@@ -2175,6 +2205,28 @@ async fn main() {
                 config.auth.jwt_signing_key = Some(BASE64.encode(boot_secrets.jwt_key));
                 let storage_key_copy = boot_secrets.storage_key;
                 // boot_secrets drops here → jwt_key and storage_key are zeroized.
+
+                // Convert any pre-existing plaintext rows before `server::run`
+                // opens a single encrypted handle. Without this, turning the
+                // flag on for a VTA that already has data makes every existing
+                // row unreadable — including the ACL keyspace, which locks the
+                // operator out. The store's decrypt path is deliberately
+                // fail-closed with no plaintext fallback, so the conversion has
+                // to happen here or not at all.
+                //
+                // Idempotent and crash-safe: a no-op on fresh installs and on
+                // every boot after the converting one, and an interrupted run
+                // is completed by the next boot.
+                if let Err(e) =
+                    hardened_bootstrap::migrate_store_to_encrypted(&store, storage_key_copy).await
+                {
+                    tracing::error!(
+                        "hardened: migrating the existing store to encrypted at rest failed: {e}. \
+                         Refusing to start — booting now would leave the VTA unable to read its \
+                         own ACL and key material."
+                    );
+                    std::process::exit(1);
+                }
 
                 tracing::info!(
                     "hardened: storage-encryption key derived from seed, \

@@ -172,7 +172,23 @@ pub async fn run_status(config_path: Option<PathBuf>) -> Result<(), Box<dyn std:
     }
 
     // 6. Open store (may fail if VTA is already running)
-    let enc_key = load_storage_key_for_cli(&config).await.ok().flatten();
+    //
+    // `status` is a diagnostic and degrades rather than exiting — it already
+    // tolerates the store being locked by a running daemon. But it must not
+    // silently treat "could not reach the secret store" as "encryption is off":
+    // that reads every encrypted keyspace through a bare handle and reports
+    // confident nonsense. Say what happened and carry on.
+    let enc_key = match load_storage_key_for_cli(&config).await {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!();
+            eprintln!(
+                "  {YELLOW}Note:{RESET} Could not derive the storage-encryption key ({e}). \
+                 Encrypted keyspaces below will read as unavailable."
+            );
+            None
+        }
+    };
     let store = match Store::open(&config.store) {
         Ok(s) => s,
         Err(_) => {

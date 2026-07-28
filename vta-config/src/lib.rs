@@ -444,6 +444,16 @@ fn default_storage_key_salt() -> String {
     "vta-tee-storage-v1".to_string()
 }
 
+/// Fallback salt for configs that predate per-VTA salt generation.
+///
+/// **Do not change this value.** It is not a "default" in the sense of a
+/// recommended setting — it is the compatibility constant that keeps any VTA
+/// whose `config.toml` omits `storage_key_salt` able to re-derive its own
+/// storage key. Changing it makes those deployments unable to read their store.
+///
+/// New installs do not use it: `vta setup` mints a random per-VTA salt
+/// (`hardened_bootstrap::generate_storage_key_salt`) and writes it into
+/// `config.toml`.
 fn default_hardened_storage_key_salt() -> String {
     "vta-storage-v1".to_string()
 }
@@ -463,8 +473,18 @@ fn default_hardened_storage_key_salt() -> String {
 /// storage_key_salt = "my-unique-per-vta-salt"
 /// ```
 ///
-/// **Migration note**: enabling on an existing plaintext-fjall VTA requires a
-/// one-time `migrate_to_encrypted` pass before starting with this flag.
+/// **Enabling on an existing VTA is handled automatically.** The first boot
+/// after setting this flag converts the existing plaintext rows to the
+/// encrypted format before anything reads them
+/// (`hardened_bootstrap::migrate_store_to_encrypted`). The pass is idempotent
+/// and crash-safe, so it costs one prefix scan per keyspace on later boots and
+/// an interrupted run is finished by the next one.
+///
+/// It has to be automatic: the store's decrypt path is deliberately
+/// fail-closed with no plaintext fallback, so a VTA that started reading an
+/// unconverted store would fail on every pre-existing row — including its own
+/// ACL entries. Take a backup first regardless; the conversion rewrites every
+/// row in place.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardenedConfig {
     /// When `true`, enables hardened non-TEE configuration:
