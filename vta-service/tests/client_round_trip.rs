@@ -1,0 +1,274 @@
+//! Round-trip contract tests: the **real `VtaClient`** against the **real
+//! router**, over a real socket.
+//!
+//! # Why this file exists
+//!
+//! Every other test in the workspace exercises one side of the wire and mocks
+//! the other:
+//!
+//! - `vta-sdk/tests/client_rest.rs` drives the real client against a wiremock,
+//!   so it proves the client agrees with a **hand-written fixture**.
+//! - `tests/e2e/tests/client_didcomm.rs` drives the real client against a
+//!   mocked responder — same shape, different transport.
+//! - `vta-service/tests/api_integration.rs` drives the real router with
+//!   hand-written JSON, so it proves the server agrees with **another
+//!   hand-written fixture**.
+//!
+//! Nothing compares the two *real* implementations. When a wire type is
+//! reshaped, both sides can be updated to disagree with each other and every
+//! test still passes, because each is measured against its own fixture. That is
+//! not hypothetical: folding the ACL surface onto canonical `acl/*` (#840 phase
+//! A) changed the server's responses while the SDK client still parsed the old
+//! shape. Nothing failed. The CLI would have broken in production, and the
+//! defect was found by reading rather than by testing.
+//!
+//! These tests close that gap for the surfaces that fold has already reshaped.
+//! **When you reshape a wire type, add a case here** — it is the only place a
+//! client/server mismatch is a test failure rather than a runtime surprise.
+//!
+//! # What "round trip" means here
+//!
+//! Both directions, end to end:
+//!
+//! 1. the client **serialises** a request the server can deserialise, and
+//! 2. the server **serialises** a response the client can deserialise,
+//! 3. with the values intact in both directions.
+//!
+//! Step 3 is the part a smoke test misses. `create` returning `Ok` proves the
+//! shapes are compatible; it does not prove `scopes` survived, and a dropped
+//! scope list on an admin entry is a **permanent super-admin**.
+
+use vta_service::test_support::MockVta;
+
+use vta_sdk::client::{CreateAclRequest, UpdateAclRequest, VtaClient};
+
+/// A client authenticated as an unrestricted admin against a live mock VTA.
+async fn admin_client(mock: &MockVta) -> VtaClient {
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkRoundTripAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+    client
+}
+
+// ── ACL ─────────────────────────────────────────────────────────────
+
+/// The full ACL lifecycle through the real client: grant, show, list, update,
+/// revoke.
+///
+/// Each step asserts the *values*, not just that the call succeeded. The fold
+/// renamed `did`→`subject` and `allowedContexts`→`scopes` and moved expiry from
+/// epoch seconds to RFC 3339; a mismatch on any of those deserialises to a
+/// default rather than an error, so only checking the value catches it.
+#[tokio::test]
+async fn acl_lifecycle_round_trips_through_the_real_client() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+    let subject = "did:key:z6MkRoundTripSubject";
+
+    // ── grant ───────────────────────────────────────────────────────
+    let created = client
+        .create_acl(
+            CreateAclRequest::new(subject, "application")
+                .label("round trip")
+                .contexts(vec!["ctx1".into()]),
+        )
+        .await
+        .expect("grant round-trips");
+
+    assert_eq!(created.did, subject);
+    assert_eq!(created.role, "application");
+    assert_eq!(
+        created.allowed_contexts,
+        vec!["ctx1".to_string()],
+        "a dropped scope list on an admin entry is a permanent super-admin, so \
+         the scopes must survive the round trip rather than defaulting to empty"
+    );
+    assert_eq!(created.label.as_deref(), Some("round trip"));
+
+    // ── show ────────────────────────────────────────────────────────
+    let fetched = client.get_acl(subject).await.expect("show round-trips");
+    assert_eq!(fetched.did, subject);
+    assert_eq!(fetched.allowed_contexts, vec!["ctx1".to_string()]);
+    assert_eq!(
+        fetched.role, created.role,
+        "show and grant must describe the same entry"
+    );
+
+    // ── list ────────────────────────────────────────────────────────
+    let listed = client.list_acl(None).await.expect("list round-trips");
+    let found = listed
+        .entries
+        .iter()
+        .find(|e| e.did == subject)
+        .expect("the granted entry appears in the listing");
+    assert_eq!(found.allowed_contexts, vec!["ctx1".to_string()]);
+
+    // ── update ──────────────────────────────────────────────────────
+    let updated = client
+        .update_acl(
+            subject,
+            UpdateAclRequest {
+                role: None,
+                label: Some("renamed".into()),
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: None,
+            },
+        )
+        .await
+        .expect("update round-trips");
+    assert_eq!(updated.label.as_deref(), Some("renamed"));
+    assert_eq!(
+        updated.allowed_contexts,
+        vec!["ctx1".to_string()],
+        "an omitted member must leave the stored value alone, not clear it"
+    );
+
+    // ── revoke ──────────────────────────────────────────────────────
+    client
+        .delete_acl(subject)
+        .await
+        .expect("revoke round-trips");
+    assert!(
+        client.get_acl(subject).await.is_err(),
+        "the entry is gone after revocation"
+    );
+}
+
+/// Expiry crosses the wire as RFC 3339 and comes back as the same instant.
+///
+/// The fold changed this member's *representation* while leaving its Rust type
+/// as epoch seconds, so a broken conversion yields `0` or `None` rather than a
+/// parse error — a silent failure that would quietly make a time-boxed grant
+/// permanent, or expire it immediately.
+#[tokio::test]
+async fn acl_expiry_survives_the_epoch_rfc3339_conversion() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+    let subject = "did:key:z6MkExpiringSubject";
+    let expires_at = 1_800_000_000u64;
+
+    let created = client
+        .create_acl(
+            CreateAclRequest::new(subject, "application")
+                .contexts(vec!["ctx1".into()])
+                .expires_at(expires_at),
+        )
+        .await
+        .expect("grant with expiry round-trips");
+
+    assert_eq!(
+        created.expires_at,
+        Some(expires_at),
+        "expiry must survive epoch → RFC 3339 → epoch unchanged; a broken \
+         conversion reads as permanent or already-expired rather than failing"
+    );
+
+    let fetched = client.get_acl(subject).await.expect("show round-trips");
+    assert_eq!(fetched.expires_at, Some(expires_at));
+}
+
+/// The step-up and approve members survive the round trip through their
+/// canonical nesting.
+///
+/// These moved from five flat members into `stepUp{}` and `approve{}`. Both are
+/// authority-bearing: a dropped `approve` silently confers nothing (safe but
+/// wrong), and a dropped `stepUp.approver` removes the delegated approver a
+/// policy may depend on.
+#[tokio::test]
+async fn acl_step_up_and_approve_survive_their_canonical_nesting() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+    let subject = "did:key:z6MkNestedSubject";
+
+    let created = client
+        .create_acl(
+            CreateAclRequest::new(subject, "application")
+                .contexts(vec!["ctx1".into()])
+                .step_up_approver("did:key:z6MkTheApprover")
+                .step_up_require("delegated"),
+        )
+        .await
+        .expect("grant with step-up round-trips");
+
+    assert_eq!(
+        created.step_up_approver(),
+        Some("did:key:z6MkTheApprover"),
+        "the delegated approver must survive the nesting"
+    );
+    assert_eq!(created.step_up_require(), Some("delegated"));
+
+    // And again on the read path, which is a different response type.
+    let fetched = client.get_acl(subject).await.expect("show round-trips");
+    assert_eq!(fetched.step_up_approver(), Some("did:key:z6MkTheApprover"));
+    assert_eq!(fetched.step_up_require(), Some("delegated"));
+}
+
+// ── Config ──────────────────────────────────────────────────────────
+
+/// The config registry round-trips, and identity is readable but not writable.
+///
+/// `config/*` moved from three named typed fields to a key registry in the same
+/// phase, so it has the same client/server mismatch exposure as ACL.
+#[tokio::test]
+async fn config_registry_round_trips_and_identity_stays_read_only() {
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+
+    // ── read ────────────────────────────────────────────────────────
+    let cfg = client.get_config().await.expect("config/show round-trips");
+    assert!(
+        cfg.vta_did().is_some(),
+        "the VTA DID must remain readable — nothing else exposes it, which is \
+         why it is a registry key marked immutable rather than absent"
+    );
+
+    // ── patch a mutable key ─────────────────────────────────────────
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("vta_name".to_string(), serde_json::json!("round tripped"));
+    let patched = client
+        .update_config(vta_sdk::client::UpdateConfigRequest {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+                overrides,
+            },
+        })
+        .await
+        .expect("config/patch round-trips");
+    assert_eq!(patched.applied, vec!["vta_name".to_string()]);
+    assert!(patched.rejected.is_empty(), "{patched:?}");
+
+    // …and the change is visible on the read path.
+    let cfg = client.get_config().await.expect("config/show round-trips");
+    assert_eq!(cfg.vta_name(), Some("round tripped"));
+
+    // ── identity is refused, through the real client ────────────────
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert(
+        "vta_did".to_string(),
+        serde_json::json!("did:key:z6MkAttacker"),
+    );
+    let patched = client
+        .update_config(vta_sdk::client::UpdateConfigRequest {
+            patch: vta_sdk::protocols::vta_management::update_config::UpdateConfigBody {
+                overrides,
+            },
+        })
+        .await
+        .expect("a rejected key is a reported rejection, not a transport error");
+
+    assert!(
+        patched.applied.is_empty(),
+        "identity must never be applied: {patched:?}"
+    );
+    assert_eq!(patched.rejected.len(), 1);
+    assert_eq!(patched.rejected[0].key, "vta_did");
+    assert!(
+        !patched.rejected[0].reason.is_empty(),
+        "the rejection must explain itself — an operator learns the rule, not \
+         just the refusal"
+    );
+}
