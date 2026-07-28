@@ -437,12 +437,13 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        46,
+        45,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
          canonical acl/{grant,show,list,update,revoke} family, and audit/list-logs onto \
-         audit/list/0.1. Phase A is complete at 46",
+         audit/list/0.1. Phase A complete at 46; phase B then folded \
+         webvh/dids/get-log into webvh/dids/get",
     ),
 ];
 

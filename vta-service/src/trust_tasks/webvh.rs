@@ -44,7 +44,6 @@ use vta_sdk::protocols::did_management::{
     create::CreateDidWebvhBody,
     delete::DeleteDidWebvhBody,
     get::GetDidWebvhBody,
-    lifecycle::GetDidWebvhLogBody,
     list::ListDidsWebvhBody,
     servers::{
         AddWebvhServerBody, ListWebvhServersBody, RegisterDidWithServerBody,
@@ -232,7 +231,13 @@ pub(super) async fn handle_dids_create(
     }
 }
 
-/// `webvh/dids/get/1.0` — fetch a DID record.
+/// `webvh/dids/get/1.0` — fetch a DID record, optionally with its raw
+/// `did.jsonl` (`includeLog`).
+///
+/// Absorbs the retired `webvh/dids/get-log/1.0`. The unauthenticated
+/// public log mirror (`GET /did/{did}/log`) remains deliberately NOT
+/// trust-task-wrapped — it stays plain REST as the DID-resolver
+/// failover path.
 pub(super) async fn handle_dids_get(
     state: &AppState,
     auth: &AuthClaims,
@@ -247,32 +252,7 @@ pub(super) async fn handle_dids_get(
         auth,
         &req.did,
         TRANSPORT_TRUST_TASK,
-    )
-    .await
-    {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
-    }
-}
-
-/// `webvh/dids/get-log/1.0` — fetch the raw `did.jsonl` log (authed).
-/// The unauthenticated public mirror (`GET /did/{did}/log`) is
-/// deliberately NOT trust-task-wrapped — it stays plain REST as the
-/// DID-resolver failover path.
-pub(super) async fn handle_dids_get_log(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let req: GetDidWebvhLogBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    match operations::did_webvh::get_did_webvh_log(
-        &state.webvh_ks,
-        auth,
-        &req.did,
-        TRANSPORT_TRUST_TASK,
+        req.include_log,
     )
     .await
     {

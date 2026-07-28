@@ -403,3 +403,103 @@ async fn audit_cursor_is_bound_to_its_filters() {
         "changing the filters while resuming must be refused, got {err:?}"
     );
 }
+
+// ── WebVH DID get ───────────────────────────────────────────────────
+
+/// Both legacy client methods still work after `dids/get-log` folded
+/// into `dids/get`.
+///
+/// This is the compatibility claim the fold rests on, and it is exactly
+/// the kind that fails silently. The merged response flattens the
+/// record and adds an optional `log`, making it a superset of both old
+/// shapes — but "superset" only helps because neither client type sets
+/// `deny_unknown_fields`. If either did, or if the flatten were dropped
+/// for a nested `record` object, both calls would fail at runtime while
+/// every mocked test stayed green.
+#[tokio::test]
+async fn webvh_get_did_round_trips_after_the_get_log_fold() {
+    use vta_sdk::webvh::WebvhDidRecord;
+
+    let mock = MockVta::start().await;
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkRoundTripAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token.clone()).await;
+
+    let did = "did:webvh:example.com:round-trip";
+    let record = WebvhDidRecord {
+        did: did.to_string(),
+        server_id: "serverless".into(),
+        mnemonic: "slot-one".into(),
+        scid: "scid-round-trip".into(),
+        context_id: "ctx1".into(),
+        portable: false,
+        log_entry_count: 1,
+        pre_rotation_count: 0,
+        next_fragment_id: 1,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    vta_service::webvh_store::store_did(&mock.ctx.webvh_ks, &record)
+        .await
+        .expect("seed DID record");
+    vta_service::webvh_store::store_did_log(&mock.ctx.webvh_ks, did, "{\"state\":{}}")
+        .await
+        .expect("seed DID log");
+
+    // The record read: values must survive, not merely parse.
+    let got = client
+        .get_did_webvh(did)
+        .await
+        .expect("get_did_webvh round-trips");
+    assert_eq!(got.did, did);
+    assert_eq!(got.scid, "scid-round-trip");
+    assert_eq!(got.context_id, "ctx1");
+
+    // The new flag: the log is present only when asked for. If
+    // `includeLog` failed to bind, the log would come back on every
+    // record read — the fold would look like it worked while quietly
+    // making every `dids/get` pay for the log.
+    let raw = |qs: &str| {
+        // Colons are legal path characters (RFC 3986 pchar), so the DID
+        // needs no escaping here.
+        let url = format!("{}/webvh/dids/{}{}", mock.base_url(), did, qs);
+        let token = token.clone();
+        async move {
+            reqwest::Client::new()
+                .get(url)
+                .bearer_auth(token)
+                .send()
+                .await
+                .expect("request")
+                .json::<serde_json::Value>()
+                .await
+                .expect("json")
+        }
+    };
+    let without = raw("").await;
+    assert_eq!(without["did"], did);
+    assert!(
+        without.get("log").is_none(),
+        "the log must be omitted unless requested: {without}"
+    );
+    let with = raw("?includeLog=true").await;
+    assert_eq!(
+        with["log"], "{\"state\":{}}",
+        "includeLog=true must return the log: {with}"
+    );
+
+    // The log read, through the path whose Trust Task folded away.
+    let log = client
+        .get_did_webvh_log(did)
+        .await
+        .expect("get_did_webvh_log round-trips");
+    assert_eq!(log.did, did);
+    assert_eq!(
+        log.log.as_deref(),
+        Some("{\"state\":{}}"),
+        "the log must survive the merge into the flattened record"
+    );
+}

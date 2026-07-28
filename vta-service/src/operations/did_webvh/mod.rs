@@ -26,7 +26,7 @@ pub(crate) use concurrency::{RaceDetected, RecordSnapshot};
 
 pub(crate) use document::build_did_document_with_options;
 pub use document::{build_did_document, build_vta_did_document_with_sealed_transfer};
-pub use lifecycle::{GetDidWebvhLogResult, get_did_webvh, get_did_webvh_log, list_dids_webvh};
+pub use lifecycle::{get_did_webvh, list_dids_webvh};
 pub use register_server::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
     register_did_with_server,

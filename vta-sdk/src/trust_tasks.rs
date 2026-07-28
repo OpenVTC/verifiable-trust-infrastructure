@@ -856,8 +856,8 @@ pub const TASK_PROVISION_INTEGRATION_REQUEST_1_0: &str =
 // Note: `GET /did/{did}/log` (public, unauth) is intentionally NOT
 // reified as a trust task — it stays plain REST so any DID resolver
 // can fall back to the minting VTA when the hosting server drops a
-// LogEntry. The authed admin equivalent IS migrated (see
-// `TASK_WEBVH_DIDS_GET_LOG_1_0` below).
+// LogEntry. The authed admin equivalent is `dids/get` with
+// `includeLog` (it had its own task until that pair was folded).
 
 // Server CRUD on the VTA's known-webvh-hosts table.
 
@@ -907,21 +907,21 @@ pub const TASK_WEBVH_DIDS_CREATE_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
 
 /// `spec/vta/webvh/dids/get/1.0` — fetch the local record (context,
-/// server, key handles) for a DID this VTA knows. Payload:
+/// server, key handles) for a DID this VTA knows, and optionally the
+/// raw `did.jsonl` alongside it (`includeLog`). Payload:
 /// [`crate::protocols::did_management::get::GetDidWebvhBody`].
 /// Auth: any authenticated user with access to the DID's context.
+///
+/// Absorbs the retired `spec/vta/webvh/dids/get-log/1.0`, which took
+/// the same `{did}`, ran the same lookup under the same context check,
+/// and differed only in the representation returned. The response
+/// flattens the record, so it is a superset of both shapes.
+///
+/// The unauthenticated public mirror (`GET /did/{did}/log`) is
+/// deliberately NOT trust-task-wrapped — it is load-bearing as the
+/// DID-resolver failover path and stays plain REST forever (see
+/// §"Why REST stays" in the registry doc).
 pub const TASK_WEBVH_DIDS_GET_1_0: &str = "https://trusttasks.org/spec/vta/webvh/dids/get/1.0";
-
-/// `spec/vta/webvh/dids/get-log/1.0` — fetch the raw `did.jsonl`
-/// log for an authed caller. The unauthenticated public mirror
-/// (`GET /did/{did}/log`) is deliberately NOT trust-task-wrapped —
-/// it's load-bearing as the DID-resolver failover path and stays
-/// plain REST forever (see §"Why REST stays" in the registry doc).
-/// Payload:
-/// [`crate::protocols::did_management::lifecycle::GetDidWebvhLogBody`].
-/// Auth: any authenticated user with access to the DID's context.
-pub const TASK_WEBVH_DIDS_GET_LOG_1_0: &str =
-    "https://trusttasks.org/spec/vta/webvh/dids/get-log/1.0";
 
 /// `spec/vta/webvh/dids/delete/1.0` — delete a DID locally and, if
 /// hosted, on the webvh server. Payload:
@@ -1408,7 +1408,6 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,
     TASK_WEBVH_DIDS_GET_1_0,
-    TASK_WEBVH_DIDS_GET_LOG_1_0,
     TASK_WEBVH_DIDS_DELETE_1_0,
     TASK_WEBVH_DIDS_UPDATE_1_0,
     TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,

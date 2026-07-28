@@ -197,7 +197,7 @@ dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist for builds where
 | `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA | implemented |
 | `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host | implemented |
 | `spec/vta/webvh/dids/get/1.0` | | implemented |
-| `spec/vta/webvh/dids/get-log/1.0` | `GET /webvh/dids/{did}/log` (authed) | implemented |
+| ~`spec/vta/webvh/dids/get-log/1.0`~ | `GET /webvh/dids/{did}/log` (authed) | **folded into `dids/get/1.0`** — same `{did}`, same lookup, same context check; the representation is now the `includeLog` flag. The REST path stays (its response is a superset of the old `{did, log}`) |
 | ~`spec/vta/webvh/dids/get-log-public/1.0`~ | `GET /did/{did}/log` (unauthed mirror) | **REST-only forever** (load-bearing as the DID-resolver failover path; wrapping it in a trust-task envelope would defeat the failover) |
 | `spec/vta/webvh/dids/delete/1.0` | | implemented |
 | `spec/vta/webvh/dids/update/1.0` | DID-doc patch (trust-task envelope carries `did` in payload — no path) | implemented |
@@ -395,7 +395,7 @@ These wire surfaces do NOT become trust-task envelopes:
 |---|---|
 | `GET /health/details` | Operator/infra observability. Health checks must be cheap and proxy-friendly; trust-task overhead is wrong here. |
 | `GET /metrics` | Prometheus scrape format. Standard exporter contract; not application-level. |
-| `GET /did/{did}/log` (public, unauthed) | **LOAD-BEARING**: failover path for WebVH log resolution. When a WebVH hosting service drops a LogEntry, any DID resolver in the world must be able to fetch the canonical copy from the minting VTA. Wrapping it in a trust-task envelope makes it useless for that purpose. Stays plain REST + public-unauthed forever. (The authed admin equivalent `GET /webvh/dids/{did}/log` DOES migrate to `spec/vta/webvh/dids/get-log/1.0`.) |
+| `GET /did/{did}/log` (public, unauthed) | **LOAD-BEARING**: failover path for WebVH log resolution. When a WebVH hosting service drops a LogEntry, any DID resolver in the world must be able to fetch the canonical copy from the minting VTA. Wrapping it in a trust-task envelope makes it useless for that purpose. Stays plain REST + public-unauthed forever. (The authed admin equivalent `GET /webvh/dids/{did}/log` is served by `spec/vta/webvh/dids/get/1.0` with `includeLog`.) |
 | Mediator pickup (DIDComm transport infrastructure) | Mediator protocol is its own DIDComm spec (`coordinate-mediation/2.0`, `messagepickup/3.0`); not application-level. |
 | Internal server-push from server → control plane (webvh stats sync over HTTP) | Already trust-task in webvh-service (`spec/did-hosting/server/stats-sync/1.0`); no VTA equivalent needed. |
 | KMS attest/unwrap (TEE startup-time only) | Pre-bootstrap; no JWT, no client, no envelope. |

@@ -850,8 +850,14 @@ didcomm_handler!(
     Gate::None,
     did_management::GET_DID_WEBVH_RESULT,
     did_management::get::GetDidWebvhBody,
-    |s, auth, body| operations::did_webvh::get_did_webvh(&s.webvh_ks, &auth, &body.did, "didcomm")
-        .await
+    |s, auth, body| operations::did_webvh::get_did_webvh(
+        &s.webvh_ks,
+        &auth,
+        &body.did,
+        "didcomm",
+        body.include_log,
+    )
+    .await
 );
 
 #[cfg(feature = "webvh")]
@@ -860,11 +866,15 @@ didcomm_handler!(
     Gate::None,
     did_management::GET_DID_WEBVH_LOG_RESULT,
     did_management::get::GetDidWebvhBody,
-    |s, auth, body| operations::did_webvh::get_did_webvh_log(
+    // The Trust Task folded into `dids/get`; this legacy DIDComm
+    // protocol message stays and always asks for the log, which is what
+    // its name promises.
+    |s, auth, body| operations::did_webvh::get_did_webvh(
         &s.webvh_ks,
         &auth,
         &body.did,
-        "didcomm"
+        "didcomm",
+        true,
     )
     .await
 );
