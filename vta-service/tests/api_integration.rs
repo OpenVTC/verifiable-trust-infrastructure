@@ -568,10 +568,12 @@ async fn acl_create_and_list() {
             "/acl",
             &token,
             json!({
-                "did": "did:key:z6MkNew",
-                "role": "application",
-                "label": "test app",
-                "allowed_contexts": ["ctx1"]
+                "entry": {
+                    "subject": "did:key:z6MkNew",
+                    "role": "application",
+                    "label": "test app",
+                    "scopes": ["ctx1"]
+                }
             }),
         ))
         .await;
@@ -582,7 +584,7 @@ async fn acl_create_and_list() {
     assert_eq!(status, StatusCode::OK);
     let entries = body["entries"].as_array().expect("entries array");
     assert!(
-        entries.iter().any(|e| e["did"] == "did:key:z6MkNew"),
+        entries.iter().any(|e| e["subject"] == "did:key:z6MkNew"),
         "new entry should be in list"
     );
 }
@@ -624,9 +626,11 @@ async fn acl_list_filters_a_context_in_both_directions() {
                 "/acl",
                 &token,
                 json!({
-                    "did": did,
-                    "role": "application",
-                    "allowed_contexts": [context],
+                    "entry": {
+                        "subject": did,
+                        "role": "application",
+                        "scopes": [context],
+                    }
                 }),
             ))
             .await;
@@ -638,7 +642,7 @@ async fn acl_list_filters_a_context_in_both_directions() {
             .as_array()
             .expect("entries array")
             .iter()
-            .map(|e| e["did"].as_str().unwrap().to_string())
+            .map(|e| e["subject"].as_str().unwrap().to_string())
             .collect();
         v.sort();
         v
@@ -710,10 +714,12 @@ async fn acl_mutation_requires_step_up() {
             "/acl",
             &token,
             json!({
-                "did": "did:key:z6MkNew",
-                "role": "application",
-                "label": "test app",
-                "allowed_contexts": ["ctx1"]
+                "entry": {
+                    "subject": "did:key:z6MkNew",
+                    "role": "application",
+                    "label": "test app",
+                    "scopes": ["ctx1"]
+                }
             }),
         ))
         .await;
@@ -755,10 +761,12 @@ async fn step_up_floor_is_per_operation_class() {
             "/acl",
             &token,
             json!({
-                "did": "did:key:z6MkUngated",
-                "role": "application",
-                "label": "ungated app",
-                "allowed_contexts": ["ctx1"]
+                "entry": {
+                    "subject": "did:key:z6MkUngated",
+                    "role": "application",
+                    "label": "ungated app",
+                    "scopes": ["ctx1"]
+                }
             }),
         ))
         .await;
@@ -838,7 +846,7 @@ async fn acl_update_sets_step_up_approver() {
         .request(post_auth(
             "/acl",
             &token,
-            json!({ "did": "did:key:z6MkGrantee2", "role": "application", "allowed_contexts": ["ctx1"] }),
+            json!({ "entry": { "subject": "did:key:z6MkGrantee2", "role": "application", "scopes": ["ctx1"] } }),
         ))
         .await;
     assert!(status.is_success());
@@ -856,7 +864,7 @@ async fn acl_update_sets_step_up_approver() {
         "update should succeed: {status} {body}"
     );
     assert_eq!(
-        body["step_up_approver"], "did:key:z6MkApprover",
+        body["entry"]["stepUp"]["approver"], "did:key:z6MkApprover",
         "update must set + reflect the step-up approver: {body}"
     );
 }
@@ -872,10 +880,12 @@ async fn acl_grant_persists_step_up_approver() {
             "/acl",
             &token,
             json!({
-                "did": "did:key:z6MkGrantee",
-                "role": "application",
-                "allowed_contexts": ["ctx1"],
-                "step_up_approver": "did:key:z6MkApprover"
+                "entry": {
+                    "subject": "did:key:z6MkGrantee",
+                    "role": "application",
+                    "scopes": ["ctx1"],
+                    "stepUp": { "approver": "did:key:z6MkApprover" }
+                }
             }),
         ))
         .await;
@@ -883,7 +893,7 @@ async fn acl_grant_persists_step_up_approver() {
     assert!(status.is_success(), "grant should succeed: {status} {body}");
     // The configured approver round-trips through the create result.
     assert_eq!(
-        body["step_up_approver"], "did:key:z6MkApprover",
+        body["entry"]["stepUp"]["approver"], "did:key:z6MkApprover",
         "grant must persist + reflect the step-up approver: {body}"
     );
 }
@@ -915,7 +925,7 @@ async fn delegated_step_up_routes_to_configured_approver() {
         .request(post_auth(
             "/acl",
             &token,
-            json!({ "did": "did:key:z6MkNew", "role": "application", "allowed_contexts": ["ctx1"] }),
+            json!({ "entry": { "subject": "did:key:z6MkNew", "role": "application", "scopes": ["ctx1"] } }),
         ))
         .await;
 
@@ -950,7 +960,7 @@ async fn delegated_step_up_without_approver_fails_closed() {
         .request(post_auth(
             "/acl",
             &token,
-            json!({ "did": "did:key:z6MkNew2", "role": "application", "allowed_contexts": ["ctx1"] }),
+            json!({ "entry": { "subject": "did:key:z6MkNew2", "role": "application", "scopes": ["ctx1"] } }),
         ))
         .await;
 
@@ -1437,10 +1447,12 @@ async fn acl_get_update_delete_lifecycle() {
         "/acl",
         &token,
         json!({
-            "did": "did:key:z6MkTarget",
-            "role": "application",
-            "label": "test",
-            "allowed_contexts": ["ctx1"]
+            "entry": {
+                "subject": "did:key:z6MkTarget",
+                "role": "application",
+                "label": "test",
+                "scopes": ["ctx1"]
+            }
         }),
     ))
     .await;
@@ -1450,7 +1462,7 @@ async fn acl_get_update_delete_lifecycle() {
         .request(get_auth("/acl/did:key:z6MkTarget", &token))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["role"], "application");
+    assert_eq!(body["entry"]["role"], "application", "{body}");
 
     // Update
     let (status, body) = app
@@ -1461,7 +1473,7 @@ async fn acl_get_update_delete_lifecycle() {
         ))
         .await;
     assert!(status.is_success(), "update: {status} {body}");
-    assert_eq!(body["role"], "initiator");
+    assert_eq!(body["entry"]["role"], "initiator", "{body}");
 
     // Delete
     let (status, _) = app

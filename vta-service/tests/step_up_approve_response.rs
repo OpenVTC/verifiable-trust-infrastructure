@@ -335,13 +335,15 @@ async fn trust_task_acl_mutation_requires_step_up() {
     // before payload parsing, so the body need only route + pass the role check.
     let doc = json!({
         "id": "acl-create-itest-1",
-        "type": "https://trusttasks.org/spec/vta/acl/create/1.0",
+        "type": "https://trusttasks.org/spec/acl/grant/0.1",
         "issuer": did,
         "recipient": "did:key:z6MkTestVTA",
         "payload": {
-            "did": "did:key:z6MkSomeNewEntry",
-            "role": "application",
-            "allowed_contexts": ["ctx1"]
+            "entry": {
+                "subject": "did:key:z6MkSomeNewEntry",
+                "role": "application",
+                "scopes": ["ctx1"]
+            }
         },
     });
     let req = Request::builder()

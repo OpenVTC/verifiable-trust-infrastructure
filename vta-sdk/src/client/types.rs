@@ -324,33 +324,135 @@ pub struct RotateSeedResponse {
 
 // ── ACL types ───────────────────────────────────────────────────────
 
+/// One ACL entry as the REST surface returns it.
+///
+/// The **wire** names are canonical (`acl/_shared/0.1/acl-entry`); the Rust
+/// field names are the maintainer's historical ones, kept so the CLI and the
+/// VTC's own ACL routes did not have to move in the same change. The mapping
+/// is `subject`↔`did` and `scopes`↔`allowed_contexts`, and the step-up and
+/// approve members are flattened back out of their canonical nesting.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AclEntryResponse {
+    #[serde(rename = "subject")]
     pub did: String,
     pub role: String,
+    #[serde(default)]
     pub label: Option<String>,
+    #[serde(rename = "scopes", default)]
     pub allowed_contexts: Vec<String>,
+    #[serde(
+        default,
+        deserialize_with = "de_epoch_opt",
+        serialize_with = "ser_epoch"
+    )]
     pub created_at: u64,
+    #[serde(default)]
     pub created_by: String,
-    /// Unix-epoch seconds at which this entry expires. `None` = permanent.
-    /// Pre-Phase-2 entries on the wire never carried this field, so
-    /// defaults to `None` for backward compat.
-    #[serde(default)]
+    /// When the entry expires. Canonical sends RFC 3339; this is the epoch
+    /// seconds the rest of the code already speaks.
+    #[serde(
+        default,
+        deserialize_with = "de_epoch_opt_option",
+        serialize_with = "ser_epoch_opt"
+    )]
     pub expires_at: Option<u64>,
-    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
-    /// floor for this subject. `None` = no override. `#[serde(default)]` for
-    /// pre-existing entries on the wire.
+    /// Flattened out of the canonical `stepUp` object.
+    #[serde(default, rename = "stepUp")]
+    step_up: Option<StepUpWire>,
+    /// Flattened out of the canonical `approve` object.
     #[serde(default)]
-    pub step_up_require: Option<String>,
-    /// Approve-authority over **any** context — may confer via approval while
-    /// acting nowhere. `#[serde(default)]` so entries from pre-approver servers
-    /// (which never send it) read as `false`.
+    approve: Option<ApproveWire>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepUpWire {
     #[serde(default)]
-    pub approve_all_contexts: bool,
-    /// Approve-authority scoped to these contexts. Empty = confers nothing
-    /// (unless `approve_all_contexts`). `#[serde(default)]` for older servers.
+    approver: Option<String>,
     #[serde(default)]
-    pub approve_contexts: Vec<String>,
+    require: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproveWire {
+    #[serde(default)]
+    all: bool,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+impl AclEntryResponse {
+    /// Per-entry step-up mode override, if any.
+    pub fn step_up_require(&self) -> Option<&str> {
+        self.step_up.as_ref().and_then(|s| s.require.as_deref())
+    }
+
+    /// Delegated step-up approver, if any.
+    pub fn step_up_approver(&self) -> Option<&str> {
+        self.step_up.as_ref().and_then(|s| s.approver.as_deref())
+    }
+
+    /// True when the entry may confer **any** scope via approval.
+    pub fn approve_all_contexts(&self) -> bool {
+        self.approve.as_ref().is_some_and(|a| a.all)
+    }
+
+    /// Scopes the entry may confer. Empty confers nothing.
+    pub fn approve_contexts(&self) -> &[String] {
+        self.approve.as_ref().map_or(&[], |a| a.scopes.as_slice())
+    }
+}
+
+/// Epoch seconds → RFC 3339, so a re-serialised entry stays canonical.
+fn ser_epoch<S: serde::Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+    ser_epoch_opt(&Some(*v), s)
+}
+
+/// Epoch seconds → RFC 3339, preserving absence.
+fn ser_epoch_opt<S: serde::Serializer>(v: &Option<u64>, s: S) -> Result<S::Ok, S::Error> {
+    use chrono::{TimeZone, Utc};
+    match v.and_then(|e| {
+        i64::try_from(e)
+            .ok()
+            .and_then(|x| Utc.timestamp_opt(x, 0).single())
+    }) {
+        Some(t) => s.serialize_str(&t.to_rfc3339()),
+        None => s.serialize_none(),
+    }
+}
+
+/// RFC 3339 → epoch seconds, defaulting to 0 when absent.
+fn de_epoch_opt<'de, D>(d: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(de_epoch_opt_option(d)?.unwrap_or(0))
+}
+
+/// RFC 3339 → epoch seconds. A pre-epoch instant clamps to 0, which for an
+/// expiry reads as "already expired" — the safe direction for a timestamp that
+/// gates authority.
+fn de_epoch_opt_option<'de, D>(d: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(d)?;
+    Ok(raw.and_then(|s| {
+        chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|t| u64::try_from(t.timestamp()).unwrap_or(0))
+    }))
+}
+
+/// The `{ entry }` envelope canonical `acl/*` responses carry.
+///
+/// Internal: the client unwraps it so callers keep receiving the entry itself
+/// rather than having to know the envelope exists.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AclEntryEnvelope {
+    pub entry: AclEntryResponse,
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,34 +460,70 @@ pub struct AclListResponse {
     pub entries: Vec<AclEntryResponse>,
 }
 
-#[derive(Debug, Serialize)]
+/// Builder for `acl/grant/0.1`.
+///
+/// The builder API is unchanged by the canonical fold; only what it serialises
+/// moved. Callers keep writing `CreateAclRequest::new(did, role).contexts(..)`
+/// and the wire carries `{entry: {subject, role, scopes, ...}}`.
+#[derive(Debug)]
 #[must_use]
 pub struct CreateAclRequest {
     pub did: String,
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub allowed_contexts: Vec<String>,
     /// Unix-epoch seconds at which this entry auto-expires. `None` = permanent.
     /// Useful for setup ACLs where the temp did:key should stop authenticating
     /// if the admin never claims it via `pnm setup` + rotation.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<u64>,
-    /// VID authorized to ratify a **delegated** AAL2 step-up for this subject
-    /// (the subject's `stepUp.approver`). Omit for no delegated approver.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// VID authorized to ratify a **delegated** AAL2 step-up for this subject.
     pub step_up_approver: Option<String>,
-    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
-    /// floor for this subject. Omit for none.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Per-entry step-up override (`"self"` | `"delegated"`).
     pub step_up_require: Option<String>,
     /// Approve-authority over any context (confer via approval, act nowhere).
-    /// Super-admin-only to grant. Takes precedence over `approve_contexts`.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub approve_all_contexts: bool,
-    /// Approve-authority scoped to these contexts. Empty = confers nothing.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Approve-authority scoped to these contexts.
     pub approve_contexts: Vec<String>,
+}
+
+impl serde::Serialize for CreateAclRequest {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use crate::protocols::acl_management::create::CreateAclBody;
+        use crate::protocols::acl_management::entry::{AclEntry, Approve, StepUp};
+        use chrono::{TimeZone, Utc};
+
+        let step_up = StepUp {
+            approver: self.step_up_approver.clone(),
+            require: self.step_up_require.clone(),
+        };
+        let approve = Approve {
+            all: self.approve_all_contexts,
+            scopes: self.approve_contexts.clone(),
+        };
+        let has_step_up = step_up.approver.is_some() || step_up.require.is_some();
+        let has_approve = approve.all || !approve.scopes.is_empty();
+        let body = CreateAclBody {
+            entry: AclEntry {
+                subject: self.did.clone(),
+                role: self.role.clone(),
+                scopes: self.allowed_contexts.clone(),
+                label: self.label.clone(),
+                created_at: None,
+                created_by: None,
+                updated_at: None,
+                updated_by: None,
+                expires_at: self.expires_at.and_then(|e| {
+                    i64::try_from(e)
+                        .ok()
+                        .and_then(|s| Utc.timestamp_opt(s, 0).single())
+                }),
+                step_up: has_step_up.then_some(step_up),
+                approve: has_approve.then_some(approve),
+            },
+            reason: None,
+        };
+        body.serialize(s)
+    }
 }
 
 impl CreateAclRequest {

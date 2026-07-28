@@ -3,7 +3,10 @@ use tracing::info;
 
 use crate::audit::{self, audit};
 use vta_sdk::protocols::acl_management::{
-    create::CreateAclResultBody, delete::DeleteAclResultBody, list::ListAclResultBody,
+    create::{CreateAclResponseBody, CreateAclResultBody},
+    delete::DeleteAclResultBody,
+    get::GetAclResultBody,
+    list::ListAclResultBody,
     swap::AclSwapPresentation,
 };
 
@@ -291,7 +294,7 @@ pub async fn list_acl(
     context_filter: Option<&str>,
     direction: ContextDirection,
     channel: &str,
-) -> Result<ListAclResultBody, AppError> {
+) -> Result<Vec<CreateAclResultBody>, AppError> {
     auth.require_manage()?;
 
     if context_filter.is_none() && direction != ContextDirection::default() {
@@ -329,7 +332,7 @@ pub async fn list_acl(
         count = entries.len(),
         "ACL listed"
     );
-    Ok(ListAclResultBody { entries })
+    Ok(entries)
 }
 
 pub async fn update_acl(
@@ -463,7 +466,7 @@ pub async fn delete_acl(
     auth: &AuthClaims,
     did: &str,
     channel: &str,
-) -> Result<DeleteAclResultBody, AppError> {
+) -> Result<(), AppError> {
     auth.require_manage()?;
 
     if auth.did == did {
@@ -508,10 +511,7 @@ pub async fn delete_acl(
         None,
     )
     .await;
-    Ok(DeleteAclResultBody {
-        did: did.to_string(),
-        deleted: true,
-    })
+    Ok(())
 }
 
 /// Atomic self-service key rotation. The authenticated caller (`auth.did` =
@@ -767,9 +767,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            body.entries
-                .iter()
-                .any(|e| e.did == "did:key:zApproverList"),
+            body.iter().any(|e| e.did == "did:key:zApproverList"),
             "an approve-all holder must be auditable by every context admin"
         );
     }
@@ -795,7 +793,7 @@ mod tests {
         let body = list_acl(acl_ks, caller, Some(ctx), direction, "test")
             .await
             .unwrap();
-        let mut dids: Vec<String> = body.entries.into_iter().map(|e| e.did).collect();
+        let mut dids: Vec<String> = body.into_iter().map(|e| e.did).collect();
         dids.sort();
         dids
     }
@@ -1552,11 +1550,19 @@ mod tests {
         seed_target(&acl_ks, admin_target, &["ctx-shared"]).await;
 
         let caller = ctx_admin("did:key:zCallerAdmin", &["ctx-shared"]);
-        let body = delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
+        // `delete_acl` is the internal removal; the canonical response body is
+        // built by `revoke_by_subject`, which reads the entry first so the
+        // caller learns what was withdrawn.
+        delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
             .await
             .expect("admin-on-admin delete succeeds");
-        assert_eq!(body.did, admin_target);
-        assert!(body.deleted);
+        assert!(
+            get_acl_entry(&acl_ks, admin_target)
+                .await
+                .unwrap()
+                .is_none(),
+            "the entry is gone after a delete"
+        );
     }
 
     /// Updating an ACL entry to add a context that doesn't exist
@@ -1601,4 +1607,151 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical `acl/*` adapters (#840 phase A)
+// ---------------------------------------------------------------------------
+//
+// The functions above take the maintainer's internal argument shape and are
+// unchanged by the fold; these adapt the canonical wire types onto them.
+//
+// Keeping the mapping in one place rather than in each transport's handler is
+// deliberate: REST, DIDComm and the trust-task dispatcher all reach the same
+// operation, and three copies of "which wire member becomes which argument" is
+// three chances for them to disagree about, say, whether an absent `approve`
+// confers nothing.
+
+// Aliased: `AclEntry` is already the *stored* type in this module. The wire
+// form and the stored form are deliberately different shapes, so keeping both
+// names visible stops one being mistaken for the other.
+use vta_sdk::protocols::acl_management::entry::{AclEntry as WireAclEntry, to_epoch};
+
+/// `acl/grant/0.1` → [`create_acl`].
+pub async fn grant_from_entry(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    entry: WireAclEntry,
+    channel: &str,
+) -> Result<CreateAclResponseBody, AppError> {
+    let role = Role::parse(&entry.role)
+        .map_err(|_| AppError::Validation(format!("invalid role: {}", entry.role)))?;
+    let stored = create_acl(
+        acl_ks,
+        audit_ks,
+        contexts_ks,
+        auth,
+        &entry.subject,
+        role,
+        entry.label.clone(),
+        entry.scopes.clone(),
+        entry.expires_at.map(to_epoch),
+        entry.step_up_approver(),
+        entry.step_up_require(),
+        entry.approve_scope(),
+        channel,
+    )
+    .await?;
+    Ok(CreateAclResponseBody {
+        entry: WireAclEntry::from_result(&stored),
+    })
+}
+
+/// `acl/show/0.1` → [`get_acl`].
+pub async fn show_by_subject(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+    channel: &str,
+) -> Result<GetAclResultBody, AppError> {
+    let stored = get_acl(acl_ks, auth, subject, channel).await?;
+    Ok(GetAclResultBody {
+        entry: WireAclEntry::from_result(&stored),
+        // Nothing is withheld from a caller already authorized to read the
+        // entry, so the list is empty rather than absent — an explicit "we
+        // redacted nothing" beats leaving the caller to infer it.
+        redacted_fields: Vec::new(),
+    })
+}
+
+/// `acl/list/0.1` → [`list_acl`].
+pub async fn list_entries(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    scope: Option<&str>,
+    direction: ContextDirection,
+    channel: &str,
+) -> Result<ListAclResultBody, AppError> {
+    let stored = list_acl(acl_ks, auth, scope, direction, channel).await?;
+    Ok(ListAclResultBody {
+        entries: stored.iter().map(WireAclEntry::from_result).collect(),
+        // This maintainer returns every matching entry in one response, so the
+        // page is never partial. Saying so explicitly is the point of the
+        // member: a caller must never have to infer completeness from length,
+        // which is how a truncated revocation sweep reads as a finished one.
+        truncated: false,
+        cursor: None,
+        redacted_fields: Vec::new(),
+    })
+}
+
+/// `acl/update/0.1` → [`update_acl`].
+pub async fn update_from_params(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    contexts_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+    params: UpdateAclParams,
+    channel: &str,
+) -> Result<CreateAclResponseBody, AppError> {
+    let stored = update_acl(
+        acl_ks,
+        audit_ks,
+        contexts_ks,
+        auth,
+        subject,
+        params,
+        channel,
+    )
+    .await?;
+    Ok(CreateAclResponseBody {
+        entry: WireAclEntry::from_result(&stored),
+    })
+}
+
+/// `acl/revoke/0.1` → [`delete_acl`].
+///
+/// Canonical revoke has a scope-reduction mode (`scopes` lists what to
+/// withdraw, the entry survives). This maintainer implements full removal
+/// only, and **refuses** a scoped request rather than treating it as a full
+/// removal — silently taking the whole entry when the caller asked to withdraw
+/// one scope removes far more authority than was requested, which is not a
+/// direction to guess in.
+pub async fn revoke_by_subject(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+    scopes: Option<Vec<String>>,
+    channel: &str,
+) -> Result<DeleteAclResultBody, AppError> {
+    if let Some(scopes) = scopes.filter(|s| !s.is_empty()) {
+        return Err(AppError::Validation(format!(
+            "scope reduction is not supported by this maintainer — `scopes` named {} entr{}, \
+             but only full revocation is implemented. Omit `scopes` to remove the entry.",
+            scopes.len(),
+            if scopes.len() == 1 { "y" } else { "ies" }
+        )));
+    }
+    // Read before removing so the response carries what was actually
+    // withdrawn. Canonical revoke returns the entry, not a boolean: a bare
+    // `deleted: true` cannot tell an auditor what authority was lost.
+    let stored = get_acl(acl_ks, auth, subject, channel).await?;
+    delete_acl(acl_ks, audit_ks, auth, subject, channel).await?;
+    Ok(DeleteAclResultBody {
+        entry: WireAclEntry::from_result(&stored),
+    })
 }

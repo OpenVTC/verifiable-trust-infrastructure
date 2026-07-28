@@ -197,30 +197,30 @@ pub const TASK_DEVICE_SET_WAKE_0_1: &str = "https://trusttasks.org/spec/device/s
 /// values changed; the bump is the canonical-version alignment.
 pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/set-wake/0.2";
 
-// ─── ACL slice (spec/vta/acl/*) ──────────────────────────────────────────
+// ─── ACL slice (canonical spec/acl/*) ────────────────────────────────────
 
-/// `spec/vta/acl/list/1.0` — list ACL entries, optionally filtered by
+/// `acl/list/0.1` — list ACL entries, optionally filtered by
 /// context. Payload: [`crate::protocols::acl_management::list::ListAclBody`].
-pub const TASK_ACL_LIST_1_0: &str = "https://trusttasks.org/spec/vta/acl/list/1.0";
+pub const TASK_ACL_LIST_1_0: &str = "https://trusttasks.org/spec/acl/list/0.1";
 
-/// `spec/vta/acl/create/1.0` — add an ACL entry. Payload:
+/// `acl/grant/0.1` — add an ACL entry. Payload:
 /// [`crate::protocols::acl_management::create::CreateAclBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_CREATE_1_0: &str = "https://trusttasks.org/spec/vta/acl/create/1.0";
+pub const TASK_ACL_CREATE_1_0: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 
-/// `spec/vta/acl/get/1.0` — retrieve a single entry. Payload:
+/// `acl/show/0.1` — retrieve a single entry. Payload:
 /// [`crate::protocols::acl_management::get::GetAclBody`].
-pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/vta/acl/get/1.0";
+pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/acl/show/0.1";
 
-/// `spec/vta/acl/update/1.0` — patch role, label, or allowed contexts.
+/// `acl/update/0.1` — patch role, label, or allowed contexts.
 /// Payload: [`crate::protocols::acl_management::update::UpdateAclBody`].
 /// Auth: Admin only.
-pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/acl/update/1.0";
+pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/acl/update/0.1";
 
-/// `spec/vta/acl/delete/1.0` — remove an entry. Payload:
+/// `acl/revoke/0.1` — remove an entry. Payload:
 /// [`crate::protocols::acl_management::delete::DeleteAclBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/acl/delete/1.0";
+pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 
 /// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
 /// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:

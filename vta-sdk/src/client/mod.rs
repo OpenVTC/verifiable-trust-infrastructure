@@ -1951,12 +1951,25 @@ mod tests {
             approve_contexts: vec![],
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert_eq!(json["did"], "did:key:z6Mk123");
-        assert_eq!(json["role"], "admin");
-        // Omitted approver must not appear on the wire.
-        assert!(json.get("step_up_approver").is_none());
-        assert!(!json.as_object().unwrap().contains_key("label"));
-        assert_eq!(json["allowed_contexts"], serde_json::json!(["vta"]));
+        // The builder API is unchanged; only what it serialises moved. The wire
+        // is canonical `acl/grant/0.1`: the entry is nested and uses `subject`
+        // and `scopes`.
+        assert_eq!(json["entry"]["subject"], "did:key:z6Mk123");
+        assert_eq!(json["entry"]["role"], "admin");
+        assert_eq!(json["entry"]["scopes"][0], "vta");
+        assert!(
+            json.get("did").is_none(),
+            "pre-fold flat shape is gone: {json}"
+        );
+        // An omitted approver must not appear at all — an empty `stepUp` object
+        // would read as a configured-but-blank override rather than absence.
+        assert!(json["entry"].get("stepUp").is_none());
+        assert!(json["entry"].get("approve").is_none());
+        // An unset label is omitted rather than emitted as null.
+        assert!(!json["entry"].as_object().unwrap().contains_key("label"));
+        assert_eq!(json["entry"]["scopes"], serde_json::json!(["vta"]));
+        // And the pre-fold member name is not emitted alongside the new one.
+        assert!(json["entry"].get("allowedContexts").is_none(), "{json}");
     }
 
     #[test]
@@ -2007,12 +2020,16 @@ mod tests {
 
     #[test]
     fn test_acl_list_response_deserialization() {
-        let json = r#"{"entries":[{"did":"did:key:z6Mk1","role":"admin","label":null,"allowed_contexts":[],"created_at":1700000000,"created_by":"setup"}]}"#;
+        // Canonical wire: `subject`/`scopes`, RFC 3339 timestamps. The Rust
+        // field names stay historical so the CLI and the VTC's ACL routes did
+        // not have to move in the same change.
+        let json = r#"{"entries":[{"subject":"did:key:z6Mk1","role":"admin","label":null,"scopes":[],"createdAt":"2023-11-14T22:13:20Z","createdBy":"setup"}],"truncated":false}"#;
         let resp: AclListResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.entries.len(), 1);
         assert_eq!(resp.entries[0].did, "did:key:z6Mk1");
         assert_eq!(resp.entries[0].role, "admin");
         assert!(resp.entries[0].allowed_contexts.is_empty());
+        assert_eq!(resp.entries[0].created_at, 1_700_000_000);
     }
 
     #[test]

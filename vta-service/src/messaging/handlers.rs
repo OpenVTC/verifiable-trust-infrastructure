@@ -581,23 +581,12 @@ didcomm_handler!(
     acl_management::CREATE_ACL_RESULT,
     acl_management::create::CreateAclBody,
     |s, auth, body| {
-        let role = Role::parse(&body.role)?;
-        operations::acl::create_acl(
+        operations::acl::grant_from_entry(
             &s.acl_ks,
             &s.audit_ks,
             &s.contexts_ks,
             &auth,
-            &body.did,
-            role,
-            body.label,
-            body.allowed_contexts,
-            body.expires_at,
-            body.step_up_approver,
-            body.step_up_require,
-            operations::acl::approve_scope_from_wire(
-                body.approve_all_contexts,
-                body.approve_contexts,
-            ),
+            body.entry,
             "didcomm",
         )
         .await
@@ -716,7 +705,7 @@ didcomm_handler!(
     Gate::Manage,
     acl_management::GET_ACL_RESULT,
     acl_management::get::GetAclBody,
-    |s, auth, body| operations::acl::get_acl(&s.acl_ks, &auth, &body.did, "didcomm").await
+    |s, auth, body| operations::acl::get_acl(&s.acl_ks, &auth, &body.subject, "didcomm").await
 );
 
 didcomm_handler!(
@@ -727,7 +716,7 @@ didcomm_handler!(
     |s, auth, body| operations::acl::list_acl(
         &s.acl_ks,
         &auth,
-        body.context.as_deref(),
+        body.scope.as_deref(),
         body.direction.unwrap_or_default(),
         "didcomm"
     )
@@ -744,7 +733,7 @@ didcomm_handler!(
             Some(r) => Some(Role::parse(&r)?),
             None => None,
         };
-        operations::acl::update_acl(
+        operations::acl::update_from_params(
             &s.acl_ks,
             &s.audit_ks,
             &s.contexts_ks,
@@ -769,11 +758,12 @@ didcomm_handler!(
     Gate::Manage,
     acl_management::DELETE_ACL_RESULT,
     acl_management::delete::DeleteAclBody,
-    |s, auth, body| operations::acl::delete_acl(
+    |s, auth, body| operations::acl::revoke_by_subject(
         &s.acl_ks,
         &s.audit_ks,
         &auth,
-        &body.did,
+        &body.subject,
+        body.scopes,
         "didcomm"
     )
     .await

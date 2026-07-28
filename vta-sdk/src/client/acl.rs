@@ -1,5 +1,6 @@
 //! ACL methods on [`VtaClient`].
 
+use super::types::AclEntryEnvelope;
 use super::{
     AclEntryResponse, AclListResponse, CreateAclRequest, SwapAclRequest, UpdateAclRequest,
     VtaClient, encode_path_segment,
@@ -72,25 +73,32 @@ impl VtaClient {
     }
 
     pub async fn get_acl(&self, did: &str) -> Result<AclEntryResponse, VtaError> {
-        self.rpc(
-            acl_management::GET_ACL,
-            serde_json::json!({ "did": did }),
-            acl_management::GET_ACL_RESULT,
-            30,
-            |c, url| c.get(format!("{url}/acl/{}", encode_path_segment(did))),
-        )
-        .await
+        // Canonical `acl/show/0.1` wraps the entry (alongside `redactedFields`);
+        // unwrap so callers keep working with the entry itself.
+        let wrapped: AclEntryEnvelope = self
+            .rpc(
+                acl_management::GET_ACL,
+                serde_json::json!({ "subject": did }),
+                acl_management::GET_ACL_RESULT,
+                30,
+                |c, url| c.get(format!("{url}/acl/{}", encode_path_segment(did))),
+            )
+            .await?;
+        Ok(wrapped.entry)
     }
 
     pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
-        self.rpc(
-            acl_management::CREATE_ACL,
-            serde_json::to_value(&req)?,
-            acl_management::CREATE_ACL_RESULT,
-            30,
-            |c, url| c.post(format!("{url}/acl")).json(&req),
-        )
-        .await
+        // Canonical `acl/grant/0.1` returns the realized entry under `entry`.
+        let wrapped: AclEntryEnvelope = self
+            .rpc(
+                acl_management::CREATE_ACL,
+                serde_json::to_value(&req)?,
+                acl_management::CREATE_ACL_RESULT,
+                30,
+                |c, url| c.post(format!("{url}/acl")).json(&req),
+            )
+            .await?;
+        Ok(wrapped.entry)
     }
 
     pub async fn update_acl(
@@ -98,28 +106,32 @@ impl VtaClient {
         did: &str,
         req: UpdateAclRequest,
     ) -> Result<AclEntryResponse, VtaError> {
-        self.rpc(
-            acl_management::UPDATE_ACL,
-            serde_json::json!({
-                "did": did,
-                "role": &req.role,
-                "label": &req.label,
-                "allowed_contexts": &req.allowed_contexts,
-            }),
-            acl_management::UPDATE_ACL_RESULT,
-            30,
-            |c, url| {
-                c.patch(format!("{url}/acl/{}", encode_path_segment(did)))
-                    .json(&req)
-            },
-        )
-        .await
+        // Canonical `acl/update/0.1` returns the realized entry under `entry`,
+        // like grant and show.
+        let wrapped: AclEntryEnvelope = self
+            .rpc(
+                acl_management::UPDATE_ACL,
+                serde_json::json!({
+                    "subject": did,
+                    "role": &req.role,
+                    "label": &req.label,
+                    "allowed_contexts": &req.allowed_contexts,
+                }),
+                acl_management::UPDATE_ACL_RESULT,
+                30,
+                |c, url| {
+                    c.patch(format!("{url}/acl/{}", encode_path_segment(did)))
+                        .json(&req)
+                },
+            )
+            .await?;
+        Ok(wrapped.entry)
     }
 
     pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
         self.rpc_void(
             acl_management::DELETE_ACL,
-            serde_json::json!({ "did": did }),
+            serde_json::json!({ "subject": did }),
             acl_management::DELETE_ACL_RESULT,
             30,
             |c, url| c.delete(format!("{url}/acl/{}", encode_path_segment(did))),

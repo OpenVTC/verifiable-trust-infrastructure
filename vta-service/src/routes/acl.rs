@@ -3,7 +3,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 
-use vta_sdk::protocols::acl_management::{create::CreateAclResultBody, list::ListAclResultBody};
+use vta_sdk::protocols::acl_management::{
+    create::{CreateAclResponseBody, CreateAclResultBody},
+    get::GetAclResultBody,
+    list::ListAclResultBody,
+};
 
 use crate::acl::{ApproveScope, ContextDirection, Role};
 use crate::auth::{AdminAuth, AuthClaims, ManageAuth};
@@ -45,7 +49,7 @@ pub async fn list_acl(
     Query(query): Query<ListAclQuery>,
 ) -> Result<Json<ListAclResultBody>, AppError> {
     let direction = parse_direction(query.direction.as_deref())?;
-    let result = operations::acl::list_acl(
+    let result = operations::acl::list_entries(
         &state.acl_ks,
         &auth.0,
         query.context.as_deref(),
@@ -67,33 +71,10 @@ fn parse_direction(raw: Option<&str>) -> Result<ContextDirection, AppError> {
     }
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct CreateAclRequest {
-    pub did: String,
-    pub role: Role,
-    pub label: Option<String>,
-    #[serde(default)]
-    pub allowed_contexts: Vec<String>,
-    /// Unix-epoch seconds at which this entry auto-expires. Omit or set to
-    /// `null` for a permanent entry.
-    #[serde(default)]
-    pub expires_at: Option<u64>,
-    /// VID authorized to ratify a delegated AAL2 step-up for this subject
-    /// (the approve-request `recipient`). Omit for no delegated approver.
-    #[serde(default)]
-    pub step_up_approver: Option<String>,
-    /// Per-entry step-up override (`"self"` | `"delegated"`) raising the system
-    /// floor for this subject. Omit for none.
-    #[serde(default)]
-    pub step_up_require: Option<String>,
-    /// Approve-authority over any context (confer via approval, act nowhere).
-    /// Super-admin-only to grant. Takes precedence over `approve_contexts`.
-    #[serde(default)]
-    pub approve_all_contexts: bool,
-    /// Approve-authority scoped to these contexts. Empty = confers nothing.
-    #[serde(default)]
-    pub approve_contexts: Vec<String>,
-}
+/// REST body for `POST /acl`, identical to the canonical `acl/grant/0.1`
+/// payload — the same interface the DIDComm and trust-task transports carry,
+/// rather than a REST-shaped variant of it.
+pub type CreateAclRequest = vta_sdk::protocols::acl_management::create::CreateAclBody;
 
 /// POST /acl — create a new ACL entry for a DID. Auth: Admin or Initiator.
 #[utoipa::path(
@@ -101,7 +82,7 @@ pub struct CreateAclRequest {
     security(("bearer_jwt" = [])),
     request_body = CreateAclRequest,
     responses(
-        (status = 201, description = "ACL entry created", body = CreateAclResultBody),
+        (status = 201, description = "ACL entry created", body = CreateAclResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller cannot manage ACL entries"),
     ),
@@ -114,20 +95,13 @@ pub async fn create_acl(
     _step_up: RequireStepUp<AclGrantOp>,
     State(state): State<AppState>,
     Json(req): Json<CreateAclRequest>,
-) -> Result<(StatusCode, Json<CreateAclResultBody>), AppError> {
-    let result = operations::acl::create_acl(
+) -> Result<(StatusCode, Json<CreateAclResponseBody>), AppError> {
+    let result = operations::acl::grant_from_entry(
         &state.acl_ks,
         &state.audit_ks,
         &state.contexts_ks,
         &auth.0,
-        &req.did,
-        req.role,
-        req.label,
-        req.allowed_contexts,
-        req.expires_at,
-        req.step_up_approver,
-        req.step_up_require,
-        operations::acl::approve_scope_from_wire(req.approve_all_contexts, req.approve_contexts),
+        req.entry,
         "rest",
     )
     .await?;
@@ -140,7 +114,7 @@ pub async fn create_acl(
     security(("bearer_jwt" = [])),
     params(("did" = String, Path, description = "Subject DID")),
     responses(
-        (status = 200, description = "ACL entry", body = CreateAclResultBody),
+        (status = 200, description = "ACL entry", body = GetAclResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller cannot manage ACL entries"),
         (status = 404, description = "ACL entry not found"),
@@ -150,8 +124,8 @@ pub async fn get_acl(
     auth: ManageAuth,
     State(state): State<AppState>,
     Path(did): Path<String>,
-) -> Result<Json<CreateAclResultBody>, AppError> {
-    let result = operations::acl::get_acl(&state.acl_ks, &auth.0, &did, "rest").await?;
+) -> Result<Json<GetAclResultBody>, AppError> {
+    let result = operations::acl::show_by_subject(&state.acl_ks, &auth.0, &did, "rest").await?;
     Ok(Json(result))
 }
 
@@ -187,7 +161,7 @@ pub struct UpdateAclRequest {
     params(("did" = String, Path, description = "Subject DID")),
     request_body = UpdateAclRequest,
     responses(
-        (status = 200, description = "ACL entry updated", body = CreateAclResultBody),
+        (status = 200, description = "ACL entry updated", body = CreateAclResponseBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "ACL entry not found"),
@@ -199,8 +173,8 @@ pub async fn update_acl(
     State(state): State<AppState>,
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
-) -> Result<Json<CreateAclResultBody>, AppError> {
-    let result = operations::acl::update_acl(
+) -> Result<Json<CreateAclResponseBody>, AppError> {
+    let result = operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_ks,
         &state.contexts_ks,
