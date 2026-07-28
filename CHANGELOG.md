@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### vta-service 0.13.3 / vtc-service 0.11.41 — the mediator handshakes stop leaking websockets
+
+The defect #830 fixed in `vta-sdk` was also present, unfixed, in the services'
+own mediator plumbing. Same shape every time: a profile that opens a websocket
+but is never registered with the ATM, so `ATM::graceful_shutdown` — which stops
+websockets by iterating the profile map — walks straight past it, and nothing
+else can stop it either (the transport task transitively owns the only `Sender`
+for its own command channel, so no handle going out of scope ends it).
+
+**`messaging/transient_handshake.rs` — leaked one socket per first-enable.** Its
+teardown was a comment: *"dropping `service`/`atm` on return closes the transient
+websocket."* It does not. Every `services didcomm enable` left a socket
+reconnecting to that mediator, for the VTA's own DID, for the life of the
+process. The profile is now registered, and the ATM is torn down explicitly
+(`profile_remove` + `graceful_shutdown`) on every exit path — success, ping
+failure, and each early return in the build sequence.
+
+**`messaging/live_prover.rs` — leaked one socket per failed `services didcomm
+update`.** The failure path called `remove_transport`, which unbinds the
+transport from the delivery layer and does nothing to the socket. Repeated
+attempts against the same candidate stacked up live sockets for the same DID on
+the same mediator, which then duelled over the mediator's one-per-DID slot. The
+candidate profile is now registered and its socket stopped with `profile_remove`
+on failure — **not** `graceful_shutdown`, which would take the VTA's own live
+listener down with it, since this ATM is shared.
+
+**The long-lived listeners** (`vta-service::messaging::service::build_messaging`,
+`vtc-service::messaging::build_messaging`) now register their profiles too. Both
+run once per process, so nothing is reclaimed today; the point is that a listener
+whose socket cannot be stopped short of `exit()` is a trap for whoever adds a
+shutdown path next.
+
+**`vtc-service`'s DIDComm test harness** (`test_support::MockVtcDidcomm`) now
+shuts the applicant client down. Each test previously left a socket
+reconnect-looping against a dead mediator for the rest of the test binary.
+
+Regression test: `tests/e2e/tests/transient_handshake.rs::
+transient_handshake_leaves_no_socket_behind` runs the handshake twice against a
+mediator capped at one websocket per DID — which *refuses* the second connection
+rather than evicting the first, so the second handshake can only succeed if the
+first one's socket is really gone. It fails on the pre-fix code.
+
 ### vta-sdk 0.20.11 / vta-service 0.13.2 / vta-cli-common 0.10.18 / vtc-service 0.11.40 — the ACL surface folds onto canonical `acl/*` (#840 phase A)
 
 All five `vta/acl/*` tasks now bind the canonical family, with **no new specs

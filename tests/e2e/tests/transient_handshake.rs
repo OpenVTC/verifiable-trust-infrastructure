@@ -70,6 +70,61 @@ async fn transient_handshake_against_live_mediator_succeeds() {
     mediator.join().await.expect("mediator joins cleanly");
 }
 
+/// The handshake must leave **no live websocket** behind.
+///
+/// Observing that from outside needs a lever, and the mediator has one: a
+/// per-DID connection cap that *refuses* the new connection (POLICY close,
+/// "per-DID connection limit reached") rather than evicting the old one. So with
+/// the cap at 1, a second handshake for the same DID can only succeed if the
+/// first one's socket is really gone.
+///
+/// Before the fix it was not. `transient_prove` never registered its profile
+/// with the ATM, and its teardown was a comment claiming that dropping the
+/// service and ATM closes the socket — which it does not: the transport task
+/// transitively owns the only `Sender` for its own command channel, so nothing
+/// going out of scope can end it. Every first-enable handshake leaked one
+/// reconnecting socket for the VTA's own DID. This test fails (at Connect) on
+/// that code.
+#[tokio::test]
+async fn transient_handshake_leaves_no_socket_behind() {
+    common::init_tracing();
+
+    let vta = TestVta::spawn().await.expect("spawn test VTA");
+    let mediator = TestMediator::builder()
+        .local_did(vta.did.clone())
+        // One at a time: a second concurrent socket for this DID is refused,
+        // which is what turns "the first one leaked" into a test failure.
+        .max_websocket_connections_per_did(1)
+        .spawn()
+        .await
+        .expect("spawn test mediator");
+
+    let opts = HandshakeOptions {
+        timeout: Duration::from_secs(10),
+        force: false,
+    };
+
+    vta.run_transient_handshake(mediator.did(), opts.clone())
+        .await
+        .expect("first handshake succeeds");
+
+    // The teardown is asynchronous at the mediator end (it decrements its count
+    // when the connection handler returns), so give it a moment to settle. This
+    // cannot mask the defect it guards: a leaked socket is still there after any
+    // sleep — it reconnects on its own timer and never goes away.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    vta.run_transient_handshake(mediator.did(), opts)
+        .await
+        .expect(
+            "second handshake for the same DID must succeed — if it fails at Connect, \
+             the first handshake's websocket is still holding the mediator's per-DID slot",
+        );
+
+    mediator.shutdown();
+    mediator.join().await.expect("mediator joins cleanly");
+}
+
 #[tokio::test]
 async fn transient_handshake_unresolvable_did_fails_at_resolve_stage() {
     common::init_tracing();
