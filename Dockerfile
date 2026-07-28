@@ -36,6 +36,17 @@ COPY didcomm-test/Cargo.toml didcomm-test/Cargo.toml
 COPY pnm-cli/Cargo.toml pnm-cli/Cargo.toml
 COPY tests/e2e/Cargo.toml tests/e2e/Cargo.toml
 COPY vta-cli-common/Cargo.toml vta-cli-common/Cargo.toml
+COPY vta-config/Cargo.toml vta-config/Cargo.toml
+COPY vta-keyspaces/Cargo.toml vta-keyspaces/Cargo.toml
+COPY vta-audit/Cargo.toml vta-audit/Cargo.toml
+COPY vta-backup/Cargo.toml vta-backup/Cargo.toml
+COPY vta-keys/Cargo.toml vta-keys/Cargo.toml
+COPY vta-policy/Cargo.toml vta-policy/Cargo.toml
+COPY vta-support/Cargo.toml vta-support/Cargo.toml
+COPY vta-tee/Cargo.toml vta-tee/Cargo.toml
+COPY vta-sweepers/Cargo.toml vta-sweepers/Cargo.toml
+COPY vta-vault/Cargo.toml vta-vault/Cargo.toml
+COPY vta-webvh/Cargo.toml vta-webvh/Cargo.toml
 COPY vta-mcp/Cargo.toml vta-mcp/Cargo.toml
 COPY vta-mobile-core/Cargo.toml vta-mobile-core/Cargo.toml
 COPY vta-sdk/Cargo.toml vta-sdk/Cargo.toml
@@ -53,6 +64,17 @@ RUN mkdir -p \
         pnm-cli/src \
         tests/e2e/tests \
         vta-cli-common/src \
+        vta-config/src \
+        vta-keyspaces/src \
+        vta-audit/src \
+        vta-backup/src \
+        vta-keys/src \
+        vta-policy/src \
+        vta-support/src \
+        vta-tee/src \
+        vta-sweepers/src \
+        vta-vault/src \
+        vta-webvh/src \
         vta-mcp/src \
         vta-mobile-core/src/bin \
         vta-sdk/src \
@@ -68,6 +90,17 @@ RUN mkdir -p \
     echo 'fn main() {}' > pnm-cli/src/main.rs && \
     echo '#[test] fn dummy() {}' > tests/e2e/tests/dummy.rs && \
     echo 'pub fn dummy() {}' > vta-cli-common/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-config/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-keyspaces/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-audit/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-backup/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-keys/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-policy/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-support/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-tee/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-sweepers/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-vault/src/lib.rs && \
+    echo 'pub fn dummy() {}' > vta-webvh/src/lib.rs && \
     echo 'fn main() {}' > vta-mcp/src/main.rs && \
     echo 'pub fn dummy() {}' > vta-mobile-core/src/lib.rs && \
     echo 'fn main() {}' > vta-mobile-core/src/bin/uniffi-bindgen.rs && \
@@ -96,6 +129,17 @@ COPY didcomm-test/ didcomm-test/
 COPY pnm-cli/ pnm-cli/
 COPY tests/e2e/ tests/e2e/
 COPY vta-cli-common/ vta-cli-common/
+COPY vta-config/ vta-config/
+COPY vta-keyspaces/ vta-keyspaces/
+COPY vta-audit/ vta-audit/
+COPY vta-backup/ vta-backup/
+COPY vta-keys/ vta-keys/
+COPY vta-policy/ vta-policy/
+COPY vta-support/ vta-support/
+COPY vta-tee/ vta-tee/
+COPY vta-sweepers/ vta-sweepers/
+COPY vta-vault/ vta-vault/
+COPY vta-webvh/ vta-webvh/
 COPY vta-mcp/ vta-mcp/
 COPY vta-mobile-core/ vta-mobile-core/
 COPY vta-sdk/ vta-sdk/
@@ -113,6 +157,17 @@ RUN find \
         pnm-cli/src \
         tests/e2e/tests \
         vta-cli-common/src \
+        vta-config/src \
+        vta-keyspaces/src \
+        vta-audit/src \
+        vta-backup/src \
+        vta-keys/src \
+        vta-policy/src \
+        vta-support/src \
+        vta-tee/src \
+        vta-sweepers/src \
+        vta-vault/src \
+        vta-webvh/src \
         vta-mcp/src \
         vta-mobile-core/src \
         vta-sdk/src \
