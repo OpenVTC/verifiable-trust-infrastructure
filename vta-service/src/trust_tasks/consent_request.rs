@@ -283,11 +283,29 @@ pub(super) async fn push_granted(
 
     #[cfg(feature = "didcomm")]
     {
-        let body = serde_json::json!({
-            "status": "granted",
-            "payloadDigest": wire_digest,
-            "taskType": type_uri,
+        // A full Trust Task document, not a bare payload: the DIDComm binding
+        // deserialises the body as `TrustTask<P>`, and the request push above
+        // already sends complete documents. (The pre-spec shape was the bare
+        // `{status, payloadDigest, taskType}` object; the payload is unchanged,
+        // it just gained the envelope `task-consent/granted/0.1` requires.)
+        // Unsigned by design — the notice is non-load-bearing (the grant check
+        // at re-submit is the real gate) and the authcrypt sender is the only
+        // attribution the requester needs; the spec makes proof OPTIONAL.
+        let mut body = serde_json::json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": TASK_CONSENT_GRANTED_0_1,
+            "threadId": wire_digest,
+            "recipient": requester,
+            "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "payload": {
+                "status": "granted",
+                "payloadDigest": wire_digest,
+                "taskType": type_uri,
+            },
         });
+        if let Some(vta_did) = state.config.read().await.vta_did.clone() {
+            body["issuer"] = serde_json::json!(vta_did);
+        }
         // `webvh`, not `didcomm`: `AppState::mediator_registry` exists only under
         // `webvh`, while `PendingResponse`'s module needs only `didcomm`. The
         // enclosing block gates on the latter, so this line compiled in a

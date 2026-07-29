@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### vta-service 0.13.9 — `task-consent/granted` notice sent as a full Trust Task document
+
+The DIDComm granted notice (`push_granted`) sent a bare payload where the
+DIDComm binding deserialises bodies as complete Trust Task documents — the
+sibling request push already wrapped correctly. The notice is now enveloped
+(unsigned, per the spec's OPTIONAL proof; it is advisory and non-load-bearing —
+the grant lookup at re-submit remains the gate). Wire bytes change without a
+transition shim: no in-repo consumer parses the old bare shape, and the
+canonical shape is what `task-consent/granted/0.1` (new in the registry, PR
+trustoverip/dtgwg-trust-tasks-tf#156) specifies.
+
 ### vta-sdk 0.20.16 / vta-service 0.13.8 / vta-cli-common 0.10.20 / pnm-cli 0.11.14 — role changes split out of `acl/update` into `acl/change-role`
 
 Closes the known remainder of #840 phase A. The VTA's `acl/update` accepted a
