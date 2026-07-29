@@ -4,9 +4,10 @@
 //! `/did-templates` (and `/contexts/{id}/did-templates`) routes. On the
 //! DIDComm transport there is no raw protocol surface — the VTA exposes
 //! template management only through its Trust-Task dispatcher, so the DIDComm
-//! leg dispatches the `trusttasks.org/spec/vta/did-templates/*` (and
-//! `.../contexts/did-templates/*`) Trust Tasks via the binding envelope. Both
-//! legs are wired through [`VtaClient::rpc_tt`] / [`VtaClient::rpc_tt_void`].
+//! leg dispatches the `trusttasks.org/spec/vta/did-templates/*/2.0` Trust
+//! Tasks via the binding envelope. One URI per operation; the payload's
+//! optional `contextId` selects global vs context scope. Both legs are wired
+//! through [`VtaClient::rpc_tt`] / [`VtaClient::rpc_tt_void`].
 
 use std::collections::HashMap;
 
@@ -23,12 +24,13 @@ impl VtaClient {
 
     /// List all global templates.
     ///
-    /// REST: `GET /did-templates`. DIDComm: `vta/did-templates/list/1.0`.
+    /// REST: `GET /did-templates`. DIDComm: `vta/did-templates/list/2.0`
+    /// without `contextId`.
     pub async fn list_did_templates(&self) -> Result<Vec<DidTemplateRecord>, VtaError> {
         let resp: proto::list::ListDidTemplatesResultBody = self
             .rpc_tt(
-                trust_tasks::TASK_DID_TEMPLATES_LIST_1_0,
-                serde_json::to_value(proto::list::ListDidTemplatesBody::default())?,
+                trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+                serde_json::to_value(proto::list::ListDidTemplatesBody { context_id: None })?,
                 30,
                 |c, url| c.get(format!("{url}/did-templates")),
             )
@@ -38,11 +40,13 @@ impl VtaClient {
 
     /// Fetch one global template by name.
     ///
-    /// REST: `GET /did-templates/{name}`. DIDComm: `vta/did-templates/get/1.0`.
+    /// REST: `GET /did-templates/{name}`. DIDComm:
+    /// `vta/did-templates/get/2.0` without `contextId`.
     pub async fn get_did_template(&self, name: &str) -> Result<DidTemplateRecord, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_GET_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
             serde_json::to_value(proto::get::GetDidTemplateBody {
+                context_id: None,
                 name: name.to_string(),
             })?,
             30,
@@ -53,16 +57,18 @@ impl VtaClient {
 
     /// Create a global template. Super admin only.
     ///
-    /// REST: `POST /did-templates`. DIDComm: `vta/did-templates/create/1.0`.
+    /// REST: `POST /did-templates`. DIDComm:
+    /// `vta/did-templates/create/2.0` without `contextId`.
     pub async fn create_did_template(
         &self,
         template: DidTemplate,
     ) -> Result<DidTemplateRecord, VtaError> {
         let payload = serde_json::to_value(proto::create::CreateDidTemplateBody {
+            context_id: None,
             template: template.clone(),
         })?;
         self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_CREATE_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
             payload,
             30,
             |c, url| c.post(format!("{url}/did-templates")).json(&template),
@@ -72,18 +78,20 @@ impl VtaClient {
 
     /// Replace a global template. Super admin only.
     ///
-    /// REST: `PUT /did-templates/{name}`. DIDComm: `vta/did-templates/update/1.0`.
+    /// REST: `PUT /did-templates/{name}`. DIDComm:
+    /// `vta/did-templates/update/2.0` without `contextId`.
     pub async fn update_did_template(
         &self,
         name: &str,
         template: DidTemplate,
     ) -> Result<DidTemplateRecord, VtaError> {
         let payload = serde_json::to_value(proto::update::UpdateDidTemplateBody {
+            context_id: None,
             name: name.to_string(),
             template: template.clone(),
         })?;
         self.rpc_tt(
-            trust_tasks::TASK_DID_TEMPLATES_UPDATE_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
             payload,
             30,
             |c, url| {
@@ -96,11 +104,13 @@ impl VtaClient {
 
     /// Delete a global template. Super admin only.
     ///
-    /// REST: `DELETE /did-templates/{name}`. DIDComm: `vta/did-templates/delete/1.0`.
+    /// REST: `DELETE /did-templates/{name}`. DIDComm:
+    /// `vta/did-templates/delete/2.0` without `contextId`.
     pub async fn delete_did_template(&self, name: &str) -> Result<(), VtaError> {
         self.rpc_tt_void(
-            trust_tasks::TASK_DID_TEMPLATES_DELETE_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0,
             serde_json::to_value(proto::delete::DeleteDidTemplateBody {
+                context_id: None,
                 name: name.to_string(),
             })?,
             30,
@@ -115,19 +125,20 @@ impl VtaClient {
     /// `vars` provides everything else.
     ///
     /// REST: `POST /did-templates/{name}/render`. DIDComm:
-    /// `vta/did-templates/render/1.0`.
+    /// `vta/did-templates/render/2.0` without `contextId`.
     pub async fn render_did_template(
         &self,
         name: &str,
         vars: HashMap<String, Value>,
     ) -> Result<Value, VtaError> {
         let payload = serde_json::to_value(proto::render::RenderDidTemplateBody {
+            context_id: None,
             name: name.to_string(),
             vars: vars.clone(),
         })?;
         let resp: proto::render::RenderDidTemplateResultBody = self
             .rpc_tt(
-                trust_tasks::TASK_DID_TEMPLATES_RENDER_1_0,
+                trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
                 payload,
                 30,
                 |c, url| {
@@ -147,16 +158,16 @@ impl VtaClient {
     /// List context-scoped templates.
     ///
     /// REST: `GET /contexts/{id}/did-templates`. DIDComm:
-    /// `vta/contexts/did-templates/list/1.0`.
+    /// `vta/did-templates/list/2.0` with `contextId` set.
     pub async fn list_context_did_templates(
         &self,
         context_id: &str,
     ) -> Result<Vec<DidTemplateRecord>, VtaError> {
         let resp: proto::list::ListDidTemplatesResultBody = self
             .rpc_tt(
-                trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0,
-                serde_json::to_value(proto::list::ListContextDidTemplatesBody {
-                    context_id: context_id.to_string(),
+                trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+                serde_json::to_value(proto::list::ListDidTemplatesBody {
+                    context_id: Some(context_id.to_string()),
                 })?,
                 30,
                 |c, url| {
@@ -173,16 +184,16 @@ impl VtaClient {
     /// Fetch one context-scoped template.
     ///
     /// REST: `GET /contexts/{id}/did-templates/{name}`. DIDComm:
-    /// `vta/contexts/did-templates/get/1.0`.
+    /// `vta/did-templates/get/2.0` with `contextId` set.
     pub async fn get_context_did_template(
         &self,
         context_id: &str,
         name: &str,
     ) -> Result<DidTemplateRecord, VtaError> {
         self.rpc_tt(
-            trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_GET_1_0,
-            serde_json::to_value(proto::get::GetContextDidTemplateBody {
-                context_id: context_id.to_string(),
+            trust_tasks::TASK_DID_TEMPLATES_GET_2_0,
+            serde_json::to_value(proto::get::GetDidTemplateBody {
+                context_id: Some(context_id.to_string()),
                 name: name.to_string(),
             })?,
             30,
@@ -200,18 +211,18 @@ impl VtaClient {
     /// Create a context-scoped template. Context admin or super admin.
     ///
     /// REST: `POST /contexts/{id}/did-templates`. DIDComm:
-    /// `vta/contexts/did-templates/create/1.0`.
+    /// `vta/did-templates/create/2.0` with `contextId` set.
     pub async fn create_context_did_template(
         &self,
         context_id: &str,
         template: DidTemplate,
     ) -> Result<DidTemplateRecord, VtaError> {
-        let payload = serde_json::to_value(proto::create::CreateContextDidTemplateBody {
-            context_id: context_id.to_string(),
+        let payload = serde_json::to_value(proto::create::CreateDidTemplateBody {
+            context_id: Some(context_id.to_string()),
             template: template.clone(),
         })?;
         self.rpc_tt(
-            trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0,
             payload,
             30,
             |c, url| {
@@ -228,20 +239,20 @@ impl VtaClient {
     /// Replace a context-scoped template.
     ///
     /// REST: `PUT /contexts/{id}/did-templates/{name}`. DIDComm:
-    /// `vta/contexts/did-templates/update/1.0`.
+    /// `vta/did-templates/update/2.0` with `contextId` set.
     pub async fn update_context_did_template(
         &self,
         context_id: &str,
         name: &str,
         template: DidTemplate,
     ) -> Result<DidTemplateRecord, VtaError> {
-        let payload = serde_json::to_value(proto::update::UpdateContextDidTemplateBody {
-            context_id: context_id.to_string(),
+        let payload = serde_json::to_value(proto::update::UpdateDidTemplateBody {
+            context_id: Some(context_id.to_string()),
             name: name.to_string(),
             template: template.clone(),
         })?;
         self.rpc_tt(
-            trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0,
+            trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0,
             payload,
             30,
             |c, url| {
@@ -259,16 +270,16 @@ impl VtaClient {
     /// Delete a context-scoped template.
     ///
     /// REST: `DELETE /contexts/{id}/did-templates/{name}`. DIDComm:
-    /// `vta/contexts/did-templates/delete/1.0`.
+    /// `vta/did-templates/delete/2.0` with `contextId` set.
     pub async fn delete_context_did_template(
         &self,
         context_id: &str,
         name: &str,
     ) -> Result<(), VtaError> {
         self.rpc_tt_void(
-            trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0,
-            serde_json::to_value(proto::delete::DeleteContextDidTemplateBody {
-                context_id: context_id.to_string(),
+            trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0,
+            serde_json::to_value(proto::delete::DeleteDidTemplateBody {
+                context_id: Some(context_id.to_string()),
                 name: name.to_string(),
             })?,
             30,
@@ -289,21 +300,21 @@ impl VtaClient {
     /// `CONTEXT_ID`, and (if set on the context) `CONTEXT_DID`.
     ///
     /// REST: `POST /contexts/{id}/did-templates/{name}/render`. DIDComm:
-    /// `vta/contexts/did-templates/render/1.0`.
+    /// `vta/did-templates/render/2.0` with `contextId` set.
     pub async fn render_context_did_template(
         &self,
         context_id: &str,
         name: &str,
         vars: HashMap<String, Value>,
     ) -> Result<Value, VtaError> {
-        let payload = serde_json::to_value(proto::render::RenderContextDidTemplateBody {
-            context_id: context_id.to_string(),
+        let payload = serde_json::to_value(proto::render::RenderDidTemplateBody {
+            context_id: Some(context_id.to_string()),
             name: name.to_string(),
             vars: vars.clone(),
         })?;
         let resp: proto::render::RenderDidTemplateResultBody = self
             .rpc_tt(
-                trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0,
+                trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0,
                 payload,
                 30,
                 |c, url| {

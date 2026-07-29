@@ -1,25 +1,21 @@
-//! Wire bodies for the `get` op (both scopes).
+//! Wire bodies for the `get` op.
 //!
-//! The result body for both URIs is the persisted
-//! [`DidTemplateRecord`].
+//! The result body is the persisted [`DidTemplateRecord`].
+//!
+//! [`DidTemplateRecord`]: crate::did_templates::DidTemplateRecord
 
 use serde::{Deserialize, Serialize};
 
-/// `spec/vta/did-templates/get/1.0` payload — fetch one global
-/// template by name. Auth: any authed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct GetDidTemplateBody {
-    pub name: String,
-}
-
-/// `spec/vta/contexts/did-templates/get/1.0` payload — fetch one
-/// context-scoped template by name. Auth: any authed with access to
-/// the context.
+/// `spec/vta/did-templates/get/2.0` payload — fetch one template by
+/// name from one scope. `context_id` absent: the global scope (any
+/// authed caller). `context_id` present: that context's scope
+/// (requires context access).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "camelCase")]
-pub struct GetContextDidTemplateBody {
-    pub context_id: String,
+pub struct GetDidTemplateBody {
+    /// Scope selector. `None` = global scope; `Some` = that context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
     pub name: String,
 }
