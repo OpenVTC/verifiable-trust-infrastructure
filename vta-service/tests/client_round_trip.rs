@@ -116,6 +116,7 @@ async fn acl_lifecycle_round_trips_through_the_real_client() {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: None,
+                allowed_keys: None,
             },
         )
         .await
@@ -677,6 +678,7 @@ async fn acl_change_role_compare_and_swaps() {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: None,
+                allowed_keys: None,
             },
         )
         .await

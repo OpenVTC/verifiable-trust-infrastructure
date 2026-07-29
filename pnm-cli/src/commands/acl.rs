@@ -24,6 +24,7 @@ pub(crate) async fn run(
             step_up_require,
             approve_all,
             approve_contexts,
+            allowed_keys,
         } => match resolve_expires_at(expires.as_deref()) {
             Ok(expires_at) => {
                 acl::cmd_acl_create(
@@ -37,6 +38,7 @@ pub(crate) async fn run(
                     step_up_require,
                     approve_all,
                     approve_contexts,
+                    allowed_keys,
                 )
                 .await
             }
@@ -52,9 +54,13 @@ pub(crate) async fn run(
             approve_all,
             approve_contexts,
             approve_none,
+            allowed_keys,
+            allowed_keys_unrestricted,
         } => {
             let approve_scope =
                 acl::approve_scope_from_flags(approve_all, approve_contexts, approve_none);
+            let allowed_keys =
+                acl::allowed_keys_from_flags(allowed_keys, allowed_keys_unrestricted);
             acl::cmd_acl_update(
                 client,
                 &did,
@@ -64,6 +70,7 @@ pub(crate) async fn run(
                 step_up_approver,
                 step_up_require,
                 approve_scope,
+                allowed_keys,
             )
             .await
         }

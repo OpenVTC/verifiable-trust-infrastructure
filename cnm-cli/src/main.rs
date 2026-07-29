@@ -564,6 +564,11 @@ enum AclCommands {
         /// Without this flag the entry is permanent.
         #[arg(long)]
         expires: Option<String>,
+        /// Restrict this DID to invoking the signing oracle on exactly these
+        /// key ids (comma-separated). Intersects with `--contexts` — it can
+        /// only narrow, never widen. Omit for no filter.
+        #[arg(long, value_delimiter = ',')]
+        allowed_keys: Option<Vec<String>>,
     },
     /// Update an ACL entry
     Update {
@@ -578,6 +583,19 @@ enum AclCommands {
         /// New comma-separated context IDs
         #[arg(long, value_delimiter = ',')]
         contexts: Option<Vec<String>>,
+        /// Replace the signing-oracle key filter with exactly these key ids
+        /// (comma-separated). The narrowing binds the subject's next sign
+        /// request. Omit to leave the filter unchanged.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with = "allowed_keys_unrestricted"
+        )]
+        allowed_keys: Option<Vec<String>>,
+        /// Remove the signing-oracle key filter entirely (a privilege
+        /// increase — the subject may again use every key in its contexts).
+        #[arg(long)]
+        allowed_keys_unrestricted: bool,
     },
     /// Delete an ACL entry
     Delete {
@@ -1160,6 +1178,7 @@ async fn main() {
                 label,
                 contexts,
                 expires,
+                allowed_keys,
             } => match expires
                 .as_deref()
                 .map(vta_cli_common::duration::duration_to_expires_at)
@@ -1178,6 +1197,7 @@ async fn main() {
                         None,
                         false,
                         Vec::new(),
+                        allowed_keys,
                     )
                     .await
                 }
@@ -1188,10 +1208,25 @@ async fn main() {
                 role,
                 label,
                 contexts,
+                allowed_keys,
+                allowed_keys_unrestricted,
             } => {
                 // cnm exposes no approve-scope flags; pass `None` so the
                 // scope is left unchanged rather than silently cleared.
-                acl::cmd_acl_update(&client, &did, role, label, contexts, None, None, None).await
+                let allowed_keys =
+                    acl::allowed_keys_from_flags(allowed_keys, allowed_keys_unrestricted);
+                acl::cmd_acl_update(
+                    &client,
+                    &did,
+                    role,
+                    label,
+                    contexts,
+                    None,
+                    None,
+                    None,
+                    allowed_keys,
+                )
+                .await
             }
             AclCommands::Delete { did } => acl::cmd_acl_delete(&client, &did).await,
         },

@@ -129,6 +129,9 @@ pub(super) async fn handle_update(
             step_up_approver: req.step_up_approver,
             step_up_require: req.step_up_require,
             approve_scope: req.approve_scope,
+            allowed_keys: req
+                .allowed_keys
+                .map(|r| r.map(|keys| keys.into_iter().collect())),
         },
         TRANSPORT_TRUST_TASK,
     )
@@ -344,6 +347,7 @@ mod tests {
             step_up_approver: None,
             step_up_require: None,
             approve_scope: None,
+            allowed_keys: None,
         })
         .expect("serialize");
         assert!(

@@ -200,6 +200,7 @@ pub(super) async fn handle_sign(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         auth,
         &req.key_id,

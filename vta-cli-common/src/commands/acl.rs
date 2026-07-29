@@ -58,6 +58,35 @@ pub fn format_approve_scope(approve_all: bool, approve_contexts: &[String]) -> O
     }
 }
 
+/// Human-readable signing-key filter (#818). `None` (no filter) omits the
+/// line entirely; the empty filter is the state that must never be
+/// misrendered — "no keys" and "no filter" are opposite grants, so the empty
+/// set is spelled out rather than shown as a blank list.
+pub fn format_allowed_keys(allowed_keys: Option<&[String]>) -> Option<String> {
+    match allowed_keys {
+        None => None,
+        Some([]) => Some("(none — may invoke the signing oracle on no keys)".to_string()),
+        Some(keys) => Some(format!("keys [{}]", keys.join(", "))),
+    }
+}
+
+/// Resolve the two mutually-exclusive allowed-keys flags into the wire value.
+///
+/// `None` means "leave unchanged"; `Some(None)` clears the filter
+/// (`--allowed-keys-unrestricted`); `Some(Some(keys))` replaces it. Clearing
+/// needs its own flag for the same reason `--approve-none` does: an empty
+/// `--allowed-keys` cannot mean both "no keys at all" and "no filter".
+pub fn allowed_keys_from_flags(
+    allowed_keys: Option<Vec<String>>,
+    allowed_keys_unrestricted: bool,
+) -> Option<Option<Vec<String>>> {
+    if allowed_keys_unrestricted {
+        Some(None)
+    } else {
+        allowed_keys.map(Some)
+    }
+}
+
 pub fn validate_role(role: &str) -> Result<(), Box<dyn std::error::Error>> {
     match role {
         "admin" | "initiator" | "application" | "reader" => Ok(()),
@@ -173,6 +202,9 @@ pub async fn cmd_acl_list(
                 fields.push(("Label", label.to_string()));
             }
             fields.push(("Contexts", contexts));
+            if let Some(k) = format_allowed_keys(entry.allowed_keys.as_deref()) {
+                fields.push(("Allowed Keys", k));
+            }
             if let Some(a) = approve {
                 fields.push(("Approve", a));
             }
@@ -275,6 +307,9 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
         "Contexts:         {}",
         format_contexts(&entry.role, &entry.allowed_contexts)
     );
+    if let Some(keys) = format_allowed_keys(entry.allowed_keys.as_deref()) {
+        println!("Allowed keys:     {keys}");
+    }
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -285,6 +320,7 @@ pub async fn cmd_acl_get(client: &VtaClient, did: &str) -> Result<(), Box<dyn st
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_acl_create(
     client: &VtaClient,
     did: String,
@@ -296,9 +332,13 @@ pub async fn cmd_acl_create(
     step_up_require: Option<String>,
     approve_all: bool,
     approve_contexts: Vec<String>,
+    allowed_keys: Option<Vec<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
+    if let Some(keys) = allowed_keys {
+        req = req.allowed_keys(keys);
+    }
     if let Some(l) = label {
         req = req.label(l);
     }
@@ -330,6 +370,9 @@ pub async fn cmd_acl_create(
         "  Contexts:   {}",
         format_contexts(&entry.role, &entry.allowed_contexts)
     );
+    if let Some(keys) = format_allowed_keys(entry.allowed_keys.as_deref()) {
+        println!("  Allowed keys: {keys}");
+    }
     if let Some(scope) =
         format_approve_scope(entry.approve_all_contexts(), entry.approve_contexts())
     {
@@ -414,6 +457,7 @@ pub async fn cmd_acl_update(
     step_up_approver: Option<String>,
     step_up_require: Option<String>,
     approve_scope: Option<ApproveScope>,
+    allowed_keys: Option<Option<Vec<String>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Role transitions moved to `acl change-role`, which carries the
     // compare-and-swap that makes a concurrent edit an error instead of a
@@ -436,12 +480,14 @@ pub async fn cmd_acl_update(
         .into());
     }
     let approve_scope_echo = approve_scope.clone();
+    let allowed_keys_echo = allowed_keys.clone();
     let req = UpdateAclRequest {
         label,
         allowed_contexts: contexts,
         step_up_approver: step_up_approver.clone(),
         step_up_require: step_up_require.clone(),
         approve_scope,
+        allowed_keys,
     };
     let entry = client.update_acl(did, req).await?;
     println!("ACL entry updated:");
@@ -470,6 +516,17 @@ pub async fn cmd_acl_update(
         } else {
             println!("  Step-up require:  {require}");
         }
+    }
+    // Echo the filter only when this call set it — and spell out the two
+    // extremes, since "(cleared — every key in scope)" and "no keys at all"
+    // are the grants an operator most needs to see they just made.
+    if let Some(replacement) = &allowed_keys_echo {
+        let rendered = match replacement.as_deref() {
+            None => "(cleared — every key within the entry's contexts)".to_string(),
+            Some([]) => "(none — may invoke the signing oracle on no keys)".to_string(),
+            Some(keys) => format!("keys [{}]", keys.join(", ")),
+        };
+        println!("  Allowed keys: {rendered}");
     }
     // Echo the scope only when this call set it, so "unchanged" is visibly
     // different from "set to confer nothing".
@@ -559,6 +616,37 @@ mod tests {
     fn test_format_contexts_multiple() {
         let ctx = vec!["vta".to_string(), "payments".to_string()];
         assert_eq!(format_contexts("reader", &ctx), "vta, payments");
+    }
+
+    // ── format_allowed_keys (#818) ─────────────────────────────────
+
+    /// "No filter" and "no keys" are opposite grants; the display must never
+    /// blur them (the same lesson as #746 one axis over).
+    #[test]
+    fn test_format_allowed_keys_distinguishes_absent_from_empty() {
+        assert_eq!(format_allowed_keys(None), None, "no filter → no line");
+        assert_eq!(
+            format_allowed_keys(Some(&[])).as_deref(),
+            Some("(none — may invoke the signing oracle on no keys)")
+        );
+        assert_eq!(
+            format_allowed_keys(Some(&["k1".to_string(), "k2".to_string()])).as_deref(),
+            Some("keys [k1, k2]")
+        );
+    }
+
+    #[test]
+    fn test_allowed_keys_from_flags() {
+        // Neither flag → leave unchanged.
+        assert_eq!(allowed_keys_from_flags(None, false), None);
+        // Replace with exactly these ids.
+        assert_eq!(
+            allowed_keys_from_flags(Some(vec!["k1".into()]), false),
+            Some(Some(vec!["k1".to_string()]))
+        );
+        // Clear the filter — its own flag, because an empty `--allowed-keys`
+        // cannot mean both "no keys at all" and "no filter".
+        assert_eq!(allowed_keys_from_flags(None, true), Some(None));
     }
 
     // ── format_role ────────────────────────────────────────────────

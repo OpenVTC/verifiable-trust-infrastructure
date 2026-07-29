@@ -736,6 +736,7 @@ async fn update_acl_patches() {
         step_up_approver: None,
         step_up_require: None,
         approve_scope: None,
+        allowed_keys: None,
     };
     let resp = c.update_acl("did:key:zAdmin", req).await.unwrap();
     assert_eq!(resp.did, "did:key:zAdmin");

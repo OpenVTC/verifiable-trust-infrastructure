@@ -357,6 +357,14 @@ pub struct AclEntryResponse {
         serialize_with = "ser_epoch_opt"
     )]
     pub expires_at: Option<u64>,
+    /// Signing-oracle key filter (#818). `None` = no filter; `Some([])` =
+    /// authorized on no keys — keep the distinction when rendering.
+    #[serde(
+        default,
+        rename = "allowedKeys",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allowed_keys: Option<Vec<String>>,
     /// Flattened out of the canonical `stepUp` object.
     #[serde(default, rename = "stepUp")]
     step_up: Option<StepUpWire>,
@@ -484,6 +492,10 @@ pub struct CreateAclRequest {
     pub approve_all_contexts: bool,
     /// Approve-authority scoped to these contexts.
     pub approve_contexts: Vec<String>,
+    /// Signing-oracle key filter (#818). `None` = no filter (every key in the
+    /// entry's contexts); `Some(∅)` = **no** keys at all — the two are
+    /// opposite grants and are serialized distinctly.
+    pub allowed_keys: Option<Vec<String>>,
 }
 
 impl serde::Serialize for CreateAclRequest {
@@ -507,6 +519,7 @@ impl serde::Serialize for CreateAclRequest {
                 subject: self.did.clone(),
                 role: self.role.clone(),
                 scopes: self.allowed_contexts.clone(),
+                allowed_keys: self.allowed_keys.clone(),
                 label: self.label.clone(),
                 created_at: None,
                 created_by: None,
@@ -538,6 +551,7 @@ impl CreateAclRequest {
             step_up_require: None,
             approve_all_contexts: false,
             approve_contexts: Vec::new(),
+            allowed_keys: None,
         }
     }
     pub fn label(mut self, label: impl Into<String>) -> Self {
@@ -572,6 +586,14 @@ impl CreateAclRequest {
     /// Grant approve-authority scoped to these contexts.
     pub fn approve_contexts(mut self, contexts: Vec<String>) -> Self {
         self.approve_contexts = contexts;
+        self
+    }
+    /// Restrict the subject to invoking the signing oracle on exactly these
+    /// key ids (#818). Intersects with — never widens — the context scope.
+    /// An empty vec means **no keys at all**; not calling this leaves the
+    /// subject unfiltered (every key its contexts reach).
+    pub fn allowed_keys(mut self, keys: Vec<String>) -> Self {
+        self.allowed_keys = Some(keys);
         self
     }
 }
@@ -612,6 +634,13 @@ pub struct UpdateAclRequest {
     /// empty list cannot mean both "confer nothing" and "leave alone".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approve_scope: Option<crate::acl::ApproveScope>,
+    /// Replace the signing-oracle key filter (#818): `None` leaves it
+    /// unchanged, `Some(None)` clears it (serialized as explicit `null` — a
+    /// privilege increase), `Some(Some(keys))` sets it to exactly those ids
+    /// (**the empty vec is "no keys at all"**, never a wildcard). Wire name
+    /// pinned to the canonical `allowedKeys`.
+    #[serde(rename = "allowedKeys", skip_serializing_if = "Option::is_none")]
+    pub allowed_keys: Option<Option<Vec<String>>>,
 }
 
 // ── WebVH server types ──────────────────────────────────────────────

@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -296,6 +297,67 @@ pub fn act_scope_for(role: &Role, allowed_contexts: &[String]) -> ActScope {
     }
 }
 
+/// An entry's authority over **signing-oracle key ids** — the effective
+/// decision decoded from the stored `allowed_keys` member (#818).
+///
+/// This is the actor-scoped complement of `ContextPolicy.signable_keys`
+/// (which is resource-bound and constrains every actor uniformly): it narrows
+/// which keys *this caller* may invoke the signing oracle on, and it only
+/// ever **intersects** with the context scope — a key named in the filter
+/// that lies outside the entry's contexts stays unreachable.
+///
+/// Exists for the same reason [`ActScope`] does: `Option<BTreeSet<String>>`
+/// has an empty-vs-absent distinction that a bare `is_empty()` gets
+/// backwards (see `docs/05-design-notes/acl-scope-semantics.md`). Decode once
+/// through [`key_scope_for`] / [`AclEntry::key_scope`], then ask
+/// [`KeyScope::allows`] — never test emptiness at a call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyScope {
+    /// No per-key filter: every key the entry's context scope reaches.
+    /// This is the decode of an **absent** (`None`) `allowed_keys` — the
+    /// behaviour of every entry that pre-dates the member.
+    AllInScope,
+    /// Exactly these key ids (still intersected with the context scope).
+    /// The decode of a **present** `allowed_keys`, *including the empty
+    /// set*: `Some([])` authorizes **no** keys — the narrowest grant, the
+    /// opposite of absent, and deliberately not a wildcard.
+    Keys(BTreeSet<String>),
+}
+
+impl KeyScope {
+    /// May this scope invoke the signing oracle on `key_id`?
+    ///
+    /// `AllInScope` defers entirely to the context gates that ran before it;
+    /// `Keys` is exact membership. `Keys(∅)` therefore allows nothing, which
+    /// is the point — the empty filter can never read as unrestricted.
+    pub fn allows(&self, key_id: &str) -> bool {
+        match self {
+            KeyScope::AllInScope => true,
+            KeyScope::Keys(keys) => keys.contains(key_id),
+        }
+    }
+}
+
+/// Decode a stored `allowed_keys` member into an explicit [`KeyScope`].
+///
+/// This is the one and only interpretation of the member:
+///
+/// | `allowed_keys` | scope |
+/// |---|---|
+/// | `None` | [`KeyScope::AllInScope`] — every key in the entry's contexts |
+/// | `Some(keys)` (even empty) | [`KeyScope::Keys`] — exactly those ids |
+///
+/// **Call this (or [`AclEntry::key_scope`]) instead of testing
+/// `allowed_keys` emptiness.** `Some(∅)` means *authorized on no keys*, not
+/// "unrestricted"; a call site that collapses the two re-creates the
+/// empty-means-unrestricted defect class (#746, #769, #770).
+pub fn key_scope_for(allowed_keys: Option<&BTreeSet<String>>) -> KeyScope {
+    match allowed_keys {
+        None => KeyScope::AllInScope,
+        Some(keys) => KeyScope::Keys(keys.clone()),
+    }
+}
+
 /// Validate that `caller` may grant `scope` on an ACL entry.
 ///
 /// Mirrors [`validate_acl_modification`]'s context rule: `All` is a
@@ -408,6 +470,16 @@ pub struct AclEntry {
     /// ⇒ pre-existing rows deserialise as [`ApproveScope::None`].
     #[serde(default)]
     pub approve_scope: ApproveScope,
+    /// Key ids this entry may invoke the signing oracle on (#818). `None` =
+    /// every key in `allowed_contexts` (today's behaviour; pre-existing rows
+    /// deserialise here). **`Some(∅)` = authorized on no keys** — the
+    /// narrowest grant, never a wildcard. Intersects with the context scope;
+    /// it can only narrow, never widen, so an entry naming a key outside its
+    /// contexts still cannot use it. Read through [`AclEntry::key_scope`],
+    /// never by testing emptiness — see [`KeyScope`]. Mirrors the canonical
+    /// `acl/_shared/0.1/acl-entry#allowedKeys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_keys: Option<BTreeSet<String>>,
 }
 
 impl AclEntry {
@@ -435,6 +507,7 @@ impl AclEntry {
             step_up_approver: None,
             step_up_require: None,
             approve_scope: ApproveScope::None,
+            allowed_keys: None,
         }
     }
 
@@ -498,6 +571,21 @@ impl AclEntry {
     pub fn with_approve_scope(mut self, approve_scope: ApproveScope) -> Self {
         self.approve_scope = approve_scope;
         self
+    }
+
+    /// Set the signing-oracle key filter. `None` = no filter (every key in
+    /// the entry's contexts); `Some(∅)` = **no** keys at all.
+    pub fn with_allowed_keys(mut self, allowed_keys: Option<BTreeSet<String>>) -> Self {
+        self.allowed_keys = allowed_keys;
+        self
+    }
+
+    /// This entry's authority over signing-oracle key ids, decoded from
+    /// `allowed_keys`. Use this rather than reading the `Option` directly —
+    /// see [`KeyScope`] for why (`Some(∅)` and `None` are opposite grants,
+    /// and a bare emptiness test collapses them).
+    pub fn key_scope(&self) -> KeyScope {
+        key_scope_for(self.allowed_keys.as_ref())
     }
 
     /// Whether this entry is an admin (`Role::Admin`).
@@ -1317,6 +1405,75 @@ mod tests {
             let s = format!("{role}");
             assert_eq!(Role::parse(&s).unwrap(), role, "display->parse cycle");
         }
+    }
+
+    // ── KeyScope (#818): allowed_keys decode ────────────────────────
+
+    /// The trap the `ActScope` precedent exists for, restated on the key
+    /// axis: `None` and `Some(∅)` are opposite grants and must decode to
+    /// different scopes.
+    #[test]
+    fn key_scope_none_is_unrestricted_and_empty_set_allows_nothing() {
+        let unfiltered = sample_entry("did:key:zA", Role::Application);
+        assert_eq!(unfiltered.key_scope(), KeyScope::AllInScope);
+        assert!(unfiltered.key_scope().allows("any-key"));
+
+        let no_keys =
+            sample_entry("did:key:zB", Role::Application).with_allowed_keys(Some(BTreeSet::new()));
+        assert_eq!(no_keys.key_scope(), KeyScope::Keys(BTreeSet::new()));
+        assert!(
+            !no_keys.key_scope().allows("any-key"),
+            "an empty filter authorizes NO keys — it is never a wildcard"
+        );
+    }
+
+    #[test]
+    fn key_scope_filters_by_exact_key_id() {
+        let entry = sample_entry("did:key:zA", Role::Application)
+            .with_allowed_keys(Some(["key-1".to_string()].into_iter().collect()));
+        assert!(entry.key_scope().allows("key-1"));
+        assert!(!entry.key_scope().allows("key-2"));
+        assert!(
+            !entry.key_scope().allows("key-1x"),
+            "exact match, not prefix"
+        );
+    }
+
+    /// A row serialized before `allowed_keys` existed must deserialise as
+    /// `None` (no filter), preserving behaviour byte-identically — the same
+    /// contract every other additive ACL member honours.
+    #[test]
+    fn legacy_row_without_allowed_keys_deserialises_to_none() {
+        let legacy = serde_json::json!({
+            "did": "did:key:zOld",
+            "role": "application",
+            "label": null,
+            "allowed_contexts": ["ctx-a"],
+            "created_at": 0,
+            "created_by": "did:key:zSetup"
+        });
+        let entry: AclEntry = serde_json::from_value(legacy).unwrap();
+        assert!(entry.allowed_keys.is_none());
+        assert_eq!(entry.key_scope(), KeyScope::AllInScope);
+    }
+
+    /// `Some(∅)` must survive a store round-trip as `Some(∅)` — if
+    /// serialization dropped the empty set, the narrowest grant would come
+    /// back as the widest.
+    #[test]
+    fn empty_allowed_keys_survives_serde_round_trip() {
+        let entry =
+            sample_entry("did:key:zA", Role::Application).with_allowed_keys(Some(BTreeSet::new()));
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"allowed_keys\":[]"), "{json}");
+        let back: AclEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.allowed_keys, Some(BTreeSet::new()));
+        assert!(!back.key_scope().allows("k"));
+
+        // And absence stays absent: no filter is not serialized at all.
+        let unfiltered = sample_entry("did:key:zB", Role::Application);
+        let json = serde_json::to_string(&unfiltered).unwrap();
+        assert!(!json.contains("allowed_keys"), "{json}");
     }
 
     // ── Expiration ──────────────────────────────────────────────────
