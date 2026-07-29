@@ -340,13 +340,13 @@ mod tests {
     fn inbound_message_parses_didcomm_envelope() {
         let json = r#"{
             "id": "urn:uuid:abc",
-            "type": "https://trusttasks.org/spec/push/wake/0.1",
+            "type": "https://trusttasks.org/spec/push/wake/0.2",
             "from": "did:key:zVta",
             "body": { "reason": "work-available" }
         }"#;
         let msg = InboundMessage::parse(json).unwrap();
         assert_eq!(msg.id, "urn:uuid:abc");
-        assert_eq!(msg.typ, "https://trusttasks.org/spec/push/wake/0.1");
+        assert_eq!(msg.typ, "https://trusttasks.org/spec/push/wake/0.2");
         assert_eq!(msg.from.as_deref(), Some("did:key:zVta"));
         assert_eq!(msg.body["reason"], "work-available");
     }

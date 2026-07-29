@@ -27,6 +27,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose;
 use serde_json::{Value, json};
 use trust_tasks_rs::specs::auth::step_up::approve_response::v0_1 as approve_response;
+#[cfg(feature = "didcomm")]
+use trust_tasks_rs::specs::push::wake::v0_2 as push_wake;
 use trust_tasks_rs::{RejectReason, TrustTask};
 use uuid::Uuid;
 
@@ -874,7 +876,7 @@ pub(super) async fn trigger_gateway_wake(
     let vta_did = state.config.read().await.vta_did.clone();
     let wake_doc = json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/wake/0.1",
+        "type": "https://trusttasks.org/spec/push/wake/0.2",
         "issuer": vta_did,
         "recipient": wake.gateway,
         "payload": {
@@ -899,15 +901,38 @@ pub(super) async fn trigger_gateway_wake(
             )
             .await
         {
-            Ok(_) => {
-                tracing::info!(gateway = %gateway, approver = %approver, "push/wake sent to gateway")
-            }
+            Ok(reply) => match wake_reply_status(&reply.body) {
+                Some(push_wake::ResponseStatus::TokenUnregistered) => tracing::warn!(
+                    gateway = %gateway, approver = %approver,
+                    "push/wake: gateway reports tokenUnregistered — dead platform token, \
+                     handle dropped; mediator queue + pickup fallback applies"
+                ),
+                Some(push_wake::ResponseStatus::Delivered) => {
+                    tracing::info!(gateway = %gateway, approver = %approver, "push/wake delivered by gateway")
+                }
+                None => tracing::info!(
+                    gateway = %gateway, approver = %approver,
+                    "push/wake sent to gateway (no recognizable 0.2 response status)"
+                ),
+            },
             Err(e) => tracing::warn!(
                 error = %e, gateway = %gateway, approver = %approver,
                 "push/wake to gateway failed (best-effort)"
             ),
         }
     });
+}
+
+/// Extract the `push/wake/0.2#response` status from the gateway's reply — the
+/// DIDComm envelope body is the Trust Task response document, so the status
+/// lives at `payload.status`. Returns `None` when the reply carries no
+/// recognizable 0.2 status; that includes the retired 0.1 kebab-case
+/// `token-unregistered`, which the 0.2 clean cutover no longer accepts.
+#[cfg(feature = "didcomm")]
+fn wake_reply_status(envelope_body: &Value) -> Option<push_wake::ResponseStatus> {
+    envelope_body
+        .pointer("/payload/status")
+        .and_then(|s| serde_json::from_value(s.clone()).ok())
 }
 
 /// Trust-task analogue of [`issue_step_up_challenge`]: enforce a stepped-up
@@ -1170,6 +1195,45 @@ mod tests {
     use http_body_util::BodyExt;
     use multibase::Base;
     use serde_json::json;
+
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn wake_reply_status_parses_camel_case_token_unregistered() {
+        // push/wake/0.2 renamed the status value `token-unregistered` →
+        // `tokenUnregistered` (the only wire-visible 0.1→0.2 change).
+        let reply = json!({
+            "type": "https://trusttasks.org/spec/push/wake/0.2#response",
+            "payload": { "status": "tokenUnregistered" },
+        });
+        assert_eq!(
+            wake_reply_status(&reply),
+            Some(push_wake::ResponseStatus::TokenUnregistered)
+        );
+    }
+
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn wake_reply_status_parses_delivered() {
+        let reply = json!({
+            "type": "https://trusttasks.org/spec/push/wake/0.2#response",
+            "payload": { "status": "delivered" },
+        });
+        assert_eq!(
+            wake_reply_status(&reply),
+            Some(push_wake::ResponseStatus::Delivered)
+        );
+    }
+
+    #[cfg(feature = "didcomm")]
+    #[test]
+    fn wake_reply_status_rejects_retired_kebab_case_and_junk() {
+        // Clean cutover: the 0.1 kebab-case value is NOT accepted.
+        let legacy = json!({ "payload": { "status": "token-unregistered" } });
+        assert_eq!(wake_reply_status(&legacy), None);
+        // Missing / malformed payloads degrade to None (best-effort logging).
+        assert_eq!(wake_reply_status(&json!({})), None);
+        assert_eq!(wake_reply_status(&json!({ "payload": {} })), None);
+    }
 
     #[test]
     fn approver_mediator_routes_did_key_to_configured_mediator() {

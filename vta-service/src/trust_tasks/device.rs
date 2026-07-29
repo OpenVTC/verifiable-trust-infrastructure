@@ -216,7 +216,7 @@ fn provision_gateway(
     };
     let provision = serde_json::json!({
         "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/push/provision/0.1",
+        "type": "https://trusttasks.org/spec/push/provision/0.2",
         "issuer": vta_did,
         "recipient": gateway,
         "payload": { "handle": handle, "policy": { "allowedTriggers": triggers } },
