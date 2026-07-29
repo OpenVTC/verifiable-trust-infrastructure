@@ -1,11 +1,18 @@
-//! `POST /v1/join-requests/{id}/approve` + `/reject` — admin
-//! decision endpoints (M1.10.1).
+//! `POST /v1/join-requests/{id}/decide` — the admin decision endpoint
+//! (`vtc/join-requests/decide/0.1`).
+//!
+//! One payload decides a pending request either way:
+//! `{ decision: approved | rejected, reason? }`. Supersedes the former
+//! `/approve` + `/reject` pair (near-identical payloads, same admin gate,
+//! same Pending-state check, same proof posture) — the decision is one
+//! enum field, not two tasks.
 //!
 //! Approve atomically writes the ACL row (`VtcRole::Member`),
 //! the Member record, and the audit envelopes
 //! (`JoinRequestApproved` + `MemberAdded`). The applicant_did is
 //! already validated at submit time so the only failure modes
-//! here are auth + duplicate-membership.
+//! here are auth + duplicate-membership. Reject flips the status and
+//! records the operator's reason.
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -22,10 +29,33 @@ use crate::acl::VtcRole;
 use crate::auth::AdminAuth;
 use crate::ceremony::execute;
 use crate::ceremony::{EffectOutcome, EffectPlan};
-use crate::join::{JoinStatus, get_join_request, store_join_request};
+use crate::join::{JoinRequest, JoinStatus, get_join_request, store_join_request};
 use crate::server::AppState;
 
 const REJECT_REASON_MAX: usize = 1024;
+
+/// The two ways a pending request can be decided
+/// (`vtc/join-requests/decide/0.1`'s `decision` enum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub enum Decision {
+    /// Admit the applicant as a member (issues the VMC + role VEC).
+    Approved,
+    /// Refuse the applicant; recoverable only by re-applying.
+    Rejected,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[derive(utoipa::ToSchema)]
+pub struct DecideBody {
+    pub decision: Decision,
+    /// Optional operator rationale, recorded in the audit trail.
+    /// Chiefly useful with `rejected`.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,35 +74,39 @@ pub struct DecideResponse {
     pub role_vec: Option<JsonValue>,
 }
 
-// ---------------------------------------------------------------------------
-// Approve
-// ---------------------------------------------------------------------------
-
-/// POST /join-requests/{id}/approve — admit the applicant + issue the VMC.
-/// Auth: Admin.
+/// POST /join-requests/{id}/decide — decide a pending join request.
+/// `approved` admits the applicant + issues the VMC; `rejected` refuses
+/// them with an optional reason. Auth: Admin.
 #[utoipa::path(
-    post, path = "/join-requests/{id}/approve", tag = "join-requests",
+    post, path = "/join-requests/{id}/decide", tag = "join-requests",
     security(("bearer_jwt" = [])),
     params(("id" = String, Path, description = "Join request id")),
+    request_body = DecideBody,
     responses(
-        (status = 201, description = "Applicant admitted; VMC + role VEC issued", body = DecideResponse),
+        (status = 200, description = "Request decided; on approve the VMC + role VEC are returned inline", body = DecideResponse),
+        (status = 400, description = "Reject reason exceeds the length cap"),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not an admin"),
         (status = 404, description = "Join request not found"),
         (status = 409, description = "Request is not Pending, or applicant is already a member"),
     ),
 )]
-pub async fn approve(
+pub async fn decide(
     admin: AdminAuth,
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    Json(body): Json<DecideBody>,
 ) -> Result<(StatusCode, Json<DecideResponse>), AppError> {
-    let audit_writer = state
-        .audit_writer
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+    let reason = body.reason.unwrap_or_default();
+    if reason.len() > REJECT_REASON_MAX {
+        return Err(AppError::Validation(format!(
+            "decision reason exceeds {REJECT_REASON_MAX} chars (got {})",
+            reason.len(),
+        )));
+    }
 
-    let mut req = get_join_request(&state.join_requests_ks, id)
+    // Shared pending-state gate — the one lifecycle check both outcomes had.
+    let req = get_join_request(&state.join_requests_ks, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
     if req.status != JoinStatus::Pending {
@@ -81,6 +115,26 @@ pub async fn approve(
             req.status
         )));
     }
+
+    let response = match body.decision {
+        Decision::Approved => approve_pending(&state, &admin, id, req).await?,
+        Decision::Rejected => reject_pending(&state, &admin, id, req, reason).await?,
+    };
+    Ok((StatusCode::OK, Json(response)))
+}
+
+/// The approve arm: admit the applicant + issue credentials.
+async fn approve_pending(
+    state: &AppState,
+    admin: &AdminAuth,
+    id: Uuid,
+    mut req: JoinRequest,
+) -> Result<DecideResponse, AppError> {
+    let audit_writer = state
+        .audit_writer
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+
     // Effects: admit the applicant as a member. The ceremony effect
     // executor owns the duplicate-ACL guard, the ACL + Member writes,
     // and credential issuance (it is the single state-mutating seam —
@@ -92,7 +146,7 @@ pub async fn approve(
         role: VtcRole::Member.to_string(),
         obligations: vec![],
     };
-    let EffectOutcome::Admitted(creds) = execute::apply(&state, plan, &admin.0.did).await? else {
+    let EffectOutcome::Admitted(creds) = execute::apply(state, plan, &admin.0.did).await? else {
         return Err(AppError::Internal(
             "admit effect did not produce credentials".into(),
         ));
@@ -105,7 +159,7 @@ pub async fn approve(
     // returned inline below for out-of-band hand-off, so a delivery failure (no
     // mediator, unreachable holder) is logged, not fatal.
     if let Err(e) = crate::credentials::delivery::deliver_membership_credentials(
-        &state,
+        state,
         &req.applicant_did,
         &creds,
     )
@@ -153,79 +207,32 @@ pub async fn approve(
         "join request approved"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(DecideResponse {
-            request_id: id,
-            status: req.status.to_string(),
-            vmc: Some(
-                serde_json::to_value(&creds.vmc)
-                    .map_err(|e| AppError::Internal(format!("serialise VMC for response: {e}")))?,
-            ),
-            role_vec: Some(
-                serde_json::to_value(&creds.role_vec)
-                    .map_err(|e| AppError::Internal(format!("serialise VEC for response: {e}")))?,
-            ),
-        }),
-    ))
+    Ok(DecideResponse {
+        request_id: id,
+        status: req.status.to_string(),
+        vmc: Some(
+            serde_json::to_value(&creds.vmc)
+                .map_err(|e| AppError::Internal(format!("serialise VMC for response: {e}")))?,
+        ),
+        role_vec: Some(
+            serde_json::to_value(&creds.role_vec)
+                .map_err(|e| AppError::Internal(format!("serialise VEC for response: {e}")))?,
+        ),
+    })
 }
 
-// ---------------------------------------------------------------------------
-// Reject
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-#[derive(utoipa::ToSchema)]
-pub struct RejectBody {
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-/// POST /join-requests/{id}/reject — reject a pending join request.
-/// Auth: Admin.
-#[utoipa::path(
-    post, path = "/join-requests/{id}/reject", tag = "join-requests",
-    security(("bearer_jwt" = [])),
-    params(("id" = String, Path, description = "Join request id")),
-    request_body = RejectBody,
-    responses(
-        (status = 201, description = "Join request rejected", body = DecideResponse),
-        (status = 400, description = "Reject reason exceeds the length cap"),
-        (status = 401, description = "Missing or invalid bearer token"),
-        (status = 403, description = "Caller is not an admin"),
-        (status = 404, description = "Join request not found"),
-        (status = 409, description = "Request is not Pending"),
-    ),
-)]
-pub async fn reject(
-    admin: AdminAuth,
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<RejectBody>,
-) -> Result<(StatusCode, Json<DecideResponse>), AppError> {
+/// The reject arm: flip the status + record the operator's reason.
+async fn reject_pending(
+    state: &AppState,
+    admin: &AdminAuth,
+    id: Uuid,
+    mut req: JoinRequest,
+    reason: String,
+) -> Result<DecideResponse, AppError> {
     let audit_writer = state
         .audit_writer
         .as_ref()
         .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
-
-    let reason = body.reason.unwrap_or_default();
-    if reason.len() > REJECT_REASON_MAX {
-        return Err(AppError::Validation(format!(
-            "reject reason exceeds {REJECT_REASON_MAX} chars (got {})",
-            reason.len(),
-        )));
-    }
-
-    let mut req = get_join_request(&state.join_requests_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("join request not found: {id}")))?;
-    if req.status != JoinStatus::Pending {
-        return Err(AppError::Conflict(format!(
-            "join request {id} is {:?}, not Pending",
-            req.status
-        )));
-    }
 
     req.status = JoinStatus::Rejected;
     store_join_request(&state.join_requests_ks, &req).await?;
@@ -252,13 +259,10 @@ pub async fn reject(
         "join request rejected"
     );
 
-    Ok((
-        StatusCode::OK,
-        Json(DecideResponse {
-            request_id: id,
-            status: req.status.to_string(),
-            vmc: None,
-            role_vec: None,
-        }),
-    ))
+    Ok(DecideResponse {
+        request_id: id,
+        status: req.status.to_string(),
+        vmc: None,
+        role_vec: None,
+    })
 }

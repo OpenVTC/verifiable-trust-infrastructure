@@ -9,18 +9,26 @@
 //! credential. Over DIDComm the authcrypt sender independently authenticates
 //! `member_did`; the two must agree.
 //!
-//! Shared by the DIDComm `members/vmc/1.0` handler (the only transport today —
-//! members speak DIDComm).
+//! Shared by the DIDComm `members/vmc/1.0` handler and the Trust Task
+//! document dispatcher (REST/TSP).
+//!
+//! With `vtc/members/vmc/0.1`'s optional `requestId`, this path also closes an
+//! **approved join request**: the delivered credential doubles as the member's
+//! reciprocal half of the join, superseding the retired
+//! `join-requests/accept/0.1` task (one credential-delivery path, not two).
 
 use affinidi_data_integrity::{DataIntegrityProof, VerifyOptions};
 use serde_json::Value as JsonValue;
 use tracing::info;
+use uuid::Uuid;
 
+use vti_common::audit::{AuditEvent, MembershipReciprocatedData};
 use vti_common::error::AppError;
 
 use vta_sdk::protocols::members::VERIFIABLE_MEMBERSHIP_CREDENTIAL_TYPE;
 
 use crate::credentials::vm_resolver::{DidVmResolver, check_issuer_binding};
+use crate::join::{JoinStatus, get_join_request};
 use crate::members::{get_member, store_member};
 use crate::server::AppState;
 
@@ -31,6 +39,9 @@ pub struct MemberVmcOutcome {
     /// `false` when the same VMC was already stored (idempotent re-send) — the
     /// caller skips re-auditing / re-logging the store.
     pub recorded: bool,
+    /// The join request this delivery closed, echoed into the receipt.
+    /// `None` when the submission carried no `requestId`.
+    pub request_id: Option<Uuid>,
 }
 
 /// Verify a member-issued VMC and store it on the member's row.
@@ -40,10 +51,17 @@ pub struct MemberVmcOutcome {
 /// `credentialSubject.id == <this VTC's DID>`; the issuer DI proof's
 /// `verificationMethod` is under the member and verifies against the resolved
 /// key. Idempotent: re-sending the same `id` is a no-op.
+///
+/// When `request_id` is `Some`, the named join request must exist, be
+/// `Approved`, and belong to `member_did`; on success the stored credential is
+/// additionally recorded as the reciprocal half of that join
+/// (`Member::record_reciprocation`) and the reciprocation audited. Re-sending
+/// the same credential with the same `request_id` stays a no-op.
 pub async fn receive_member_vmc_inner(
     state: &AppState,
     member_did: String,
     vc: JsonValue,
+    request_id: Option<Uuid>,
 ) -> Result<MemberVmcOutcome, AppError> {
     // The community DID the member's VMC must name as its subject.
     let community_did = state
@@ -59,6 +77,25 @@ pub async fn receive_member_vmc_inner(
 
     let vmc_id = verify_member_vmc(state, &vc, &member_did, &community_did).await?;
 
+    // Resolve + validate the join request BEFORE any write, so a bad
+    // `requestId` can't half-apply the delivery.
+    if let Some(req_id) = request_id {
+        let req = get_join_request(&state.join_requests_ks, req_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("join request not found: {req_id}")))?;
+        if req.applicant_did != member_did {
+            return Err(AppError::Validation(format!(
+                "join request {req_id} does not belong to the delivering member"
+            )));
+        }
+        if req.status != JoinStatus::Approved {
+            return Err(AppError::Conflict(format!(
+                "join request {req_id} is {:?}; only an Approved request has a membership to reciprocate",
+                req.status
+            )));
+        }
+    }
+
     // The member must exist and be active.
     let mut member = get_member(&state.members_ks, &member_did)
         .await?
@@ -68,19 +105,46 @@ pub async fn receive_member_vmc_inner(
     // Idempotency: the same VMC re-sent is a no-op; a *different* VMC replaces
     // the stored one (a renewal — the member rotated/reissued their half).
     if member.member_vmc_id.as_deref() == Some(vmc_id.as_str()) {
+        // A repeat delivery that repeats the same `requestId` is equally a
+        // no-op — the reciprocation is already recorded below.
         return Ok(MemberVmcOutcome {
             member_did,
             vmc_id,
             recorded: false,
+            request_id,
         });
     }
 
     member.record_member_vmc(vmc_id.clone(), vc);
+    // Closing a join request: the delivered credential IS the reciprocal half
+    // of the join, so the edge is marked reciprocated with the same id.
+    if request_id.is_some() {
+        member.record_reciprocation(vmc_id.clone());
+    }
     store_member(&state.members_ks, &member).await?;
+
+    if let Some(req_id) = request_id {
+        let audit_writer = state
+            .audit_writer
+            .as_ref()
+            .ok_or_else(|| AppError::Internal("audit_writer not initialised".into()))?;
+        audit_writer
+            .write(
+                &member_did,
+                Some(&member_did),
+                AuditEvent::MembershipReciprocated(MembershipReciprocatedData {
+                    request_id: req_id.to_string(),
+                    vmc_id: vmc_id.clone(),
+                    reciprocal_vc_id: vmc_id.clone(),
+                }),
+            )
+            .await?;
+    }
 
     info!(
         member = %member_did,
         vmc_id = %vmc_id,
+        closed_request = ?request_id,
         "stored member-issued VMC (member → community half of the pair)"
     );
 
@@ -88,6 +152,7 @@ pub async fn receive_member_vmc_inner(
         member_did,
         vmc_id,
         recorded: true,
+        request_id,
     })
 }
 
