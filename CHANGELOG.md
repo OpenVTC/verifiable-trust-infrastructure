@@ -20,6 +20,69 @@ renders is signed by its issuer.
 - `issuedAt` added to the minted document (framework SHOULD; the signed
   evidence gets a timestamp).
 
+### vta-sdk 0.20.26 — TSP is a provisioning transport, not an invisible one
+
+`provision_client::select_initial_transport` decided the provisioning wire from
+two of the three endpoints its own resolver produces. `ResolvedVta` carries
+`tsp_mediator_did`, `mediator_did` and `rest_url`, and even exposes an
+`advertised()` helper that reports all three — but the selector matched only on
+`(mediator_did, rest_url)`. A VTA advertising **only** `#tsp` therefore fell
+through to `InitialChoice::Neither` and failed with `"resolved (no endpoints)"`,
+about a document from which the resolver had just parsed a perfectly good
+endpoint. 0.19 masked this by synthesising a REST URL from the VTA DID's own
+domain; 0.20 correctly stopped guessing, which removed the accidental fallback
+and exposed the gap (#869).
+
+TSP now provisions. The VTA's TSP inbound dispatcher already feeds
+`dispatch_trust_task_core` — the same spine REST and DIDComm use — and both
+operations this flow needs (`spec/vta/webvh/servers/list/1.0`,
+`spec/provision/integration/0.2`) are registered on it, so the request and reply
+documents are byte-identical across all three transports. This is wiring, not
+new protocol surface.
+
+- **`InitialChoice` now has one variant per cell of the 2×2×2 advertise
+  matrix** — `TspOnly`, `TspAndDIDComm`, `TspAndRest`, `TspDIDCommAndRest`
+  alongside the existing four. Adding variants is a breaking match for any
+  external consumer that matches exhaustively; the alternative was a choice that
+  keeps losing the endpoint it was asked about. `starts_with_tsp()` /
+  `has_didcomm()` / `has_rest()` keep the match sites small, and a test asserts
+  the predicates agree with the resolved document (the runner's degrade path
+  `expect`s on them).
+- **Ranking is TSP > DIDComm > REST**, matching `ResolvedVta::advertised()` and
+  `vta-service`'s own inbound ranking. **This changes the default wire for a VTA
+  advertising both `#tsp` and `#vta-didcomm`** — the reference topology. Pass
+  `force_transport: Some(Protocol::DidComm)` to pin the old behaviour.
+- **Degradation is pre-auth only.** An auto-picked TSP leg that fails before the
+  VTA accepts anything (no `tsp` feature compiled in, mediator unreachable) is
+  reported and the run continues on DIDComm/REST when the document advertises
+  one. A post-auth failure stays terminal, exactly as the existing
+  `AttemptOutcome` split already dictated for DIDComm. A **forced** transport
+  never degrades.
+- **`Protocol` gains `Tsp`** (also the `force_transport` vocabulary) and
+  `DiagCheck` gains `AuthenticateTSP`, listed first so a consumer rendering
+  `DiagCheck::all()` shows the rows in the order the runner tries them. Both are
+  breaking for exhaustive matches. `AttemptLog` and the headless
+  `HeadlessVtaError` gain a `tsp` slot.
+- **New `provision_client::runner_tsp`**, gated on `tsp`: `run_tsp_attempt` plus
+  one-shot `provision_via_tsp` / `provision_admin_rotation_via_tsp`. A build
+  without the feature keeps compiling and fails with a message naming the
+  *cargo feature*, in the shape `session::connect_tsp_bounded` already uses —
+  never "no endpoints", which is what sent people hunting a DID-document error
+  that did not exist.
+- **`select_initial_transport` stays feature-independent.** A `tsp`-less build
+  still *selects* `TspOnly` for a TSP-only VTA and then explains itself, rather
+  than the selection matrix quietly changing shape with the feature flags.
+
+Known gap, deliberate: the TSP `FullSetup` leg runs the webvh catalogue lookup
+and the provision round-trip back-to-back on one socket instead of splitting
+into `PreflightOk` → `run_provision_flight`. The split exists to let an
+interactive consumer close its session while a picker dialog is up, and the
+picker is driven off `VtaEvent::PreflightDone`, whose `mediator_did` is a DIDComm
+mediator by construction — carrying a TSP mediator there needs a public
+event-shape change. Explicit `WEBVH_SERVER` in the ask wins, 0/1 catalogue
+entries auto-pick, and 2+ with no explicit choice is refused by name rather than
+guessed.
+
 ### vta-sdk 0.20.25 / vta-service 0.13.16 / vtc-service 0.11.44 — trust-tasks-rs 0.2.51, messaging SDK 0.18.65, `acl_set` → `account_update`
 
 Picks up the consolidation programme's published registry output and sweeps the

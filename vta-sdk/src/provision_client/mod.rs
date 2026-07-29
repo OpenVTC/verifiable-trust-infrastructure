@@ -55,6 +55,7 @@ pub mod result;
 pub mod runner;
 pub mod runner_didcomm;
 pub(crate) mod runner_rest;
+pub mod runner_tsp;
 pub mod setup_key;
 
 /// Test fixtures available to downstream integration tests.
@@ -69,6 +70,13 @@ pub use runner::{
 pub use runner_didcomm::{
     provision_admin_rotation_via_didcomm, provision_via_didcomm, run_provision_flight,
 };
+/// One-shot TSP round-trips — the TSP siblings of
+/// [`provision_via_didcomm`] / [`provision_via_rest`]. Gated on the `tsp`
+/// feature: without it the SDK has no TSP stack to send over, and the
+/// orchestrated [`run_provision`] path reports that by name rather than
+/// silently degrading.
+#[cfg(feature = "tsp")]
+pub use runner_tsp::{provision_admin_rotation_via_tsp, provision_via_tsp};
 
 pub use ask::{
     BUILTIN_DID_HOST_DIDCOMM_TEMPLATE, BUILTIN_DID_HOST_HTTP_DIDCOMM_TEMPLATE,
