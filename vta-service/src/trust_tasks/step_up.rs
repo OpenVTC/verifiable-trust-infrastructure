@@ -15,7 +15,7 @@
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
 //!
-//! The *request* leg (`auth/step-up/approve-request/0.1`, minted by
+//! The *request* leg (`auth/step-up/approve-request/0.2`, minted by
 //! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
 //! `assertionMethod`, issuer DID == the proof's `verificationMethod` DID —
 //! the same shape as `task-consent` ([`super::consent_request`]) and the
@@ -538,8 +538,11 @@ async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<
 }
 
 /// Mint a pending step-up and build the **signed**
-/// `auth/step-up/approve-request/0.1` document the AAL1 caller hands to its
-/// approver (wallet / VTA).
+/// `auth/step-up/approve-request/0.2` document the AAL1 caller hands to its
+/// approver (wallet / VTA). 0.2 differs from 0.1 only in the type URI and the
+/// `acceptableEvidence` spelling (`did-signed` → `didSigned`); every fielded
+/// receiver (vta-mobile-core, the browser plugin) accepts both request
+/// flavors, so the mint moved cleanly to 0.2 (#870's deferred follow-up).
 ///
 /// A fresh challenge is bound server-side to the caller's
 /// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
@@ -574,7 +577,11 @@ async fn mint_pending_step_up(
     // the reason-only form.
     authorization_context: Option<&Value>,
 ) -> Result<Value, ()> {
+    // The *stored* pending record keeps the kebab canonical form
+    // (`did-signed`) that `vti_common::auth::step_up` documents — it's internal
+    // state, not wire. The 0.2 wire spelling is camelCase (`didSigned`).
     let acceptable = vec!["did-signed".to_string(), "webauthn".to_string()];
+    let acceptable_wire = vec!["didSigned".to_string(), "webauthn".to_string()];
 
     // 256 bits of challenge entropy (two UUIDv4s) — comfortably over the spec's
     // ≥128-bit / ≥16-char minimum, using deps already present.
@@ -604,7 +611,7 @@ async fn mint_pending_step_up(
 
     let mut doc = json!({
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
-        "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
         "issuer": vta_did,
         "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": {
@@ -613,7 +620,7 @@ async fn mint_pending_step_up(
             "challenge": challenge,
             "reason": reason,
             "targetAcr": STEP_UP_TARGET_ACR,
-            "acceptableEvidence": acceptable,
+            "acceptableEvidence": acceptable_wire,
             "ttl": STEP_UP_TTL_SECS,
         },
     });
@@ -734,10 +741,12 @@ fn step_up_denied_response() -> Response {
 }
 
 /// Trust Task `type` of a step-up approve-request (also the DIDComm message
-/// `type` used when pushing one to an approver).
+/// `type` used when pushing one to an approver). 0.2 — matches the minted
+/// document; both fielded approver stacks (vta-mobile-core #871, the browser
+/// plugin) accept 0.1 and 0.2 request URIs.
 #[cfg(feature = "didcomm")]
 const STEP_UP_APPROVE_REQUEST_TYPE: &str =
-    "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
+    "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
 
 /// Pure route selection for a delegated push: given the approver DID and the
 /// VTA's configured mediator, pick the mediator to forward through.
@@ -1392,13 +1401,18 @@ mod tests {
         assert_eq!(v["requiredAcr"], "aal2");
         assert_eq!(
             v["approveRequest"]["type"],
-            "https://trusttasks.org/spec/auth/step-up/approve-request/0.1"
+            "https://trusttasks.org/spec/auth/step-up/approve-request/0.2"
         );
         assert_eq!(v["approveRequest"]["issuer"], vta_did);
         assert_eq!(v["approveRequest"]["recipient"], "did:key:zHolder");
         assert_eq!(v["approveRequest"]["payload"]["sessionId"], "sess-9");
         assert_eq!(v["approveRequest"]["payload"]["targetAcr"], "aal2");
         assert_eq!(v["approveRequest"]["payload"]["reason"], "rotate keys");
+        // 0.2 wire spelling: camelCase `didSigned` (0.1 said `did-signed`).
+        assert_eq!(
+            v["approveRequest"]["payload"]["acceptableEvidence"],
+            json!(["didSigned", "webauthn"])
+        );
         let challenge = v["approveRequest"]["payload"]["challenge"]
             .as_str()
             .expect("challenge string");
@@ -1427,6 +1441,8 @@ mod tests {
         // self-approval recorded the subject as its own authorized approver.
         assert_eq!(pending.approver, "did:key:zHolder");
         assert_eq!(pending.target_acr, "aal2");
+        // The stored record keeps the internal kebab canonical form even
+        // though the 0.2 wire says `didSigned` (it's state, not wire).
         assert_eq!(
             pending.acceptable_evidence,
             vec!["did-signed".to_string(), "webauthn".to_string()]
