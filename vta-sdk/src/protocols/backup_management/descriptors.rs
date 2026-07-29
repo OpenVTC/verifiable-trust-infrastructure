@@ -73,7 +73,8 @@ fn default_true() -> bool {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct InitiateExportBody {
     /// Password to derive the AES-256-GCM key (Argon2id KDF).
-    /// Minimum 12 chars enforced at the op layer.
+    /// Minimum length is [`super::MIN_BACKUP_PASSWORD_LEN`], enforced at the
+    /// op layer via [`super::validate_backup_password`].
     pub password: String,
 
     /// Include audit logs in the backup. Default: false.

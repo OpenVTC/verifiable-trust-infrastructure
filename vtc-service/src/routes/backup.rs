@@ -22,7 +22,7 @@ use vti_common::error::AppError;
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
-    /// Encryption password (Argon2id). Minimum 12 characters.
+    /// Encryption password (Argon2id). Minimum 15 characters.
     pub password: String,
     /// Include the audit log in the backup. Default `false` — audit logs
     /// can be large and carry plaintext DIDs.

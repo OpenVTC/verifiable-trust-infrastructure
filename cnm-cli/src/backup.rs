@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
 use vta_sdk::client::VtaClient;
+use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
 use crate::auth;
 
@@ -69,12 +70,12 @@ pub(crate) async fn cmd_export(
     output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
-    }
+    validate_backup_password(&password)?;
 
     println!("Exporting community backup...");
     let envelope = authed_post(

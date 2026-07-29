@@ -51,7 +51,11 @@ house rule pins these crates):
   `p_cost = 4`, 32-byte salt, 32-byte derived key.
 - **Cipher**: AES-256-GCM, 12-byte nonce, random salt+nonce per export (OsRng).
 - **Encoding**: `base64::URL_SAFE_NO_PAD` for salt / nonce / ciphertext.
-- **Password**: minimum 12 chars at export (`Validation` → 400).
+- **Password**: minimum 15 chars at export (`Validation` → 400). The length
+  lives in `vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN` and
+  is applied by `validate_backup_password`, which every export-side guard in
+  the workspace calls. Import carries no length check, so envelopes written
+  under the earlier 12-char minimum stay decryptable.
 - **Import bounds** (anti-memory-bomb on untrusted envelopes): `m_cost ∈
   [8 MiB, 1 GiB]`, `t_cost ∈ [1,10]`, `p_cost ∈ [1,16]`; algorithm strings must
   equal `argon2id` / `aes-256-gcm`; salt/nonce length-checked before

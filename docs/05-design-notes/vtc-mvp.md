@@ -1247,8 +1247,18 @@ signing bundle itself lives in the seed-store backend, not a keyspace.
 ### 14.1 Backup / restore
 
 `POST /v1/admin/backup/export` returns an encrypted dump (Argon2id +
-AES-256-GCM). Password strength enforced via `zxcvbn` (minimum
-score 3) — `≥12 chars` alone is too weak.
+AES-256-GCM).
+
+**Password strength — shipped vs. designed.** The design position here is
+`zxcvbn` (minimum score 3), on the reasoning that a bare length floor lets
+`Passw0rdPassw0rd` through. That check has **not** shipped. What is enforced
+today is a length minimum, raised from 12 to 15 characters and consolidated
+behind `vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN,
+validate_backup_password}` — one constant that every export-side guard in the
+workspace (VTA op layer, VTC op layer, `pnm`, `cnm`) reads, so the number can
+move in one place. Treat 15 as an interim floor, not the end state: swapping
+the length test inside `validate_backup_password` for an entropy estimate is
+now a single-function change, and it remains the intended direction.
 
 **Cross-VTC restore protection.** Each backup is wrapped under a key
 derived from the VTC's master seed (`HKDF(seed, "vtc-backup-key")`),

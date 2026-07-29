@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### vta-backup 0.1.3 / vtc-service 0.11.45 / pnm-cli 0.11.16 / cnm-cli 0.11.13 / vta-sdk 0.20.27 — raise backup password minimum to 15 characters
+
+The export-side minimum password length is raised from 12 to 15 characters
+across all enforcement points. Import/decrypt paths carry no length check —
+existing backups remain decryptable with shorter passwords (backward compatible).
+
+- **`vta-sdk`**: new `protocols::backup_management::MIN_BACKUP_PASSWORD_LEN` +
+  `validate_backup_password` — the **single source of truth**. Every
+  export-side guard now calls it instead of repeating the literal, so the next
+  change to the policy is one edit rather than five. The helper counts
+  **characters** (`chars().count()`), not bytes: `str::len()` let a
+  six-character non-ASCII password clear a check whose message said "15
+  characters".
+- **`vta-backup`**: `export_backup` delegates to `validate_backup_password`;
+  new `export_rejects_short_password` unit test (14-char rejected, 15-char
+  boundary accepted).
+- **`vtc-service`**: crate-local `MIN_PASSWORD_LEN` removed in favour of the
+  shared constant; new `export_rejects_short_password` integration test in
+  `tests/backup.rs`.
+- **`pnm-cli` / `cnm-cli`**: prompt text and client-side guard now render from
+  the shared constant on all three export paths (pnm direct, pnm trust-task
+  descriptor, cnm).
+- **Docs**: the seven places that still documented a 12-character minimum are
+  corrected — `CLAUDE.md`, `pnm-cli/README.md`, `docs/03-vtc/backup-restore.md`
+  (×2), `docs/05-design-notes/vtc-backup-restore.md`,
+  `docs/05-design-notes/backup-descriptor-pattern.md`, and the request example
+  in `docs/02-vta/didcomm-protocol.md`.
+
+The 15-character threshold aligns with CIS Benchmark recommendations for
+privileged-account credentials, reflecting the sensitivity of a backup envelope
+(master seed, BIP-32 key hierarchy, ACL). It is an **interim** floor:
+`docs/05-design-notes/vtc-mvp.md` §14.1 calls for an entropy estimate
+(`zxcvbn` score ≥ 3) on the grounds that any bare length floor admits
+`Passw0rdPassw0rd`. That note is updated to record what actually ships today;
+consolidating behind `validate_backup_password` makes the eventual swap a
+single-function change.
+
 ### vta-service 0.13.18 — step-up approve-request minted as 0.2; inbound stays bilingual
 
 The deferred follow-up to 0.13.17 (#870): the minted step-up approve-request

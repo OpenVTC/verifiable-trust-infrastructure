@@ -1,12 +1,13 @@
 //! Dispatch for `pnm backup …`.
 //!
 //! Both export and import prompt interactively for the encryption
-//! password (Argon2id KDF, ≥12 chars). `--preview` on import skips the
+//! password (Argon2id KDF, ≥15 chars). `--preview` on import skips the
 //! destructive write so an operator can inspect a backup before
 //! committing.
 
 use vta_cli_common::render::{DIM, GREEN, RED, RESET};
 use vta_sdk::client::VtaClient;
+use vta_sdk::protocols::backup_management::{MIN_BACKUP_PASSWORD_LEN, validate_backup_password};
 
 use crate::cli::BackupCommands;
 
@@ -47,12 +48,12 @@ async fn cmd_backup_export(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
-    }
+    validate_backup_password(&password)?;
 
     println!("Exporting backup...");
     let envelope = client.backup_export(&password, include_audit).await?;
@@ -155,12 +156,12 @@ async fn cmd_backup_export_descriptor(
     output: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt(format!(
+            "Backup password (min {MIN_BACKUP_PASSWORD_LEN} chars)"
+        ))
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
-    }
+    validate_backup_password(&password)?;
 
     println!("Exporting backup (trust-task descriptor flow)...");
     let bytes = client

@@ -653,7 +653,9 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **What**: Encrypted full-state dump + restore.
 - **Endpoints**: `POST /backup/export`, `POST /backup/import`
   (super-admin).
-- **Crypto**: Argon2id KDF (≥12-char password) + AES-256-GCM.
+- **Crypto**: Argon2id KDF (≥15-char password — the minimum is
+  `vta_sdk::protocols::backup_management::MIN_BACKUP_PASSWORD_LEN`, the single
+  source of truth every export-side guard reads) + AES-256-GCM.
 - **Compatibility check**: import cross-checks the backup's `vta_did`
   against the running VTA via `check_vta_did_compatibility`
   (`vta-backup/src/ops/mod.rs`). A fresh-install VTA

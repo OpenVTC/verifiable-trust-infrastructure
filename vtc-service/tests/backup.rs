@@ -15,7 +15,10 @@ use vtc_service::keys::seed_store::{PlaintextSecretStore, SecretStore};
 use vtc_service::server::AppState;
 use vtc_service::test_support::TestVtc;
 
-const PW: &str = "twelve-char-pw!!";
+/// Must clear `MIN_BACKUP_PASSWORD_LEN` — every test below exports through
+/// the real guard, so a short value here fails the whole file rather than the
+/// one case under test. (The old name said "twelve"; the minimum is 15.)
+const PW: &str = "backup-test-password";
 const VTC_DID: &str = "did:key:z6MkBackupRoundTrip";
 
 /// `cfg.save()` (run by import's config restore) writes `config_path` —
@@ -208,6 +211,30 @@ async fn wrong_password_rejected() {
         format!("{err}").contains("incorrect backup password"),
         "{err}"
     );
+}
+
+/// `export_backup` rejects passwords shorter than 15 characters with a
+/// `Validation` error. A password of exactly 15 characters must be accepted
+/// (boundary). Import has no length check — old backups remain decryptable.
+#[tokio::test]
+async fn export_rejects_short_password() {
+    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&a.state, a.data_dir().join("config.toml")).await;
+    let a_store = PlaintextSecretStore::new(a.data_dir());
+
+    // 14 chars — one short of the minimum
+    let err = export_backup(&a.state, &a_store, "14-char-passwo", false)
+        .await
+        .expect_err("export must reject a 14-character password");
+    assert!(
+        format!("{err}").contains("15 characters"),
+        "error must mention the 15-character minimum, got: {err}"
+    );
+
+    // Exactly 15 chars — must be accepted (boundary)
+    export_backup(&a.state, &a_store, "15-char-passwor", false)
+        .await
+        .expect("export must accept a 15-character password");
 }
 
 // ---------------------------------------------------------------------------
