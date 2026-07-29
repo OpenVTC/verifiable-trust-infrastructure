@@ -742,7 +742,12 @@ async fn acl_mutation_requires_step_up() {
     let ar = &body["approveRequest"];
     assert_eq!(
         ar["type"],
-        "https://trusttasks.org/spec/auth/step-up/approve-request/0.1"
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.2"
+    );
+    // 0.2 wire spelling of the evidence enum (0.1 said `did-signed`).
+    assert_eq!(
+        ar["payload"]["acceptableEvidence"],
+        json!(["didSigned", "webauthn"])
     );
     assert_eq!(ar["recipient"], "did:key:z6MkAdmin");
     assert_eq!(ar["payload"]["targetAcr"], "aal2");

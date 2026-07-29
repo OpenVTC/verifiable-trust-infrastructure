@@ -1680,15 +1680,29 @@ pub(crate) const STEP_UP_APPROVE_RESPONSE_TYPE: &str =
 /// registered on the DIDComm router alongside the legacy `vta/step-up/*` URI
 /// (issue #517). A spec-conformant caller that targets the canonical
 /// `spec/auth/step-up/approve-request/0.1` is now handled too; the response
-/// echoes the request's version family (canonical request → canonical
-/// response), so neither the legacy plugin nor a spec-0.2 caller breaks.
+/// echoes the request's version family AND minor version (0.1 request →
+/// 0.1 response, 0.2 → 0.2), so neither the legacy plugin nor a spec caller
+/// on either minor breaks. **Kept for inbound compat** during the 0.1→0.2
+/// transition — approvers in the field still send 0.1.
 pub(crate) const STEP_UP_APPROVE_REQUEST_CANONICAL: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-request/0.1";
+
+/// The 0.2 flavor of [`STEP_UP_APPROVE_REQUEST_CANONICAL`] — same payload
+/// shape (this request body carries no renamed enum values), so one handler
+/// serves both minors and only the echoed response type differs.
+pub(crate) const STEP_UP_APPROVE_REQUEST_CANONICAL_0_2: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-request/0.2";
 
 /// Canonical Trust Task registry URI for the step-up approval response,
 /// emitted when the request arrived on [`STEP_UP_APPROVE_REQUEST_CANONICAL`].
 pub(crate) const STEP_UP_APPROVE_RESPONSE_CANONICAL: &str =
     "https://trusttasks.org/spec/auth/step-up/approve-response/0.1";
+
+/// The 0.2 response flavor, emitted when the request arrived on
+/// [`STEP_UP_APPROVE_REQUEST_CANONICAL_0_2`]. (The webvh control plane —
+/// the relying party for this flow — accepts both response minors.)
+pub(crate) const STEP_UP_APPROVE_RESPONSE_CANONICAL_0_2: &str =
+    "https://trusttasks.org/spec/auth/step-up/approve-response/0.2";
 
 /// Request body for [`handle_step_up_approve`]. The `rpDid` alias accepts a
 /// spec-conformant (lowerCamelCase) producer; the legacy `rp_did` keeps the
@@ -1734,10 +1748,13 @@ pub async fn handle_step_up_approve(
         }
     };
 
-    // Echo the version family of the inbound request so a canonical
-    // (`spec/auth/step-up/…`) caller gets a canonical response and the legacy
-    // (`vta/step-up/…/1.0`) plugin gets the legacy response.
-    let response_type = if message.typ == STEP_UP_APPROVE_REQUEST_CANONICAL {
+    // Echo the version family (and minor) of the inbound request so a
+    // canonical (`spec/auth/step-up/…`) caller gets the matching canonical
+    // response and the legacy (`vta/step-up/…/1.0`) plugin gets the legacy
+    // response.
+    let response_type = if message.typ == STEP_UP_APPROVE_REQUEST_CANONICAL_0_2 {
+        STEP_UP_APPROVE_RESPONSE_CANONICAL_0_2
+    } else if message.typ == STEP_UP_APPROVE_REQUEST_CANONICAL {
         STEP_UP_APPROVE_RESPONSE_CANONICAL
     } else {
         STEP_UP_APPROVE_RESPONSE_TYPE

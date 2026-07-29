@@ -541,6 +541,7 @@ pub async fn dispatch(
     // ── Step-up approval (always) ────────────────────────────────────
     if t == handlers::STEP_UP_APPROVE_REQUEST_TYPE
         || t == handlers::STEP_UP_APPROVE_REQUEST_CANONICAL
+        || t == handlers::STEP_UP_APPROVE_REQUEST_CANONICAL_0_2
     {
         return finish(handlers::handle_step_up_approve(ctx, msg, Extension(vta_state)).await);
     }

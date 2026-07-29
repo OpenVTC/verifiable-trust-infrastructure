@@ -1,6 +1,8 @@
-//! Integration test for `auth/step-up/approve-response/0.1` — the full
-//! HTTP round-trip: an AAL1 session holder POSTs a did-signed approve-response
-//! to `/api/trust-tasks` and the VTA elevates their session to AAL2.
+//! Integration tests for `auth/step-up/approve-response/0.1` **and** `/0.2` —
+//! the full HTTP round-trip: an AAL1 session holder POSTs a did-signed
+//! approve-response to `/api/trust-tasks` and the VTA elevates their session
+//! to AAL2. The request leg is minted as `/0.2`; both response minors are
+//! accepted (mixed-version deployments during the transition).
 //!
 //! Exercises the real route → bearer auth → trust-task dispatcher → step-up
 //! handler → pending-store consume → did-signed gate verification → session
@@ -373,7 +375,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
     );
     assert_eq!(
         details["approveRequest"]["type"],
-        "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
+        "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
         "reject must carry the approve-request: {v}"
     );
     assert_eq!(details["approveRequest"]["recipient"], did, "{v}");
@@ -392,6 +394,175 @@ async fn trust_task_acl_mutation_requires_step_up() {
         details["approveRequest"]["proof"]["proofPurpose"], "assertionMethod",
         "{v}"
     );
+}
+
+/// Full transition-window round trip: the gate mints a **0.2** approve-request
+/// (the migrated wire form), the minted document's VTA proof verifies
+/// end-to-end (the #870 pattern — did:key signing, `di_proof` verification),
+/// and an approver still speaking **0.1** answers it — kebab `did-signed`
+/// evidence discriminator and the `…/0.1` type URI — against the 0.2-minted
+/// pending step-up. The session must elevate and the ack must echo the
+/// approver's own (0.1) version family. This is exactly the mixed-version
+/// deployment the dual-accept inbound exists for.
+#[tokio::test]
+async fn v0_2_minted_request_completes_with_a_0_1_flavored_response() {
+    // Signing app: the minted approve-request carries the real VTA proof.
+    let (router, ctx) = build_provisionable_test_app().await;
+
+    // Opt into step-up enforcement: `*` floor, self-approve.
+    {
+        use vti_common::auth::step_up::{StepUpFloor, StepUpMode, StepUpPolicy};
+        ctx.config.write().await.auth.step_up = StepUpPolicy {
+            enabled: true,
+            floors: vec![StepUpFloor {
+                operation: "*".into(),
+                mode: StepUpMode::SelfApprove,
+                allow_aal1_if_non_escalating: false,
+            }],
+        };
+    }
+
+    // The subject: a REAL did:key admin at AAL1 (self step-up — it will sign
+    // its own approve-response).
+    let sk = SigningKey::from_bytes(&[57u8; 32]);
+    let (did, mb) = did_key(&sk);
+    let vm = format!("{did}#{mb}");
+    let session_id = "sess-roundtrip-0-2".to_string();
+    let session = Session {
+        session_id: session_id.clone(),
+        did: did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        last_seen: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: Some(now_epoch() + 86_400),
+        tee_attested: false,
+        amr: vec!["did".to_string()],
+        acr: "aal1".to_string(),
+        acr_expires_at: None,
+        token_id: None,
+        session_pubkey_b58btc: None,
+    };
+    store_session(&ctx.sessions_ks, &session).await.unwrap();
+    let claims = ctx.jwt_keys.new_claims(
+        did.clone(),
+        session_id.clone(),
+        "admin".to_string(),
+        vec![],
+        900,
+        false,
+    );
+    let token = ctx.jwt_keys.encode(&claims).unwrap();
+
+    // 1. An AAL2-gated trust-task mutation → rejected with the minted
+    //    approve-request in `details`.
+    let gated = json!({
+        "id": "acl-create-roundtrip-1",
+        "type": "https://trusttasks.org/spec/acl/grant/0.1",
+        "issuer": did,
+        "recipient": ctx.vta_did,
+        "payload": {
+            "entry": {
+                "subject": "did:key:z6MkRoundTripEntry",
+                "role": "application",
+                "scopes": ["ctx1"]
+            }
+        },
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&gated).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::OK, "gate must fire");
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    let ar = v["payload"]["details"]["approveRequest"].clone();
+
+    // 2. The minted request is 0.2: /0.2 type URI + camelCase evidence enum.
+    assert_eq!(
+        ar["type"], "https://trusttasks.org/spec/auth/step-up/approve-request/0.2",
+        "{v}"
+    );
+    assert_eq!(
+        ar["payload"]["acceptableEvidence"],
+        json!(["didSigned", "webauthn"]),
+        "{v}"
+    );
+
+    // 3. …and it verifies end-to-end: the VTA's eddsa-jcs-2022 proof checks
+    //    out over the served 0.2 bytes, attributable to the issuing VTA.
+    let minted: TrustTask<Value> = serde_json::from_value(ar.clone()).unwrap();
+    let signer = vta_service::auth::di_proof::verify_trust_task_proof(&minted)
+        .await
+        .expect("minted 0.2 approve-request proof verifies");
+    assert_eq!(signer, ctx.vta_did, "proof VM DID == issuing VTA");
+
+    // 4. The approver answers in the OLD (0.1) dialect: kebab `did-signed`
+    //    evidence + the /0.1 type URI, echoing the 0.2 request's challenge.
+    let challenge = ar["payload"]["challenge"].as_str().unwrap().to_string();
+    let doc_json = json!({
+        "id": "approve-resp-roundtrip-1",
+        "type": "https://trusttasks.org/spec/auth/step-up/approve-response/0.1",
+        "issuer": did,
+        "recipient": ctx.vta_did,
+        "payload": {
+            "subject": did,
+            "sessionId": session_id,
+            "challenge": challenge,
+            "decision": "approved",
+            "grantedAcr": "aal2",
+            "evidence": { "kind": "did-signed" },
+        },
+    });
+    let mut doc: TrustTask<Value> = serde_json::from_value(doc_json).unwrap();
+    let mut di = DataIntegrityProof::new(
+        CryptoSuite::EddsaJcs2022,
+        vm,
+        "assertionMethod".to_string(),
+        None,
+        Some("2026-05-31T00:00:00Z".to_string()),
+        None,
+    );
+    let input = prepare_sign_input(&doc, &di, CryptoSuite::EddsaJcs2022).unwrap();
+    di.proof_value = Some(multibase::encode(
+        Base::Base58Btc,
+        sk.sign(&input).to_bytes(),
+    ));
+    doc.proof = Some(serde_json::from_value::<Proof>(serde_json::to_value(&di).unwrap()).unwrap());
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/trust-tasks")
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+
+    // 5. The 0.1-flavored answer completes the 0.2-minted step-up…
+    assert_eq!(status, StatusCode::OK, "expected 200, got {status}: {v}");
+    assert_eq!(v["payload"]["status"], "elevated", "{v}");
+    assert_eq!(v["payload"]["session"]["acr"], "aal2", "{v}");
+    // …and the ack echoes the APPROVER's version family (0.1), not the mint's.
+    assert_eq!(
+        v["type"], "https://trusttasks.org/spec/auth/step-up/approve-response/0.1#response",
+        "0.1 response must yield a 0.1 ack: {v}"
+    );
+
+    // 6. The stored session is elevated.
+    let stored = get_session(&ctx.sessions_ks, &session_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.acr, "aal2");
 }
 
 /// Delegated step-up: a distinct, authorized approver (`issuer != subject`)

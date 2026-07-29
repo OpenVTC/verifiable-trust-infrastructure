@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### vta-service 0.13.18 — step-up approve-request minted as 0.2; inbound stays bilingual
+
+The deferred follow-up to 0.13.17 (#870): the minted step-up approve-request
+moves from `auth/step-up/approve-request/0.1` to `/0.2`. Receivers were
+migrated first — vta-mobile-core (#871) and the browser plugin
+(OpenVTC/vta-browser-plugin#103) accept both request minors, and the webvh
+control plane accepts both approve-response minors
+(affinidi/affinidi-webvh-service#147) — so this is the producer-side cutover.
+
+- `mint_pending_step_up` emits the `/0.2` type URI and the 0.2 camelCase
+  `acceptableEvidence` spelling (`didSigned`; 0.1 said `did-signed`). That
+  spelling is the **only** payload difference between the minors — same
+  required members, same optional hints, same ttl semantics. The signing is
+  unchanged from #870: `eddsa-jcs-2022`, `assertionMethod`, `{vta_did}#key-0`,
+  proof last over the complete document including `payload.ext` (the embedded
+  Cierge `authorizationContext` carriage is unaffected and still covered by
+  the proof). The DIDComm push type follows the document to `/0.2`.
+- **Inbound stays bilingual.** The approve-response dispatcher keeps accepting
+  0.1 and 0.2 (approvers in the field answer with either during the
+  transition), and the DIDComm router's canonical step-up-approve registration
+  now accepts the `/0.2` request URI beside `/0.1` and the legacy
+  `vta/step-up/*/1.0`, echoing the caller's own minor in the response type.
+- The stored `PendingStepUp.acceptable_evidence` record keeps the internal
+  kebab canonical form — it is state, not wire — so in-flight pending
+  step-ups from 0.13.17 remain consumable across the deploy.
+- New integration test: the gate's minted 0.2 document verifies end-to-end
+  (VTA proof via `di_proof`, issuer == proof VM DID) and a 0.1-flavored
+  signed approve-response completes the 0.2-minted step-up, with the ack
+  echoing the approver's 0.1 family.
+
 ### vta-service 0.13.17 — the step-up approve-request is signed (spec: proof REQUIRED)
 
 Part of the ecosystem-wide "signed request legs" push
