@@ -70,6 +70,13 @@ pub struct CreateAclResultBody {
     /// `approve_scope`). Empty = confers nothing, unless `approve_all_contexts`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approve_contexts: Vec<String>,
+    /// The signing-oracle key filter the maintainer now holds for this
+    /// subject (#818), echoing the stored `allowed_keys`. `None` = no filter
+    /// (every key in the entry's contexts); **`Some([])` = no keys at all** —
+    /// the skip is deliberately `Option::is_none`, never emptiness, so the
+    /// two cannot collapse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_keys: Option<Vec<String>>,
 }
 
 #[cfg(test)]

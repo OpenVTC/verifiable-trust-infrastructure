@@ -245,7 +245,7 @@ Authorization: Bearer <token>
 The VTA **does not inspect what it signs** — `POST /keys/{key_id}/sign` signs
 the bytes you hand it. What stops a caller signing as something it isn't is
 therefore entirely *which keys it may name*, and that is enforced. A sign
-request passes three gates, in order:
+request passes four gates, in order:
 
 1. **The caller's context scope.** If the key carries a `context_id`, the
    caller must be authorized in that context (or an ancestor of it). A caller
@@ -258,23 +258,39 @@ request passes three gates, in order:
 3. **Unscoped keys are super-admin only.** A key with no `context_id` has no
    context and therefore no policy to constrain it, so the role floor is the
    only guardrail — non-super-admin callers are refused.
+4. **The caller's own key filter** (`allowedKeys` on its ACL entry, #818).
+   Where gate 2 is resource-bound, this is *actor-scoped*: it names the key
+   ids **this caller** may invoke the oracle on, and it only ever
+   **intersects** with the context scope — a key named in the filter but
+   outside the caller's contexts is still refused by gate 1, which runs
+   first. Absent means every key the caller's contexts reach (every
+   pre-existing entry behaves exactly as before); **present-but-empty means
+   no keys at all** — emptiness is never a wildcard. The gate reads the
+   stored ACL row on every request, so an operator narrowing a filter binds
+   the subject's *next* sign call — no session revocation, no waiting out a
+   token TTL.
 
-The same three gates apply on **every** transport: REST, the DIDComm
+The same four gates apply on **every** transport: REST, the DIDComm
 `key-management/1.0/sign-request` protocol, and the `keys/sign` Trust Task all
 funnel through one enforcement point (`operations::keys::sign_payload`).
 
-> **Granularity: per context, not per key id.** Gate 1 authorizes a caller for
-> *every* key in a context they hold. If one credential signs for several
-> domains, give **each domain its own context** — putting several domains' keys
-> in one context and scoping the caller to it authorizes all of them. Gate 2
-> (`signable_keys`) gives per-key narrowing, but it is opt-in policy an operator
-> must write; it is not the default.
+> **Granularity: per context by default, per key id on request.** Gate 1
+> authorizes a caller for *every* key in a context it holds. If one credential
+> signs for several domains, give **each domain its own context** — putting
+> several domains' keys in one context and scoping the caller to it authorizes
+> all of them. For a caller that legitimately needs *one key out of a shared
+> context*, grant it `--allowed-keys <key-id>` (gate 4) instead of carving a
+> context per key; and use gate 2 (`signable_keys`) when the restriction
+> should bind every actor uniformly. Both narrowings are opt-in; neither is
+> the default.
 
 This is the property that makes a multi-tenant signer safe without the VTA
 understanding the payload. Pinned by
 `sign_payload_refuses_a_key_outside_the_callers_contexts`,
-`sign_payload_restricts_unscoped_keys_to_super_admin`, and
-`sign_payload_honours_context_policy_signable_keys`.
+`sign_payload_restricts_unscoped_keys_to_super_admin`,
+`sign_payload_honours_context_policy_signable_keys`,
+`sign_payload_honours_acl_allowed_keys`, and
+`sign_payload_allowed_keys_only_narrows_never_widens`.
 
 ### Context Operations
 

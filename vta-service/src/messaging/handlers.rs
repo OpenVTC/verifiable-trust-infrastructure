@@ -428,6 +428,7 @@ didcomm_handler!(
             &s.keys_ks,
             &s.imported_ks,
             &s.contexts_ks,
+            &s.acl_ks,
             &s.seed_store,
             &auth,
             &body.key_id,
@@ -770,6 +771,9 @@ didcomm_handler!(
                 step_up_approver: body.step_up_approver,
                 step_up_require: body.step_up_require,
                 approve_scope: body.approve_scope,
+                allowed_keys: body
+                    .allowed_keys
+                    .map(|r| r.map(|keys| keys.into_iter().collect())),
             },
             "didcomm",
         )

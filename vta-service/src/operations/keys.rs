@@ -808,6 +808,48 @@ pub async fn get_key_secret_internal(
     })
 }
 
+/// Gate 4 of [`sign_payload`] (#818): the **actor-scoped** key filter.
+///
+/// Loads the caller's stored ACL row and asks its [`KeyScope`] whether
+/// `key_id` is within the entry's `allowed_keys`. Complements the
+/// resource-bound `ContextPolicy.signable_keys` (which binds every actor,
+/// super-admin included); this one binds *this caller*, and only ever
+/// narrows what the context gates already allowed.
+///
+/// Reads the store rather than the JWT deliberately: an operator narrowing
+/// an entry's `allowed_keys` is a privilege reduction, and reading the row
+/// live means the reduction binds the subject's **next** sign request — no
+/// session revocation, no waiting out an access-token TTL (the trap the
+/// VTC's `is_privilege_reduction` path exists to close for claims-borne
+/// authority).
+///
+/// A caller with **no ACL row** passes: the only callers that reach here
+/// without one are process-local synthesized identities (the offline CLI's
+/// `cli:<channel>` sentinel), whose trust boundary is the OS, and a row
+/// deleted mid-session — for whom this preserves today's behaviour exactly
+/// (`None` on every existing row is byte-identical, and absence of a row
+/// carries no `allowed_keys` to enforce). The decode goes through
+/// [`AclEntry::key_scope`], never a bare emptiness test: `Some(∅)` means
+/// authorized on **no** keys, the opposite of `None`.
+///
+/// [`KeyScope`]: vti_common::acl::KeyScope
+/// [`AclEntry::key_scope`]: vti_common::acl::AclEntry::key_scope
+async fn require_key_in_caller_scope(
+    acl_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    key_id: &str,
+) -> Result<(), AppError> {
+    let Some(entry) = vti_common::acl::get_acl_entry(acl_ks, &auth.did).await? else {
+        return Ok(());
+    };
+    if entry.key_scope().allows(key_id) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(format!(
+        "signing key {key_id} is not in the caller's allowed keys"
+    )))
+}
+
 /// Sign a payload using a VTA-managed key.
 ///
 /// For derived keys, re-derives from BIP-32 seed. For imported keys,
@@ -818,6 +860,7 @@ pub async fn sign_payload(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
+    acl_ks: &KeyspaceHandle,
     seed_store: &Arc<dyn SeedStore>,
     auth: &AuthClaims,
     key_id: &str,
@@ -838,6 +881,13 @@ pub async fn sign_payload(
 
     if let Some(ref ctx) = record.context_id {
         auth.require_context(ctx)?;
+        // Gate 4 (#818) — the caller's own ACL row may narrow which key ids
+        // it can invoke the oracle on. Runs strictly AFTER `require_context`,
+        // so a caller can never reach (or learn about) a key outside its
+        // contexts by naming it here — the filter intersects with the context
+        // scope, never widens it. Placed BEFORE the policy quota so a refused
+        // call burns none of the context's daily sign budget.
+        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
         // Context policy is a resource-bound guardrail: it constrains the key's
         // context regardless of the actor — even the super-admin. This is what
         // lets a higher authority (e.g. a VTC/fleet-pushed policy) or the
@@ -855,10 +905,16 @@ pub async fn sign_payload(
         if let Some(limit) = policy.quota_for("sign") {
             crate::contexts::enforce_daily_quota(contexts_ks, ctx, "sign", limit).await?;
         }
-    } else if !auth.is_super_admin() {
-        return Err(AppError::Forbidden(
-            "only super admin can use unscoped keys".into(),
-        ));
+    } else {
+        if !auth.is_super_admin() {
+            return Err(AppError::Forbidden(
+                "only super admin can use unscoped keys".into(),
+            ));
+        }
+        // Gate 4 applies to unscoped keys too: the filter can only ever
+        // *narrow* whatever the context dimension allowed, and a super-admin
+        // whose entry names specific keys asked to be bound to them.
+        require_key_in_caller_scope(acl_ks, auth, key_id).await?;
     }
 
     let signature_bytes = match record.origin {
@@ -1158,6 +1214,7 @@ mod tests {
         contexts_ks: KeyspaceHandle,
         audit_ks: KeyspaceHandle,
         imported_ks: KeyspaceHandle,
+        acl_ks: KeyspaceHandle,
         seed_store: Arc<dyn SeedStore>,
         _dir: tempfile::TempDir,
     }
@@ -1174,6 +1231,7 @@ mod tests {
             let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS).unwrap();
             let audit_ks = store.keyspace(crate::keyspaces::AUDIT).unwrap();
             let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS).unwrap();
+            let acl_ks = store.keyspace(crate::keyspaces::ACL).unwrap();
 
             // 32-byte seed; will be expanded to 64 bytes by BIP-32 internally
             let seed_store: Arc<dyn SeedStore> =
@@ -1189,6 +1247,7 @@ mod tests {
                 contexts_ks,
                 audit_ks,
                 imported_ks,
+                acl_ks,
                 seed_store,
                 _dir: dir,
             }
@@ -1520,6 +1579,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &auth,
             &key.key_id,
@@ -1761,6 +1821,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &scoped,
             &key.key_id,
@@ -1780,6 +1841,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &admin,
             &key.key_id,
@@ -1816,6 +1878,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &scoped,
             &allowed.key_id,
@@ -1825,6 +1888,248 @@ mod tests {
         )
         .await
         .expect("policy permits allowed-key");
+    }
+
+    /// Gate 4 (#818): the caller's own ACL row may narrow which key ids it
+    /// can invoke the oracle on — the actor-scoped complement of the
+    /// resource-bound `signable_keys` policy pinned above.
+    #[tokio::test]
+    async fn sign_payload_honours_acl_allowed_keys() {
+        use vti_common::acl::{AclEntry, store_acl_entry};
+
+        let h = TestHarness::new().await;
+        let admin = h.super_admin_auth();
+
+        // Two keys in the same context — the split gate 4 exists to express.
+        for id in ["tenant-key-a", "tenant-key-b"] {
+            create_key(
+                &h.keys_ks,
+                &h.contexts_ks,
+                &h.seed_store,
+                &h.audit_ks,
+                &admin,
+                CreateKeyParams {
+                    key_type: KeyType::Ed25519,
+                    derivation_path: None,
+                    key_id: Some(id.into()),
+                    mnemonic: None,
+                    label: None,
+                    context_id: Some("test-ctx".into()),
+                },
+                "test",
+            )
+            .await
+            .expect("create key");
+        }
+
+        let caller_did = "did:key:z6MkFilteredSigner";
+        let claims = AuthClaims {
+            did: caller_did.to_string(),
+            role: Role::Application,
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        let sign = |key_id: &'static str| {
+            let claims = claims.clone();
+            let h = &h;
+            async move {
+                sign_payload(
+                    &h.keys_ks,
+                    &h.imported_ks,
+                    &h.contexts_ks,
+                    &h.acl_ks,
+                    &h.seed_store,
+                    &claims,
+                    key_id,
+                    b"payload",
+                    &SignAlgorithm::EdDSA,
+                    "test",
+                )
+                .await
+            }
+        };
+
+        // No ACL filter (`allowed_keys: None`): every key in scope — the
+        // pre-#818 behaviour, byte-identical.
+        let entry = AclEntry::new(caller_did, Role::Application, "did:key:zSetup")
+            .with_contexts(vec!["test-ctx".into()]);
+        store_acl_entry(&h.acl_ks, &entry).await.unwrap();
+        sign("tenant-key-a").await.expect("no filter: key-a signs");
+        sign("tenant-key-b").await.expect("no filter: key-b signs");
+
+        // A filter naming exactly key-a: key-b is refused, key-a still signs.
+        // The narrowing bound the very next request — same claims, same live
+        // "session", no revocation step in between (the gate reads the row).
+        store_acl_entry(
+            &h.acl_ks,
+            &entry
+                .clone()
+                .with_allowed_keys(Some(["tenant-key-a".to_string()].into_iter().collect())),
+        )
+        .await
+        .unwrap();
+        sign("tenant-key-a").await.expect("filter names key-a");
+        let denied = sign("tenant-key-b").await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "a key outside the caller's allowed_keys must be Forbidden, got {denied:?}"
+        );
+
+        // Trap 1: PRESENT-BUT-EMPTY is authorized on NO keys — the narrowest
+        // grant, never a wildcard. If a bare `is_empty()` ever sneaks into
+        // the gate, this is the assertion that catches it.
+        store_acl_entry(
+            &h.acl_ks,
+            &entry.clone().with_allowed_keys(Some(Default::default())),
+        )
+        .await
+        .unwrap();
+        for key in ["tenant-key-a", "tenant-key-b"] {
+            let denied = sign(key).await;
+            assert!(
+                matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+                "an EMPTY allowed_keys must refuse every key (got {denied:?} for {key})"
+            );
+        }
+    }
+
+    /// Gate 4 intersects — it never widens. A filter naming a key outside the
+    /// caller's contexts does not grant it: the context gate still runs
+    /// first, so the caller is refused before its key filter is even asked.
+    /// And the filter binds the unscoped-key path too: a super-admin whose
+    /// entry names specific keys asked to be bound to them.
+    #[tokio::test]
+    async fn sign_payload_allowed_keys_only_narrows_never_widens() {
+        use crate::contexts::{ContextRecord, store_context};
+        use vta_sdk::context_policy::ContextPolicy;
+        use vti_common::acl::{AclEntry, store_acl_entry};
+
+        let h = TestHarness::new().await;
+        let admin = h.super_admin_auth();
+
+        // A key in a context the caller does NOT hold.
+        let now = chrono::Utc::now();
+        store_context(
+            &h.contexts_ks,
+            &ContextRecord {
+                id: "other-ctx".into(),
+                name: "other".into(),
+                did: None,
+                description: None,
+                parent: None,
+                base_path: "m/26'/2'/31'".into(),
+                index: 31,
+                created_at: now,
+                updated_at: now,
+                context_policy: Some(ContextPolicy::unrestricted()),
+            },
+        )
+        .await
+        .unwrap();
+        let foreign = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &admin,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: None,
+                key_id: Some("foreign-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: Some("other-ctx".into()),
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+
+        // The caller's entry NAMES the foreign key — and must still be
+        // refused, because the filter intersects with the context scope.
+        let caller_did = "did:key:z6MkOverreach";
+        store_acl_entry(
+            &h.acl_ks,
+            &AclEntry::new(caller_did, Role::Application, "did:key:zSetup")
+                .with_contexts(vec!["test-ctx".into()])
+                .with_allowed_keys(Some(["foreign-key".to_string()].into_iter().collect())),
+        )
+        .await
+        .unwrap();
+        let claims = AuthClaims {
+            did: caller_did.to_string(),
+            role: Role::Application,
+            allowed_contexts: vec!["test-ctx".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &claims,
+            &foreign.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "naming a key in allowed_keys must not reach past the context scope, got {denied:?}"
+        );
+
+        // Unscoped keys are gated too: a super-admin whose own row carries a
+        // filter is bound by it even where no context policy exists.
+        let unscoped = create_key(
+            &h.keys_ks,
+            &h.contexts_ks,
+            &h.seed_store,
+            &h.audit_ks,
+            &admin,
+            CreateKeyParams {
+                key_type: KeyType::Ed25519,
+                derivation_path: Some("m/26'/2'/77'/0'".into()),
+                key_id: Some("unscoped-key".into()),
+                mnemonic: None,
+                label: None,
+                context_id: None,
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        store_acl_entry(
+            &h.acl_ks,
+            &AclEntry::new(&admin.did, Role::Admin, "did:key:zSetup")
+                .with_allowed_keys(Some(["some-other-key".to_string()].into_iter().collect())),
+        )
+        .await
+        .unwrap();
+        let denied = sign_payload(
+            &h.keys_ks,
+            &h.imported_ks,
+            &h.contexts_ks,
+            &h.acl_ks,
+            &h.seed_store,
+            &admin,
+            &unscoped.key_id,
+            b"payload",
+            &SignAlgorithm::EdDSA,
+            "test",
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(crate::error::AppError::Forbidden(_))),
+            "a filtered super-admin is bound on unscoped keys too, got {denied:?}"
+        );
     }
 
     /// A caller authorized in one context cannot sign with another context's
@@ -1838,9 +2143,11 @@ mod tests {
     /// could name — and nothing about the request would look wrong.
     ///
     /// Note the granularity being pinned: **per context, not per key id**. A
-    /// caller scoped to a context may sign with *every* key in it. Per-key
-    /// narrowing exists (`signable_keys`, covered above) but is opt-in policy;
-    /// separation between domains comes from giving each its own context.
+    /// caller scoped to a context may sign with *every* key in it by default.
+    /// Per-key narrowing exists in two opt-in forms — the resource-bound
+    /// `signable_keys` policy and the actor-scoped `allowed_keys` ACL filter
+    /// (#818), each covered above; separation between domains still comes
+    /// from giving each its own context.
     #[tokio::test]
     async fn sign_payload_refuses_a_key_outside_the_callers_contexts() {
         use crate::contexts::{ContextRecord, store_context};
@@ -1907,6 +2214,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &other_tenant,
             &key.key_id,
@@ -1944,6 +2252,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &other_tenant,
             &own.key_id,
@@ -2005,6 +2314,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &scoped,
             &key.key_id,
@@ -2022,6 +2332,7 @@ mod tests {
             &h.keys_ks,
             &h.imported_ks,
             &h.contexts_ks,
+            &h.acl_ks,
             &h.seed_store,
             &admin,
             &key.key_id,

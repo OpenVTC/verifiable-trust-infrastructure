@@ -533,6 +533,7 @@ async fn update_acl_via_didcomm() {
         step_up_approver: None,
         step_up_require: None,
         approve_scope: None,
+        allowed_keys: None,
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
 

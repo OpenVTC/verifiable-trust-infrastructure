@@ -315,6 +315,7 @@ pub async fn sign_with_key(
         &state.keys_ks,
         &state.imported_ks,
         &state.contexts_ks,
+        &state.acl_ks,
         &state.seed_store,
         &auth,
         &key_id,

@@ -2045,6 +2045,7 @@ mod tests {
             step_up_require: None,
             approve_all_contexts: false,
             approve_contexts: vec![],
+            allowed_keys: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         // The builder API is unchanged; only what it serialises moved. The wire
@@ -2076,10 +2077,54 @@ mod tests {
             step_up_approver: None,
             step_up_require: None,
             approve_scope: None,
+            allowed_keys: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         let obj = json.as_object().unwrap();
         assert!(obj.is_empty(), "all-None request should serialize to {{}}");
+    }
+
+    /// The `allowedKeys` member of the update request keeps the three-way
+    /// distinction on the wire (#818): leave-alone emits nothing, clear emits
+    /// an explicit `null`, and the empty list — "no keys at all" — emits `[]`.
+    #[test]
+    fn test_update_acl_request_allowed_keys_three_intentions() {
+        let base = || UpdateAclRequest {
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+            allowed_keys: None,
+        };
+
+        let set = UpdateAclRequest {
+            allowed_keys: Some(Some(vec!["key-1".into()])),
+            ..base()
+        };
+        let json = serde_json::to_value(&set).unwrap();
+        assert_eq!(json["allowedKeys"], serde_json::json!(["key-1"]));
+
+        let clear = UpdateAclRequest {
+            allowed_keys: Some(None),
+            ..base()
+        };
+        let json = serde_json::to_value(&clear).unwrap();
+        assert!(
+            json["allowedKeys"].is_null(),
+            "clear is explicit null: {json}"
+        );
+
+        let none_at_all = UpdateAclRequest {
+            allowed_keys: Some(Some(vec![])),
+            ..base()
+        };
+        let json = serde_json::to_value(&none_at_all).unwrap();
+        assert_eq!(
+            json["allowedKeys"],
+            serde_json::json!([]),
+            "the empty list must be emitted, not skipped: {json}"
+        );
     }
 
     #[test]

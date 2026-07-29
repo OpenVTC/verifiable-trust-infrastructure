@@ -150,6 +150,25 @@ pub struct UpdateAclRequest {
     /// "leave it alone", and revoking is the case that matters most.
     #[serde(default)]
     pub approve_scope: Option<ApproveScope>,
+    /// Replace the signing-oracle key filter (#818). Omitted leaves it
+    /// unchanged; explicit `null` clears it (privilege increase); an array
+    /// sets it to exactly those ids — **the empty array means no keys at
+    /// all**, never a wildcard. Wire name pinned to the canonical
+    /// `allowedKeys` (the SDK's `UpdateAclRequest` serializes the same).
+    #[serde(rename = "allowedKeys", default, deserialize_with = "double_option")]
+    pub allowed_keys: Option<Option<Vec<String>>>,
+}
+
+/// Absent vs explicit-null, distinguishably: absent → `None` (leave alone),
+/// `null` → `Some(None)` (clear), value → `Some(Some(v))`. A plain
+/// `Option<Option<T>>` folds `null` into the outer `None` and loses the
+/// clearing intent.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(de).map(Some)
 }
 
 /// PATCH /acl/{did} — update label, contexts, step-up or approve authority on
@@ -203,6 +222,9 @@ pub async fn update_acl(
             step_up_approver: req.step_up_approver,
             step_up_require: req.step_up_require,
             approve_scope: req.approve_scope,
+            allowed_keys: req
+                .allowed_keys
+                .map(|r| r.map(|keys| keys.into_iter().collect())),
         },
         "rest",
     )

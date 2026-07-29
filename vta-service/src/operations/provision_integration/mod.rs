@@ -631,6 +631,7 @@ pub async fn provision_integration(
         None,
         None,
         crate::acl::ApproveScope::None,
+        None,
         "provision-integration",
     )
     .await
@@ -902,6 +903,7 @@ async fn provision_admin_rotation(
         None,
         None,
         crate::acl::ApproveScope::None,
+        None,
         "provision-integration",
     )
     .await
