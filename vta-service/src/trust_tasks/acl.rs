@@ -6,6 +6,7 @@
 use super::helpers::TrustTaskOutcome;
 use serde_json::{Value, json};
 use trust_tasks_rs::{RejectReason, TrustTask};
+use vta_sdk::protocols::acl_management::change_role::ChangeRoleBody;
 use vta_sdk::protocols::acl_management::create::CreateAclBody;
 use vta_sdk::protocols::acl_management::delete::DeleteAclBody;
 use vta_sdk::protocols::acl_management::get::GetAclBody;
@@ -13,7 +14,6 @@ use vta_sdk::protocols::acl_management::list::ListAclBody;
 use vta_sdk::protocols::acl_management::swap::SwapKeyBody;
 use vta_sdk::protocols::acl_management::update::UpdateAclBody;
 
-use crate::acl::Role;
 use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::operations;
@@ -114,20 +114,8 @@ pub(super) async fn handle_update(
         Ok(r) => r,
         Err(resp) => return resp,
     };
-    let role = match req.role.as_deref() {
-        Some(r) => match Role::parse(r) {
-            Ok(parsed) => Some(parsed),
-            Err(_) => {
-                return reject_with(
-                    &doc,
-                    RejectReason::MalformedRequest {
-                        reason: format!("invalid role: {r}"),
-                    },
-                );
-            }
-        },
-        None => None,
-    };
+    // Role transitions live in `acl/change-role`, not here.
+    let role = None;
     match operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_ks,
@@ -142,6 +130,40 @@ pub(super) async fn handle_update(
             step_up_require: req.step_up_require,
             approve_scope: req.approve_scope,
         },
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `acl/change-role/0.1`. Admin-only.
+///
+/// Separate task from `acl/update` because the transition is
+/// compare-and-swapped against `fromRole` — see
+/// [`operations::acl::change_role`].
+pub(super) async fn handle_change_role(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> TrustTaskOutcome {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: ChangeRoleBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::acl::change_role(
+        &state.acl_ks,
+        &state.audit_ks,
+        auth,
+        &req.subject,
+        &req.from_role,
+        &req.to_role,
+        req.reason.as_deref(),
         TRANSPORT_TRUST_TASK,
     )
     .await
@@ -288,5 +310,56 @@ pub(super) async fn handle_swap_key(
             success_response(&doc, result)
         }
         Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use trust_tasks_rs::specs::acl::change_role::v0_1 as canonical_change_role;
+
+    /// Our wire shapes must be the canonical ones, not merely bound to
+    /// the canonical URIs. The generated types carry
+    /// `deny_unknown_fields` and the spec's required set, so round-
+    /// tripping our serialized form through them catches a member we
+    /// named differently or one the spec forbids.
+    #[test]
+    fn change_role_conforms_and_update_carries_no_role() {
+        let change = ChangeRoleBody {
+            subject: "did:key:z6MkSubject".into(),
+            from_role: "reader".into(),
+            to_role: "application".into(),
+            reason: Some("promoted".into()),
+        };
+        let json = serde_json::to_value(&change).expect("serialize");
+        serde_json::from_value::<canonical_change_role::Payload>(json.clone())
+            .unwrap_or_else(|e| panic!("not canonical `acl/change-role/0.1`: {e}\n{json:#}"));
+
+        // What this PR establishes: `acl/update` carries no role, so the
+        // only way to move one is the checked path above.
+        let base = serde_json::to_value(UpdateAclBody {
+            did: "did:key:z6MkSubject".into(),
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+        })
+        .expect("serialize");
+        assert!(
+            base.get("role").is_none(),
+            "acl/update must not carry a role: {base:#}"
+        );
+
+        // KNOWN GAP, deliberately not asserted as conformant: this body is
+        // not yet canonical — it emits `did`/`allowedContexts` where
+        // `acl/update/0.1` requires `subject`/`scopes`, and it has no
+        // nested `stepUp`/`approve`. #842 made the *response* canonical
+        // and repointed the URI but left the request shape alone. Because
+        // the URI is published, the dispatch spine validates against the
+        // canonical schema, so `acl/update` over the Trust Task transport
+        // is rejected today. Tracked separately from this role split;
+        // asserting conformance here would fail for that unrelated reason
+        // and mask what this test is actually for.
     }
 }

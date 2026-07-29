@@ -729,15 +729,34 @@ didcomm_handler!(
 );
 
 didcomm_handler!(
+    handle_change_acl_role,
+    // Admin-only, like the other role-bearing paths; the operation
+    // re-checks and also compare-and-swaps against `fromRole`.
+    Gate::Admin,
+    acl_management::CHANGE_ROLE_RESULT,
+    acl_management::change_role::ChangeRoleBody,
+    |s, auth, body| operations::acl::change_role(
+        &s.acl_ks,
+        &s.audit_ks,
+        &auth,
+        &body.subject,
+        &body.from_role,
+        &body.to_role,
+        body.reason.as_deref(),
+        "didcomm",
+    )
+    .await
+);
+
+didcomm_handler!(
     handle_update_acl,
     Gate::Manage,
     acl_management::UPDATE_ACL_RESULT,
     acl_management::update::UpdateAclBody,
     |s, auth, body| {
-        let role = match body.role {
-            Some(r) => Some(Role::parse(&r)?),
-            None => None,
-        };
+        // No `role` here: role transitions are `acl/change-role`, which
+        // carries the compare-and-swap this path cannot express.
+        let role = None;
         operations::acl::update_from_params(
             &s.acl_ks,
             &s.audit_ks,

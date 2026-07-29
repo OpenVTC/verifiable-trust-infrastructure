@@ -4,6 +4,7 @@ use ratatui::{
     widgets::{Block, Cell, Row, Table},
 };
 use vta_sdk::acl::{ApproveScope, ContextDirection};
+use vta_sdk::client::ChangeAclRoleRequest;
 use vta_sdk::prelude::*;
 use vti_common::acl::{Role, act_scope_for};
 
@@ -370,6 +371,39 @@ pub fn approve_scope_from_flags(
     }
 }
 
+/// `pnm acl change-role` — transition a subject's role with a
+/// compare-and-swap on the role they currently hold.
+pub async fn cmd_acl_change_role(
+    client: &VtaClient,
+    did: &str,
+    from_role: &str,
+    to_role: &str,
+    reason: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_role(from_role)?;
+    validate_role(to_role)?;
+
+    let entry = client
+        .change_acl_role(
+            did,
+            ChangeAclRoleRequest {
+                from_role: from_role.to_string(),
+                to_role: to_role.to_string(),
+                reason,
+            },
+        )
+        .await?;
+
+    println!("ACL role changed:");
+    println!("  DID:  {}", entry.did);
+    println!(
+        "  Role: {} \u{2192} {}",
+        from_role,
+        format_role(&entry.role, &entry.allowed_contexts)
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_acl_update(
     client: &VtaClient,
@@ -381,12 +415,28 @@ pub async fn cmd_acl_update(
     step_up_require: Option<String>,
     approve_scope: Option<ApproveScope>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Role transitions moved to `acl change-role`, which carries the
+    // compare-and-swap that makes a concurrent edit an error instead of a
+    // silent overwrite. Rather than just refusing, look up the role the
+    // subject actually holds so the operator can copy the fixed command —
+    // `--from` is the one argument they cannot guess.
     if let Some(ref r) = role {
         validate_role(r)?;
+        let current = client
+            .get_acl(did)
+            .await
+            .ok()
+            .map(|e| e.role)
+            .unwrap_or_else(|| "<current-role>".to_string());
+        return Err(format!(
+            "role changes are not part of `acl update` — they need the compare-and-swap that \
+             `acl change-role` carries.\n\n  Run: pnm acl change-role --did {did} --from \
+             {current} --to {r}"
+        )
+        .into());
     }
     let approve_scope_echo = approve_scope.clone();
     let req = UpdateAclRequest {
-        role,
         label,
         allowed_contexts: contexts,
         step_up_approver: step_up_approver.clone(),

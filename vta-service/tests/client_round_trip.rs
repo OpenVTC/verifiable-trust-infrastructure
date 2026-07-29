@@ -111,7 +111,6 @@ async fn acl_lifecycle_round_trips_through_the_real_client() {
         .update_acl(
             subject,
             UpdateAclRequest {
-                role: None,
                 label: Some("renamed".into()),
                 allowed_contexts: None,
                 step_up_approver: None,
@@ -587,5 +586,103 @@ async fn webvh_server_register_upserts_but_refuses_a_repoint() {
     assert!(
         missing.is_err(),
         "patching an unregistered server must fail, got {missing:?}"
+    );
+}
+
+// ── ACL change-role ─────────────────────────────────────────────────
+
+/// The role transition is compare-and-swapped, through the real client.
+///
+/// The defect this exists to prevent: two admins acting on the same
+/// stale read — one demoting, one promoting — both "succeed" under a
+/// blind write, and whichever lands second silently wins. The loser's
+/// intent disappears with no error anywhere, which on a *demotion*
+/// means someone stays an admin who was meant to be removed.
+#[tokio::test]
+async fn acl_change_role_compare_and_swaps() {
+    use vta_sdk::client::ChangeAclRoleRequest;
+
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+    let subject = "did:key:z6MkChangeRoleSubject";
+
+    client
+        .create_acl(CreateAclRequest::new(subject, "reader").contexts(vec!["ctx1".into()]))
+        .await
+        .expect("grant round-trips");
+
+    // A transition from the role they actually hold succeeds.
+    let changed = client
+        .change_acl_role(
+            subject,
+            ChangeAclRoleRequest {
+                from_role: "reader".into(),
+                to_role: "application".into(),
+                reason: Some("promoted for the integration".into()),
+            },
+        )
+        .await
+        .expect("change-role round-trips");
+    assert_eq!(
+        changed.role, "application",
+        "the new role must come back on the entry: {changed:?}"
+    );
+
+    // A transition declaring a stale `from` is refused — this is the
+    // whole point of the split.
+    let stale = client
+        .change_acl_role(
+            subject,
+            ChangeAclRoleRequest {
+                // They are `application` now, not `reader`.
+                from_role: "reader".into(),
+                to_role: "admin".into(),
+                reason: None,
+            },
+        )
+        .await;
+    assert!(
+        stale.is_err(),
+        "a stale fromRole must be refused, got {stale:?}"
+    );
+
+    // …and the refusal left the entry alone.
+    let after = client.get_acl(subject).await.expect("show round-trips");
+    assert_eq!(
+        after.role, "application",
+        "a refused change must not modify the entry"
+    );
+
+    // An unrecognized role is a caller error, not a 500.
+    let bogus = client
+        .change_acl_role(
+            subject,
+            ChangeAclRoleRequest {
+                from_role: "application".into(),
+                to_role: "superuser".into(),
+                reason: None,
+            },
+        )
+        .await;
+    assert!(bogus.is_err(), "an unknown role must be refused");
+
+    // `acl/update` no longer carries a role at all, so the only way to
+    // move one is through the checked path above.
+    let updated = client
+        .update_acl(
+            subject,
+            vta_sdk::client::UpdateAclRequest {
+                label: Some("still an application".into()),
+                allowed_contexts: None,
+                step_up_approver: None,
+                step_up_require: None,
+                approve_scope: None,
+            },
+        )
+        .await
+        .expect("update round-trips");
+    assert_eq!(
+        updated.role, "application",
+        "update must leave the role untouched"
     );
 }

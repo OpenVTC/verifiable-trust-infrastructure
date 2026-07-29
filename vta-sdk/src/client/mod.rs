@@ -2105,7 +2105,6 @@ mod tests {
     #[test]
     fn test_update_acl_request_all_none() {
         let req = UpdateAclRequest {
-            role: None,
             label: None,
             allowed_contexts: None,
             step_up_approver: None,

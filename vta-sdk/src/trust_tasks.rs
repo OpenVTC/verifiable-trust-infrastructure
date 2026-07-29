@@ -212,10 +212,29 @@ pub const TASK_ACL_CREATE_1_0: &str = "https://trusttasks.org/spec/acl/grant/0.1
 /// [`crate::protocols::acl_management::get::GetAclBody`].
 pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/acl/show/0.1";
 
-/// `acl/update/0.1` — patch role, label, or allowed contexts.
-/// Payload: [`crate::protocols::acl_management::update::UpdateAclBody`].
+/// `acl/update/0.1` — patch label, scopes, expiry, step-up or approve
+/// authority on an existing entry. Payload:
+/// [`crate::protocols::acl_management::update::UpdateAclBody`].
 /// Auth: Admin only.
+///
+/// **Does not change roles.** Canonical gives that transition its own
+/// task so it can carry a compare-and-swap — see
+/// [`TASK_ACL_CHANGE_ROLE_0_1`]. A request naming a role here is
+/// refused rather than applied.
 pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/acl/update/0.1";
+
+/// `acl/change-role/0.1` — transition a subject's role, guarded by a
+/// compare-and-swap on their current one. Payload:
+/// [`crate::protocols::acl_management::change_role::ChangeRoleBody`].
+/// Auth: Admin only.
+///
+/// Separate from [`TASK_ACL_UPDATE_1_0`] because role is the one
+/// attribute where losing an update is a privilege change: two admins
+/// editing concurrently could otherwise silently overwrite each other,
+/// and the loser's intent — say a demotion — would vanish with no
+/// error. The producer declares `fromRole`; a mismatch against the
+/// stored role is rejected instead of applied.
+pub const TASK_ACL_CHANGE_ROLE_0_1: &str = "https://trusttasks.org/spec/acl/change-role/0.1";
 
 /// `acl/revoke/0.1` — remove an entry. Payload:
 /// [`crate::protocols::acl_management::delete::DeleteAclBody`].
@@ -1315,6 +1334,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_ACL_CREATE_1_0,
     TASK_ACL_GET_1_0,
     TASK_ACL_UPDATE_1_0,
+    TASK_ACL_CHANGE_ROLE_0_1,
     TASK_ACL_DELETE_1_0,
     TASK_ACL_SWAP_KEY_1_0,
     // Contexts slice

@@ -596,8 +596,6 @@ impl SwapAclRequest {
 #[derive(Debug, Serialize)]
 pub struct UpdateAclRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_contexts: Option<Vec<String>>,
@@ -689,6 +687,21 @@ pub struct CreateDidWebvhRequest {
     /// `CONTEXT_ID`, `CONTEXT_DID`, `NOW`) are injected automatically.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub template_vars: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Request for `VtaClient::change_acl_role`.
+///
+/// `from_role` is the compare-and-swap: the role the caller believes the
+/// subject holds. The VTA refuses the transition if its stored role differs,
+/// so a race against another admin surfaces as an error rather than one
+/// change silently overwriting the other.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeAclRoleRequest {
+    pub from_role: String,
+    pub to_role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ── WebVH DID log types ──────────────────────────────────────────────

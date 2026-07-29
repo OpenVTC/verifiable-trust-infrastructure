@@ -4,12 +4,17 @@ use crate::acl::ApproveScope;
 
 use super::create::CreateAclResultBody;
 
+/// Request payload for canonical `acl/update/0.1`.
+///
+/// Carries no `role`: canonical gives the role transition its own
+/// task (`acl/change-role/0.1`) so it can be compare-and-swapped
+/// against the subject's current role, which is what stops two admins
+/// on a stale read from silently overwriting one another on the one
+/// attribute where that is a privilege change.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateAclBody {
     pub did: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

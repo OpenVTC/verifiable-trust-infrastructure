@@ -13,7 +13,8 @@ use vta_sdk::protocols::acl_management::{
 use crate::acl::{
     AclEntry, ApproveScope, ContextDirection, Role, acl_entry_matches_context, delete_acl_entry,
     get_acl_entry, is_acl_entry_auditable, is_acl_entry_visible, list_acl_entries, store_acl_entry,
-    validate_acl_modification, validate_approve_scope_grant, validate_role_assignment,
+    update_acl_entry_versioned, validate_acl_modification, validate_approve_scope_grant,
+    validate_role_assignment,
 };
 use crate::auth::AuthClaims;
 use crate::auth::session::now_epoch;
@@ -455,6 +456,105 @@ pub async fn update_acl(
         "success",
         Some(channel),
         None,
+    )
+    .await;
+    Ok(to_result_body(&entry))
+}
+
+/// `acl/change-role/0.1` — transition a subject's role, compare-and-swapped
+/// against the role the caller believes they hold.
+///
+/// Split out of [`update_acl`] because role is the one ACL attribute where a
+/// lost update is a privilege change. Two admins acting on the same stale read
+/// — one demoting to `reader`, one promoting to `admin` — would both succeed
+/// under a blind write, and whichever landed second would silently win. The
+/// demotion would vanish with no error anywhere. Declaring `from_role` turns
+/// that race into a refusal.
+///
+/// Two guards run *after* the compare-and-swap, and both matter:
+///
+/// - [`validate_role_assignment`] — may this caller hand out the target role
+///   at all (only an admin may confer admin).
+/// - [`validate_acl_modification`] — is the *resulting* entry one the caller
+///   could have created directly. This is what stops promotion being an
+///   escalation route: an entry with an empty `allowed_contexts` is authorized
+///   *nowhere* while its role is non-admin, but flipping that same entry to
+///   `admin` makes it **unrestricted** — a super-admin. Only a caller who is
+///   already unrestricted may do that.
+#[allow(clippy::too_many_arguments)]
+pub async fn change_role(
+    acl_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
+    auth: &AuthClaims,
+    subject: &str,
+    from_role: &str,
+    to_role: &str,
+    reason: Option<&str>,
+    channel: &str,
+) -> Result<CreateAclResultBody, AppError> {
+    auth.require_admin()?;
+
+    let mut entry = get_acl_entry(acl_ks, subject)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("ACL entry not found for DID: {subject}")))?;
+
+    if !is_acl_entry_visible(auth, &entry) {
+        return Err(not_manageable(auth, &entry, subject, "change-role"));
+    }
+
+    // `Role::parse` owns the vocabulary, but maps an unknown value to
+    // `Internal` — a 500 for what is a caller mistake. Re-map it: an
+    // unrecognized role is a bad request, which is also what canonical's
+    // `role_not_recognized` describes.
+    let parse = |raw: &str| -> Result<Role, AppError> {
+        Role::parse(raw).map_err(|_| {
+            AppError::Validation(format!(
+                "role not recognized: {raw}; expected one of admin, initiator, \
+                 application, reader, monitor"
+            ))
+        })
+    };
+    let from = parse(from_role)?;
+    let to = parse(to_role)?;
+
+    // The compare-and-swap. Report what was actually found — an operator
+    // racing another admin needs to see the role they lost to, not just
+    // that they lost.
+    if entry.role != from {
+        return Err(AppError::Conflict(format!(
+            "role of {subject} is {}, not {from} — the change was based on stale state. \
+             Re-read the entry and retry with the current role",
+            entry.role,
+        )));
+    }
+
+    validate_role_assignment(auth, &to)?;
+    validate_acl_modification(auth, &to, &entry.allowed_contexts)?;
+
+    let expected_version = entry.version;
+    entry.role = to;
+
+    // Versioned write rather than a plain store: the role check above is
+    // read-then-compare, so on its own it still leaves a window for another
+    // writer to land between the two. The version guard closes it.
+    update_acl_entry_versioned(acl_ks, entry.clone(), expected_version).await?;
+
+    info!(channel, did = %subject, from = %from_role, to = %to_role, "ACL role changed");
+    audit!(
+        "acl.change_role",
+        actor = &auth.did,
+        resource = subject,
+        outcome = "success"
+    );
+    let _ = audit::record_with_detail(
+        audit_ks,
+        "acl.change_role",
+        &auth.did,
+        Some(subject),
+        "success",
+        Some(channel),
+        None,
+        reason,
     )
     .await;
     Ok(to_result_body(&entry))

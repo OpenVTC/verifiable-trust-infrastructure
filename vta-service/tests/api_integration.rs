@@ -1558,16 +1558,59 @@ async fn acl_get_update_delete_lifecycle() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["entry"]["role"], "application", "{body}");
 
-    // Update
+    // Update — label only. `acl/update` no longer carries a role.
     let (status, body) = app
         .request(patch_auth(
             "/acl/did:key:z6MkTarget",
             &token,
-            json!({"role": "initiator", "label": "updated"}),
+            json!({"label": "updated"}),
         ))
         .await;
     assert!(status.is_success(), "update: {status} {body}");
+    assert_eq!(
+        body["entry"]["role"], "application",
+        "update must leave the role alone: {body}"
+    );
+
+    // A role on the patch is refused, not ignored — and the error names
+    // the command that does work.
+    let (status, body) = app
+        .request(patch_auth(
+            "/acl/did:key:z6MkTarget",
+            &token,
+            json!({"role": "initiator"}),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("change-role"),
+        "the refusal must point at the replacement: {body}"
+    );
+
+    // The transition goes through the compare-and-swapped endpoint.
+    let (status, body) = app
+        .request(post_auth(
+            "/acl/did:key:z6MkTarget/change-role",
+            &token,
+            json!({"fromRole": "application", "toRole": "initiator"}),
+        ))
+        .await;
+    assert!(status.is_success(), "change-role: {status} {body}");
     assert_eq!(body["entry"]["role"], "initiator", "{body}");
+
+    // A stale `fromRole` is refused — they are `initiator` now.
+    let (status, body) = app
+        .request(post_auth(
+            "/acl/did:key:z6MkTarget/change-role",
+            &token,
+            json!({"fromRole": "application", "toRole": "admin"}),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a stale fromRole must conflict: {body}"
+    );
 
     // Delete
     let (status, _) = app

@@ -682,6 +682,8 @@ dispatch_table! {
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update
         [ Mutating None false ],
+    vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1 => acl::handle_change_role
+        [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_1_0 => acl::handle_swap_key
