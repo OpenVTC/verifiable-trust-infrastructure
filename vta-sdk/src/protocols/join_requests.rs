@@ -3,7 +3,7 @@
 //! Each body below is a [`trust_tasks_rs::TrustTask`] **payload**; the
 //! document `type` is one of the `JOIN_REQUEST_*_TYPE` URIs. The success
 //! reply is a framework `#response` document carrying a [`VerdictResponse`]
-//! (the `request`/`submit` verb) or a read body (manifest/status/accept);
+//! (the `request`/`submit` verb) or a read body (manifest/status);
 //! failures are framework `trust-task-error` documents, never DIDComm
 //! problem-reports.
 //!
@@ -56,7 +56,7 @@ pub const JOIN_REQUEST_SUBMIT_RESPONSE_TYPE: &str =
 /// Async acknowledgement sent by the VTC after a submit. Deliberately
 /// still on the `openvtc/vtc/` authority: the canonical registry has no
 /// receipt task — the ceremony's canonical surface is
-/// submit/accept/status/manifest plus their `#response` forms, and a
+/// submit/status/manifest plus their `#response` forms, and a
 /// receipt is a separate fire-and-forget ack, not a Trust Task response.
 /// Inventing `spec/vtc/join-requests/submit-receipt` here would mean
 /// emitting a URI that resolves to nothing in the registry.
@@ -89,49 +89,11 @@ pub struct JoinRequestSubmitBody {
 }
 
 // ---------------------------------------------------------------------------
-// Accept — reciprocal VMC (join ceremony close, join-requests/accept/1.0)
+// (Accept is gone. `join-requests/accept/0.1` was retired upstream, superseded
+// by `vtc/members/vmc/0.1` with an optional `requestId` — the member closes
+// their approved join by delivering their reciprocal VMC through the one
+// credential-delivery path. See `protocols::members::MemberVmcBody`.)
 // ---------------------------------------------------------------------------
-
-/// Trust Task `type` for a join-request accept: the admitted member
-/// counter-signs the issued VMC to form the bidirectional DTG membership
-/// edge. `memberDid` is the TrustTask `issuer` (DIDComm authcrypt sender /
-/// REST document proof).
-pub const JOIN_REQUEST_ACCEPT_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/accept/0.1";
-
-/// `#response` variant of [`JOIN_REQUEST_ACCEPT_TYPE`] — carries a
-/// [`JoinRequestAcceptReceiptBody`].
-pub const JOIN_REQUEST_ACCEPT_RESPONSE_TYPE: &str =
-    "https://trusttasks.org/spec/vtc/join-requests/accept/0.1#response";
-
-/// Body of the accept message. `memberDid` comes from the DIDComm
-/// `from` field (the authcrypt sender) — the envelope binds the member,
-/// so no separate signature is needed. `vc` is the member-issued
-/// reciprocal VC (a DI VC whose issuer is the member); `vmcId` names the
-/// VMC it reciprocates.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct JoinRequestAcceptBody {
-    /// The join request being reciprocated. Over REST this is the
-    /// `{id}` path segment; over DIDComm (no path) it travels in the
-    /// body. The member learns it from the submit receipt's `requestId`.
-    pub request_id: Uuid,
-    pub vmc_id: String,
-    pub vc: JsonValue,
-}
-
-/// Body of the accept receipt message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct JoinRequestAcceptReceiptBody {
-    pub request_id: Uuid,
-    /// Status string. `"accepted"` once the reciprocal edge is recorded.
-    pub status: String,
-    /// `id` of the recorded member-issued reciprocal VC.
-    pub reciprocal_vc_id: String,
-}
 
 // ---------------------------------------------------------------------------
 // Manifest — pre-submit discovery (join-requests/manifest/1.0)

@@ -679,7 +679,7 @@ fn template_record_json(name: &str) -> Value {
 }
 
 /// DIDComm template management is dispatched as a Trust Task: the SDK sends the
-/// binding-envelope type carrying `{type: vta/did-templates/list/1.0, payload}`,
+/// binding-envelope type carrying `{type: vta/did-templates/list/2.0, payload}`,
 /// and the VTA replies with a trust-task document whose `payload` is the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_did_templates_via_didcomm() {
@@ -687,13 +687,13 @@ async fn list_did_templates_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
         if msg_type == TT_ENVELOPE
             && body.get("type").and_then(|v| v.as_str())
-                == Some(trust_tasks::TASK_DID_TEMPLATES_LIST_1_0)
+                == Some(trust_tasks::TASK_DID_TEMPLATES_LIST_2_0)
         {
             ResponderReply::ok(
                 TT_ENVELOPE,
                 json!({
                     "id": "urn:uuid:resp-1",
-                    "type": format!("{}#response", trust_tasks::TASK_DID_TEMPLATES_LIST_1_0),
+                    "type": format!("{}#response", trust_tasks::TASK_DID_TEMPLATES_LIST_2_0),
                     "payload": {"templates": [template_record_json("custom-1")]}
                 }),
             )

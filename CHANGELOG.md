@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.20 / vta-service 0.13.12 — schema-conformance sweep, and every published task made canonical
+### vta-sdk 0.20.23 / vta-service 0.13.14 — schema-conformance sweep, and every published task made canonical
 
 Closes #856 and #857. A conformance sweep now asserts, for **every** task the
 VTA dispatcher binds to a published canonical URI (63 today, derived from the
@@ -37,6 +37,71 @@ change, so the sweep ships with an **empty** drift allowlist:
   bound URI).
 - **`vta/webvh/dids/update` response**: `UpdateDidWebvhResultBody` emits
   camelCase (`newVersionId`, …) per its published schema, snake aliases kept.
+
+The sweep's census is derived, so it tracks the fold programme on its own: the
+twelve `vta/did-templates/*/1.0` witnesses left with #864's merge onto the 2.0
+family, and the six 2.0 URIs re-enter scope (and will be asked for) at the next
+`trust-tasks-rs` bump that publishes them.
+
+### vta-sdk 0.20.21 / vta-service 0.13.12 — did-templates consolidated onto the merged 2.0 family
+
+Implements OpenVTC/verifiable-trust-infrastructure#851. The twelve-URI pair of
+trust-task families `vta/did-templates/*/1.0` (global) and
+`vta/contexts/did-templates/*/1.0` (context-scoped) collapses onto the merged
+six-task `vta/did-templates/{list,get,create,update,delete,render}/2.0` family:
+one URI per operation, with the payload's **optional `contextId`** selecting the
+scope — absent = global (super-admin gated for writes), present = that context
+(context-admin gated for writes, context access for reads). `render/2.0`
+additionally injects the ambient `CONTEXT_ID` / `CONTEXT_DID` variables when
+scoped, exactly as the former context render did.
+
+**Clean cutover — removed wire URIs.** Per the pre-production consolidation
+policy the twelve 1.0 URIs are dropped outright rather than dual-accepted; a
+document carrying any of them now gets `UnsupportedType`:
+
+- `https://trusttasks.org/spec/vta/did-templates/{list,create,get,update,delete,render}/1.0`
+- `https://trusttasks.org/spec/vta/contexts/did-templates/{list,create,get,update,delete,render}/1.0`
+
+**Surfaces:**
+
+- `vta-sdk`: six `TASK_DID_TEMPLATES_*_2_0` constants replace the twelve 1.0
+  constants; the `did_template_management` wire bodies collapse to one body per
+  op with `context_id: Option<String>` (the `*Context*Body` variants are gone);
+  `VtaClient` template methods keep their signatures but dispatch the 2.0 URIs.
+- `vta-service`: the did-templates trust-task slice is six scope-branching
+  handlers dispatching into the unchanged `operations::did_templates`
+  global/context functions; per-scope auth still enforced at the op layer.
+  REST routes are untouched.
+
+### vtc-service 0.11.43 / vta-sdk 0.20.20 — join-request decide, accept folded into members/vmc, endorsement-types per-method tasks
+
+Implements OpenVTC/verifiable-trust-infrastructure#853 (clean cutover — the
+retired URIs are removed, not dual-accepted; every remaining mount gates on a
+published canonical task):
+
+- **`POST /v1/join-requests/{id}/decide`** on `vtc/join-requests/decide/0.1`
+  (`{ decision: approved|rejected, reason? }`) replaces the `/approve` +
+  `/reject` mounts and their per-outcome tasks. Same admin gate, same
+  Pending-state check, same audit envelopes (`JoinRequestApproved` /
+  `JoinRequestRejected`); the admin SPA's join-requests plugin now posts the
+  decide payload.
+- **`members/vmc` gains the optional `requestId`** (`MemberVmcBody` /
+  `MemberVmcReceiptBody`): a delivery naming an approved join request whose
+  applicant is the delivering member also closes that request — the delivered
+  credential is recorded as the reciprocal half of the join
+  (`Member::record_reciprocation`) and the reciprocation audited
+  (`MembershipReciprocated`). This supersedes `join-requests/accept/0.1`,
+  whose dispatcher arm, DIDComm handler, REST spine (`accept.rs`, including
+  the `MembershipAcknowledgement` VC shape and the accept holder-binding
+  signature) and SDK types are removed — one credential-delivery path.
+- **`GET /v1/endorsement-types`** now enforces its own
+  `vtc/endorsement-types/list/0.1` instead of riding `register`'s URI — the
+  last of the issue's four shared-mount workarounds (the other three landed
+  earlier: members show/update/admin-remove, community profile show/update,
+  join-requests list).
+
+Removed wire URIs (consumers to sweep): `vtc/join-requests/approve/0.1`,
+`vtc/join-requests/reject/0.1`, `vtc/join-requests/accept/0.1`.
 
 ### vta-sdk 0.20.19 / vta-service 0.13.11 — push/* emitters cut over to 0.2
 

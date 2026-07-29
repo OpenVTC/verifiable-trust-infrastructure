@@ -1057,102 +1057,62 @@ pub const TASK_WEBVH_AGENT_NAME_ENABLE_1_0: &str =
 
 // ─── DID-templates slice (spec/vta/did-templates/*) ──────────────────────
 //
-// Global-scope template CRUD + render. Mirrored under
-// `spec/vta/contexts/did-templates/*` below for the context-scoped
-// resource. The two URI hierarchies are intentionally separate —
-// global templates and context templates have different owners and
-// lifecycles (super-admin vs context-admin), and the URI carries
-// that distinction directly so the auth contract is self-evident
-// from the wire `type` field.
+// Template CRUD + render across both scopes, one URI per operation.
+// The 2.0 family (trust-tasks registry, issue #851) merges the former
+// `spec/vta/did-templates/*/1.0` (global) and
+// `spec/vta/contexts/did-templates/*/1.0` (context-scoped) pairs
+// behind an optional `contextId` payload field: absent = global scope
+// (super-admin gated for writes), present = that context
+// (context-admin gated for writes, context access for reads). The
+// retired 1.0 URIs are no longer accepted — clean cutover, both
+// hierarchies dropped in the same change that introduced 2.0.
 
-/// `spec/vta/did-templates/list/1.0` — list all global templates.
-/// Payload:
-/// [`crate::protocols::did_template_management::list::ListDidTemplatesBody`]
-/// (empty). Auth: any authenticated user.
-pub const TASK_DID_TEMPLATES_LIST_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/list/1.0";
+/// `spec/vta/did-templates/list/2.0` — list the templates in one
+/// scope: global when `contextId` is absent, that context's when
+/// present. Payload:
+/// [`crate::protocols::did_template_management::list::ListDidTemplatesBody`].
+/// Auth: any authenticated user; context access when scoped.
+pub const TASK_DID_TEMPLATES_LIST_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/list/2.0";
 
-/// `spec/vta/did-templates/create/1.0` — create a new global
-/// template. Payload:
+/// `spec/vta/did-templates/create/2.0` — create a template in one
+/// scope. Payload:
 /// [`crate::protocols::did_template_management::create::CreateDidTemplateBody`].
-/// Auth: Super Admin only.
-pub const TASK_DID_TEMPLATES_CREATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/create/1.0";
+/// Auth: Super Admin (global) OR Admin-with-context (`contextId` set).
+pub const TASK_DID_TEMPLATES_CREATE_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/create/2.0";
 
-/// `spec/vta/did-templates/get/1.0` — fetch one global template by
-/// name. Payload:
+/// `spec/vta/did-templates/get/2.0` — fetch one template by name from
+/// one scope. Payload:
 /// [`crate::protocols::did_template_management::get::GetDidTemplateBody`].
-/// Auth: any authenticated user.
-pub const TASK_DID_TEMPLATES_GET_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/get/1.0";
+/// Auth: any authenticated user; context access when scoped.
+pub const TASK_DID_TEMPLATES_GET_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/get/2.0";
 
-/// `spec/vta/did-templates/update/1.0` — replace a global template.
-/// Payload:
+/// `spec/vta/did-templates/update/2.0` — replace a template in one
+/// scope. Payload:
 /// [`crate::protocols::did_template_management::update::UpdateDidTemplateBody`].
-/// Auth: Super Admin only.
-pub const TASK_DID_TEMPLATES_UPDATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/update/1.0";
+/// Auth: Super Admin (global) OR Admin-with-context (`contextId` set).
+pub const TASK_DID_TEMPLATES_UPDATE_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/update/2.0";
 
-/// `spec/vta/did-templates/delete/1.0` — delete a global template.
-/// Payload:
+/// `spec/vta/did-templates/delete/2.0` — delete a template from one
+/// scope. Payload:
 /// [`crate::protocols::did_template_management::delete::DeleteDidTemplateBody`].
-/// Auth: Super Admin only.
-pub const TASK_DID_TEMPLATES_DELETE_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/delete/1.0";
+/// Auth: Super Admin (global) OR Admin-with-context (`contextId` set).
+pub const TASK_DID_TEMPLATES_DELETE_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/delete/2.0";
 
-/// `spec/vta/did-templates/render/1.0` — render a global template
-/// with caller-supplied variables. Server injects ambient vars
-/// (`VTA_DID`, `NOW`, …). Payload:
+/// `spec/vta/did-templates/render/2.0` — render a template from one
+/// scope with caller-supplied variables. Server injects ambient vars
+/// (`VTA_DID`, `VTA_URL`, `NOW`; plus `CONTEXT_ID` / `CONTEXT_DID`
+/// when `contextId` is present). Context renders may fall through to
+/// a global template of the same name, per the op layer's
+/// scope-fallback rule. Payload:
 /// [`crate::protocols::did_template_management::render::RenderDidTemplateBody`].
-/// Auth: any authenticated user.
-pub const TASK_DID_TEMPLATES_RENDER_1_0: &str =
-    "https://trusttasks.org/spec/vta/did-templates/render/1.0";
-
-// ─── Context-scoped DID-templates (spec/vta/contexts/did-templates/*) ────
-
-/// `spec/vta/contexts/did-templates/list/1.0` — list templates
-/// scoped to a specific context. Payload:
-/// [`crate::protocols::did_template_management::list::ListContextDidTemplatesBody`].
-/// Auth: any authenticated user with access to the context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/list/1.0";
-
-/// `spec/vta/contexts/did-templates/create/1.0` — create a
-/// context-scoped template. Payload:
-/// [`crate::protocols::did_template_management::create::CreateContextDidTemplateBody`].
-/// Auth: Super Admin OR Admin-with-context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/create/1.0";
-
-/// `spec/vta/contexts/did-templates/get/1.0` — fetch one
-/// context-scoped template. Payload:
-/// [`crate::protocols::did_template_management::get::GetContextDidTemplateBody`].
-/// Auth: any authenticated user with access to the context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_GET_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/get/1.0";
-
-/// `spec/vta/contexts/did-templates/update/1.0` — replace a
-/// context-scoped template. Payload:
-/// [`crate::protocols::did_template_management::update::UpdateContextDidTemplateBody`].
-/// Auth: Super Admin OR Admin-with-context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/update/1.0";
-
-/// `spec/vta/contexts/did-templates/delete/1.0` — delete a
-/// context-scoped template. Payload:
-/// [`crate::protocols::did_template_management::delete::DeleteContextDidTemplateBody`].
-/// Auth: Super Admin OR Admin-with-context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/delete/1.0";
-
-/// `spec/vta/contexts/did-templates/render/1.0` — render a
-/// context-scoped template (or fall through to a global template
-/// of the same name, per the op layer's scope-fallback rule).
-/// Payload:
-/// [`crate::protocols::did_template_management::render::RenderContextDidTemplateBody`].
-/// Auth: any authenticated user with access to the context.
-pub const TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0: &str =
-    "https://trusttasks.org/spec/vta/contexts/did-templates/render/1.0";
+/// Auth: any authenticated user; context access when scoped.
+pub const TASK_DID_TEMPLATES_RENDER_2_0: &str =
+    "https://trusttasks.org/spec/vta/did-templates/render/2.0";
 
 // ─── Backup slice (spec/vta/backup/*) ────────────────────────────────────
 //
@@ -1439,20 +1399,14 @@ pub const ALL_URIS: &[&str] = &[
     TASK_WEBVH_AGENT_NAME_REMOVE_1_0,
     TASK_WEBVH_AGENT_NAME_DISABLE_1_0,
     TASK_WEBVH_AGENT_NAME_ENABLE_1_0,
-    // DID-templates slice (global)
-    TASK_DID_TEMPLATES_LIST_1_0,
-    TASK_DID_TEMPLATES_CREATE_1_0,
-    TASK_DID_TEMPLATES_GET_1_0,
-    TASK_DID_TEMPLATES_UPDATE_1_0,
-    TASK_DID_TEMPLATES_DELETE_1_0,
-    TASK_DID_TEMPLATES_RENDER_1_0,
-    // DID-templates slice (context-scoped)
-    TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0,
-    TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0,
-    TASK_CONTEXTS_DID_TEMPLATES_GET_1_0,
-    TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0,
-    TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0,
-    TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0,
+    // DID-templates slice (2.0 — one URI per op, optional contextId
+    // selects global vs context scope; the twelve 1.0 URIs are retired)
+    TASK_DID_TEMPLATES_LIST_2_0,
+    TASK_DID_TEMPLATES_CREATE_2_0,
+    TASK_DID_TEMPLATES_GET_2_0,
+    TASK_DID_TEMPLATES_UPDATE_2_0,
+    TASK_DID_TEMPLATES_DELETE_2_0,
+    TASK_DID_TEMPLATES_RENDER_2_0,
     // Backup slice (descriptor pattern). URIs land in ALL_URIS now
     // that the trust-task slice is wired in vta-service.
     TASK_BACKUP_INITIATE_EXPORT_1_0,

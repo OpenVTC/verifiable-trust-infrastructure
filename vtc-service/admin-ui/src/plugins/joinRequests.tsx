@@ -24,10 +24,8 @@ const TRUST_TASK_SUBMIT =
   "https://trusttasks.org/spec/vtc/join-requests/list/0.1";
 const TRUST_TASK_SHOW =
   "https://trusttasks.org/spec/vtc/join-requests/show/0.1";
-const TRUST_TASK_APPROVE =
-  "https://trusttasks.org/spec/vtc/join-requests/approve/0.1";
-const TRUST_TASK_REJECT =
-  "https://trusttasks.org/spec/vtc/join-requests/reject/0.1";
+const TRUST_TASK_DECIDE =
+  "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
 
 type JoinStatus = "pending" | "approved" | "rejected" | "withdrawn" | "deferred";
 
@@ -79,11 +77,13 @@ async function fetchJoinRequest(id: string): Promise<JoinRequestRow> {
   });
 }
 
+// One decision endpoint (`decide/0.1`) carries both outcomes as
+// `{ decision, reason? }` — the approve/reject task pair is retired.
 async function approve(id: string): Promise<DecideResponse> {
   return postJson<DecideResponse>(
-    `/v1/join-requests/${id}/approve`,
-    undefined,
-    { trustTask: TRUST_TASK_APPROVE },
+    `/v1/join-requests/${id}/decide`,
+    { decision: "approved" },
+    { trustTask: TRUST_TASK_DECIDE },
   );
 }
 
@@ -92,9 +92,9 @@ async function reject(args: {
   reason: string;
 }): Promise<DecideResponse> {
   return postJson<DecideResponse>(
-    `/v1/join-requests/${args.id}/reject`,
-    { reason: args.reason || null },
-    { trustTask: TRUST_TASK_REJECT },
+    `/v1/join-requests/${args.id}/decide`,
+    { decision: "rejected", reason: args.reason || null },
+    { trustTask: TRUST_TASK_DECIDE },
   );
 }
 

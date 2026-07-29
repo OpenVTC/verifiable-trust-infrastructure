@@ -241,30 +241,6 @@ fn vault_entry() -> vti_common::vault::VaultEntry {
     }
 }
 
-fn did_template() -> vta_sdk::did_templates::DidTemplate {
-    vta_sdk::did_templates::DidTemplate {
-        schema_version: 1,
-        name: "agent-web".into(),
-        kind: "custom".into(),
-        description: Some("test template".into()),
-        methods: vec!["webvh".into()],
-        required_vars: vec!["DOMAIN".into()],
-        optional_vars: serde_json::Map::new(),
-        defaults: serde_json::Map::new(),
-        document: json!({ "id": "did:webvh:{SCID}:{DOMAIN}" }),
-    }
-}
-
-fn did_template_record() -> vta_sdk::did_templates::DidTemplateRecord {
-    vta_sdk::did_templates::DidTemplateRecord {
-        template: did_template(),
-        scope: vta_sdk::did_templates::Scope::Global,
-        created_at: 1_800_000_000,
-        updated_at: 1_800_000_000,
-        created_by: "did:key:z6MkAdmin".into(),
-    }
-}
-
 // ─── The witness table ───────────────────────────────────────────────────
 
 /// One entry per URI in [`resolved_uris`] — the coverage assertion below
@@ -276,8 +252,6 @@ fn did_template_record() -> vta_sdk::did_templates::DidTemplateRecord {
 /// census this table must cover.
 #[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
-    use vta_sdk::protocols::did_template_management as tpl;
-
     let mut t: Vec<(&'static str, Conformance)> = vec![
         // ─── auth ────────────────────────────────────────────────
         (
@@ -984,165 +958,17 @@ fn table() -> Vec<(&'static str, Conformance)> {
                 })
             ),
         ),
-        // ─── vta/did-templates (global) ──────────────────────────
-        (
-            uris::TASK_DID_TEMPLATES_LIST_1_0,
-            checked!(
-                specs::vta::did_templates::list::v1_0::Payload,
-                specs::vta::did_templates::list::v1_0::Response,
-                to_v(tpl::list::ListDidTemplatesBody {}),
-                to_v(tpl::list::ListDidTemplatesResultBody {
-                    templates: vec![did_template_record()],
-                })
-            ),
-        ),
-        (
-            uris::TASK_DID_TEMPLATES_CREATE_1_0,
-            checked!(
-                specs::vta::did_templates::create::v1_0::Payload,
-                specs::vta::did_templates::create::v1_0::Response,
-                to_v(tpl::create::CreateDidTemplateBody {
-                    template: did_template(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_DID_TEMPLATES_GET_1_0,
-            checked!(
-                specs::vta::did_templates::get::v1_0::Payload,
-                specs::vta::did_templates::get::v1_0::Response,
-                to_v(tpl::get::GetDidTemplateBody {
-                    name: "agent-web".into(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_DID_TEMPLATES_UPDATE_1_0,
-            checked!(
-                specs::vta::did_templates::update::v1_0::Payload,
-                specs::vta::did_templates::update::v1_0::Response,
-                to_v(tpl::update::UpdateDidTemplateBody {
-                    name: "agent-web".into(),
-                    template: did_template(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_DID_TEMPLATES_DELETE_1_0,
-            checked!(
-                specs::vta::did_templates::delete::v1_0::Payload,
-                specs::vta::did_templates::delete::v1_0::Response,
-                to_v(tpl::delete::DeleteDidTemplateBody {
-                    name: "agent-web".into(),
-                }),
-                to_v(tpl::delete::DeleteDidTemplateResultBody {
-                    name: "agent-web".into(),
-                    deleted: true,
-                })
-            ),
-        ),
-        (
-            uris::TASK_DID_TEMPLATES_RENDER_1_0,
-            checked!(
-                specs::vta::did_templates::render::v1_0::Payload,
-                specs::vta::did_templates::render::v1_0::Response,
-                to_v(tpl::render::RenderDidTemplateBody {
-                    name: "agent-web".into(),
-                    vars: [("DOMAIN".to_string(), json!("agents.example"))]
-                        .into_iter()
-                        .collect(),
-                }),
-                to_v(tpl::render::RenderDidTemplateResultBody {
-                    document: json!({ "id": "did:webvh:scid:agents.example" }),
-                })
-            ),
-        ),
-        // ─── vta/contexts/did-templates ──────────────────────────
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::list::v1_0::Payload,
-                specs::vta::contexts::did_templates::list::v1_0::Response,
-                to_v(tpl::list::ListContextDidTemplatesBody {
-                    context_id: "ctx-a".into(),
-                }),
-                to_v(tpl::list::ListDidTemplatesResultBody {
-                    templates: vec![did_template_record()],
-                })
-            ),
-        ),
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::create::v1_0::Payload,
-                specs::vta::contexts::did_templates::create::v1_0::Response,
-                to_v(tpl::create::CreateContextDidTemplateBody {
-                    context_id: "ctx-a".into(),
-                    template: did_template(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_GET_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::get::v1_0::Payload,
-                specs::vta::contexts::did_templates::get::v1_0::Response,
-                to_v(tpl::get::GetContextDidTemplateBody {
-                    context_id: "ctx-a".into(),
-                    name: "agent-web".into(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::update::v1_0::Payload,
-                specs::vta::contexts::did_templates::update::v1_0::Response,
-                to_v(tpl::update::UpdateContextDidTemplateBody {
-                    context_id: "ctx-a".into(),
-                    name: "agent-web".into(),
-                    template: did_template(),
-                }),
-                to_v(did_template_record())
-            ),
-        ),
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::delete::v1_0::Payload,
-                specs::vta::contexts::did_templates::delete::v1_0::Response,
-                to_v(tpl::delete::DeleteContextDidTemplateBody {
-                    context_id: "ctx-a".into(),
-                    name: "agent-web".into(),
-                }),
-                to_v(tpl::delete::DeleteDidTemplateResultBody {
-                    name: "agent-web".into(),
-                    deleted: true,
-                })
-            ),
-        ),
-        (
-            uris::TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0,
-            checked!(
-                specs::vta::contexts::did_templates::render::v1_0::Payload,
-                specs::vta::contexts::did_templates::render::v1_0::Response,
-                to_v(tpl::render::RenderContextDidTemplateBody {
-                    context_id: "ctx-a".into(),
-                    name: "agent-web".into(),
-                    vars: [("DOMAIN".to_string(), json!("agents.example"))]
-                        .into_iter()
-                        .collect(),
-                }),
-                to_v(tpl::render::RenderDidTemplateResultBody {
-                    document: json!({ "id": "did:webvh:scid:agents.example" }),
-                })
-            ),
-        ),
+        // ─── vta/did-templates ───────────────────────────────────
+        //
+        // No witnesses, and that is correct right now. #864 folded the twelve
+        // `vta/{contexts/,}did-templates/*/1.0` URIs onto the merged six-task
+        // `vta/did-templates/*/2.0` family, and the 2.0 specs are published
+        // upstream but not yet in the pinned `trust-tasks-rs` (the publish-lag
+        // `vtc-service/tests/trust_task_manifest.rs` also records). So
+        // `schema_for` resolves none of them and the derived census excludes
+        // them. The next `trust-tasks-rs` bump puts all six back in scope and
+        // the coverage assertion will ask for their witnesses — which is the
+        // sweep working, not breaking.
     ];
 
     // ─── passkey-vms (feature-gated like their dispatch arms) ─────

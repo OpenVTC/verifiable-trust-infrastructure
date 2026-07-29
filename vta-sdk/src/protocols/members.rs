@@ -4,9 +4,11 @@
 //! issues a `MembershipCredential` to the member at admission
 //! (community → member), and the member issues one back to the VTC
 //! (member → community), so each side holds a credential asserting the other's
-//! membership edge. The join-ceremony `accept` step records a member-issued
-//! *acknowledgement*; this family carries the **full reciprocal VMC** and lets
-//! it be (re)exchanged at any point after admission:
+//! membership edge. This family carries the **full reciprocal VMC** and lets
+//! it be (re)exchanged at any point — at join time with
+//! [`MemberVmcBody::request_id`] set (which also closes the approved join
+//! request; the retired `join-requests/accept` semantics), or unprompted /
+//! on request later:
 //!
 //! - [`MEMBER_REQUEST_VMC_TYPE`] — VTC → member: "please issue + send your VMC".
 //!   Admin-triggered from the VTC; delivered over DIDComm to the member's agent.
@@ -66,6 +68,16 @@ pub struct RequestMemberVmcBody {
 pub struct MemberVmcBody {
     /// The member-issued membership credential (a Data-Integrity VC).
     pub vc: Value,
+    /// Optional: an **approved** join request this delivery also closes
+    /// (`vtc/members/vmc/0.1`'s `requestId`, which carries the retired
+    /// `join-requests/accept` semantics). When present and naming an approved
+    /// request whose applicant is the delivering member, the VTC records the
+    /// delivered credential as the reciprocal half of that join and echoes
+    /// `request_id` in the receipt. A UUID in string form — `members` compiles
+    /// featureless, so the module avoids the optional `uuid` dependency;
+    /// consumers parse and refuse a malformed id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 /// Body of a [`MEMBER_VMC_RESPONSE_TYPE`] receipt.
@@ -78,4 +90,8 @@ pub struct MemberVmcReceiptBody {
     pub vmc_id: String,
     /// Always `"stored"` on success.
     pub status: String,
+    /// Echoed when the delivery also closed a join request (the submission
+    /// carried [`MemberVmcBody::request_id`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }

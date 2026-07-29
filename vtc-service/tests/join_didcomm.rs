@@ -54,7 +54,7 @@ fn response_payload(doc: serde_json::Value) -> serde_json::Value {
 use vta_sdk::vp::{HeldCredential, build_vp_token, select_credentials};
 
 const ADMIN_DID: &str = "did:key:z6MkJoinAdmin";
-const APPROVE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/approve/0.1";
+const DECIDE_TASK: &str = "https://trusttasks.org/spec/vtc/join-requests/decide/0.1";
 
 /// Seed the join ceremony the same way `server::run` does at boot: default
 /// policies (so `join.rego` evaluates instead of failing closed), both status
@@ -254,10 +254,10 @@ async fn didcomm_join_round_trips_submit_manifest_status_approve_and_vmc_deliver
     //    over DIDComm (`deliver_membership_credentials`).
     let (code, body) = rest_post(
         &mock,
-        &format!("/v1/join-requests/{request_id}/approve"),
-        APPROVE_TASK,
+        &format!("/v1/join-requests/{request_id}/decide"),
+        DECIDE_TASK,
         &admin_token,
-        json!({}),
+        json!({ "decision": "approved" }),
     )
     .await;
     assert_eq!(code, StatusCode::OK, "approve failed: {body}");

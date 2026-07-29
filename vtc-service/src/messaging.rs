@@ -26,10 +26,9 @@ use vta_sdk::protocols::credential_exchange::{
     ISSUE as CREDENTIAL_ISSUE_TYPE, IssueBody, PresentBody, RequestBody,
 };
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_ACCEPT_TYPE, JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE,
-    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody,
-    MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
-    SelfRemoveReceiptBody,
+    JOIN_REQUEST_MANIFEST_TYPE, JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitReceiptBody, MEMBER_SELF_REMOVE_RECEIPT_TYPE,
+    MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody, SelfRemoveReceiptBody,
 };
 use vta_sdk::protocols::members::{
     MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
@@ -565,7 +564,6 @@ async fn route(msg: &Message, auth_sender: Option<String>, state: &AppState) -> 
     match msg.typ.as_str() {
         TRUST_PING_TYPE => trust_ping_reply(msg, auth_sender.as_deref()),
         JOIN_REQUEST_SUBMIT_TYPE => join_request_submit_handler(msg, auth_sender, state).await,
-        JOIN_REQUEST_ACCEPT_TYPE => join_request_accept_handler(msg, auth_sender, state).await,
         JOIN_REQUEST_MANIFEST_TYPE => join_request_manifest_handler(msg, state).await,
         JOIN_REQUEST_STATUS_TYPE => join_request_status_handler(msg, auth_sender, state).await,
         MEMBER_SELF_REMOVE_TYPE => member_self_remove_handler(msg, auth_sender, state).await,
@@ -843,26 +841,9 @@ async fn join_request_submit_handler(
     tt_didcomm_reply(outcome, thid)
 }
 
-/// `join-requests/accept/1.0` over DIDComm — the reciprocal step. The
-/// authcrypt sender is the proven member; the document payload carries the
-/// `requestId`, `vmcId`, and the member-issued reciprocal `vc`.
-async fn join_request_accept_handler(
-    msg: &Message,
-    auth_sender: Option<String>,
-    state: &AppState,
-) -> Option<Reply> {
-    let thid = msg.id.clone();
-    let Some(member_did) = auth_sender else {
-        return Some(unauthorized_reply(thid));
-    };
-    let body = match inbound_doc_bytes(msg) {
-        Ok(b) => b,
-        Err(e) => return Some(problem_report(thid, codes::INTERNAL, e)),
-    };
-    let ctx = JoinAuthCtx::didcomm(member_did);
-    let outcome = dispatch_trust_task_core(state, &ctx, &body).await;
-    tt_didcomm_reply(outcome, thid)
-}
+// (`join-requests/accept` over DIDComm is gone — retired upstream, superseded
+// by `members/vmc` with an optional `requestId`. The member closes an approved
+// join by delivering their reciprocal VMC through `member_vmc_handler`.)
 
 /// `join-requests/manifest/1.0` over DIDComm — pre-submit discovery. A
 /// public read; no sender authentication required (uses the plaintext `from`).
@@ -998,18 +979,38 @@ async fn member_vmc_handler(
         }
     };
 
-    let outcome =
-        match crate::members::inbound_vmc::receive_member_vmc_inner(state, member_did, body.vc)
-            .await
-        {
-            Ok(o) => o,
-            Err(e) => return Some(app_error_report(thid, &e)),
-        };
+    // `request_id` travels as a string (the SDK's `members` module compiles
+    // featureless, without `uuid`); refuse a malformed id up front.
+    let request_id = match body
+        .request_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("requestId is not a UUID: {e}"),
+            ));
+        }
+    };
+
+    let outcome = match crate::members::inbound_vmc::receive_member_vmc_inner(
+        state, member_did, body.vc, request_id,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return Some(app_error_report(thid, &e)),
+    };
 
     let receipt = MemberVmcReceiptBody {
         member_did: outcome.member_did,
         vmc_id: outcome.vmc_id,
         status: "stored".to_string(),
+        request_id: outcome.request_id.map(|u| u.to_string()),
     };
     let body = match serde_json::to_value(&receipt) {
         Ok(v) => v,

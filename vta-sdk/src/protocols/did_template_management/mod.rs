@@ -2,27 +2,25 @@
 //! for DID-template management.
 //!
 //! Each operation lives in its own submodule (`list`, `create`,
-//! `get`, `update`, `delete`, `render`). Each module defines two
-//! body types when relevant: a **global**-scope variant
-//! (`*DidTemplateBody`) and a **context**-scope variant
-//! (`*ContextDidTemplateBody`). The context-scope variant carries
-//! a required `context_id` field (serialized as `contextId` on the
-//! wire, lowerCamelCase per the Trust Task framework); the global
-//! variant doesn't.
+//! `get`, `update`, `delete`, `render`) and defines one body type
+//! per operation. Scope is selected by the body's **optional
+//! `context_id`** field (serialized as `contextId` on the wire,
+//! lowerCamelCase per the Trust Task framework): absent = the
+//! global scope (super-admin gated for writes), present = that
+//! context's scope (context-admin gated for writes, context access
+//! for reads).
 //!
-//! The split is deliberate. Global and context templates are not
-//! the same resource filtered differently — they have different
-//! owners (super-admin vs context-admin), different lifecycles, and
-//! different visibility scopes. Modelling them as distinct wire
-//! types makes the auth contract self-documenting from the
-//! payload, mirrors the URI hierarchy
-//! (`spec/vta/did-templates/*` vs `spec/vta/contexts/did-templates/*`),
-//! and removes the need for slice handlers to branch on
-//! `Option<String>`.
+//! This is the 2.0 shape of the family
+//! (`spec/vta/did-templates/*/2.0`, trust-tasks registry issue
+//! OpenVTC/verifiable-trust-infrastructure#851), which merged the
+//! former global (`spec/vta/did-templates/*/1.0`) and context
+//! (`spec/vta/contexts/did-templates/*/1.0`) URI hierarchies — the
+//! per-scope ACL moved from the slug structure into the `contextId`
+//! field plus party gating. The twelve 1.0 URIs are retired and no
+//! longer accepted.
 //!
 //! Trust-task URIs are declared in
-//! [`crate::trust_tasks`] under the `TASK_DID_TEMPLATES_*` and
-//! `TASK_CONTEXTS_DID_TEMPLATES_*` prefixes.
+//! [`crate::trust_tasks`] under the `TASK_DID_TEMPLATES_*` prefix.
 //!
 //! Template management over DIDComm ships as a **Trust Task**: the
 //! `VtaClient` dispatches the
