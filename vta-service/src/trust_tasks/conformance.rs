@@ -269,6 +269,12 @@ fn did_template_record() -> vta_sdk::did_templates::DidTemplateRecord {
 
 /// One entry per URI in [`resolved_uris`] — the coverage assertion below
 /// holds the two in lockstep, in both directions.
+///
+/// `#[allow(deprecated)]` for the same reason the dispatch table carries it:
+/// the 0.1 constants are deprecated in favour of their 0.2 siblings but are
+/// still dispatched during the migration window, so they are still in the
+/// census this table must cover.
+#[allow(deprecated)]
 fn table() -> Vec<(&'static str, Conformance)> {
     use vta_sdk::protocols::did_template_management as tpl;
 

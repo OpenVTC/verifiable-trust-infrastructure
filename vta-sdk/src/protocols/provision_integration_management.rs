@@ -252,17 +252,20 @@ mod tests {
         );
     }
 
+    /// The recase runs camel → snake/kebab now: the types serialise the
+    /// canonical 0.2 form, so 0.1 is the direction that needs converting
+    /// (#857).
     #[test]
-    fn snake_and_kebab_to_lower_camel() {
-        assert_eq!(snake_to_lower_camel("client_did"), "clientDid");
-        assert_eq!(snake_to_lower_camel("bundle_id_hex"), "bundleIdHex");
+    fn lower_camel_to_snake_and_kebab() {
+        assert_eq!(lower_camel_to_snake("clientDid"), "client_did");
+        assert_eq!(lower_camel_to_snake("bundleIdHex"), "bundle_id_hex");
         assert_eq!(
-            snake_to_lower_camel("vc_validity_seconds"),
-            "vcValiditySeconds"
+            lower_camel_to_snake("vcValiditySeconds"),
+            "vc_validity_seconds"
         );
-        assert_eq!(snake_to_lower_camel("bundle"), "bundle"); // single word
-        assert_eq!(kebab_to_lower_camel("did-signed"), "didSigned");
-        assert_eq!(kebab_to_lower_camel("pinned-only"), "pinnedOnly");
+        assert_eq!(lower_camel_to_snake("bundle"), "bundle"); // single word
+        assert_eq!(lower_camel_to_kebab("didSigned"), "did-signed");
+        assert_eq!(lower_camel_to_kebab("pinnedOnly"), "pinned-only");
     }
 
     /// Build a real VP-framed request so the `request` subtree carries a
