@@ -38,6 +38,13 @@
 //! URI fails the coverage assertion here **by design** — add a witness (or,
 //! with a stated reason, a debt entry) for it. That is this check doing its
 //! job, not an obstacle to route around.
+//!
+//! It has already happened once, and the shape is worth keeping: #864 folded
+//! the `did-templates` family onto new URIs, the census dropped the old ones,
+//! and the *stale-witness* direction of the coverage assertion fired. Both
+//! directions matter — a witness for a URI nothing dispatches any more is as
+//! much drift as a dispatched URI with no witness, and only the first tells
+//! you a fold landed.
 
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
