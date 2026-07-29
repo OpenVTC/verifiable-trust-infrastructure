@@ -1,7 +1,7 @@
 //! Dispatch for `pnm backup …`.
 //!
 //! Both export and import prompt interactively for the encryption
-//! password (Argon2id KDF, ≥12 chars). `--preview` on import skips the
+//! password (Argon2id KDF, ≥15 chars). `--preview` on import skips the
 //! destructive write so an operator can inspect a backup before
 //! committing.
 
@@ -47,11 +47,11 @@ async fn cmd_backup_export(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Prompt for password
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt("Backup password (min 15 chars)")
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
+    if password.len() < 15 {
+        return Err("password must be at least 15 characters".into());
     }
 
     println!("Exporting backup...");
@@ -155,11 +155,11 @@ async fn cmd_backup_export_descriptor(
     output: Option<std::path::PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt("Backup password (min 15 chars)")
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
+    if password.len() < 15 {
+        return Err("password must be at least 15 characters".into());
     }
 
     println!("Exporting backup (trust-task descriptor flow)...");

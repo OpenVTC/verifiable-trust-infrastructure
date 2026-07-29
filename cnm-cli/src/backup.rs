@@ -69,11 +69,11 @@ pub(crate) async fn cmd_export(
     output: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let password = dialoguer::Password::new()
-        .with_prompt("Backup password (min 12 chars)")
+        .with_prompt("Backup password (min 15 chars)")
         .with_confirmation("Confirm password", "Passwords do not match")
         .interact()?;
-    if password.len() < 12 {
-        return Err("password must be at least 12 characters".into());
+    if password.len() < 15 {
+        return Err("password must be at least 15 characters".into());
     }
 
     println!("Exporting community backup...");

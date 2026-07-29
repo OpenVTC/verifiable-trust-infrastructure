@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### vta-backup 0.1.3 / vtc-service 0.11.45 / pnm-cli 0.11.16 / cnm-cli 0.11.13 / vta-sdk 0.20.27 — raise backup password minimum to 15 characters
+
+The export-side minimum password length is raised from 12 to 15 characters
+across all enforcement points. Import/decrypt paths carry no length check —
+existing backups remain decryptable with shorter passwords (backward compatible).
+
+- **`vta-backup`**: `export_backup` rejects passwords shorter than 15 characters
+  with `AppError::Validation`; new `export_rejects_short_password` unit test
+  (14-char rejected, 15-char boundary accepted).
+- **`vtc-service`**: `MIN_PASSWORD_LEN` 12 → 15; new `export_rejects_short_password`
+  integration test in `tests/backup.rs`.
+- **`pnm-cli`**: prompt text and client-side guard updated on both export paths
+  (direct and trust-task descriptor).
+- **`cnm-cli`**: prompt text and client-side guard updated.
+- **`vta-sdk`**: doc comment on `InitiateExportBody.password` updated.
+
+The 15-character threshold aligns with CIS Benchmark recommendations for
+privileged-account credentials, reflecting the sensitivity of a backup envelope
+(master seed, BIP-32 key hierarchy, ACL).
+
 ### vta-service 0.13.18 — step-up approve-request minted as 0.2; inbound stays bilingual
 
 The deferred follow-up to 0.13.17 (#870): the minted step-up approve-request

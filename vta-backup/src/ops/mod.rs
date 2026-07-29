@@ -96,9 +96,9 @@ pub async fn export_backup(
     let webvh_ks = ks.webvh;
     auth.require_super_admin()?;
 
-    if password.len() < 12 {
+    if password.len() < 15 {
         return Err(AppError::Validation(
-            "backup password must be at least 12 characters".into(),
+            "backup password must be at least 15 characters".into(),
         ));
     }
 
@@ -1081,6 +1081,42 @@ mod tests {
             msg.contains("corrupt") && msg.contains("key"),
             "error must name the corrupt-row cause, got: {msg}"
         );
+    }
+
+    /// `export_backup` rejects passwords shorter than 15 characters with a
+    /// `Validation` error. The check fires before any keyspace I/O.
+    /// A password of exactly 15 characters must be accepted (boundary).
+    #[tokio::test]
+    async fn export_rejects_short_password() {
+        let ts = crate::test_support::open_test_store().await;
+        let seed_store = crate::test_support::TestSeedStore(vec![42u8; 32]);
+        let config = crate::test_support::test_app_config(ts.data_dir.clone());
+        let auth = crate::test_support::super_admin_claims();
+
+        let ks = vta_keyspaces::Keyspaces {
+            keys: &ts.keys_ks,
+            acl: &ts.acl_ks,
+            contexts: &ts.contexts_ks,
+            did_templates: &ts.did_templates_ks,
+            audit: &ts.audit_ks,
+            imported: &ts.imported_ks,
+            #[cfg(feature = "webvh")]
+            webvh: &ts.webvh_ks,
+        };
+
+        // 14 chars — one short of the minimum
+        let err = export_backup(&ks, &seed_store, &config, &auth, "14-char-passwo", false)
+            .await
+            .expect_err("export must reject a 14-character password");
+        assert!(
+            format!("{err}").contains("15 characters"),
+            "error must mention the 15-character minimum, got: {err}"
+        );
+
+        // Exactly 15 chars — must be accepted (boundary)
+        export_backup(&ks, &seed_store, &config, &auth, "15-char-passwor", false)
+            .await
+            .expect("export must accept a 15-character password");
     }
 
     fn test_payload() -> BackupPayload {

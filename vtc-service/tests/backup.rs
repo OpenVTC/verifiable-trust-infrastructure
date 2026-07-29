@@ -210,6 +210,30 @@ async fn wrong_password_rejected() {
     );
 }
 
+/// `export_backup` rejects passwords shorter than 15 characters with a
+/// `Validation` error. A password of exactly 15 characters must be accepted
+/// (boundary). Import has no length check — old backups remain decryptable.
+#[tokio::test]
+async fn export_rejects_short_password() {
+    let a = TestVtc::builder().vtc_did(VTC_DID).build().await;
+    set_config_path(&a.state, a.data_dir().join("config.toml")).await;
+    let a_store = PlaintextSecretStore::new(a.data_dir());
+
+    // 14 chars — one short of the minimum
+    let err = export_backup(&a.state, &a_store, "14-char-passwo", false)
+        .await
+        .expect_err("export must reject a 14-character password");
+    assert!(
+        format!("{err}").contains("15 characters"),
+        "error must mention the 15-character minimum, got: {err}"
+    );
+
+    // Exactly 15 chars — must be accepted (boundary)
+    export_backup(&a.state, &a_store, "15-char-passwor", false)
+        .await
+        .expect("export must accept a 15-character password");
+}
+
 // ---------------------------------------------------------------------------
 // Audit checkpoints (#708)
 // ---------------------------------------------------------------------------
