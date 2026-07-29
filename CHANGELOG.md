@@ -2,35 +2,57 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.21 / vta-service 0.13.12 — did-templates consolidated onto the merged 2.0 family
+### vta-sdk 0.20.24 / vta-service 0.13.15 — schema-conformance sweep, and every published task made canonical
 
-Implements OpenVTC/verifiable-trust-infrastructure#851. The twelve-URI pair of
-trust-task families `vta/did-templates/*/1.0` (global) and
-`vta/contexts/did-templates/*/1.0` (context-scoped) collapses onto the merged
-six-task `vta/did-templates/{list,get,create,update,delete,render}/2.0` family:
-one URI per operation, with the payload's **optional `contextId`** selecting the
-scope — absent = global (super-admin gated for writes), present = that context
-(context-admin gated for writes, context access for reads). `render/2.0`
-additionally injects the ambient `CONTEXT_ID` / `CONTEXT_DID` variables when
-scoped, exactly as the former context render did.
+Closes #856 and #857. A conformance sweep now asserts, for **every** task the
+VTA dispatcher binds to a published canonical URI (63 today, derived from the
+dispatch table ∩ `trust_tasks_rs::schema_index` — never hand-listed), that a
+representative request round-trips through the generated `specs::…::Payload`
+and the response through `…::Response`, and that each check has teeth (an
+injected unknown member must be rejected). The sweep's first run found eight
+non-conformances beyond the known `acl/update` one; all are fixed in this
+change, so the sweep ships with an **empty** drift allowlist:
 
-**Clean cutover — removed wire URIs.** Per the pre-production consolidation
-policy the twelve 1.0 URIs are dropped outright rather than dual-accepted; a
-document carrying any of them now gets `UnsupportedType`:
+- **`acl/update` request** (#856): `UpdateAclBody` now speaks the canonical
+  wire (`did`→`subject`, `allowed_contexts`→`scopes`, nested
+  `stepUp`/`approve` reusing the shared #842 components) and carries the
+  spec's `expiresAt` + `reason`. The published URI's schema validation at the
+  dispatch spine had been rejecting every conforming document since #842.
+- **`acl/list` / `acl/show` responses**: the trust-task handlers now return
+  the canonical `{entries, truncated, …}` / `{entry, redactedFields}`
+  wrappers (`list_entries` / `show_by_subject`) instead of legacy flat rows.
+- **`acl/change-role` / `acl/swap-key` responses**: wrapped in the canonical
+  `{entry}` / `{entry, previousSubject}` shapes (new `SwapKeyResultBody`).
+- **`auth/revoke-session` response**: carries the required `revokedCount`
+  (was an empty object — which vta-mobile-core already expected the count).
+- **`device/wipe` response**: canonical `{deviceId, scope, completedAt}`
+  (dropped `wipedAt`/`disabledAt`/`reason`, which the closed schema forbids).
+- **`vault/proxy-login` response**: the cleartext `sessionId`/`expiresAt`
+  hints move under the vendor-namespaced `ext` (`org.openvtc.vault-session`)
+  — the canonical response object is closed.
+- **`provision/integration` wire types**: emission flips to the canonical
+  0.2 lowerCamelCase (`ProvisionSummary`, `AssertionMode`,
+  `vcValiditySeconds`, `createContext`), with snake/kebab aliases still
+  accepted on intake (reverses the #517 direction now that 0.2 is the only
+  bound URI).
+- **`vta/webvh/dids/update` response**: `UpdateDidWebvhResultBody` emits
+  camelCase (`newVersionId`, …) per its published schema, snake aliases kept.
 
-- `https://trusttasks.org/spec/vta/did-templates/{list,create,get,update,delete,render}/1.0`
-- `https://trusttasks.org/spec/vta/contexts/did-templates/{list,create,get,update,delete,render}/1.0`
+The sweep's census is derived, so it tracks the fold programme on its own: the
+twelve `vta/did-templates/*/1.0` witnesses left with #864's merge onto the 2.0
+family, and the six 2.0 URIs re-enter scope (and will be asked for) at the next
+`trust-tasks-rs` bump that publishes them.
 
-**Surfaces:**
-
-- `vta-sdk`: six `TASK_DID_TEMPLATES_*_2_0` constants replace the twelve 1.0
-  constants; the `did_template_management` wire bodies collapse to one body per
-  op with `context_id: Option<String>` (the `*Context*Body` variants are gone);
-  `VtaClient` template methods keep their signatures but dispatch the 2.0 URIs.
-- `vta-service`: the did-templates trust-task slice is six scope-branching
-  handlers dispatching into the unchanged `operations::did_templates`
-  global/context functions; per-scope auth still enforced at the op layer.
-  REST routes are untouched.
+**Interaction with `allowedKeys` (#818, below).** The canonicalized
+`UpdateAclBody` keeps that member — nested under the same
+`rename = "allowedKeys"` + `double_option` treatment it arrived with — but the
+conformance witnesses leave it **absent**, because the *published*
+`acl/update/0.1` and `acl/_shared/0.1/acl-entry` schemas do not carry it yet
+(the registry side of #818 is still in flight) and both generated types are
+`deny_unknown_fields`. Until that spec bump lands, a document that actually
+sets `allowedKeys` is rejected by the dispatch spine's schema validation on the
+trust-task path; REST and the DIDComm handler are unaffected. The member enters
+the sweep automatically at the `trust-tasks-rs` bump that publishes it.
 
 ### vti-common 0.11.30 / vta-sdk 0.20.22 / vta-service 0.13.13 / vta-cli-common 0.10.21 / pnm-cli 0.11.15 / cnm-cli 0.11.12 — ACL grants can scope a caller to specific signing keys (`allowedKeys`, #818)
 
@@ -82,6 +104,36 @@ render the empty filter as "no keys", never blank. Docs: integration-guide
 oracle and `VtcAclEntry` has no `allowed_keys`; on the VTA the live
 store-read above already makes narrowing immediate, which is strictly
 stronger than session revocation.
+
+### vta-sdk 0.20.21 / vta-service 0.13.12 — did-templates consolidated onto the merged 2.0 family
+
+Implements OpenVTC/verifiable-trust-infrastructure#851. The twelve-URI pair of
+trust-task families `vta/did-templates/*/1.0` (global) and
+`vta/contexts/did-templates/*/1.0` (context-scoped) collapses onto the merged
+six-task `vta/did-templates/{list,get,create,update,delete,render}/2.0` family:
+one URI per operation, with the payload's **optional `contextId`** selecting the
+scope — absent = global (super-admin gated for writes), present = that context
+(context-admin gated for writes, context access for reads). `render/2.0`
+additionally injects the ambient `CONTEXT_ID` / `CONTEXT_DID` variables when
+scoped, exactly as the former context render did.
+
+**Clean cutover — removed wire URIs.** Per the pre-production consolidation
+policy the twelve 1.0 URIs are dropped outright rather than dual-accepted; a
+document carrying any of them now gets `UnsupportedType`:
+
+- `https://trusttasks.org/spec/vta/did-templates/{list,create,get,update,delete,render}/1.0`
+- `https://trusttasks.org/spec/vta/contexts/did-templates/{list,create,get,update,delete,render}/1.0`
+
+**Surfaces:**
+
+- `vta-sdk`: six `TASK_DID_TEMPLATES_*_2_0` constants replace the twelve 1.0
+  constants; the `did_template_management` wire bodies collapse to one body per
+  op with `context_id: Option<String>` (the `*Context*Body` variants are gone);
+  `VtaClient` template methods keep their signatures but dispatch the 2.0 URIs.
+- `vta-service`: the did-templates trust-task slice is six scope-branching
+  handlers dispatching into the unchanged `operations::did_templates`
+  global/context functions; per-scope auth still enforced at the op layer.
+  REST routes are untouched.
 
 ### vtc-service 0.11.43 / vta-sdk 0.20.20 — join-request decide, accept folded into members/vmc, endorsement-types per-method tasks
 

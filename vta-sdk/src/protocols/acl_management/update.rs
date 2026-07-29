@@ -1,47 +1,72 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::acl::ApproveScope;
 
 use super::create::CreateAclResultBody;
+use super::entry::{Approve, StepUp};
 
 /// Request payload for canonical `acl/update/0.1`.
+///
+/// **The wire form is the canonical one** (#856): the Rust field names keep
+/// their historical spellings, mapped onto the canonical members with serde
+/// renames — the same compatibility-layer treatment #842 gave the response
+/// via [`super::entry::AclEntry`]. `did` serializes as `subject`,
+/// `allowed_contexts` as `scopes`, and the step-up / approve-authority
+/// sub-concerns nest under the shared canonical [`StepUp`] / [`Approve`]
+/// components rather than flattening into five loosely-related members.
 ///
 /// Carries no `role`: canonical gives the role transition its own
 /// task (`acl/change-role/0.1`) so it can be compare-and-swapped
 /// against the subject's current role, which is what stops two admins
 /// on a stale read from silently overwriting one another on the one
 /// attribute where that is a privilege change.
+///
+/// Patch semantics throughout: `Some` sets, absent leaves unchanged. The
+/// canonical spec's explicit-`null` clears (`label`, `expiresAt`,
+/// `stepUp.approver`) are not expressible through plain `Option` fields —
+/// absent and `null` deserialize identically — so clearing those members is
+/// not offered here, consistent with the pre-canonical body. `allowedKeys` is
+/// the exception: it carries a `double_option` so absent, explicit `null` and
+/// an array stay three distinct intentions (#818).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UpdateAclBody {
+    /// VID of the entry to amend — canonical wire member `subject`.
+    #[serde(rename = "subject")]
     pub did: String,
+    /// Replacement human-readable label; omitted leaves it unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Replacement scope set — canonical wire member `scopes`. Applied
+    /// wholesale rather than merged; omitted leaves the set unchanged.
+    #[serde(rename = "scopes", default, skip_serializing_if = "Option::is_none")]
     pub allowed_contexts: Option<Vec<String>>,
-    /// Set the delegated step-up approver VID. `Some` sets it; `None` leaves
-    /// it unchanged (matching the other fields — clearing an existing
-    /// approver isn't expressible here, consistent with `label`).
+    /// Replacement expiry — canonical `expiresAt`, RFC 3339 on the wire
+    /// (the store keeps epoch seconds; see [`super::entry::to_epoch`]).
+    /// Omitted leaves the expiry unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_up_approver: Option<String>,
-    /// Set the per-entry step-up override (`"self"` | `"delegated"`). `Some`
-    /// sets it; `None` leaves it unchanged (consistent with the other fields).
+    pub expires_at: Option<DateTime<Utc>>,
+    /// Optional human-readable rationale, recorded with the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_up_require: Option<String>,
-    /// Set the approve scope to exactly this value; omit to leave unchanged.
+    pub reason: Option<String>,
+    /// Replacement per-entry step-up configuration — canonical `stepUp`,
+    /// the same shared component the response carries. `Some` sets the
+    /// members it names; omitted leaves the configuration unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_up: Option<StepUp>,
+    /// Replacement approve-authority — canonical `approve`, the shared
+    /// component from [`super::entry`]. Omit to leave it unchanged.
     ///
-    /// Unlike the create body — which takes `approve_all_contexts` +
-    /// `approve_contexts` as two independent fields — this carries the enum
-    /// itself, because **clearing has to be expressible**. With two flat fields
-    /// there is no way to distinguish "revoke this approver's authority" from
-    /// "leave it alone", and revoking is the case that matters most: before
-    /// this existed, the only way to narrow or drop an approve scope was to
-    /// delete the ACL entry and recreate it, which leaves the DID with no entry
-    /// at all if the recreate fails.
-    ///
-    /// Clear is `Some(ApproveScope::None)` — an explicit value, not absence.
+    /// **Clearing has to be expressible**, and it is: `Some(Approve::default())`
+    /// serializes as `"approve": {}` — confers nothing — which is the wire
+    /// spelling of "revoke this approver's authority". Before this existed,
+    /// the only way to narrow or drop an approve scope was to delete the ACL
+    /// entry and recreate it, which leaves the DID with no entry at all if
+    /// the recreate fails.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approve_scope: Option<ApproveScope>,
+    pub approve: Option<Approve>,
     /// Replace the signing-oracle key filter (#818). Three intentions, three
     /// spellings, exactly as `acl/update/0.1` specifies:
     ///
@@ -55,10 +80,11 @@ pub struct UpdateAclBody {
     /// reduction (enforcement reads the stored row live in `sign_payload`
     /// gate 4, so it binds the subject's next sign request).
     ///
-    /// The wire name is pinned to the canonical `allowedKeys` (the rest of
-    /// this body is snake_case pending the #856 rename): casing drift on this
-    /// exact struct family once let an empty `allowed_contexts` mint a
-    /// super-admin (#656/#658), so the round-trip test below pins it.
+    /// The wire name is pinned to the canonical `allowedKeys` explicitly,
+    /// rather than left to the struct's `rename_all` (#856 made the rest of
+    /// this body canonical too): casing drift on this exact struct family once
+    /// let an empty `allowed_contexts` mint a super-admin (#656/#658), so the
+    /// rename is spelled out here and the round-trip test below pins it.
     #[serde(
         rename = "allowedKeys",
         default,
@@ -78,6 +104,26 @@ where
     D: serde::Deserializer<'de>,
 {
     Deserialize::deserialize(de).map(Some)
+}
+
+impl UpdateAclBody {
+    /// The delegated step-up approver to set, if the request names one.
+    /// `None` leaves it unchanged (the historical flat-field accessor).
+    pub fn step_up_approver(&self) -> Option<String> {
+        self.step_up.as_ref().and_then(|s| s.approver.clone())
+    }
+
+    /// The per-entry step-up override to set (`"self"` | `"delegated"`),
+    /// if the request names one. `None` leaves it unchanged.
+    pub fn step_up_require(&self) -> Option<String> {
+        self.step_up.as_ref().and_then(|s| s.require.clone())
+    }
+
+    /// The approve-authority to set. `None` leaves it unchanged; clear is
+    /// `Some(ApproveScope::None)` — an explicit value, not absence.
+    pub fn approve_scope(&self) -> Option<ApproveScope> {
+        self.approve.as_ref().map(Approve::to_scope)
+    }
 }
 
 pub type UpdateAclResultBody = CreateAclResultBody;
@@ -100,9 +146,10 @@ mod tests {
             did: "did:key:zA".into(),
             label: None,
             allowed_contexts: None,
-            step_up_approver: None,
-            step_up_require: None,
-            approve_scope: None,
+            expires_at: None,
+            reason: None,
+            step_up: None,
+            approve: None,
             allowed_keys: Some(Some(vec!["key-1".into(), "key-2".into()])),
         };
         let v = serde_json::to_value(&b).unwrap();
@@ -120,7 +167,7 @@ mod tests {
         // ignored — the test documents that the pinned name is the only one
         // that takes effect.)
         let b = body(serde_json::json!({
-            "did": "did:key:zA", "allowed_keys": ["key-1"]
+            "subject": "did:key:zA", "allowed_keys": ["key-1"]
         }));
         assert_eq!(b.allowed_keys, None);
     }
@@ -129,13 +176,13 @@ mod tests {
     /// leave alone, explicit null = clear the filter, empty array = no keys.
     #[test]
     fn allowed_keys_distinguishes_absent_null_and_empty() {
-        let absent = body(serde_json::json!({ "did": "did:key:zA" }));
+        let absent = body(serde_json::json!({ "subject": "did:key:zA" }));
         assert_eq!(absent.allowed_keys, None, "omitted = leave unchanged");
 
-        let null = body(serde_json::json!({ "did": "did:key:zA", "allowedKeys": null }));
+        let null = body(serde_json::json!({ "subject": "did:key:zA", "allowedKeys": null }));
         assert_eq!(null.allowed_keys, Some(None), "null = clear the filter");
 
-        let empty = body(serde_json::json!({ "did": "did:key:zA", "allowedKeys": [] }));
+        let empty = body(serde_json::json!({ "subject": "did:key:zA", "allowedKeys": [] }));
         assert_eq!(
             empty.allowed_keys,
             Some(Some(vec![])),
@@ -151,9 +198,10 @@ mod tests {
             did: "did:key:zA".into(),
             label: None,
             allowed_contexts: None,
-            step_up_approver: None,
-            step_up_require: None,
-            approve_scope: None,
+            expires_at: None,
+            reason: None,
+            step_up: None,
+            approve: None,
             allowed_keys: Some(None),
         };
         let v = serde_json::to_value(&b).unwrap();

@@ -47,13 +47,19 @@ pub struct RevokeSessionRequest {
     pub session_id: String,
 }
 
-/// Trust-task payload for `spec/auth/revoke-session/0.1#response`
-/// — empty success body modelled as a struct so future fields
-/// (e.g. `revokedAt`) can be added without a wire-format version bump.
+/// Trust-task payload for `spec/auth/revoke-session/0.1#response`.
+///
+/// Canonical requires `revokedCount` — how many sessions the request ended.
+/// This VTA revokes exactly the one named session, so the count is 1 on
+/// success (#857: the previous empty `{}` body failed the published schema's
+/// required set).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct RevokeSessionResponse {}
+pub struct RevokeSessionResponse {
+    /// Number of sessions revoked by this request.
+    pub revoked_count: u64,
+}
 
 /// Server responds from `POST /auth/challenge`.
 ///
@@ -207,10 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn revoke_session_response_is_empty_object() {
-        let resp = RevokeSessionResponse::default();
+    fn revoke_session_response_carries_the_canonical_count() {
+        let resp = RevokeSessionResponse { revoked_count: 1 };
         let json = serde_json::to_string(&resp).unwrap();
-        assert_eq!(json, "{}", "empty success body");
+        assert_eq!(json, r#"{"revokedCount":1}"#, "canonical member name");
     }
 
     #[test]

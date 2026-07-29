@@ -49,6 +49,8 @@ mod audit;
 mod auth;
 mod backup;
 mod config;
+#[cfg(test)]
+mod conformance;
 mod consent;
 mod consent_request;
 mod contexts;
