@@ -41,6 +41,10 @@ chrono = { workspace = true }
 affinidi-data-integrity = { workspace = true }
 # Multibase (base58btc) encoding of the signature into `proofValue`.
 multibase = { workspace = true }
+# `CachedDidResolver` — the VerificationMethodResolver that resolves a request
+# proof's verificationMethod through the crate's shared DID resolver cache, so
+# the device can verify a VTA-signed request no matter the issuer's DID method.
+trust-tasks-proof = { workspace = true }
 # ed25519→x25519 key-agreement derivation + did:key encoding for the DIDComm
 # holder identity (the X25519 key matches the holder did:key's keyAgreement, so
 # a sender resolving the did:key can authcrypt to it). Tested TDK conversions —
@@ -84,6 +88,9 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # Test-only Ed25519 signing for the did-signed verify round-trip (stands in for
 # the native enclave Signer).
 ed25519-dalek = { workspace = true }
+# Test-only `Secret::generate_ed25519` — mints the executor keys the request
+# verification tests sign with (the same sign path the VTA uses in production).
+affinidi-secrets-resolver = { workspace = true }
 
 [[bin]]
 # `cargo run -p vta-mobile-core --bin uniffi-bindgen -- generate ...`

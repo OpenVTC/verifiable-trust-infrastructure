@@ -7,11 +7,14 @@
 //! operator returns a DID-signed `task-consent/decision/0.1`.
 //!
 //! Two exports:
-//! - [`parse_task_consent_request`] surfaces the request's display fields. It
-//!   reads them off a lenient `Value` rather than the strict generated `request`
-//!   type, because the VTA's wire payload carries fields beyond that schema
-//!   (`excludeRequester`, `statePin`), and the display path must not be brittle
-//!   to them.
+//! - [`parse_task_consent_request`] **verifies** the request's own
+//!   `eddsa-jcs-2022` Data Integrity proof against the caller-supplied
+//!   enrolled-executor allowlist, then surfaces the display fields. Field
+//!   extraction reads off a lenient `Value` rather than the strict generated
+//!   `request` type, because the VTA's wire payload carries fields beyond that
+//!   schema (`excludeRequester`, `statePin`), and the display path must not be
+//!   brittle to them — the proof is verified over the raw document, so the
+//!   extra fields are covered by the signature too.
 //! - [`build_task_consent_decision_did_signed`] / [`build_task_consent_decision_denied`]
 //!   assemble the decision from the **typed** `decision` payload (which this
 //!   crate constructs, so no unknown-field concern) and attach the same
@@ -19,11 +22,16 @@
 //!   the transport — is the approver's authority: the VTA takes the signer from
 //!   it (see the executor's `task_consent::handle_decision`).
 //!
-//! Sender attribution in this slice is the transport's: the mediator
-//! authenticates the VTA's authcrypt envelope before `receive_next` yields, and
-//! the native layer checks the message `from` is the enrolled VTA. Verifying the
-//! request's own DI proof on-device (belt-and-braces against a compromised
-//! mediator, as the browser approver does) is a hardening follow-up.
+//! Sender attribution is layered. The transport authenticates first: the
+//! mediator verifies the VTA's authcrypt envelope before `receive_next` yields,
+//! and the native layer checks the message `from` is the enrolled VTA. On top of
+//! that, the request document's own DI proof is now **verified on-device before
+//! anything is surfaced for display** (belt-and-braces against a compromised
+//! mediator, as the browser approver does): the proof must be present and valid,
+//! the proof key must be the document `issuer`'s, and the issuer must be an
+//! enrolled executor — otherwise [`crate::FfiError::UntrustedIssuer`] and the
+//! device MUST NOT prompt (the spec's `untrusted_issuer` rule). See
+//! [`crate::proof::verify_signed_request`].
 
 use chrono::DateTime;
 use trust_tasks_rs::TrustTask;
@@ -59,8 +67,10 @@ pub struct TaskConsentEffect {
 /// to answer.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TaskConsentRequest {
-    /// The VTA that issued the request (document `issuer`), when present.
-    pub issuer: Option<String>,
+    /// The executor that issued the request — the **proven** signer of the
+    /// document's Data Integrity proof, guaranteed to be in the caller's
+    /// enrolled-executor allowlist.
+    pub issuer: String,
     /// Nonce echoed + bound into the decision (never recomputed here).
     pub challenge: String,
     /// The salted digest the decision echoes; the executor re-derives it from the
@@ -98,12 +108,23 @@ pub struct TaskConsentRequest {
     pub consequences: Vec<String>,
 }
 
-/// Parse an inbound `task-consent/request/0.1` for display.
+/// Verify and parse an inbound `task-consent/request/0.1` for display.
 ///
-/// Lenient by design (see the module note): validates the document type and the
-/// binding fields the decision must echo, and surfaces the rest best-effort.
-#[uniffi::export]
-pub fn parse_task_consent_request(json: String) -> Result<TaskConsentRequest, FfiError> {
+/// `trusted_issuers` is the enrolled-executor allowlist the native layer holds:
+/// the enrolled VTA's DID plus any granted executor DIDs. The request's Data
+/// Integrity proof is verified first ([`crate::proof::verify_signed_request`]);
+/// an unverifiable request returns [`FfiError::UntrustedIssuer`] and MUST NOT
+/// be prompted on. Async because verification resolves the issuer's DID for its
+/// key material (through the crate's shared resolver cache).
+///
+/// Field extraction stays lenient by design (see the module note): validates
+/// the document type and the binding fields the decision must echo, and
+/// surfaces the rest best-effort.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn parse_task_consent_request(
+    json: String,
+    trusted_issuers: Vec<String>,
+) -> Result<TaskConsentRequest, FfiError> {
     let v: serde_json::Value = serde_json::from_str(&json).map_err(|e| FfiError::Decode {
         reason: format!("not valid JSON: {e}"),
     })?;
@@ -114,7 +135,9 @@ pub fn parse_task_consent_request(json: String) -> Result<TaskConsentRequest, Ff
         });
     }
 
-    let issuer = v.get("issuer").and_then(|x| x.as_str()).map(String::from);
+    // The gate: no valid proof from an enrolled executor, no prompt.
+    let issuer = crate::proof::verify_signed_request(&v, &trusted_issuers).await?;
+
     let p = v.get("payload").ok_or_else(|| FfiError::Decode {
         reason: "task-consent request has no payload".to_string(),
     })?;
@@ -279,6 +302,12 @@ fn conv<E: ::std::fmt::Display>(e: E) -> FfiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proof::test_support::{did_for, sign_as};
+
+    /// Seed of the enrolled executor the happy-path tests sign as.
+    const EXECUTOR: u8 = 7;
+    /// Seed of a key holder the device is *not* enrolled with.
+    const STRANGER: u8 = 8;
 
     const REQUEST: &str = r##"{
       "id": "urn:uuid:11111111-1111-1111-1111-111111111111",
@@ -306,12 +335,29 @@ mod tests {
       }
     }"##;
 
-    #[test]
-    fn parses_request_for_display_tolerating_extra_wire_fields() {
+    /// The wire REQUEST re-issued (and, unless `signer` is `None`, signed) by a
+    /// deterministic `did:key` executor, as a JSON string ready for the parse.
+    async fn request_issued_by(issuer_seed: u8, signer: Option<u8>) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
+        v["issuer"] = serde_json::Value::String(did_for(issuer_seed));
+        if let Some(s) = signer {
+            sign_as(&mut v, s).await;
+        }
+        v.to_string()
+    }
+
+    fn enrolled() -> Vec<String> {
+        vec![did_for(EXECUTOR)]
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parses_a_signed_request_from_an_enrolled_executor() {
         // `excludeRequester` and `statePin` are beyond the strict schema — the
-        // lenient parse must not choke on them.
-        let r = parse_task_consent_request(REQUEST.to_string()).unwrap();
-        assert_eq!(r.issuer.as_deref(), Some("did:webvh:scid:vta.example:vta"));
+        // lenient parse must not choke on them, and because verification runs
+        // over the raw document, the signature covers them too.
+        let json = request_issued_by(EXECUTOR, Some(EXECUTOR)).await;
+        let r = parse_task_consent_request(json, enrolled()).await.unwrap();
+        assert_eq!(r.issuer, did_for(EXECUTOR), "issuer is the proven signer");
         assert_eq!(r.challenge, "VHJhbnNmZXJDb25maXJtTm9uY2VYWQ");
         assert_eq!(r.match_code, "3b0c7f");
         assert_eq!(
@@ -336,18 +382,73 @@ mod tests {
         assert_eq!(r.expires_at.as_deref(), Some("2026-07-18T10:10:00Z"));
     }
 
-    #[test]
-    fn rejects_a_non_request_document() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejects_a_non_request_document() {
         let err =
-            parse_task_consent_request(r#"{"type":"other","payload":{}}"#.to_string()).unwrap_err();
+            parse_task_consent_request(r#"{"type":"other","payload":{}}"#.to_string(), vec![])
+                .await
+                .unwrap_err();
         assert!(matches!(err, FfiError::Decode { .. }));
     }
 
-    #[test]
-    fn rejects_a_request_missing_the_binding_fields() {
-        let json = r#"{"type":"https://trusttasks.org/spec/task-consent/request/0.1","payload":{"challenge":"VHJhbnNmZXJDb25maXJtTm9uY2VYWQ"}}"#;
-        let err = parse_task_consent_request(json.to_string()).unwrap_err();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rejects_a_signed_request_missing_the_binding_fields() {
+        let mut v: serde_json::Value = serde_json::from_str(
+            r#"{"id":"x","type":"https://trusttasks.org/spec/task-consent/request/0.1","payload":{"challenge":"VHJhbnNmZXJDb25maXJtTm9uY2VYWQ"}}"#,
+        )
+        .unwrap();
+        v["issuer"] = serde_json::Value::String(did_for(EXECUTOR));
+        sign_as(&mut v, EXECUTOR).await;
+        let err = parse_task_consent_request(v.to_string(), enrolled())
+            .await
+            .unwrap_err();
+        // The proof is fine; the display contract is not — a Decode, not an
+        // untrusted issuer.
         assert!(matches!(err, FfiError::Decode { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_request_without_a_proof() {
+        let json = request_issued_by(EXECUTOR, None).await;
+        let err = parse_task_consent_request(json, enrolled())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FfiError::UntrustedIssuer { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_valid_proof_from_a_non_enrolled_did() {
+        // A perfectly good signature — but not from anyone this device is
+        // enrolled with. MUST NOT prompt.
+        let json = request_issued_by(STRANGER, Some(STRANGER)).await;
+        let err = parse_task_consent_request(json, enrolled())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FfiError::UntrustedIssuer { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_an_issuer_verification_method_mismatch() {
+        // Signed by the stranger's key while claiming the enrolled executor as
+        // issuer: the classic spoof the issuer≡verificationMethod binding stops.
+        // Enroll both DIDs so the test isolates the binding check itself.
+        let json = request_issued_by(EXECUTOR, Some(STRANGER)).await;
+        let err = parse_task_consent_request(json, vec![did_for(EXECUTOR), did_for(STRANGER)])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FfiError::UntrustedIssuer { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refuses_a_request_tampered_after_signing() {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&request_issued_by(EXECUTOR, Some(EXECUTOR)).await).unwrap();
+        // The attack the proof exists to stop: effects rewritten in flight.
+        v["payload"]["effects"] = serde_json::json!([]);
+        let err = parse_task_consent_request(v.to_string(), enrolled())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, FfiError::UntrustedIssuer { .. }));
     }
 
     /// A fake signer that returns a fixed 64-byte signature, so the builders can

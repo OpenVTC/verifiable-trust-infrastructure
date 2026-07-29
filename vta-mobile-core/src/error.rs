@@ -25,4 +25,13 @@ pub enum FfiError {
     /// receive). Network/protocol failures from the live mediator surface here.
     #[error("transport error: {reason}")]
     Transport { reason: String },
+
+    /// An inbound approval request could not be cryptographically attributed to
+    /// an enrolled executor: its Data Integrity proof is missing or invalid, the
+    /// proof's key is not the document issuer's, or the issuer is not in the
+    /// enrolled-executor allowlist. This is the spec's `untrusted_issuer`
+    /// condition — the device MUST NOT prompt; drop the request (optionally
+    /// logging `reason`).
+    #[error("untrusted issuer: {reason}")]
+    UntrustedIssuer { reason: String },
 }
