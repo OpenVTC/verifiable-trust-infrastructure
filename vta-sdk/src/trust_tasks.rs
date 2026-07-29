@@ -57,10 +57,12 @@
 // ─── Auth slice — canonical cross-cutting specs ──────────────────────────
 //
 // These point at the framework's `spec/auth/*/0.1` canonical specs in the
-// trusttasks-tf registry. VTA was the first implementer; the constant names
-// keep their `_1_0` suffix for cargo-grep continuity but the URIs are now
-// the canonical 0.1 specs. When the canonical specs cure to candidate /
-// standard the constants will follow with a `_0_1` rename pass.
+// trusttasks-tf registry. VTA was the first implementer. The long-pending
+// `_1_0` → actual-version rename pass landed with #854: every constant's
+// suffix now matches its URI's version, and the constant's verb stem matches
+// the canonical slug (`TASK_ACL_GRANT_0_1` for `acl/grant/0.1`, not the old
+// `TASK_ACL_CREATE_1_0`). A `tests::constant_suffix_matches_uri_version`
+// guard keeps it that way.
 
 /// `spec/auth/challenge/0.1` — request a one-time nonce for a subject DID.
 pub const TASK_AUTH_CHALLENGE_0_1: &str = "https://trusttasks.org/spec/auth/challenge/0.1";
@@ -201,16 +203,16 @@ pub const TASK_DEVICE_SET_WAKE_0_2: &str = "https://trusttasks.org/spec/device/s
 
 /// `acl/list/0.1` — list ACL entries, optionally filtered by
 /// context. Payload: [`crate::protocols::acl_management::list::ListAclBody`].
-pub const TASK_ACL_LIST_1_0: &str = "https://trusttasks.org/spec/acl/list/0.1";
+pub const TASK_ACL_LIST_0_1: &str = "https://trusttasks.org/spec/acl/list/0.1";
 
 /// `acl/grant/0.1` — add an ACL entry. Payload:
 /// [`crate::protocols::acl_management::create::CreateAclBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_CREATE_1_0: &str = "https://trusttasks.org/spec/acl/grant/0.1";
+pub const TASK_ACL_GRANT_0_1: &str = "https://trusttasks.org/spec/acl/grant/0.1";
 
 /// `acl/show/0.1` — retrieve a single entry. Payload:
 /// [`crate::protocols::acl_management::get::GetAclBody`].
-pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/acl/show/0.1";
+pub const TASK_ACL_SHOW_0_1: &str = "https://trusttasks.org/spec/acl/show/0.1";
 
 /// `acl/update/0.1` — patch label, scopes, expiry, step-up or approve
 /// authority on an existing entry. Payload:
@@ -221,14 +223,14 @@ pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/acl/show/0.1";
 /// task so it can carry a compare-and-swap — see
 /// [`TASK_ACL_CHANGE_ROLE_0_1`]. A request naming a role here is
 /// refused rather than applied.
-pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/acl/update/0.1";
+pub const TASK_ACL_UPDATE_0_1: &str = "https://trusttasks.org/spec/acl/update/0.1";
 
 /// `acl/change-role/0.1` — transition a subject's role, guarded by a
 /// compare-and-swap on their current one. Payload:
 /// [`crate::protocols::acl_management::change_role::ChangeRoleBody`].
 /// Auth: Admin only.
 ///
-/// Separate from [`TASK_ACL_UPDATE_1_0`] because role is the one
+/// Separate from [`TASK_ACL_UPDATE_0_1`] because role is the one
 /// attribute where losing an update is a privilege change: two admins
 /// editing concurrently could otherwise silently overwrite each other,
 /// and the loser's intent — say a demotion — would vanish with no
@@ -239,7 +241,7 @@ pub const TASK_ACL_CHANGE_ROLE_0_1: &str = "https://trusttasks.org/spec/acl/chan
 /// `acl/revoke/0.1` — remove an entry. Payload:
 /// [`crate::protocols::acl_management::delete::DeleteAclBody`].
 /// Auth: Admin or Initiator.
-pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
+pub const TASK_ACL_REVOKE_0_1: &str = "https://trusttasks.org/spec/acl/revoke/0.1";
 
 /// `spec/acl/swap-key/0.1` — self-service rotation of the caller's own ACL
 /// entry onto a new subject DID, proven by a `link_proof` VP-JWT. Payload:
@@ -249,7 +251,7 @@ pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/acl/revoke/0.
 /// Registry alias of [`crate::protocols::acl_management::ACL_SWAP_KEY`] so the
 /// dispatcher can route it through the shared spine (previously it was bespoke
 /// on both REST `/acl/swap` and the DIDComm router).
-pub const TASK_ACL_SWAP_KEY_1_0: &str = crate::protocols::acl_management::ACL_SWAP_KEY;
+pub const TASK_ACL_SWAP_KEY_0_1: &str = crate::protocols::acl_management::ACL_SWAP_KEY;
 
 // ─── Contexts slice (spec/vta/contexts/*) ────────────────────────────────
 
@@ -371,7 +373,7 @@ pub const TASK_SEEDS_EXPORT_MNEMONIC_1_0: &str =
 ///
 /// Auth: unrestricted admin for the whole-log tail; a context-scoped
 /// admin must supply `contextId` within their own scope.
-pub const TASK_AUDIT_LIST_LOGS_1_0: &str = "https://trusttasks.org/spec/audit/list/0.1";
+pub const TASK_AUDIT_LIST_0_1: &str = "https://trusttasks.org/spec/audit/list/0.1";
 
 /// `spec/vta/audit/get-retention/1.0` — read the current retention
 /// period. Payload:
@@ -780,12 +782,12 @@ pub const TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1: &str =
 /// (VTA DID, name, public URL).
 /// Payload: [`crate::protocols::vta_management::get_config::GetConfigBody`]
 /// (empty). Auth: any authenticated user.
-pub const TASK_CONFIG_GET_1_0: &str = "https://trusttasks.org/spec/config/show/0.1";
+pub const TASK_CONFIG_SHOW_0_1: &str = "https://trusttasks.org/spec/config/show/0.1";
 
 /// `spec/vta/config/update/1.0` — patch VTA DID, name, or public URL.
 /// Payload: [`crate::protocols::vta_management::update_config::UpdateConfigBody`].
 /// Auth: Super Admin only.
-pub const TASK_CONFIG_UPDATE_1_0: &str = "https://trusttasks.org/spec/config/patch/0.1";
+pub const TASK_CONFIG_PATCH_0_1: &str = "https://trusttasks.org/spec/config/patch/0.1";
 
 // ─── Management slice (spec/vta/management/*) ────────────────────────────
 
@@ -856,7 +858,7 @@ pub const TASK_PASSKEY_VMS_REVOKE_0_1: &str =
 /// [`crate::provision_integration::http::ProvisionIntegrationRequest`].
 /// Auth: Admin role on the target context (super-admin to use
 /// `create_context: true`).
-pub const TASK_PROVISION_INTEGRATION_REQUEST_1_0: &str =
+pub const TASK_PROVISION_INTEGRATION_0_2: &str =
     "https://trusttasks.org/spec/provision/integration/0.2";
 
 // ─── WebVH-DID-lifecycle slice (spec/vta/webvh/*) ────────────────────────
@@ -1330,13 +1332,13 @@ pub const ALL_URIS: &[&str] = &[
     // Messaging slice
     TASK_MESSAGING_PING_0_1,
     // ACL slice
-    TASK_ACL_LIST_1_0,
-    TASK_ACL_CREATE_1_0,
-    TASK_ACL_GET_1_0,
-    TASK_ACL_UPDATE_1_0,
+    TASK_ACL_LIST_0_1,
+    TASK_ACL_GRANT_0_1,
+    TASK_ACL_SHOW_0_1,
+    TASK_ACL_UPDATE_0_1,
     TASK_ACL_CHANGE_ROLE_0_1,
-    TASK_ACL_DELETE_1_0,
-    TASK_ACL_SWAP_KEY_1_0,
+    TASK_ACL_REVOKE_0_1,
+    TASK_ACL_SWAP_KEY_0_1,
     // Contexts slice
     TASK_CONTEXTS_LIST_1_0,
     TASK_CONTEXTS_CREATE_1_0,
@@ -1359,7 +1361,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SEEDS_ROTATE_1_0,
     TASK_SEEDS_EXPORT_MNEMONIC_1_0,
     // Audit slice
-    TASK_AUDIT_LIST_LOGS_1_0,
+    TASK_AUDIT_LIST_0_1,
     TASK_AUDIT_GET_RETENTION_1_0,
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
@@ -1408,8 +1410,8 @@ pub const ALL_URIS: &[&str] = &[
     TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
     TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
     // Config slice
-    TASK_CONFIG_GET_1_0,
-    TASK_CONFIG_UPDATE_1_0,
+    TASK_CONFIG_SHOW_0_1,
+    TASK_CONFIG_PATCH_0_1,
     // Management slice
     TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
     // Passkey-VMs slice (feature-gated: webvh + didcomm). Dual-accept
@@ -1419,7 +1421,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PASSKEY_VMS_LIST_0_1,
     TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration (feature-gated: webvh)
-    TASK_PROVISION_INTEGRATION_REQUEST_1_0,
+    TASK_PROVISION_INTEGRATION_0_2,
     // WebVH-DID-lifecycle slice (feature-gated: webvh)
     TASK_WEBVH_SERVERS_LIST_1_0,
     TASK_WEBVH_SERVERS_REGISTER_1_0,
@@ -1587,7 +1589,7 @@ mod tests {
             // was a constant change.
             "https://trusttasks.org/spec/provision/",
             // Framework ACL protocol — the `acl/swap-key` self-service key
-            // rotation task (`TASK_ACL_SWAP_KEY_1_0`), now dispatcher-routed.
+            // rotation task (`TASK_ACL_SWAP_KEY_0_1`), now dispatcher-routed.
             "https://trusttasks.org/spec/acl/",
             // ToIP messaging protocol — the transport-agnostic `messaging/ping`
             // liveness/capability probe (`TASK_MESSAGING_PING_0_1`).
@@ -1622,6 +1624,61 @@ mod tests {
                 "version components must be digits: {uri}"
             );
         }
+    }
+
+    /// The #854 rename-pass guard: every literal-assigned `TASK_*` constant's
+    /// `_MAJ_MIN` suffix must match the version segment of the URI it names.
+    /// `TASK_ACL_LIST_1_0 = ".../acl/list/0.1"` was exactly the drift this
+    /// module carried for months — greppable names that lied about the wire.
+    ///
+    /// Scans this file's own source text (the same technique as
+    /// `vtc-service/tests/trust_task_manifest.rs`) because consts have no
+    /// runtime name. Alias-assigned constants (no string literal on the
+    /// declaration) are asserted individually below.
+    #[test]
+    fn constant_suffix_matches_uri_version() {
+        let src: String = include_str!("trust_tasks.rs")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut checked = 0usize;
+        for decl in src.split("pub const TASK_").skip(1) {
+            let Some(name_end) = decl.find(':') else {
+                continue;
+            };
+            let name = format!("TASK_{}", &decl[..name_end]);
+            // Only literal assignments: `: &str = "https://..."`. Alias
+            // assignments (`= crate::protocols::…`) and stray occurrences of
+            // the split pattern in other string literals fail the prefix
+            // check and are skipped.
+            let Some(rest) = decl[name_end..].strip_prefix(": &str = \"") else {
+                continue;
+            };
+            let Some(lit_end) = rest.find('"') else {
+                continue;
+            };
+            let uri = &rest[..lit_end];
+            let version = uri.rsplit('/').next().unwrap();
+            let expected_suffix = format!("_{}", version.replace('.', "_"));
+            assert!(
+                name.ends_with(&expected_suffix),
+                "constant `{name}` names `{uri}` but its suffix does not match \
+                 the URI version `{version}` — rename the constant (the #854 \
+                 convention: suffix always mirrors the wire version)"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 100,
+            "scanned only {checked} constants — the source scan is broken, not the code"
+        );
+        // The one alias-assigned constant: `TASK_ACL_SWAP_KEY_0_1` points at
+        // `protocols::acl_management::ACL_SWAP_KEY`, which the scan above
+        // cannot see through.
+        assert!(
+            TASK_ACL_SWAP_KEY_0_1.ends_with("/0.1"),
+            "acl/swap-key alias drifted from its 0.1 suffix"
+        );
     }
 
     #[test]
