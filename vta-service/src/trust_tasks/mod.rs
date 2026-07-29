@@ -142,8 +142,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0,
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
     vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
@@ -902,10 +901,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0 => webvh::handle_servers_list
         [ None Metadata false ],
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0 => webvh::handle_servers_add
-        [ Mutating None false ],
-    #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0 => webvh::handle_servers_update
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0 => webvh::handle_servers_register
         [ Mutating None false ],
     #[cfg(feature = "webvh")]
     vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0 => webvh::handle_servers_remove

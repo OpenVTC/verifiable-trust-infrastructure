@@ -868,19 +868,19 @@ pub const TASK_PROVISION_INTEGRATION_REQUEST_1_0: &str =
 pub const TASK_WEBVH_SERVERS_LIST_1_0: &str =
     "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
 
-/// `spec/vta/webvh/servers/add/1.0` — register a new webvh host.
-/// Payload:
-/// [`crate::protocols::did_management::servers::AddWebvhServerBody`].
+/// `spec/vta/webvh/servers/register/1.0` — register a webvh host, or
+/// update the label of one already registered. Payload:
+/// [`crate::protocols::did_management::servers::RegisterWebvhServerBody`].
 /// Auth: Super Admin.
-pub const TASK_WEBVH_SERVERS_ADD_1_0: &str =
-    "https://trusttasks.org/spec/vta/webvh/servers/add/1.0";
-
-/// `spec/vta/webvh/servers/update/1.0` — patch a registered webvh
-/// host's label. Payload:
-/// [`crate::protocols::did_management::servers::UpdateWebvhServerBody`].
-/// Auth: Super Admin.
-pub const TASK_WEBVH_SERVERS_UPDATE_1_0: &str =
-    "https://trusttasks.org/spec/vta/webvh/servers/update/1.0";
+///
+/// Absorbs the retired `servers/add/1.0` and `servers/update/1.0`:
+/// update's body was add's minus `did`, and both returned the same
+/// `WebvhServerRecord`. Which runs is decided by whether `id` is
+/// already registered — see the payload docs, including why supplying
+/// a *different* `did` for an existing `id` is refused rather than
+/// treated as a re-point.
+pub const TASK_WEBVH_SERVERS_REGISTER_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/register/1.0";
 
 /// `spec/vta/webvh/servers/remove/1.0` — deregister a webvh host.
 /// Payload:
@@ -1402,8 +1402,7 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PROVISION_INTEGRATION_REQUEST_1_0,
     // WebVH-DID-lifecycle slice (feature-gated: webvh)
     TASK_WEBVH_SERVERS_LIST_1_0,
-    TASK_WEBVH_SERVERS_ADD_1_0,
-    TASK_WEBVH_SERVERS_UPDATE_1_0,
+    TASK_WEBVH_SERVERS_REGISTER_1_0,
     TASK_WEBVH_SERVERS_REMOVE_1_0,
     TASK_WEBVH_DIDS_LIST_1_0,
     TASK_WEBVH_DIDS_CREATE_1_0,

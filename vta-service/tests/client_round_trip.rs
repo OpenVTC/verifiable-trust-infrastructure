@@ -503,3 +503,89 @@ async fn webvh_get_did_round_trips_after_the_get_log_fold() {
         "the log must survive the merge into the flattened record"
     );
 }
+
+// ── WebVH server registration ───────────────────────────────────────
+
+/// The merged `servers/register` behaves correctly on every path the
+/// two tasks it replaces used to cover, through the real client.
+///
+/// The one that matters is the last: an upsert keyed only on `id`
+/// would happily re-point an existing registration at a different
+/// host. That silently redirects every DID resolving through it, and
+/// unwinding it needs coordinated teardown on the old host — so the
+/// merge has to refuse it rather than treat it as an update.
+#[tokio::test]
+async fn webvh_server_register_upserts_but_refuses_a_repoint() {
+    use vta_sdk::client::{AddWebvhServerRequest, UpdateWebvhServerRequest};
+
+    let mock = MockVta::start().await;
+    let client = admin_client(&mock).await;
+
+    let host_did = "did:web:host-one.example";
+    mock.seed_webvh_server("host1", host_did).await;
+
+    // Label-only update, the path that was `servers/update`.
+    let updated = client
+        .update_webvh_server(
+            "host1",
+            UpdateWebvhServerRequest {
+                label: Some("renamed".into()),
+            },
+        )
+        .await
+        .expect("relabel round-trips");
+    assert_eq!(updated.label.as_deref(), Some("renamed"));
+    assert_eq!(updated.did, host_did, "a relabel must not touch the DID");
+
+    // Re-registering the same host is idempotent rather than a conflict.
+    let again = client
+        .add_webvh_server(AddWebvhServerRequest {
+            id: "host1".into(),
+            did: host_did.into(),
+            label: Some("same host".into()),
+        })
+        .await
+        .expect("re-registering an identical host is idempotent");
+    assert_eq!(again.did, host_did);
+    assert_eq!(again.label.as_deref(), Some("same host"));
+
+    // Re-pointing at a different host is refused.
+    let repoint = client
+        .add_webvh_server(AddWebvhServerRequest {
+            id: "host1".into(),
+            did: "did:web:host-two.example".into(),
+            label: None,
+        })
+        .await;
+    assert!(
+        repoint.is_err(),
+        "re-pointing a registration at a different DID must be refused, got {repoint:?}"
+    );
+
+    // …and the stored record is untouched by the refused attempt.
+    let servers = client.list_webvh_servers().await.expect("list round-trips");
+    let host1 = servers
+        .servers
+        .iter()
+        .find(|s| s.id == "host1")
+        .expect("host1 still registered");
+    assert_eq!(
+        host1.did, host_did,
+        "a refused re-point must leave the registration alone"
+    );
+
+    // A label-only patch against an unknown id is still NotFound, not a
+    // silent registration.
+    let missing = client
+        .update_webvh_server(
+            "nope",
+            UpdateWebvhServerRequest {
+                label: Some("x".into()),
+            },
+        )
+        .await;
+    assert!(
+        missing.is_err(),
+        "patching an unregistered server must fail, got {missing:?}"
+    );
+}

@@ -2,16 +2,38 @@ use serde::{Deserialize, Serialize};
 
 use crate::webvh::WebvhServerRecord;
 
+/// Request for `spec/vta/webvh/servers/register/1.0`.
+///
+/// Absorbs the former `servers/update/1.0`, whose body was this one
+/// minus `did` and which returned the same `WebvhServerRecord`.
+///
+/// Which operation runs is decided by whether `id` is already
+/// registered, not by a mode flag:
+///
+/// - **new `id`** — `did` is required, gets validated (it must resolve
+///   and advertise a WebVH service), and the registration is created.
+/// - **existing `id`** — the label is updated. `did` may be omitted, or
+///   repeated identically for an idempotent re-register; supplying a
+///   *different* `did` is refused.
+///
+/// That last rule is the point of not making this a blind upsert.
+/// Re-pointing a registration at another host would silently redirect
+/// every DID that resolves through it, and doing so safely needs
+/// coordinated teardown on the old host — the same reasoning that makes
+/// `dids/register-with-server` refuse an already-server-managed DID.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct AddWebvhServerBody {
+pub struct RegisterWebvhServerBody {
     pub id: String,
-    pub did: String,
+    /// Required when registering a new `id`; on an existing one it may
+    /// be omitted or repeated identically, but never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
 
-pub type AddWebvhServerResultBody = WebvhServerRecord;
+pub type RegisterWebvhServerResultBody = WebvhServerRecord;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -57,16 +79,6 @@ pub struct WebvhServerDomainEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct UpdateWebvhServerBody {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-pub type UpdateWebvhServerResultBody = WebvhServerRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

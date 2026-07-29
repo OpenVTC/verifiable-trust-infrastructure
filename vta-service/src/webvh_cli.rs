@@ -43,13 +43,13 @@ pub async fn run_add_server(
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
 
     let auth = cli_super_admin();
-    let result = operations::did_webvh::add_webvh_server(
+    let result = operations::did_webvh::register_webvh_server(
         &webvh_ks,
         &auth,
         &id,
-        &did,
+        Some(&did),
         label,
-        &did_resolver,
+        Some(&did_resolver),
         "cli",
     )
     .await?;
@@ -102,8 +102,12 @@ pub async fn run_update_server(
     let webvh_ks = cs.keyspace(crate::keyspaces::WEBVH)?;
 
     let auth = cli_super_admin();
-    let result =
-        operations::did_webvh::update_webvh_server(&webvh_ks, &auth, &id, label, "cli").await?;
+    // `did: None` — label-only, so an unknown id is NotFound rather
+    // than a silent registration, and no resolver is needed.
+    let result = operations::did_webvh::register_webvh_server(
+        &webvh_ks, &auth, &id, None, label, None, "cli",
+    )
+    .await?;
     cs.persist().await?;
 
     eprintln!("WebVH server updated:");
