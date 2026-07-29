@@ -32,6 +32,15 @@ control plane accepts both approve-response minors
   signed approve-response completes the 0.2-minted step-up, with the ack
   echoing the approver's 0.1 family.
 
+### vta-mobile-core 0.6.17 — release cut for on-device request-proof verification
+
+Version label for the already-merged #871 (`mobile/verify-request-proofs`):
+async `parse_task_consent_request` / `parse_step_up_request` with a
+`trustedIssuers` allowlist, on-device eddsa-jcs-2022 proof verification
+before any prompt, and the new `UntrustedIssuer` error. Cut so the
+`vta-mobile-core-v0.6.17` iOS xcframework release can be published for
+OpenVTC/vta-mobile-agent-ios#25, whose vendored bindings need the new ABI.
+
 ### vta-service 0.13.17 — the step-up approve-request is signed (spec: proof REQUIRED)
 
 Part of the ecosystem-wide "signed request legs" push
