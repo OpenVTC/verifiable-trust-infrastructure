@@ -1274,3 +1274,36 @@ fn every_witnessed_task_round_trips_through_its_generated_types() {
         eprintln!("KNOWN DRIFT (follow-up issue required): {line}");
     }
 }
+
+/// `allowedKeys` (#865/#818) is emitted by the ACL family but is **not** in
+/// the published `acl/_shared/0.1/acl-entry` component, which is closed. The
+/// witnesses above pin it to `None` so it is skipped on the wire — which is
+/// why they pass, and also why they are blind to it: the drift only exists
+/// once the member is populated.
+///
+/// This is the tripwire for that blind spot. An entry that actually uses the
+/// feature is non-conformant against the published spec today, and nothing
+/// else would say so — responses are never validated at runtime, so the only
+/// signal available is a test.
+///
+/// **When this test fails, that is the good outcome.** It means a
+/// `trust-tasks-rs` bump published `allowedKeys`; delete this test and add the
+/// member to [`acl_entry`] and to the `acl/update` request sample, so the
+/// sweep covers it properly.
+#[test]
+fn allowed_keys_is_unpublished_and_the_witnesses_are_pinned_around_it() {
+    let mut entry = acl_entry();
+    assert!(
+        entry.allowed_keys.is_none(),
+        "the witness must keep allowedKeys absent while the member is unpublished"
+    );
+
+    entry.allowed_keys = Some(vec!["key-1".into()]);
+    let populated = to_v(CreateAclResponseBody { entry });
+    let err = serde_json::from_value::<specs::acl::grant::v0_1::Response>(populated)
+        .expect_err("allowedKeys is not in the published acl-entry component");
+    assert!(
+        err.to_string().contains("allowedKeys"),
+        "expected the rejection to name allowedKeys, got: {err}"
+    );
+}
