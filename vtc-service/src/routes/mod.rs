@@ -293,13 +293,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // was mistaken — `task_routes` layers the *method* router and axum
     // merges same-path routers per method, so both verbs are enforced
     // independently.
-    // The unauthenticated `/join-requests` POST submit, `/accept`, and
-    // `/status` move to `build_unauth_routes` (P0.5) so the governor + 64 KiB
-    // cap apply; their Trust Tasks are declared there. The admin GET list keeps
-    // the `/join-requests` mount here under the *same* `join-requests/submit/1.0`
-    // task it has always required (axum merges this GET with the governed POST;
-    // the task descriptor collapse to `submit/1.0` for the list is unchanged —
-    // a per-method `list/1.0` split is future work, tracked separately).
+    // The unauthenticated `/join-requests` POST submit and `/status` move to
+    // `build_unauth_routes` (P0.5) so the governor + 64 KiB cap apply; their
+    // Trust Tasks are declared there. (`accept` is gone — retired upstream,
+    // folded into `members/vmc` + `requestId`.) The admin GET list shares the
+    // `/join-requests` path with the governed POST but carries its own
+    // `join-requests/list/0.1` task (axum merges same-path method routers
+    // per method).
     // Policies (Phase 2 M2.3). Three distinct Trust Tasks for the
     // three POST endpoints — upload, activate, test — so SIEM
     // filters + soft-gate consumers can target each precisely.
@@ -312,10 +312,9 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
     // `members/{did}` show + update + admin-remove.
     // Phase 4 M4.6 — VRC trust-graph endpoints.
     // Phase 4 M4.8 — endorsement type registry + custom
-    // endorsement CRUD. Seven Trust Tasks total — list / show
-    // / delete share their mount where TrustTaskRouter
-    // doesn't yet support per-method selectors (standalone
-    // tasks ship on disk + in index.json).
+    // endorsement CRUD. Each verb carries its own canonical
+    // task (same-path verbs are enforced per method — see
+    // `vti_common::trust_task::openapi`).
     // `endorsements_show` + `endorsements_revoke` share the
     // `endorsements/{id}` mount with the Trust Task header
     // pinned to the `show` variant. Standalone tasks ship on
@@ -646,11 +645,19 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
         ))
         // Phase 4 M4.8.1 — operator-uploaded endorsement type
         // registry. Admin-gated CRUD.
+        // POST + GET on `/endorsement-types` each carry their own canonical
+        // task. They shared `register`'s URI while the router was believed
+        // to need per-method selectors; it does not (`task_routes` layers
+        // the method router, axum merges same-path routers per method — see
+        // `vti_common::trust_task::openapi`), so `list` now enforces the
+        // standalone spec that previously shipped unenforced.
         .routes(tt(
-            routes!(endorsement_types::register, endorsement_types::list), // POST + GET share `register/1.0` at the router
-            // layer pending per-method selectors; standalone
-            // `list/1.0` exists on disk + in index.json.
+            routes!(endorsement_types::register),
             "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1",
+        ))
+        .routes(tt(
+            routes!(endorsement_types::list),
+            "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1",
         ))
         .routes(tt(
             routes!(endorsement_types::delete),
@@ -732,7 +739,7 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             "https://trusttasks.org/spec/vtc/members/admin-remove/0.1",
         ))
         // Join requests (Phase 1 M1.7–M1.10). The unauth POST submit /
-        // accept / status live on the governed branch (`build_unauth_routes`,
+        // status live on the governed branch (`build_unauth_routes`,
         // P0.5). The admin GET list shares the `/join-requests` path with
         // the governed-branch POST submit, but now carries its OWN task:
         // axum merges same-path method routers per method, so each verb
@@ -746,13 +753,13 @@ fn build_api_chain(_routing: &RoutingConfig, trust_xff: bool) -> OpenApiRouter<A
             routes!(join_requests::read::show_join_request),
             "https://trusttasks.org/spec/vtc/join-requests/show/0.1",
         ))
+        // One decision endpoint, one task: `decide/0.1` carries
+        // `{ decision: approved | rejected, reason? }`, superseding the
+        // retired `approve/0.1` + `reject/0.1` pair (clean cutover — the
+        // old URIs and `/approve` + `/reject` mounts are gone).
         .routes(tt(
-            routes!(join_requests::decide::approve),
-            "https://trusttasks.org/spec/vtc/join-requests/approve/0.1",
-        ))
-        .routes(tt(
-            routes!(join_requests::decide::reject),
-            "https://trusttasks.org/spec/vtc/join-requests/reject/0.1",
+            routes!(join_requests::decide::decide),
+            "https://trusttasks.org/spec/vtc/join-requests/decide/0.1",
         ))
         // (Manifest discovery moved to the single `POST /v1/trust-tasks`
         // document endpoint — `join-requests/manifest/1.0` is now a Trust
@@ -940,11 +947,12 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
     // Step 1 of the recognise flow — issues the single-use challenge nonce the
     // holder binds into the VP presented to `/auth/recognise`. Same unauth
     // chain (governor + body cap) as the other challenge endpoints.
-    // P0.5 — the unauthenticated join-request POSTs (submit / accept / status)
+    // P0.5 — the unauthenticated join-request POSTs (submit / status, plus
+    // the member-facing `members/vmc` delivery that closes an approved join)
     // do the same attacker-driven crypto as recognise (Ed25519 holder-binding
     // verify, reciprocal-VC counter-sign verify, Rego eval) but were left on
     // the 1 MiB / no-limiter main chain. Move them here so the governor + 64
-    // KiB cap apply. The admin GET list + show + approve / reject and the
+    // KiB cap apply. The admin GET list + show + POST decide and the
     // public GET manifest stay on the `api` chain.
 
     // L2: rate-limiter key extractor honours `trust_xff`. The
@@ -1027,7 +1035,7 @@ fn build_unauth_routes(trust_xff: bool) -> OpenApiRouter<AppState> {
         ))
         // The single Trust Task document endpoint (P0.5: governed unauth
         // chain). The holder-facing join ceremony verbs (submit/request,
-        // accept, manifest, status) all arrive here as Trust Task documents
+        // manifest, status) all arrive here as Trust Task documents
         // and are routed internally by document `type`; the holder is
         // authenticated by the document's `eddsa-jcs-2022` proof. No
         // `Trust-Task` header gate — the document's own `type` is the

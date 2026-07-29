@@ -8,7 +8,7 @@
 //!
 //! Also hosts `emit_admit_audit` (the `MemberAdded` + `VmcIssued` + `VecIssued`
 //! envelopes a member admission records) — shared with the manual-approve route
-//! (`routes::join_requests::decide::approve`).
+//! (`routes::join_requests::decide::decide`).
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;

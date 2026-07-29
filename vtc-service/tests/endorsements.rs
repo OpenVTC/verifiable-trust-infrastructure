@@ -29,6 +29,7 @@ use vtc_service::test_support::TestVtc;
 
 const PUBLIC_URL: &str = "https://vtc.example.com";
 const REGISTER_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/register/0.1";
+const LIST_TYPES_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/list/0.1";
 const DELETE_TYPE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsement-types/delete/0.1";
 const ISSUE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/issue/0.1";
 const REVOKE_TASK: &str = "https://trusttasks.org/spec/vtc/endorsements/revoke/0.1";
@@ -260,6 +261,43 @@ async fn register_requires_admin() {
         .unwrap();
     let resp = fix.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_types_enforces_its_own_task_per_method() {
+    // GET + POST share `/endorsement-types`, but each verb now gates on its
+    // own canonical task: the GET requires `list/0.1` and refuses the POST's
+    // `register/0.1` header (the former shared-mount workaround is gone).
+    let fix = build().await;
+    let get = |task: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/v1/endorsement-types")
+            .header("authorization", format!("Bearer {}", fix.admin_token))
+            .header("trust-task", task)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get(LIST_TYPES_TASK))
+        .await
+        .unwrap();
+    let (status, v) = body_value(resp).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+
+    let resp = fix
+        .router
+        .clone()
+        .oneshot(get(REGISTER_TASK))
+        .await
+        .unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::OK,
+        "GET must refuse the register task header"
+    );
 }
 
 #[tokio::test]

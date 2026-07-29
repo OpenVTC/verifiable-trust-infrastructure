@@ -12,7 +12,7 @@
 //! 2. **Apply** (next slice) — an async executor consumes the
 //!    [`EffectPlan`] against `AppState`, reusing the existing
 //!    issue-VMC / write-ACL / write-Member helpers (today's bespoke
-//!    `routes::join_requests::decide::approve` becomes one such
+//!    `routes::join_requests::decide::decide` becomes one such
 //!    executor). Deliberately not wired here: it means refactoring a
 //!    tested write path, which belongs in its own change.
 //!

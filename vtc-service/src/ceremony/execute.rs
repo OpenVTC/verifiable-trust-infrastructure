@@ -12,7 +12,7 @@
 //! ## Single entry point, shared by the bespoke flow
 //!
 //! [`apply`] is the one executor. The MVP's manual join-approve route
-//! ([`crate::routes::join_requests::decide::approve`]) is refactored
+//! ([`crate::routes::join_requests::decide::decide`]) is refactored
 //! to go through it too — it builds an [`EffectPlan::Admit`] and calls
 //! [`apply`], so the pipeline genuinely supersedes the bespoke write
 //! path rather than duplicating it. The approve route's integration

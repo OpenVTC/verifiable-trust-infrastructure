@@ -60,8 +60,8 @@
 //!   off chance a request reaches them carrying a stale session
 //!   cookie (e.g. a re-login while an old cookie lingers). The
 //!   holder-facing `…/{id}/accept` / `…/{id}/status` POSTs are
-//!   suffix-matched; the admin `approve`/`reject` endpoints on the
-//!   same mount are deliberately left to the cookie-session gate.
+//!   suffix-matched; the admin `decide` endpoint on the
+//!   same mount is deliberately left to the cookie-session gate.
 
 use axum::body::Body;
 use axum::extract::Request;
@@ -117,8 +117,8 @@ fn has_bearer_auth(headers: &HeaderMap) -> bool {
 /// public holder endpoints on the join surface
 /// (`/v1/join-requests/{id}/accept`, `…/{id}/status`), which can't be
 /// exact-matched. Suffix-matching `/accept` / `/status` under the
-/// join-requests prefix deliberately leaves the admin `approve` /
-/// `reject` endpoints on the same mount gated.
+/// join-requests prefix deliberately leaves the admin `decide`
+/// endpoint on the same mount gated.
 fn is_csrf_exempt(path: &str) -> bool {
     if CSRF_EXEMPT_PATHS.contains(&path) {
         return true;
@@ -251,7 +251,7 @@ mod tests {
             .route("/v1/join-requests", post(ok))
             .route("/v1/join-requests/{id}/accept", post(ok))
             .route("/v1/join-requests/{id}/status", post(ok))
-            .route("/v1/join-requests/{id}/approve", post(ok))
+            .route("/v1/join-requests/{id}/decide", post(ok))
             .route("/v1/auth/challenge", post(ok))
             .layer(axum::middleware::from_fn(enforce))
     }
@@ -483,8 +483,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn admin_approve_on_join_mount_stays_gated() {
-        // `approve` shares the join-requests mount but is an admin
+    async fn admin_decide_on_join_mount_stays_gated() {
+        // `decide` shares the join-requests mount but is an admin
         // action — a cookie-session POST with no token must 403 (only
         // the holder `accept`/`status` suffixes are exempt, and only a
         // cookie session is gated at all).
@@ -492,7 +492,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/v1/join-requests/req-123/approve")
+                    .uri("/v1/join-requests/req-123/decide")
                     .header("cookie", SESSION_COOKIE)
                     .body(Body::empty())
                     .unwrap(),

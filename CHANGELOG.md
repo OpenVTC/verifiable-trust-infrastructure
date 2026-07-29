@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### vtc-service 0.11.43 / vta-sdk 0.20.20 — join-request decide, accept folded into members/vmc, endorsement-types per-method tasks
+
+Implements OpenVTC/verifiable-trust-infrastructure#853 (clean cutover — the
+retired URIs are removed, not dual-accepted; every remaining mount gates on a
+published canonical task):
+
+- **`POST /v1/join-requests/{id}/decide`** on `vtc/join-requests/decide/0.1`
+  (`{ decision: approved|rejected, reason? }`) replaces the `/approve` +
+  `/reject` mounts and their per-outcome tasks. Same admin gate, same
+  Pending-state check, same audit envelopes (`JoinRequestApproved` /
+  `JoinRequestRejected`); the admin SPA's join-requests plugin now posts the
+  decide payload.
+- **`members/vmc` gains the optional `requestId`** (`MemberVmcBody` /
+  `MemberVmcReceiptBody`): a delivery naming an approved join request whose
+  applicant is the delivering member also closes that request — the delivered
+  credential is recorded as the reciprocal half of the join
+  (`Member::record_reciprocation`) and the reciprocation audited
+  (`MembershipReciprocated`). This supersedes `join-requests/accept/0.1`,
+  whose dispatcher arm, DIDComm handler, REST spine (`accept.rs`, including
+  the `MembershipAcknowledgement` VC shape and the accept holder-binding
+  signature) and SDK types are removed — one credential-delivery path.
+- **`GET /v1/endorsement-types`** now enforces its own
+  `vtc/endorsement-types/list/0.1` instead of riding `register`'s URI — the
+  last of the issue's four shared-mount workarounds (the other three landed
+  earlier: members show/update/admin-remove, community profile show/update,
+  join-requests list).
+
+Removed wire URIs (consumers to sweep): `vtc/join-requests/approve/0.1`,
+`vtc/join-requests/reject/0.1`, `vtc/join-requests/accept/0.1`.
+
 ### vta-sdk 0.20.19 / vta-service 0.13.11 — push/* emitters cut over to 0.2
 
 The vti-push-gateway's clean cutover to `push/*` 0.2

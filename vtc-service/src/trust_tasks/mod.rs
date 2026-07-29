@@ -3,11 +3,12 @@
 //! The VTC member-facing **Trust Task document** dispatcher.
 //!
 //! This is the wire adapter the join ceremony grew up into: each holder- or
-//! public-facing verb (`submit`/`request`, `accept`, `manifest`, `status`)
+//! public-facing verb (`submit`/`request`, `manifest`, `status`)
 //! is a [`trust_tasks_rs::TrustTask`] document, as are the member-initiated
-//! `members/self-remove` and `members/vmc`. The success reply is a
-//! framework `#response` document (a [`VerdictResponse`] for `submit`, a
-//! read body for `accept`/`manifest`/`status`); every failure — invalid
+//! `members/self-remove` and `members/vmc` (whose optional `requestId`
+//! closes an approved join — the retired `accept` verb's semantics). The
+//! success reply is a framework `#response` document (a [`VerdictResponse`]
+//! for `submit`, a read body for `manifest`/`status`); every failure — invalid
 //! VIC, expired, malformed, duplicate — is a framework `trust-task-error`
 //! document, never a DIDComm problem-report and never a `deny` verdict
 //! (`deny` is a *policy* refusal of a verified request; an error means the
@@ -24,9 +25,9 @@
 //!
 //! ## Auth is per-verb (unlike the VTA's uniform-`AuthClaims` dispatcher)
 //!
-//! The join family is mostly unauthenticated/holder-bound: `submit`,
-//! `accept`, `status` are bound to the holder DID (no ACL entry needed);
-//! `manifest` is public. The operator-facing `approve`/`reject`/`list`/
+//! The join family is mostly unauthenticated/holder-bound: `submit` and
+//! `status` are bound to the holder DID (no ACL entry needed);
+//! `manifest` is public. The operator-facing `decide`/`list`/
 //! `show` verbs stay on their existing JWT-gated REST routes and are *not*
 //! routed here. `present` belongs to the `credential-exchange` family and is
 //! handled there.
@@ -112,7 +113,6 @@ pub(crate) async fn dispatch_trust_task_core(
     let type_uri = doc.type_uri.to_string();
     match type_uri.as_str() {
         jr::JOIN_REQUEST_SUBMIT_TYPE => handle_submit(state, ctx, doc).await,
-        jr::JOIN_REQUEST_ACCEPT_TYPE => handle_accept(state, ctx, doc).await,
         jr::JOIN_REQUEST_MANIFEST_TYPE => handle_manifest(state, doc).await,
         jr::JOIN_REQUEST_STATUS_TYPE => handle_status(state, ctx, doc).await,
         jr::MEMBER_SELF_REMOVE_TYPE => handle_self_remove(state, ctx, doc).await,
@@ -136,7 +136,6 @@ pub(crate) async fn dispatch_trust_task_core(
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const DISPATCHED_URIS: &[&str] = &[
     jr::JOIN_REQUEST_SUBMIT_TYPE,
-    jr::JOIN_REQUEST_ACCEPT_TYPE,
     jr::JOIN_REQUEST_MANIFEST_TYPE,
     jr::JOIN_REQUEST_STATUS_TYPE,
     jr::MEMBER_SELF_REMOVE_TYPE,
@@ -287,47 +286,6 @@ fn outcome_to_verdict(outcome: &JoinSubmitOutcome) -> Result<VerdictResponse, Ap
     Ok(verdict)
 }
 
-// ─── accept ──────────────────────────────────────────────────────────────
-
-async fn handle_accept(
-    state: &AppState,
-    ctx: &JoinAuthCtx,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    let member_did = match resolve_holder(ctx, &doc).await {
-        Ok(did) => did,
-        Err(reject) => return reject,
-    };
-    let body: jr::JoinRequestAcceptBody = match parse_payload(&doc) {
-        Ok(b) => b,
-        Err(reject) => return reject,
-    };
-
-    let outcome = match crate::routes::join_requests::accept::accept_inner(
-        state,
-        body.request_id,
-        member_did,
-        body.vmc_id,
-        body.vc,
-        None,
-        ctx.transport,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => return app_error_to_reject(&doc, &e),
-    };
-
-    success_response(
-        &doc,
-        jr::JoinRequestAcceptReceiptBody {
-            request_id: outcome.request_id,
-            status: "accepted".to_string(),
-            reciprocal_vc_id: outcome.reciprocal_vc_id,
-        },
-    )
-}
-
 // ─── manifest (public) ─────────────────────────────────────────────────────
 
 async fn handle_manifest(state: &AppState, doc: TrustTask<Value>) -> TrustTaskOutcome {
@@ -425,7 +383,9 @@ async fn handle_self_remove(
 }
 
 /// `members/vmc/0.1` as a Trust Task document — a member submits their
-/// reciprocal VMC (the member → community half of the membership pair).
+/// reciprocal VMC (the member → community half of the membership pair),
+/// optionally closing an approved join request via `requestId` (the retired
+/// `join-requests/accept` semantics).
 ///
 /// Same spine as the DIDComm handler: `receive_member_vmc_inner` verifies the
 /// issuer / subject binding and the DI proof before storing it on the member
@@ -445,14 +405,38 @@ async fn handle_member_vmc(
         Ok(b) => b,
         Err(reject) => return reject,
     };
+    // `request_id` travels as a string (the SDK's `members` module compiles
+    // featureless, without `uuid`); a malformed id is a framework reject, not
+    // a lookup miss.
+    let request_id = match body
+        .request_id
+        .as_deref()
+        .map(uuid::Uuid::parse_str)
+        .transpose()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("requestId is not a UUID: {e}"),
+                },
+            );
+        }
+    };
 
-    match crate::members::inbound_vmc::receive_member_vmc_inner(state, member_did, body.vc).await {
+    match crate::members::inbound_vmc::receive_member_vmc_inner(
+        state, member_did, body.vc, request_id,
+    )
+    .await
+    {
         Ok(outcome) => success_response(
             &doc,
             MemberVmcReceiptBody {
                 member_did: outcome.member_did,
                 vmc_id: outcome.vmc_id,
                 status: "stored".to_string(),
+                request_id: outcome.request_id.map(|u| u.to_string()),
             },
         ),
         Err(e) => app_error_to_reject(&doc, &e),
@@ -470,7 +454,6 @@ mod tests {
     fn dispatcher_routes_every_dispatched_uri() {
         let sdk = [
             jr::JOIN_REQUEST_SUBMIT_TYPE,
-            jr::JOIN_REQUEST_ACCEPT_TYPE,
             jr::JOIN_REQUEST_MANIFEST_TYPE,
             jr::JOIN_REQUEST_STATUS_TYPE,
             jr::MEMBER_SELF_REMOVE_TYPE,

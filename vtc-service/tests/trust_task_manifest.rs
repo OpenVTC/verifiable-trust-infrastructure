@@ -410,6 +410,16 @@ fn no_new_bindings_on_the_retired_authority() {
 /// (#821) is what produced this list. **None of it was previously checked by
 /// anything.**
 const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
+    // Authored upstream in trust-tasks-tf alongside this change (#853,
+    // trust-tasks-tf#160): `vtc/join-requests/decide/0.1` supersedes the
+    // retired approve/reject pair. Ships in trust-tasks-rs 0.2.47; the
+    // workspace pins 0.2.43. Drop this entry when the trust-tasks-rs
+    // dependency bumps to >= 0.2.47.
+    (
+        "https://trusttasks.org/spec/vtc/join-requests/decide/",
+        1,
+        "vtc/join-requests/decide/0.1 — authored upstream with #853 (trust-tasks-tf#160), ships in trust-tasks-rs 0.2.47; remove on dependency bump",
+    ),
     // Not a dispatchable task: the framework's error envelope is a *response*
     // type, deliberately absent from the task index, so `schema_for` will never
     // resolve it. This entry is permanent — the others are debt.
