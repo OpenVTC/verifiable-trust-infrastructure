@@ -910,14 +910,16 @@ didcomm_handler!(
 #[cfg(feature = "webvh")]
 didcomm_handler!(
     resolver handle_add_webvh_server, Gate::None, did_management::ADD_WEBVH_SERVER_RESULT,
-    did_management::servers::AddWebvhServerBody,
-    |s, auth, body, did_resolver| operations::did_webvh::add_webvh_server(
+    did_management::servers::RegisterWebvhServerBody,
+    // Trust Task folded into `servers/register`; this legacy DIDComm
+    // message stays for wire compatibility, backed by the merged op.
+    |s, auth, body, did_resolver| operations::did_webvh::register_webvh_server(
         &s.webvh_ks,
         &auth,
         &body.id,
-        &body.did,
+        body.did.as_deref(),
         body.label,
-        did_resolver,
+        Some(did_resolver),
         "didcomm",
     )
     .await
@@ -963,15 +965,19 @@ didcomm_handler!(
 
 #[cfg(feature = "webvh")]
 didcomm_handler!(
-    handle_update_webvh_server,
-    Gate::None,
+    resolver handle_update_webvh_server, Gate::None,
     did_management::UPDATE_WEBVH_SERVER_RESULT,
-    did_management::servers::UpdateWebvhServerBody,
-    |s, auth, body| operations::did_webvh::update_webvh_server(
+    did_management::servers::RegisterWebvhServerBody,
+    // As above: kept for wire compatibility, backed by the merged op.
+    // A `did` that differs from the stored one is refused there rather
+    // than silently re-pointing the registration.
+    |s, auth, body, did_resolver| operations::did_webvh::register_webvh_server(
         &s.webvh_ks,
         &auth,
         &body.id,
+        body.did.as_deref(),
         body.label,
+        Some(did_resolver),
         "didcomm",
     )
     .await

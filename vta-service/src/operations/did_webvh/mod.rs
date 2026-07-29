@@ -32,8 +32,7 @@ pub use register_server::{
     register_did_with_server,
 };
 pub use servers::{
-    add_webvh_server, list_webvh_server_domains, list_webvh_servers, remove_webvh_server,
-    update_webvh_server,
+    list_webvh_server_domains, list_webvh_servers, register_webvh_server, remove_webvh_server,
 };
 pub use update::{
     AgentNameVerb, RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions,

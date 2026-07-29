@@ -191,8 +191,7 @@ dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist for builds where
 | URI | Today's surface | Status |
 |---|---|---|
 | `spec/vta/webvh/servers/list/1.0` | webvh server CRUD on VTA side | implemented |
-| `spec/vta/webvh/servers/add/1.0` | (REST `POST /webvh/servers`) | implemented |
-| `spec/vta/webvh/servers/update/1.0` | | implemented |
+| `spec/vta/webvh/servers/register/1.0` | (REST `POST /webvh/servers`, `PATCH /webvh/servers/{id}`) | implemented — **absorbed `servers/add` + `servers/update`**: update's body was add's minus `did`, both returned the same record. A `did` that differs from the stored one is refused, not treated as a re-point |
 | `spec/vta/webvh/servers/remove/1.0` | | implemented |
 | `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA | implemented |
 | `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host | implemented |
@@ -385,7 +384,7 @@ Both services touch WebVH DIDs. Disambiguation:
 
 Concrete examples:
 - VTA wants to rotate a key on a DID it controls → `spec/vta/webvh/dids/rotate-keys/1.0` to the VTA, which then sends `spec/webvh/did/sync-update/1.0` to the host. Two different URIs, two different actions, on two different services.
-- Operator wants to add a host to their VTA's known-hosts list → `spec/vta/webvh/servers/add/1.0`. Adding a controller authorisation to the host itself → `spec/did-hosting/acl/create/1.0`.
+- Operator wants to add a host to their VTA's known-hosts list → `spec/vta/webvh/servers/register/1.0`. Adding a controller authorisation to the host itself → `spec/did-hosting/acl/create/1.0`.
 
 ## Excluded from migration
 
@@ -449,7 +448,7 @@ REST:
   GET    /services/didcomm/drain                    → vta/services/didcomm/drain/list/1.0
   POST   /services/didcomm/drain/cancel             → vta/services/didcomm/drain/cancel/1.0
   GET    /mediators/report                          → vta/services/mediators/report/1.0
-  POST   /webvh/servers                             → vta/webvh/servers/add/1.0
+  POST   /webvh/servers                             → vta/webvh/servers/register/1.0
   GET    /webvh/servers                             → vta/webvh/servers/list/1.0
   …(see WebVH-DID-lifecycle slice for the rest)…
   GET    /did-templates                             → vta/did-templates/list/1.0

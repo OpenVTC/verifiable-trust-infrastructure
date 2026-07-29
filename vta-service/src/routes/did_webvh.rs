@@ -8,8 +8,8 @@ use vta_sdk::protocols::did_management::{
     get::GetDidWebvhResultBody,
     list::ListDidsWebvhResultBody,
     servers::{
-        AddWebvhServerResultBody, ListWebvhServersResultBody, RegisterDidWithServerBody,
-        RegisterDidWithServerResultBody, UpdateWebvhServerResultBody,
+        ListWebvhServersResultBody, RegisterDidWithServerBody, RegisterDidWithServerResultBody,
+        RegisterWebvhServerResultBody,
     },
 };
 
@@ -44,7 +44,7 @@ pub struct ListDidsQuery {
     security(("bearer_jwt" = [])),
     request_body = AddServerRequest,
     responses(
-        (status = 201, description = "Server registered", body = AddWebvhServerResultBody),
+        (status = 201, description = "Server registered", body = RegisterWebvhServerResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
     ),
@@ -53,18 +53,18 @@ pub async fn add_server_handler(
     auth: SuperAdminAuth,
     State(state): State<AppState>,
     Json(req): Json<AddServerRequest>,
-) -> Result<(StatusCode, Json<AddWebvhServerResultBody>), AppError> {
+) -> Result<(StatusCode, Json<RegisterWebvhServerResultBody>), AppError> {
     let did_resolver = state
         .did_resolver
         .as_ref()
         .ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
-    let result = operations::did_webvh::add_webvh_server(
+    let result = operations::did_webvh::register_webvh_server(
         &state.webvh_ks,
         &auth.0,
         &req.id,
-        &req.did,
+        Some(&req.did),
         req.label,
-        did_resolver,
+        Some(did_resolver),
         "rest",
     )
     .await?;
@@ -139,7 +139,7 @@ pub struct UpdateServerRequest {
     params(("id" = String, Path, description = "Server identifier")),
     request_body = UpdateServerRequest,
     responses(
-        (status = 200, description = "Server updated", body = UpdateWebvhServerResultBody),
+        (status = 200, description = "Server updated", body = RegisterWebvhServerResultBody),
         (status = 401, description = "Missing or invalid bearer token"),
         (status = 403, description = "Caller is not a super-admin"),
         (status = 404, description = "Server not found"),
@@ -150,12 +150,18 @@ pub async fn update_server_handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateServerRequest>,
-) -> Result<Json<UpdateWebvhServerResultBody>, AppError> {
-    let result = operations::did_webvh::update_webvh_server(
+) -> Result<Json<RegisterWebvhServerResultBody>, AppError> {
+    // `did: None` keeps this a label-only patch: the merged op returns
+    // NotFound for an unknown id rather than creating one, so PATCH's
+    // 404 contract is unchanged — and it needs no resolver, exactly as
+    // before the merge.
+    let result = operations::did_webvh::register_webvh_server(
         &state.webvh_ks,
         &auth.0,
         &id,
+        None,
         req.label,
+        None,
         "rest",
     )
     .await?;

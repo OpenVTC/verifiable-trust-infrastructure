@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.15 / vta-service 0.13.7 — `webvh/servers/{add,update}` fold into `webvh/servers/register`
+
+Second reduction of the `spec/vta/webvh/*` family (#840 phase B). Takes the
+unpublished-canonical count for `spec/vta/` from 45 to **44**.
+
+`servers/update`'s body was `servers/add`'s minus `did`, and both returned the
+same `WebvhServerRecord`. They now share one task, with the `id` deciding what
+happens rather than a mode flag: an unregistered `id` requires `did` and
+validates it before storing; a registered one updates the label.
+
+**A different `did` for an existing `id` is refused.** This is why the merge is
+not a blind upsert. Without the guard the update branch — which only ever
+touched `label` — would silently *ignore* the new DID and report success, so a
+caller would believe they had re-pointed a registration when nothing had
+changed. Re-pointing for real also needs coordinated teardown on the old host,
+since every DID resolving through that registration follows it. Same reasoning
+that makes `dids/register-with-server` refuse an already-server-managed DID.
+
+**Operator surfaces are unchanged.** Both REST routes (`POST /webvh/servers`,
+`PATCH /webvh/servers/{id}`), both CLI verbs, and both legacy DIDComm protocol
+messages are kept, all now backed by the one operation — one task, reused
+several times. `PATCH` keeps its 404 for an unknown id, because "no stored
+record and no `did` to create one with" resolves to `NotFound` rather than a
+validation error. It also still needs no DID resolver: the resolver is now
+`Option`, required only on the create path, so a relabel cannot fail on a VTA
+that has none.
+
+One behaviour change: `POST /webvh/servers` for an already-registered `id` with
+the *same* `did` now succeeds idempotently (updating the label) instead of
+returning 409. A colliding `id` with a *different* `did` is still refused.
+
+Covered by a round-trip case in `vta-service/tests/client_round_trip.rs` driving
+the real client against the real router across every path — relabel, idempotent
+re-register, refused re-point (asserting the stored record is untouched
+afterwards), and patch-unknown-id. Mutation-verified: with the guard removed,
+the re-point silently succeeds.
+
 ### vta-sdk 0.20.14 / vta-service 0.13.6 — `webvh/dids/get-log` folds into `webvh/dids/get`
 
 First reduction of the `spec/vta/webvh/*` family (#840 phase B). Takes the

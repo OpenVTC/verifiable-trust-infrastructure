@@ -16,29 +16,68 @@ use crate::error::AppError;
 use crate::store::KeyspaceHandle;
 use crate::webvh_store;
 use vta_sdk::protocols::did_management::servers::{
-    AddWebvhServerResultBody, ListWebvhServersResultBody, RemoveWebvhServerResultBody,
-    UpdateWebvhServerResultBody,
+    ListWebvhServersResultBody, RegisterWebvhServerResultBody, RemoveWebvhServerResultBody,
 };
 use vta_sdk::webvh::WebvhServerRecord;
 
-pub async fn add_webvh_server(
+/// Register a webvh host, or update the label of one already
+/// registered — `spec/vta/webvh/servers/register/1.0`.
+///
+/// The `id` decides which happens; there is no mode flag. A new `id`
+/// requires `did` and validates it over the network before storing. An
+/// existing `id` updates the label only, and a `did` that differs from
+/// the stored one is **refused**: re-pointing a registration silently
+/// redirects every DID resolving through it, and unwinding that needs
+/// coordinated teardown on the old host.
+pub async fn register_webvh_server(
     webvh_ks: &KeyspaceHandle,
     auth: &AuthClaims,
     id: &str,
-    server_did: &str,
+    server_did: Option<&str>,
     label: Option<String>,
-    did_resolver: &DIDCacheClient,
+    // Only needed to create a registration — the label-only path never
+    // resolves anything, so a caller that is just relabelling may pass
+    // `None` rather than having to construct a resolver.
+    did_resolver: Option<&DIDCacheClient>,
     channel: &str,
-) -> Result<AddWebvhServerResultBody, AppError> {
+) -> Result<RegisterWebvhServerResultBody, AppError> {
     auth.require_super_admin()?;
 
-    if webvh_store::get_server(webvh_ks, id).await?.is_some() {
-        return Err(AppError::Conflict(format!(
-            "webvh server already exists: {id}"
-        )));
+    if let Some(mut record) = webvh_store::get_server(webvh_ks, id).await? {
+        // Re-registering the same host is idempotent; pointing the same
+        // id at a different host is not something this op will do.
+        if let Some(did) = server_did
+            && did != record.did
+        {
+            return Err(AppError::Conflict(format!(
+                "webvh server {id} is registered to {}; re-pointing it at {did} would redirect                  every DID resolving through it. Remove the registration and add it again,                  after migrating those DIDs off the old host",
+                record.did
+            )));
+        }
+
+        if let Some(lbl) = label {
+            record.label = if lbl.is_empty() { None } else { Some(lbl) };
+        }
+        record.updated_at = Utc::now();
+        webvh_store::store_server(webvh_ks, &record).await?;
+
+        info!(channel, id = %id, "webvh server updated");
+        return Ok(record);
     }
 
-    // Validate the DID resolves and has a supported WebVH service
+    // No stored record and no `did` to create one with: the caller was
+    // updating something that does not exist. NotFound (404), not a
+    // validation error — this is what preserves `PATCH
+    // /webvh/servers/{id}`'s contract now that it shares this op.
+    let server_did = server_did.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "webvh server not found: {id}; supply `did` to register it"
+        ))
+    })?;
+
+    // Validate the DID resolves and has a supported WebVH service.
+    let did_resolver =
+        did_resolver.ok_or_else(|| AppError::Internal("DID resolver not available".into()))?;
     validate_server_did(did_resolver, server_did).await?;
 
     let now = Utc::now();
@@ -156,30 +195,6 @@ pub async fn list_webvh_server_domains(
         "webvh server hosting domains listed"
     );
     Ok(entries)
-}
-
-pub async fn update_webvh_server(
-    webvh_ks: &KeyspaceHandle,
-    auth: &AuthClaims,
-    id: &str,
-    label: Option<String>,
-    channel: &str,
-) -> Result<UpdateWebvhServerResultBody, AppError> {
-    auth.require_super_admin()?;
-
-    let mut record = webvh_store::get_server(webvh_ks, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {id}")))?;
-
-    if let Some(lbl) = label {
-        record.label = if lbl.is_empty() { None } else { Some(lbl) };
-    }
-    record.updated_at = Utc::now();
-
-    webvh_store::store_server(webvh_ks, &record).await?;
-
-    info!(channel, id = %id, "webvh server updated");
-    Ok(record)
 }
 
 pub async fn remove_webvh_server(

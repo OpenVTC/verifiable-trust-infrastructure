@@ -46,8 +46,8 @@ use vta_sdk::protocols::did_management::{
     get::GetDidWebvhBody,
     list::ListDidsWebvhBody,
     servers::{
-        AddWebvhServerBody, ListWebvhServersBody, RegisterDidWithServerBody,
-        RegisterDidWithServerResultBody, RemoveWebvhServerBody, UpdateWebvhServerBody,
+        ListWebvhServersBody, RegisterDidWithServerBody, RegisterDidWithServerResultBody,
+        RegisterWebvhServerBody, RemoveWebvhServerBody,
     },
     update::{RotateDidWebvhKeysBody, UpdateDidWebvhBody},
 };
@@ -85,8 +85,11 @@ pub(super) async fn handle_servers_list(
     }
 }
 
-/// `webvh/servers/add/1.0` — register a new webvh host. Super-admin.
-pub(super) async fn handle_servers_add(
+/// `webvh/servers/register/1.0` — register a webvh host, or update the
+/// label of one already registered. Super-admin.
+///
+/// Absorbs the retired `servers/add/1.0` and `servers/update/1.0`.
+pub(super) async fn handle_servers_register(
     state: &AppState,
     auth: &AuthClaims,
     doc: TrustTask<Value>,
@@ -94,7 +97,7 @@ pub(super) async fn handle_servers_add(
     if let Err(e) = auth.require_super_admin() {
         return app_error_to_reject(&doc, e);
     }
-    let req: AddWebvhServerBody = match parse_payload(&doc) {
+    let req: RegisterWebvhServerBody = match parse_payload(&doc) {
         Ok(r) => r,
         Err(resp) => return resp,
     };
@@ -107,40 +110,13 @@ pub(super) async fn handle_servers_add(
             );
         }
     };
-    match operations::did_webvh::add_webvh_server(
+    match operations::did_webvh::register_webvh_server(
         &state.webvh_ks,
         auth,
         &req.id,
-        &req.did,
+        req.did.as_deref(),
         req.label,
-        did_resolver,
-        TRANSPORT_TRUST_TASK,
-    )
-    .await
-    {
-        Ok(body) => success_response(&doc, body),
-        Err(e) => app_error_to_reject(&doc, e),
-    }
-}
-
-/// `webvh/servers/update/1.0` — patch a webvh host's label. Super-admin.
-pub(super) async fn handle_servers_update(
-    state: &AppState,
-    auth: &AuthClaims,
-    doc: TrustTask<Value>,
-) -> TrustTaskOutcome {
-    if let Err(e) = auth.require_super_admin() {
-        return app_error_to_reject(&doc, e);
-    }
-    let req: UpdateWebvhServerBody = match parse_payload(&doc) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
-    match operations::did_webvh::update_webvh_server(
-        &state.webvh_ks,
-        auth,
-        &req.id,
-        req.label,
+        Some(did_resolver),
         TRANSPORT_TRUST_TASK,
     )
     .await
