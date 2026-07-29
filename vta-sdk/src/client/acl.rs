@@ -89,11 +89,13 @@ impl VtaClient {
 
     pub async fn create_acl(&self, req: CreateAclRequest) -> Result<AclEntryResponse, VtaError> {
         // Canonical `acl/grant/0.1` returns the realized entry under `entry`.
+        // `CreateAclRequest` serializes to the canonical `{ entry, … }`
+        // request, so the same body serves the REST route and the trust-task
+        // dispatcher (which schema-validates it against the published spec).
         let wrapped: AclEntryEnvelope = self
-            .rpc(
-                acl_management::CREATE_ACL,
+            .rpc_tt(
+                crate::trust_tasks::TASK_ACL_GRANT_0_1,
                 serde_json::to_value(&req)?,
-                acl_management::CREATE_ACL_RESULT,
                 30,
                 |c, url| c.post(format!("{url}/acl")).json(&req),
             )
@@ -163,10 +165,9 @@ impl VtaClient {
     }
 
     pub async fn delete_acl(&self, did: &str) -> Result<(), VtaError> {
-        self.rpc_void(
-            acl_management::DELETE_ACL,
+        self.rpc_tt_void(
+            crate::trust_tasks::TASK_ACL_REVOKE_0_1,
             serde_json::json!({ "subject": did }),
-            acl_management::DELETE_ACL_RESULT,
             30,
             |c, url| c.delete(format!("{url}/acl/{}", encode_path_segment(did))),
         )

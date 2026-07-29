@@ -14,15 +14,21 @@ use crate::protocols::key_management::sign::SignAlgorithm;
 use crate::trust_tasks;
 
 #[cfg(feature = "client")]
-use crate::protocols::{key_management, seed_management};
+use crate::protocols::key_management;
 
 #[cfg(feature = "client")]
 impl VtaClient {
     // ── Key methods ─────────────────────────────────────────────────
 
+    /// Create a key.
+    ///
+    /// Trust-task leg note: `spec/vta/keys/create/1.0` auto-generates the
+    /// key id from the derivation path, so an explicit `req.key_id` only
+    /// takes effect on the REST leg — exactly as it did on the legacy
+    /// DIDComm message, which never carried `key_id` either.
     pub async fn create_key(&self, req: CreateKeyRequest) -> Result<CreateKeyResponse, VtaError> {
-        self.rpc(
-            key_management::CREATE_KEY,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_CREATE_1_0,
             serde_json::json!({
                 "key_type": serde_json::to_value(&req.key_type)?,
                 "derivation_path": req.derivation_path.as_deref().unwrap_or_default(),
@@ -30,7 +36,6 @@ impl VtaClient {
                 "label": req.label.as_deref(),
                 "context_id": req.context_id.as_deref(),
             }),
-            key_management::CREATE_KEY_RESULT,
             30,
             |c, url| c.post(format!("{url}/keys")).json(&req),
         )
@@ -44,15 +49,14 @@ impl VtaClient {
         status: Option<&str>,
         context_id: Option<&str>,
     ) -> Result<ListKeysResponse, VtaError> {
-        self.rpc(
-            key_management::LIST_KEYS,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_LIST_1_0,
             serde_json::json!({
                 "offset": offset,
                 "limit": limit,
                 "status": status,
                 "context_id": context_id,
             }),
-            key_management::LIST_KEYS_RESULT,
             30,
             |c, url| {
                 let mut u = format!("{url}/keys?offset={offset}&limit={limit}");
@@ -69,21 +73,23 @@ impl VtaClient {
     }
 
     pub async fn get_key(&self, key_id: &str) -> Result<KeyRecord, VtaError> {
-        self.rpc(
-            key_management::GET_KEY,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_GET_1_0,
             serde_json::json!({ "key_id": key_id }),
-            key_management::GET_KEY_RESULT,
             30,
             |c, url| c.get(format!("{url}/keys/{}", encode_path_segment(key_id))),
         )
         .await
     }
 
+    /// Export a key's secret material. The trust-task twin lives in the
+    /// seeds slice (`spec/vta/seeds/export-mnemonic/1.0`) — same
+    /// `{ key_id }` request and the same
+    /// `operations::keys::get_key_secret` spine as the legacy message.
     pub async fn get_key_secret(&self, key_id: &str) -> Result<GetKeySecretResponse, VtaError> {
-        self.rpc(
-            key_management::GET_KEY_SECRET,
+        self.rpc_tt(
+            trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
             serde_json::json!({ "key_id": key_id }),
-            key_management::GET_KEY_SECRET_RESULT,
             30,
             |c, url| c.get(format!("{url}/keys/{}/secret", encode_path_segment(key_id))),
         )
@@ -102,14 +108,13 @@ impl VtaClient {
     ) -> Result<SignResponse, VtaError> {
         use base64::Engine;
         let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
-        self.rpc(
-            key_management::SIGN_REQUEST,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_SIGN_1_0,
             serde_json::json!({
                 "key_id": key_id,
                 "payload": payload_b64,
                 "algorithm": algorithm,
             }),
-            key_management::SIGN_RESULT,
             30,
             |c, url| {
                 c.post(format!("{url}/keys/{}/sign", encode_path_segment(key_id)))
@@ -186,10 +191,9 @@ impl VtaClient {
     }
 
     pub async fn invalidate_key(&self, key_id: &str) -> Result<InvalidateKeyResponse, VtaError> {
-        self.rpc(
-            key_management::REVOKE_KEY,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_REVOKE_1_0,
             serde_json::json!({ "key_id": key_id }),
-            key_management::REVOKE_KEY_RESULT,
             30,
             |c, url| c.delete(format!("{url}/keys/{}", encode_path_segment(key_id))),
         )
@@ -201,10 +205,9 @@ impl VtaClient {
         key_id: &str,
         new_key_id: &str,
     ) -> Result<RenameKeyResponse, VtaError> {
-        self.rpc(
-            key_management::RENAME_KEY,
+        self.rpc_tt(
+            trust_tasks::TASK_KEYS_RENAME_1_0,
             serde_json::json!({ "key_id": key_id, "new_key_id": new_key_id }),
-            key_management::RENAME_KEY_RESULT,
             30,
             |c, url| {
                 c.patch(format!("{url}/keys/{}", encode_path_segment(key_id)))
@@ -258,10 +261,9 @@ impl VtaClient {
     // ── Seed methods ────────────────────────────────────────────────
 
     pub async fn list_seeds(&self) -> Result<ListSeedsResponse, VtaError> {
-        self.rpc(
-            seed_management::LIST_SEEDS,
+        self.rpc_tt(
+            trust_tasks::TASK_SEEDS_LIST_1_0,
             serde_json::json!({}),
-            seed_management::LIST_SEEDS_RESULT,
             30,
             |c, url| c.get(format!("{url}/keys/seeds")),
         )
@@ -275,10 +277,9 @@ impl VtaClient {
         let body = RotateSeedRequest {
             mnemonic: mnemonic.clone(),
         };
-        self.rpc(
-            seed_management::ROTATE_SEED,
+        self.rpc_tt(
+            trust_tasks::TASK_SEEDS_ROTATE_1_0,
             serde_json::json!({ "mnemonic": mnemonic }),
-            seed_management::ROTATE_SEED_RESULT,
             30,
             |c, url| c.post(format!("{url}/keys/seeds/rotate")).json(&body),
         )

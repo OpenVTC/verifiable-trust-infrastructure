@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.18 — every client method with a Trust-Task twin now rides the Trust-Task bridge (#829)
+
+`VtaClient::sign()` was the odd one out among the three signing entry points:
+it rode the legacy `rpc` path, whose TSP arm is `unsupported_over_tsp`, so the
+one VTA call a signing consumer (e.g. Cierge's gateway) builds on was the one
+that didn't port DIDComm → TSP. It now routes through
+`rpc_tt(TASK_KEYS_SIGN_1_0, …)` — same REST leg, same
+`operations::keys::sign_payload` spine, and the DIDComm/TSP legs dispatch the
+`spec/vta/keys/sign/1.0` Trust Task exactly like `derive_and_sign` beside it.
+
+The audit the issue asked for happened, and acted: **every** remaining
+`rpc`/`rpc_void`-routed client method whose Trust-Task twin exists in the
+dispatcher and whose request/response wire shapes already match moved in the
+same sweep — the keys slice (list/create/get/rename/revoke/sign,
+`get_key_secret` via `vta/seeds/export-mnemonic`), seeds (list/rotate), ACL
+grant + revoke, audit (list + retention get/update), contexts (all seven),
+config show/patch, `restart` (via `vta/management/reload-services`),
+`capabilities`, and the WebVH servers/DIDs methods (register/list/remove,
+create/list/get/get-log/delete/register-with-server). All of them keep their
+dedicated REST routes; only the DIDComm leg changes envelope, and TSP support
+falls out for free.
+
+Deliberately **not** moved (wire shapes differ — the gap is the conformance
+stream's, not this PR's to paper over): `list_acl`/`get_acl`/`change_acl_role`
+(trust-task responses are the flat stored form, not the canonical `{entry}` /
+`{entries}` envelopes), `update_acl` (request shape is non-canonical and the
+dispatch spine schema-rejects it today), `swap_acl` (canonical `acl/swap-key`
+needs `currentSubject`/`newSubject` the client API doesn't carry),
+`update_webvh_server` (its twin is register-or-update, a different contract),
+`update_did_webvh`/`rotate_did_webvh_keys` (trust task addresses by `did`, the
+client by `context_id`+`scid`). No twin at all: `import_key`,
+`get_wrapping_key`, `list_webvh_server_domains`, and the one-shot
+`backup_export`/`backup_import` pair (the trust-task backup slice is the
+five-step descriptor protocol).
+
+`rpc_void` lost its last caller and is gone; `rpc` stays for the surfaces
+listed above.
+
 ### vta-sdk 0.20.17 / vta-service 0.13.10 — reverse registry-parity harness + the `_1_0` constant rename pass (#854 phase 1)
 
 The dispatcher's parity harness has always asserted every `vta-sdk` URI is

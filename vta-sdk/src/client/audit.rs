@@ -18,11 +18,12 @@ impl VtaClient {
         &self,
         params: &crate::protocols::audit_management::list::ListAuditLogsBody,
     ) -> Result<crate::protocols::audit_management::list::ListAuditLogsResultBody, VtaError> {
-        use crate::protocols::audit_management;
-        self.rpc(
-            audit_management::LIST_LOGS,
+        // `ListAuditLogsBody` serializes to the canonical `audit/list/0.1`
+        // payload (omitted filters are absent, not null) — conformance is
+        // asserted server-side in `trust_tasks::audit::tests`.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUDIT_LIST_0_1,
             serde_json::to_value(params)?,
-            audit_management::LIST_LOGS_RESULT,
             30,
             |c, url| {
                 // Query-param names are the canonical camelCase ones the
@@ -63,11 +64,9 @@ impl VtaClient {
     pub async fn get_audit_retention(
         &self,
     ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, VtaError> {
-        use crate::protocols::audit_management;
-        self.rpc(
-            audit_management::GET_RETENTION,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0,
             serde_json::json!({}),
-            audit_management::GET_RETENTION_RESULT,
             30,
             |c, url| c.get(format!("{url}/audit/retention")),
         )
@@ -81,10 +80,9 @@ impl VtaClient {
     ) -> Result<crate::protocols::audit_management::retention::RetentionResultBody, VtaError> {
         use crate::protocols::audit_management;
         let body = audit_management::retention::UpdateRetentionBody { retention_days };
-        self.rpc(
-            audit_management::UPDATE_RETENTION,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0,
             serde_json::to_value(&body)?,
-            audit_management::UPDATE_RETENTION_RESULT,
             30,
             |c, url| c.patch(format!("{url}/audit/retention")).json(&body),
         )
