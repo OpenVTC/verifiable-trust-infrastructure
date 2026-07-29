@@ -1809,10 +1809,33 @@ pub(crate) enum AclCommands {
         approve_contexts: Vec<String>,
     },
     /// Update an ACL entry
+    /// Change a subject's role, guarded by a compare-and-swap.
+    ///
+    /// `--from` is the role you believe they hold. If another admin has
+    /// moved them since you looked, the change is refused rather than
+    /// silently overwriting theirs — re-read with `pnm acl get` and retry.
+    ChangeRole {
+        /// DID of the entry whose role is changing
+        #[arg(long)]
+        did: String,
+        /// The role the subject currently holds
+        #[arg(long = "from")]
+        from_role: String,
+        /// The role to move them to
+        #[arg(long = "to")]
+        to_role: String,
+        /// Optional rationale, recorded in the audit log
+        #[arg(long)]
+        reason: Option<String>,
+    },
     Update {
         /// DID of the entry to update
         did: String,
-        /// New role
+        /// New role.
+        ///
+        /// Refused — role changes need `pnm acl change-role`, which carries
+        /// the compare-and-swap. Kept here so the error can name the exact
+        /// replacement command rather than reading as an unknown flag.
         #[arg(long)]
         role: Option<String>,
         /// New label

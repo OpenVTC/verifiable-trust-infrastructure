@@ -528,7 +528,6 @@ async fn update_acl_via_didcomm() {
     .await;
 
     let req = UpdateAclRequest {
-        role: Some("reader".into()),
         label: None,
         allowed_contexts: None,
         step_up_approver: None,
@@ -536,6 +535,44 @@ async fn update_acl_via_didcomm() {
         approve_scope: None,
     };
     client.update_acl("did:key:zAdmin", req).await.unwrap();
+
+    shutdown_all(client, responder, mediator).await;
+}
+
+/// The client must send `change-role` over a message type the router
+/// actually handles. Adding the client method without registering the
+/// DIDComm arm compiles cleanly and fails only at runtime with
+/// "unsupported message type" — which is precisely what happened while
+/// this task was being split out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn change_acl_role_via_didcomm() {
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if msg_type == acl_management::CHANGE_ROLE {
+            // The compare-and-swap has to reach the maintainer, or the
+            // check it exists for cannot run.
+            assert_eq!(body["fromRole"], "reader", "fromRole must be sent: {body}");
+            assert_eq!(body["toRole"], "application", "toRole must be sent: {body}");
+            ResponderReply::ok(
+                acl_management::CHANGE_ROLE_RESULT,
+                acl_entry_envelope("did:key:zAdmin"),
+            )
+        } else {
+            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+        }
+    })
+    .await;
+
+    client
+        .change_acl_role(
+            "did:key:zAdmin",
+            vta_sdk::client::ChangeAclRoleRequest {
+                from_role: "reader".into(),
+                to_role: "application".into(),
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
 
     shutdown_all(client, responder, mediator).await;
 }

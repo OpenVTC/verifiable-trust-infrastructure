@@ -731,7 +731,6 @@ async fn update_acl_patches() {
     .await;
     let c = client(&server).await;
     let req = UpdateAclRequest {
-        role: Some("reader".into()),
         label: None,
         allowed_contexts: Some(vec!["ctx-b".into()]),
         step_up_approver: None,

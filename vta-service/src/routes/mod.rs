@@ -432,6 +432,7 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         // as a DID. Self-service key rotation (any authenticated caller).
         .routes(routes!(acl::swap_acl))
         .routes(routes!(acl::get_acl, acl::update_acl, acl::delete_acl))
+        .routes(routes!(acl::change_role))
         // Audit log routes
         .routes(routes!(audit::list_audit_logs))
         .routes(routes!(audit::get_retention, audit::update_retention))

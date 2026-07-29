@@ -2,8 +2,8 @@
 
 use super::types::AclEntryEnvelope;
 use super::{
-    AclEntryResponse, AclListResponse, CreateAclRequest, SwapAclRequest, UpdateAclRequest,
-    VtaClient, encode_path_segment,
+    AclEntryResponse, AclListResponse, ChangeAclRoleRequest, CreateAclRequest, SwapAclRequest,
+    UpdateAclRequest, VtaClient, encode_path_segment,
 };
 use crate::acl::ContextDirection;
 use crate::error::VtaError;
@@ -113,7 +113,6 @@ impl VtaClient {
                 acl_management::UPDATE_ACL,
                 serde_json::json!({
                     "subject": did,
-                    "role": &req.role,
                     "label": &req.label,
                     "allowed_contexts": &req.allowed_contexts,
                 }),
@@ -122,6 +121,41 @@ impl VtaClient {
                 |c, url| {
                     c.patch(format!("{url}/acl/{}", encode_path_segment(did)))
                         .json(&req)
+                },
+            )
+            .await?;
+        Ok(wrapped.entry)
+    }
+
+    /// Transition a subject's role, compare-and-swapped against the role
+    /// they currently hold.
+    ///
+    /// Separate from [`Self::update_acl`] because role is the one ACL
+    /// attribute where a lost update is a privilege change. If another
+    /// admin has moved the subject since you read them, this fails
+    /// rather than overwriting their change — re-read and retry.
+    pub async fn change_acl_role(
+        &self,
+        did: &str,
+        req: ChangeAclRoleRequest,
+    ) -> Result<AclEntryResponse, VtaError> {
+        let wrapped: AclEntryEnvelope = self
+            .rpc(
+                acl_management::CHANGE_ROLE,
+                serde_json::json!({
+                    "subject": did,
+                    "fromRole": &req.from_role,
+                    "toRole": &req.to_role,
+                    "reason": &req.reason,
+                }),
+                acl_management::CHANGE_ROLE_RESULT,
+                30,
+                |c, url| {
+                    c.post(format!(
+                        "{url}/acl/{}/change-role",
+                        encode_path_segment(did)
+                    ))
+                    .json(&req)
                 },
             )
             .await?;

@@ -360,6 +360,9 @@ pub async fn dispatch(
     if t == acl_management::LIST_ACL {
         return finish(handlers::handle_list_acl(ctx, msg, Extension(vta_state)).await);
     }
+    if t == acl_management::CHANGE_ROLE {
+        return finish(handlers::handle_change_acl_role(ctx, msg, Extension(vta_state)).await);
+    }
     if t == acl_management::UPDATE_ACL {
         return finish(handlers::handle_update_acl(ctx, msg, Extension(vta_state)).await);
     }

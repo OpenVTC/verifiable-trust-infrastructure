@@ -152,9 +152,14 @@ pub struct UpdateAclRequest {
     pub approve_scope: Option<ApproveScope>,
 }
 
-/// PATCH /acl/{did} — update role, label, or allowed contexts for an ACL entry.
-/// Auth: Admin only (the operation layer also enforces this; gating at the
-/// extractor fails earlier with a clearer error).
+/// PATCH /acl/{did} — update label, contexts, step-up or approve authority on
+/// an ACL entry. Auth: Admin only (the operation layer also enforces this;
+/// gating at the extractor fails earlier with a clearer error).
+///
+/// **Role changes are refused here.** They belong to
+/// `POST /acl/{did}/change-role`, which carries the `fromRole`
+/// compare-and-swap; applying one without that check is how a concurrent
+/// demotion gets silently overwritten.
 #[utoipa::path(
     patch, path = "/acl/{did}", tag = "acl",
     security(("bearer_jwt" = [])),
@@ -174,6 +179,17 @@ pub async fn update_acl(
     Path(did): Path<String>,
     Json(req): Json<UpdateAclRequest>,
 ) -> Result<Json<CreateAclResponseBody>, AppError> {
+    // Refuse rather than ignore. Silently dropping a role from a patch
+    // would report success while leaving the subject's privileges exactly
+    // as they were — the caller believes they demoted someone who is still
+    // an admin.
+    if let Some(role) = &req.role {
+        return Err(AppError::Validation(format!(
+            "role changes are not part of `acl/update`; they need the compare-and-swap that \
+             `acl/change-role` carries. Run: pnm acl change-role --did {did} --from \
+             <current-role> --to {role}"
+        )));
+    }
     let result = operations::acl::update_from_params(
         &state.acl_ks,
         &state.audit_ks,
@@ -181,7 +197,7 @@ pub async fn update_acl(
         &auth.0,
         &did,
         operations::acl::UpdateAclParams {
-            role: req.role,
+            role: None,
             label: req.label,
             allowed_contexts: req.allowed_contexts,
             step_up_approver: req.step_up_approver,
@@ -192,6 +208,62 @@ pub async fn update_acl(
     )
     .await?;
     Ok(Json(result))
+}
+
+/// Request body for `POST /acl/{did}/change-role`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeRoleRequest {
+    /// The role the caller believes the subject currently holds. A
+    /// mismatch against the stored role is refused rather than applied.
+    pub from_role: String,
+    pub to_role: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// POST /acl/{did}/change-role — transition a subject's role, guarded by a
+/// compare-and-swap on `fromRole`. Auth: Admin only.
+///
+/// Split from `PATCH /acl/{did}` because role is the one attribute where a
+/// lost update is a privilege change: without the check, two admins on the
+/// same stale read silently overwrite one another and the loser's intent —
+/// a demotion, say — disappears with no error.
+#[utoipa::path(
+    post, path = "/acl/{did}/change-role", tag = "acl",
+    security(("bearer_jwt" = [])),
+    params(("did" = String, Path, description = "Subject DID")),
+    request_body = ChangeRoleRequest,
+    responses(
+        (status = 200, description = "Role changed", body = CreateAclResponseBody),
+        (status = 400, description = "Role not recognized"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller may not confer the target role"),
+        (status = 404, description = "ACL entry not found"),
+        (status = 409, description = "Stored role does not match fromRole"),
+    ),
+)]
+pub async fn change_role(
+    auth: AdminAuth,
+    _step_up: RequireStepUp<AclChangeRoleOp>,
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+    Json(req): Json<ChangeRoleRequest>,
+) -> Result<Json<CreateAclResponseBody>, AppError> {
+    let stored = operations::acl::change_role(
+        &state.acl_ks,
+        &state.audit_ks,
+        &auth.0,
+        &did,
+        &req.from_role,
+        &req.to_role,
+        req.reason.as_deref(),
+        "rest",
+    )
+    .await?;
+    Ok(Json(CreateAclResponseBody {
+        entry: vta_sdk::protocols::acl_management::entry::AclEntry::from_result(&stored),
+    }))
 }
 
 /// DELETE /acl/{did} — remove an ACL entry. Auth: Admin or Initiator.

@@ -1,3 +1,4 @@
+pub mod change_role;
 pub mod create;
 pub mod delete;
 pub mod entry;
@@ -23,6 +24,11 @@ pub const LIST_ACL_RESULT: &str =
 pub const UPDATE_ACL: &str = "https://firstperson.network/protocols/acl-management/1.0/update-acl";
 pub const UPDATE_ACL_RESULT: &str =
     "https://firstperson.network/protocols/acl-management/1.0/update-acl-result";
+
+pub const CHANGE_ROLE: &str =
+    "https://firstperson.network/protocols/acl-management/1.0/change-role";
+pub const CHANGE_ROLE_RESULT: &str =
+    "https://firstperson.network/protocols/acl-management/1.0/change-role-result";
 
 pub const DELETE_ACL: &str = "https://firstperson.network/protocols/acl-management/1.0/delete-acl";
 pub const DELETE_ACL_RESULT: &str =

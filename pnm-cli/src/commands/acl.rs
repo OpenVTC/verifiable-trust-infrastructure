@@ -67,6 +67,12 @@ pub(crate) async fn run(
             )
             .await
         }
+        AclCommands::ChangeRole {
+            did,
+            from_role,
+            to_role,
+            reason,
+        } => acl::cmd_acl_change_role(client, &did, &from_role, &to_role, reason).await,
         AclCommands::Delete { did } => acl::cmd_acl_delete(client, &did).await,
     }
 }

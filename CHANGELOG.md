@@ -2,6 +2,65 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.16 / vta-service 0.13.8 / vta-cli-common 0.10.20 / pnm-cli 0.11.14 — role changes split out of `acl/update` into `acl/change-role`
+
+Closes the known remainder of #840 phase A. The VTA's `acl/update` accepted a
+`role`, but canonical `acl/update/0.1` defines no such member: the transition
+belongs to `acl/change-role/0.1`, which carries a **compare-and-swap** on the
+subject's current role. Both URIs are already published, so the
+unpublished-canonical count is unchanged at 44 — this is a correctness fix, not
+a reduction.
+
+**Why role is the one attribute that needs the check.** Everywhere else a lost
+update is an inconvenience; here it is a privilege change. Two admins acting on
+the same stale read — one demoting to `reader`, one promoting to `admin` —
+both succeed under a blind write, and whichever lands second silently wins. The
+loser's intent vanishes with no error anywhere, and when the loser was the
+*demotion*, someone stays an admin who was meant to be removed. Declaring
+`fromRole` turns that race into a refusal naming the role actually found.
+
+The check is backed by a versioned write (`update_acl_entry_versioned`), because
+comparing the role and then storing is still read-then-write on its own; the
+version guard closes the window between them.
+
+Two authorization guards run after the swap. `validate_role_assignment` decides
+whether the caller may confer the target role at all. `validate_acl_modification`
+— the same check `create` applies — decides whether the *resulting* entry is one
+the caller could have created directly, which is what stops promotion being an
+escalation route: an entry with an empty scope list is authorized **nowhere**
+while its role is non-admin, but flipping that same entry to `admin` makes it
+**unrestricted**.
+
+**Surfaces:**
+
+- New Trust Task `acl/change-role/0.1`, REST `POST /acl/{did}/change-role`,
+  DIDComm `change-role`, and `VtaClient::change_acl_role`.
+- New `pnm acl change-role --did <did> --from <role> --to <role> [--reason]`.
+- `acl/update` and `PATCH /acl/{did}` now **refuse** a role rather than ignoring
+  it — silently dropping it would report success while leaving the subject's
+  privileges exactly as they were.
+- `pnm acl update --role` is kept only so it can name its replacement: it looks
+  up the role the subject actually holds and prints the full corrected command,
+  since `--from` is the one argument an operator cannot guess.
+- An unrecognized role is a 400, not the 500 that `Role::parse` returns by
+  default.
+
+**Separately found, not fixed here.** `acl/update`'s *request* body is not
+canonical: it emits `did`/`allowedContexts` where the schema requires
+`subject`/`scopes`, and has no nested `stepUp`/`approve`. #842 made the response
+canonical and repointed the URI but left the request shape alone. Because that
+URI is published, the dispatch spine validates against the canonical schema, so
+`acl/update` over the **Trust Task** transport is rejected today (REST and the
+legacy DIDComm message use their own bodies and are unaffected). Pinned by a
+comment in the conformance test rather than asserted, so it cannot be mistaken
+for conformant; the fix is its own change.
+
+Covered by a round-trip case driving the real client against the real router:
+the valid transition, a stale `fromRole` refused with the entry left untouched,
+an unrecognized role refused, and `update` leaving the role alone.
+Mutation-verified — with the compare-and-swap removed, the stale request
+promotes the subject to `admin`.
+
 ### vta-sdk 0.20.15 / vta-service 0.13.7 — `webvh/servers/{add,update}` fold into `webvh/servers/register`
 
 Second reduction of the `spec/vta/webvh/*` family (#840 phase B). Takes the
