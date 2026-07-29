@@ -6,6 +6,21 @@
 //! a single SDK method and asserts the SDK's request shape (msg_type)
 //! and response decoding work end-to-end through the routing/2.0
 //! forward envelope path enforced by the test mediator.
+//!
+//! # Two request shapes
+//!
+//! There are now two wire shapes to mock, because #861 (#829) routed every
+//! client method with a Trust Task twin through `rpc_tt`:
+//!
+//! - **Trust Task** (the majority): the DIDComm message type is the binding
+//!   envelope [`TT_ENVELOPE`] and the body is a trust-task document
+//!   `{ id, type, payload }`, so the responder must dispatch on the *inner*
+//!   `type` URI (a `vta_sdk::trust_tasks::TASK_*` constant) — see [`is_tt`]
+//!   / [`tt_ok`].
+//! - **Legacy protocol message**: the surfaces #861 deliberately left on
+//!   `rpc` (`import_key`, the flat-response ACL reads/updates,
+//!   `backup_export`, …) still dispatch on the `*_management` message-type
+//!   constant.
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
@@ -14,14 +29,43 @@ use vta_sdk::did_key::ed25519_multibase_pubkey;
 use vta_sdk::error::VtaError;
 use vta_sdk::keys::{KeyOrigin, KeyStatus, KeyType};
 use vta_sdk::protocols::key_management::sign::SignAlgorithm;
-use vta_sdk::protocols::{
-    acl_management, audit_management, backup_management, context_management, did_management,
-    discovery, key_management, seed_management, vta_management,
-};
+use vta_sdk::protocols::{acl_management, backup_management, key_management};
 use vta_sdk::trust_tasks;
 
 mod common;
 use common::test_vta_responder::{ResponderReply, TestVtaResponder};
+
+// ── Trust-task envelope helpers ─────────────────────────────────────
+
+/// The DIDComm binding envelope every Trust Task rides in. `rpc_tt` sends
+/// this as the message type and puts the trust-task document in the body;
+/// the reply must come back under the same type (`send_and_wait` checks it).
+const TT_ENVELOPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
+
+/// True when this inbound message is a Trust Task dispatch for `tt_uri`.
+///
+/// The request payload is then `body["payload"]` — the JSON the SDK method
+/// used to send as the whole legacy message body.
+fn is_tt(msg_type: &str, body: &Value, tt_uri: &str) -> bool {
+    msg_type == TT_ENVELOPE && body.get("type").and_then(Value::as_str) == Some(tt_uri)
+}
+
+/// A successful trust-task reply carrying `payload` as the result body.
+fn tt_ok(tt_uri: &str, payload: Value) -> ResponderReply {
+    ResponderReply::ok(
+        TT_ENVELOPE,
+        json!({
+            "id": format!("urn:uuid:{}", uuid::Uuid::new_v4()),
+            "type": format!("{tt_uri}#response"),
+            "payload": payload,
+        }),
+    )
+}
+
+/// The catch-all every handler falls through to.
+fn no_handler() -> ResponderReply {
+    ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+}
 
 // ── Test fixtures ───────────────────────────────────────────────────
 
@@ -128,10 +172,10 @@ fn acl_entry_envelope(did: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn capabilities_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == discovery::DISCOVER_CAPABILITIES {
-            ResponderReply::ok(
-                discovery::DISCOVER_CAPABILITIES_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0) {
+            tt_ok(
+                trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
                 json!({
                     "version": "0.5.0",
                     "features": {"webvh": true, "didcomm": true, "tee": false, "rest": true},
@@ -141,7 +185,7 @@ async fn capabilities_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -155,14 +199,18 @@ async fn capabilities_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == vta_management::RESTART {
-            ResponderReply::ok(
-                vta_management::RESTART_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(
+            msg_type,
+            body,
+            trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
+        ) {
+            tt_ok(
+                trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
                 json!({"status": "restarting"}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -174,10 +222,10 @@ async fn restart_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_config_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == vta_management::GET_CONFIG {
-            ResponderReply::ok(
-                vta_management::GET_CONFIG_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_CONFIG_SHOW_0_1) {
+            tt_ok(
+                trust_tasks::TASK_CONFIG_SHOW_0_1,
                 json!({
                     "fields": [
                         { "key": "vta_did", "value": "did:web:vta.example.com",
@@ -190,7 +238,7 @@ async fn get_config_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -206,14 +254,14 @@ async fn get_config_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_keys_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::LIST_KEYS {
-            ResponderReply::ok(
-                key_management::LIST_KEYS_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_LIST_1_0) {
+            tt_ok(
+                trust_tasks::TASK_KEYS_LIST_1_0,
                 json!({"keys": [key_record_json("k1"), key_record_json("k2")], "total": 2}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -227,11 +275,11 @@ async fn list_keys_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_key_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::GET_KEY {
-            ResponderReply::ok(key_management::GET_KEY_RESULT, key_record_json("k1"))
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_GET_1_0) {
+            tt_ok(trust_tasks::TASK_KEYS_GET_1_0, key_record_json("k1"))
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -245,10 +293,10 @@ async fn get_key_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if msg_type == key_management::CREATE_KEY {
-            assert_eq!(body["key_type"], "ed25519");
-            ResponderReply::ok(
-                key_management::CREATE_KEY_RESULT,
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_CREATE_1_0) {
+            assert_eq!(body["payload"]["key_type"], "ed25519");
+            tt_ok(
+                trust_tasks::TASK_KEYS_CREATE_1_0,
                 json!({
                     "key_id": "k1",
                     "key_type": "ed25519",
@@ -260,7 +308,7 @@ async fn create_key_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -276,15 +324,16 @@ async fn create_key_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sign_via_didcomm_round_trips_payload() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if msg_type == key_management::SIGN_REQUEST {
-            // Verify the SDK base64url-encoded the payload.
-            assert_eq!(body["payload"], "aGVsbG8");
-            ResponderReply::ok(
-                key_management::SIGN_RESULT,
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_SIGN_1_0) {
+            // Verify the SDK base64url-encoded the payload-to-sign (which
+            // sits at `payload.payload` inside the trust-task document).
+            assert_eq!(body["payload"]["payload"], "aGVsbG8");
+            tt_ok(
+                trust_tasks::TASK_KEYS_SIGN_1_0,
                 json!({"key_id": "k1", "signature": "AQID", "algorithm": "eddsa"}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -300,10 +349,10 @@ async fn sign_via_didcomm_round_trips_payload() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalidate_key_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::REVOKE_KEY {
-            ResponderReply::ok(
-                key_management::REVOKE_KEY_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_REVOKE_1_0) {
+            tt_ok(
+                trust_tasks::TASK_KEYS_REVOKE_1_0,
                 json!({
                     "key_id": "k1",
                     "status": "revoked",
@@ -311,7 +360,7 @@ async fn invalidate_key_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -324,14 +373,14 @@ async fn invalidate_key_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rename_key_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::RENAME_KEY {
-            ResponderReply::ok(
-                key_management::RENAME_KEY_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_KEYS_RENAME_1_0) {
+            tt_ok(
+                trust_tasks::TASK_KEYS_RENAME_1_0,
                 json!({"key_id": "new", "updated_at": "2026-01-01T00:00:00Z"}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -342,6 +391,8 @@ async fn rename_key_via_didcomm() {
     shutdown_all(client, responder, mediator).await;
 }
 
+/// `import_key` is twinless — #861 left it on the legacy `rpc` path, so the
+/// mock still matches the `key-management/1.0` message type.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn import_key_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
@@ -359,7 +410,7 @@ async fn import_key_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -381,10 +432,12 @@ async fn import_key_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_key_secret_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == key_management::GET_KEY_SECRET {
-            ResponderReply::ok(
-                key_management::GET_KEY_SECRET_RESULT,
+    // The trust-task twin lives in the seeds slice
+    // (`spec/vta/seeds/export-mnemonic/1.0`) — same `{ key_id }` request.
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0) {
+            tt_ok(
+                trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
                 json!({
                     "key_id": "k1",
                     "key_type": "ed25519",
@@ -393,7 +446,7 @@ async fn get_key_secret_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -408,10 +461,10 @@ async fn get_key_secret_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_seeds_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == seed_management::LIST_SEEDS {
-            ResponderReply::ok(
-                seed_management::LIST_SEEDS_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_SEEDS_LIST_1_0) {
+            tt_ok(
+                trust_tasks::TASK_SEEDS_LIST_1_0,
                 json!({
                     "seeds": [{
                         "id": 1, "status": "active",
@@ -421,7 +474,7 @@ async fn list_seeds_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -434,14 +487,14 @@ async fn list_seeds_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rotate_seed_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == seed_management::ROTATE_SEED {
-            ResponderReply::ok(
-                seed_management::ROTATE_SEED_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_SEEDS_ROTATE_1_0) {
+            tt_ok(
+                trust_tasks::TASK_SEEDS_ROTATE_1_0,
                 json!({"previous_seed_id": 1, "new_seed_id": 2}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -454,6 +507,8 @@ async fn rotate_seed_via_didcomm() {
 
 // ── ACL ─────────────────────────────────────────────────────────────
 
+/// `list_acl` stayed on the legacy message (#861 left the ACL reads behind:
+/// their twins answer with the flat stored form, not `{ entries }`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_acl_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
@@ -463,7 +518,7 @@ async fn list_acl_via_didcomm() {
                 json!({"entries": [acl_entry_json("did:key:zAdmin")], "truncated": false}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -476,14 +531,14 @@ async fn list_acl_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_acl_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == acl_management::CREATE_ACL {
-            ResponderReply::ok(
-                acl_management::CREATE_ACL_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_GRANT_0_1) {
+            tt_ok(
+                trust_tasks::TASK_ACL_GRANT_0_1,
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -497,13 +552,13 @@ async fn create_acl_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_acl_via_didcomm_returns_unit() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == acl_management::DELETE_ACL {
-            // rpc_void path: any non-error response works; the SDK
-            // doesn't deserialize the body for unit-returning calls.
-            ResponderReply::ok(acl_management::DELETE_ACL_RESULT, json!({}))
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_ACL_REVOKE_0_1) {
+            // rpc_tt_void path: any non-rejection reply works; the SDK
+            // doesn't deserialize the payload for unit-returning calls.
+            tt_ok(trust_tasks::TASK_ACL_REVOKE_0_1, json!({}))
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -513,6 +568,8 @@ async fn delete_acl_via_didcomm_returns_unit() {
     shutdown_all(client, responder, mediator).await;
 }
 
+/// `update_acl` stayed on the legacy message: its request is non-canonical
+/// and the dispatch spine's schema check rejects it (#861).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_acl_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
@@ -522,7 +579,7 @@ async fn update_acl_via_didcomm() {
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -558,7 +615,7 @@ async fn change_acl_role_via_didcomm() {
                 acl_entry_envelope("did:key:zAdmin"),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -582,14 +639,14 @@ async fn change_acl_role_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_contexts_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == context_management::LIST_CONTEXTS {
-            ResponderReply::ok(
-                context_management::LIST_CONTEXTS_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_LIST_1_0) {
+            tt_ok(
+                trust_tasks::TASK_CONTEXTS_LIST_1_0,
                 json!({"contexts": [context_json("primary")]}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -602,14 +659,14 @@ async fn list_contexts_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_context_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == context_management::CREATE_CONTEXT {
-            ResponderReply::ok(
-                context_management::CREATE_CONTEXT_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_CREATE_1_0) {
+            tt_ok(
+                trust_tasks::TASK_CONTEXTS_CREATE_1_0,
                 context_json("primary"),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -623,11 +680,11 @@ async fn create_context_via_didcomm() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_context_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if msg_type == context_management::DELETE_CONTEXT {
-            assert_eq!(body["force"], true);
-            ResponderReply::ok(context_management::DELETE_CONTEXT_RESULT, json!({}))
+        if is_tt(msg_type, body, trust_tasks::TASK_CONTEXTS_DELETE_1_0) {
+            assert_eq!(body["payload"]["force"], true);
+            tt_ok(trust_tasks::TASK_CONTEXTS_DELETE_1_0, json!({}))
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -641,14 +698,14 @@ async fn delete_context_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_audit_retention_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == audit_management::GET_RETENTION {
-            ResponderReply::ok(
-                audit_management::GET_RETENTION_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_AUDIT_GET_RETENTION_1_0) {
+            tt_ok(
+                trust_tasks::TASK_AUDIT_GET_RETENTION_1_0,
                 json!({"retention_days": 90}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -684,22 +741,14 @@ fn template_record_json(name: &str) -> Value {
 /// and the VTA replies with a trust-task document whose `payload` is the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_did_templates_via_didcomm() {
-    const TT_ENVELOPE: &str = "https://trusttasks.org/binding/didcomm/0.1/envelope";
     let (mediator, responder, client) = build_didcomm(|msg_type, body| {
-        if msg_type == TT_ENVELOPE
-            && body.get("type").and_then(|v| v.as_str())
-                == Some(trust_tasks::TASK_DID_TEMPLATES_LIST_2_0)
-        {
-            ResponderReply::ok(
-                TT_ENVELOPE,
-                json!({
-                    "id": "urn:uuid:resp-1",
-                    "type": format!("{}#response", trust_tasks::TASK_DID_TEMPLATES_LIST_2_0),
-                    "payload": {"templates": [template_record_json("custom-1")]}
-                }),
+        if is_tt(msg_type, body, trust_tasks::TASK_DID_TEMPLATES_LIST_2_0) {
+            tt_ok(
+                trust_tasks::TASK_DID_TEMPLATES_LIST_2_0,
+                json!({"templates": [template_record_json("custom-1")]}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -730,14 +779,14 @@ fn webvh_did_record_json(did: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn list_dids_webvh_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == did_management::LIST_DIDS_WEBVH {
-            ResponderReply::ok(
-                did_management::LIST_DIDS_WEBVH_RESULT,
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_DIDS_LIST_1_0) {
+            tt_ok(
+                trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
                 json!({"dids": [webvh_did_record_json("did:webvh:abc")]}),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -750,11 +799,11 @@ async fn list_dids_webvh_via_didcomm() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_did_webvh_via_didcomm() {
-    let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
-        if msg_type == did_management::DELETE_DID_WEBVH {
-            ResponderReply::ok(did_management::DELETE_DID_WEBVH_RESULT, json!({}))
+    let (mediator, responder, client) = build_didcomm(|msg_type, body| {
+        if is_tt(msg_type, body, trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0) {
+            tt_ok(trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0, json!({}))
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -766,6 +815,7 @@ async fn delete_did_webvh_via_didcomm() {
 
 // ── Backup ──────────────────────────────────────────────────────────
 
+/// The `backup/*` pair is twinless, so it stays on the legacy message (#861).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backup_export_via_didcomm() {
     let (mediator, responder, client) = build_didcomm(|msg_type, _body| {
@@ -784,7 +834,7 @@ async fn backup_export_via_didcomm() {
                 }),
             )
         } else {
-            ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+            no_handler()
         }
     })
     .await;
@@ -885,10 +935,10 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
     // One persistent mediator + VTA responder for both cycles.
     let (mediator, responder) = TestVtaResponder::spawn_with_mediator(
         vec![client_did.clone()],
-        |msg_type: &str, _body: &Value| {
-            if msg_type == discovery::DISCOVER_CAPABILITIES {
-                ResponderReply::ok(
-                    discovery::DISCOVER_CAPABILITIES_RESULT,
+        |msg_type: &str, body: &Value| {
+            if is_tt(msg_type, body, trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0) {
+                tt_ok(
+                    trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
                     json!({
                         "version": "0.5.0",
                         "features": {"webvh": true, "didcomm": true, "tee": false, "rest": true},
@@ -898,7 +948,7 @@ async fn with_didcomm_sequential_cycles_for_same_did_do_not_duel() {
                     }),
                 )
             } else {
-                ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+                no_handler()
             }
         },
     )
@@ -955,7 +1005,7 @@ async fn provision_admin_rotation_didcomm_shuts_session_down_on_error() {
                 // still shut the session down before returning.
                 ResponderReply::problem_report("e.p.msg.forbidden", "denied for test")
             } else {
-                ResponderReply::problem_report("e.p.msg.not-found", "no handler")
+                no_handler()
             }
         },
     )
