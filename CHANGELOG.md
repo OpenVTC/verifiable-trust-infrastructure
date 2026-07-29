@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.21 / vta-service 0.13.12 — did-templates consolidated onto the merged 2.0 family
+
+Implements OpenVTC/verifiable-trust-infrastructure#851. The twelve-URI pair of
+trust-task families `vta/did-templates/*/1.0` (global) and
+`vta/contexts/did-templates/*/1.0` (context-scoped) collapses onto the merged
+six-task `vta/did-templates/{list,get,create,update,delete,render}/2.0` family:
+one URI per operation, with the payload's **optional `contextId`** selecting the
+scope — absent = global (super-admin gated for writes), present = that context
+(context-admin gated for writes, context access for reads). `render/2.0`
+additionally injects the ambient `CONTEXT_ID` / `CONTEXT_DID` variables when
+scoped, exactly as the former context render did.
+
+**Clean cutover — removed wire URIs.** Per the pre-production consolidation
+policy the twelve 1.0 URIs are dropped outright rather than dual-accepted; a
+document carrying any of them now gets `UnsupportedType`:
+
+- `https://trusttasks.org/spec/vta/did-templates/{list,create,get,update,delete,render}/1.0`
+- `https://trusttasks.org/spec/vta/contexts/did-templates/{list,create,get,update,delete,render}/1.0`
+
+**Surfaces:**
+
+- `vta-sdk`: six `TASK_DID_TEMPLATES_*_2_0` constants replace the twelve 1.0
+  constants; the `did_template_management` wire bodies collapse to one body per
+  op with `context_id: Option<String>` (the `*Context*Body` variants are gone);
+  `VtaClient` template methods keep their signatures but dispatch the 2.0 URIs.
+- `vta-service`: the did-templates trust-task slice is six scope-branching
+  handlers dispatching into the unchanged `operations::did_templates`
+  global/context functions; per-scope auth still enforced at the op layer.
+  REST routes are untouched.
+
 ### vti-common 0.11.30 / vta-sdk 0.20.22 / vta-service 0.13.13 / vta-cli-common 0.10.21 / pnm-cli 0.11.15 / cnm-cli 0.11.12 — ACL grants can scope a caller to specific signing keys (`allowedKeys`, #818)
 
 The **resource** dimension of an ACL grant was expressible only as a context:

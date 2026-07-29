@@ -447,14 +447,17 @@ const UNPUBLISHED_CANONICAL_OK: &[(&str, usize, &str)] = &[
     // 77.
     (
         "https://trusttasks.org/spec/vta/",
-        44,
+        50,
         "VTA Trust Task surface at 1.0 — predates the registry and was never reconciled with it. \
          Down from 55 via #840 phase A: config/{get,update} onto config/{show,patch}, \
          provision-integration/request onto provision/integration/0.2, acl/* onto the \
          canonical acl/{grant,show,list,update,revoke} family, and audit/list-logs onto \
          audit/list/0.1. Phase A complete at 46; phase B folded \
          webvh/dids/get-log into webvh/dids/get, and webvh/servers/{add,update} \
-         into webvh/servers/register",
+         into webvh/servers/register. The last +6 are publish-lag, not debt: the \
+         vta/did-templates/*/2.0 family (#851, trust-tasks-tf#162) is published in \
+         trust-tasks-rs 0.2.49 while the workspace still pins 0.2.43, so this returns \
+         to 44 on the dependency bump without anything being authored",
     ),
 ];
 

@@ -216,6 +216,18 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
 /// Tracking issue: OpenVTC/verifiable-trust-infrastructure#854.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
+    // ─ vta/did-templates/*/2.0 — spec AUTHORED upstream
+    //   (trustoverip/dtgwg-trust-tasks-tf#162, lands in trust-tasks-rs
+    //   0.2.49); these entries are publish-lag only, not missing-spec
+    //   debt. The staleness check below forces their removal the moment
+    //   the pinned trust-tasks-rs is bumped to a version that indexes
+    //   the 2.0 family. (#851 — merged global+context family.)
+    "https://trusttasks.org/spec/vta/did-templates/list/2.0",
+    "https://trusttasks.org/spec/vta/did-templates/create/2.0",
+    "https://trusttasks.org/spec/vta/did-templates/get/2.0",
+    "https://trusttasks.org/spec/vta/did-templates/update/2.0",
+    "https://trusttasks.org/spec/vta/did-templates/delete/2.0",
+    "https://trusttasks.org/spec/vta/did-templates/render/2.0",
     // ─ vta/contexts/* — keep-and-spec under `vta/` (reduction plan §E).
     "https://trusttasks.org/spec/vta/contexts/list/1.0",
     "https://trusttasks.org/spec/vta/contexts/create/1.0",
@@ -937,35 +949,19 @@ dispatch_table! {
         [ Destructive None false ],
     vta_sdk::trust_tasks::TASK_BACKUP_ABORT_1_0 => backup::handle_abort
         [ Mutating None false ],
-    // ─── DID-templates slice (global) ────────────────────────────
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_1_0 => did_templates::handle_list
+    // ─── DID-templates slice (2.0 — optional contextId selects the
+    // scope; the twelve retired 1.0 URIs now get UnsupportedType) ──
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_LIST_2_0 => did_templates::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_1_0 => did_templates::handle_create
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_CREATE_2_0 => did_templates::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_1_0 => did_templates::handle_get
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_GET_2_0 => did_templates::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_1_0 => did_templates::handle_update
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_UPDATE_2_0 => did_templates::handle_update
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_1_0 => did_templates::handle_delete
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_DELETE_2_0 => did_templates::handle_delete
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_1_0 => did_templates::handle_render
-        [ None Metadata false ],
-    // ─── DID-templates slice (context-scoped) ────────────────────
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_LIST_1_0 => did_templates::handle_context_list
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_CREATE_1_0
-        => did_templates::handle_context_create
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_GET_1_0 => did_templates::handle_context_get
-        [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_UPDATE_1_0
-        => did_templates::handle_context_update
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_DELETE_1_0
-        => did_templates::handle_context_delete
-        [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_CONTEXTS_DID_TEMPLATES_RENDER_1_0
-        => did_templates::handle_context_render
+    vta_sdk::trust_tasks::TASK_DID_TEMPLATES_RENDER_2_0 => did_templates::handle_render
         [ None Metadata false ],
     // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
     //

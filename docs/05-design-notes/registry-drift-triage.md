@@ -16,6 +16,12 @@ are *fold* and *delete*, not *alias*.
   excluded from this triage as in-flight. (It is an outbound producer URI in
   `vta-service/src/trust_tasks/consent_request.rs`, not a dispatched one, so it
   is also outside the harness's scope.)
+- #851 — the did-templates global+context merge — shipped as
+  `vta/did-templates/*/2.0` (specced upstream in
+  trustoverip/dtgwg-trust-tasks-tf#162). The six 2.0 URIs sit in
+  `UNSPECCED_DISPATCHED_URIS` as **publish-lag entries only** until the pinned
+  `trust-tasks-rs` is bumped to ≥0.2.49; the staleness check then forces their
+  removal. Not missing-spec debt — do not fold into this triage.
 - #856 — `acl/update`'s non-canonical body — is being fixed by another stream.
 - #857 — the payload-conformance sweep (the *third* parity direction: served
   URIs whose published schema the handler's actual payload type does not
