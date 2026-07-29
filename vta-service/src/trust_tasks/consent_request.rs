@@ -6,10 +6,12 @@
 //! the prose the human reads — including the relying party whose task is being
 //! approved — while every downstream signature still verified.
 //!
-//! Note the contrast with step-up, whose `approveRequest` is deliberately
-//! unsigned: there the challenge is the binding and the approver signs the
-//! *response*, and nothing in the request is load-bearing for the decision.
-//! Here the request *is* the decision's basis, so it has to be attributable.
+//! Step-up's `approveRequest` is signed the same way (see
+//! `super::step_up::mint_pending_step_up`): both request legs put prose in
+//! front of a human, so both must be attributable to their issuer, and the
+//! signed request doubles as retainable evidence of exactly what was asked.
+//! The challenge binding still carries each decision's freshness — the
+//! signature authenticates the ask, the challenge scopes the approval.
 
 // Only the DIDComm delivery paths below bound their sends.
 #[cfg(feature = "didcomm")]

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### vta-service 0.13.17 — the step-up approve-request is signed (spec: proof REQUIRED)
+
+Part of the ecosystem-wide "signed request legs" push
+(affinidi/affinidi-webvh-service#147): every approval request leg an approver
+renders is signed by its issuer.
+
+- `mint_pending_step_up` signs the complete `auth/step-up/approve-request/0.1`
+  document (`eddsa-jcs-2022`, `assertionMethod`) with the `{vta_did}#key-0`
+  issuer secret — the same pattern task-consent requests already use, so
+  issuer DID == proof `verificationMethod` DID by construction. All three gate
+  surfaces (trust-task `require_step_up`, policy `initiate_self_step_up`, the
+  REST `RequireStepUp` extractor) load the secret.
+- **Fail-closed behavior change:** a VTA with no loadable `{vta_did}#key-0`
+  (or unset `vta_did`) now returns internal-error instead of emitting an
+  unsigned approve-request. Operators with unusual key setups take note.
+- `issuedAt` added to the minted document (framework SHOULD; the signed
+  evidence gets a timestamp).
+
 ### vta-sdk 0.20.25 / vta-service 0.13.16 / vtc-service 0.11.44 — trust-tasks-rs 0.2.51, messaging SDK 0.18.65, `acl_set` → `account_update`
 
 Picks up the consolidation programme's published registry output and sweeps the
