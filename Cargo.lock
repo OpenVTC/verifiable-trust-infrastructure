@@ -10089,7 +10089,7 @@ dependencies = [
 
 [[package]]
 name = "vta-backup"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -10143,7 +10143,7 @@ dependencies = [
 
 [[package]]
 name = "vta-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_ignored",
@@ -10333,7 +10333,7 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.13.18"
+version = "0.13.19"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",

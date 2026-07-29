@@ -989,6 +989,7 @@ pub async fn apply_inputs(
         },
         services: inputs.services.clone(),
         messaging: messaging.clone(),
+        mediator_readiness: Default::default(),
         auth: AuthConfig {
             jwt_signing_key,
             ..AuthConfig::default()
@@ -1475,6 +1476,7 @@ fn scratch_config_for_seed_store(
         store: StoreConfig { data_dir },
         services: ServicesConfig::default(),
         messaging: None,
+        mediator_readiness: Default::default(),
         auth: AuthConfig::default(),
         audit: Default::default(),
         vault: Default::default(),

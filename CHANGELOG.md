@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### vta-service 0.13.19 / vta-config 0.2.1 / vta-backup 0.1.4 — mediator cold-start self-readiness gate + persistent reconnect (#876)
+
+Fixes a cold-start race where a freshly deployed VTA could fail to establish its
+mediator connection and stay disconnected. On startup, before the first connect
+attempt, the mediator DID and the VTA's own DID may not yet be resolvable
+(propagation / caching), so the initial DIDComm handshake is rejected and the
+service never retries.
+
+- **`vta-service`**: new `messaging::readiness` gate. Before connecting, the
+  service confirms its own DID resolves over the network; until it does, the
+  connect is deferred rather than attempted-and-failed. A `MessagingConnect`
+  supervisor then owns the mediator connection for the process lifetime,
+  reconnecting with capped exponential backoff and full jitter instead of
+  giving up after the first failure. Self-resolution honours the configured
+  remote resolver when one is set, matching how the rest of the service
+  resolves DIDs.
+- **`vta-config`**: `MediatorReadinessConfig` gains reconnect controls —
+  `reconnect` (enable/disable), `reconnect_backoff_cap_secs`, and
+  `reconnect_max_elapsed_secs`.
+- **`vta-backup`**: test-support constructor updated for the new config field.
+
 ### vta-backup 0.1.3 / vtc-service 0.11.45 / pnm-cli 0.11.16 / cnm-cli 0.11.13 / vta-sdk 0.20.27 — raise backup password minimum to 15 characters
 
 The export-side minimum password length is raised from 12 to 15 characters
