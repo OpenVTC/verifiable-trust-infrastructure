@@ -72,9 +72,9 @@ fn op_class_for(type_uri: &str) -> Option<&'static str> {
     use super::step_up::op;
     use vta_sdk::trust_tasks as t;
     match type_uri {
-        t::TASK_ACL_CREATE_1_0 => Some(op::ACL_GRANT),
-        t::TASK_ACL_UPDATE_1_0 => Some(op::ACL_CHANGE_ROLE),
-        t::TASK_ACL_DELETE_1_0 => Some(op::ACL_REVOKE),
+        t::TASK_ACL_GRANT_0_1 => Some(op::ACL_GRANT),
+        t::TASK_ACL_UPDATE_0_1 => Some(op::ACL_CHANGE_ROLE),
+        t::TASK_ACL_REVOKE_0_1 => Some(op::ACL_REVOKE),
         t::TASK_CONTEXTS_DELETE_1_0 => Some(op::CONTEXT_DELETE),
         t::TASK_KEYS_REVOKE_1_0 => Some(op::KEY_REVOKE),
         t::TASK_VAULT_RELEASE_0_1 => Some(op::VAULT_RELEASE),

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### vta-sdk 0.20.17 / vta-service 0.13.10 — reverse registry-parity harness + the `_1_0` constant rename pass (#854 phase 1)
+
+The dispatcher's parity harness has always asserted every `vta-sdk` URI is
+served; nothing asserted the opposite, so a URI could be served for months with
+no published spec behind it. `vta-service` now carries the reverse check:
+`every_served_uri_has_a_published_spec_or_is_tracked_debt` requires every URI
+the service serves — dispatched, REST-routed, feature-gated, or `wire_v0_2`
+edge-transformed — to resolve in the published registry via the generated
+`trust_tasks_rs::schema_index`. The 56 known-unspecced URIs are acknowledged
+per-URI in `UNSPECCED_DISPATCHED_URIS`; the harness fails on new drift, on an
+entry whose spec has since been published (the list only shrinks), and on an
+entry no longer served. Dispositions for all 56 — plus the version-straddle
+list (`auth/step-up/approve-request` 0.2, `device/wipe/0.2`,
+`policy/evaluate`) — are recorded in
+`docs/05-design-notes/registry-drift-triage.md`.
+
+`vta-sdk` gets the long-pending rename pass: ten `TASK_*` constants whose
+greppable name lied about the wire (`TASK_ACL_LIST_1_0` naming `acl/list/0.1`)
+now carry the canonical verb stem and version suffix
+(`TASK_ACL_{LIST,GRANT,SHOW,UPDATE,REVOKE,SWAP_KEY}_0_1`,
+`TASK_AUDIT_LIST_0_1`, `TASK_CONFIG_{SHOW,PATCH}_0_1`,
+`TASK_PROVISION_INTEGRATION_0_2`). A source-scanning guard
+(`constant_suffix_matches_uri_version`) keeps every literal-assigned constant's
+suffix equal to its URI version from now on. Constant renames only — no wire
+URI changed.
+
 ### vta-service 0.13.9 — `task-consent/granted` notice sent as a full Trust Task document
 
 The DIDComm granted notice (`push_granted`) sent a bare payload where the

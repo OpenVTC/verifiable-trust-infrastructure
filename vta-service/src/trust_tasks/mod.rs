@@ -137,7 +137,7 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_0_1,
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_0_1,
     // Provision-integration — requires `webvh`.
-    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0,
+    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2,
     // WebVH-DID-lifecycle slice — requires `webvh`. The `dispatch_table!`
     // entries list the same URIs and are tracked by the parity harness when
     // `webvh` is on; this allowlist covers builds where `webvh` is off.
@@ -192,6 +192,97 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_SERVER_STATS_SYNC_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_ADMIN_REGISTER_0_1,
     vta_sdk::trust_tasks::TASK_DID_MANAGEMENT_REGISTRY_DEREGISTER_0_1,
+];
+
+/// URIs this dispatcher serves that the published Trust-Tasks registry does
+/// NOT yet spec — the implementation→registry drift tracked by issue #854.
+///
+/// The forward parity harness below asserts every vta-sdk URI is served; the
+/// reverse harness (`every_served_uri_has_a_published_spec_or_is_tracked_debt`)
+/// asserts every *served* URI resolves in the published registry, using the
+/// generated `trust_tasks_rs::schema_index` as the registry's vendored index
+/// (the same source `validate_payload` consults at dispatch time, and the same
+/// one the workspace-wide census in `vtc-service/tests/trust_task_manifest.rs`
+/// checks against — that census counts per *family*; this list is per *URI*,
+/// scoped to what this dispatcher actually serves).
+///
+/// Every entry is acknowledged debt with a disposition recorded in
+/// `docs/05-design-notes/registry-drift-triage.md` (and the programme doc
+/// `canonical-task-reduction.md`). The harness enforces monotonicity in both
+/// directions: serving a NEW unspecced URI fails (add the spec upstream — do
+/// not grow this list), and once a spec is published upstream the entry MUST
+/// be removed (a stale entry also fails).
+///
+/// Tracking issue: OpenVTC/verifiable-trust-infrastructure#854.
+#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
+const UNSPECCED_DISPATCHED_URIS: &[&str] = &[
+    // ─ vta/contexts/* — keep-and-spec under `vta/` (reduction plan §E).
+    "https://trusttasks.org/spec/vta/contexts/list/1.0",
+    "https://trusttasks.org/spec/vta/contexts/create/1.0",
+    "https://trusttasks.org/spec/vta/contexts/get/1.0",
+    "https://trusttasks.org/spec/vta/contexts/update/1.0",
+    "https://trusttasks.org/spec/vta/contexts/update-did/1.0",
+    "https://trusttasks.org/spec/vta/contexts/preview-delete/1.0",
+    "https://trusttasks.org/spec/vta/contexts/delete/1.0",
+    // ─ vta/keys/* — author top-level `keys/*` (reduction plan §D).
+    "https://trusttasks.org/spec/vta/keys/list/1.0",
+    "https://trusttasks.org/spec/vta/keys/create/1.0",
+    "https://trusttasks.org/spec/vta/keys/get/1.0",
+    "https://trusttasks.org/spec/vta/keys/rename/1.0",
+    "https://trusttasks.org/spec/vta/keys/revoke/1.0",
+    "https://trusttasks.org/spec/vta/keys/sign/1.0",
+    "https://trusttasks.org/spec/vta/keys/derive-and-sign/1.0",
+    "https://trusttasks.org/spec/vta/keys/derive-and-sign-document/1.0",
+    // ─ vta/seeds/* — keep-and-spec under `vta/` (reduction plan §E).
+    "https://trusttasks.org/spec/vta/seeds/list/1.0",
+    "https://trusttasks.org/spec/vta/seeds/rotate/1.0",
+    "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0",
+    // ─ vta/audit retention pair — candidate `audit/retention/{show,update}`.
+    "https://trusttasks.org/spec/vta/audit/get-retention/1.0",
+    "https://trusttasks.org/spec/vta/audit/update-retention/1.0",
+    // ─ Discovery / management singletons — diff against canonical first.
+    "https://trusttasks.org/spec/vta/discovery/capabilities/1.0",
+    "https://trusttasks.org/spec/vta/management/reload-services/1.0",
+    // ─ vta/backup/* — author top-level `backup/*` (reduction plan §D).
+    "https://trusttasks.org/spec/vta/backup/initiate-export/1.0",
+    "https://trusttasks.org/spec/vta/backup/complete-export/1.0",
+    "https://trusttasks.org/spec/vta/backup/initiate-import/1.0",
+    "https://trusttasks.org/spec/vta/backup/finalize-import/1.0",
+    "https://trusttasks.org/spec/vta/backup/abort/1.0",
+    // ─ vta/attestation/* (REST-routed, unauthenticated) — keep-and-spec.
+    "https://trusttasks.org/spec/vta/attestation/status/1.0",
+    "https://trusttasks.org/spec/vta/attestation/report/1.0",
+    // ─ vta/webvh/** — two-ends-of-one-wire decision pending (plan §B).
+    //   `dids/update` is published; the rest are not.
+    "https://trusttasks.org/spec/vta/webvh/servers/list/1.0",
+    "https://trusttasks.org/spec/vta/webvh/servers/register/1.0",
+    "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/list/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/create/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/get/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0",
+    "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/list/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/check/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/set/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/remove/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/disable/1.0",
+    "https://trusttasks.org/spec/vta/webvh/agent-name/enable/1.0",
+    // ─ Vault archival lifecycle (#540) — generalise with a store
+    //   discriminator instead of publishing twelve (reduction plan §C).
+    "https://trusttasks.org/spec/vault/archive/0.1",
+    "https://trusttasks.org/spec/vault/unarchive/0.1",
+    "https://trusttasks.org/spec/vault/restore/0.1",
+    "https://trusttasks.org/spec/vault/purge/0.1",
+    "https://trusttasks.org/spec/vault/credentials/receive/0.1",
+    "https://trusttasks.org/spec/vault/credentials/query/0.1",
+    "https://trusttasks.org/spec/vault/credentials/get/0.1",
+    "https://trusttasks.org/spec/vault/credentials/archive/0.1",
+    "https://trusttasks.org/spec/vault/credentials/unarchive/0.1",
+    "https://trusttasks.org/spec/vault/credentials/delete/0.1",
+    "https://trusttasks.org/spec/vault/credentials/restore/0.1",
+    "https://trusttasks.org/spec/vault/credentials/purge/0.1",
 ];
 
 /// Declarative Trust-Task dispatch table.
@@ -674,19 +765,19 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_TASK_CONSENT_DECISION_0_1 => task_consent::handle_decision
         [ Mutating None false ],
     // ─── ACL slice ────────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list
+    vta_sdk::trust_tasks::TASK_ACL_LIST_0_1 => acl::handle_list
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => acl::handle_create
+    vta_sdk::trust_tasks::TASK_ACL_GRANT_0_1 => acl::handle_create
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => acl::handle_get
+    vta_sdk::trust_tasks::TASK_ACL_SHOW_0_1 => acl::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => acl::handle_update
+    vta_sdk::trust_tasks::TASK_ACL_UPDATE_0_1 => acl::handle_update
         [ Mutating None false ],
     vta_sdk::trust_tasks::TASK_ACL_CHANGE_ROLE_0_1 => acl::handle_change_role
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => acl::handle_delete
+    vta_sdk::trust_tasks::TASK_ACL_REVOKE_0_1 => acl::handle_delete
         [ Mutating None false ],
-    vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_1_0 => acl::handle_swap_key
+    vta_sdk::trust_tasks::TASK_ACL_SWAP_KEY_0_1 => acl::handle_swap_key
         [ Destructive None false ],
     // ─── Device slice ─────────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_DEVICE_REGISTER_0_1 => device::handle_register
@@ -744,7 +835,7 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0 => seeds::handle_export_mnemonic
         [ None Secret false ],
     // ─── Audit slice ─────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_AUDIT_LIST_LOGS_1_0 => audit::handle_list_logs
+    vta_sdk::trust_tasks::TASK_AUDIT_LIST_0_1 => audit::handle_list_logs
         [ None Metadata false ],
     vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0 => audit::handle_get_retention
         [ None Metadata false ],
@@ -828,9 +919,9 @@ dispatch_table! {
     vta_sdk::trust_tasks::TASK_VTA_MEMORY_DELETE_0_1 => memory::handle_delete
         [ Mutating None false ],
     // ─── Config slice ────────────────────────────────────────────
-    vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get
+    vta_sdk::trust_tasks::TASK_CONFIG_SHOW_0_1 => config::handle_get
         [ None Metadata false ],
-    vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => config::handle_update
+    vta_sdk::trust_tasks::TASK_CONFIG_PATCH_0_1 => config::handle_update
         [ Mutating None false ],
     // ─── Management slice ────────────────────────────────────────
     vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => management::handle_reload_services
@@ -895,7 +986,7 @@ dispatch_table! {
         [ Destructive None false ],
     // ─── Provision-integration (feature-gated: webvh) ────────────
     #[cfg(feature = "webvh")]
-    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0
+    vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_0_2
         => provision_integration::handle_request
         [ Mutating Secret false ],
     // ─── WebVH-DID-lifecycle slice (feature-gated: webvh) ────────
@@ -1130,6 +1221,67 @@ mod tests {
                  (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
                  (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
                  (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
+            );
+        }
+    }
+
+    /// Reverse parity harness (#854) — the opposite direction of
+    /// [`dispatcher_handles_every_vta_sdk_uri`]. Every URI this service
+    /// *serves* — dispatched, REST-routed, feature-gated, or accepted via the
+    /// `wire_v0_2` edge transform — must resolve to a published spec in the
+    /// Trust-Tasks registry, as vendored by the generated
+    /// `trust_tasks_rs::schema_index` this build validates payloads against.
+    ///
+    /// A URI with no published spec is a live wire contract with no schema,
+    /// no registry page, no generated bindings, and no discovery entry. The
+    /// known ones are acknowledged per-URI in [`UNSPECCED_DISPATCHED_URIS`]
+    /// with their disposition recorded in
+    /// `docs/05-design-notes/registry-drift-triage.md`; anything else fails
+    /// here, so NEW drift cannot land silently.
+    ///
+    /// The allowlist is also checked for staleness in both directions: an
+    /// entry whose spec has since been published upstream must be removed
+    /// (the debt shrinks monotonically), and an entry no longer served is
+    /// dead and must be removed too.
+    #[test]
+    fn every_served_uri_has_a_published_spec_or_is_tracked_debt() {
+        let mut served: std::collections::BTreeSet<&str> = dispatched_uris().into_iter().collect();
+        served.extend(REST_ROUTED);
+        served.extend(KNOWN_FEATURE_GATED_URIS);
+        served.extend(wire_v0_2::WIRE_V0_2_URIS);
+
+        let unspecced: Vec<&&str> = served
+            .iter()
+            .filter(|uri| {
+                trust_tasks_rs::schema_index::schema_for(uri).is_none()
+                    && !UNSPECCED_DISPATCHED_URIS.contains(uri)
+            })
+            .collect();
+        assert!(
+            unspecced.is_empty(),
+            "this service serves URIs the published registry (trust-tasks-rs) \
+             has no spec for, and they are not acknowledged in \
+             UNSPECCED_DISPATCHED_URIS:\n  {}\n\n\
+             Author the spec upstream in trustoverip/dtgwg-trust-tasks-tf and \
+             bump trust-tasks-rs — growing the allowlist is the wrong fix \
+             (see issue #854 and docs/05-design-notes/registry-drift-triage.md).",
+            unspecced
+                .iter()
+                .map(|u| u.to_string())
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        );
+
+        for uri in UNSPECCED_DISPATCHED_URIS {
+            assert!(
+                trust_tasks_rs::schema_index::schema_for(uri).is_none(),
+                "`{uri}` is now published in the registry — remove it from \
+                 UNSPECCED_DISPATCHED_URIS so the debt shrinks monotonically"
+            );
+            assert!(
+                served.contains(uri),
+                "`{uri}` is in UNSPECCED_DISPATCHED_URIS but this service no \
+                 longer serves it — remove the stale entry"
             );
         }
     }
