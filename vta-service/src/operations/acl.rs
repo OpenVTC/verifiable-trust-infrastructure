@@ -48,6 +48,16 @@ pub struct UpdateAclParams {
     pub expires_at: Option<u64>,
     /// Optional human-readable rationale, recorded with the audit entry.
     pub reason: Option<String>,
+    /// Replace the signing-oracle key filter (#818). `None` leaves it
+    /// unchanged; `Some(None)` clears it (back to every key in the entry's
+    /// contexts — a privilege *increase*); `Some(Some(keys))` sets it to
+    /// exactly those ids, **the empty set meaning no keys at all**.
+    ///
+    /// A narrowing replacement is a privilege reduction. No session
+    /// revocation is needed to make it bind: `sign_payload` gate 4 reads the
+    /// stored entry on every request, so the narrowed set applies to the
+    /// subject's next sign call even while its access token stays valid.
+    pub allowed_keys: Option<Option<std::collections::BTreeSet<String>>>,
 }
 
 /// Parse a wire `stepUp.require` value into a [`StepUpMode`]. Only `self` and
@@ -198,7 +208,34 @@ fn to_result_body(e: &AclEntry) -> CreateAclResultBody {
         step_up_require: step_up_require_to_wire(e.step_up_require),
         approve_all_contexts,
         approve_contexts,
+        // `Some(∅)` must echo as an empty list, never collapse to `None` —
+        // the two are opposite grants (see `KeyScope`).
+        allowed_keys: e
+            .allowed_keys
+            .as_ref()
+            .map(|keys| keys.iter().cloned().collect()),
     }
+}
+
+/// Shape-check a signing-key filter before storing it: every id must be
+/// non-empty after trimming. The `--contexts ''` lesson one axis over — an
+/// empty id is not an identifier, matches no key, and an entry holding one
+/// looks filtered while being inert (or, worse, looks narrower than it is).
+fn validate_allowed_keys(
+    allowed_keys: Option<&std::collections::BTreeSet<String>>,
+) -> Result<(), AppError> {
+    if let Some(keys) = allowed_keys {
+        for key in keys {
+            if key.trim().is_empty() {
+                return Err(AppError::Validation(
+                    "allowedKeys must not contain an empty key id — pass an empty \
+                     list to authorize no keys, or omit the member for no filter"
+                        .into(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -215,11 +252,16 @@ pub async fn create_acl(
     step_up_approver: Option<String>,
     step_up_require: Option<String>,
     approve_scope: ApproveScope,
+    allowed_keys: Option<std::collections::BTreeSet<String>>,
     channel: &str,
 ) -> Result<CreateAclResultBody, AppError> {
     auth.require_manage()?;
     validate_role_assignment(auth, &role)?;
     validate_acl_modification(auth, &role, &allowed_contexts)?;
+    // The key filter can only narrow (it intersects with the context scope in
+    // `sign_payload` gate 4), so granting it needs no privilege check beyond
+    // the ones above — only a shape check.
+    validate_allowed_keys(allowed_keys.as_ref())?;
     // Granting approve-authority is its own privilege check: `all` is
     // super-admin-only, a scoped grant requires the caller to hold each context.
     validate_approve_scope_grant(auth, &approve_scope)?;
@@ -241,7 +283,8 @@ pub async fn create_acl(
         .with_expires_at(expires_at)
         .with_step_up_approver(step_up_approver)
         .with_step_up_require(step_up_require)
-        .with_approve_scope(approve_scope);
+        .with_approve_scope(approve_scope)
+        .with_allowed_keys(allowed_keys);
 
     store_acl_entry(acl_ks, &entry).await?;
 
@@ -427,6 +470,19 @@ pub async fn update_acl(
             .collect();
         require_contexts_exist(contexts_ks, &added).await?;
         entry.allowed_contexts = allowed_contexts;
+    }
+
+    if let Some(replacement) = params.allowed_keys {
+        // Replacement, not merge, per `acl/update/0.1`: the stored filter
+        // becomes exactly this value. `Some(None)` clears it (privilege
+        // increase — admin-gated like everything on this path); `Some(∅)`
+        // is "no keys at all", never a wildcard. A narrowing replacement is
+        // a privilege reduction, and it binds without any session revocation
+        // because `sign_payload` gate 4 reads this row live on every sign
+        // request — the narrowed set applies to the subject's next call even
+        // while its access token stays valid.
+        validate_allowed_keys(replacement.as_ref())?;
+        entry.allowed_keys = replacement;
     }
 
     if let Some(scope) = params.approve_scope {
@@ -774,6 +830,10 @@ pub async fn grant_from_entry(
         entry.step_up_approver(),
         entry.step_up_require(),
         entry.approve_scope(),
+        entry
+            .allowed_keys
+            .clone()
+            .map(|keys| keys.into_iter().collect()),
         channel,
     )
     .await?;
@@ -1312,6 +1372,7 @@ mod tests {
 
         let admin = super_admin("did:key:zRoot");
         let set = |scope| UpdateAclParams {
+            allowed_keys: None,
             role: None,
             label: None,
             allowed_contexts: None,
@@ -1386,6 +1447,122 @@ mod tests {
         );
     }
 
+    /// The `allowedKeys` replacement carries three intentions (#818): omitted
+    /// leaves the filter, `Some(Some(keys))` replaces it (the empty set is
+    /// "no keys at all"), `Some(None)` clears it. Each must land distinctly.
+    #[tokio::test]
+    async fn update_acl_sets_empties_and_clears_the_key_filter() {
+        use std::collections::BTreeSet;
+
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-a"]).await;
+        let target = "did:key:zSigner";
+        seed_target(&acl_ks, target, &["ctx-a"]).await;
+        let admin = super_admin("did:key:zRoot");
+
+        let set = |replacement| UpdateAclParams {
+            role: None,
+            label: None,
+            allowed_contexts: None,
+            step_up_approver: None,
+            step_up_require: None,
+            approve_scope: None,
+            expires_at: None,
+            reason: None,
+            allowed_keys: replacement,
+        };
+        let stored_filter = |acl_ks: &KeyspaceHandle| {
+            let acl_ks = acl_ks.clone();
+            async move {
+                get_acl_entry(&acl_ks, target)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .allowed_keys
+            }
+        };
+
+        // Replace: exactly this set.
+        let keys: BTreeSet<String> = ["key-1".to_string()].into_iter().collect();
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(Some(keys.clone()))),
+            "test",
+        )
+        .await
+        .expect("setting the filter");
+        assert_eq!(stored_filter(&acl_ks).await, Some(keys.clone()));
+
+        // Omitted: a label-only edit must not disturb the filter.
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            UpdateAclParams {
+                label: Some("relabelled".into()),
+                ..set(None)
+            },
+            "test",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            stored_filter(&acl_ks).await,
+            Some(keys),
+            "omitting allowedKeys must leave the filter unchanged"
+        );
+
+        // Empty set: authorized on NO keys — stored as Some(∅), never
+        // collapsed into "no filter".
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(Some(BTreeSet::new()))),
+            "test",
+        )
+        .await
+        .expect("narrowing to no keys");
+        assert_eq!(stored_filter(&acl_ks).await, Some(BTreeSet::new()));
+
+        // Clear: back to every key in scope — Some(None), an explicit value.
+        update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(None)),
+            "test",
+        )
+        .await
+        .expect("clearing the filter");
+        assert_eq!(stored_filter(&acl_ks).await, None);
+
+        // Shape guard: an empty-string key id is not an identifier (the
+        // `--contexts ''` lesson one axis over).
+        let err = update_acl(
+            &acl_ks,
+            &audit_ks,
+            &contexts_ks,
+            &admin,
+            target,
+            set(Some(Some(["".to_string()].into_iter().collect()))),
+            "test",
+        )
+        .await
+        .expect_err("an empty key id must be refused");
+        assert!(matches!(err, AppError::Validation(_)), "got {err:?}");
+    }
+
     /// Omitting the field leaves the existing scope alone — the distinction
     /// that made a flat bool/list pair unusable for this.
     #[tokio::test]
@@ -1403,6 +1580,7 @@ mod tests {
             &admin,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 allowed_contexts: None,
@@ -1425,6 +1603,7 @@ mod tests {
             &admin,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: Some("renamed".into()),
                 allowed_contexts: None,
@@ -1465,6 +1644,7 @@ mod tests {
             &ctx_admin_a,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 allowed_contexts: None,
@@ -1490,6 +1670,7 @@ mod tests {
             &ctx_admin_a,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 allowed_contexts: None,
@@ -1524,6 +1705,7 @@ mod tests {
             &caller,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 step_up_approver: None,
@@ -1562,6 +1744,7 @@ mod tests {
             &caller,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 step_up_approver: None,
@@ -1597,6 +1780,7 @@ mod tests {
             &caller,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 step_up_approver: None,
@@ -1647,6 +1831,7 @@ mod tests {
             None,
             None,
             ApproveScope::None,
+            None,
             "test",
         )
         .await
@@ -1682,6 +1867,7 @@ mod tests {
             None,
             None,
             ApproveScope::None,
+            None,
             "test",
         )
         .await
@@ -1713,6 +1899,7 @@ mod tests {
             None,
             None,
             ApproveScope::Contexts(vec!["ctx-a".into()]),
+            None,
             "test",
         )
         .await
@@ -1745,6 +1932,7 @@ mod tests {
             None,
             None,
             ApproveScope::Contexts(vec!["ctx-b".into()]),
+            None,
             "test",
         )
         .await
@@ -1773,6 +1961,7 @@ mod tests {
             None,
             None,
             ApproveScope::None,
+            None,
             "test",
         )
         .await
@@ -1867,6 +2056,7 @@ mod tests {
             &caller,
             target,
             UpdateAclParams {
+                allowed_keys: None,
                 role: None,
                 label: None,
                 step_up_approver: None,

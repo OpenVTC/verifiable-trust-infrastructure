@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### vta-sdk 0.20.23 / vta-service 0.13.14 — schema-conformance sweep, and every published task made canonical
+### vta-sdk 0.20.24 / vta-service 0.13.15 — schema-conformance sweep, and every published task made canonical
 
 Closes #856 and #857. A conformance sweep now asserts, for **every** task the
 VTA dispatcher binds to a published canonical URI (63 today, derived from the
@@ -42,6 +42,68 @@ The sweep's census is derived, so it tracks the fold programme on its own: the
 twelve `vta/did-templates/*/1.0` witnesses left with #864's merge onto the 2.0
 family, and the six 2.0 URIs re-enter scope (and will be asked for) at the next
 `trust-tasks-rs` bump that publishes them.
+
+**Interaction with `allowedKeys` (#818, below).** The canonicalized
+`UpdateAclBody` keeps that member — nested under the same
+`rename = "allowedKeys"` + `double_option` treatment it arrived with — but the
+conformance witnesses leave it **absent**, because the *published*
+`acl/update/0.1` and `acl/_shared/0.1/acl-entry` schemas do not carry it yet
+(the registry side of #818 is still in flight) and both generated types are
+`deny_unknown_fields`. Until that spec bump lands, a document that actually
+sets `allowedKeys` is rejected by the dispatch spine's schema validation on the
+trust-task path; REST and the DIDComm handler are unaffected. The member enters
+the sweep automatically at the `trust-tasks-rs` bump that publishes it.
+
+### vti-common 0.11.30 / vta-sdk 0.20.22 / vta-service 0.13.13 / vta-cli-common 0.10.21 / pnm-cli 0.11.15 / cnm-cli 0.11.12 — ACL grants can scope a caller to specific signing keys (`allowedKeys`, #818)
+
+The **resource** dimension of an ACL grant was expressible only as a context:
+`Capability::Sign` is unparameterized, so "this caller may invoke the signing
+oracle on exactly key K" could not be said — the only spelling was giving K a
+context of its own, forcing context topology to encode per-key authorization.
+`ContextPolicy.signable_keys` is not the answer: it is resource-bound by
+design (it constrains the key's context for *every* actor, super-admin
+included). This adds the actor-scoped half.
+
+**The member.** `AclEntry.allowed_keys: Option<BTreeSet<String>>` — key ids
+the entry may invoke the signing oracle on, mirroring the canonical
+`acl/_shared/0.1/acl-entry#allowedKeys` (trust-tasks 0.2.45). It
+**intersects** with `allowed_contexts`, never widens: an entry naming a key
+outside its contexts still cannot use it. `None` = every key in scope
+(byte-identical for every existing row); **`Some(∅)` = authorized on no
+keys**. The decode lives in one place — `KeyScope` +
+`AclEntry::key_scope()` — the same shape `ActScope` gave the context axis,
+so the empty-vs-absent distinction cannot be got backwards and no call site
+tests emptiness (`acl-scope-semantics.md`; the #746/#769/#770 defect class).
+
+**The gate.** `operations::keys::sign_payload` gains gate 4, strictly after
+`auth.require_context(ctx)` (a caller can never reach a key outside its
+contexts by naming it here) and before the policy quota (a refused call burns
+no daily sign budget). One enforcement point covers all three transports
+(REST, DIDComm `sign-request`, `keys/sign` Trust Task). The gate reads the
+**stored ACL row**, not the JWT — so narrowing an entry's filter binds the
+subject's next sign request with no session revocation and no token-TTL
+window. Unscoped (super-admin-only) keys are gated too: the filter only ever
+narrows.
+
+**Wire + surfaces.** Canonical `AclEntry` carries `allowedKeys`
+(`Option<Vec<String>>`, skip-if-**none** so `[]` survives the wire);
+`acl/update` carries the three-intention replacement (omitted = leave, `null`
+= clear — a privilege increase, empty array = no keys) as a double-`Option`
+pinned to the `allowedKeys` spelling with round-trip tests (the #656/#658
+casing-drift lesson). Wired through REST `POST /acl` / `PATCH /acl/{did}`,
+DIDComm and Trust Task `acl/grant` + `acl/update`, `CreateAclRequest
+::allowed_keys(..)` / `UpdateAclRequest.allowed_keys`, and
+`pnm|cnm acl create|update --allowed-keys <ids>` (update also takes
+`--allowed-keys-unrestricted` to remove the filter — its own flag, because an
+empty `--allowed-keys` cannot mean both "no keys" and "no filter"). Displays
+render the empty filter as "no keys", never blank. Docs: integration-guide
+§"What authorizes a sign request" is now four gates.
+
+**Revocation semantics (issue trap 3).** Nothing to add to
+`is_privilege_reduction`: that path is VTC-only, the VTC runs no signing
+oracle and `VtcAclEntry` has no `allowed_keys`; on the VTA the live
+store-read above already makes narrowing immediate, which is strictly
+stronger than session revocation.
 
 ### vta-sdk 0.20.21 / vta-service 0.13.12 — did-templates consolidated onto the merged 2.0 family
 

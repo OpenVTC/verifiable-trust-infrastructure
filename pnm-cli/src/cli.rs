@@ -1807,6 +1807,13 @@ pub(crate) enum AclCommands {
         /// `--approve-all` is set.
         #[arg(long, value_delimiter = ',')]
         approve_contexts: Vec<String>,
+        /// Restrict this DID to invoking the signing oracle on exactly these
+        /// key ids (comma-separated). Intersects with `--contexts` — it can
+        /// only narrow, never widen. Omit the flag for no filter (every key
+        /// the contexts reach). Do not pass `--allowed-keys ''`: an empty
+        /// string is not an id and is rejected.
+        #[arg(long, value_delimiter = ',')]
+        allowed_keys: Option<Vec<String>>,
     },
     /// Update an ACL entry
     /// Change a subject's role, guarded by a compare-and-swap.
@@ -1867,6 +1874,22 @@ pub(crate) enum AclCommands {
         /// leaves the scope unchanged.
         #[arg(long)]
         approve_none: bool,
+        /// Replace the signing-oracle key filter with exactly these key ids
+        /// (comma-separated). Intersects with the entry's contexts — it can
+        /// only narrow. Narrowing binds the subject's next sign request.
+        /// Omit to leave the filter unchanged.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with = "allowed_keys_unrestricted"
+        )]
+        allowed_keys: Option<Vec<String>>,
+        /// Remove the signing-oracle key filter entirely — the subject may
+        /// again use every key its contexts reach. A privilege increase, and
+        /// its own flag because an empty `--allowed-keys` cannot mean both
+        /// "no keys at all" and "no filter".
+        #[arg(long)]
+        allowed_keys_unrestricted: bool,
     },
     /// Delete an ACL entry
     Delete {

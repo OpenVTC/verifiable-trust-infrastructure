@@ -120,6 +120,17 @@ pub struct AclEntry {
     /// Resolve through the role, as `AclEntry::act_scope` does.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
+    /// Key ids the subject may invoke the signing oracle on (#818).
+    /// Intersects with — never widens — `scopes`.
+    ///
+    /// **`None` and `Some(∅)` are opposite grants.** Absent = every key the
+    /// entry's scopes reach (entries that pre-date the member); present-but-
+    /// empty = authorized on **no** keys. That is why the skip is
+    /// `Option::is_none`, *not* `Vec::is_empty`: `Some([])` must survive the
+    /// wire as `"allowedKeys": []` or the narrowest grant silently becomes
+    /// the widest. Mirrors `acl/_shared/0.1/acl-entry#allowedKeys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_keys: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -168,6 +179,7 @@ impl AclEntry {
             subject: r.did.clone(),
             role: r.role.clone(),
             scopes: r.allowed_contexts.clone(),
+            allowed_keys: r.allowed_keys.clone(),
             label: r.label.clone(),
             created_at: to_rfc3339(r.created_at),
             created_by: Some(r.created_by.clone()),
@@ -208,6 +220,7 @@ mod tests {
             subject: "did:key:z6MkA".into(),
             role: "reader".into(),
             scopes: vec![],
+            allowed_keys: None,
             label: None,
             created_at: None,
             created_by: None,
@@ -261,6 +274,39 @@ mod tests {
         assert_eq!(ts.to_rfc3339(), "2027-01-15T08:00:00+00:00");
     }
 
+    /// `allowedKeys` (#818): absent and empty are opposite grants and both
+    /// must survive the wire. `Some([])` emits `"allowedKeys": []`; `None`
+    /// emits nothing — collapsing them would turn "may sign with no keys"
+    /// into "may sign with every key in scope".
+    #[test]
+    fn allowed_keys_empty_and_absent_both_survive_the_wire() {
+        let mut e: AclEntry =
+            serde_json::from_value(serde_json::json!({"subject": "did:key:zA", "role": "reader"}))
+                .unwrap();
+        assert_eq!(e.allowed_keys, None, "absent decodes to None (no filter)");
+        let v = serde_json::to_value(&e).unwrap();
+        assert!(
+            v.get("allowedKeys").is_none(),
+            "no filter emits nothing: {v}"
+        );
+
+        e.allowed_keys = Some(vec![]);
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            v.get("allowedKeys"),
+            Some(&serde_json::json!([])),
+            "the empty filter must be emitted, not skipped: {v}"
+        );
+        let back: AclEntry = serde_json::from_value(v).unwrap();
+        assert_eq!(back.allowed_keys, Some(vec![]));
+
+        // And the wire casing is the canonical camelCase, pinned (#656/#658).
+        e.allowed_keys = Some(vec!["key-1".into()]);
+        let v = serde_json::to_value(&e).unwrap();
+        assert!(v.get("allowedKeys").is_some(), "{v}");
+        assert!(v.get("allowed_keys").is_none(), "{v}");
+    }
+
     /// The wire form is camelCase; the pre-fold snake_case names are gone.
     #[test]
     fn wire_form_is_camel_case() {
@@ -268,6 +314,7 @@ mod tests {
             subject: "did:key:zA".into(),
             role: "admin".into(),
             scopes: vec!["ctx".into()],
+            allowed_keys: None,
             label: None,
             created_at: None,
             created_by: None,

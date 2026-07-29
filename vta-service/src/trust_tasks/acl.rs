@@ -140,6 +140,10 @@ pub(super) async fn handle_update(
                 .expires_at
                 .map(vta_sdk::protocols::acl_management::entry::to_epoch),
             reason: req.reason.clone(),
+            allowed_keys: req
+                .allowed_keys
+                .clone()
+                .map(|r| r.map(|keys| keys.into_iter().collect())),
         },
         TRANSPORT_TRUST_TASK,
     )
@@ -397,6 +401,14 @@ mod tests {
                 all: false,
                 scopes: vec!["ctx-a".into()],
             }),
+            // `allowedKeys` (#818) is deliberately left absent: the member is
+            // not in the *published* `acl/update/0.1` schema yet (the registry
+            // side of #818 is still in flight), and the canonical Payload is
+            // `deny_unknown_fields`. Populating it here would assert a wire
+            // form the published spec rejects. It joins this sample — and the
+            // conformance sweep — at the `trust-tasks-rs` bump that publishes
+            // `acl/_shared/0.1/acl-entry#allowedKeys`.
+            allowed_keys: None,
         }
     }
 

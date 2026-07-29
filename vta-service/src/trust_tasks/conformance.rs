@@ -167,6 +167,11 @@ fn acl_entry() -> AclEntry {
             all: false,
             scopes: vec!["ctx-a".into()],
         }),
+        // Absent on purpose — `allowedKeys` (#818) is not in the published
+        // `acl/_shared/0.1/acl-entry` component yet and every response type
+        // that embeds this entry is `deny_unknown_fields`. It joins the
+        // witness at the `trust-tasks-rs` bump that publishes the member.
+        allowed_keys: None,
     }
 }
 
@@ -518,6 +523,11 @@ fn table() -> Vec<(&'static str, Conformance)> {
                         all: false,
                         scopes: vec!["ctx-a".into()],
                     }),
+                    // Absent on purpose — `allowedKeys` (#818) is not in the
+                    // published `acl/update/0.1` schema yet, and the Payload
+                    // is `deny_unknown_fields`. It enters this sample at the
+                    // `trust-tasks-rs` bump that publishes the member.
+                    allowed_keys: None,
                 }),
                 to_v(CreateAclResponseBody { entry: acl_entry() })
             ),

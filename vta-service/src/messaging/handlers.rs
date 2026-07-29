@@ -428,6 +428,7 @@ didcomm_handler!(
             &s.keys_ks,
             &s.imported_ks,
             &s.contexts_ks,
+            &s.acl_ks,
             &s.seed_store,
             &auth,
             &body.key_id,
@@ -772,6 +773,10 @@ didcomm_handler!(
                 approve_scope: body.approve_scope(),
                 expires_at: body.expires_at.map(acl_management::entry::to_epoch),
                 reason: body.reason.clone(),
+                allowed_keys: body
+                    .allowed_keys
+                    .clone()
+                    .map(|r| r.map(|keys| keys.into_iter().collect())),
             },
             "didcomm",
         )
