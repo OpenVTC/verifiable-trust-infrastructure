@@ -109,14 +109,15 @@ impl VtaClient {
         req: UpdateAclRequest,
     ) -> Result<AclEntryResponse, VtaError> {
         // Canonical `acl/update/0.1` returns the realized entry under `entry`,
-        // like grant and show.
+        // like grant and show. The DIDComm body is the canonical wire shape
+        // (`subject`/`scopes` — #856), same as the Trust Task transport.
         let wrapped: AclEntryEnvelope = self
             .rpc(
                 acl_management::UPDATE_ACL,
                 serde_json::json!({
                     "subject": did,
                     "label": &req.label,
-                    "allowed_contexts": &req.allowed_contexts,
+                    "scopes": &req.allowed_contexts,
                 }),
                 acl_management::UPDATE_ACL_RESULT,
                 30,

@@ -124,11 +124,15 @@ pub(super) async fn handle_update(
         &req.did,
         operations::acl::UpdateAclParams {
             role,
-            label: req.label,
-            allowed_contexts: req.allowed_contexts,
-            step_up_approver: req.step_up_approver,
-            step_up_require: req.step_up_require,
-            approve_scope: req.approve_scope,
+            label: req.label.clone(),
+            allowed_contexts: req.allowed_contexts.clone(),
+            step_up_approver: req.step_up_approver(),
+            step_up_require: req.step_up_require(),
+            approve_scope: req.approve_scope(),
+            expires_at: req
+                .expires_at
+                .map(vta_sdk::protocols::acl_management::entry::to_epoch),
+            reason: req.reason.clone(),
         },
         TRANSPORT_TRUST_TASK,
     )
@@ -316,7 +320,10 @@ pub(super) async fn handle_swap_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vta_sdk::protocols::acl_management::entry::{Approve, StepUp};
+
     use trust_tasks_rs::specs::acl::change_role::v0_1 as canonical_change_role;
+    use trust_tasks_rs::specs::acl::update::v0_1 as canonical_update;
 
     /// Our wire shapes must be the canonical ones, not merely bound to
     /// the canonical URIs. The generated types carry
@@ -335,31 +342,78 @@ mod tests {
         serde_json::from_value::<canonical_change_role::Payload>(json.clone())
             .unwrap_or_else(|e| panic!("not canonical `acl/change-role/0.1`: {e}\n{json:#}"));
 
-        // What this PR establishes: `acl/update` carries no role, so the
-        // only way to move one is the checked path above.
-        let base = serde_json::to_value(UpdateAclBody {
-            did: "did:key:z6MkSubject".into(),
-            label: None,
-            allowed_contexts: None,
-            step_up_approver: None,
-            step_up_require: None,
-            approve_scope: None,
-        })
-        .expect("serialize");
+        // What the role split established: `acl/update` carries no role, so
+        // the only way to move one is the checked path above.
+        let base = serde_json::to_value(update_body()).expect("serialize");
         assert!(
             base.get("role").is_none(),
             "acl/update must not carry a role: {base:#}"
         );
+    }
 
-        // KNOWN GAP, deliberately not asserted as conformant: this body is
-        // not yet canonical — it emits `did`/`allowedContexts` where
-        // `acl/update/0.1` requires `subject`/`scopes`, and it has no
-        // nested `stepUp`/`approve`. #842 made the *response* canonical
-        // and repointed the URI but left the request shape alone. Because
-        // the URI is published, the dispatch spine validates against the
-        // canonical schema, so `acl/update` over the Trust Task transport
-        // is rejected today. Tracked separately from this role split;
-        // asserting conformance here would fail for that unrelated reason
-        // and mask what this test is actually for.
+    /// A fully-populated request body, so the round-trip exercises every
+    /// member the type can emit — a partially-populated sample would let a
+    /// non-canonical spelling of the omitted members through.
+    fn update_body() -> UpdateAclBody {
+        UpdateAclBody {
+            did: "did:key:z6MkSubject".into(),
+            label: Some("build agent".into()),
+            allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
+            expires_at: Some(
+                chrono::DateTime::parse_from_rfc3339("2027-01-15T08:00:00Z")
+                    .expect("valid ts")
+                    .to_utc(),
+            ),
+            reason: Some("quarterly access review".into()),
+            step_up: Some(StepUp {
+                approver: Some("did:key:z6MkApprover".into()),
+                require: Some("delegated".into()),
+            }),
+            approve: Some(Approve {
+                all: false,
+                scopes: vec!["ctx-a".into()],
+            }),
+        }
+    }
+
+    /// The #856 fix: `acl/update`'s request body is canonical, and the check
+    /// has teeth. #842 repointed the URI onto the published spec — which
+    /// switched schema validation on at the dispatch spine — while the body
+    /// still emitted `did`/`allowedContexts`, so every conforming document
+    /// (and every one we emitted) was rejected with `malformed_request`.
+    #[test]
+    fn update_body_is_canonical() {
+        let json = serde_json::to_value(update_body()).expect("serialize");
+        serde_json::from_value::<canonical_update::Payload>(json.clone())
+            .unwrap_or_else(|e| panic!("not canonical `acl/update/0.1`: {e}\n{json:#}"));
+
+        // Prove the assertion above can fail (#857's lesson: an assertion
+        // that was passing for the wrong reason hid this exact defect for
+        // three PRs). Reintroduce the pre-fix spelling and require rejection.
+        let mut drifted = json.clone();
+        let obj = drifted.as_object_mut().expect("object");
+        let subject = obj.remove("subject").expect("subject is emitted");
+        obj.insert("did".into(), subject);
+        assert!(
+            serde_json::from_value::<canonical_update::Payload>(drifted).is_err(),
+            "`did` must be rejected by the canonical schema"
+        );
+
+        // And the historical flat members must be gone from the wire.
+        for legacy in ["did", "allowedContexts", "stepUpApprover", "approveScope"] {
+            assert!(
+                json.get(legacy).is_none(),
+                "legacy member `{legacy}` leaked onto the wire: {json:#}"
+            );
+        }
+
+        // Round-trip back: what the canonical schema accepts, we parse.
+        let ours: UpdateAclBody = serde_json::from_value(json).expect("parse our own wire form");
+        assert_eq!(ours.did, "did:key:z6MkSubject");
+        assert_eq!(ours.step_up_require().as_deref(), Some("delegated"));
+        assert_eq!(
+            ours.approve_scope(),
+            Some(vta_sdk::acl::ApproveScope::Contexts(vec!["ctx-a".into()]))
+        );
     }
 }

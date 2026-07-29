@@ -43,6 +43,11 @@ pub struct UpdateAclParams {
     /// approver's authority" from "don't touch it", and revoking is the case
     /// that matters most.
     pub approve_scope: Option<ApproveScope>,
+    /// `Some` sets the expiry (Unix epoch seconds — the wire carries RFC 3339,
+    /// converted at the transport boundary); `None` leaves it unchanged.
+    pub expires_at: Option<u64>,
+    /// Optional human-readable rationale, recorded with the audit entry.
+    pub reason: Option<String>,
 }
 
 /// Parse a wire `stepUp.require` value into a [`StepUpMode`]. Only `self` and
@@ -439,6 +444,10 @@ pub async fn update_acl(
         entry.approve_scope = scope;
     }
 
+    if let Some(expires_at) = params.expires_at {
+        entry.expires_at = Some(expires_at);
+    }
+
     store_acl_entry(acl_ks, &entry).await?;
 
     info!(channel, did = %did, "ACL entry updated");
@@ -448,7 +457,7 @@ pub async fn update_acl(
         resource = did,
         outcome = "success"
     );
-    let _ = audit::record(
+    let _ = audit::record_with_detail(
         audit_ks,
         "acl.update",
         &auth.did,
@@ -456,6 +465,7 @@ pub async fn update_acl(
         "success",
         Some(channel),
         None,
+        params.reason.as_deref(),
     )
     .await;
     Ok(to_result_body(&entry))
@@ -1308,6 +1318,8 @@ mod tests {
             step_up_approver: None,
             step_up_require: None,
             approve_scope: Some(scope),
+            expires_at: None,
+            reason: None,
         };
 
         // Narrow: All -> a single context, without touching the entry.
@@ -1397,6 +1409,8 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::All),
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1417,6 +1431,8 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: None,
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1455,6 +1471,8 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::All),
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1478,6 +1496,8 @@ mod tests {
                 step_up_approver: None,
                 step_up_require: None,
                 approve_scope: Some(ApproveScope::Contexts(vec!["ctx-b".into()])),
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1510,6 +1530,8 @@ mod tests {
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
                 approve_scope: None,
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1546,6 +1568,8 @@ mod tests {
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into()]),
                 approve_scope: None,
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1579,6 +1603,8 @@ mod tests {
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-b".into()]),
                 approve_scope: None,
+                expires_at: None,
+                reason: None,
             },
             "test",
         )
@@ -1847,6 +1873,8 @@ mod tests {
                 step_up_require: None,
                 allowed_contexts: Some(vec!["ctx-a".into(), "ctx-ghost".into()]),
                 approve_scope: None,
+                expires_at: None,
+                reason: None,
             },
             "test",
         )

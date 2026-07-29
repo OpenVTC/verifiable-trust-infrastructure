@@ -765,11 +765,13 @@ didcomm_handler!(
             &body.did,
             operations::acl::UpdateAclParams {
                 role,
-                label: body.label,
-                allowed_contexts: body.allowed_contexts,
-                step_up_approver: body.step_up_approver,
-                step_up_require: body.step_up_require,
-                approve_scope: body.approve_scope,
+                label: body.label.clone(),
+                allowed_contexts: body.allowed_contexts.clone(),
+                step_up_approver: body.step_up_approver(),
+                step_up_require: body.step_up_require(),
+                approve_scope: body.approve_scope(),
+                expires_at: body.expires_at.map(acl_management::entry::to_epoch),
+                reason: body.reason.clone(),
             },
             "didcomm",
         )

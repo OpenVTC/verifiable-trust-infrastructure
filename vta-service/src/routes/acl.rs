@@ -203,6 +203,10 @@ pub async fn update_acl(
             step_up_approver: req.step_up_approver,
             step_up_require: req.step_up_require,
             approve_scope: req.approve_scope,
+            // The REST body does not carry expiry or a rationale; the
+            // canonical trust-task body does.
+            expires_at: None,
+            reason: None,
         },
         "rest",
     )
