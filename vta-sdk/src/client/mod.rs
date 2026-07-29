@@ -6,7 +6,7 @@
 //! `audit.rs`, `did_templates.rs`, `bootstrap.rs`, `backup.rs`,
 //! `vta_management.rs`, `secrets.rs`). This file holds the struct
 //! definition, transport plumbing, the constructor / connection
-//! surface, and the shared `rpc` / `rpc_void` dispatch helpers used
+//! surface, and the shared `rpc` / `rpc_tt` dispatch helpers used
 //! by every per-domain method.
 
 use crate::error::VtaError;
@@ -704,8 +704,8 @@ impl VtaClient {
     /// - [`dispatch_trust_task`](Self::dispatch_trust_task) and everything built
     ///   on it (`rpc_tt`, the `device/*` and `vault/*` methods, the generic
     ///   trust-task escape hatch) routes over TSP.
-    /// - [`rpc`](Self::rpc) / `rpc_void` — the older DIDComm protocol-message
-    ///   surface (`key-management/1.0/*`, `create_did_webvh`, `list_contexts`)
+    /// - [`rpc`](Self::rpc) — the older DIDComm protocol-message surface
+    ///   (`import_key`, `update_webvh_server`, the legacy `backup/*` pair, …)
     ///   — stays on DIDComm **unconditionally**. It has no TSP dispatcher behind
     ///   it, so moving it would break it; that is why TSP is a per-surface
     ///   choice and not a client-wide one.
@@ -878,8 +878,8 @@ impl VtaClient {
     }
 
     /// Which transport carries the older DIDComm **protocol-message** surface
-    /// ([`rpc`](Self::rpc) / `rpc_void` — `key-management/1.0/*`,
-    /// `create_did_webvh`, `list_contexts`, …).
+    /// ([`rpc`](Self::rpc) — `import_key`, `update_webvh_server`, the legacy
+    /// `backup/*` pair, …).
     ///
     /// Never TSP: the VTA has no TSP dispatcher for these, so they report
     /// [`VtaError::UnsupportedTransport`] on a TSP-only client rather than being
@@ -1265,38 +1265,6 @@ impl VtaClient {
                 session
                     .send_and_wait(msg_type, body, result_type, timeout)
                     .await
-            }
-            #[cfg(feature = "tsp")]
-            Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
-        }
-    }
-
-    /// Like [`rpc`](Self::rpc) but for operations that return `()` (e.g. DELETE).
-    #[allow(unused_variables)]
-    pub(super) async fn rpc_void(
-        &self,
-        msg_type: &str,
-        body: serde_json::Value,
-        result_type: &str,
-        timeout: u64,
-        build_rest: impl FnOnce(&Client, &str) -> RequestBuilder,
-    ) -> Result<(), VtaError> {
-        match &self.transport {
-            Transport::Rest {
-                client,
-                base_url,
-                auth,
-            } => {
-                let req = build_rest(client, base_url);
-                let resp = Self::send_authed(client, base_url, auth, req).await?;
-                Self::handle_delete_response(resp).await
-            }
-            #[cfg(feature = "session")]
-            Transport::DIDComm { session, .. } => {
-                let _: serde_json::Value = session
-                    .send_and_wait(msg_type, body, result_type, timeout)
-                    .await?;
-                Ok(())
             }
             #[cfg(feature = "tsp")]
             Transport::Tsp { .. } => Err(unsupported_over_tsp(msg_type)),
@@ -1829,11 +1797,9 @@ impl VtaClient {
     pub async fn capabilities(
         &self,
     ) -> Result<crate::protocols::discovery::CapabilitiesResponse, VtaError> {
-        use crate::protocols::discovery;
-        self.rpc(
-            discovery::DISCOVER_CAPABILITIES,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
             serde_json::json!({}),
-            discovery::DISCOVER_CAPABILITIES_RESULT,
             30,
             |c, url| c.get(format!("{url}/capabilities")),
         )

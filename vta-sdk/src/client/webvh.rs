@@ -19,10 +19,9 @@ impl VtaClient {
         &self,
         req: AddWebvhServerRequest,
     ) -> Result<crate::webvh::WebvhServerRecord, VtaError> {
-        self.rpc(
-            did_management::ADD_WEBVH_SERVER,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_REGISTER_1_0,
             serde_json::to_value(&req)?,
-            did_management::ADD_WEBVH_SERVER_RESULT,
             30,
             |c, url| c.post(format!("{url}/webvh/servers")).json(&req),
         )
@@ -33,10 +32,9 @@ impl VtaClient {
         &self,
     ) -> Result<crate::protocols::did_management::servers::ListWebvhServersResultBody, VtaError>
     {
-        self.rpc(
-            did_management::LIST_WEBVH_SERVERS,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
             serde_json::json!({}),
-            did_management::LIST_WEBVH_SERVERS_RESULT,
             30,
             |c, url| c.get(format!("{url}/webvh/servers")),
         )
@@ -88,10 +86,9 @@ impl VtaClient {
     }
 
     pub async fn remove_webvh_server(&self, id: &str) -> Result<(), VtaError> {
-        self.rpc_void(
-            did_management::REMOVE_WEBVH_SERVER,
+        self.rpc_tt_void(
+            crate::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
             serde_json::json!({ "id": id }),
-            did_management::REMOVE_WEBVH_SERVER_RESULT,
             30,
             |c, url| c.delete(format!("{url}/webvh/servers/{}", encode_path_segment(id))),
         )
@@ -123,10 +120,9 @@ impl VtaClient {
             force,
             domain: domain.map(|d| d.to_string()),
         };
-        self.rpc(
-            did_management::REGISTER_DID_WITH_SERVER,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
             serde_json::to_value(&body)?,
-            did_management::REGISTER_DID_WITH_SERVER_RESULT,
             60,
             |c, url| {
                 c.post(format!(
@@ -145,10 +141,9 @@ impl VtaClient {
         &self,
         req: CreateDidWebvhRequest,
     ) -> Result<crate::protocols::did_management::create::CreateDidWebvhResultBody, VtaError> {
-        self.rpc(
-            did_management::CREATE_DID_WEBVH,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
             serde_json::to_value(&req)?,
-            did_management::CREATE_DID_WEBVH_RESULT,
             60,
             |c, url| c.post(format!("{url}/webvh/dids")).json(&req),
         )
@@ -160,13 +155,12 @@ impl VtaClient {
         context_id: Option<&str>,
         server_id: Option<&str>,
     ) -> Result<crate::protocols::did_management::list::ListDidsWebvhResultBody, VtaError> {
-        self.rpc(
-            did_management::LIST_DIDS_WEBVH,
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
             serde_json::json!({
                 "context_id": context_id,
                 "server_id": server_id,
             }),
-            did_management::LIST_DIDS_WEBVH_RESULT,
             30,
             |c, url| {
                 let mut u = format!("{url}/webvh/dids");
@@ -185,10 +179,12 @@ impl VtaClient {
     }
 
     pub async fn get_did_webvh(&self, did: &str) -> Result<crate::webvh::WebvhDidRecord, VtaError> {
-        self.rpc(
-            did_management::GET_DID_WEBVH,
+        // `spec/vta/webvh/dids/get/1.0` returns the record flattened (a
+        // strict superset of the bare `WebvhDidRecord`), so the same decode
+        // serves both legs.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
             serde_json::json!({ "did": did }),
-            did_management::GET_DID_WEBVH_RESULT,
             30,
             |c, url| c.get(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
         )
@@ -196,10 +192,12 @@ impl VtaClient {
     }
 
     pub async fn get_did_webvh_log(&self, did: &str) -> Result<GetDidLogResponse, VtaError> {
-        self.rpc(
-            did_management::GET_DID_WEBVH_LOG,
-            serde_json::json!({ "did": did }),
-            did_management::GET_DID_WEBVH_LOG_RESULT,
+        // The dedicated get-log task folded into `dids/get` + `includeLog`
+        // (see `GetDidWebvhBody`); the flattened response is a superset of
+        // `GetDidLogResponse`, so the decode is unchanged.
+        self.rpc_tt(
+            crate::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+            serde_json::json!({ "did": did, "includeLog": true }),
             30,
             |c, url| c.get(format!("{url}/webvh/dids/{}/log", encode_path_segment(did))),
         )
@@ -207,10 +205,9 @@ impl VtaClient {
     }
 
     pub async fn delete_did_webvh(&self, did: &str) -> Result<(), VtaError> {
-        self.rpc_void(
-            did_management::DELETE_DID_WEBVH,
+        self.rpc_tt_void(
+            crate::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
             serde_json::json!({ "did": did }),
-            did_management::DELETE_DID_WEBVH_RESULT,
             60,
             |c, url| c.delete(format!("{url}/webvh/dids/{}", encode_path_segment(did))),
         )
