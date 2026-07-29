@@ -18,7 +18,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use multibase::Base;
 use trust_tasks_rs::{Proof, TrustTask};
 
-use vta_service::test_support::build_test_app;
+use vta_service::test_support::{build_provisionable_test_app, build_test_app};
 use vti_common::auth::session::{Session, SessionState, get_session, now_epoch, store_session};
 use vti_common::auth::step_up::{new_pending_step_up, store_pending_step_up};
 
@@ -284,7 +284,9 @@ async fn did_signed_approve_response_0_2_elevates_session_to_aal2() {
 /// gate firing — not a permission denial — and it fires before payload parsing.
 #[tokio::test]
 async fn trust_task_acl_mutation_requires_step_up() {
-    let (router, ctx) = build_test_app().await;
+    // Signing app (real `{vta_did}#key-0`): the minted approve-request carries
+    // the spec-REQUIRED VTA proof, which the sentinel-DID app cannot sign.
+    let (router, ctx) = build_provisionable_test_app().await;
 
     // Opt into step-up enforcement (shipping default is disabled): a `*`
     // floor at AAL2 so the AAL1 trust-task mutation below is gated.
@@ -337,7 +339,7 @@ async fn trust_task_acl_mutation_requires_step_up() {
         "id": "acl-create-itest-1",
         "type": "https://trusttasks.org/spec/acl/grant/0.1",
         "issuer": did,
-        "recipient": "did:key:z6MkTestVTA",
+        "recipient": ctx.vta_did,
         "payload": {
             "entry": {
                 "subject": "did:key:z6MkSomeNewEntry",
@@ -377,6 +379,17 @@ async fn trust_task_acl_mutation_requires_step_up() {
     assert_eq!(details["approveRequest"]["recipient"], did, "{v}");
     assert_eq!(
         details["approveRequest"]["payload"]["targetAcr"], "aal2",
+        "{v}"
+    );
+    // The carried approve-request is signed by the VTA (spec: proof REQUIRED),
+    // and the issuer is the signing VTA itself.
+    assert_eq!(details["approveRequest"]["issuer"], ctx.vta_did, "{v}");
+    assert_eq!(
+        details["approveRequest"]["proof"]["cryptosuite"], "eddsa-jcs-2022",
+        "approve-request must carry the VTA's proof: {v}"
+    );
+    assert_eq!(
+        details["approveRequest"]["proof"]["proofPurpose"], "assertionMethod",
         "{v}"
     );
 }

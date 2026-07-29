@@ -14,11 +14,23 @@
 //! This module is the did-signed verifier; the handler that consumes the
 //! pending step-up, dispatches on `evidence.kind`, and elevates the session
 //! lands alongside it.
+//!
+//! The *request* leg (`auth/step-up/approve-request/0.1`, minted by
+//! [`mint_pending_step_up`]) is **signed by this VTA** — `eddsa-jcs-2022`,
+//! `assertionMethod`, issuer DID == the proof's `verificationMethod` DID —
+//! the same shape as `task-consent` ([`super::consent_request`]) and the
+//! spec's REQUIRED proof. Both request legs put prose (`reason`) in front of
+//! a human, so the request must be attributable to its issuer, and the signed
+//! document doubles as retainable evidence of exactly what was asked. The
+//! challenge binding still carries the decision's freshness — the signature
+//! authenticates the ask, the challenge scopes the approval.
 
 // Only the DIDComm send below bounds its delivery window.
 #[cfg(feature = "didcomm")]
 use std::time::Duration;
 
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions, crypto_suites::CryptoSuite};
+use affinidi_secrets_resolver::secrets::Secret;
 use axum::extract::FromRequestParts;
 use axum::http::StatusCode;
 use axum::http::request::Parts;
@@ -489,16 +501,6 @@ const STEP_UP_TTL_SECS: u64 = 300;
 /// long enough while keeping the standing grant short.
 const STEP_UP_ELEVATION_TTL_SECS: u64 = 900; // 15m
 
-/// Mint a pending step-up and build the `auth/step-up/approve-request/0.1`
-/// document the AAL1 caller hands to its approver (wallet / VTA).
-///
-/// A fresh challenge is bound server-side to the caller's
-/// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
-/// pending-step-up store; the approver's `approve-response` is later consumed by
-/// [`handle_approve_response`]. Shared by both gate surfaces — the REST `403`
-/// ([`issue_step_up_challenge`]) and the trust-task reject ([`require_step_up`]).
-/// Returns the approve-request document, or `Err(())` if the pending step-up
-/// could not be persisted (the caller maps that to a 5xx / internal-error reject).
 /// The default step-up reason when the gated request carries no structured
 /// authorization context (or one without a `summary`).
 const DEFAULT_STEP_UP_REASON: &str = "this operation requires a stepped-up (AAL2) session";
@@ -522,9 +524,43 @@ fn reason_and_context(payload: &Value) -> (&str, Option<&Value>) {
     (reason, ctx)
 }
 
+/// Load the VTA's `{vta_did}#key-0` issuer key for signing a step-up
+/// approve-request. Thin wrapper over
+/// [`crate::operations::credentials::load_vta_issuer_secret`] (the same key
+/// task-consent requests are signed with) that logs the failure and flattens
+/// the error to `Err(())` for the gate surfaces' internal-error mapping.
+async fn load_step_up_signing_secret(state: &AppState, vta_did: &str) -> Result<Secret, ()> {
+    crate::operations::credentials::load_vta_issuer_secret(state, vta_did, "step-up")
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to load VTA issuer key for step-up approve-request");
+        })
+}
+
+/// Mint a pending step-up and build the **signed**
+/// `auth/step-up/approve-request/0.1` document the AAL1 caller hands to its
+/// approver (wallet / VTA).
+///
+/// A fresh challenge is bound server-side to the caller's
+/// `{session_id, subject, targetAcr=aal2, acceptableEvidence}` via the
+/// pending-step-up store; the approver's `approve-response` is later consumed by
+/// [`handle_approve_response`]. Shared by both gate surfaces — the REST `403`
+/// ([`issue_step_up_challenge`]) and the trust-task reject ([`require_step_up`]).
+///
+/// The document carries the spec's REQUIRED Data-Integrity proof
+/// (`eddsa-jcs-2022`, `assertionMethod`), signed with `secret` — the VTA's
+/// `{vta_did}#key-0` issuer key — so the `reason` a human reads is attributable
+/// to this VTA and the request is retainable evidence of what was asked (see
+/// the module doc). Signing happens *last*, over the complete document
+/// (including `recipient` and `payload.ext`).
+///
+/// Returns the approve-request document, or `Err(())` if the pending step-up
+/// could not be persisted or the document could not be signed (the caller maps
+/// that to a 5xx / internal-error reject).
 async fn mint_pending_step_up(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
+    secret: &Secret,
     subject: &str,
     recipient: &str,
     approver_any: bool,
@@ -570,6 +606,7 @@ async fn mint_pending_step_up(
         "id": format!("urn:uuid:{}", Uuid::new_v4()),
         "type": "https://trusttasks.org/spec/auth/step-up/approve-request/0.1",
         "issuer": vta_did,
+        "issuedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "payload": {
             "subject": subject,
             "sessionId": session_id,
@@ -593,6 +630,31 @@ async fn mint_pending_step_up(
     if let Some(ctx) = authorization_context {
         doc["payload"]["ext"] = json!({ EXT_KEY_AUTHZ_CONTEXT: ctx });
     }
+    // Sign the complete document (spec: proof REQUIRED) — same pattern as
+    // `consent_request::mint_signed_requests`. The proof's verificationMethod
+    // resolves under the VTA DID, so issuer DID == proof VM DID.
+    let proof = match DataIntegrityProof::sign(
+        &doc,
+        secret,
+        SignOptions::new()
+            .with_proof_purpose("assertionMethod")
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to sign step-up approve-request");
+            return Err(());
+        }
+    };
+    match serde_json::to_value(&proof) {
+        Ok(p) => doc["proof"] = p,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to serialize step-up approve-request proof");
+            return Err(());
+        }
+    }
     Ok(doc)
 }
 
@@ -605,6 +667,7 @@ async fn mint_pending_step_up(
 pub(crate) async fn issue_step_up_challenge(
     sessions_ks: &KeyspaceHandle,
     vta_did: &str,
+    secret: &Secret,
     subject: &str,
     recipient: &str,
     approver_any: bool,
@@ -615,6 +678,7 @@ pub(crate) async fn issue_step_up_challenge(
     let approve_request = match mint_pending_step_up(
         sessions_ks,
         vta_did,
+        secret,
         subject,
         recipient,
         approver_any,
@@ -989,9 +1053,21 @@ pub(super) async fn require_step_up(
     // `summary` as the `reason` so a context-unaware renderer still shows
     // something meaningful.
     let (reason, authorization_context) = reason_and_context(&doc.payload);
+    let secret = match load_step_up_signing_secret(state, &vta_did).await {
+        Ok(s) => s,
+        Err(()) => {
+            return Some(reject_with(
+                doc,
+                RejectReason::InternalError {
+                    reason: "failed to initiate step-up".to_string(),
+                },
+            ));
+        }
+    };
     let reject = match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
+        &secret,
         &auth.did,
         &recipient,
         approver_any,
@@ -1046,9 +1122,21 @@ pub(super) async fn initiate_self_step_up(
         .clone()
         .unwrap_or_default();
     let (reason, authorization_context) = reason_and_context(&doc.payload);
+    let secret = match load_step_up_signing_secret(state, &vta_did).await {
+        Ok(s) => s,
+        Err(()) => {
+            return reject_with(
+                doc,
+                RejectReason::InternalError {
+                    reason: "failed to initiate step-up".to_string(),
+                },
+            );
+        }
+    };
     let reject = match mint_pending_step_up(
         &state.sessions_ks,
         &vta_did,
+        &secret,
         &auth.did,
         &auth.did, // self-approve: the subject is its own approver
         false,
@@ -1170,9 +1258,21 @@ impl<O: StepUpOp> FromRequestParts<AppState> for RequireStepUp<O> {
             .vta_did
             .clone()
             .unwrap_or_default();
+        let secret = match load_step_up_signing_secret(state, &vta_did).await {
+            Ok(s) => s,
+            Err(()) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    br#"{"error":"internal_error"}"#.to_vec(),
+                )
+                    .into_response());
+            }
+        };
         Err(issue_step_up_challenge(
             &state.sessions_ks,
             &vta_did,
+            &secret,
             &claims.did,
             &recipient,
             approver_any,
@@ -1265,9 +1365,16 @@ mod tests {
         .unwrap();
         let ks = store.keyspace(crate::keyspaces::SESSIONS).unwrap();
 
+        // A did:key issuer so the minted proof can be verified end-to-end with
+        // the same shared verifier the gates use (did:key resolves locally).
+        let sk = SigningKey::from_bytes(&[42u8; 32]);
+        let (vta_did, mb) = did_key(&sk);
+        let secret = issuer_secret(&sk, &format!("{vta_did}#{mb}"));
+
         let resp = issue_step_up_challenge(
             &ks,
-            "did:web:vta.example",
+            &vta_did,
+            &secret,
             "did:key:zHolder",
             // self-approval: recipient == subject
             "did:key:zHolder",
@@ -1287,7 +1394,7 @@ mod tests {
             v["approveRequest"]["type"],
             "https://trusttasks.org/spec/auth/step-up/approve-request/0.1"
         );
-        assert_eq!(v["approveRequest"]["issuer"], "did:web:vta.example");
+        assert_eq!(v["approveRequest"]["issuer"], vta_did);
         assert_eq!(v["approveRequest"]["recipient"], "did:key:zHolder");
         assert_eq!(v["approveRequest"]["payload"]["sessionId"], "sess-9");
         assert_eq!(v["approveRequest"]["payload"]["targetAcr"], "aal2");
@@ -1295,6 +1402,22 @@ mod tests {
         let challenge = v["approveRequest"]["payload"]["challenge"]
             .as_str()
             .expect("challenge string");
+
+        // The approve-request is signed (spec: proof REQUIRED) — an
+        // eddsa-jcs-2022 assertionMethod proof whose verificationMethod DID is
+        // the issuer, and the signature verifies over the served document.
+        let proof = &v["approveRequest"]["proof"];
+        assert_eq!(proof["type"], "DataIntegrityProof", "{v}");
+        assert_eq!(proof["cryptosuite"], "eddsa-jcs-2022", "{v}");
+        assert_eq!(proof["proofPurpose"], "assertionMethod", "{v}");
+        let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
+        let signer = crate::auth::di_proof::verify_trust_task_proof(&task)
+            .await
+            .expect("approve-request proof verifies");
+        assert_eq!(
+            signer, vta_did,
+            "issuer DID == proof verificationMethod DID"
+        );
 
         // The pending step-up was minted + bound to the caller, ready for the
         // matching approve-response to consume.
@@ -1354,9 +1477,14 @@ mod tests {
             "risk": "high",
             "action": { "kind": "share", "from": "finance", "to": "travel", "ttlSeconds": 3600 },
         });
+        let sk = SigningKey::from_bytes(&[43u8; 32]);
+        let (vta_did, mb) = did_key(&sk);
+        let secret = issuer_secret(&sk, &format!("{vta_did}#{mb}"));
+
         let resp = issue_step_up_challenge(
             &ks,
-            "did:web:vta.example",
+            &vta_did,
+            &secret,
             "did:key:zHolder",
             "did:key:zHolder",
             false,
@@ -1369,6 +1497,14 @@ mod tests {
 
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&bytes).unwrap();
+        // The `ext` context rides *inside* the signed surface — the proof
+        // covers it (SPEC: "The optional `ext` extension is part of the signed
+        // surface").
+        let task: TrustTask<Value> = serde_json::from_value(v["approveRequest"].clone()).unwrap();
+        let signer = crate::auth::di_proof::verify_trust_task_proof(&task)
+            .await
+            .expect("approve-request proof verifies over ext");
+        assert_eq!(signer, vta_did);
         let payload = &v["approveRequest"]["payload"];
         // The structured context rode into the approve-request under the
         // reverse-DNS `ext` key (spec-valid for deny_unknown_fields consumers)…
@@ -1391,6 +1527,12 @@ mod tests {
         mc.extend_from_slice(pk.as_bytes());
         let mb = multibase::encode(Base::Base58Btc, mc);
         (format!("did:key:{mb}"), mb)
+    }
+
+    /// A signing `Secret` for `sk` with verification-method `id` — the shape
+    /// `load_vta_issuer_secret` hands the production mint path.
+    fn issuer_secret(sk: &SigningKey, id: &str) -> Secret {
+        Secret::generate_ed25519(Some(id), Some(sk.as_bytes()))
     }
 
     /// Build an approve-response-shaped TrustTask and attach a did-signed

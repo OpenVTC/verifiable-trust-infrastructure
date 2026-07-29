@@ -17,7 +17,7 @@ use vti_common::auth::jwt::JwtKeys;
 use vti_common::auth::session::{Session, SessionState, store_session};
 
 use vta_service::store::KeyspaceHandle;
-use vta_service::test_support::{TestAppContext, build_test_app};
+use vta_service::test_support::{TestAppContext, build_provisionable_test_app, build_test_app};
 
 // ── Test harness — thin wrapper over the workspace's `test_support`
 // `build_test_app` helper. The substantial AppState wiring (every
@@ -33,6 +33,16 @@ struct TestApp {
 impl TestApp {
     async fn new() -> (Self, TestContext) {
         let (router, ctx) = build_test_app().await;
+        (Self { router }, TestContext { inner: ctx })
+    }
+
+    /// Like [`TestApp::new`] but with a real, self-resolving VTA signing
+    /// identity (`{vta_did}#key-0` provisioned). Needed by tests that drive a
+    /// path which **mints a VTA-signed document** — e.g. the step-up gate,
+    /// whose approve-request now carries the spec-REQUIRED proof — since the
+    /// cheap sentinel-DID app has no issuer key to sign with.
+    async fn new_signing() -> (Self, TestContext) {
+        let (router, ctx) = build_provisionable_test_app().await;
         (Self { router }, TestContext { inner: ctx })
     }
 
@@ -703,7 +713,8 @@ async fn acl_list_filters_a_context_in_both_directions() {
 /// up. Mirrors the operator policy: all ACL changes require AAL2.
 #[tokio::test]
 async fn acl_mutation_requires_step_up() {
-    let (app, ctx) = TestApp::new().await;
+    // Signing app: the approve-request carries the spec-REQUIRED VTA proof.
+    let (app, ctx) = TestApp::new_signing().await;
     // Opt into step-up enforcement (shipping default is disabled).
     ctx.enable_step_up_all().await;
     // A normal (AAL1) admin session: correct role, but not stepped up.
@@ -741,6 +752,11 @@ async fn acl_mutation_requires_step_up() {
             .is_some_and(|c| c.len() >= 16),
         "approve-request must carry a ≥16-char challenge"
     );
+    // The approve-request is signed by the VTA (spec: proof REQUIRED) so the
+    // reason the approver renders is attributable to this relying party.
+    assert_eq!(ar["proof"]["type"], "DataIntegrityProof", "{body}");
+    assert_eq!(ar["proof"]["cryptosuite"], "eddsa-jcs-2022", "{body}");
+    assert_eq!(ar["proof"]["proofPurpose"], "assertionMethod", "{body}");
 }
 
 #[tokio::test]
@@ -811,7 +827,8 @@ async fn swap_key_carve_out_admits_aal1_when_configured() {
 #[tokio::test]
 async fn swap_key_gated_without_carve_out() {
     use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-    let (app, ctx) = TestApp::new().await;
+    // Signing app: the gate mints a signed approve-request (spec: proof REQUIRED).
+    let (app, ctx) = TestApp::new_signing().await;
     // Same AAL2 floor but WITHOUT the carve-out → swap-key is gated.
     ctx.set_step_up_floors(vec![StepUpFloor {
         operation: "acl/swap-key".into(),
@@ -902,7 +919,8 @@ async fn acl_grant_persists_step_up_approver() {
 async fn delegated_step_up_routes_to_configured_approver() {
     use vti_common::acl::{AclEntry, Role, store_acl_entry};
     use vti_common::auth::step_up::{StepUpFloor, StepUpMode};
-    let (app, ctx) = TestApp::new().await;
+    // Signing app: the approve-request carries the spec-REQUIRED VTA proof.
+    let (app, ctx) = TestApp::new_signing().await;
     let caller = "did:key:z6MkAdmin";
     let approver = "did:key:z6MkApprover";
     // The caller's ACL entry names its delegated approver.
